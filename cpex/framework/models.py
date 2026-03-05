@@ -1850,8 +1850,8 @@ class PluginPackageInfo(BaseModel):
 
     Examples:
         >>> pkg = PluginPackageInfo(git_repository="https://github.com/user/repo.git",
-        ...     git_branch_tag_commit="v1.0.0",
-        ...     version_constraint=">=1.0.0")
+            git_branch_tag_commit="v1.0.0",
+            version_constraint=">=1.0.0")
         >>> pkg2 = PluginPackageInfo(pypi_package="my-package", version_constraint=">=1.0.0")
     """
 
