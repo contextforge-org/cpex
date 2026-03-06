@@ -33,7 +33,6 @@ from pydantic import (
     field_validator,
     model_validator,
 )
-from packaging.version import Version, InvalidVersion
 
 # First-Party
 from cpex.framework.constants import (
