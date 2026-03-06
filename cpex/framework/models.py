@@ -35,7 +35,6 @@ from pydantic import (
 )
 from packaging.version import Version, InvalidVersion
 
-
 # First-Party
 from cpex.framework.constants import (
     CMD,
