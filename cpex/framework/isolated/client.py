@@ -272,7 +272,8 @@ class IsolatedVenvPlugin(Plugin):
         if not result_type:
             raise PluginError(
                 error=PluginErrorModel(
-                    message=f"Hook type '{hook_type}' not registered in hook registry", plugin_name=self.name
+                    message=f"Hook type '{hook_type}' not registered in hook registry",
+                    plugin_name=self.name
                 )
             )
 
