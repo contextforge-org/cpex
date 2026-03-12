@@ -894,4 +894,300 @@ class TestVenvProcessCommunicator:
         assert len(communicator.response_queues) == 0
 
 
+    @patch("subprocess.Popen")
+    @patch("threading.Thread")
+    def test_read_stderr_with_output(self, mock_thread, mock_popen, communicator):
+        """Test _read_stderr method reads and logs stderr output."""
+        mock_process = MagicMock()
+        mock_process.stdin = MagicMock()
+        mock_process.stdout = MagicMock()
+        
+        # Mock stderr with some output
+        mock_stderr = MagicMock()
+        mock_stderr.readline.side_effect = [
+            "Error line 1\n",
+            "Error line 2\n",
+            "",  # Empty string signals end
+        ]
+        mock_process.stderr = mock_stderr
+        mock_process.poll.return_value = None
+        mock_popen.return_value = mock_process
+        
+        mock_thread_instance = MagicMock()
+        mock_thread.return_value = mock_thread_instance
+        
+        # Start worker to trigger stderr thread
+        communicator.start_worker("test_script.py")
+        
+        # Manually call _read_stderr to test it
+        communicator._read_stderr()
+        
+        # Verify readline was called
+        assert mock_stderr.readline.call_count >= 1
+
+    @patch("subprocess.Popen")
+    @patch("threading.Thread")
+    def test_read_stderr_with_exception(self, mock_thread, mock_popen, communicator):
+        """Test _read_stderr handles exceptions gracefully."""
+        mock_process = MagicMock()
+        mock_process.stdin = MagicMock()
+        mock_process.stdout = MagicMock()
+        
+        # Mock stderr that raises exception
+        mock_stderr = MagicMock()
+        mock_stderr.readline.side_effect = Exception("Read error")
+        mock_process.stderr = mock_stderr
+        mock_process.poll.return_value = None
+        mock_popen.return_value = mock_process
+        
+        mock_thread_instance = MagicMock()
+        mock_thread.return_value = mock_thread_instance
+        
+        communicator.start_worker("test_script.py")
+        
+        # Should not raise exception
+        communicator._read_stderr()
+
+    @patch("subprocess.Popen")
+    @patch("threading.Thread")
+    def test_read_stderr_no_process(self, mock_thread, mock_popen, communicator):
+        """Test _read_stderr returns early when no process."""
+        # Don't start worker, just call _read_stderr
+        communicator._read_stderr()
+        # Should return without error
+
+    @patch("subprocess.Popen")
+    @patch("threading.Thread")
+    def test_read_responses_with_valid_json(self, mock_thread, mock_popen, communicator):
+        """Test _read_responses processes valid JSON responses."""
+        mock_process = MagicMock()
+        mock_process.stdin = MagicMock()
+        mock_process.stderr = MagicMock()
+        
+        # Mock stdout with valid JSON responses
+        mock_stdout = MagicMock()
+        mock_stdout.readline.side_effect = [
+            '{"status": "ok", "request_id": "test-123"}\n',
+            "",  # Empty string signals end
+        ]
+        mock_process.stdout = mock_stdout
+        mock_process.poll.return_value = None
+        mock_popen.return_value = mock_process
+        
+        mock_thread_instance = MagicMock()
+        mock_thread.return_value = mock_thread_instance
+        
+        # Create a response queue for the request
+        communicator.response_queues["test-123"] = Queue()
+        
+        communicator.start_worker("test_script.py")
+        
+        # Manually call _read_responses
+        communicator._read_responses()
+        
+        # Verify the response was queued
+        assert not communicator.response_queues["test-123"].empty()
+
+    @patch("subprocess.Popen")
+    @patch("threading.Thread")
+    def test_read_responses_with_empty_lines(self, mock_thread, mock_popen, communicator):
+        """Test _read_responses skips empty lines."""
+        mock_process = MagicMock()
+        mock_process.stdin = MagicMock()
+        mock_process.stderr = MagicMock()
+        
+        # Mock stdout with empty lines
+        mock_stdout = MagicMock()
+        mock_stdout.readline.side_effect = [
+            "\n",
+            "   \n",
+            '{"status": "ok", "request_id": "test-456"}\n',
+            "",
+        ]
+        mock_process.stdout = mock_stdout
+        mock_process.poll.return_value = None
+        mock_popen.return_value = mock_process
+        
+        mock_thread_instance = MagicMock()
+        mock_thread.return_value = mock_thread_instance
+        
+        communicator.response_queues["test-456"] = Queue()
+        communicator.start_worker("test_script.py")
+        communicator._read_responses()
+        
+        assert not communicator.response_queues["test-456"].empty()
+
+    @patch("subprocess.Popen")
+    @patch("threading.Thread")
+    def test_read_responses_with_invalid_json(self, mock_thread, mock_popen, communicator):
+        """Test _read_responses handles invalid JSON gracefully."""
+        mock_process = MagicMock()
+        mock_process.stdin = MagicMock()
+        mock_process.stderr = MagicMock()
+        
+        # Mock stdout with invalid JSON
+        mock_stdout = MagicMock()
+        mock_stdout.readline.side_effect = [
+            "not valid json\n",
+            '{"incomplete": \n',
+            "",
+        ]
+        mock_process.stdout = mock_stdout
+        mock_process.poll.return_value = None
+        mock_popen.return_value = mock_process
+        
+        mock_thread_instance = MagicMock()
+        mock_thread.return_value = mock_thread_instance
+        
+        communicator.start_worker("test_script.py")
+        
+        # Should not raise exception
+        communicator._read_responses()
+
+    @patch("subprocess.Popen")
+    @patch("threading.Thread")
+    def test_read_responses_without_request_id(self, mock_thread, mock_popen, communicator):
+        """Test _read_responses handles responses without request_id."""
+        mock_process = MagicMock()
+        mock_process.stdin = MagicMock()
+        mock_process.stderr = MagicMock()
+        
+        # Mock stdout with response missing request_id
+        mock_stdout = MagicMock()
+        mock_stdout.readline.side_effect = [
+            '{"status": "ok", "data": "test"}\n',
+            "",
+        ]
+        mock_process.stdout = mock_stdout
+        mock_process.poll.return_value = None
+        mock_popen.return_value = mock_process
+        
+        mock_thread_instance = MagicMock()
+        mock_thread.return_value = mock_thread_instance
+        
+        communicator.start_worker("test_script.py")
+        
+        # Should log warning but not crash
+        communicator._read_responses()
+
+    @patch("subprocess.Popen")
+    @patch("threading.Thread")
+    def test_read_responses_unknown_request_id(self, mock_thread, mock_popen, communicator):
+        """Test _read_responses handles unknown request_id."""
+        mock_process = MagicMock()
+        mock_process.stdin = MagicMock()
+        mock_process.stderr = MagicMock()
+        
+        # Mock stdout with unknown request_id
+        mock_stdout = MagicMock()
+        mock_stdout.readline.side_effect = [
+            '{"status": "ok", "request_id": "unknown-999"}\n',
+            "",
+        ]
+        mock_process.stdout = mock_stdout
+        mock_process.poll.return_value = None
+        mock_popen.return_value = mock_process
+        
+        mock_thread_instance = MagicMock()
+        mock_thread.return_value = mock_thread_instance
+        
+        communicator.start_worker("test_script.py")
+        
+        # Should log warning but not crash
+        communicator._read_responses()
+
+    @patch("subprocess.Popen")
+    @patch("threading.Thread")
+    def test_read_responses_with_exception(self, mock_thread, mock_popen, communicator):
+        """Test _read_responses handles exceptions during reading."""
+        mock_process = MagicMock()
+        mock_process.stdin = MagicMock()
+        mock_process.stderr = MagicMock()
+        
+        # Mock stdout that raises exception
+        mock_stdout = MagicMock()
+        mock_stdout.readline.side_effect = Exception("Read error")
+        mock_process.stdout = mock_stdout
+        mock_process.poll.return_value = None
+        mock_popen.return_value = mock_process
+        
+        mock_thread_instance = MagicMock()
+        mock_thread.return_value = mock_thread_instance
+        
+        communicator.start_worker("test_script.py")
+        
+        # Should handle exception and set running to False
+        communicator._read_responses()
+        assert communicator.running is False
+
+    @patch("subprocess.Popen")
+    @patch("threading.Thread")
+    @patch("cpex.framework.isolated.venv_comm.Queue")
+    def test_send_task_stdin_not_available(self, mock_queue_class, mock_thread, mock_popen, communicator):
+        """Test send_task when stdin is not available."""
+        task_data = {"task_type": "test"}
+        
+        mock_process = MagicMock()
+        mock_process.stdin = None  # stdin not available
+        mock_process.stdout = MagicMock()
+        mock_process.stderr = MagicMock()
+        mock_process.poll.return_value = None
+        mock_popen.return_value = mock_process
+        
+        mock_thread_instance = MagicMock()
+        mock_thread.return_value = mock_thread_instance
+        
+        mock_queue_instance = MagicMock()
+        mock_queue_class.return_value = mock_queue_instance
+        
+        communicator.start_worker("test_script.py")
+        
+        with pytest.raises(RuntimeError, match="Worker process stdin not available"):
+            communicator.send_task("test_script.py", task_data)
+
+    @patch("subprocess.Popen")
+    @patch("threading.Thread")
+    def test_stop_worker_send_shutdown_exception(self, mock_thread, mock_popen, communicator):
+        """Test stop_worker handles exception when sending shutdown signal."""
+        mock_process = MagicMock()
+        mock_stdin = MagicMock()
+        mock_stdin.write.side_effect = Exception("Write failed")
+        mock_process.stdin = mock_stdin
+        mock_process.stdout = MagicMock()
+        mock_process.stderr = MagicMock()
+        mock_process.wait.return_value = None
+        mock_popen.return_value = mock_process
+        
+        mock_thread_instance = MagicMock()
+        mock_thread_instance.is_alive.return_value = False
+        mock_thread.return_value = mock_thread_instance
+        
+        communicator.start_worker("test_script.py")
+        
+        # Should handle exception gracefully
+        communicator.stop_worker()
+        
+        assert communicator.running is False
+        assert communicator.process is None
+
+    def test_del_method(self, communicator):
+        """Test __del__ method calls stop_worker."""
+        communicator.running = True
+        communicator.process = MagicMock()
+        
+        # Call __del__ directly
+        communicator.__del__()
+        
+        # Should have stopped the worker
+        assert communicator.running is False
+
+    def test_del_method_no_running_attribute(self):
+        """Test __del__ handles missing running attribute."""
+        # Create instance without proper initialization
+        comm = object.__new__(VenvProcessCommunicator)
+        
+        # Should not raise exception
+        comm.__del__()
+
+
 # Made with Bob
