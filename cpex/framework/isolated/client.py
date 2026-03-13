@@ -248,8 +248,6 @@ class IsolatedVenvPlugin(Plugin):
         else:
             logger.info("Using cached venv, skipping requirements installation")
 
-
-
     async def cleanup(self) -> None:
         """Cleanup resources, including stopping the worker process."""
         if self.comm:
