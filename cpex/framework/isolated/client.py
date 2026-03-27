@@ -17,7 +17,6 @@ import os
 import shutil
 import sys
 import venv
-import yaml
 from pathlib import Path
 
 from typing_extensions import Any, Optional
