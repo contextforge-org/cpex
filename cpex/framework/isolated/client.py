@@ -26,7 +26,6 @@ from cpex.framework.constants import CONTEXT, HOOK_TYPE, PAYLOAD, PLUGIN_NAME
 from cpex.framework.errors import PluginError, convert_exception_to_error
 from cpex.framework.hooks.registry import get_hook_registry
 from cpex.framework.isolated.venv_comm import VenvProcessCommunicator
-from cpex.framework.loader.config import ConfigLoader
 from cpex.framework.models import PluginConfig, PluginContext, PluginErrorModel, PluginPayload, PluginResult
 
 logger = logging.getLogger(__name__)
