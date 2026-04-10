@@ -1189,5 +1189,183 @@ class TestVenvProcessCommunicator:
         # Should not raise exception
         comm.__del__()
 
+    @patch("subprocess.Popen")
+    @patch("threading.Thread")
+    def test_send_task_exceeds_max_content_size(self, mock_thread, mock_popen, communicator):
+        """Test send_task raises error when data exceeds max_content_size."""
+        # Create a large task that will exceed the limit
+        large_data = "x" * 5000
+        task_data = {
+            "task_type": "test",
+            "data": large_data
+        }
+        
+        mock_process = MagicMock()
+        mock_process.stdin = MagicMock()
+        mock_process.stdout = MagicMock()
+        mock_process.stderr = MagicMock()
+        mock_process.poll.return_value = None
+        mock_popen.return_value = mock_process
+        
+        mock_thread_instance = MagicMock()
+        mock_thread.return_value = mock_thread_instance
+        
+        communicator.start_worker("test_script.py")
+        
+        # Set a very small max_content_size to trigger the error
+        with pytest.raises(RuntimeError, match="task_data exceeds max_content_size"):
+            communicator.send_task("test_script.py", task_data, max_content_size=100)
+        
+        # Verify the request_id was cleaned up from response_queues
+        assert len(communicator.response_queues) == 0
+
+    @patch("subprocess.Popen")
+    @patch("threading.Thread")
+    @patch("uuid.uuid4")
+    def test_send_task_at_max_content_size_boundary(self, mock_uuid, mock_thread, mock_popen, communicator):
+        """Test send_task works when data is exactly at the limit."""
+        # Use a fixed UUID to make size calculation predictable
+        mock_uuid.return_value = Mock(hex="12345678123456781234567812345678")
+        mock_uuid.return_value.__str__ = Mock(return_value="12345678-1234-5678-1234-567812345678")
+        
+        task_data = {"task_type": "test", "data": "small"}
+        
+        mock_process = MagicMock()
+        mock_process.stdin = MagicMock()
+        mock_process.stdout = MagicMock()
+        mock_process.stderr = MagicMock()
+        mock_process.poll.return_value = None
+        mock_popen.return_value = mock_process
+        
+        mock_thread_instance = MagicMock()
+        mock_thread.return_value = mock_thread_instance
+        
+        # Mock the Queue to return response
+        with patch("cpex.framework.isolated.venv_comm.Queue") as mock_queue_class:
+            mock_queue_instance = MagicMock()
+            mock_queue_instance.get.return_value = {
+                "status": "success",
+                "result": "ok",
+                "request_id": "test-id"
+            }
+            mock_queue_class.return_value = mock_queue_instance
+            
+            communicator.start_worker("test_script.py")
+            
+            # Calculate the exact size of the serialized data with the mocked UUID
+            import orjson
+            test_data_copy = task_data.copy()
+            test_data_copy["request_id"] = "12345678-1234-5678-1234-567812345678"
+            serialized_size = len(orjson.dumps(test_data_copy).decode())
+            
+            # Set max_content_size to exactly the serialized size
+            result = communicator.send_task("test_script.py", task_data, max_content_size=serialized_size)
+            
+            assert result == {"status": "success", "result": "ok"}
+
+    @patch("subprocess.Popen")
+    @patch("threading.Thread")
+    def test_send_task_with_custom_max_content_size(self, mock_thread, mock_popen, communicator):
+        """Test send_task respects custom max_content_size parameter."""
+        # Create task data that's moderately sized
+        task_data = {
+            "task_type": "test",
+            "data": "x" * 1000,
+            "metadata": {"key": "value"}
+        }
+        
+        mock_process = MagicMock()
+        mock_process.stdin = MagicMock()
+        mock_process.stdout = MagicMock()
+        mock_process.stderr = MagicMock()
+        mock_process.poll.return_value = None
+        mock_popen.return_value = mock_process
+        
+        mock_thread_instance = MagicMock()
+        mock_thread.return_value = mock_thread_instance
+        
+        with patch("cpex.framework.isolated.venv_comm.Queue") as mock_queue_class:
+            mock_queue_instance = MagicMock()
+            mock_queue_instance.get.return_value = {
+                "status": "success",
+                "result": "processed",
+                "request_id": "test-id"
+            }
+            mock_queue_class.return_value = mock_queue_instance
+            
+            communicator.start_worker("test_script.py")
+            
+            # Should succeed with large max_content_size
+            result = communicator.send_task("test_script.py", task_data, max_content_size=50000)
+            assert result == {"status": "success", "result": "processed"}
+            
+            # Should fail with small max_content_size
+            with pytest.raises(RuntimeError, match="task_data exceeds max_content_size"):
+                communicator.send_task("test_script.py", task_data, max_content_size=500)
+
+    @patch("subprocess.Popen")
+    @patch("threading.Thread")
+    def test_send_task_default_max_content_size(self, mock_thread, mock_popen, communicator):
+        """Test send_task uses default max_content_size of 10MB."""
+        # Create a task that's under 10MB
+        task_data = {
+            "task_type": "test",
+            "data": "x" * 100000  # 100KB
+        }
+        
+        mock_process = MagicMock()
+        mock_process.stdin = MagicMock()
+        mock_process.stdout = MagicMock()
+        mock_process.stderr = MagicMock()
+        mock_process.poll.return_value = None
+        mock_popen.return_value = mock_process
+        
+        mock_thread_instance = MagicMock()
+        mock_thread.return_value = mock_thread_instance
+        
+        with patch("cpex.framework.isolated.venv_comm.Queue") as mock_queue_class:
+            mock_queue_instance = MagicMock()
+            mock_queue_instance.get.return_value = {
+                "status": "success",
+                "result": "ok",
+                "request_id": "test-id"
+            }
+            mock_queue_class.return_value = mock_queue_instance
+            
+            communicator.start_worker("test_script.py")
+            
+            # Should succeed with default max_content_size (10MB)
+            result = communicator.send_task("test_script.py", task_data)
+            assert result == {"status": "success", "result": "ok"}
+
+    @patch("subprocess.Popen")
+    @patch("threading.Thread")
+    def test_send_task_very_large_data_exceeds_default_limit(self, mock_thread, mock_popen, communicator):
+        """Test send_task fails when data exceeds default 10MB limit."""
+        # Create a task that exceeds 10MB
+        task_data = {
+            "task_type": "test",
+            "data": "x" * 11000000  # ~11MB
+        }
+        
+        mock_process = MagicMock()
+        mock_process.stdin = MagicMock()
+        mock_process.stdout = MagicMock()
+        mock_process.stderr = MagicMock()
+        mock_process.poll.return_value = None
+        mock_popen.return_value = mock_process
+        
+        mock_thread_instance = MagicMock()
+        mock_thread.return_value = mock_thread_instance
+        
+        communicator.start_worker("test_script.py")
+        
+        # Should fail with default max_content_size
+        with pytest.raises(RuntimeError, match="task_data exceeds max_content_size"):
+            communicator.send_task("test_script.py", task_data)
+        
+        # Verify cleanup happened
+        assert len(communicator.response_queues) == 0
+
 
 # Made with Bob
