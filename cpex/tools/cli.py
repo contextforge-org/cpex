@@ -43,7 +43,6 @@ from typing_extensions import Annotated
 from cpex.framework.loader.config import ConfigLoader, ConfigSaver
 from cpex.framework.models import (
     Config,
-    InstalledPluginRegistry,
     PluginManifest,
     PluginMode,
 )

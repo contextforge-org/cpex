@@ -178,7 +178,9 @@ class PluginCatalog:
         else:
             logger.error("Failed to download file: %s status_code: %d", git_url, result.status_code)
 
-    def find_and_save_plugin_manifest(self, member: str, name: str, repo_url: httpx.URL, headers) -> PluginManifest | None:
+    def find_and_save_plugin_manifest(
+        self, member: str, name: str, repo_url: httpx.URL, headers
+    ) -> PluginManifest | None:
         """Find the plugin-manifest.yaml relative to the supplied member folder,
         download and save the manifest, updating the monorepo's package_folder, package_source and repo_url attributes
         """
@@ -237,11 +239,11 @@ class PluginCatalog:
                 project_data = r.json()
                 for item in project_data["items"]:
                     if "pyproject.toml" in item["name"]:
-                        member = item['path'].removesuffix('/' + item['name'])
+                        member = item["path"].removesuffix("/" + item["name"])
                         pyproject_data = self.download_file(
-                                git_url=f"https://{self.github_api}/repos/{repo_path}/contents/{member}/pyproject.toml",
-                                headers=headers,
-                            )
+                            git_url=f"https://{self.github_api}/repos/{repo_path}/contents/{member}/pyproject.toml",
+                            headers=headers,
+                        )
                         if pyproject_data is None:
                             logger.warning("Failed to download pyproject.toml from %s", repo)
                             continue
