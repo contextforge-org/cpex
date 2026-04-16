@@ -415,10 +415,7 @@ def _finalize_installation(manifest: PluginManifest, install_type: str, catalog:
     """
     plugin_registry = PluginRegistry()
     plugin_registry.update(
-        manifest=manifest,
-        installation_type=install_type,
-        catalog=catalog,
-        git_user_name=git_user_name()
+        manifest=manifest, installation_type=install_type, catalog=catalog, git_user_name=git_user_name()
     )
     update_plugins_config_yaml(manifest=manifest)
 
@@ -473,10 +470,7 @@ def _install_from_pypi(source: str, catalog: PluginCatalog):
     package_name, version_constraint = _parse_pypi_source(source)
 
     with console.status(f"Installing plugin {package_name} via pypi", spinner="dots"):
-        manifest = catalog.install_from_pypi(
-            plugin_package_name=package_name,
-            version_constraint=version_constraint
-        )
+        manifest = catalog.install_from_pypi(plugin_package_name=package_name, version_constraint=version_constraint)
 
     if manifest is None:
         console.print(f"❌ Failed to install {package_name}")
