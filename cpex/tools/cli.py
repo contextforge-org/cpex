@@ -251,22 +251,17 @@ def list(type: str) -> None:
     Raises:
     typer.Exit: If the type is not "native" or "external".
     """
-    DEFAULT_PLUGIN_REGISTRY_FOLDER = Path(os.environ.get("PLUGIN_REGISTRY_FILE", "data"))
-    os.makedirs(DEFAULT_PLUGIN_REGISTRY_FOLDER, exist_ok=True)
-    DEFAULT_PLUGIN_REGISTRY_FILE = "installed-plugins.json"
-    registered_plugins = None
-    ipr_file = DEFAULT_PLUGIN_REGISTRY_FOLDER / DEFAULT_PLUGIN_REGISTRY_FILE
-    if ipr_file.exists():
-        with open(ipr_file, "r", encoding="utf-8") as ipr:
-            registered_plugins = json.load(ipr)
+    pr = PluginRegistry()
+
+    registered_plugins = pr.registry.plugins
 
     if registered_plugins:
-        for plug_in in registered_plugins["plugins"]:
+        for plug_in in registered_plugins:
             logger.info(
                 "name: %s version: %s installation type: %s",
-                plug_in["name"],
-                plug_in["version"],
-                plug_in["installation_type"],
+                plug_in.name,
+                plug_in.version,
+                plug_in.installation_type,
             )
     else:
         logger.info("No plugins registered.")

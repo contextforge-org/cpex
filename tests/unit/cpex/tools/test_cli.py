@@ -466,8 +466,24 @@ class TestListFunction:
         registry_file = tmp_path / "installed-plugins.json"
         registry_data = {
             "plugins": [
-                {"name": "test_plugin", "version": "1.0.0", "installation_type": "monorepo"},
-                {"name": "another_plugin", "version": "2.0.0", "installation_type": "pypi"},
+                {
+                    "name": "test_plugin",
+                    "kind": "native",
+                    "version": "1.0.0",
+                    "installation_type": "monorepo",
+                    "installation_path": "/path/to/test_plugin",
+                    "installed_at": "2024-01-01T00:00:00.000000Z",
+                    "installed_by": "test_user",
+                },
+                {
+                    "name": "another_plugin",
+                    "kind": "external",
+                    "version": "2.0.0",
+                    "installation_type": "pypi",
+                    "installation_path": "/path/to/another_plugin",
+                    "installed_at": "2024-01-02T00:00:00.000000Z",
+                    "installed_by": "test_user",
+                },
             ]
         }
         registry_file.write_text(json.dumps(registry_data))
