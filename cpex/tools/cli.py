@@ -573,7 +573,7 @@ def plugin(
     # optimized github search REST api takes ~14s to search & download all manifests
     console.log("Update catalog")
     with console.status("Updating catalog...", spinner="dots"):
-        pc.update_catalog_with_cargo()
+        pc.update_catalog_with_pyproject()
     console.log("Catalog update completed.")
 
     if cmd_action == "list":

@@ -167,7 +167,7 @@ class PluginCatalog:
         else:
             logger.error("Failed to download file: %s status_code: %d", git_url, result.status_code)
 
-    def download_file(self, git_url: str, headers) -> str:
+    def download_file(self, git_url: str, headers) -> str | None:
         """Download the content of a github file"""
         result = httpx.get(git_url, headers=headers)
         if result.status_code == 200:
@@ -178,7 +178,7 @@ class PluginCatalog:
         else:
             logger.error("Failed to download file: %s status_code: %d", git_url, result.status_code)
 
-    def find_and_save_plugin_manifest(self, member: str, name: str, repo_url: httpx.URL, headers) -> PluginManifest:
+    def find_and_save_plugin_manifest(self, member: str, name: str, repo_url: httpx.URL, headers) -> PluginManifest | None:
         """Find the plugin-manifest.yaml relative to the supplied member folder,
         download and save the manifest, updating the monorepo's package_folder, package_source and repo_url attributes
         """
@@ -195,7 +195,11 @@ class PluginCatalog:
             for item in result["items"]:
                 # only download yaml files, not the README.md which may also contain references to available_hooks
                 if item["name"].endswith(".yaml") and item["name"].startswith("plugin-manifest"):
-                    manifest_content = yaml.safe_load(self.download_file(item["git_url"], headers=headers))
+                    manifest_data = self.download_file(item["git_url"], headers=headers)
+                    if manifest_data is None:
+                        logger.error("Failed to download plugin-manifest from %s", member)
+                        continue
+                    manifest_content = yaml.safe_load(manifest_data)
                     package_source = f"{repo_url}#subdirectory={member}"
                     manifest_content["name"] = name
                     manifest_content["monorepo"] = {
@@ -219,30 +223,32 @@ class PluginCatalog:
         else:
             logger.error("Catalog update failed with error code: %d", r.status_code)
 
-    def update_catalog_with_cargo(self) -> None:
-        """Update the plugin catalog with the latest available plugins."""
-        # Get the list of available plugins from the Cargo registry
+    def update_catalog_with_pyproject(self) -> None:
+        """Update the catalog with the pyproject.toml file."""
         headers = {"accept": "application/vnd.github+json", "authorization": f"Bearer {self.github_token}"}
         self.create_output_folder()
         for repo in self.monorepos:
             repo_url = httpx.URL(repo)
             repo_path = repo_url.path.removeprefix("/")
-            cargo_data = tomllib.loads(
-                self.download_file(
-                    git_url=f"https://{self.github_api}/repos/{repo_path}/contents/Cargo.toml", headers=headers
-                )
-            )
-            for member in cargo_data["workspace"]["members"]:
-                project_data = tomllib.loads(
-                    self.download_file(
-                        git_url=f"https://{self.github_api}/repos/{repo_path}/contents/{member}/pyproject.toml",
-                        headers=headers,
-                    )
-                )
-                # project_data.project.name
-                self.find_and_save_plugin_manifest(
-                    member=member, name=project_data["project"]["name"], repo_url=repo_url, headers=headers
-                )
+            params = f"q=repo:{repo_path}+filename:pyproject+extension:toml&per_page=100"
+            r = httpx.get(f"https://{self.github_api}/search/code", params=params, headers=headers)
+            logger.info("status code: %d ", r.status_code)
+            if r.status_code == 200:
+                project_data = r.json()
+                for item in project_data["items"]:
+                    if "pyproject.toml" in item["name"]:
+                        member = item['path'].removesuffix('/' + item['name'])
+                        pyproject_data = self.download_file(
+                                git_url=f"https://{self.github_api}/repos/{repo_path}/contents/{member}/pyproject.toml",
+                                headers=headers,
+                            )
+                        if pyproject_data is None:
+                            logger.warning("Failed to download pyproject.toml from %s", repo)
+                            continue
+                        project_data = tomllib.loads(pyproject_data)
+                        self.find_and_save_plugin_manifest(
+                            member=member, name=project_data["project"]["name"], repo_url=repo_url, headers=headers
+                        )
 
     def load(self) -> None:
         """Load plugin-manifest.yaml files from self.catalog_folder into self.manifests."""

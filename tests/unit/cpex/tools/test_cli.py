@@ -869,12 +869,12 @@ class TestPluginCommand:
             patch("cpex.tools.cli.Console"),
         ):
             mock_catalog = Mock()
-            mock_catalog.update_catalog_with_cargo = Mock()
+            mock_catalog.update_catalog_with_pyproject = Mock()
             mock_catalog_class.return_value = mock_catalog
 
             result = runner.invoke(app, ["plugin", "list"])
             assert result.exit_code == 0
-            mock_catalog.update_catalog_with_cargo.assert_called_once()
+            mock_catalog.update_catalog_with_pyproject.assert_called_once()
 
     def test_plugin_search_command(self, temp_registry_dir):
         """Test plugin search command."""
@@ -885,7 +885,7 @@ class TestPluginCommand:
             patch("cpex.tools.cli.Console"),
         ):
             mock_catalog = Mock()
-            mock_catalog.update_catalog_with_cargo = Mock()
+            mock_catalog.update_catalog_with_pyproject = Mock()
             mock_catalog.search = Mock(return_value=[manifest])
             mock_catalog_class.return_value = mock_catalog
 
@@ -905,7 +905,7 @@ class TestPluginCommand:
             patch("cpex.tools.cli.update_plugins_config_yaml"),
         ):
             mock_catalog = Mock()
-            mock_catalog.update_catalog_with_cargo = Mock()
+            mock_catalog.update_catalog_with_pyproject = Mock()
             mock_catalog.search = Mock(return_value=[manifest])
             mock_catalog.install_folder_via_pip = Mock()
             mock_catalog.find_package_path = Mock(return_value=Path("/fake/path/to/plugin"))

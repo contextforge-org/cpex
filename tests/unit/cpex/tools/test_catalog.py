@@ -661,24 +661,29 @@ class TestPluginCatalogFindAndSavePluginManifest:
             assert saved_file.exists()
 
 
-class TestPluginCatalogUpdateCatalogWithCargo:
-    """Tests for update_catalog_with_cargo method."""
+class TestPluginCatalogUpdateCatalogWithPyproject:
+    """Tests for update_catalog_with_pyproject method."""
 
-    def test_update_catalog_with_cargo_success(self, tmp_path, mock_github_env):
-        """Test successful catalog update with Cargo workspace."""
+    def test_update_catalog_with_pyproject_success(self, tmp_path, mock_github_env):
+        """Test successful catalog update with pyproject.toml files."""
         with patch("cpex.tools.catalog.httpx.get") as mock_get:
             catalog = PluginCatalog()
             catalog.catalog_folder = str(tmp_path / "catalog")
             catalog.monorepos = ["https://github.com/org/repo"]
             
-            # Mock Cargo.toml response
-            cargo_content = '[workspace]\nmembers = ["plugin1"]'
-            b64_cargo = base64.b64encode(cargo_content.encode()).decode()
-            cargo_response = Mock()
-            cargo_response.status_code = 200
-            cargo_response.json.return_value = {"content": b64_cargo}
+            # Mock search response for pyproject.toml files
+            search_response = Mock()
+            search_response.status_code = 200
+            search_response.json.return_value = {
+                "items": [
+                    {
+                        "name": "pyproject.toml",
+                        "path": "plugin1/pyproject.toml"
+                    }
+                ]
+            }
             
-            # Mock pyproject.toml response
+            # Mock pyproject.toml content response
             pyproject_content = '[project]\nname = "test_plugin"'
             b64_pyproject = base64.b64encode(pyproject_content.encode()).decode()
             pyproject_response = Mock()
@@ -686,9 +691,9 @@ class TestPluginCatalogUpdateCatalogWithCargo:
             pyproject_response.json.return_value = {"content": b64_pyproject}
             
             # Mock search response for manifest
-            search_response = Mock()
-            search_response.status_code = 200
-            search_response.json.return_value = {
+            manifest_search_response = Mock()
+            manifest_search_response.status_code = 200
+            manifest_search_response.json.return_value = {
                 "items": [
                     {
                         "name": "plugin-manifest.yaml",
@@ -705,9 +710,9 @@ class TestPluginCatalogUpdateCatalogWithCargo:
             manifest_response.status_code = 200
             manifest_response.json.return_value = {"content": b64_manifest}
             
-            mock_get.side_effect = [cargo_response, pyproject_response, search_response, manifest_response]
+            mock_get.side_effect = [search_response, pyproject_response, manifest_search_response, manifest_response]
             
-            catalog.update_catalog_with_cargo()
+            catalog.update_catalog_with_pyproject()
             
             assert (tmp_path / "catalog").exists()
 
