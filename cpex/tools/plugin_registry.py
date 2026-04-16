@@ -9,11 +9,13 @@ from cpex.tools.catalog import PluginCatalog
 
 class PluginRegistry:
     """Plugin registry.
-        Plugin registry is responsible for storing information about installed plugins.
+    Plugin registry is responsible for storing information about installed plugins.
     """
+
     registry: InstalledPluginRegistry = InstalledPluginRegistry()
 
     def __init__(self, *args, **kwargs):
+        """Initialize the plugin registry."""
         super().__init__(*args, **kwargs)
         DEFAULT_PLUGIN_REGISTRY_FOLDER = Path(os.environ.get("PLUGIN_REGISTRY_FILE", "data"))
         os.makedirs(DEFAULT_PLUGIN_REGISTRY_FOLDER, exist_ok=True)
