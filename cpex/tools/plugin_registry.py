@@ -24,6 +24,8 @@ class PluginRegistry:
         if ipr_file.exists():
             with open(ipr_file, "r", encoding="utf-8") as ipr:
                 self.registry = InstalledPluginRegistry(**json.load(ipr))
+        else:
+            self.registry = InstalledPluginRegistry()
 
     def update(
         self, manifest: PluginManifest, installation_type: str, catalog: PluginCatalog, git_user_name: str

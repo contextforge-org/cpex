@@ -530,12 +530,8 @@ def info(plugin_name: str | None):
         Returns:
             list[Plugin]: A list of plugins that match the search criteria.
     """
-    ipr_file = DEFAULT_PLUGIN_REGISTRY_FOLDER / DEFAULT_PLUGIN_REGISTRY_FILE
-    if ipr_file.exists():
-        with open(ipr_file, "r", encoding="utf-8") as ipr:
-            registry = InstalledPluginRegistry(**json.load(ipr))
-    else:
-        registry = InstalledPluginRegistry()
+    registry = PluginRegistry().registry
+
     found = 0
     for plug_in in registry.plugins:
         if plugin_name is None:

@@ -9,6 +9,7 @@ Tests for the cpex CLI bootstrap command and utility functions.
 
 # Standard
 import json
+import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, Mock, patch, mock_open
 
@@ -37,12 +38,25 @@ from cpex.tools.cli import (
     update_plugins_config_yaml,
 )
 from cpex.tools.plugin_registry import PluginRegistry
-from cpex.framework.models import PluginManifest, Monorepo, Config, PluginConfig, PluginMode
+from cpex.framework.models import PluginManifest, Monorepo, Config, PluginConfig, PluginMode, PiPyRepo
 
 runner = CliRunner()
 
 # cookiecutter is imported locally inside bootstrap(); patch at source module
 _CC_PATCH_TARGET = "cookiecutter.main.cookiecutter"
+
+
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def temp_registry_dir(tmp_path, monkeypatch):
+    """Fixture to ensure all tests use a temporary directory for the plugin registry."""
+    registry_dir = tmp_path / "test_registry"
+    registry_dir.mkdir(exist_ok=True)
+    monkeypatch.setenv("PLUGIN_REGISTRY_FILE", str(registry_dir))
+    return registry_dir
 
 
 # Helper function to create test manifests
@@ -452,18 +466,15 @@ class TestMainEntrypoint:
 class TestListFunction:
     """Tests for the list() function."""
 
-    def test_list_with_no_registry_file(self, tmp_path):
+    def test_list_with_no_registry_file(self, temp_registry_dir):
         """Test list when registry file doesn't exist."""
-        with (
-            patch("cpex.tools.cli.os.environ.get", return_value=str(tmp_path)),
-            patch("cpex.tools.cli.logger") as mock_logger,
-        ):
+        with patch("cpex.tools.cli.logger") as mock_logger:
             list("all")
             mock_logger.info.assert_called_with("No plugins registered.")
 
-    def test_list_with_existing_plugins(self, tmp_path):
+    def test_list_with_existing_plugins(self, temp_registry_dir):
         """Test list with existing plugins in registry."""
-        registry_file = tmp_path / "installed-plugins.json"
+        registry_file = temp_registry_dir / "installed-plugins.json"
         registry_data = {
             "plugins": [
                 {
@@ -488,10 +499,7 @@ class TestListFunction:
         }
         registry_file.write_text(json.dumps(registry_data))
 
-        with (
-            patch("cpex.tools.cli.os.environ.get", return_value=str(tmp_path)),
-            patch("cpex.tools.cli.logger") as mock_logger,
-        ):
+        with patch("cpex.tools.cli.logger") as mock_logger:
             list("all")
             assert mock_logger.info.call_count == 2
 
@@ -499,25 +507,22 @@ class TestListFunction:
 class TestUpdatePluginRegistry:
     """Tests for update_plugin_registry() function."""
 
-    def test_creates_new_registry_if_not_exists(self, tmp_path):
+    def test_creates_new_registry_if_not_exists(self, temp_registry_dir):
         """Test creating a new registry when file doesn't exist."""
         manifest = create_test_manifest()
         
         mock_catalog = Mock()
         mock_catalog.find_package_path = Mock(return_value=Path("/fake/path/to/plugin"))
 
-        with (
-            patch.dict("os.environ", {"PLUGIN_REGISTRY_FILE": str(tmp_path)}),
-            patch("cpex.tools.cli.git_user_name", return_value="test_user"),
-        ):
+        with patch("cpex.tools.cli.git_user_name", return_value="test_user"):
             plugin_registry = PluginRegistry()
             plugin_registry.update(manifest, "monorepo", mock_catalog, "test_user")
-            registry_file = tmp_path / "installed-plugins.json"
+            registry_file = temp_registry_dir / "installed-plugins.json"
             assert registry_file.exists()
 
-    def test_updates_existing_registry(self, tmp_path):
+    def test_updates_existing_registry(self, temp_registry_dir):
         """Test updating an existing registry."""
-        registry_file = tmp_path / "installed-plugins.json"
+        registry_file = temp_registry_dir / "installed-plugins.json"
         registry_data = {"plugins": []}
         registry_file.write_text(json.dumps(registry_data))
 
@@ -531,15 +536,64 @@ class TestUpdatePluginRegistry:
         mock_catalog = Mock()
         mock_catalog.find_package_path = Mock(return_value=Path("/fake/path/to/new_plugin"))
 
-        with (
-            patch.dict("os.environ", {"PLUGIN_REGISTRY_FILE": str(tmp_path)}),
-            patch("cpex.tools.cli.git_user_name", return_value="test_user"),
-        ):
+        with patch("cpex.tools.cli.git_user_name", return_value="test_user"):
             plugin_registry = PluginRegistry()
             plugin_registry.update(manifest, "monorepo", mock_catalog, "test_user")
             updated_data = json.loads(registry_file.read_text())
             assert len(updated_data["plugins"]) == 1
             assert updated_data["plugins"][0]["name"] == "new_plugin"
+
+
+class TestPluginRegistryCoverage:
+    """Additional tests to increase coverage for PluginRegistry."""
+
+    def test_update_with_pypi_installation(self, temp_registry_dir):
+        """Test registry update for the PyPI installation path."""
+        manifest = create_test_manifest(
+            name="pypi_plugin",
+            monorepo=None,
+            package_info=PiPyRepo(pypi_package="pypi-plugin", version_constraint=None),
+        )
+
+        mock_catalog = Mock()
+        mock_catalog.find_package_path = Mock(return_value=Path("/fake/path/to/pypi_plugin"))
+
+        plugin_registry = PluginRegistry()
+        plugin_registry.update(manifest, "pypi", mock_catalog, "test_user")
+
+        registry_file = temp_registry_dir / "installed-plugins.json"
+        updated_data = json.loads(registry_file.read_text())
+        assert len(updated_data["plugins"]) == 1
+        assert updated_data["plugins"][0]["name"] == "pypi_plugin"
+        assert updated_data["plugins"][0]["package_source"] == "pypi-plugin"
+        assert updated_data["plugins"][0]["installation_type"] == "pypi"
+
+    def test_update_raises_for_monorepo_without_monorepo_metadata(self, temp_registry_dir):
+        """Test monorepo update fails when manifest.monorepo is missing."""
+        manifest = create_test_manifest(monorepo=None)
+
+        plugin_registry = PluginRegistry()
+
+        with pytest.raises(RuntimeError, match="PluginManifest.monorepo can not be None."):
+            plugin_registry.update(manifest, "monorepo", Mock(), "test_user")
+
+    def test_update_raises_for_pypi_without_package_info(self, temp_registry_dir):
+        """Test PyPI update fails when manifest.package_info is missing."""
+        manifest = create_test_manifest(monorepo=None)
+
+        plugin_registry = PluginRegistry()
+
+        with pytest.raises(RuntimeError, match="PluginManifest.package_info can not be None."):
+            plugin_registry.update(manifest, "pypi", Mock(), "test_user")
+
+    def test_update_raises_for_invalid_installation_type(self, temp_registry_dir):
+        """Test invalid installation types are rejected."""
+        manifest = create_test_manifest()
+
+        plugin_registry = PluginRegistry()
+
+        with pytest.raises(ValueError, match="Invalid installation type: invalid"):
+            plugin_registry.update(manifest, "invalid", Mock(), "test_user")
 
 
 class TestInstanceNameIsUnique:
@@ -639,7 +693,7 @@ class TestUpdatePluginsConfigYaml:
 class TestInstallFromManifest:
     """Tests for install_from_manifest() function."""
 
-    def test_install_from_monorepo(self, tmp_path):
+    def test_install_from_monorepo(self, temp_registry_dir):
         """Test installing from monorepo."""
         manifest = create_test_manifest()
 
@@ -648,8 +702,6 @@ class TestInstallFromManifest:
         mock_catalog.find_package_path = Mock(return_value=Path("/fake/path/to/plugin"))
 
         with (
-            patch("cpex.tools.cli.DEFAULT_PLUGIN_REGISTRY_FOLDER", tmp_path),
-            patch("cpex.tools.cli.DEFAULT_PLUGIN_REGISTRY_FILE", "installed-plugins.json"),
             patch("cpex.tools.cli.git_user_name", return_value="test_user"),
             patch("cpex.tools.cli.update_plugins_config_yaml"),
         ):
@@ -675,7 +727,7 @@ class TestInstallFunction:
             install("test_plugin", "monorepo", mock_catalog)
             mock_logger.print.assert_called_with("No matching plugins found.")
 
-    def test_install_monorepo_with_available_plugins(self, tmp_path):
+    def test_install_monorepo_with_available_plugins(self, temp_registry_dir):
         """Test monorepo install with available plugins."""
         manifest = create_test_manifest()
 
@@ -687,8 +739,6 @@ class TestInstallFunction:
         with (
             patch("cpex.tools.cli.inquirer.prompt", return_value={"plugins": 0}),
             patch("cpex.tools.cli.Console"),
-            patch("cpex.tools.cli.DEFAULT_PLUGIN_REGISTRY_FOLDER", tmp_path),
-            patch("cpex.tools.cli.DEFAULT_PLUGIN_REGISTRY_FILE", "installed-plugins.json"),
             patch("cpex.tools.cli.git_user_name", return_value="test_user"),
             patch("cpex.tools.cli.update_plugins_config_yaml"),
         ):
@@ -737,19 +787,15 @@ class TestSearchFunction:
 class TestInfoFunction:
     """Tests for info() function."""
 
-    def test_info_with_no_registry(self, tmp_path):
+    def test_info_with_no_registry(self, temp_registry_dir):
         """Test info when registry doesn't exist."""
-        with (
-            patch("cpex.tools.cli.DEFAULT_PLUGIN_REGISTRY_FOLDER", tmp_path),
-            patch("cpex.tools.cli.DEFAULT_PLUGIN_REGISTRY_FILE", "installed-plugins.json"),
-            patch("cpex.tools.cli.console") as mock_console,
-        ):
+        with patch("cpex.tools.cli.console") as mock_console:
             info(None)
             mock_console.print.assert_called_with("No plugins found")
 
-    def test_info_list_all_plugins(self, tmp_path):
+    def test_info_list_all_plugins(self, temp_registry_dir):
         """Test info listing all plugins."""
-        registry_file = tmp_path / "installed-plugins.json"
+        registry_file = temp_registry_dir / "installed-plugins.json"
         registry_data = {
             "plugins": [
                 {
@@ -767,17 +813,13 @@ class TestInfoFunction:
         }
         registry_file.write_text(json.dumps(registry_data))
 
-        with (
-            patch("cpex.tools.cli.DEFAULT_PLUGIN_REGISTRY_FOLDER", tmp_path),
-            patch("cpex.tools.cli.DEFAULT_PLUGIN_REGISTRY_FILE", "installed-plugins.json"),
-            patch("cpex.tools.cli.console") as mock_console,
-        ):
+        with patch("cpex.tools.cli.console") as mock_console:
             info(None)
             mock_console.print_json.assert_called_once()
 
-    def test_info_search_specific_plugin(self, tmp_path):
+    def test_info_search_specific_plugin(self, temp_registry_dir):
         """Test info searching for specific plugin."""
-        registry_file = tmp_path / "installed-plugins.json"
+        registry_file = temp_registry_dir / "installed-plugins.json"
         registry_data = {
             "plugins": [
                 {
@@ -806,11 +848,7 @@ class TestInfoFunction:
         }
         registry_file.write_text(json.dumps(registry_data))
 
-        with (
-            patch("cpex.tools.cli.DEFAULT_PLUGIN_REGISTRY_FOLDER", tmp_path),
-            patch("cpex.tools.cli.DEFAULT_PLUGIN_REGISTRY_FILE", "installed-plugins.json"),
-            patch("cpex.tools.cli.console") as mock_console,
-        ):
+        with patch("cpex.tools.cli.console") as mock_console:
             info("test")
             mock_console.print_json.assert_called_once()
 
@@ -818,22 +856,17 @@ class TestInfoFunction:
 class TestPluginCommand:
     """Tests for the plugin() command."""
 
-    def test_plugin_info_command(self, tmp_path):
+    def test_plugin_info_command(self, temp_registry_dir):
         """Test plugin info command."""
-        with (
-            patch("cpex.tools.cli.DEFAULT_PLUGIN_REGISTRY_FOLDER", tmp_path),
-            patch("cpex.tools.cli.DEFAULT_PLUGIN_REGISTRY_FILE", "installed-plugins.json"),
-            patch("cpex.tools.cli.Console"),
-        ):
+        with patch("cpex.tools.cli.Console"):
             result = runner.invoke(app, ["plugin", "info"])
             assert result.exit_code == 0
 
-    def test_plugin_list_command(self, tmp_path):
+    def test_plugin_list_command(self, temp_registry_dir):
         """Test plugin list command."""
         with (
             patch("cpex.tools.cli.PluginCatalog") as mock_catalog_class,
             patch("cpex.tools.cli.Console"),
-            patch("cpex.tools.cli.DEFAULT_PLUGIN_REGISTRY_FOLDER", tmp_path),
         ):
             mock_catalog = Mock()
             mock_catalog.update_catalog_with_cargo = Mock()
@@ -843,7 +876,7 @@ class TestPluginCommand:
             assert result.exit_code == 0
             mock_catalog.update_catalog_with_cargo.assert_called_once()
 
-    def test_plugin_search_command(self):
+    def test_plugin_search_command(self, temp_registry_dir):
         """Test plugin search command."""
         manifest = create_test_manifest()
 
@@ -860,7 +893,7 @@ class TestPluginCommand:
             assert result.exit_code == 0
             mock_catalog.search.assert_called_once_with("test")
 
-    def test_plugin_install_command(self, tmp_path):
+    def test_plugin_install_command(self, temp_registry_dir):
         """Test plugin install command."""
         manifest = create_test_manifest()
 
@@ -868,8 +901,6 @@ class TestPluginCommand:
             patch("cpex.tools.cli.PluginCatalog") as mock_catalog_class,
             patch("cpex.tools.cli.Console"),
             patch("cpex.tools.cli.inquirer.prompt", return_value={"plugins": 0}),
-            patch("cpex.tools.cli.DEFAULT_PLUGIN_REGISTRY_FOLDER", tmp_path),
-            patch("cpex.tools.cli.DEFAULT_PLUGIN_REGISTRY_FILE", "installed-plugins.json"),
             patch("cpex.tools.cli.git_user_name", return_value="test_user"),
             patch("cpex.tools.cli.update_plugins_config_yaml"),
         ):
