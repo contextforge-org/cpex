@@ -78,3 +78,15 @@ class PluginRegistry:
         )
         # add the newly downloaded plugin to the registry
         self.registry.register_plugin(ipi)
+
+    def remove(self, plugin_name: str) -> bool:
+        """
+        Remove a plugin from the registry.
+
+        Args:
+            plugin_name: The name of the plugin to remove.
+
+        Returns:
+            True if the plugin was found and removed, False otherwise.
+        """
+        return self.registry.unregister_plugin(plugin_name)

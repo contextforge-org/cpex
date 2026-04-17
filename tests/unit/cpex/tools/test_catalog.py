@@ -886,3 +886,255 @@ class TestPluginCatalogInstallFromPypiExtended:
 
 
 # Made with Bob
+
+
+
+class TestPluginCatalogProcessPyproject:
+    """Tests for _process_pyproject helper method."""
+
+    def test_process_pyproject_with_download_failure(self, tmp_path, mock_github_env):
+        """Test _process_pyproject when download fails."""
+        catalog = PluginCatalog()
+        catalog.catalog_folder = str(tmp_path / "catalog")
+        
+        # Mock the repository to raise exception
+        mock_repo = Mock()
+        mock_repo.get_contents = Mock(side_effect=Exception("Download failed"))
+        
+        item = Mock()
+        item.name = "pyproject.toml"
+        item.path = "plugin1/pyproject.toml"
+        
+        repo_url = httpx.URL("https://github.com/org/repo")
+        headers = {}
+        
+        # Should raise exception
+        with pytest.raises(Exception, match="Download failed"):
+            catalog._process_pyproject(mock_repo, item, repo_url, headers)
+
+
+class TestPluginCatalogUpdateCatalogWithPyprojectExtended:
+    """Extended tests for update_catalog_with_pyproject method."""
+
+    def test_update_catalog_with_pyproject_no_token(self, tmp_path, mock_github_env):
+        """Test update_catalog_with_pyproject when no GitHub token is set."""
+        with (
+            patch("cpex.tools.catalog.logger") as mock_logger,
+        ):
+            catalog = PluginCatalog()
+            catalog.github_token = None
+            result = catalog.update_catalog_with_pyproject()
+            
+            assert result is True
+            mock_logger.error.assert_called_with("No GitHub token set")
+
+    def test_update_catalog_with_pyproject_repo_access_error(self, tmp_path, mock_github_env):
+        """Test update_catalog_with_pyproject when repository access fails."""
+        with (
+            patch("cpex.tools.catalog.logger") as mock_logger,
+        ):
+            catalog = PluginCatalog()
+            catalog.catalog_folder = str(tmp_path / "catalog")
+            catalog.monorepos = ["https://github.com/org/repo"]
+            
+            # Mock get_repo to raise exception
+            catalog.gh.get_repo = Mock(side_effect=Exception("Access denied"))
+            
+            result = catalog.update_catalog_with_pyproject()
+            
+            assert result is False
+            mock_logger.error.assert_called()
+
+    def test_update_catalog_with_pyproject_search_error(self, tmp_path, mock_github_env):
+        """Test update_catalog_with_pyproject when search fails."""
+        with patch("cpex.tools.catalog.logger") as mock_logger:
+            catalog = PluginCatalog()
+            catalog.catalog_folder = str(tmp_path / "catalog")
+            catalog.monorepos = ["https://github.com/org/repo"]
+            
+            # Mock successful get_repo but failing search
+            mock_repo = Mock()
+            catalog.gh.get_repo = Mock(return_value=mock_repo)
+            catalog.gh.search_code = Mock(side_effect=Exception("Search failed"))
+            
+            result = catalog.update_catalog_with_pyproject()
+            
+            assert result is False
+            mock_logger.error.assert_called()
+
+
+class TestPluginCatalogSearchGithubCode:
+    """Tests for _search_github_code method."""
+
+    def test_search_github_code_exception(self, mock_github_env):
+        """Test _search_github_code when exception occurs."""
+        with patch("cpex.tools.catalog.logger") as mock_logger:
+            catalog = PluginCatalog()
+            
+            # Mock search_code to raise exception
+            catalog.gh.search_code = Mock(side_effect=Exception("Search error"))
+            
+            result = catalog._search_github_code("org/repo", "plugins", {})
+            
+            assert result is None
+            mock_logger.error.assert_called()
+
+
+class TestPluginCatalogProcessManifestItem:
+    """Tests for _process_manifest_item method."""
+
+    def test_process_manifest_item_not_yaml(self, tmp_path, mock_github_env):
+        """Test _process_manifest_item with non-YAML file."""
+        with patch("cpex.tools.catalog.logger") as mock_logger:
+            catalog = PluginCatalog()
+            catalog.catalog_folder = str(tmp_path / "catalog")
+            
+            item = {
+                "name": "README.md",
+                "path": "plugin1/README.md",
+                "git_url": "https://api.github.com/file"
+            }
+            
+            repo_url = httpx.URL("https://github.com/org/repo")
+            relpath = tmp_path / "catalog" / "plugin1" / "plugin-manifest.yaml"
+            
+            result = catalog._process_manifest_item(item, "plugin1", "plugin1", repo_url, {}, relpath, "org/repo")
+            
+            assert result is False
+            mock_logger.warning.assert_called()
+
+    def test_process_manifest_item_download_failure(self, tmp_path, mock_github_env):
+        """Test _process_manifest_item when download fails."""
+        with patch("cpex.tools.catalog.logger") as mock_logger:
+            catalog = PluginCatalog()
+            catalog.catalog_folder = str(tmp_path / "catalog")
+            
+            # Mock download_file to return None
+            catalog.download_file = Mock(return_value=None)
+            
+            item = {
+                "name": "plugin-manifest.yaml",
+                "path": "plugin1/plugin-manifest.yaml",
+                "git_url": "https://api.github.com/file"
+            }
+            
+            repo_url = httpx.URL("https://github.com/org/repo")
+            relpath = tmp_path / "catalog" / "plugin1" / "plugin-manifest.yaml"
+            
+            result = catalog._process_manifest_item(item, "plugin1", "plugin1", repo_url, {}, relpath, "org/repo")
+            
+            assert result is False
+            mock_logger.error.assert_called()
+
+
+class TestPluginCatalogFindAndSavePluginManifestExtended:
+    """Extended tests for find_and_save_plugin_manifest method."""
+
+    def test_find_and_save_plugin_manifest_search_returns_none(self, tmp_path, mock_github_env):
+        """Test find_and_save_plugin_manifest when search returns None."""
+        catalog = PluginCatalog()
+        catalog.catalog_folder = str(tmp_path / "catalog")
+        
+        # Mock _search_github_code to return None
+        catalog._search_github_code = Mock(return_value=None)
+        
+        repo_url = httpx.URL("https://github.com/org/repo")
+        result = catalog.find_and_save_plugin_manifest("plugin1", "plugin1", repo_url, {})
+        
+        assert result is None
+
+
+class TestPluginCatalogLoadManifestFile:
+    """Tests for _load_manifest_file method."""
+
+    def test_load_manifest_file_not_found(self, tmp_path, mock_github_env):
+        """Test _load_manifest_file when file doesn't exist."""
+        catalog = PluginCatalog()
+        manifest_path = tmp_path / "nonexistent" / "plugin-manifest.yaml"
+        
+        with pytest.raises(FileNotFoundError, match="plugin-manifest.yaml not found"):
+            catalog._load_manifest_file(manifest_path)
+
+    def test_load_manifest_file_invalid_yaml(self, tmp_path, mock_github_env):
+        """Test _load_manifest_file with invalid YAML."""
+        catalog = PluginCatalog()
+        manifest_path = tmp_path / "plugin-manifest.yaml"
+        manifest_path.write_text("invalid: yaml: content:")
+        
+        with pytest.raises(RuntimeError, match="Failed to parse manifest YAML"):
+            catalog._load_manifest_file(manifest_path)
+
+    def test_load_manifest_file_not_dict(self, tmp_path, mock_github_env):
+        """Test _load_manifest_file when YAML is not a dictionary."""
+        catalog = PluginCatalog()
+        manifest_path = tmp_path / "plugin-manifest.yaml"
+        manifest_path.write_text("- item1\n- item2")
+        
+        with pytest.raises(RuntimeError, match="Invalid manifest format"):
+            catalog._load_manifest_file(manifest_path)
+
+
+class TestPluginCatalogNormalizeManifestData:
+    """Tests for _normalize_manifest_data method."""
+
+    def test_normalize_manifest_data_validation_error(self, mock_github_env):
+        """Test _normalize_manifest_data with validation error."""
+        catalog = PluginCatalog()
+        
+        # Invalid manifest data (missing required fields)
+        manifest_data = {"name": "test"}
+        
+        with pytest.raises(RuntimeError, match="Failed to validate manifest"):
+            catalog._normalize_manifest_data(manifest_data, "test_package", None)
+
+
+class TestPluginCatalogPersistManifest:
+    """Tests for _persist_manifest method."""
+
+    def test_persist_manifest_error(self, tmp_path, mock_github_env):
+        """Test _persist_manifest when save fails."""
+        catalog = PluginCatalog()
+        catalog.catalog_folder = str(tmp_path / "nonexistent" / "catalog")
+        
+        manifest = create_test_manifest()
+        
+        # Make directory read-only to cause save failure
+        with patch("cpex.tools.catalog.PluginCatalog.save_manifest", side_effect=Exception("Save failed")):
+            with pytest.raises(RuntimeError, match="Failed to save manifest"):
+                catalog._persist_manifest(manifest, "test_plugin")
+
+
+class TestPluginCatalogInstallPackage:
+    """Tests for _install_package method."""
+
+    def test_install_package_with_version_constraint(self, mock_github_env):
+        """Test _install_package with version constraint."""
+        with patch("cpex.tools.catalog.subprocess.run") as mock_subprocess:
+            catalog = PluginCatalog()
+            catalog._install_package("test_package", ">=1.0.0")
+            
+            mock_subprocess.assert_called_once()
+            call_args = mock_subprocess.call_args[0][0]
+            assert "test_package@>=1.0.0" in " ".join(call_args)
+
+
+class TestPluginCatalogDownloadFileExtended:
+    """Extended tests for download_file method."""
+
+    def test_download_file_with_exception_message(self, mock_github_env):
+        """Test download_file logs proper error message."""
+        with patch("cpex.tools.catalog.logger") as mock_logger:
+            catalog = PluginCatalog()
+            
+            # Mock to raise exception
+            catalog.gh.get_repo = Mock(side_effect=Exception("API error"))
+            
+            item = {"path": "test/file.yaml"}
+            result = catalog.download_file("org/repo", item, {})
+            
+            assert result is None
+            # Check that error was logged with the item path
+            assert mock_logger.error.called
+
+
+# Made with Bob

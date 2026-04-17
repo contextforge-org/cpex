@@ -651,3 +651,30 @@ class PluginCatalog:
 
         logger.info("Successfully installed and cataloged %s", plugin_package_name)
         return manifest
+
+    def uninstall_package(self, package_name: str) -> bool:
+        """Uninstall a Python package using pip.
+
+        Args:
+            package_name: The name of the package to uninstall.
+
+        Returns:
+            True if uninstallation was successful, False otherwise.
+
+        Raises:
+            RuntimeError: If the uninstallation process fails.
+        """
+        try:
+            subprocess.run(
+                [self.python_executable, "-m", "pip", "uninstall", "-y", package_name],
+                check=True,
+                capture_output=True,
+                text=True
+            )
+            logger.info("Successfully uninstalled package: %s", package_name)
+            return True
+
+        except subprocess.CalledProcessError as e:
+            raise RuntimeError(f"Failed to uninstall {package_name}: {e.stderr}") from e
+        except Exception as e:
+            raise RuntimeError(f"Unexpected error uninstalling {package_name}: {str(e)}") from e

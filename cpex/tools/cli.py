@@ -304,6 +304,35 @@ def update_plugins_config_yaml(manifest: PluginManifest):
     ConfigSaver.save_config(plugin_configs, settings.config_file)
 
 
+def remove_from_plugins_config_yaml(plugin_name: str) -> bool:
+    """
+    Remove a plugin from the plugins/config.yaml file.
+
+    Args:
+        plugin_name: The name of the plugin to remove from the config.
+
+    Returns:
+        bool: True if the plugin was found and removed, False otherwise.
+    """
+    try:
+        plugin_configs: Config = ConfigLoader.load_config(settings.config_file)
+        
+        if plugin_configs.plugins is None:
+            return False
+        
+        initial_count = len(plugin_configs.plugins)
+        plugin_configs.plugins = [p for p in plugin_configs.plugins if p.name != plugin_name]
+        
+        if len(plugin_configs.plugins) < initial_count:
+            ConfigSaver.save_config(plugin_configs, settings.config_file)
+            return True
+        
+        return False
+    except Exception as e:
+        logger.error("Error removing plugin from config: %s", str(e))
+        return False
+
+
 def install_from_manifest(manifest: PluginManifest, installation_type: str, catalog: PluginCatalog):
     """
     Given a plugin manifest, download the plugin and register it in the plugin registry.
@@ -554,18 +583,76 @@ def info(plugin_name: str | None):
         console.print("No plugins found")
 
 
+def uninstall(plugin_name: str, catalog: PluginCatalog) -> None:
+    """Uninstall a plugin.
+
+    Args:
+        plugin_name: The name of the plugin to uninstall.
+        catalog: The plugin catalog.
+    """
+    # Get plugin registry to find the installed plugin
+    plugin_registry = PluginRegistry()
+    
+    # Find the plugin in the registry
+    installed_plugin = None
+    for plugin in plugin_registry.registry.plugins:
+        if plugin.name == plugin_name:
+            installed_plugin = plugin
+            break
+    
+    if installed_plugin is None:
+        console.print(f"❌ Plugin '{plugin_name}' is not installed.")
+        return
+    
+    # Confirm uninstallation
+    console.print(f"Found plugin: {installed_plugin.name} (version {installed_plugin.version})")
+    console.print(f"Installation type: {installed_plugin.installation_type}")
+    console.print(f"Installation path: {installed_plugin.installation_path}")
+    
+    questions = [
+        inquirer.Confirm(
+            "confirm",
+            message=f"Are you sure you want to uninstall '{plugin_name}'?",
+            default=False,
+        ),
+    ]
+    answers = inquirer.prompt(questions)
+    
+    if not answers or not answers["confirm"]:
+        console.print("Uninstall cancelled.")
+        return
+    
+    try:
+        with console.status(f"Uninstalling plugin {plugin_name}...", spinner="dots"):
+            # Uninstall the package using pip
+            catalog.uninstall_package(plugin_name)
+            
+            # Remove from plugin registry
+            plugin_registry.remove(plugin_name)
+            
+            # Remove from plugins/config.yaml
+            remove_from_plugins_config_yaml(plugin_name)
+        
+        console.print(f"✅ {plugin_name} uninstalled successfully.")
+        
+    except Exception as e:
+        console.print(f"❌ Failed to uninstall {plugin_name}: {str(e)}")
+        logger.error("Uninstall error: %s", str(e), exc_info=True)
+
+
 @app.command(
-    help="List, search or install plugins.\n\n"
+    help="List, search, install or uninstall plugins.\n\n"
     "\ndefault install type is monorepo\n"
     "Examples:\n"
     "python cpex/tools/cli.py plugin info pii\n"
     "python cpex/tools/cli.py plugin search pii\n"
     "python cpex/tools/cli.py plugin --type monorepo search pii\n"
     "python cpex/tools/cli.py plugin --type monorepo install PIIFilterPlugin\n"
-    "python cpex/tools/cli.py plugin --type pypi install ExamplePlugin@>=0.1.0"
+    "python cpex/tools/cli.py plugin --type pypi install ExamplePlugin@>=0.1.0\n"
+    "python cpex/tools/cli.py plugin uninstall PIIFilterPlugin"
 )
 def plugin(
-    cmd_action: str = typer.Argument(None, help="One of: list|info|install|search"),
+    cmd_action: str = typer.Argument(None, help="One of: list|info|install|search|uninstall"),
     source: str | None = typer.Argument(None, help="The pypi, git, or local folder where the plugin resides"),
     install_type: Annotated[
         str, typer.Option("--type", "-t", help="The types of plugins to list.  One of: bundled|pypi|git|local|monorepo")
@@ -574,6 +661,15 @@ def plugin(
     """Lists installed plugins"""
     if cmd_action == "info":
         return info(source)
+    
+    # For uninstall, we don't need to update the catalog
+    if cmd_action == "uninstall":
+        if source is None:
+            console.print("❌ Please specify a plugin name to uninstall.")
+            return
+        pc = PluginCatalog()
+        return uninstall(source, catalog=pc)
+    
     # update the catalog before proceeding with install etc.
     pc = PluginCatalog()
     # optimized github search REST api takes ~14s to search & download all manifests

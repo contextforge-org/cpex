@@ -36,6 +36,8 @@ from cpex.tools.cli import (
     info,
     instance_name_is_unique,
     update_plugins_config_yaml,
+    remove_from_plugins_config_yaml,
+    uninstall,
 )
 from cpex.tools.plugin_registry import PluginRegistry
 from cpex.framework.models import PluginManifest, Monorepo, Config, PluginConfig, PluginMode, PiPyRepo
@@ -924,3 +926,433 @@ class TestCallbackFunction:
 
         # callback should be callable and do nothing
         callback()
+
+
+
+class TestRemoveFromPluginsConfigYaml:
+    """Tests for remove_from_plugins_config_yaml() function."""
+
+    def test_removes_plugin_from_config(self, tmp_path):
+        """Test removing a plugin from config."""
+        config_file = tmp_path / "config.yaml"
+        
+        plugin1 = PluginConfig(
+            name="plugin_to_remove",
+            kind="test.plugin",
+            mode=PluginMode.SEQUENTIAL,
+            priority=100
+        )
+        plugin2 = PluginConfig(
+            name="plugin_to_keep",
+            kind="test.plugin",
+            mode=PluginMode.SEQUENTIAL,
+            priority=100
+        )
+        mock_config = Config(plugins=[plugin1, plugin2])
+        
+        with (
+            patch("cpex.tools.cli.ConfigLoader.load_config", return_value=mock_config),
+            patch("cpex.tools.cli.ConfigSaver.save_config") as mock_save,
+        ):
+            result = remove_from_plugins_config_yaml("plugin_to_remove")
+            assert result is True
+            mock_save.assert_called_once()
+            assert len(mock_config.plugins) == 1
+            assert mock_config.plugins[0].name == "plugin_to_keep"
+
+    def test_returns_false_when_plugin_not_found(self, tmp_path):
+        """Test that function returns False when plugin not found."""
+        plugin1 = PluginConfig(
+            name="existing_plugin",
+            kind="test.plugin",
+            mode=PluginMode.SEQUENTIAL,
+            priority=100
+        )
+        mock_config = Config(plugins=[plugin1])
+        
+        with (
+            patch("cpex.tools.cli.ConfigLoader.load_config", return_value=mock_config),
+            patch("cpex.tools.cli.ConfigSaver.save_config") as mock_save,
+        ):
+            result = remove_from_plugins_config_yaml("nonexistent_plugin")
+            assert result is False
+            mock_save.assert_not_called()
+
+    def test_returns_false_when_no_plugins_in_config(self, tmp_path):
+        """Test that function returns False when config has no plugins."""
+        mock_config = Config(plugins=None)
+        
+        with patch("cpex.tools.cli.ConfigLoader.load_config", return_value=mock_config):
+            result = remove_from_plugins_config_yaml("any_plugin")
+            assert result is False
+
+    def test_handles_exception_gracefully(self, tmp_path):
+        """Test that function handles exceptions gracefully."""
+        with (
+            patch("cpex.tools.cli.ConfigLoader.load_config", side_effect=Exception("Config error")),
+            patch("cpex.tools.cli.logger") as mock_logger,
+        ):
+            result = remove_from_plugins_config_yaml("any_plugin")
+            assert result is False
+            mock_logger.error.assert_called_once()
+
+
+class TestUninstallFunction:
+    """Tests for uninstall() function."""
+
+    def test_uninstall_plugin_not_found(self, temp_registry_dir):
+        """Test uninstalling a plugin that is not installed."""
+        mock_catalog = Mock()
+        
+        with patch("cpex.tools.cli.console") as mock_console:
+            uninstall("nonexistent_plugin", mock_catalog)
+            mock_console.print.assert_called_with("❌ Plugin 'nonexistent_plugin' is not installed.")
+
+    def test_uninstall_cancelled_by_user(self, temp_registry_dir):
+        """Test uninstall cancelled by user."""
+        registry_file = temp_registry_dir / "installed-plugins.json"
+        registry_data = {
+            "plugins": [
+                {
+                    "name": "test_plugin",
+                    "version": "1.0.0",
+                    "kind": "native",
+                    "installation_type": "monorepo",
+                    "installation_path": "/path/to/test_plugin",
+                    "installed_at": "2024-01-01T00:00:00.000000Z",
+                    "installed_by": "test_user",
+                    "package_source": "https://example.com/repo/plugin",
+                    "editable": False,
+                }
+            ]
+        }
+        registry_file.write_text(json.dumps(registry_data))
+        
+        mock_catalog = Mock()
+        
+        with (
+            patch("cpex.tools.cli.inquirer.prompt", return_value={"confirm": False}),
+            patch("cpex.tools.cli.console") as mock_console,
+        ):
+            uninstall("test_plugin", mock_catalog)
+            mock_console.print.assert_any_call("Uninstall cancelled.")
+
+    def test_uninstall_success(self, temp_registry_dir):
+        """Test successful plugin uninstallation."""
+        registry_file = temp_registry_dir / "installed-plugins.json"
+        registry_data = {
+            "plugins": [
+                {
+                    "name": "test_plugin",
+                    "version": "1.0.0",
+                    "kind": "native",
+                    "installation_type": "monorepo",
+                    "installation_path": "/path/to/test_plugin",
+                    "installed_at": "2024-01-01T00:00:00.000000Z",
+                    "installed_by": "test_user",
+                    "package_source": "https://example.com/repo/plugin",
+                    "editable": False,
+                }
+            ]
+        }
+        registry_file.write_text(json.dumps(registry_data))
+        
+        mock_catalog = Mock()
+        mock_catalog.uninstall_package = Mock()
+        
+        with (
+            patch("cpex.tools.cli.inquirer.prompt", return_value={"confirm": True}),
+            patch("cpex.tools.cli.console") as mock_console,
+            patch("cpex.tools.cli.remove_from_plugins_config_yaml", return_value=True),
+        ):
+            mock_status = Mock()
+            mock_status.__enter__ = Mock(return_value=mock_status)
+            mock_status.__exit__ = Mock(return_value=False)
+            mock_console.status = Mock(return_value=mock_status)
+            
+            uninstall("test_plugin", mock_catalog)
+            
+            mock_catalog.uninstall_package.assert_called_once_with("test_plugin")
+            mock_console.print.assert_any_call("✅ test_plugin uninstalled successfully.")
+
+    def test_uninstall_handles_exception(self, temp_registry_dir):
+        """Test uninstall handles exceptions gracefully."""
+        registry_file = temp_registry_dir / "installed-plugins.json"
+        registry_data = {
+            "plugins": [
+                {
+                    "name": "test_plugin",
+                    "version": "1.0.0",
+                    "kind": "native",
+                    "installation_type": "monorepo",
+                    "installation_path": "/path/to/test_plugin",
+                    "installed_at": "2024-01-01T00:00:00.000000Z",
+                    "installed_by": "test_user",
+                    "package_source": "https://example.com/repo/plugin",
+                    "editable": False,
+                }
+            ]
+        }
+        registry_file.write_text(json.dumps(registry_data))
+        
+        mock_catalog = Mock()
+        mock_catalog.uninstall_package = Mock(side_effect=RuntimeError("Uninstall failed"))
+        
+        with (
+            patch("cpex.tools.cli.inquirer.prompt", return_value={"confirm": True}),
+            patch("cpex.tools.cli.console") as mock_console,
+            patch("cpex.tools.cli.logger") as mock_logger,
+        ):
+            mock_status = Mock()
+            mock_status.__enter__ = Mock(return_value=mock_status)
+            mock_status.__exit__ = Mock(return_value=False)
+            mock_console.status = Mock(return_value=mock_status)
+            
+            uninstall("test_plugin", mock_catalog)
+            
+            mock_console.print.assert_any_call("❌ Failed to uninstall test_plugin: Uninstall failed")
+            mock_logger.error.assert_called_once()
+
+
+class TestPluginUninstallCommand:
+    """Tests for the plugin uninstall command."""
+
+    def test_plugin_uninstall_command_without_plugin_name(self, temp_registry_dir):
+        """Test plugin uninstall command without specifying plugin name."""
+        with (
+            patch("cpex.tools.cli.PluginCatalog") as mock_catalog_class,
+            patch("cpex.tools.cli.console") as mock_console,
+        ):
+            mock_catalog = Mock()
+            mock_catalog_class.return_value = mock_catalog
+            
+            result = runner.invoke(app, ["plugin", "uninstall"])
+            assert result.exit_code == 0
+            mock_console.print.assert_called_with("❌ Please specify a plugin name to uninstall.")
+
+    def test_plugin_uninstall_command_success(self, temp_registry_dir):
+        """Test successful plugin uninstall command."""
+        registry_file = temp_registry_dir / "installed-plugins.json"
+        registry_data = {
+            "plugins": [
+                {
+                    "name": "test_plugin",
+                    "version": "1.0.0",
+                    "kind": "native",
+                    "installation_type": "monorepo",
+                    "installation_path": "/path/to/test_plugin",
+                    "installed_at": "2024-01-01T00:00:00.000000Z",
+                    "installed_by": "test_user",
+                    "package_source": "https://example.com/repo/plugin",
+                    "editable": False,
+                }
+            ]
+        }
+        registry_file.write_text(json.dumps(registry_data))
+        
+        with (
+            patch("cpex.tools.cli.PluginCatalog") as mock_catalog_class,
+            patch("cpex.tools.cli.inquirer.prompt", return_value={"confirm": True}),
+            patch("cpex.tools.cli.console") as mock_console,
+            patch("cpex.tools.cli.remove_from_plugins_config_yaml", return_value=True),
+        ):
+            mock_catalog = Mock()
+            mock_catalog.uninstall_package = Mock()
+            mock_catalog_class.return_value = mock_catalog
+            
+            mock_status = Mock()
+            mock_status.__enter__ = Mock(return_value=mock_status)
+            mock_status.__exit__ = Mock(return_value=False)
+            mock_console.status = Mock(return_value=mock_status)
+            
+            result = runner.invoke(app, ["plugin", "uninstall", "test_plugin"])
+            assert result.exit_code == 0
+            mock_catalog.uninstall_package.assert_called_once_with("test_plugin")
+
+    def test_plugin_uninstall_command_not_found(self, temp_registry_dir):
+        """Test plugin uninstall command when plugin not found."""
+        with (
+            patch("cpex.tools.cli.PluginCatalog") as mock_catalog_class,
+            patch("cpex.tools.cli.console") as mock_console,
+        ):
+            mock_catalog = Mock()
+            mock_catalog_class.return_value = mock_catalog
+            
+            result = runner.invoke(app, ["plugin", "uninstall", "nonexistent_plugin"])
+            assert result.exit_code == 0
+            mock_console.print.assert_called_with("❌ Plugin 'nonexistent_plugin' is not installed.")
+
+
+class TestCatalogUninstallPackage:
+    """Tests for PluginCatalog.uninstall_package() method."""
+
+    def test_uninstall_package_success(self, temp_registry_dir):
+        """Test successful package uninstallation."""
+        from cpex.tools.catalog import PluginCatalog
+        
+        with (
+            patch.dict("os.environ", {"PLUGINS_GITHUB_TOKEN": "test_token"}),
+            patch("cpex.tools.catalog.Github"),
+            patch("cpex.tools.catalog.subprocess.run") as mock_subprocess,
+        ):
+            catalog = PluginCatalog()
+            result = catalog.uninstall_package("test_package")
+            
+            assert result is True
+            mock_subprocess.assert_called_once()
+            call_args = mock_subprocess.call_args
+            assert "pip" in call_args[0][0]
+            assert "uninstall" in call_args[0][0]
+            assert "-y" in call_args[0][0]
+            assert "test_package" in call_args[0][0]
+
+    def test_uninstall_package_subprocess_error(self, temp_registry_dir):
+        """Test package uninstallation with subprocess error."""
+        from cpex.tools.catalog import PluginCatalog
+        import subprocess
+        
+        with (
+            patch.dict("os.environ", {"PLUGINS_GITHUB_TOKEN": "test_token"}),
+            patch("cpex.tools.catalog.Github"),
+            patch("cpex.tools.catalog.subprocess.run", side_effect=subprocess.CalledProcessError(1, ["pip"], stderr="Error")),
+        ):
+            catalog = PluginCatalog()
+            
+            with pytest.raises(RuntimeError, match="Failed to uninstall"):
+                catalog.uninstall_package("test_package")
+
+    def test_uninstall_package_unexpected_error(self, temp_registry_dir):
+        """Test package uninstallation with unexpected error."""
+        from cpex.tools.catalog import PluginCatalog
+        
+        with (
+            patch.dict("os.environ", {"PLUGINS_GITHUB_TOKEN": "test_token"}),
+            patch("cpex.tools.catalog.Github"),
+            patch("cpex.tools.catalog.subprocess.run", side_effect=Exception("Unexpected error")),
+        ):
+            catalog = PluginCatalog()
+            
+            with pytest.raises(RuntimeError, match="Unexpected error uninstalling"):
+                catalog.uninstall_package("test_package")
+
+
+class TestPluginRegistryRemove:
+    """Tests for PluginRegistry.remove() method."""
+
+    def test_remove_existing_plugin(self, temp_registry_dir):
+        """Test removing an existing plugin from registry."""
+        registry_file = temp_registry_dir / "installed-plugins.json"
+        registry_data = {
+            "plugins": [
+                {
+                    "name": "test_plugin",
+                    "version": "1.0.0",
+                    "kind": "native",
+                    "installation_type": "monorepo",
+                    "installation_path": "/path/to/test_plugin",
+                    "installed_at": "2024-01-01T00:00:00.000000Z",
+                    "installed_by": "test_user",
+                    "package_source": "https://example.com/repo/plugin",
+                    "editable": False,
+                }
+            ]
+        }
+        registry_file.write_text(json.dumps(registry_data))
+        
+        plugin_registry = PluginRegistry()
+        result = plugin_registry.remove("test_plugin")
+        
+        assert result is True
+        updated_data = json.loads(registry_file.read_text())
+        assert len(updated_data["plugins"]) == 0
+
+    def test_remove_nonexistent_plugin(self, temp_registry_dir):
+        """Test removing a plugin that doesn't exist."""
+        registry_file = temp_registry_dir / "installed-plugins.json"
+        registry_data = {
+            "plugins": [
+                {
+                    "name": "test_plugin",
+                    "version": "1.0.0",
+                    "kind": "native",
+                    "installation_type": "monorepo",
+                    "installation_path": "/path/to/test_plugin",
+                    "installed_at": "2024-01-01T00:00:00.000000Z",
+                    "installed_by": "test_user",
+                    "package_source": "https://example.com/repo/plugin",
+                    "editable": False,
+                }
+            ]
+        }
+        registry_file.write_text(json.dumps(registry_data))
+        
+        plugin_registry = PluginRegistry()
+        result = plugin_registry.remove("nonexistent_plugin")
+        
+        assert result is False
+        updated_data = json.loads(registry_file.read_text())
+        assert len(updated_data["plugins"]) == 1
+
+
+class TestInstalledPluginRegistryUnregister:
+    """Tests for InstalledPluginRegistry.unregister_plugin() method."""
+
+    def test_unregister_existing_plugin(self, temp_registry_dir):
+        """Test unregistering an existing plugin."""
+        from cpex.framework.models import InstalledPluginRegistry, InstalledPluginInfo, PluginInstallationType
+        
+        registry_file = temp_registry_dir / "installed-plugins.json"
+        plugin1 = InstalledPluginInfo(
+            name="plugin1",
+            kind="native",
+            version="1.0.0",
+            installation_type=PluginInstallationType.MONOREPO,
+            installation_path="/path/to/plugin1",
+            installed_at="2024-01-01T00:00:00.000000Z",
+            installed_by="test_user",
+            package_source="https://example.com/repo/plugin1",
+            editable=False,
+        )
+        plugin2 = InstalledPluginInfo(
+            name="plugin2",
+            kind="native",
+            version="1.0.0",
+            installation_type=PluginInstallationType.MONOREPO,
+            installation_path="/path/to/plugin2",
+            installed_at="2024-01-01T00:00:00.000000Z",
+            installed_by="test_user",
+            package_source="https://example.com/repo/plugin2",
+            editable=False,
+        )
+        
+        registry = InstalledPluginRegistry(plugins=[plugin1, plugin2])
+        result = registry.unregister_plugin("plugin1")
+        
+        assert result is True
+        assert len(registry.plugins) == 1
+        assert registry.plugins[0].name == "plugin2"
+
+    def test_unregister_nonexistent_plugin(self, temp_registry_dir):
+        """Test unregistering a plugin that doesn't exist."""
+        from cpex.framework.models import InstalledPluginRegistry, InstalledPluginInfo, PluginInstallationType
+        
+        plugin1 = InstalledPluginInfo(
+            name="plugin1",
+            kind="native",
+            version="1.0.0",
+            installation_type=PluginInstallationType.MONOREPO,
+            installation_path="/path/to/plugin1",
+            installed_at="2024-01-01T00:00:00.000000Z",
+            installed_by="test_user",
+            package_source="https://example.com/repo/plugin1",
+            editable=False,
+        )
+        
+        registry = InstalledPluginRegistry(plugins=[plugin1])
+        result = registry.unregister_plugin("nonexistent")
+        
+        assert result is False
+        assert len(registry.plugins) == 1
+
+
+# Made with Bob
