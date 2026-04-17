@@ -31,6 +31,7 @@ import logging
 import os
 import shutil
 import subprocess  # nosec B404 # Safe: Used only for git commands with hardcoded args
+#import sys
 from pathlib import Path
 from typing import List, Optional
 
@@ -289,6 +290,7 @@ def update_plugins_config_yaml(manifest: PluginManifest):
     ctr = 1
     while not instance_name_is_unique(plugin_configs, suggested_instance_name=suggested_name):
         suggested_name = manifest.suggest_instance_name() + "_" + str(ctr)
+        ctr += 1
 
     accepted_name = suggested_name
     # TODO: prompt to confirm mode, priority etc and accepted name?
@@ -474,7 +476,7 @@ def _install_from_pypi(source: str, catalog: PluginCatalog):
     console.print(f"✅ {package_name} installation complete.")
 
 
-def install(source: str, install_type: str, catalog: PluginCatalog):
+def install(source: str, install_type: str | None, catalog: PluginCatalog):
     """Install a plugin from its associated source.
 
     Args:
@@ -486,6 +488,9 @@ def install(source: str, install_type: str, catalog: PluginCatalog):
         ValueError: If install_type is not supported.
         NotImplementedError: If the installation type is not yet implemented.
     """
+    if install_type is None:
+        install_type = "monorepo"
+
     handlers = {
         "git": _install_from_git,
         "monorepo": _install_from_monorepo,
@@ -551,8 +556,10 @@ def info(plugin_name: str | None):
 
 @app.command(
     help="List, search or install plugins.\n\n"
+    "\ndefault install type is monorepo\n"
     "Examples:\n"
     "python cpex/tools/cli.py plugin info pii\n"
+    "python cpex/tools/cli.py plugin search pii\n"
     "python cpex/tools/cli.py plugin --type monorepo search pii\n"
     "python cpex/tools/cli.py plugin --type monorepo install PIIFilterPlugin\n"
     "python cpex/tools/cli.py plugin --type pypi install ExamplePlugin@>=0.1.0"
@@ -572,8 +579,11 @@ def plugin(
     # optimized github search REST api takes ~14s to search & download all manifests
     console.log("Update catalog")
     with console.status("Updating catalog...", spinner="dots"):
-        pc.update_catalog_with_pyproject()
-    console.log("Catalog update completed.")
+        rc = pc.update_catalog_with_pyproject()
+        if rc == 0:
+            console.log("Catalog update completed.")
+        else:
+            console.log("❌ Catalog update failed.")
 
     if cmd_action == "list":
         return list(install_type)

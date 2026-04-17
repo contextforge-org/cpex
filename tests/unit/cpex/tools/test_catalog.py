@@ -590,34 +590,31 @@ class TestPluginCatalogDownloadFile:
 
     def test_download_file_success(self, mock_github_env):
         """Test successful file download."""
-        with patch("cpex.tools.catalog.httpx.get") as mock_get:
-            catalog = PluginCatalog()
-            
-            # Mock the HTTP response
-            manifest_content = "name: test\nversion: 1.0.0"
-            b64_content = base64.b64encode(manifest_content.encode()).decode()
-            mock_response = Mock()
-            mock_response.status_code = 200
-            mock_response.json.return_value = {"content": b64_content}
-            mock_get.return_value = mock_response
-            
-            result = catalog.download_file("https://api.github.com/file", {})
-            
-            assert result == manifest_content
+        catalog = PluginCatalog()
+        
+        # Mock the GitHub repository and file content
+        mock_repo = Mock()
+        mock_file_content = Mock()
+        manifest_content = "name: test\nversion: 1.0.0"
+        mock_file_content.decoded_content = manifest_content.encode()
+        mock_repo.get_contents.return_value = mock_file_content
+        catalog.gh.get_repo = Mock(return_value=mock_repo)
+        
+        item = {"path": "test_plugin/plugin-manifest.yaml"}
+        result = catalog.download_file("org/repo", item, {})
+        
+        assert result == manifest_content
 
     def test_download_file_failure(self, mock_github_env):
         """Test failed file download."""
-        with (
-            patch("cpex.tools.catalog.httpx.get") as mock_get,
-            patch("cpex.tools.catalog.logger") as mock_logger,
-        ):
+        with patch("cpex.tools.catalog.logger") as mock_logger:
             catalog = PluginCatalog()
             
-            mock_response = Mock()
-            mock_response.status_code = 404
-            mock_get.return_value = mock_response
+            # Mock the GitHub repository to raise an exception
+            catalog.gh.get_repo = Mock(side_effect=Exception("Not found"))
             
-            result = catalog.download_file("https://api.github.com/file", {})
+            item = {"path": "test_plugin/plugin-manifest.yaml"}
+            result = catalog.download_file("org/repo", item, {})
             
             assert result is None
             mock_logger.error.assert_called_once()
@@ -628,37 +625,35 @@ class TestPluginCatalogFindAndSavePluginManifest:
 
     def test_find_and_save_plugin_manifest_success(self, tmp_path, mock_github_env):
         """Test successful finding and saving of plugin manifest."""
-        with patch("cpex.tools.catalog.httpx.get") as mock_get:
-            catalog = PluginCatalog()
-            catalog.catalog_folder = str(tmp_path / "catalog")
-            
-            # Mock search response
-            search_response = Mock()
-            search_response.status_code = 200
-            search_response.json.return_value = {
-                "items": [
-                    {
-                        "name": "plugin-manifest.yaml",
-                        "path": "test_plugin/plugin-manifest.yaml",
-                        "git_url": "https://api.github.com/repos/org/repo/git/blobs/abc123"
-                    }
-                ]
-            }
-            
-            # Mock file content response
-            manifest_content = "name: test\nversion: 1.0.0\nkind: native\ndescription: Test\nauthor: Test\navailable_hooks: [tools]"
-            b64_content = base64.b64encode(manifest_content.encode()).decode()
-            file_response = Mock()
-            file_response.status_code = 200
-            file_response.json.return_value = {"content": b64_content}
-            
-            mock_get.side_effect = [search_response, file_response]
-            
-            repo_url = httpx.URL("https://github.com/org/repo")
-            catalog.find_and_save_plugin_manifest("test_plugin", "test_plugin", repo_url, {})
-            
-            saved_file = tmp_path / "catalog" / "test_plugin" / "plugin-manifest.yaml"
-            assert saved_file.exists()
+        catalog = PluginCatalog()
+        catalog.catalog_folder = str(tmp_path / "catalog")
+        
+        # Mock the search results
+        mock_search_result = Mock()
+        mock_content_file = Mock()
+        mock_content_file.name = "plugin-manifest.yaml"
+        mock_content_file.path = "test_plugin/plugin-manifest.yaml"
+        mock_content_file.git_url = "https://api.github.com/repos/org/repo/git/blobs/abc123"
+        mock_content_file.html_url = "https://github.com/org/repo/blob/main/test_plugin/plugin-manifest.yaml"
+        
+        mock_search_result.totalCount = 1
+        mock_search_result.__iter__ = Mock(return_value=iter([mock_content_file]))
+        
+        catalog.gh.search_code = Mock(return_value=mock_search_result)
+        
+        # Mock the repository and file content
+        mock_repo = Mock()
+        manifest_content = "name: test\nversion: 1.0.0\nkind: native\ndescription: Test\nauthor: Test\navailable_hooks: [tools]"
+        mock_file_content = Mock()
+        mock_file_content.decoded_content = manifest_content.encode()
+        mock_repo.get_contents.return_value = mock_file_content
+        catalog.gh.get_repo = Mock(return_value=mock_repo)
+        
+        repo_url = httpx.URL("https://github.com/org/repo")
+        catalog.find_and_save_plugin_manifest("test_plugin", "test_plugin", repo_url, {})
+        
+        saved_file = tmp_path / "catalog" / "test_plugin" / "plugin-manifest.yaml"
+        assert saved_file.exists()
 
 
 class TestPluginCatalogUpdateCatalogWithPyproject:
