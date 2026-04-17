@@ -79,6 +79,19 @@ class PluginRegistry:
         # add the newly downloaded plugin to the registry
         self.registry.register_plugin(ipi)
 
+    def has(self, plugin_name: str) -> bool:
+        """
+        Check if a plugin is installed.
+        Args:
+            plugin_name: The name of the plugin to check.
+        Returns:
+            True if the plugin is installed, False otherwise.
+        """
+        for plugin in self.registry.plugins:
+            if plugin.name == plugin_name:
+                return True
+        return False
+
     def remove(self, plugin_name: str) -> bool:
         """
         Remove a plugin from the registry.

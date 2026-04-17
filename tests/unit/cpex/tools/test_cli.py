@@ -938,61 +938,70 @@ class TestRemoveFromPluginsConfigYaml:
         
         plugin1 = PluginConfig(
             name="plugin_to_remove",
-            kind="test.plugin",
+            kind="test.plugin.remove",
             mode=PluginMode.SEQUENTIAL,
             priority=100
         )
         plugin2 = PluginConfig(
             name="plugin_to_keep",
-            kind="test.plugin",
+            kind="test.plugin.keep",
             mode=PluginMode.SEQUENTIAL,
             priority=100
         )
         mock_config = Config(plugins=[plugin1, plugin2])
         
-        with (
-            patch("cpex.tools.cli.ConfigLoader.load_config", return_value=mock_config),
-            patch("cpex.tools.cli.ConfigSaver.save_config") as mock_save,
-        ):
-            result = remove_from_plugins_config_yaml("plugin_to_remove")
-            assert result is True
-            mock_save.assert_called_once()
-            assert len(mock_config.plugins) == 1
-            assert mock_config.plugins[0].name == "plugin_to_keep"
-
-    def test_returns_false_when_plugin_not_found(self, tmp_path):
-        """Test that function returns False when plugin not found."""
-        plugin1 = PluginConfig(
-            name="existing_plugin",
-            kind="test.plugin",
-            mode=PluginMode.SEQUENTIAL,
-            priority=100
-        )
-        mock_config = Config(plugins=[plugin1])
+        # Create a manifest with matching kind
+        manifest = create_test_manifest(name="plugin_to_remove", kind="test.plugin.remove")
         
         with (
             patch("cpex.tools.cli.ConfigLoader.load_config", return_value=mock_config),
             patch("cpex.tools.cli.ConfigSaver.save_config") as mock_save,
         ):
-            result = remove_from_plugins_config_yaml("nonexistent_plugin")
+            result = remove_from_plugins_config_yaml(manifest)
+            assert result is True
+            mock_save.assert_called_once()
+            assert len(mock_config.plugins) == 1
+            assert mock_config.plugins[0].kind == "test.plugin.keep"
+
+    def test_returns_false_when_plugin_not_found(self, tmp_path):
+        """Test that function returns False when plugin not found."""
+        plugin1 = PluginConfig(
+            name="existing_plugin",
+            kind="test.plugin.existing",
+            mode=PluginMode.SEQUENTIAL,
+            priority=100
+        )
+        mock_config = Config(plugins=[plugin1])
+        
+        # Create a manifest with non-matching kind
+        manifest = create_test_manifest(name="nonexistent_plugin", kind="test.plugin.nonexistent")
+        
+        with (
+            patch("cpex.tools.cli.ConfigLoader.load_config", return_value=mock_config),
+            patch("cpex.tools.cli.ConfigSaver.save_config") as mock_save,
+        ):
+            result = remove_from_plugins_config_yaml(manifest)
             assert result is False
             mock_save.assert_not_called()
 
     def test_returns_false_when_no_plugins_in_config(self, tmp_path):
         """Test that function returns False when config has no plugins."""
         mock_config = Config(plugins=None)
+        manifest = create_test_manifest(name="any_plugin")
         
         with patch("cpex.tools.cli.ConfigLoader.load_config", return_value=mock_config):
-            result = remove_from_plugins_config_yaml("any_plugin")
+            result = remove_from_plugins_config_yaml(manifest)
             assert result is False
 
     def test_handles_exception_gracefully(self, tmp_path):
         """Test that function handles exceptions gracefully."""
+        manifest = create_test_manifest(name="any_plugin")
+        
         with (
             patch("cpex.tools.cli.ConfigLoader.load_config", side_effect=Exception("Config error")),
             patch("cpex.tools.cli.logger") as mock_logger,
         ):
-            result = remove_from_plugins_config_yaml("any_plugin")
+            result = remove_from_plugins_config_yaml(manifest)
             assert result is False
             mock_logger.error.assert_called_once()
 
@@ -1060,11 +1069,20 @@ class TestUninstallFunction:
         mock_catalog = Mock()
         mock_catalog.uninstall_package = Mock()
         
+        # Create a manifest to return from find
+        test_manifest = create_test_manifest(name="test_plugin", kind="native")
+        
         with (
             patch("cpex.tools.cli.inquirer.prompt", return_value={"confirm": True}),
             patch("cpex.tools.cli.console") as mock_console,
-            patch("cpex.tools.cli.remove_from_plugins_config_yaml", return_value=True),
+            patch("cpex.tools.cli.remove_from_plugins_config_yaml", return_value=True) as mock_remove,
+            patch("cpex.tools.cli.PluginCatalog") as mock_catalog_class,
         ):
+            # Mock the catalog.find method
+            mock_catalog_instance = Mock()
+            mock_catalog_instance.find = Mock(return_value=test_manifest)
+            mock_catalog_class.return_value = mock_catalog_instance
+            
             mock_status = Mock()
             mock_status.__enter__ = Mock(return_value=mock_status)
             mock_status.__exit__ = Mock(return_value=False)
@@ -1073,6 +1091,7 @@ class TestUninstallFunction:
             uninstall("test_plugin", mock_catalog)
             
             mock_catalog.uninstall_package.assert_called_once_with("test_plugin")
+            mock_remove.assert_called_once_with(test_manifest)
             mock_console.print.assert_any_call("✅ test_plugin uninstalled successfully.")
 
     def test_uninstall_handles_exception(self, temp_registry_dir):
@@ -1150,6 +1169,9 @@ class TestPluginUninstallCommand:
         }
         registry_file.write_text(json.dumps(registry_data))
         
+        # Create a manifest to return from find
+        test_manifest = create_test_manifest(name="test_plugin", kind="native")
+        
         with (
             patch("cpex.tools.cli.PluginCatalog") as mock_catalog_class,
             patch("cpex.tools.cli.inquirer.prompt", return_value={"confirm": True}),
@@ -1158,6 +1180,7 @@ class TestPluginUninstallCommand:
         ):
             mock_catalog = Mock()
             mock_catalog.uninstall_package = Mock()
+            mock_catalog.find = Mock(return_value=test_manifest)
             mock_catalog_class.return_value = mock_catalog
             
             mock_status = Mock()

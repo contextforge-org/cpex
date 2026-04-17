@@ -431,6 +431,21 @@ class PluginCatalog:
                 matching.append(manifest)
         return matching if len(matching) > 0 else None
 
+    def find(self, plugin_name: str) -> Optional[PluginManifest]:
+        """Find a plugin in the catalog
+        Args:
+           plugin_name: The name of the plugin to find
+        Returns:
+            The manifest of the plugin if found, None otherwise
+        """
+        # lookup the plugin from the catalog's plugin-manifest.yaml
+        if (self.manifests is not None) and (len(self.manifests) == 0):
+            self.load()
+        for manifest in self.manifests:
+            if manifest.name.lower() == plugin_name.lower():
+                return manifest
+        return None
+
     def install_folder_via_pip(self, manifest: PluginManifest) -> None:
         """
         Runs a pip install using subfolder syntax

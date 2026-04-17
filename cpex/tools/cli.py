@@ -305,7 +305,7 @@ def update_plugins_config_yaml(manifest: PluginManifest):
     ConfigSaver.save_config(plugin_configs, settings.config_file)
 
 
-def remove_from_plugins_config_yaml(plugin_name: str) -> bool:
+def remove_from_plugins_config_yaml(manifest: PluginManifest) -> bool:
     """
     Remove a plugin from the plugins/config.yaml file.
 
@@ -322,8 +322,9 @@ def remove_from_plugins_config_yaml(plugin_name: str) -> bool:
             return False
 
         initial_count = len(plugin_configs.plugins)
-        plugin_configs.plugins = [p for p in plugin_configs.plugins if p.name != plugin_name]
-
+        # Need to match by manifest.kind or if plugin.name starts with manifest.name
+        # e.g. if it is an external plugin or a venv plugin then kind will match many plugin configurations in config.yaml
+        plugin_configs.plugins = [p for p in plugin_configs.plugins if p.kind != manifest.kind and p.name.count(manifest.name) == 0]
         if len(plugin_configs.plugins) < initial_count:
             ConfigSaver.save_config(plugin_configs, settings.config_file)
             return True
@@ -630,9 +631,14 @@ def uninstall(plugin_name: str, catalog: PluginCatalog) -> None:
 
             # Remove from plugin registry
             plugin_registry.remove(plugin_name)
-
+            # retrieve the manifest so we can match on kind value
+            catalog = PluginCatalog()
+            manifest = catalog.find(plugin_name)
             # Remove from plugins/config.yaml
-            remove_from_plugins_config_yaml(plugin_name)
+            if manifest:
+                remove_from_plugins_config_yaml(manifest)
+            else:
+                console.print(f"Plugin {plugin_name} not found in plugins config.yaml.")
 
         console.print(f"✅ {plugin_name} uninstalled successfully.")
 
@@ -670,6 +676,12 @@ def plugin(
             return
         pc = PluginCatalog()
         return uninstall(source, catalog=pc)
+    if cmd_action == "install" and source is not None:
+        registry = PluginRegistry()
+        if registry.has(source):
+            console.print(f"Plugin {source} is already installed.")
+            return
+
 
     # update the catalog before proceeding with install etc.
     pc = PluginCatalog()
