@@ -31,7 +31,8 @@ import logging
 import os
 import shutil
 import subprocess  # nosec B404 # Safe: Used only for git commands with hardcoded args
-#import sys
+
+# import sys
 from pathlib import Path
 from typing import List, Optional
 
@@ -316,17 +317,17 @@ def remove_from_plugins_config_yaml(plugin_name: str) -> bool:
     """
     try:
         plugin_configs: Config = ConfigLoader.load_config(settings.config_file)
-        
+
         if plugin_configs.plugins is None:
             return False
-        
+
         initial_count = len(plugin_configs.plugins)
         plugin_configs.plugins = [p for p in plugin_configs.plugins if p.name != plugin_name]
-        
+
         if len(plugin_configs.plugins) < initial_count:
             ConfigSaver.save_config(plugin_configs, settings.config_file)
             return True
-        
+
         return False
     except Exception as e:
         logger.error("Error removing plugin from config: %s", str(e))
@@ -592,23 +593,23 @@ def uninstall(plugin_name: str, catalog: PluginCatalog) -> None:
     """
     # Get plugin registry to find the installed plugin
     plugin_registry = PluginRegistry()
-    
+
     # Find the plugin in the registry
     installed_plugin = None
     for plugin in plugin_registry.registry.plugins:
         if plugin.name == plugin_name:
             installed_plugin = plugin
             break
-    
+
     if installed_plugin is None:
         console.print(f"❌ Plugin '{plugin_name}' is not installed.")
         return
-    
+
     # Confirm uninstallation
     console.print(f"Found plugin: {installed_plugin.name} (version {installed_plugin.version})")
     console.print(f"Installation type: {installed_plugin.installation_type}")
     console.print(f"Installation path: {installed_plugin.installation_path}")
-    
+
     questions = [
         inquirer.Confirm(
             "confirm",
@@ -617,24 +618,24 @@ def uninstall(plugin_name: str, catalog: PluginCatalog) -> None:
         ),
     ]
     answers = inquirer.prompt(questions)
-    
+
     if not answers or not answers["confirm"]:
         console.print("Uninstall cancelled.")
         return
-    
+
     try:
         with console.status(f"Uninstalling plugin {plugin_name}...", spinner="dots"):
             # Uninstall the package using pip
             catalog.uninstall_package(plugin_name)
-            
+
             # Remove from plugin registry
             plugin_registry.remove(plugin_name)
-            
+
             # Remove from plugins/config.yaml
             remove_from_plugins_config_yaml(plugin_name)
-        
+
         console.print(f"✅ {plugin_name} uninstalled successfully.")
-        
+
     except Exception as e:
         console.print(f"❌ Failed to uninstall {plugin_name}: {str(e)}")
         logger.error("Uninstall error: %s", str(e), exc_info=True)
@@ -661,7 +662,7 @@ def plugin(
     """Lists installed plugins"""
     if cmd_action == "info":
         return info(source)
-    
+
     # For uninstall, we don't need to update the catalog
     if cmd_action == "uninstall":
         if source is None:
@@ -669,7 +670,7 @@ def plugin(
             return
         pc = PluginCatalog()
         return uninstall(source, catalog=pc)
-    
+
     # update the catalog before proceeding with install etc.
     pc = PluginCatalog()
     # optimized github search REST api takes ~14s to search & download all manifests

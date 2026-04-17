@@ -2296,16 +2296,16 @@ class InstalledPluginRegistry(BaseModel):
 
     def unregister_plugin(self, plugin_name: str) -> bool:
         """Unregister a plugin from the registry.
-        
+
         Args:
             plugin_name: The name of the plugin to unregister.
-            
+
         Returns:
             True if the plugin was found and removed, False otherwise.
         """
         initial_count = len(self.plugins)
         self.plugins = [p for p in self.plugins if p.name != plugin_name]
-        
+
         if len(self.plugins) < initial_count:
             self.save()
             return True

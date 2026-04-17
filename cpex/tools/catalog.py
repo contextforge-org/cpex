@@ -152,9 +152,9 @@ class PluginCatalog:
         else:
             logger.error("Failed to download file: %s status_code: %d", git_url, result.status_code)
 
-    def download_file(self,repo_path: str, item: dict, headers) -> str | None:
+    def download_file(self, repo_path: str, item: dict, headers) -> str | None:
         """Download the content of a github file
-           
+
            Args:
                repo_path: Repository path (e.g., 'owner/repo')
                item: Dictionary containing the path of the file to download
@@ -185,24 +185,26 @@ class PluginCatalog:
         try:
             # Build search query for PyGithub
             query = f"repo:{repo_path} path:{member} filename:plugin-manifest extension:yaml"
-            
+
             # Use PyGithub's search_code method
             search_results = self.gh.search_code(query=query)
-            
+
             logger.info("Found %d plugin-manifest files in %s/%s", search_results.totalCount, repo_path, member)
-            
+
             # Convert PyGithub ContentFile objects to dict format compatible with existing code
             items = []
             for content_file in search_results:
-                items.append({
-                    "name": content_file.name,
-                    "path": content_file.path,
-                    "git_url": content_file.git_url,
-                    "html_url": content_file.html_url,
-                })
-            
+                items.append(
+                    {
+                        "name": content_file.name,
+                        "path": content_file.path,
+                        "git_url": content_file.git_url,
+                        "html_url": content_file.html_url,
+                    }
+                )
+
             return items
-            
+
         except Exception as e:
             logger.error("Catalog update failed with error: %s", str(e))
             return None
@@ -236,7 +238,14 @@ class PluginCatalog:
         return manifest_content
 
     def _process_manifest_item(
-        self, item: dict, name: str, member: str, repo_url: httpx.URL, headers, relpath: Path, repo_path: str,
+        self,
+        item: dict,
+        name: str,
+        member: str,
+        repo_url: httpx.URL,
+        headers,
+        relpath: Path,
+        repo_path: str,
     ) -> bool:
         """Process a single manifest search result item.
 
@@ -300,9 +309,7 @@ class PluginCatalog:
 
         return None
 
-    def _process_pyproject(
-        self, gh_repo, item, repo_url: httpx.URL, headers
-    ) -> None:
+    def _process_pyproject(self, gh_repo, item, repo_url: httpx.URL, headers) -> None:
         """Process a single pyproject.toml file.
 
         Args:
@@ -316,24 +323,21 @@ class PluginCatalog:
         """
         # Get the directory path (remove filename)
         member = item.path.removesuffix("/" + item.name)
-        
+
         # Download pyproject.toml content using PyGithub
         file_content = gh_repo.get_contents(item.path)
         pyproject_data = file_content.decoded_content.decode("utf-8")
-        
+
         if pyproject_data is None:
             logger.warning("Failed to download pyproject.toml from %s", item.path)
             return
-        
+
         # Parse the pyproject.toml
         project_data = tomllib.loads(pyproject_data)
-        
+
         # Find and save the plugin manifest
         self.find_and_save_plugin_manifest(
-            member=member,
-            name=project_data["project"]["name"],
-            repo_url=repo_url,
-            headers=headers
+            member=member, name=project_data["project"]["name"], repo_url=repo_url, headers=headers
         )
 
     def update_catalog_with_pyproject(self) -> bool:
@@ -341,29 +345,29 @@ class PluginCatalog:
         if self.github_token is None:
             logger.error("No GitHub token set")
             return True
-        
+
         headers = {"accept": "application/vnd.github+json", "authorization": f"Bearer {self.github_token}"}
         self.create_output_folder()
-        
+
         # Cache repositories to avoid repeated API calls
         repo_cache: dict[str, Any] = {}
-        
+
         for repo in self.monorepos:
             repo_url = httpx.URL(repo)
             repo_path = repo_url.path.removeprefix("/")
-            
+
             try:
                 # Get repository using PyGithub (with caching)
                 if repo_path not in repo_cache:
                     repo_cache[repo_path] = self.gh.get_repo(repo_path)
                 gh_repo = repo_cache[repo_path]
-                
+
                 # Search for pyproject.toml files using PyGithub search
                 query = f"repo:{repo_path} filename:pyproject extension:toml"
                 search_results = self.gh.search_code(query=query)
-                
+
                 logger.info("Found %d pyproject.toml files in %s", search_results.totalCount, repo_path)
-                
+
                 for item in search_results:
                     if "pyproject.toml" in item.name:
                         try:
@@ -371,11 +375,11 @@ class PluginCatalog:
                         except Exception as e:
                             logger.error("Error processing pyproject.toml at %s: %s", item.path, str(e))
                             continue
-                            
+
             except Exception as e:
                 logger.error("Error accessing repository %s: %s", repo_path, str(e))
                 continue
-                
+
         return False
 
     def load(self) -> None:
@@ -669,7 +673,7 @@ class PluginCatalog:
                 [self.python_executable, "-m", "pip", "uninstall", "-y", package_name],
                 check=True,
                 capture_output=True,
-                text=True
+                text=True,
             )
             logger.info("Successfully uninstalled package: %s", package_name)
             return True
