@@ -514,9 +514,11 @@ class TestUpdatePluginRegistry:
         manifest = create_test_manifest()
         
         mock_catalog = Mock()
-        mock_catalog.find_package_path = Mock(return_value=Path("/fake/path/to/plugin"))
 
-        with patch("cpex.tools.cli.git_user_name", return_value="test_user"):
+        with (
+              patch("cpex.tools.cli.git_user_name", return_value="test_user"),
+              patch("cpex.tools.plugin_registry.find_package_path", return_value=Path("/fake/path/to/plugin")),
+              ):
             plugin_registry = PluginRegistry()
             plugin_registry.update(manifest, "monorepo", mock_catalog, "test_user")
             registry_file = temp_registry_dir / "installed-plugins.json"
@@ -536,9 +538,11 @@ class TestUpdatePluginRegistry:
         )
         
         mock_catalog = Mock()
-        mock_catalog.find_package_path = Mock(return_value=Path("/fake/path/to/new_plugin"))
 
-        with patch("cpex.tools.cli.git_user_name", return_value="test_user"):
+        with (
+            patch("cpex.tools.cli.git_user_name", return_value="test_user"),
+            patch("cpex.tools.plugin_registry.find_package_path", return_value=Path("/fake/path/to/new_plugin")),
+        ):
             plugin_registry = PluginRegistry()
             plugin_registry.update(manifest, "monorepo", mock_catalog, "test_user")
             updated_data = json.loads(registry_file.read_text())
@@ -558,17 +562,17 @@ class TestPluginRegistryCoverage:
         )
 
         mock_catalog = Mock()
-        mock_catalog.find_package_path = Mock(return_value=Path("/fake/path/to/pypi_plugin"))
 
-        plugin_registry = PluginRegistry()
-        plugin_registry.update(manifest, "pypi", mock_catalog, "test_user")
+        with patch("cpex.tools.plugin_registry.find_package_path", return_value=Path("/fake/path/to/pypi_plugin")):
+            plugin_registry = PluginRegistry()
+            plugin_registry.update(manifest, "pypi", mock_catalog, "test_user")
 
-        registry_file = temp_registry_dir / "installed-plugins.json"
-        updated_data = json.loads(registry_file.read_text())
-        assert len(updated_data["plugins"]) == 1
-        assert updated_data["plugins"][0]["name"] == "pypi_plugin"
-        assert updated_data["plugins"][0]["package_source"] == "pypi-plugin"
-        assert updated_data["plugins"][0]["installation_type"] == "pypi"
+            registry_file = temp_registry_dir / "installed-plugins.json"
+            updated_data = json.loads(registry_file.read_text())
+            assert len(updated_data["plugins"]) == 1
+            assert updated_data["plugins"][0]["name"] == "pypi_plugin"
+            assert updated_data["plugins"][0]["package_source"] == "pypi-plugin"
+            assert updated_data["plugins"][0]["installation_type"] == "pypi"
 
     def test_update_raises_for_monorepo_without_monorepo_metadata(self, temp_registry_dir):
         """Test monorepo update fails when manifest.monorepo is missing."""
@@ -701,11 +705,11 @@ class TestInstallFromManifest:
 
         mock_catalog = Mock()
         mock_catalog.install_folder_via_pip = Mock()
-        mock_catalog.find_package_path = Mock(return_value=Path("/fake/path/to/plugin"))
 
         with (
             patch("cpex.tools.cli.git_user_name", return_value="test_user"),
             patch("cpex.tools.cli.update_plugins_config_yaml"),
+            patch("cpex.tools.plugin_registry.find_package_path", return_value=Path("/fake/path/to/plugin")),
         ):
             install_from_manifest(manifest, "monorepo", mock_catalog)
             mock_catalog.install_folder_via_pip.assert_called_once_with(manifest)
@@ -736,13 +740,13 @@ class TestInstallFunction:
         mock_catalog = Mock()
         mock_catalog.search = Mock(return_value=[manifest])
         mock_catalog.install_folder_via_pip = Mock()
-        mock_catalog.find_package_path = Mock(return_value=Path("/fake/path/to/plugin"))
 
         with (
             patch("cpex.tools.cli.inquirer.prompt", return_value={"plugins": 0}),
             patch("cpex.tools.cli.Console"),
             patch("cpex.tools.cli.git_user_name", return_value="test_user"),
             patch("cpex.tools.cli.update_plugins_config_yaml"),
+            patch("cpex.tools.plugin_registry.find_package_path", return_value=Path("/fake/path/to/plugin")),
         ):
             install("test_plugin", "monorepo", mock_catalog)
             mock_catalog.install_folder_via_pip.assert_called_once()
@@ -905,12 +909,12 @@ class TestPluginCommand:
             patch("cpex.tools.cli.inquirer.prompt", return_value={"plugins": 0}),
             patch("cpex.tools.cli.git_user_name", return_value="test_user"),
             patch("cpex.tools.cli.update_plugins_config_yaml"),
+            patch("cpex.tools.plugin_registry.find_package_path", return_value=Path("/fake/path/to/plugin")),
         ):
             mock_catalog = Mock()
             mock_catalog.update_catalog_with_pyproject = Mock()
             mock_catalog.search = Mock(return_value=[manifest])
             mock_catalog.install_folder_via_pip = Mock()
-            mock_catalog.find_package_path = Mock(return_value=Path("/fake/path/to/plugin"))
             mock_catalog_class.return_value = mock_catalog
 
             result = runner.invoke(app, ["plugin", "install", "test_plugin", "--type", "monorepo"])

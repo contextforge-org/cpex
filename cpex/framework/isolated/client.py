@@ -27,6 +27,7 @@ from cpex.framework.errors import PluginError, convert_exception_to_error
 from cpex.framework.hooks.registry import get_hook_registry
 from cpex.framework.isolated.venv_comm import VenvProcessCommunicator
 from cpex.framework.models import PluginConfig, PluginContext, PluginErrorModel, PluginPayload, PluginResult
+from cpex.framework.utils import find_package_path
 
 logger = logging.getLogger(__name__)
 
@@ -217,21 +218,17 @@ class IsolatedVenvPlugin(Plugin):
         else:
             requirements_file = Path(requirements_file_input)
 
-        # If it's a relative path, resolve it relative to plugin_path
-        if not requirements_file.is_absolute():
-            requirements_file = (self.plugin_path / requirements_file).resolve()
-        else:
-            # If absolute, resolve it to normalize
-            requirements_file = requirements_file.resolve()
-
-        # Validate that the resolved path is within plugin_path (security check)
+        # Try to find the package location where plugin-manifest.yaml resides
+        # Fall back to self.plugin_path if package is not installed (e.g., in tests)
         try:
-            requirements_file.relative_to(self.plugin_path.resolve())
-        except ValueError as ve:
-            raise RuntimeError(
-                f"Invalid requirements_file path: {requirements_file_input}. "
-                f"Path must be within plugin directory: {self.plugin_path}"
-            ) from ve
+            package_path = find_package_path(self.config.name)
+            logger.debug("Found installed package %s at %s", self.config.name, package_path)
+        except RuntimeError:
+            # Package not installed (e.g., in test environment), use plugin_path
+            package_path = self.plugin_path
+            logger.debug("Package %s not installed, using plugin_path: %s", self.config.name, package_path)
+
+        requirements_file = package_path / requirements_file_input
 
         # Create venv with caching support
         new_venv = await self.create_venv(venv_path=venv_path, requirements_file=requirements_file, use_cache=True)

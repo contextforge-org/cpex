@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 
 from cpex.framework.models import InstalledPluginInfo, InstalledPluginRegistry, PluginInstallationType, PluginManifest
+from cpex.framework.utils import find_package_path
 from cpex.tools.catalog import PluginCatalog
 
 
@@ -63,7 +64,7 @@ class PluginRegistry:
         else:
             raise ValueError(f"Invalid installation type: {installation_type}")
 
-        installation_path = catalog.find_package_path(manifest.name)
+        installation_path = find_package_path(manifest.name)
 
         ipi: InstalledPluginInfo = InstalledPluginInfo(
             name=manifest.name,

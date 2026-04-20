@@ -324,7 +324,9 @@ def remove_from_plugins_config_yaml(manifest: PluginManifest) -> bool:
         initial_count = len(plugin_configs.plugins)
         # Need to match by manifest.kind or if plugin.name starts with manifest.name
         # e.g. if it is an external plugin or a venv plugin then kind will match many plugin configurations in config.yaml
-        plugin_configs.plugins = [p for p in plugin_configs.plugins if p.kind != manifest.kind and p.name.count(manifest.name) == 0]
+        plugin_configs.plugins = [
+            p for p in plugin_configs.plugins if p.kind != manifest.kind and p.name.count(manifest.name) == 0
+        ]
         if len(plugin_configs.plugins) < initial_count:
             ConfigSaver.save_config(plugin_configs, settings.config_file)
             return True
@@ -447,7 +449,7 @@ def _finalize_installation(manifest: PluginManifest, install_type: str, catalog:
     update_plugins_config_yaml(manifest=manifest)
 
 
-def _install_from_git(source: str, catalog: PluginCatalog):
+def _install_from_git(source: str, catalog: PluginCatalog, use_test: bool = False):
     """Handle git-based installation (not yet implemented).
 
     Args:
@@ -460,7 +462,7 @@ def _install_from_git(source: str, catalog: PluginCatalog):
     raise NotImplementedError("Git installation is not yet implemented")
 
 
-def _install_from_monorepo(source: str, catalog: PluginCatalog):
+def _install_from_monorepo(source: str, catalog: PluginCatalog, use_test: bool = False):
     """Handle monorepo-based installation.
 
     Args:
@@ -484,7 +486,7 @@ def _install_from_monorepo(source: str, catalog: PluginCatalog):
     console.print(f"✅ {selected_plugin.name} installation complete.")
 
 
-def _install_from_pypi(source: str, catalog: PluginCatalog):
+def _install_from_pypi(source: str, catalog: PluginCatalog, use_test: bool = False):
     """Handle PyPI-based installation.
 
     Args:
@@ -497,7 +499,9 @@ def _install_from_pypi(source: str, catalog: PluginCatalog):
     package_name, version_constraint = _parse_pypi_source(source)
 
     with console.status(f"Installing plugin {package_name} via pypi", spinner="dots"):
-        manifest = catalog.install_from_pypi(plugin_package_name=package_name, version_constraint=version_constraint)
+        manifest = catalog.install_from_pypi(
+            plugin_package_name=package_name, version_constraint=version_constraint, use_pytest=use_test
+        )
 
     if manifest is None:
         console.print(f"❌ Failed to install {package_name}")
@@ -526,13 +530,14 @@ def install(source: str, install_type: str | None, catalog: PluginCatalog):
         "git": _install_from_git,
         "monorepo": _install_from_monorepo,
         "pypi": _install_from_pypi,
+        "test-pypi": _install_from_pypi,
     }
 
     handler = handlers.get(install_type)
     if handler is None:
         raise ValueError(f"Unsupported installation type: {install_type}. Must be one of: {', '.join(handlers.keys())}")
 
-    handler(source, catalog)
+    handler(source, catalog, use_test=True if install_type == "test-pypi" else False)
 
 
 def search(plugin_name: str | None, catalog: PluginCatalog):
@@ -654,15 +659,21 @@ def uninstall(plugin_name: str, catalog: PluginCatalog) -> None:
     "python cpex/tools/cli.py plugin info pii\n"
     "python cpex/tools/cli.py plugin search pii\n"
     "python cpex/tools/cli.py plugin --type monorepo search pii\n"
-    "python cpex/tools/cli.py plugin --type monorepo install PIIFilterPlugin\n"
-    "python cpex/tools/cli.py plugin --type pypi install ExamplePlugin@>=0.1.0\n"
-    "python cpex/tools/cli.py plugin uninstall PIIFilterPlugin"
+    "python cpex/tools/cli.py plugin --type monorepo install cpex-pii-filter\n"
+    "python cpex/tools/cli.py plugin --type pypi install \"ExamplePlugin@>=0.1.0\"\n"
+    "python cpex/tools/cli.py plugin --type test-pypi install \"cpex-plugin-test@>=0.1.1\"\n"
+    "python cpex/tools/cli.py plugin uninstall cpex-pii-filter"
 )
 def plugin(
     cmd_action: str = typer.Argument(None, help="One of: list|info|install|search|uninstall"),
     source: str | None = typer.Argument(None, help="The pypi, git, or local folder where the plugin resides"),
     install_type: Annotated[
-        str, typer.Option("--type", "-t", help="The types of plugins to list.  One of: bundled|pypi|git|local|monorepo")
+        str,
+        typer.Option(
+            "--type",
+            "-t",
+            help="The types of plugins to list.  One of: monorepo|pypi|test-pypi|git|local  Defaults to monorepo if unspecified.",
+        ),
     ] = None,
 ) -> None:
     """Lists installed plugins"""
@@ -682,14 +693,13 @@ def plugin(
             console.print(f"Plugin {source} is already installed.")
             return
 
-
     # update the catalog before proceeding with install etc.
     pc = PluginCatalog()
     # optimized github search REST api takes ~14s to search & download all manifests
     console.log("Update catalog")
     with console.status("Updating catalog...", spinner="dots"):
         rc = pc.update_catalog_with_pyproject()
-        if rc == 0:
+        if rc is False:
             console.log("Catalog update completed.")
         else:
             console.log("❌ Catalog update failed.")

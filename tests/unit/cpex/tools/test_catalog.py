@@ -349,16 +349,18 @@ class TestPluginCatalogLoadOperations:
 class TestPluginCatalogSearchOperations:
     """Tests for search operations."""
 
-    def test_search_empty_catalog(self, mock_github_env):
+    def test_search_empty_catalog(self, tmp_path, mock_github_env):
         """Test search with empty catalog."""
         catalog = PluginCatalog()
+        catalog.catalog_folder = str(tmp_path / "catalog")
         catalog.manifests = []
         result = catalog.search("test")
         assert result is None
 
-    def test_search_by_name(self, mock_github_env):
+    def test_search_by_name(self, tmp_path, mock_github_env):
         """Test search by plugin name."""
         catalog = PluginCatalog()
+        catalog.catalog_folder = str(tmp_path / "catalog")
         catalog.manifests = [
             create_test_manifest(name="test_plugin", tags=["plugin"]),
             create_test_manifest(name="another_plugin", tags=["other"]),
@@ -368,9 +370,10 @@ class TestPluginCatalogSearchOperations:
         assert len(result) == 1
         assert result[0].name == "test_plugin"
 
-    def test_search_by_tag(self, mock_github_env):
+    def test_search_by_tag(self, tmp_path, mock_github_env):
         """Test search by tag."""
         catalog = PluginCatalog()
+        catalog.catalog_folder = str(tmp_path / "catalog")
         catalog.manifests = [
             create_test_manifest(name="plugin1", tags=["security"]),
             create_test_manifest(name="plugin2", tags=["data"]),
@@ -380,9 +383,10 @@ class TestPluginCatalogSearchOperations:
         assert len(result) == 1
         assert result[0].name == "plugin1"
 
-    def test_search_no_match(self, mock_github_env):
+    def test_search_no_match(self, tmp_path, mock_github_env):
         """Test search with no matches."""
         catalog = PluginCatalog()
+        catalog.catalog_folder = str(tmp_path / "catalog")
         catalog.manifests = [create_test_manifest(name="test_plugin")]
         result = catalog.search("nonexistent")
         assert result is None
@@ -1115,7 +1119,7 @@ class TestPluginCatalogInstallPackage:
             
             mock_subprocess.assert_called_once()
             call_args = mock_subprocess.call_args[0][0]
-            assert "test_package@>=1.0.0" in " ".join(call_args)
+            assert "test_package>=1.0.0" in " ".join(call_args)
 
 
 class TestPluginCatalogDownloadFileExtended:

@@ -23,6 +23,7 @@ import yaml
 from github import Auth, Github
 
 from cpex.framework.models import PiPyRepo, PluginManifest, PluginPackageInfo
+from cpex.framework.utils import find_package_path
 from cpex.tools.settings import get_catalog_settings
 
 logger = logging.getLogger(__name__)
@@ -474,7 +475,7 @@ class PluginCatalog:
         except Exception as e:
             raise RuntimeError(f"Unexpected error installing {manifest.name}: {str(e)}") from e
 
-    def _install_package(self, package_name: str, version_constraint: str | None) -> None:
+    def _install_package(self, package_name: str, version_constraint: str | None, use_test: bool = False) -> None:
         """Install package from PyPI with proper error handling.
 
         Args:
@@ -489,57 +490,33 @@ class PluginCatalog:
             ppi = PluginPackageInfo(pypi_package=package_name, version_constraint=version_constraint)
             tgt = ppi.pypi_package
             if ppi.version_constraint is not None:
-                tgt = f"{tgt}@{ppi.version_constraint}"
-
-            # Use subprocess.run for better error handling
-            subprocess.run(
-                [self.python_executable, "-m", "pip", "install", tgt], check=True, capture_output=True, text=True
-            )
+                tgt = f"{tgt}{ppi.version_constraint}"
+            if use_test:
+                subprocess.run(
+                    [
+                        self.python_executable,
+                        "-m",
+                        "pip",
+                        "install",
+                        "--index-url",
+                        "https://test.pypi.org/simple/",
+                        tgt,
+                    ],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+            else:
+                # Use subprocess.run for better error handling
+                subprocess.run(
+                    [self.python_executable, "-m", "pip", "install", tgt], check=True, capture_output=True, text=True
+                )
             logger.info("Successfully installed package: %s", package_name)
 
         except subprocess.CalledProcessError as e:
             raise RuntimeError(f"Failed to install {package_name}: {e.stderr}") from e
         except Exception as e:
             raise RuntimeError(f"Unexpected error installing {package_name}: {str(e)}") from e
-
-    def find_package_path(self, package_name: str) -> Path:
-        """Locate installed package directory using importlib.metadata.
-
-        Args:
-            package_name: The name of the installed package.
-
-        Returns:
-            Path to the package directory.
-
-        Raises:
-            RuntimeError: If package cannot be found.
-        """
-        try:
-            # Use importlib.metadata for more reliable package discovery
-            for dist in importlib.metadata.distributions():
-                if dist.name == package_name or dist.metadata.get("Name") == package_name:
-                    if dist.files:
-                        # Get the package root from the plugin-manifest.yaml file
-                        for afile in dist.files:
-                            if afile.name == "plugin-manifest.yaml":
-                                located_path = dist.locate_file(afile)
-                                package_path = Path(str(located_path)).parent
-                                logger.debug("Found package %s at %s", package_name, package_path)
-                                return package_path
-
-            # Fallback to importlib.util.find_spec if metadata approach fails
-            spec = importlib.util.find_spec(package_name)
-            if spec is not None and spec.origin is not None:
-                package_path = Path(spec.origin).parent
-                logger.debug("Found package %s at %s (via find_spec)", package_name, package_path)
-                return package_path
-
-            raise RuntimeError(f"Could not find installed package: {package_name}")
-
-        except Exception as e:
-            if isinstance(e, RuntimeError):
-                raise
-            raise RuntimeError(f"Error locating package {package_name}: {str(e)}") from e
 
     def _load_manifest_file(self, manifest_path: Path) -> dict[str, Any]:
         """Load and parse plugin-manifest.yaml with validation.
@@ -631,7 +608,9 @@ class PluginCatalog:
         except Exception as e:
             raise RuntimeError(f"Failed to save manifest for {package_name}: {str(e)}") from e
 
-    def install_from_pypi(self, plugin_package_name: str, version_constraint: str | None = None) -> PluginManifest:
+    def install_from_pypi(
+        self, plugin_package_name: str, version_constraint: str | None = None, use_pytest: bool = False
+    ) -> PluginManifest:
         """Install Python package from PyPI and load its plugin-manifest.yaml.
 
         This method performs the following steps:
@@ -653,10 +632,10 @@ class PluginCatalog:
             FileNotFoundError: If plugin-manifest.yaml is not found in the package.
         """
         # Step 1: Install the package
-        self._install_package(plugin_package_name, version_constraint)
+        self._install_package(plugin_package_name, version_constraint, use_pytest)
 
         # Step 2: Find the package location where plugin-manifest.yaml resides
-        package_path = self.find_package_path(plugin_package_name)
+        package_path = find_package_path(plugin_package_name)
 
         # Step 3: Load the manifest file
         manifest_path = package_path / "plugin-manifest.yaml"
