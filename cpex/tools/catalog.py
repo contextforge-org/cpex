@@ -151,7 +151,7 @@ class PluginCatalog:
         else:
             logger.error("Failed to download file: %s status_code: %d", git_url, result.status_code)
 
-    def download_file(self, repo_path: str, item: dict, headers) -> str | None:
+    def download_file(self, repo_path: str, item: dict, headers, gh_repo) -> str | None:
         """Download the content of a github file
 
            Args:
@@ -163,7 +163,6 @@ class PluginCatalog:
         """
         # Get the repository using PyGithub
         try:
-            gh_repo = self.gh.get_repo(repo_path)
             file_content = gh_repo.get_contents(item["path"])
             content = file_content.decoded_content.decode("utf-8")
             return content
@@ -245,6 +244,7 @@ class PluginCatalog:
         headers,
         relpath: Path,
         repo_path: str,
+        gh_repo,
     ) -> bool:
         """Process a single manifest search result item.
 
@@ -265,7 +265,7 @@ class PluginCatalog:
             return False
 
         # manifest_data = self.download_file(repo_path=repo_path, git_url=item["git_url"], headers=headers)
-        manifest_data = self.download_file(repo_path=repo_path, item=item, headers=headers)
+        manifest_data = self.download_file(repo_path=repo_path, item=item, headers=headers, gh_repo=gh_repo)
         if manifest_data is None:
             logger.error("Failed to download plugin-manifest from %s", member)
             return False
@@ -278,7 +278,7 @@ class PluginCatalog:
         return True
 
     def find_and_save_plugin_manifest(
-        self, member: str, name: str, repo_url: httpx.URL, headers
+        self, member: str, name: str, repo_url: httpx.URL, headers, gh_repo
     ) -> PluginManifest | None:
         """Find the plugin-manifest.yaml relative to the supplied member folder,
         download and save the manifest, updating the monorepo's package_folder, package_source and repo_url attributes
@@ -303,7 +303,7 @@ class PluginCatalog:
             return None
 
         for item in items:
-            if self._process_manifest_item(item, name, member, repo_url, headers, relpath, repo_path):
+            if self._process_manifest_item(item, name, member, repo_url, headers, relpath, repo_path, gh_repo):
                 break  # Successfully processed first valid manifest
 
         return None
@@ -336,7 +336,7 @@ class PluginCatalog:
 
         # Find and save the plugin manifest
         self.find_and_save_plugin_manifest(
-            member=member, name=project_data["project"]["name"], repo_url=repo_url, headers=headers
+            member=member, name=project_data["project"]["name"], repo_url=repo_url, headers=headers, gh_repo=gh_repo
         )
 
     def update_catalog_with_pyproject(self) -> bool:

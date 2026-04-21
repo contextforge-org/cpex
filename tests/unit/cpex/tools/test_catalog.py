@@ -13,6 +13,7 @@ import json
 import subprocess
 import sys
 from pathlib import Path
+from unittest import mock
 from unittest.mock import MagicMock, Mock, patch, mock_open
 
 # Third-Party
@@ -424,7 +425,7 @@ class TestPluginCatalogInstallFromPypi:
         """Test successful installation from PyPI."""
         with (
             patch("cpex.tools.catalog.subprocess.run") as mock_subprocess,
-            patch("cpex.tools.catalog.importlib.metadata.distributions") as mock_distributions,
+            patch("cpex.framework.utils.importlib.metadata.distributions") as mock_distributions,
         ):
             # Create manifest file
             package_dir = tmp_path / "test_package"
@@ -469,8 +470,8 @@ class TestPluginCatalogInstallFromPypi:
         """Test when package is not found after installation."""
         with (
             patch("cpex.tools.catalog.subprocess.run"),
-            patch("cpex.tools.catalog.importlib.metadata.distributions", return_value=[]),
-            patch("cpex.tools.catalog.importlib.util.find_spec", return_value=None),
+            patch("cpex.framework.utils.importlib.metadata.distributions", return_value=[]),
+            patch("cpex.framework.utils.importlib.util.find_spec", return_value=None),
         ):
             catalog = PluginCatalog()
             with pytest.raises(RuntimeError, match="Could not find installed package"):
@@ -480,7 +481,7 @@ class TestPluginCatalogInstallFromPypi:
         """Test when manifest file is not found in package."""
         with (
             patch("cpex.tools.catalog.subprocess.run"),
-            patch("cpex.tools.catalog.importlib.metadata.distributions") as mock_distributions,
+            patch("cpex.framework.utils.importlib.metadata.distributions") as mock_distributions,
         ):
             # Setup mock distribution without plugin-manifest.yaml file
             mock_dist = Mock()
@@ -503,7 +504,7 @@ class TestPluginCatalogInstallFromPypi:
         """Test when manifest file is invalid."""
         with (
             patch("cpex.tools.catalog.subprocess.run"),
-            patch("cpex.tools.catalog.importlib.metadata.distributions") as mock_distributions,
+            patch("cpex.framework.utils.importlib.metadata.distributions") as mock_distributions,
         ):
             package_dir = tmp_path / "test_package"
             package_dir.mkdir()
@@ -605,7 +606,7 @@ class TestPluginCatalogDownloadFile:
         catalog.gh.get_repo = Mock(return_value=mock_repo)
         
         item = {"path": "test_plugin/plugin-manifest.yaml"}
-        result = catalog.download_file("org/repo", item, {})
+        result = catalog.download_file("org/repo", item, {}, mock_repo)
         
         assert result == manifest_content
 
@@ -613,12 +614,11 @@ class TestPluginCatalogDownloadFile:
         """Test failed file download."""
         with patch("cpex.tools.catalog.logger") as mock_logger:
             catalog = PluginCatalog()
-            
             # Mock the GitHub repository to raise an exception
-            catalog.gh.get_repo = Mock(side_effect=Exception("Not found"))
-            
+            mock_repo = Mock(side_effect=Exception("Not found"))
+            mock_repo.get_contents.return_value = Exception("Not found")
             item = {"path": "test_plugin/plugin-manifest.yaml"}
-            result = catalog.download_file("org/repo", item, {})
+            result = catalog.download_file("org/repo", item, {}, mock_repo)
             
             assert result is None
             mock_logger.error.assert_called_once()
@@ -654,7 +654,7 @@ class TestPluginCatalogFindAndSavePluginManifest:
         catalog.gh.get_repo = Mock(return_value=mock_repo)
         
         repo_url = httpx.URL("https://github.com/org/repo")
-        catalog.find_and_save_plugin_manifest("test_plugin", "test_plugin", repo_url, {})
+        catalog.find_and_save_plugin_manifest("test_plugin", "test_plugin", repo_url, {}, mock_repo)
         
         saved_file = tmp_path / "catalog" / "test_plugin" / "plugin-manifest.yaml"
         assert saved_file.exists()
@@ -738,7 +738,7 @@ class TestPluginCatalogInstallFromPypiExtended:
         """Test installation with version constraint."""
         with (
             patch("cpex.tools.catalog.subprocess.run") as mock_subprocess,
-            patch("cpex.tools.catalog.importlib.metadata.distributions") as mock_distributions,
+            patch("cpex.framework.utils.importlib.metadata.distributions") as mock_distributions,
         ):
             package_dir = tmp_path / "test_package"
             package_dir.mkdir()
@@ -777,7 +777,7 @@ class TestPluginCatalogInstallFromPypiExtended:
         """Test installation with default_configs field."""
         with (
             patch("cpex.tools.catalog.subprocess.run") as mock_subprocess,
-            patch("cpex.tools.catalog.importlib.metadata.distributions") as mock_distributions,
+            patch("cpex.framework.utils.importlib.metadata.distributions") as mock_distributions,
         ):
             package_dir = tmp_path / "test_package"
             package_dir.mkdir()
@@ -813,7 +813,7 @@ class TestPluginCatalogInstallFromPypiExtended:
         """Test installation with existing package_info."""
         with (
             patch("cpex.tools.catalog.subprocess.run") as mock_subprocess,
-            patch("cpex.tools.catalog.importlib.metadata.distributions") as mock_distributions,
+            patch("cpex.framework.utils.importlib.metadata.distributions") as mock_distributions,
         ):
             package_dir = tmp_path / "test_package"
             package_dir.mkdir()
@@ -855,7 +855,7 @@ class TestPluginCatalogInstallFromPypiExtended:
         """Test installation with null default_configs in manifest."""
         with (
             patch("cpex.tools.catalog.subprocess.run") as mock_subprocess,
-            patch("cpex.tools.catalog.importlib.metadata.distributions") as mock_distributions,
+            patch("cpex.framework.utils.importlib.metadata.distributions") as mock_distributions,
         ):
             package_dir = tmp_path / "test_package"
             package_dir.mkdir()
@@ -1001,8 +1001,8 @@ class TestPluginCatalogProcessManifestItem:
             
             repo_url = httpx.URL("https://github.com/org/repo")
             relpath = tmp_path / "catalog" / "plugin1" / "plugin-manifest.yaml"
-            
-            result = catalog._process_manifest_item(item, "plugin1", "plugin1", repo_url, {}, relpath, "org/repo")
+            mock_repo = Mock()
+            result = catalog._process_manifest_item(item, "plugin1", "plugin1", repo_url, {}, relpath, "org/repo", gh_repo=mock_repo)
             
             assert result is False
             mock_logger.warning.assert_called()
@@ -1021,11 +1021,11 @@ class TestPluginCatalogProcessManifestItem:
                 "path": "plugin1/plugin-manifest.yaml",
                 "git_url": "https://api.github.com/file"
             }
-            
+            mock_repo = Mock()
             repo_url = httpx.URL("https://github.com/org/repo")
             relpath = tmp_path / "catalog" / "plugin1" / "plugin-manifest.yaml"
             
-            result = catalog._process_manifest_item(item, "plugin1", "plugin1", repo_url, {}, relpath, "org/repo")
+            result = catalog._process_manifest_item(item, "plugin1", "plugin1", repo_url, {}, relpath, "org/repo", gh_repo=mock_repo)
             
             assert result is False
             mock_logger.error.assert_called()
@@ -1041,9 +1041,9 @@ class TestPluginCatalogFindAndSavePluginManifestExtended:
         
         # Mock _search_github_code to return None
         catalog._search_github_code = Mock(return_value=None)
-        
+        mock_repo = Mock()
         repo_url = httpx.URL("https://github.com/org/repo")
-        result = catalog.find_and_save_plugin_manifest("plugin1", "plugin1", repo_url, {})
+        result = catalog.find_and_save_plugin_manifest("plugin1", "plugin1", repo_url, {}, mock_repo)
         
         assert result is None
 
@@ -1132,9 +1132,10 @@ class TestPluginCatalogDownloadFileExtended:
             
             # Mock to raise exception
             catalog.gh.get_repo = Mock(side_effect=Exception("API error"))
-            
+            mock_repo = Mock()
+            mock_repo.get_contents = Mock(side_effect=Exception("API error"))
             item = {"path": "test/file.yaml"}
-            result = catalog.download_file("org/repo", item, {})
+            result = catalog.download_file("org/repo", item, {}, gh_repo=mock_repo)
             
             assert result is None
             # Check that error was logged with the item path
