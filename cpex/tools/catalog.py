@@ -8,8 +8,6 @@ This module implements the plugin catalog object.
 """
 
 import base64
-import importlib.metadata
-import importlib.util
 import logging
 import os
 import subprocess
