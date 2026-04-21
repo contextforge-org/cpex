@@ -1019,7 +1019,7 @@ class TestUninstallFunction:
         
         with patch("cpex.tools.cli.console") as mock_console:
             uninstall("nonexistent_plugin", mock_catalog)
-            mock_console.print.assert_called_with("❌ Plugin 'nonexistent_plugin' is not installed.")
+            mock_console.print.assert_called_with(":x: Plugin 'nonexistent_plugin' is not installed.")
 
     def test_uninstall_cancelled_by_user(self, temp_registry_dir):
         """Test uninstall cancelled by user."""
@@ -1096,7 +1096,7 @@ class TestUninstallFunction:
             
             mock_catalog.uninstall_package.assert_called_once_with("test_plugin")
             mock_remove.assert_called_once_with(test_manifest)
-            mock_console.print.assert_any_call("✅ test_plugin uninstalled successfully.")
+            mock_console.print.assert_any_call(":white_heavy_check_mark: test_plugin uninstalled successfully.")
 
     def test_uninstall_handles_exception(self, temp_registry_dir):
         """Test uninstall handles exceptions gracefully."""
@@ -1133,7 +1133,7 @@ class TestUninstallFunction:
             
             uninstall("test_plugin", mock_catalog)
             
-            mock_console.print.assert_any_call("❌ Failed to uninstall test_plugin: Uninstall failed")
+            mock_console.print.assert_any_call(":x: Failed to uninstall test_plugin: Uninstall failed")
             mock_logger.error.assert_called_once()
 
 
@@ -1151,7 +1151,7 @@ class TestPluginUninstallCommand:
             
             result = runner.invoke(app, ["plugin", "uninstall"])
             assert result.exit_code == 0
-            mock_console.print.assert_called_with("❌ Please specify a plugin name to uninstall.")
+            mock_console.print.assert_called_with(":x: Please specify a plugin name to uninstall.")
 
     def test_plugin_uninstall_command_success(self, temp_registry_dir):
         """Test successful plugin uninstall command."""
@@ -1207,7 +1207,7 @@ class TestPluginUninstallCommand:
             
             result = runner.invoke(app, ["plugin", "uninstall", "nonexistent_plugin"])
             assert result.exit_code == 0
-            mock_console.print.assert_called_with("❌ Plugin 'nonexistent_plugin' is not installed.")
+            mock_console.print.assert_called_with(":x: Plugin 'nonexistent_plugin' is not installed.")
 
 
 class TestCatalogUninstallPackage:

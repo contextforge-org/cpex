@@ -496,7 +496,7 @@ def _install_from_monorepo(source: str, catalog: PluginCatalog, use_test: bool =
     with console.status(f"Installing plugin {selected_plugin.name}...", spinner="dots"):
         install_from_manifest(selected_plugin, "monorepo", catalog=catalog)
 
-    console.print(f"✅ {selected_plugin.name} installation complete.")
+    console.print(f":white_heavy_check_mark: {selected_plugin.name} installation complete.")
 
 
 def _install_from_pypi(source: str, catalog: PluginCatalog, use_test: bool = False):
@@ -517,11 +517,11 @@ def _install_from_pypi(source: str, catalog: PluginCatalog, use_test: bool = Fal
         )
 
     if manifest is None:
-        console.print(f"❌ Failed to install {package_name}")
+        console.print(f":x: Failed to install {package_name}")
         return
 
     _finalize_installation(manifest, "pypi", catalog)
-    console.print(f"✅ {package_name} installation complete.")
+    console.print(f":white_heavy_check_mark: {package_name} installation complete.")
 
 
 def install(source: str, install_type: str | None, catalog: PluginCatalog):
@@ -622,7 +622,7 @@ def uninstall(plugin_name: str, catalog: PluginCatalog) -> None:
             break
 
     if installed_plugin is None:
-        console.print(f"❌ Plugin '{plugin_name}' is not installed.")
+        console.print(f":x: Plugin '{plugin_name}' is not installed.")
         return
 
     # Confirm uninstallation
@@ -659,10 +659,10 @@ def uninstall(plugin_name: str, catalog: PluginCatalog) -> None:
             else:
                 console.print(f"Plugin {plugin_name} not found in plugins config.yaml.")
 
-        console.print(f"✅ {plugin_name} uninstalled successfully.")
+        console.print(f":white_heavy_check_mark: {plugin_name} uninstalled successfully.")
 
     except Exception as e:
-        console.print(f"❌ Failed to uninstall {plugin_name}: {str(e)}")
+        console.print(f":x: Failed to uninstall {plugin_name}: {str(e)}")
         logger.error("Uninstall error: %s", str(e), exc_info=True)
 
 
@@ -697,7 +697,7 @@ def plugin(
     # For uninstall, we don't need to update the catalog
     if cmd_action == "uninstall":
         if source is None:
-            console.print("❌ Please specify a plugin name to uninstall.")
+            console.print(":x: Please specify a plugin name to uninstall.")
             return
         pc = PluginCatalog()
         return uninstall(source, catalog=pc)
