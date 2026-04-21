@@ -448,6 +448,17 @@ def _finalize_installation(manifest: PluginManifest, install_type: str, catalog:
     )
     update_plugins_config_yaml(manifest=manifest)
 
+def _install_from_local(source: str, catalog: PluginCatalog, use_test: bool = False):
+    """Handle local-based installation (not yet implemented).
+
+    Args:
+        source: local path.
+        catalog: The plugin catalog.
+
+    Raises:
+        NotImplementedError: local installation is not yet supported.
+    """
+    raise NotImplementedError("Local installation is not yet implemented")
 
 def _install_from_git(source: str, catalog: PluginCatalog, use_test: bool = False):
     """Handle git-based installation (not yet implemented).
@@ -531,6 +542,7 @@ def install(source: str, install_type: str | None, catalog: PluginCatalog):
         "monorepo": _install_from_monorepo,
         "pypi": _install_from_pypi,
         "test-pypi": _install_from_pypi,
+        "local": _install_from_local,
     }
 
     handler = handlers.get(install_type)
