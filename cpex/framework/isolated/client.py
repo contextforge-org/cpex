@@ -44,8 +44,8 @@ class IsolatedVenvPlugin(Plugin):
         # use the first plugin dir specified in the plugin configuration file.
         path = Path(self.plugin_dirs[0]).resolve()
         class_root = self.config.config.get("class_name").split(".")[0]
-        cache_root = path / class_root
-        self.plugin_path = cache_root
+        cache_root: Path = path / class_root
+        self.plugin_path: Path = cache_root
         if not cache_root.exists():
             cache_root.mkdir(parents=True, exist_ok=True)
         self.cache_dir: Path = cache_root / ".cpex" / "venv_cache"
