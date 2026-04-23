@@ -766,28 +766,58 @@ class PluginCatalog:
         # Return the first manifest found
         return manifest_files[0]
 
-    def _find_requirements_in_extracted_package(self, extract_dir: Path, package_name: str, requirements_file: str) -> Path:
-        """Find plugin-manifest.yaml in extracted package.
+    def _find_requirements_in_extracted_package(
+        self, extract_dir: Path, package_name: str, requirements_file: str
+    ) -> Path:
+        """Find requirements file in extracted package with path traversal protection.
 
         Args:
             extract_dir: Directory where package was extracted.
             package_name: Name of the package.
+            requirements_file: Name of the requirements file to find.
 
         Returns:
-            Path to plugin-manifest.yaml.
+            Path to requirements file.
 
         Raises:
-            FileNotFoundError: If manifest not found.
+            FileNotFoundError: If requirements file not found.
+            ValueError: If requirements_file contains path traversal attempts.
         """
-        # Search for plugin-manifest.yaml in the extracted directory
+        # Validate requirements_file to prevent path traversal attacks
+        # Normalize the path and check for suspicious patterns
+        normalized_file = os.path.normpath(requirements_file)
+        
+        # Check for path traversal attempts (../, absolute paths, etc.)
+        if normalized_file.startswith("..") or os.path.isabs(normalized_file):
+            raise ValueError(
+                f"Invalid requirements file path '{requirements_file}': "
+                "path traversal attempts are not allowed"
+            )
+        
+        # Additional check: ensure no path separators that could escape the directory
+        if normalized_file != requirements_file.replace("\\", "/").strip("/"):
+            raise ValueError(
+                f"Invalid requirements file path '{requirements_file}': "
+                "suspicious path components detected"
+            )
+        
+        # Search for requirements file in the extracted directory
         manifest_files = list(extract_dir.rglob(requirements_file))
 
         if not manifest_files:
             raise FileNotFoundError(f"requirements file {requirements_file} not found in {package_name} package")
 
-        # Return the first manifest found
-        return manifest_files[0]
+        # Verify the found file is actually within extract_dir (defense in depth)
+        found_file = manifest_files[0]
+        try:
+            found_file.resolve().relative_to(extract_dir.resolve())
+        except ValueError as e:
+            raise ValueError(
+                f"Security violation: requirements file '{found_file}' is outside the package directory"
+            ) from e
 
+        # Return the first manifest found
+        return found_file
 
     def _initialize_isolated_venv(self, manifest: PluginManifest, package_path: Path) -> Path:
         """Initialize isolated venv for a plugin without installing it into the CLI's venv.

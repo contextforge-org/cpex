@@ -12,6 +12,8 @@ import base64
 import json
 import subprocess
 import sys
+import tarfile
+import zipfile
 from pathlib import Path
 from unittest import mock
 from unittest.mock import MagicMock, Mock, patch, mock_open
@@ -1152,6 +1154,700 @@ class TestPluginCatalogDownloadFileExtended:
             assert result is None
             # Check that error was logged with the item path
             assert mock_logger.error.called
+
+
+class TestPluginCatalogSearchGithubCodeWithNullMember:
+    """Tests for _search_github_code with member=None."""
+
+    def test_search_github_code_with_null_member(self, mock_github_env):
+        """Test _search_github_code when member is None."""
+        catalog = PluginCatalog()
+        
+        # Mock the search results
+        mock_search_results = MagicMock()
+        mock_search_results.totalCount = 1
+        
+        mock_content_file = MagicMock()
+        mock_content_file.name = "plugin-manifest.yaml"
+        mock_content_file.path = "plugin-manifest.yaml"
+        mock_content_file.git_url = "https://api.github.com/repos/org/repo/git/blobs/abc123"
+        mock_content_file.html_url = "https://github.com/org/repo/blob/main/plugin-manifest.yaml"
+        
+        mock_search_results.__iter__ = Mock(return_value=iter([mock_content_file]))
+        
+        with patch.object(catalog.gh, 'search_code', return_value=mock_search_results):
+            result = catalog._search_github_code("org/repo", None, {})
+        
+        assert result is not None
+        assert len(result) == 1
+        assert result[0]["name"] == "plugin-manifest.yaml"
+
+
+class TestPluginCatalogTransformManifestDataWithNullMember:
+    """Tests for _transform_manifest_data with member=None."""
+
+    def test_transform_manifest_data_with_null_member(self, mock_github_env):
+        """Test _transform_manifest_data when member is None."""
+        catalog = PluginCatalog()
+        
+        manifest_content = {
+            "version": "1.0.0",
+            "kind": "native",
+            "description": "Test plugin",
+            "author": "Test Author",
+            "available_hooks": ["tools"],
+        }
+        
+        repo_url = httpx.URL("https://github.com/org/repo")
+        result = catalog._transform_manifest_data(manifest_content, "test_plugin", None, repo_url)
+        
+        assert result["name"] == "test_plugin"
+        assert result["monorepo"]["package_source"] == "https://github.com/org/repo"
+        assert result["monorepo"]["package_folder"] == ""
+
+
+class TestPluginCatalogDownloadMonorepoFolderToTemp:
+    """Tests for _download_monorepo_folder_to_temp method."""
+
+    def test_download_monorepo_folder_success(self, tmp_path, mock_github_env):
+        """Test successful download of monorepo folder."""
+        catalog = PluginCatalog()
+        
+        # Create a mock tarball
+        mock_tarball = tmp_path / "package.tar.gz"
+        with tarfile.open(mock_tarball, "w:gz") as tar:
+            # Create a temporary file to add to the tarball
+            temp_file = tmp_path / "test_file.txt"
+            temp_file.write_text("test content")
+            tar.add(temp_file, arcname="test_file.txt")
+        
+        with patch('subprocess.run') as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            
+            with patch('pathlib.Path.glob') as mock_glob:
+                mock_glob.return_value = [mock_tarball]
+                
+                result = catalog._download_monorepo_folder_to_temp(
+                    "git+https://github.com/org/repo#subdirectory=plugin",
+                    "test_plugin"
+                )
+                
+                assert result.exists()
+                assert result.name == "extracted"
+
+    def test_download_monorepo_folder_no_files(self, tmp_path, mock_github_env):
+        """Test error when no files are downloaded."""
+        catalog = PluginCatalog()
+        
+        with patch('subprocess.run') as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            
+            with patch('pathlib.Path.glob') as mock_glob:
+                mock_glob.return_value = []
+                
+                with pytest.raises(RuntimeError) as exc_info:
+                    catalog._download_monorepo_folder_to_temp(
+                        "git+https://github.com/org/repo#subdirectory=plugin",
+                        "test_plugin"
+                    )
+                
+                assert "No files downloaded" in str(exc_info.value)
+
+    def test_download_monorepo_folder_unsupported_format(self, tmp_path, mock_github_env):
+        """Test error with unsupported package format."""
+        catalog = PluginCatalog()
+        
+        # Create a mock file with unsupported extension
+        mock_file = tmp_path / "package.unknown"
+        mock_file.write_text("test")
+        
+        with patch('subprocess.run') as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            
+            with patch('pathlib.Path.glob') as mock_glob:
+                mock_glob.return_value = [mock_file]
+                
+                with pytest.raises(RuntimeError) as exc_info:
+                    catalog._download_monorepo_folder_to_temp(
+                        "git+https://github.com/org/repo#subdirectory=plugin",
+                        "test_plugin"
+                    )
+                
+                assert "Unsupported package format" in str(exc_info.value)
+
+    def test_download_monorepo_folder_subprocess_error(self, mock_github_env):
+        """Test subprocess error handling."""
+        catalog = PluginCatalog()
+        
+        with patch('subprocess.run') as mock_run:
+            mock_run.side_effect = subprocess.CalledProcessError(1, "pip", stderr="Download failed")
+            
+            with pytest.raises(RuntimeError) as exc_info:
+                catalog._download_monorepo_folder_to_temp(
+                    "git+https://github.com/org/repo#subdirectory=plugin",
+                    "test_plugin"
+                )
+            
+            assert "Failed to download" in str(exc_info.value)
+
+
+class TestPluginCatalogDownloadPackageToTemp:
+    """Tests for _download_package_to_temp method."""
+
+    def test_download_package_with_test_pypi(self, tmp_path, mock_github_env):
+        """Test downloading from test.pypi.org."""
+        catalog = PluginCatalog()
+        
+        # Create a mock wheel file
+        mock_wheel = tmp_path / "package-1.0.0-py3-none-any.whl"
+        with zipfile.ZipFile(mock_wheel, "w") as zf:
+            zf.writestr("test_file.txt", "test content")
+        
+        with patch('subprocess.run') as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            
+            with patch('pathlib.Path.glob') as mock_glob:
+                mock_glob.return_value = [mock_wheel]
+                
+                result = catalog._download_package_to_temp("test_plugin", None, use_test=True)
+                
+                assert result.exists()
+                assert result.name == "extracted"
+                
+                # Verify test.pypi.org was used
+                call_args = mock_run.call_args[0][0]
+                assert "--index-url" in call_args
+                assert "https://test.pypi.org/simple/" in call_args
+
+    def test_download_package_no_files_downloaded(self, mock_github_env):
+        """Test error when no files are downloaded."""
+        catalog = PluginCatalog()
+        
+        with patch('subprocess.run') as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            
+            with patch('pathlib.Path.glob') as mock_glob:
+                mock_glob.return_value = []
+                
+                with pytest.raises(RuntimeError) as exc_info:
+                    catalog._download_package_to_temp("test_plugin", None)
+                
+                assert "No files downloaded" in str(exc_info.value)
+
+    def test_download_package_unsupported_format(self, tmp_path, mock_github_env):
+        """Test error with unsupported package format."""
+        catalog = PluginCatalog()
+        
+        mock_file = tmp_path / "package.exe"
+        mock_file.write_text("test")
+        
+        with patch('subprocess.run') as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            
+            with patch('pathlib.Path.glob') as mock_glob:
+                mock_glob.return_value = [mock_file]
+                
+                with pytest.raises(RuntimeError) as exc_info:
+                    catalog._download_package_to_temp("test_plugin", None)
+                
+                assert "Unsupported package format" in str(exc_info.value)
+
+
+class TestPluginCatalogFindManifestInExtractedPackage:
+    """Tests for _find_manifest_in_extracted_package method."""
+
+    def test_find_manifest_not_found(self, tmp_path, mock_github_env):
+        """Test FileNotFoundError when manifest is not found."""
+        catalog = PluginCatalog()
+        
+        extract_dir = tmp_path / "extracted"
+        extract_dir.mkdir()
+        
+        with pytest.raises(FileNotFoundError) as exc_info:
+            catalog._find_manifest_in_extracted_package(extract_dir, "test_plugin")
+        
+        assert "plugin-manifest.yaml not found" in str(exc_info.value)
+
+
+class TestPluginCatalogUninstallPackage:
+    """Tests for uninstall_package method."""
+
+    def test_uninstall_package_success(self, mock_github_env):
+        """Test successful package uninstallation."""
+        catalog = PluginCatalog()
+        
+        with patch('subprocess.run') as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            
+            result = catalog.uninstall_package("test_plugin")
+            
+            assert result is True
+            mock_run.assert_called_once()
+            call_args = mock_run.call_args[0][0]
+            assert "pip" in call_args
+            assert "uninstall" in call_args
+            assert "-y" in call_args
+            assert "test_plugin" in call_args
+
+    def test_uninstall_package_subprocess_error(self, mock_github_env):
+        """Test subprocess error during uninstallation."""
+        catalog = PluginCatalog()
+        
+        with patch('subprocess.run') as mock_run:
+            mock_run.side_effect = subprocess.CalledProcessError(1, "pip", stderr="Uninstall failed")
+            
+            with pytest.raises(RuntimeError) as exc_info:
+                catalog.uninstall_package("test_plugin")
+            
+            assert "Failed to uninstall" in str(exc_info.value)
+
+    def test_uninstall_package_unexpected_error(self, mock_github_env):
+        """Test unexpected error during uninstallation."""
+        catalog = PluginCatalog()
+        
+        with patch('subprocess.run') as mock_run:
+            mock_run.side_effect = Exception("Unexpected error")
+            
+            with pytest.raises(RuntimeError) as exc_info:
+                catalog.uninstall_package("test_plugin")
+            
+            assert "Unexpected error uninstalling" in str(exc_info.value)
+
+
+class TestPluginCatalogInstallFolderViaPipIsolated:
+    """Tests for install_folder_via_pip with isolated_venv plugins."""
+
+    def test_install_folder_via_pip_isolated_venv(self, tmp_path, mock_github_env):
+        """Test installing an isolated_venv plugin from monorepo."""
+        catalog = PluginCatalog()
+        
+        manifest = create_test_manifest(kind="isolated_venv")
+        
+        # Mock the download and initialization
+        with patch.object(catalog, '_download_monorepo_folder_to_temp') as mock_download:
+            mock_download.return_value = tmp_path / "package"
+            
+            with patch.object(catalog, '_initialize_isolated_venv') as mock_init:
+                mock_init.return_value = tmp_path / "venv"
+                
+                result = catalog.install_folder_via_pip(manifest)
+                
+                assert result == tmp_path / "venv"
+                mock_download.assert_called_once()
+                mock_init.assert_called_once()
+
+
+
+class TestPluginCatalogProcessPyprojectExtended:
+    """Extended tests for _process_pyproject method."""
+
+    def test_process_pyproject_with_member_none(self, mock_github_env):
+        """Test _process_pyproject when member is None (root directory)."""
+        catalog = PluginCatalog()
+        
+        mock_repo = MagicMock()
+        mock_item = MagicMock()
+        mock_item.path = "pyproject.toml"
+        mock_item.name = "pyproject.toml"
+        
+        # Mock file content
+        pyproject_content = """
+[project]
+name = "test_plugin"
+version = "1.0.0"
+"""
+        mock_file_content = MagicMock()
+        mock_file_content.decoded_content = pyproject_content.encode('utf-8')
+        mock_repo.get_contents.return_value = mock_file_content
+        
+        repo_url = httpx.URL("https://github.com/org/repo")
+        
+        with patch.object(catalog, 'find_and_save_plugin_manifest') as mock_find:
+            catalog._process_pyproject(mock_repo, mock_item, repo_url, {})
+            
+            # Verify find_and_save_plugin_manifest was called with member=None
+            mock_find.assert_called_once()
+            call_args = mock_find.call_args
+            assert call_args[1]['member'] is None
+
+
+class TestPluginCatalogInstallFolderViaPipNonIsolated:
+    """Tests for install_folder_via_pip with non-isolated plugins."""
+
+    def test_install_folder_via_pip_non_isolated(self, mock_github_env):
+        """Test installing a non-isolated plugin from monorepo."""
+        catalog = PluginCatalog()
+        
+        manifest = create_test_manifest(kind="native")
+        
+        with patch('subprocess.run') as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            
+            result = catalog.install_folder_via_pip(manifest)
+            
+            # For non-isolated plugins, should return None
+            assert result is None
+            
+            # Verify pip install was called
+            mock_run.assert_called_once()
+            call_args = mock_run.call_args[0][0]
+            assert "pip" in call_args
+            assert "install" in call_args
+
+
+class TestPluginCatalogInstallPackageEdgeCases:
+    """Edge case tests for _install_package method."""
+
+    def test_install_package_with_null_version_constraint(self, mock_github_env):
+        """Test installing package with None version constraint."""
+        catalog = PluginCatalog()
+        
+        with patch('subprocess.run') as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            
+            catalog._install_package("test_plugin", None, use_test=False)
+            
+            mock_run.assert_called_once()
+            call_args = mock_run.call_args[0][0]
+            assert "test_plugin" in call_args
+            assert "--index-url" not in call_args
+
+    def test_install_package_unexpected_error(self, mock_github_env):
+        """Test unexpected error during package installation."""
+        catalog = PluginCatalog()
+        
+        with patch('subprocess.run') as mock_run:
+            mock_run.side_effect = Exception("Unexpected error")
+            
+            with pytest.raises(RuntimeError) as exc_info:
+                catalog._install_package("test_plugin", None)
+            
+            assert "Unexpected error installing" in str(exc_info.value)
+
+
+class TestPluginCatalogDownloadPackageEdgeCases:
+    """Edge case tests for download methods."""
+
+    def test_download_package_with_version_constraint(self, tmp_path, mock_github_env):
+        """Test downloading package with version constraint."""
+        catalog = PluginCatalog()
+        
+        mock_wheel = tmp_path / "package-1.0.0-py3-none-any.whl"
+        with zipfile.ZipFile(mock_wheel, "w") as zf:
+            zf.writestr("test_file.txt", "test content")
+        
+        with patch('subprocess.run') as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            
+            with patch('pathlib.Path.glob') as mock_glob:
+                mock_glob.return_value = [mock_wheel]
+                
+                result = catalog._download_package_to_temp("test_plugin", ">=1.0.0", use_test=False)
+                
+                assert result.exists()
+                
+                # Verify version constraint was included
+                call_args = mock_run.call_args[0][0]
+                assert any("test_plugin>=1.0.0" in str(arg) for arg in call_args)
+
+    def test_download_monorepo_zip_format(self, tmp_path, mock_github_env):
+        """Test downloading monorepo with zip format."""
+        catalog = PluginCatalog()
+        
+        # Create a mock zip file
+        mock_zip = tmp_path / "package.zip"
+        with zipfile.ZipFile(mock_zip, "w") as zf:
+            zf.writestr("test_file.txt", "test content")
+        
+        with patch('subprocess.run') as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            
+            with patch('pathlib.Path.glob') as mock_glob:
+                mock_glob.return_value = [mock_zip]
+                
+                result = catalog._download_monorepo_folder_to_temp(
+                    "git+https://github.com/org/repo#subdirectory=plugin",
+                    "test_plugin"
+                )
+                
+                assert result.exists()
+                assert result.name == "extracted"
+
+
+class TestPluginCatalogFindOperations:
+    """Tests for find method."""
+
+    def test_find_case_insensitive(self, tmp_path, mock_github_env):
+        """Test that find is case-insensitive."""
+        catalog = PluginCatalog()
+        
+        # Create a manifest with uppercase name
+        manifest_dir = tmp_path / "catalog" / "TEST_PLUGIN"
+        manifest_dir.mkdir(parents=True)
+        manifest_file = manifest_dir / "plugin-manifest.yaml"
+        
+        manifest_data = {
+            "name": "TEST_PLUGIN",
+            "version": "1.0.0",
+            "kind": "native",
+            "description": "Test plugin",
+            "author": "Test Author",
+            "available_hooks": ["tools"],
+            "tags": [],
+            "default_config": {},
+        }
+        manifest_file.write_text(yaml.safe_dump(manifest_data))
+        
+        catalog.catalog_folder = str(tmp_path / "catalog")
+        catalog.load()
+        
+        # Search with lowercase should find it
+        result = catalog.find("test_plugin")
+        
+        assert result is not None
+        assert result.name == "TEST_PLUGIN"
+
+
+class TestPluginCatalogInstallFromPypiIsolated:
+    """Tests for install_from_pypi with isolated_venv plugins."""
+
+    def test_install_from_pypi_isolated_venv(self, tmp_path, mock_github_env):
+        """Test installing an isolated_venv plugin from PyPI."""
+        catalog = PluginCatalog()
+        
+        # Create mock extracted package with manifest
+        extract_dir = tmp_path / "extracted"
+        extract_dir.mkdir()
+        plugin_dir = extract_dir / "test_plugin"
+        plugin_dir.mkdir()
+        
+        manifest_file = plugin_dir / "plugin-manifest.yaml"
+        manifest_data = {
+            "name": "test_plugin",
+            "version": "1.0.0",
+            "kind": "isolated_venv",
+            "description": "Test isolated plugin",
+            "author": "Test Author",
+            "available_hooks": ["tools"],
+            "default_config": {"requirements_file": "requirements.txt"},
+        }
+        manifest_file.write_text(yaml.safe_dump(manifest_data))
+        
+        with patch.object(catalog, '_download_package_to_temp') as mock_download:
+            mock_download.return_value = extract_dir
+            
+            with patch.object(catalog, '_initialize_isolated_venv') as mock_init:
+                mock_init.return_value = tmp_path / "venv"
+                
+                with patch.object(catalog, '_persist_manifest'):
+                    manifest, plugin_path = catalog.install_from_pypi("test_plugin")
+                    
+                    assert manifest.kind == "isolated_venv"
+                    assert plugin_path == tmp_path / "venv"
+                    mock_init.assert_called_once()
+
+
+
+class TestPluginCatalogFindRequirementsInExtractedPackage:
+    """Tests for _find_requirements_in_extracted_package method with path traversal protection."""
+
+    def test_find_requirements_success(self, tmp_path, mock_github_env):
+        """Test successful finding of requirements file."""
+        catalog = PluginCatalog()
+        
+        # Create a mock extracted package directory with requirements.txt
+        extract_dir = tmp_path / "extracted"
+        extract_dir.mkdir()
+        plugin_dir = extract_dir / "my_plugin"
+        plugin_dir.mkdir()
+        requirements_file = plugin_dir / "requirements.txt"
+        requirements_file.write_text("pytest>=7.0.0\n")
+        
+        # Find the requirements file
+        result = catalog._find_requirements_in_extracted_package(
+            extract_dir, "my_plugin", "requirements.txt"
+        )
+        
+        assert result == requirements_file
+        assert result.exists()
+
+    def test_find_requirements_not_found(self, tmp_path, mock_github_env):
+        """Test FileNotFoundError when requirements file doesn't exist."""
+        catalog = PluginCatalog()
+        
+        extract_dir = tmp_path / "extracted"
+        extract_dir.mkdir()
+        
+        with pytest.raises(FileNotFoundError) as exc_info:
+            catalog._find_requirements_in_extracted_package(
+                extract_dir, "my_plugin", "requirements.txt"
+            )
+        
+        assert "requirements file requirements.txt not found" in str(exc_info.value)
+        assert "my_plugin" in str(exc_info.value)
+
+    def test_find_requirements_path_traversal_parent_directory(self, tmp_path, mock_github_env):
+        """Test that path traversal with ../ is blocked."""
+        catalog = PluginCatalog()
+        
+        extract_dir = tmp_path / "extracted"
+        extract_dir.mkdir()
+        
+        # Try to access parent directory
+        with pytest.raises(ValueError) as exc_info:
+            catalog._find_requirements_in_extracted_package(
+                extract_dir, "my_plugin", "../../../etc/passwd"
+            )
+        
+        assert "path traversal attempts are not allowed" in str(exc_info.value)
+
+    def test_find_requirements_path_traversal_absolute_path(self, tmp_path, mock_github_env):
+        """Test that absolute paths are blocked."""
+        catalog = PluginCatalog()
+        
+        extract_dir = tmp_path / "extracted"
+        extract_dir.mkdir()
+        
+        # Try to use absolute path
+        with pytest.raises(ValueError) as exc_info:
+            catalog._find_requirements_in_extracted_package(
+                extract_dir, "my_plugin", "/etc/passwd"
+            )
+        
+        assert "path traversal attempts are not allowed" in str(exc_info.value)
+
+    def test_find_requirements_path_traversal_mixed_separators(self, tmp_path, mock_github_env):
+        """Test that mixed path separators are blocked."""
+        catalog = PluginCatalog()
+        
+        extract_dir = tmp_path / "extracted"
+        extract_dir.mkdir()
+        
+        # Try to use backslashes (Windows-style) in suspicious way
+        with pytest.raises(ValueError) as exc_info:
+            catalog._find_requirements_in_extracted_package(
+                extract_dir, "my_plugin", "..\\..\\etc\\passwd"
+            )
+        
+        assert "path traversal attempts are not allowed" in str(exc_info.value)
+
+    def test_find_requirements_path_traversal_encoded(self, tmp_path, mock_github_env):
+        """Test that URL-encoded path traversal attempts are blocked."""
+        catalog = PluginCatalog()
+        
+        extract_dir = tmp_path / "extracted"
+        extract_dir.mkdir()
+        
+        # Try various encoded forms
+        malicious_paths = [
+            "..%2F..%2Fetc%2Fpasswd",
+            "..%5c..%5cetc%5cpasswd",
+        ]
+        
+        for malicious_path in malicious_paths:
+            with pytest.raises(ValueError) as exc_info:
+                catalog._find_requirements_in_extracted_package(
+                    extract_dir, "my_plugin", malicious_path
+                )
+            
+            assert "path traversal" in str(exc_info.value).lower() or "suspicious" in str(exc_info.value).lower()
+
+    def test_find_requirements_defense_in_depth(self, tmp_path, mock_github_env):
+        """Test defense-in-depth check that file is within extract_dir."""
+        catalog = PluginCatalog()
+        
+        # Create extract directory
+        extract_dir = tmp_path / "extracted"
+        extract_dir.mkdir()
+        
+        # Create a file outside the extract directory
+        outside_dir = tmp_path / "outside"
+        outside_dir.mkdir()
+        outside_file = outside_dir / "requirements.txt"
+        outside_file.write_text("malicious\n")
+        
+        # Create a symlink inside extract_dir pointing outside
+        # (This tests the defense-in-depth check)
+        try:
+            symlink_path = extract_dir / "requirements.txt"
+            symlink_path.symlink_to(outside_file)
+            
+            # The rglob should find it, but the defense-in-depth check should catch it
+            with pytest.raises(ValueError) as exc_info:
+                catalog._find_requirements_in_extracted_package(
+                    extract_dir, "my_plugin", "requirements.txt"
+                )
+            
+            assert "outside the package directory" in str(exc_info.value)
+        except OSError:
+            # Skip test if symlinks aren't supported (e.g., Windows without admin)
+            pytest.skip("Symlinks not supported on this system")
+
+    def test_find_requirements_nested_directory(self, tmp_path, mock_github_env):
+        """Test finding requirements file in nested directory structure."""
+        catalog = PluginCatalog()
+        
+        # Create nested directory structure
+        extract_dir = tmp_path / "extracted"
+        extract_dir.mkdir()
+        nested_dir = extract_dir / "plugin" / "subdir" / "config"
+        nested_dir.mkdir(parents=True)
+        requirements_file = nested_dir / "requirements.txt"
+        requirements_file.write_text("pytest>=7.0.0\n")
+        
+        # Should find the file in nested structure
+        result = catalog._find_requirements_in_extracted_package(
+            extract_dir, "my_plugin", "requirements.txt"
+        )
+        
+        assert result == requirements_file
+        assert result.exists()
+
+    def test_find_requirements_multiple_files_returns_first(self, tmp_path, mock_github_env):
+        """Test that when multiple matching files exist, the first one is returned."""
+        catalog = PluginCatalog()
+        
+        # Create multiple requirements files
+        extract_dir = tmp_path / "extracted"
+        extract_dir.mkdir()
+        
+        dir1 = extract_dir / "dir1"
+        dir1.mkdir()
+        req1 = dir1 / "requirements.txt"
+        req1.write_text("first\n")
+        
+        dir2 = extract_dir / "dir2"
+        dir2.mkdir()
+        req2 = dir2 / "requirements.txt"
+        req2.write_text("second\n")
+        
+        # Should return one of them (first found by rglob)
+        result = catalog._find_requirements_in_extracted_package(
+            extract_dir, "my_plugin", "requirements.txt"
+        )
+        
+        assert result in [req1, req2]
+        assert result.exists()
+
+    def test_find_requirements_custom_filename(self, tmp_path, mock_github_env):
+        """Test finding a custom requirements filename."""
+        catalog = PluginCatalog()
+        
+        extract_dir = tmp_path / "extracted"
+        extract_dir.mkdir()
+        plugin_dir = extract_dir / "my_plugin"
+        plugin_dir.mkdir()
+        
+        # Use a custom requirements filename
+        custom_req = plugin_dir / "requirements-dev.txt"
+        custom_req.write_text("pytest>=7.0.0\n")
+        
+        result = catalog._find_requirements_in_extracted_package(
+            extract_dir, "my_plugin", "requirements-dev.txt"
+        )
+        
+        assert result == custom_req
+        assert result.exists()
 
 
 # Made with Bob
