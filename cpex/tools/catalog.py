@@ -63,12 +63,7 @@ class PluginCatalog:
         """
         Creates the base_path / rel_path folder to store data in.
         """
-        # elements = rel_path.split("/")
-        # new_path = Path()
-        # for i in range(len(elements)):
-        #     new_path = new_path / elements[i]
         relpath = Path(base_path) / rel_path
-        # logger.info("relpath: %s", relpath)
         os.makedirs(relpath, exist_ok=True)
 
     def create_plugin_folder(self, path: str):
@@ -82,13 +77,6 @@ class PluginCatalog:
         Creates the OUTPUT_FOLDER/path folder to store the plugin-manifest.yaml file in.
         """
         self.create_folder(self.catalog_folder, path)
-        # elements = path.split("/")
-        # new_path = Path()
-        # for i in range(len(elements) - 1):
-        #     new_path = new_path / elements[i]
-        # relpath = Path(OUTPUT_FOLDER / new_path)
-        # # logger.info("relpath: %s", relpath)
-        # os.makedirs(relpath, exist_ok=True)
 
     def save_manifest(self, manifest: PluginManifest, path):
         """Save a pypi installed manifest to the plugin catalog.
@@ -834,8 +822,9 @@ class PluginCatalog:
                 plugin_dirs=[str(self.plugin_folder)],
             )
             # TODO: sec - prevent path traversal on user supplied requirements file path.
-            source_path = self._find_requirements_in_extracted_package(package_path, manifest.name, manifest.default_config["requirements_file"])
-            shutil.copy(source_path, isolated_plugin.plugin_path / manifest.default_config["requirements_file"])
+            requirements_file = manifest.default_config.get("requirements_file", "requirements.txt")
+            source_path = self._find_requirements_in_extracted_package(package_path, manifest.name, requirements_file)
+            shutil.copy(source_path, isolated_plugin.plugin_path / requirements_file)
             # Initialize the venv (this will create venv and install requirements)
             import asyncio
 
@@ -850,7 +839,7 @@ class PluginCatalog:
 
     def install_from_pypi(
         self, plugin_package_name: str, version_constraint: str | None = None, use_pytest: bool = False
-    ) -> PluginManifest:
+    ) -> tuple[PluginManifest, Path | None]:
         """Install Python package from PyPI and load its plugin-manifest.yaml.
 
         This method performs the following steps:

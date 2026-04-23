@@ -423,103 +423,115 @@ class TestPluginCatalogInstallFromPypi:
 
     def test_install_from_pypi_success(self, tmp_path, mock_github_env):
         """Test successful installation from PyPI."""
+        # Create manifest file in temp directory
+        extract_dir = tmp_path / "extracted"
+        extract_dir.mkdir()
+        package_dir = extract_dir / "test_package"
+        package_dir.mkdir()
+        manifest_data = {
+            "name": "test_package",
+            "version": "1.0.0",
+            "kind": "native",
+            "description": "Test",
+            "author": "Test Author",
+            "tags": ["test"],
+            "available_hooks": ["tools"],
+            "default_config": {},
+        }
+        manifest_file = package_dir / "plugin-manifest.yaml"
+        manifest_file.write_text(yaml.safe_dump(manifest_data))
+        
         with (
+            patch("cpex.tools.catalog.PluginCatalog._download_package_to_temp", return_value=extract_dir),
+            patch("cpex.tools.catalog.PluginCatalog._find_manifest_in_extracted_package", return_value=manifest_file),
             patch("cpex.tools.catalog.subprocess.run") as mock_subprocess,
             patch("cpex.framework.utils.importlib.metadata.distributions") as mock_distributions,
+            patch("shutil.rmtree") as mock_rmtree,
         ):
-            # Create manifest file
-            package_dir = tmp_path / "test_package"
-            package_dir.mkdir()
-            manifest_data = {
-                "name": "test_package",
-                "version": "1.0.0",
-                "kind": "native",
-                "description": "Test",
-                "author": "Test Author",
-                "tags": ["test"],
-                "available_hooks": ["tools"],
-                "default_config": {},
-            }
-            manifest_file = package_dir / "plugin-manifest.yaml"
-            manifest_file.write_text(yaml.safe_dump(manifest_data))
-            
-            # Setup mock distribution with plugin-manifest.yaml file
+            # Setup mock distribution
             mock_dist = Mock()
             mock_dist.name = "test_package"
-            mock_manifest_file = Mock()
-            mock_manifest_file.name = "plugin-manifest.yaml"
-            mock_dist.files = [mock_manifest_file]
-            mock_dist.locate_file.return_value = manifest_file
             mock_distributions.return_value = [mock_dist]
             
             catalog = PluginCatalog()
             catalog.catalog_folder = str(tmp_path / "catalog")
-            result = catalog.install_from_pypi("test_package")
+            manifest, plugin_path = catalog.install_from_pypi("test_package")
             
+            # Should call subprocess.run for non-isolated plugin
             mock_subprocess.assert_called_once()
-            assert result.name == "test_package"
+            assert manifest.name == "test_package"
+            assert plugin_path is None  # Non-isolated plugins don't return a path
+            # Should clean up temp directory
+            mock_rmtree.assert_called_once()
 
     def test_install_from_pypi_install_failure(self, mock_github_env):
         """Test installation failure from PyPI."""
-        with patch("cpex.tools.catalog.subprocess.run", side_effect=Exception("Install failed")):
+        with patch("cpex.tools.catalog.PluginCatalog._download_package_to_temp", side_effect=RuntimeError("Download failed")):
             catalog = PluginCatalog()
-            with pytest.raises(RuntimeError, match="Unexpected error installing"):
+            with pytest.raises(RuntimeError, match="Download failed"):
                 catalog.install_from_pypi("test_package")
 
-    def test_install_from_pypi_package_not_found(self, mock_github_env):
-        """Test when package is not found after installation."""
+    def test_install_from_pypi_package_not_found(self, tmp_path, mock_github_env):
+        """Test when package is not found after installation (for isolated_venv plugins)."""
+        extract_dir = tmp_path / "extracted"
+        extract_dir.mkdir()
+        package_dir = extract_dir / "test_package"
+        package_dir.mkdir()
+        manifest_data = {
+            "name": "test_package",
+            "version": "1.0.0",
+            "kind": "isolated_venv",  # Changed to isolated_venv to trigger find_package_path
+            "description": "Test",
+            "author": "Test Author",
+            "tags": ["test"],
+            "available_hooks": ["tools"],
+            "default_config": {},
+        }
+        manifest_file = package_dir / "plugin-manifest.yaml"
+        manifest_file.write_text(yaml.safe_dump(manifest_data))
+        
         with (
+            patch("cpex.tools.catalog.PluginCatalog._download_package_to_temp", return_value=extract_dir),
+            patch("cpex.tools.catalog.PluginCatalog._find_manifest_in_extracted_package", return_value=manifest_file),
             patch("cpex.tools.catalog.subprocess.run"),
             patch("cpex.framework.utils.importlib.metadata.distributions", return_value=[]),
             patch("cpex.framework.utils.importlib.util.find_spec", return_value=None),
+            patch("shutil.rmtree"),
         ):
             catalog = PluginCatalog()
-            with pytest.raises(RuntimeError, match="Could not find installed package"):
+            catalog.catalog_folder = str(tmp_path / "catalog")
+            with pytest.raises(RuntimeError, match="Failed to initialize isolated venv for test_package"):
                 catalog.install_from_pypi("test_package")
 
     def test_install_from_pypi_manifest_not_found(self, tmp_path, mock_github_env):
         """Test when manifest file is not found in package."""
+        extract_dir = tmp_path / "extracted"
+        extract_dir.mkdir()
+        
         with (
-            patch("cpex.tools.catalog.subprocess.run"),
-            patch("cpex.framework.utils.importlib.metadata.distributions") as mock_distributions,
+            patch("cpex.tools.catalog.PluginCatalog._download_package_to_temp", return_value=extract_dir),
+            patch("cpex.tools.catalog.PluginCatalog._find_manifest_in_extracted_package", side_effect=FileNotFoundError("plugin-manifest.yaml not found")),
+            patch("shutil.rmtree"),
         ):
-            # Setup mock distribution without plugin-manifest.yaml file
-            mock_dist = Mock()
-            mock_dist.name = "test_package"
-            mock_file = Mock()
-            mock_file.name = "__init__.py"
-            mock_dist.files = [mock_file]
-            mock_dist.locate_file.return_value = tmp_path / "test_package" / "__init__.py"
-            mock_distributions.return_value = [mock_dist]
-            
-            package_dir = tmp_path / "test_package"
-            package_dir.mkdir()
-            
             catalog = PluginCatalog()
             catalog.catalog_folder = str(tmp_path / "catalog")
-            with pytest.raises(RuntimeError, match="Could not find installed package"):
+            with pytest.raises(FileNotFoundError, match="plugin-manifest.yaml not found"):
                 catalog.install_from_pypi("test_package")
 
     def test_install_from_pypi_invalid_manifest(self, tmp_path, mock_github_env):
         """Test when manifest file is invalid."""
+        extract_dir = tmp_path / "extracted"
+        extract_dir.mkdir()
+        package_dir = extract_dir / "test_package"
+        package_dir.mkdir()
+        manifest_file = package_dir / "plugin-manifest.yaml"
+        manifest_file.write_text("invalid: yaml: content:")
+        
         with (
-            patch("cpex.tools.catalog.subprocess.run"),
-            patch("cpex.framework.utils.importlib.metadata.distributions") as mock_distributions,
+            patch("cpex.tools.catalog.PluginCatalog._download_package_to_temp", return_value=extract_dir),
+            patch("cpex.tools.catalog.PluginCatalog._find_manifest_in_extracted_package", return_value=manifest_file),
+            patch("shutil.rmtree"),
         ):
-            package_dir = tmp_path / "test_package"
-            package_dir.mkdir()
-            manifest_file = package_dir / "plugin-manifest.yaml"
-            manifest_file.write_text("invalid: yaml: content:")
-            
-            # Setup mock distribution with plugin-manifest.yaml file
-            mock_dist = Mock()
-            mock_dist.name = "test_package"
-            mock_manifest_file = Mock()
-            mock_manifest_file.name = "plugin-manifest.yaml"
-            mock_dist.files = [mock_manifest_file]
-            mock_dist.locate_file.return_value = manifest_file
-            mock_distributions.return_value = [mock_dist]
-            
             catalog = PluginCatalog()
             catalog.catalog_folder = str(tmp_path / "catalog")
             with pytest.raises(RuntimeError, match="Failed to parse manifest YAML"):
@@ -736,157 +748,157 @@ class TestPluginCatalogInstallFromPypiExtended:
 
     def test_install_from_pypi_with_version_constraint(self, tmp_path, mock_github_env):
         """Test installation with version constraint."""
+        extract_dir = tmp_path / "extracted"
+        extract_dir.mkdir()
+        package_dir = extract_dir / "test_package"
+        package_dir.mkdir()
+        manifest_data = {
+            "name": "test_package",
+            "version": "1.0.0",
+            "kind": "native",
+            "description": "Test",
+            "author": "Test Author",
+            "tags": ["test"],
+            "available_hooks": ["tools"],
+            "default_config": {},
+        }
+        manifest_file = package_dir / "plugin-manifest.yaml"
+        manifest_file.write_text(yaml.safe_dump(manifest_data))
+        
         with (
+            patch("cpex.tools.catalog.PluginCatalog._download_package_to_temp", return_value=extract_dir),
+            patch("cpex.tools.catalog.PluginCatalog._find_manifest_in_extracted_package", return_value=manifest_file),
             patch("cpex.tools.catalog.subprocess.run") as mock_subprocess,
             patch("cpex.framework.utils.importlib.metadata.distributions") as mock_distributions,
+            patch("shutil.rmtree"),
         ):
-            package_dir = tmp_path / "test_package"
-            package_dir.mkdir()
-            manifest_data = {
-                "name": "test_package",
-                "version": "1.0.0",
-                "kind": "native",
-                "description": "Test",
-                "author": "Test Author",
-                "tags": ["test"],
-                "available_hooks": ["tools"],
-                "default_config": {},
-            }
-            manifest_file = package_dir / "plugin-manifest.yaml"
-            manifest_file.write_text(yaml.safe_dump(manifest_data))
-            
-            # Setup mock distribution with plugin-manifest.yaml file
             mock_dist = Mock()
             mock_dist.name = "test_package"
-            mock_manifest_file = Mock()
-            mock_manifest_file.name = "plugin-manifest.yaml"
-            mock_dist.files = [mock_manifest_file]
-            mock_dist.locate_file.return_value = manifest_file
             mock_distributions.return_value = [mock_dist]
             
             catalog = PluginCatalog()
             catalog.catalog_folder = str(tmp_path / "catalog")
-            result = catalog.install_from_pypi("test_package", ">=1.0.0")
+            manifest, plugin_path = catalog.install_from_pypi("test_package", ">=1.0.0")
             
             mock_subprocess.assert_called_once()
-            assert result.name == "test_package"
-            assert result.package_info is not None
-            assert result.package_info.version_constraint == ">=1.0.0"
+            assert manifest.name == "test_package"
+            assert manifest.package_info is not None
+            assert manifest.package_info.version_constraint == ">=1.0.0"
 
     def test_install_from_pypi_with_default_configs(self, tmp_path, mock_github_env):
         """Test installation with default_configs field."""
+        extract_dir = tmp_path / "extracted"
+        extract_dir.mkdir()
+        package_dir = extract_dir / "test_package"
+        package_dir.mkdir()
+        manifest_data = {
+            "name": "test_package",
+            "version": "1.0.0",
+            "kind": "native",
+            "description": "Test",
+            "author": "Test Author",
+            "tags": ["test"],
+            "available_hooks": ["tools"],
+            "default_configs": {"key": "value"},
+        }
+        manifest_file = package_dir / "plugin-manifest.yaml"
+        manifest_file.write_text(yaml.safe_dump(manifest_data))
+        
         with (
+            patch("cpex.tools.catalog.PluginCatalog._download_package_to_temp", return_value=extract_dir),
+            patch("cpex.tools.catalog.PluginCatalog._find_manifest_in_extracted_package", return_value=manifest_file),
             patch("cpex.tools.catalog.subprocess.run") as mock_subprocess,
             patch("cpex.framework.utils.importlib.metadata.distributions") as mock_distributions,
+            patch("shutil.rmtree"),
         ):
-            package_dir = tmp_path / "test_package"
-            package_dir.mkdir()
-            manifest_data = {
-                "name": "test_package",
-                "version": "1.0.0",
-                "kind": "native",
-                "description": "Test",
-                "author": "Test Author",
-                "tags": ["test"],
-                "available_hooks": ["tools"],
-                "default_configs": {"key": "value"},
-            }
-            manifest_file = package_dir / "plugin-manifest.yaml"
-            manifest_file.write_text(yaml.safe_dump(manifest_data))
-            
-            # Setup mock distribution with plugin-manifest.yaml file
             mock_dist = Mock()
             mock_dist.name = "test_package"
-            mock_manifest_file = Mock()
-            mock_manifest_file.name = "plugin-manifest.yaml"
-            mock_dist.files = [mock_manifest_file]
-            mock_dist.locate_file.return_value = manifest_file
             mock_distributions.return_value = [mock_dist]
             
             catalog = PluginCatalog()
             catalog.catalog_folder = str(tmp_path / "catalog")
-            result = catalog.install_from_pypi("test_package")
+            manifest, plugin_path = catalog.install_from_pypi("test_package")
             
-            assert result.default_config == {"key": "value"}
+            assert manifest.default_config == {"key": "value"}
 
     def test_install_from_pypi_with_existing_package_info(self, tmp_path, mock_github_env):
         """Test installation with existing package_info."""
+        extract_dir = tmp_path / "extracted"
+        extract_dir.mkdir()
+        package_dir = extract_dir / "test_package"
+        package_dir.mkdir()
+        manifest_data = {
+            "name": "test_package",
+            "version": "1.0.0",
+            "kind": "native",
+            "description": "Test",
+            "author": "Test Author",
+            "tags": ["test"],
+            "available_hooks": ["tools"],
+            "default_config": {},
+            "package_info": {
+                "pypi_package": "old_name",
+                "version_constraint": ">=0.1.0"
+            }
+        }
+        manifest_file = package_dir / "plugin-manifest.yaml"
+        manifest_file.write_text(yaml.safe_dump(manifest_data))
+        
         with (
+            patch("cpex.tools.catalog.PluginCatalog._download_package_to_temp", return_value=extract_dir),
+            patch("cpex.tools.catalog.PluginCatalog._find_manifest_in_extracted_package", return_value=manifest_file),
             patch("cpex.tools.catalog.subprocess.run") as mock_subprocess,
             patch("cpex.framework.utils.importlib.metadata.distributions") as mock_distributions,
+            patch("shutil.rmtree"),
         ):
-            package_dir = tmp_path / "test_package"
-            package_dir.mkdir()
-            manifest_data = {
-                "name": "test_package",
-                "version": "1.0.0",
-                "kind": "native",
-                "description": "Test",
-                "author": "Test Author",
-                "tags": ["test"],
-                "available_hooks": ["tools"],
-                "default_config": {},
-                "package_info": {
-                    "pypi_package": "old_name",
-                    "version_constraint": ">=0.1.0"
-                }
-            }
-            manifest_file = package_dir / "plugin-manifest.yaml"
-            manifest_file.write_text(yaml.safe_dump(manifest_data))
-            
-            # Setup mock distribution with plugin-manifest.yaml file
             mock_dist = Mock()
             mock_dist.name = "test_package"
-            mock_manifest_file = Mock()
-            mock_manifest_file.name = "plugin-manifest.yaml"
-            mock_dist.files = [mock_manifest_file]
-            mock_dist.locate_file.return_value = manifest_file
             mock_distributions.return_value = [mock_dist]
             
             catalog = PluginCatalog()
             catalog.catalog_folder = str(tmp_path / "catalog")
-            result = catalog.install_from_pypi("test_package", ">=2.0.0")
+            manifest, plugin_path = catalog.install_from_pypi("test_package", ">=2.0.0")
             
-            assert result.package_info is not None
-            assert result.package_info.pypi_package == "test_package"
-            assert result.package_info.version_constraint == ">=2.0.0"
+            assert manifest.package_info is not None
+            assert manifest.package_info.pypi_package == "test_package"
+            assert manifest.package_info.version_constraint == ">=2.0.0"
 
     def test_install_from_pypi_with_null_default_configs_in_manifest(self, tmp_path, mock_github_env):
         """Test installation with null default_configs in manifest."""
+        extract_dir = tmp_path / "extracted"
+        extract_dir.mkdir()
+        package_dir = extract_dir / "test_package"
+        package_dir.mkdir()
+        manifest_data = {
+            "name": "test_package",
+            "version": "1.0.0",
+            "kind": "native",
+            "description": "Test",
+            "author": "Test Author",
+            "tags": ["test"],
+            "available_hooks": ["tools"],
+            "default_configs": None,
+        }
+        manifest_file = package_dir / "plugin-manifest.yaml"
+        manifest_file.write_text(yaml.safe_dump(manifest_data))
+        
         with (
+            patch("cpex.tools.catalog.PluginCatalog._download_package_to_temp", return_value=extract_dir),
+            patch("cpex.tools.catalog.PluginCatalog._find_manifest_in_extracted_package", return_value=manifest_file),
             patch("cpex.tools.catalog.subprocess.run") as mock_subprocess,
             patch("cpex.framework.utils.importlib.metadata.distributions") as mock_distributions,
+            patch("shutil.rmtree"),
         ):
-            package_dir = tmp_path / "test_package"
-            package_dir.mkdir()
-            manifest_data = {
-                "name": "test_package",
-                "version": "1.0.0",
-                "kind": "native",
-                "description": "Test",
-                "author": "Test Author",
-                "tags": ["test"],
-                "available_hooks": ["tools"],
-                "default_configs": None,
-            }
-            manifest_file = package_dir / "plugin-manifest.yaml"
-            manifest_file.write_text(yaml.safe_dump(manifest_data))
-            
-            # Setup mock distribution with plugin-manifest.yaml file
             mock_dist = Mock()
             mock_dist.name = "test_package"
-            mock_manifest_file = Mock()
-            mock_manifest_file.name = "plugin-manifest.yaml"
-            mock_dist.files = [mock_manifest_file]
-            mock_dist.locate_file.return_value = manifest_file
             mock_distributions.return_value = [mock_dist]
             
             catalog = PluginCatalog()
             catalog.catalog_folder = str(tmp_path / "catalog")
-            result = catalog.install_from_pypi("test_package")
+            manifest, plugin_path = catalog.install_from_pypi("test_package")
             
             # default_config should be empty dict when default_configs is None
-            assert result.default_config == {}
+            assert manifest.default_config == {}
 
 
 # Made with Bob
