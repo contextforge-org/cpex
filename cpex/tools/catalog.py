@@ -15,8 +15,14 @@ import sys
 import tomllib
 from pathlib import Path
 from typing import Any, Optional
+import uuid
 
 import httpx
+import shutil
+import tarfile
+import tempfile
+import zipfile
+
 import yaml
 from github import Auth, Github
 
@@ -182,8 +188,10 @@ class PluginCatalog:
         """
         try:
             # Build search query for PyGithub
-            query = f"repo:{repo_path} path:{member} filename:plugin-manifest extension:yaml"
-
+            if member is not None:
+                query = f"repo:{repo_path} path:{member} filename:plugin-manifest extension:yaml"
+            else:
+                query = f"repo:{repo_path} filename:plugin-manifest extension:yaml"
             # Use PyGithub's search_code method
             search_results = self.gh.search_code(query=query)
 
@@ -219,14 +227,17 @@ class PluginCatalog:
         Returns:
             Transformed manifest data with monorepo metadata
         """
-        package_source = f"{repo_url}#subdirectory={member}"
+        if member is None:
+            package_source = str(repo_url)
+        else:
+            package_source = f"{repo_url}#subdirectory={member}"
 
         manifest_content["name"] = name
         manifest_content.setdefault("tags", [])
         manifest_content["monorepo"] = {
             "package_source": package_source,
             "repo_url": str(repo_url),
-            "package_folder": member,
+            "package_folder": member if member is not None else "",
         }
 
         # Normalize default_configs -> default_config
@@ -321,7 +332,10 @@ class PluginCatalog:
             Exception: If processing fails (caller should handle)
         """
         # Get the directory path (remove filename)
-        member = item.path.removesuffix("/" + item.name)
+        if item.path.find("/") == -1:
+            member = None
+        else:
+            member = item.path.removesuffix("/" + item.name)
 
         # Download pyproject.toml content using PyGithub
         file_content = gh_repo.get_contents(item.path)
@@ -352,7 +366,7 @@ class PluginCatalog:
         repo_cache: dict[str, Any] = {}
 
         for repo in self.monorepos:
-            repo_url = httpx.URL(repo)
+            repo_url = httpx.URL(repo.strip())
             repo_path = repo_url.path.removeprefix("/")
 
             try:
@@ -445,9 +459,10 @@ class PluginCatalog:
                 return manifest
         return None
 
-    def install_folder_via_pip(self, manifest: PluginManifest) -> None:
+    def install_folder_via_pip(self, manifest: PluginManifest) -> Path | None:
         """
-        Runs a pip install using subfolder syntax
+        Runs a pip install using subfolder syntax for monorepo plugins.
+        For isolated_venv plugins, checks manifest kind BEFORE installing to avoid dependency conflicts.
         e.g. "git+https://github.com[extra]&subdirectory=folder_name"
 
         Args:
@@ -459,14 +474,24 @@ class PluginCatalog:
         if manifest.monorepo is None:
             raise RuntimeError("PluginManifest.monorepo can not be None.")
         try:
-            # safe_path = package_source.path.strip("/")
-            # org = safe_path.split("/")[0]
-            # safe_path = safe_path.replace(org, "", 1).lstrip("/")
             repo_url = f"git+{manifest.monorepo.package_source}"
-            subprocess.run(
-                [self.python_executable, "-m", "pip", "install", repo_url], check=True, capture_output=True, text=True
-            )
-            logger.info("Successfully installed package: %s", manifest.name)
+            
+            plugin_path = None
+            # Check manifest kind BEFORE installing
+            if manifest.kind == "isolated_venv":
+                logger.info("Detected isolated_venv plugin from monorepo: %s", manifest.name)
+                # Install the package to make it available for venv initialization
+                package_path = self._download_monorepo_folder_to_temp(repo_url, manifest.name)
+                plugin_path = self._initialize_isolated_venv(manifest, package_path)
+                logger.info("Isolated venv initialized. Plugin will be auto-installed via requirements.txt")
+            else:
+                # For non-isolated plugins, install normally into CLI's venv
+                logger.info("Installing non-isolated plugin from monorepo: %s", manifest.name)
+                subprocess.run(
+                    [self.python_executable, "-m", "pip", "install", repo_url], check=True, capture_output=True, text=True
+                )
+                logger.info("Successfully installed package: %s", manifest.name)
+            return plugin_path
 
         except subprocess.CalledProcessError as e:
             raise RuntimeError(f"Failed to install {manifest.name}: {e.stderr}") from e
@@ -606,17 +631,235 @@ class PluginCatalog:
         except Exception as e:
             raise RuntimeError(f"Failed to save manifest for {package_name}: {str(e)}") from e
 
+    def _download_monorepo_folder_to_temp(self, repo_url: str, package_name: str) -> Path:
+        """Download monorepo folder to temporary directory.
+        Args:
+            repo_url: The URL of the monorepo.
+        Returns:
+            Path to the downloaded monorepo folder.
+        """
+        try:
+            tmpid    = uuid.uuid4()
+            temp_dir = Path(tempfile.mkdtemp(prefix=f"cpex_plugin_{tmpid}_"))
+            logger.info("Downloading monorepo folder to %s", temp_dir)
+
+            # Download package without installing
+            download_args = [
+                self.python_executable,
+                "-m",
+                "pip",
+                "download",
+                "--no-deps",  # Don't download dependencies
+                "--dest",
+                str(temp_dir),
+            ]
+            download_args.append(repo_url)
+
+            subprocess.run(download_args, check=True, capture_output=True, text=True)
+
+            # Find the downloaded file
+            downloaded_files = list(temp_dir.glob("*"))
+            if not downloaded_files:
+                raise RuntimeError(f"No files downloaded for {package_name}")
+            package_file = downloaded_files[0]
+            extract_dir = temp_dir / "extracted"
+            extract_dir.mkdir()
+
+            # Extract the package
+            if package_file.suffix == ".zip" or package_file.name.endswith(".zip"):
+                with zipfile.ZipFile(package_file, "r") as zip_ref:
+                    zip_ref.extractall(extract_dir)
+            elif package_file.suffix in [".gz", ".bz2"] or ".tar" in package_file.name:
+                with tarfile.open(package_file, "r:*") as tar_ref:
+                    tar_ref.extractall(extract_dir)
+            else:
+                raise RuntimeError(f"Unsupported package format: {package_file}")
+
+            logger.info("Downloaded and extracted %s to %s", package_name, extract_dir)
+            return extract_dir
+
+        except subprocess.CalledProcessError as e:
+            raise RuntimeError(f"Failed to download {package_name}: {e.stderr}") from e
+        except Exception as e:
+            raise RuntimeError(f"Unexpected error downloading {package_name}: {str(e)}") from e
+
+
+    def _download_package_to_temp(
+        self, package_name: str, version_constraint: str | None, use_test: bool = False
+    ) -> Path:
+        """Download package to a temporary directory without installing it.
+
+        Args:
+            package_name: The PyPI package name to download.
+            version_constraint: Optional version constraint.
+            use_test: Whether to use test.pypi.org.
+
+        Returns:
+            Path to the downloaded package directory.
+
+        Raises:
+            RuntimeError: If download fails.
+        """
+
+        try:
+            # Create temporary directory
+            temp_dir = Path(tempfile.mkdtemp(prefix=f"cpex_plugin_{package_name}_"))
+
+            # Validate package name and constraint format
+            ppi = PluginPackageInfo(pypi_package=package_name, version_constraint=version_constraint)
+            tgt = ppi.pypi_package
+            if ppi.version_constraint is not None:
+                tgt = f"{tgt}{ppi.version_constraint}"
+
+            # Download package without installing
+            download_args = [
+                self.python_executable,
+                "-m",
+                "pip",
+                "download",
+                "--no-deps",  # Don't download dependencies
+                "--dest",
+                str(temp_dir),
+            ]
+
+            if use_test:
+                download_args.extend(["--index-url", "https://test.pypi.org/simple/"])
+
+            download_args.append(tgt)
+
+            subprocess.run(download_args, check=True, capture_output=True, text=True)
+
+            # Find the downloaded file
+            downloaded_files = list(temp_dir.glob("*"))
+            if not downloaded_files:
+                raise RuntimeError(f"No files downloaded for {package_name}")
+
+            package_file = downloaded_files[0]
+            extract_dir = temp_dir / "extracted"
+            extract_dir.mkdir()
+
+            # Extract the package
+            if package_file.suffix == ".whl" or package_file.name.endswith(".whl"):
+                with zipfile.ZipFile(package_file, "r") as zip_ref:
+                    zip_ref.extractall(extract_dir)
+            elif package_file.suffix in [".gz", ".bz2"] or ".tar" in package_file.name:
+                with tarfile.open(package_file, "r:*") as tar_ref:
+                    tar_ref.extractall(extract_dir)
+            else:
+                raise RuntimeError(f"Unsupported package format: {package_file}")
+
+            logger.info("Downloaded and extracted %s to %s", package_name, extract_dir)
+            return extract_dir
+
+        except subprocess.CalledProcessError as e:
+            raise RuntimeError(f"Failed to download {package_name}: {e.stderr}") from e
+        except Exception as e:
+            raise RuntimeError(f"Unexpected error downloading {package_name}: {str(e)}") from e
+
+    def _find_manifest_in_extracted_package(self, extract_dir: Path, package_name: str) -> Path:
+        """Find plugin-manifest.yaml in extracted package.
+
+        Args:
+            extract_dir: Directory where package was extracted.
+            package_name: Name of the package.
+
+        Returns:
+            Path to plugin-manifest.yaml.
+
+        Raises:
+            FileNotFoundError: If manifest not found.
+        """
+        # Search for plugin-manifest.yaml in the extracted directory
+        manifest_files = list(extract_dir.rglob("plugin-manifest.yaml"))
+
+        if not manifest_files:
+            raise FileNotFoundError(f"plugin-manifest.yaml not found in {package_name} package")
+
+        # Return the first manifest found
+        return manifest_files[0]
+
+    def _find_requirements_in_extracted_package(self, extract_dir: Path, package_name: str, requirements_file: str) -> Path:
+        """Find plugin-manifest.yaml in extracted package.
+
+        Args:
+            extract_dir: Directory where package was extracted.
+            package_name: Name of the package.
+
+        Returns:
+            Path to plugin-manifest.yaml.
+
+        Raises:
+            FileNotFoundError: If manifest not found.
+        """
+        # Search for plugin-manifest.yaml in the extracted directory
+        manifest_files = list(extract_dir.rglob(requirements_file))
+
+        if not manifest_files:
+            raise FileNotFoundError(f"requirements file {requirements_file} not found in {package_name} package")
+
+        # Return the first manifest found
+        return manifest_files[0]
+
+
+    def _initialize_isolated_venv(self, manifest: PluginManifest, package_path: Path) -> Path:
+        """Initialize isolated venv for a plugin without installing it into the CLI's venv.
+
+        This method creates and initializes the target venv for isolated_venv plugins,
+        allowing the plugin's requirements.txt to self-reference and auto-install the plugin.
+
+        Args:
+            manifest: The plugin manifest.
+            package_path: Path to the installed package directory.
+
+        Raises:
+            RuntimeError: If venv initialization fails.
+        """
+        try:
+            # Import here to avoid circular dependency
+            from cpex.framework.isolated.client import IsolatedVenvPlugin
+            from cpex.framework.models import PluginMode
+
+            logger.info("Initializing isolated venv for plugin: %s", manifest.name)
+
+            # Create a temporary PluginConfig from the manifest
+            plugin_config = manifest.create_instance_config(
+                instance_name=manifest.name,
+                mode=PluginMode.SEQUENTIAL,  # Mode doesn't matter for initialization
+                priority=100,
+            )
+
+            # Create an IsolatedVenvPlugin instance
+            isolated_plugin = IsolatedVenvPlugin(
+                config=plugin_config,
+                plugin_dirs=[str(self.plugin_folder)],
+            )
+            # TODO: sec - prevent path traversal on user supplied requirements file path.
+            source_path = self._find_requirements_in_extracted_package(package_path, manifest.name, manifest.default_config["requirements_file"])
+            shutil.copy(source_path, isolated_plugin.plugin_path / manifest.default_config["requirements_file"])
+            # Initialize the venv (this will create venv and install requirements)
+            import asyncio
+
+            asyncio.run(isolated_plugin.initialize())
+
+            logger.info("Successfully initialized isolated venv for %s", manifest.name)
+
+            return isolated_plugin.plugin_path
+
+        except Exception as e:
+            raise RuntimeError(f"Failed to initialize isolated venv for {manifest.name}: {str(e)}") from e
+
     def install_from_pypi(
         self, plugin_package_name: str, version_constraint: str | None = None, use_pytest: bool = False
     ) -> PluginManifest:
         """Install Python package from PyPI and load its plugin-manifest.yaml.
 
         This method performs the following steps:
-        1. Installs the package from PyPI
-        2. Locates the installed package directory
-        3. Loads and parses the plugin-manifest.yaml
-        4. Normalizes and validates the manifest data
-        5. Persists the manifest to the plugin catalog
+        1. Downloads package to check manifest (without installing for isolated_venv)
+        2. Loads and parses the plugin-manifest.yaml
+        3. Normalizes and validates the manifest data
+        4. For isolated_venv plugins: initializes the target venv (plugin auto-installs via requirements.txt)
+        5. For other plugins: installs normally into CLI's venv
+        6. Persists the manifest to the plugin catalog
 
         Args:
             plugin_package_name: The name of the package hosted on PyPI.
@@ -629,24 +872,41 @@ class PluginCatalog:
             RuntimeError: If any step of the installation process fails.
             FileNotFoundError: If plugin-manifest.yaml is not found in the package.
         """
-        # Step 1: Install the package
-        self._install_package(plugin_package_name, version_constraint, use_pytest)
 
-        # Step 2: Find the package location where plugin-manifest.yaml resides
-        package_path = find_package_path(plugin_package_name)
+        # Step 1: Download package to temporary location to read manifest
+        temp_extract_dir = self._download_package_to_temp(plugin_package_name, version_constraint, use_pytest)
 
-        # Step 3: Load the manifest file
-        manifest_path = package_path / "plugin-manifest.yaml"
-        manifest_data = self._load_manifest_file(manifest_path)
+        try:
+            # Step 2: Find and load the manifest file
+            manifest_path = self._find_manifest_in_extracted_package(temp_extract_dir, plugin_package_name)
+            manifest_data = self._load_manifest_file(manifest_path)
 
-        # Step 4: Normalize and validate the manifest
-        manifest = self._normalize_manifest_data(manifest_data, plugin_package_name, version_constraint)
+            # Step 3: Normalize and validate the manifest
+            manifest = self._normalize_manifest_data(manifest_data, plugin_package_name, version_constraint)
 
-        # Step 5: Persist to catalog
-        self._persist_manifest(manifest, plugin_package_name)
+            package_path = manifest_path.parent
 
-        logger.info("Successfully installed and cataloged %s", plugin_package_name)
-        return manifest
+            plugin_path = None
+            # Step 4: Handle based on plugin kind
+            if manifest.kind == "isolated_venv":
+                logger.info("Detected isolated_venv plugin: %s", manifest.name)
+                plugin_path = self._initialize_isolated_venv(manifest, package_path)
+                logger.info("Isolated venv initialized. Plugin auto-installed via requirements.txt")
+            else:
+                # For non-isolated plugins, install normally into CLI's venv
+                logger.info("Installing non-isolated plugin: %s", manifest.name)
+                self._install_package(plugin_package_name, version_constraint, use_pytest)
+
+            # Step 5: Persist to catalog
+            self._persist_manifest(manifest, plugin_package_name)
+
+            logger.info("Successfully installed and cataloged %s", plugin_package_name)
+            return manifest, plugin_path
+
+        finally:
+            # Clean up temporary directory
+            if temp_extract_dir.exists():
+                shutil.rmtree(temp_extract_dir.parent)
 
     def uninstall_package(self, package_name: str) -> bool:
         """Uninstall a Python package using pip.
