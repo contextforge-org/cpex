@@ -352,11 +352,11 @@ def install_from_manifest(manifest: PluginManifest, installation_type: str, cata
     # download the plugin to the plugins folder
     if installation_type == "monorepo":
         logger.info("installation type: %s", installation_type)
-        catalog.install_folder_via_pip(manifest)
+        plugin_path = catalog.install_folder_via_pip(manifest)
         plugin_registry: PluginRegistry = PluginRegistry()
         # add the newly downloaded plugin to the registry
         plugin_registry.update(
-            manifest=manifest, installation_type=installation_type, catalog=catalog, git_user_name=git_user_name()
+            manifest=manifest, installation_type=installation_type, catalog=catalog, git_user_name=git_user_name(), plugin_path=plugin_path
         )
         update_plugins_config_yaml(manifest)
 
@@ -434,7 +434,7 @@ def _parse_pypi_source(source: str) -> tuple[str, Optional[str]]:
     return package_name, version_constraint
 
 
-def _finalize_installation(manifest: PluginManifest, install_type: str, catalog: PluginCatalog):
+def _finalize_installation(manifest: PluginManifest, install_type: str, catalog: PluginCatalog, plugin_path: Path | None = None):
     """Common finalization steps for plugin installation.
 
     Args:
@@ -444,7 +444,7 @@ def _finalize_installation(manifest: PluginManifest, install_type: str, catalog:
     """
     plugin_registry = PluginRegistry()
     plugin_registry.update(
-        manifest=manifest, installation_type=install_type, catalog=catalog, git_user_name=git_user_name()
+        manifest=manifest, installation_type=install_type, catalog=catalog, git_user_name=git_user_name(), plugin_path=plugin_path
     )
     update_plugins_config_yaml(manifest=manifest)
 
@@ -512,7 +512,7 @@ def _install_from_pypi(source: str, catalog: PluginCatalog, use_test: bool = Fal
     package_name, version_constraint = _parse_pypi_source(source)
 
     with console.status(f"Installing plugin {package_name} via pypi", spinner="dots"):
-        manifest = catalog.install_from_pypi(
+        manifest, plugin_path = catalog.install_from_pypi(
             plugin_package_name=package_name, version_constraint=version_constraint, use_pytest=use_test
         )
 
@@ -520,7 +520,7 @@ def _install_from_pypi(source: str, catalog: PluginCatalog, use_test: bool = Fal
         console.print(f":x: Failed to install {package_name}")
         return
 
-    _finalize_installation(manifest, "pypi", catalog)
+    _finalize_installation(manifest, "pypi", catalog, plugin_path)
     console.print(f":white_heavy_check_mark: {package_name} installation complete.")
 
 
