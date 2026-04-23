@@ -38,7 +38,7 @@ class PluginRegistry:
             self.registry = InstalledPluginRegistry()
 
     def update(
-        self, manifest: PluginManifest, installation_type: str, catalog: PluginCatalog, git_user_name: str
+        self, manifest: PluginManifest, installation_type: str, catalog: PluginCatalog, git_user_name: str, plugin_path: Path | None = None
     ) -> None:
         """
         Given a plugin manifest, register it in the plugin registry.
@@ -64,7 +64,7 @@ class PluginRegistry:
         else:
             raise ValueError(f"Invalid installation type: {installation_type}")
 
-        installation_path = find_package_path(manifest.name)
+        installation_path =  plugin_path if plugin_path is not None else find_package_path(manifest.name)
 
         ipi: InstalledPluginInfo = InstalledPluginInfo(
             name=manifest.name,
