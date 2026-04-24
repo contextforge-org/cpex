@@ -1,0 +1,27 @@
+# Location: ./crates/cpex-core/Cargo.toml
+# Copyright 2025
+# SPDX-License-Identifier: Apache-2.0
+# Authors: Teryl Taylor
+#
+# CPEX Core — pure Rust plugin runtime with no FFI dependencies.
+# Contains the PluginManager, 5-phase executor, hook registry,
+# config parser, and all core types.
+
+[package]
+name = "cpex-core"
+description = "CPEX plugin runtime core — PluginManager, executor, hooks, and config."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_yaml = { workspace = true }
+serde_json = { workspace = true }
+async-trait = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }
+futures = { workspace = true }
