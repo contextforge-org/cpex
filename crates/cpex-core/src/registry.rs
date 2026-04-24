@@ -31,12 +31,10 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
-
 use std::sync::Arc;
-use uuid::Uuid;
 
 use crate::context::PluginContext;
-use crate::hooks::payload::{Extensions, PluginPayload};
+use crate::hooks::payload::{FilteredExtensions, PluginPayload};
 use crate::hooks::trait_def::HookTypeDef;
 use crate::hooks::HookType;
 use crate::plugin::{Plugin, PluginConfig, PluginMode};
@@ -70,10 +68,7 @@ pub struct PluginRef {
     trusted_config: PluginConfig,
 
     /// Unique identifier assigned by the registry.
-    /// Stored as `Uuid` (16 bytes, `Copy`) rather than a 36-char `String`
-    /// to avoid heap allocation per registered plugin and to give
-    /// downstream `HashMap<Uuid, _>` keys fixed-size hashing.
-    id: Uuid,
+    id: String,
 
     /// Runtime circuit breaker — set to true when `on_error: Disable`
     /// triggers. Once set, `mode()` returns `Disabled` and the plugin
@@ -89,10 +84,11 @@ impl PluginRef {
     /// NOT from `plugin.config()`. The plugin may hold its own copy
     /// for reading during execute(), but the manager never consults it.
     pub fn new(plugin: Arc<dyn Plugin>, trusted_config: PluginConfig) -> Self {
+        let id = uuid::Uuid::new_v4().to_string();
         Self {
             plugin,
             trusted_config,
-            id: Uuid::new_v4(),
+            id,
             disabled: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -108,9 +104,8 @@ impl PluginRef {
     }
 
     /// Unique identifier assigned at registration.
-    /// Returned by value — `Uuid` is `Copy` (16 bytes).
-    pub fn id(&self) -> Uuid {
-        self.id
+    pub fn id(&self) -> &str {
+        &self.id
     }
 
     /// Convenience: plugin name from the trusted config.
@@ -120,12 +115,8 @@ impl PluginRef {
 
     /// Effective mode — returns `Disabled` if the runtime circuit breaker
     /// has tripped, otherwise returns the configured mode.
-    ///
-    /// `Acquire` on the load pairs with `Release` on the disable() store
-    /// so weak-memory-ordering hardware (ARM64) propagates the disable
-    /// promptly across threads.
     pub fn mode(&self) -> PluginMode {
-        if self.disabled.load(Ordering::Acquire) {
+        if self.disabled.load(Ordering::Relaxed) {
             PluginMode::Disabled
         } else {
             self.trusted_config.mode
@@ -136,20 +127,14 @@ impl PluginRef {
     ///
     /// Called by the executor when a plugin errors with `on_error: Disable`.
     /// All clones of this PluginRef (in HookEntry, etc.) share the same
-    /// `AtomicBool`, so the disable is visible across the system.
-    ///
-    /// `Release` ordering establishes a happens-before with `Acquire`
-    /// loads in `is_disabled()` and `mode()` — required for correctness
-    /// on weak-memory hardware (ARM64) where `Relaxed` allows the new
-    /// value to remain unobserved by other threads for an unbounded window.
+    /// `AtomicBool`, so the disable is instantly visible across the system.
     pub fn disable(&self) {
-        self.disabled.store(true, Ordering::Release);
+        self.disabled.store(true, Ordering::Relaxed);
     }
 
     /// Whether this plugin has been runtime-disabled.
-    /// `Acquire` pairs with the `Release` in `disable()` (see `mode()`).
     pub fn is_disabled(&self) -> bool {
-        self.disabled.load(Ordering::Acquire)
+        self.disabled.load(Ordering::Relaxed)
     }
 
     /// Convenience: plugin priority from the trusted config.
@@ -188,9 +173,9 @@ pub trait AnyHookHandler: Send + Sync {
     async fn invoke(
         &self,
         payload: &dyn PluginPayload,
-        extensions: &Extensions,
+        extensions: &FilteredExtensions,
         ctx: &mut PluginContext,
-    ) -> Result<Box<dyn std::any::Any + Send + Sync>, Box<crate::error::PluginError>>;
+    ) -> Result<Box<dyn std::any::Any + Send + Sync>, crate::error::PluginError>;
 
     /// The hook type name this handler was registered for.
     fn hook_type_name(&self) -> &'static str;
@@ -204,15 +189,10 @@ pub trait AnyHookHandler: Send + Sync {
 ///
 /// The executor uses `plugin_ref` for scheduling decisions (mode,
 /// priority, capabilities) and `handler` for actual dispatch.
-///
-/// `plugin_ref` is `Arc<PluginRef>` so cloning a `HookEntry` is two
-/// reference-count bumps rather than a deep clone of the embedded
-/// `PluginConfig`. `group_by_mode` (called once per invoke) clones N
-/// entries — keeping that cheap matters at high request rates.
 #[derive(Clone)]
 pub struct HookEntry {
     /// The plugin wrapper with authoritative config.
-    pub plugin_ref: Arc<PluginRef>,
+    pub plugin_ref: PluginRef,
 
     /// The type-erased handler for this specific hook.
     pub handler: Arc<dyn AnyHookHandler>,
@@ -236,19 +216,9 @@ pub struct HookEntry {
 /// - `register_for_names::<H>()` — typed registration for multiple
 ///   hook names (the CMF pattern where one handler covers
 ///   `cmf.tool_pre_invoke`, `cmf.llm_input`, etc.).
-///
-/// `Clone` is cheap-ish: the HashMaps duplicate, but their values are all
-/// `Arc`-counted (`Arc<PluginRef>`, `Arc<dyn AnyHookHandler>`), so the
-/// inner data is shared. Used by `PluginManager`'s `ArcSwap` snapshot
-/// pattern, where every mutating method clones the registry, mutates the
-/// clone, and atomically swaps in a new snapshot.
-#[derive(Clone)]
 pub struct PluginRegistry {
-    /// Plugins keyed by name (for lookup and lifecycle). Wrapped in `Arc`
-    /// so the same instance is shared with every `HookEntry` in
-    /// `hook_index` — registering a plugin allocates one `PluginRef`,
-    /// not one per hook.
-    plugins: HashMap<String, Arc<PluginRef>>,
+    /// Plugins keyed by name (for lookup and lifecycle).
+    plugins: HashMap<String, PluginRef>,
 
     /// Hook name → list of HookEntries, sorted by priority.
     hook_index: HashMap<HookType, Vec<HookEntry>>,
@@ -308,65 +278,6 @@ impl PluginRegistry {
         self.register_for_names_inner(plugin, config, handler, names)
     }
 
-    /// Register a plugin with a handler for multiple hook names.
-    ///
-    /// Like `register_for_names` but without requiring a `HookTypeDef`
-    /// type parameter. Used by the config-driven factory path where
-    /// the hook type is not known at compile time — the factory
-    /// provides the handler directly.
-    pub fn register_for_names_with_handler(
-        &mut self,
-        plugin: Arc<dyn Plugin>,
-        config: PluginConfig,
-        handler: Arc<dyn AnyHookHandler>,
-        names: &[&str],
-    ) -> Result<(), String> {
-        self.register_for_names_inner(plugin, config, handler, names)
-    }
-
-    /// Register a plugin with multiple handlers, each for a specific hook.
-    ///
-    /// Used when a plugin implements multiple hook types with different
-    /// payloads (e.g., `ToolPreInvoke` and `ToolPostInvoke`). Each
-    /// handler is registered under its paired hook name.
-    ///
-    /// The plugin is registered once in the name index. Each handler
-    /// gets its own `HookEntry` in the hook index under the specified name.
-    pub fn register_multi_handler(
-        &mut self,
-        plugin: Arc<dyn Plugin>,
-        config: PluginConfig,
-        handlers: Vec<(&str, Arc<dyn AnyHookHandler>)>,
-    ) -> Result<(), String> {
-        let name = config.name.clone();
-
-        if self.plugins.contains_key(&name) {
-            return Err(format!("plugin '{}' is already registered", name));
-        }
-
-        let plugin_ref = Arc::new(PluginRef::new(plugin, config));
-
-        for (hook_name, handler) in &handlers {
-            let hook_type = HookType::new(*hook_name);
-            let entry = HookEntry {
-                plugin_ref: Arc::clone(&plugin_ref),
-                handler: Arc::clone(handler),
-            };
-            self.hook_index.entry(hook_type).or_default().push(entry);
-        }
-
-        // Sort each affected hook's entry list by trusted priority
-        for (hook_name, _) in &handlers {
-            let hook_type = HookType::new(*hook_name);
-            if let Some(entries) = self.hook_index.get_mut(&hook_type) {
-                entries.sort_by_key(|e| e.plugin_ref.priority());
-            }
-        }
-
-        self.plugins.insert(name, plugin_ref);
-        Ok(())
-    }
-
     /// Internal: register handler under one or more hook names.
     fn register_for_names_inner(
         &mut self,
@@ -381,13 +292,13 @@ impl PluginRegistry {
             return Err(format!("plugin '{}' is already registered", name));
         }
 
-        let plugin_ref = Arc::new(PluginRef::new(plugin, config));
+        let plugin_ref = PluginRef::new(plugin, config);
 
         // Add to hook index for each specified hook name
         for hook_name in names {
             let hook_type = HookType::new(*hook_name);
             let entry = HookEntry {
-                plugin_ref: Arc::clone(&plugin_ref),
+                plugin_ref: plugin_ref.clone(),
                 handler: Arc::clone(&handler),
             };
             self.hook_index.entry(hook_type).or_default().push(entry);
@@ -408,8 +319,8 @@ impl PluginRegistry {
     /// Unregister a plugin by name.
     ///
     /// Removes the PluginRef from the name index and all HookEntries
-    /// from the hook index. Returns the (Arc-wrapped) PluginRef if found.
-    pub fn unregister(&mut self, name: &str) -> Option<Arc<PluginRef>> {
+    /// from the hook index. Returns the PluginRef if found.
+    pub fn unregister(&mut self, name: &str) -> Option<PluginRef> {
         let plugin_ref = self.plugins.remove(name)?;
 
         // Remove from hook index
@@ -423,11 +334,9 @@ impl PluginRegistry {
         Some(plugin_ref)
     }
 
-    /// Look up a PluginRef by name. Returns an `Arc` clone so callers
-    /// don't hold borrows on internal storage — works with snapshot-based
-    /// dispatch where the registry may sit behind a transient guard.
-    pub fn get(&self, name: &str) -> Option<Arc<PluginRef>> {
-        self.plugins.get(name).map(Arc::clone)
+    /// Look up a PluginRef by name.
+    pub fn get(&self, name: &str) -> Option<&PluginRef> {
+        self.plugins.get(name)
     }
 
     /// Returns all HookEntries for a given hook name, sorted by priority.
@@ -453,29 +362,9 @@ impl PluginRegistry {
         self.plugins.len()
     }
 
-    /// All registered plugin names. Returns owned `String`s so callers
-    /// don't hold borrows on internal storage — works with snapshot-based
-    /// dispatch where the registry may sit behind a transient guard.
-    pub fn plugin_names(&self) -> Vec<String> {
-        self.plugins.keys().cloned().collect()
-    }
-
-    /// Returns every (hook_name, HookEntry) pair where the entry's plugin
-    /// matches the given name. Used by external orchestrators that need
-    /// to build pre-resolved dispatch lineups for a single plugin across
-    /// every hook it registered to (e.g. apl-cpex deciding which entry
-    /// handles step-style invocations vs field-style invocations for the
-    /// same plugin). Owned tuples — no borrows held on the registry.
-    pub fn entries_for_plugin(&self, plugin_name: &str) -> Vec<(String, HookEntry)> {
-        let mut out = Vec::new();
-        for (hook_type, entries) in &self.hook_index {
-            for entry in entries {
-                if entry.plugin_ref.name() == plugin_name {
-                    out.push((hook_type.as_str().to_string(), entry.clone()));
-                }
-            }
-        }
-        out
+    /// All registered plugin names.
+    pub fn plugin_names(&self) -> Vec<&str> {
+        self.plugins.keys().map(|s| s.as_str()).collect()
     }
 }
 
@@ -495,15 +384,15 @@ impl Default for PluginRegistry {
 /// Returns a tuple of five vectors in execution order:
 /// (sequential, transform, audit, concurrent, fire_and_forget).
 /// Disabled plugins are excluded.
-pub type GroupedHookEntries = (
+pub fn group_by_mode(
+    entries: &[HookEntry],
+) -> (
     Vec<HookEntry>,
     Vec<HookEntry>,
     Vec<HookEntry>,
     Vec<HookEntry>,
     Vec<HookEntry>,
-);
-
-pub fn group_by_mode(entries: &[HookEntry]) -> GroupedHookEntries {
+) {
     let mut sequential = Vec::new();
     let mut transform = Vec::new();
     let mut audit = Vec::new();
@@ -535,7 +424,6 @@ mod tests {
     // -- Test payload and hook type --
 
     #[derive(Debug, Clone)]
-    #[allow(dead_code)] // test fixture — typed shape is the point, not field reads
     struct TestPayload {
         value: String,
     }
@@ -551,9 +439,9 @@ mod tests {
         async fn invoke(
             &self,
             _payload: &dyn PluginPayload,
-            _extensions: &Extensions,
+            _extensions: &FilteredExtensions,
             _ctx: &mut PluginContext,
-        ) -> Result<Box<dyn std::any::Any + Send + Sync>, Box<PluginError>> {
+        ) -> Result<Box<dyn std::any::Any + Send + Sync>, PluginError> {
             let result: PluginResult<TestPayload> = PluginResult::allow();
             Ok(crate::executor::erase_result(result))
         }
@@ -598,10 +486,10 @@ mod tests {
         fn config(&self) -> &PluginConfig {
             &self.cfg
         }
-        async fn initialize(&self) -> Result<(), Box<PluginError>> {
+        async fn initialize(&self) -> Result<(), PluginError> {
             Ok(())
         }
-        async fn shutdown(&self) -> Result<(), Box<PluginError>> {
+        async fn shutdown(&self) -> Result<(), PluginError> {
             Ok(())
         }
     }
@@ -640,11 +528,7 @@ mod tests {
             plugin,
             config,
             handler,
-            &[
-                "cmf.tool_pre_invoke",
-                "cmf.tool_post_invoke",
-                "cmf.llm_input",
-            ],
+            &["cmf.tool_pre_invoke", "cmf.tool_post_invoke", "cmf.llm_input"],
         )
         .unwrap();
 
@@ -665,12 +549,8 @@ mod tests {
         let h1: Arc<dyn AnyHookHandler> = Arc::new(TestHandler);
         let h2: Arc<dyn AnyHookHandler> = Arc::new(TestHandler);
 
-        assert!(reg
-            .register_for_names_inner(p1, c1, h1, &["hook_a"])
-            .is_ok());
-        assert!(reg
-            .register_for_names_inner(p2, c2, h2, &["hook_a"])
-            .is_err());
+        assert!(reg.register_for_names_inner(p1, c1, h1, &["hook_a"]).is_ok());
+        assert!(reg.register_for_names_inner(p2, c2, h2, &["hook_a"]).is_err());
     }
 
     #[test]
@@ -683,10 +563,8 @@ mod tests {
         let h1: Arc<dyn AnyHookHandler> = Arc::new(TestHandler);
         let h2: Arc<dyn AnyHookHandler> = Arc::new(TestHandler);
 
-        reg.register_for_names_inner(p_low, c_low, h1, &["hook_a"])
-            .unwrap();
-        reg.register_for_names_inner(p_high, c_high, h2, &["hook_a"])
-            .unwrap();
+        reg.register_for_names_inner(p_low, c_low, h1, &["hook_a"]).unwrap();
+        reg.register_for_names_inner(p_high, c_high, h2, &["hook_a"]).unwrap();
 
         let entries = reg.entries_for_hook(&HookType::new("hook_a"));
         assert_eq!(entries[0].plugin_ref.name(), "high"); // priority 10 first
@@ -737,13 +615,10 @@ mod tests {
         let payload = TestPayload {
             value: "test".into(),
         };
-        let ext = Extensions::default();
+        let ext = FilteredExtensions::default();
         let mut ctx = PluginContext::new();
 
-        let result = handler
-            .invoke(&payload as &dyn PluginPayload, &ext, &mut ctx)
-            .await
-            .unwrap();
+        let result = handler.invoke(&payload as &dyn PluginPayload, &ext, &mut ctx).await.unwrap();
         let fields = crate::executor::extract_erased(result).unwrap();
         assert!(fields.continue_processing);
     }

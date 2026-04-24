@@ -21,13 +21,54 @@
 // modification without copying the payload.
 
 use std::any::Any;
+use std::collections::HashMap;
 use std::fmt;
 
-// Re-export Extensions and OwnedExtensions from the extensions module.
-// These are the typed containers for all extension data. They live in
-// extensions/container.rs but are re-exported here for backward
-// compatibility with existing code that imports from hooks::payload.
-pub use crate::extensions::{Extensions, Guarded, MetaExtension, OwnedExtensions, WriteToken};
+use serde::{Deserialize, Serialize};
+
+// ---------------------------------------------------------------------------
+// Extensions (stub — fleshed out in Phase 3 with full CMF types)
+// ---------------------------------------------------------------------------
+
+/// Typed container for all message extensions.
+///
+/// Each field corresponds to an extension with an explicit mutability
+/// tier enforced by the processing pipeline. Extensions are always
+/// passed separately from the payload to handlers.
+///
+/// This is a Phase 1 stub with minimal fields. Phase 3 adds the
+/// full CMF extension types (SecurityExtension with MonotonicSet,
+/// DelegationExtension with scope-narrowing chain, HttpExtension
+/// with Guarded<T>, MetaExtension, etc.).
+///
+/// Mirrors Python's `cpex.framework.extensions.Extensions`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Extensions {
+    /// Security labels (monotonic — add-only in the full implementation).
+    #[serde(default)]
+    pub labels: std::collections::HashSet<String>,
+
+    /// Custom extensions (mutable — no restrictions).
+    #[serde(default)]
+    pub custom: HashMap<String, serde_json::Value>,
+}
+
+/// Capability-filtered view of Extensions for a specific plugin.
+///
+/// Built by the framework before dispatching to each plugin. Fields
+/// the plugin hasn't declared capabilities for are `None`. Plugins
+/// receive this as a separate parameter — never inside the payload.
+///
+/// Phase 1 stub — Phase 3 adds per-field capability gating matching
+/// the Python `filter_extensions()` implementation.
+#[derive(Debug, Clone, Default)]
+pub struct FilteredExtensions {
+    /// Security labels (visible with `read_labels` capability).
+    pub labels: Option<std::collections::HashSet<String>>,
+
+    /// Custom extensions (always visible).
+    pub custom: Option<HashMap<String, serde_json::Value>>,
+}
 
 // ---------------------------------------------------------------------------
 // PluginPayload Trait
@@ -54,7 +95,7 @@ pub use crate::extensions::{Extensions, Guarded, MetaExtension, OwnedExtensions,
 /// - `'static` — payloads must be owned types (no borrowed references).
 ///
 /// Extensions are **not** part of the payload. They are passed as a
-/// separate `&Extensions` parameter to handlers.
+/// separate `&FilteredExtensions` parameter to handlers.
 ///
 /// # Examples
 ///

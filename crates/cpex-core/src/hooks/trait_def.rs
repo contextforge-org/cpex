@@ -21,7 +21,7 @@
 
 use crate::context::PluginContext;
 use crate::error::PluginViolation;
-use crate::hooks::payload::{Extensions, PluginPayload};
+use crate::hooks::payload::{Extensions, FilteredExtensions, PluginPayload};
 use crate::plugin::Plugin;
 
 // ---------------------------------------------------------------------------
@@ -78,70 +78,28 @@ pub trait HookTypeDef: Send + Sync + 'static {
 /// Plugin authors implement this trait (alongside [`Plugin`]) to handle
 /// a specific hook. The type parameter `H` ties the handler to a
 /// `HookTypeDef`, ensuring the correct payload and result types at
-/// compile time. The framework creates a type-erased adapter internally
-/// when you register — you never touch `AnyHookHandler` directly.
+/// compile time.
 ///
-/// # Async by design
-///
-/// `handle` is an `async fn`. Plugins that don't need to `.await`
-/// anything still write `async fn handle(...)` and return synchronously
-/// — the compiler emits a trivially-ready future and LLVM inlines it
-/// at the adapter site, so there's no observable runtime cost over a
-/// plain function. Plugins that *do* need to `.await` (fresh JWKS
-/// fetch, RPC to an authz service, dynamic policy lookup) just use
-/// `.await` inside the body.
-///
-/// **Best practice:** even when async is available, prefer pre-loading
-/// state in [`Plugin::initialize`] and reading from cache in `handle`.
-/// Hot-path I/O is the most common source of latency regressions.
-///
-/// # Native AFIT, not `#[async_trait]`
-///
-/// The trait uses native `async fn` (return-position `impl Future`)
-/// rather than `#[async_trait]`. This avoids a per-call heap
-/// allocation: the returned future is monomorphized into the
-/// [`TypedHandlerAdapter`] rather than boxed. The trait is therefore
-/// **not object-safe** — you cannot have `Box<dyn HookHandler<H>>`.
-/// We don't need that; type erasure happens one layer up at
-/// [`AnyHookHandler`].
+/// The framework creates a type-erased adapter internally when you
+/// register — you never touch `AnyHookHandler` directly.
 ///
 /// # Examples
 ///
 /// ```rust,ignore
-/// // Synchronous plugin — no .await, no extra cost
-/// impl HookHandler<CmfHook> for AllowPlugin {
-///     async fn handle(
+/// impl HookHandler<CmfHook> for MyPlugin {
+///     fn handle(
 ///         &self,
-///         _payload: &MessagePayload,
-///         _extensions: &Extensions,
-///         _ctx: &mut PluginContext,
+///         payload: MessagePayload,
+///         extensions: &FilteredExtensions,
+///         ctx: &PluginContext,
 ///     ) -> PluginResult<MessagePayload> {
 ///         PluginResult::allow()
 ///     }
 /// }
 ///
-/// // Async plugin — calls .await inside the body
-/// impl HookHandler<MyHook> for AuthzPlugin {
-///     async fn handle(
-///         &self,
-///         payload: &MyPayload,
-///         _extensions: &Extensions,
-///         _ctx: &mut PluginContext,
-///     ) -> PluginResult<MyPayload> {
-///         match self.client.check(&payload.user).await {
-///             Ok(true) => PluginResult::allow(),
-///             _ => PluginResult::deny(/* ... */),
-///         }
-///     }
-/// }
-///
-/// // Registration is the same for both:
-/// manager.register_handler::<MyHook, _>(plugin, config)?;
+/// // Registration — no AnyHookHandler needed:
+/// manager.register_handler::<CmfHook, _>(plugin, config)?;
 /// ```
-///
-/// [`PluginManager::register_handler`]: crate::manager::PluginManager::register_handler
-/// [`AnyHookHandler`]: crate::registry::AnyHookHandler
-/// [`TypedHandlerAdapter`]: crate::hooks::adapter::TypedHandlerAdapter
 pub trait HookHandler<H: HookTypeDef>: Plugin + Send + Sync {
     /// Handle the hook invocation.
     ///
@@ -154,18 +112,12 @@ pub trait HookHandler<H: HookTypeDef>: Plugin + Send + Sync {
     /// the modified copy in `PluginResult::modify_payload()`. This
     /// pushes the clone cost to the plugin that actually needs it —
     /// read-only plugins (validators, auditors) never pay for a copy.
-    ///
-    /// Returns a `Send`-able future so the executor can drive it from
-    /// any worker thread (including the concurrent-phase `JoinSet`).
-    /// `H::Result` is already `Send + Sync` per the `HookTypeDef`
-    /// bound, so the `Send` constraint comes for free for typical
-    /// handlers.
     fn handle(
         &self,
         payload: &H::Payload,
-        extensions: &Extensions,
+        extensions: &FilteredExtensions,
         ctx: &mut PluginContext,
-    ) -> impl std::future::Future<Output = H::Result> + Send;
+    ) -> H::Result;
 }
 
 // ---------------------------------------------------------------------------
@@ -211,7 +163,7 @@ pub trait HookHandler<H: HookTypeDef>: Plugin + Send + Sync {
 /// assert!(!result.continue_processing);
 /// assert!(result.violation.is_some());
 /// ```
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct PluginResult<P: PluginPayload> {
     /// Whether the pipeline should continue processing.
     /// `false` halts the pipeline (deny). Only respected for
@@ -223,10 +175,10 @@ pub struct PluginResult<P: PluginPayload> {
     pub modified_payload: Option<P>,
 
     /// Modified extensions. `None` means no extension changes.
-    /// Return an `OwnedExtensions` from `extensions.cow_copy()`.
-    /// The executor validates (immutable unchanged, monotonic superset)
-    /// and merges back into the pipeline's `Extensions`.
-    pub modified_extensions: Option<crate::hooks::payload::OwnedExtensions>,
+    /// Merged back by the framework using tier validation
+    /// (immutable rejected, monotonic superset-checked, etc.).
+    /// Only accepted from Sequential and Transform mode plugins.
+    pub modified_extensions: Option<Extensions>,
 
     /// Policy violation. Present when `continue_processing` is `false`.
     pub violation: Option<PluginViolation>,
@@ -274,8 +226,7 @@ impl<P: PluginPayload> PluginResult<P> {
     }
 
     /// Modify extensions only — payload unchanged.
-    /// Takes an `OwnedExtensions` from `extensions.cow_copy()`.
-    pub fn modify_extensions(extensions: crate::hooks::payload::OwnedExtensions) -> Self {
+    pub fn modify_extensions(extensions: Extensions) -> Self {
         Self {
             continue_processing: true,
             modified_payload: None,
@@ -287,8 +238,7 @@ impl<P: PluginPayload> PluginResult<P> {
     }
 
     /// Modify both payload and extensions.
-    /// Takes an `OwnedExtensions` from `extensions.cow_copy()`.
-    pub fn modify(payload: P, extensions: crate::hooks::payload::OwnedExtensions) -> Self {
+    pub fn modify(payload: P, extensions: Extensions) -> Self {
         Self {
             continue_processing: true,
             modified_payload: Some(payload),

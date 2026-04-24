@@ -17,7 +17,6 @@ authors.workspace = true
 
 [dependencies]
 tokio = { workspace = true }
-tokio-util = { workspace = true }
 serde = { workspace = true }
 serde_yaml = { workspace = true }
 serde_json = { workspace = true }
@@ -26,15 +25,3 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true }
 futures = { workspace = true }
-hashbrown = { workspace = true }
-arc-swap = { workspace = true }
-wildmatch = { workspace = true }
-chrono = { workspace = true }
-# Zeroizing wrapper for raw credential material in RawCredentialsExtension.
-# `derive` feature pulls the proc-macro so we can `#[derive(Zeroize)]` on
-# token-bearing structs in a future slice; for now only the
-# `Zeroizing<String>` wrapper is used directly.
-zeroize = { version = "1.8", features = ["zeroize_derive"] }
-# Shared concurrency primitive used by `executor::run_concurrent_phase`
-# (and apl-core's `Effect::Parallel`). Leaf crate, no cycles back here.
-cpex-orchestration = { path = "../cpex-orchestration" }

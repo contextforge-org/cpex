@@ -25,17 +25,15 @@
 // cpex/framework/manager.py.
 
 use std::any::Any;
-use std::fmt;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::time::timeout;
 use tracing::{error, warn};
 
-use crate::context::PluginContextTable;
-use crate::error::PluginError;
-use crate::extensions::filter_extensions;
-use crate::hooks::payload::{Extensions, PluginPayload, WriteToken};
+use crate::context::{PluginContext, PluginContextTable};
+use crate::hooks::payload::{Extensions, FilteredExtensions, PluginPayload};
 use crate::plugin::OnError;
 use crate::registry::{group_by_mode, HookEntry};
 
@@ -69,43 +67,23 @@ impl Default for ExecutorConfig {
 /// Aggregate result from a full hook invocation across all phases.
 ///
 /// Wraps the final payload, extensions, any violation, and the
-/// context table. Immutable by design — policy decisions cannot be
-/// tampered with after the executor returns them.
-///
-/// The caller should pass `context_table` into the next hook
-/// invocation to preserve per-plugin local state across hooks in
-/// the same request lifecycle.
-///
-/// Background tasks are returned separately as [`BackgroundTasks`]
-/// to keep the policy result immutable.
+/// context table. The caller should pass `context_table` into the
+/// next hook invocation to preserve per-plugin local state across
+/// hooks in the same request lifecycle.
 #[derive(Debug)]
 pub struct PipelineResult {
-    /// Whether the pipeline should continue processing.
-    /// `false` means a plugin denied — the pipeline was halted.
-    pub continue_processing: bool,
+    /// Whether the pipeline completed without a deny.
+    pub allowed: bool,
 
     /// The final payload after all modifications (type-erased).
     /// `None` if the pipeline was denied before any modifications.
-    pub modified_payload: Option<Box<dyn PluginPayload>>,
+    pub payload: Option<Box<dyn PluginPayload>>,
 
     /// The final extensions after all modifications.
-    /// `None` if no plugin modified extensions.
-    pub modified_extensions: Option<Extensions>,
+    pub extensions: Extensions,
 
     /// The violation that caused a deny, if any.
     pub violation: Option<crate::error::PluginViolation>,
-
-    /// Errors from plugins that ran with `on_error: ignore` or
-    /// `on_error: disable`. These plugins didn't halt the pipeline
-    /// (their on_error policy said to continue), but the caller
-    /// should still know the errors happened so it can log them in
-    /// a structured way, retry the affected plugin, or alert.
-    /// Empty when no plugin errored on a non-halt path.
-    /// Fire-and-forget errors live in `BackgroundTasks` instead.
-    pub errors: Vec<crate::error::PluginErrorRecord>,
-
-    /// Optional metadata aggregated from plugins (telemetry, diagnostics).
-    pub metadata: Option<serde_json::Value>,
 
     /// Plugin contexts indexed by plugin ID. Thread this into the
     /// next hook invocation to preserve per-plugin `local_state`.
@@ -120,12 +98,10 @@ impl PipelineResult {
         context_table: PluginContextTable,
     ) -> Self {
         Self {
-            continue_processing: true,
-            modified_payload: Some(payload),
-            modified_extensions: Some(extensions),
+            allowed: true,
+            payload: Some(payload),
+            extensions,
             violation: None,
-            errors: Vec::new(),
-            metadata: None,
             context_table,
         }
     }
@@ -137,99 +113,12 @@ impl PipelineResult {
         context_table: PluginContextTable,
     ) -> Self {
         Self {
-            continue_processing: false,
-            modified_payload: None,
-            modified_extensions: Some(extensions),
+            allowed: false,
+            payload: None,
+            extensions,
             violation: Some(violation),
-            errors: Vec::new(),
-            metadata: None,
             context_table,
         }
-    }
-
-    /// Replace the errors vec on a constructed PipelineResult. Used by
-    /// the executor to attach errors collected from `on_error: ignore`
-    /// / `on_error: disable` plugins.
-    pub fn with_errors(mut self, errors: Vec<crate::error::PluginErrorRecord>) -> Self {
-        self.errors = errors;
-        self
-    }
-
-    /// Whether this result represents a denial.
-    pub fn is_denied(&self) -> bool {
-        !self.continue_processing
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Background Tasks
-// ---------------------------------------------------------------------------
-
-/// Handles to fire-and-forget background tasks spawned by the executor.
-///
-/// Returned separately from [`PipelineResult`] so that the policy
-/// result stays immutable. If not awaited, tasks complete on their
-/// own in the background. Call `wait_for_background_tasks()` when you
-/// need to ensure tasks have finished (tests, graceful shutdown,
-/// audit flush).
-pub struct BackgroundTasks {
-    tasks: Vec<(String, tokio::task::JoinHandle<()>)>,
-}
-
-impl BackgroundTasks {
-    /// Create an empty set of background tasks.
-    pub fn empty() -> Self {
-        Self { tasks: Vec::new() }
-    }
-
-    /// Create from a list of (plugin_name, handle) pairs.
-    fn from_handles(tasks: Vec<(String, tokio::task::JoinHandle<()>)>) -> Self {
-        Self { tasks }
-    }
-
-    /// Whether there are any background tasks.
-    pub fn is_empty(&self) -> bool {
-        self.tasks.is_empty()
-    }
-
-    /// Number of background tasks.
-    pub fn len(&self) -> usize {
-        self.tasks.len()
-    }
-
-    /// Wait for all fire-and-forget background tasks to complete.
-    ///
-    /// Returns a list of errors from any tasks that panicked.
-    /// An empty list means all tasks completed successfully.
-    ///
-    /// Consumes `self` — each task handle can only be awaited once.
-    ///
-    /// If not called, background tasks still complete on their own.
-    /// Use this for tests, graceful shutdown, or when you need to
-    /// ensure audit/logging tasks have flushed before proceeding.
-    pub async fn wait_for_background_tasks(self) -> Vec<crate::error::PluginError> {
-        let mut errors = Vec::new();
-        for (plugin_name, handle) in self.tasks {
-            if let Err(e) = handle.await {
-                errors.push(crate::error::PluginError::Execution {
-                    plugin_name,
-                    message: format!("background task panicked: {}", e),
-                    source: None,
-                    code: None,
-                    details: std::collections::HashMap::new(),
-                    proto_error_code: None,
-                });
-            }
-        }
-        errors
-    }
-}
-
-impl fmt::Debug for BackgroundTasks {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("BackgroundTasks")
-            .field("count", &self.tasks.len())
-            .finish()
     }
 }
 
@@ -247,7 +136,6 @@ impl fmt::Debug for BackgroundTasks {
 ///
 /// The executor is stateless — all state comes from the arguments.
 /// One executor instance can serve multiple concurrent hook invocations.
-#[derive(Clone)]
 pub struct Executor {
     config: ExecutorConfig,
 }
@@ -270,40 +158,27 @@ impl Executor {
     ///
     /// # Returns
     ///
-    /// A tuple of:
-    /// - `PipelineResult` — immutable policy result with payload,
-    ///   extensions, violation, and context table.
-    /// - `BackgroundTasks` — handles to fire-and-forget tasks. Call
-    ///   `wait_for_background_tasks()` to await them, or drop to let
-    ///   them complete in the background.
+    /// A `PipelineResult` with the final payload, extensions, violation,
+    /// and the updated context table for threading into the next hook.
     pub async fn execute(
         &self,
         entries: &[HookEntry],
         payload: Box<dyn PluginPayload>,
         extensions: Extensions,
         context_table: Option<PluginContextTable>,
-        task_tracker: &tokio_util::task::TaskTracker,
-    ) -> (PipelineResult, BackgroundTasks) {
+    ) -> PipelineResult {
         let mut ctx_table = context_table.unwrap_or_default();
 
         if entries.is_empty() {
-            return (
-                PipelineResult::allowed_with(payload, extensions, ctx_table),
-                BackgroundTasks::empty(),
-            );
+            return PipelineResult::allowed_with(payload, extensions, ctx_table);
         }
 
         // Group entries by mode (from trusted_config)
-        let (sequential, transform, audit, concurrent, fire_and_forget) = group_by_mode(entries);
+        let (sequential, transform, audit, concurrent, fire_and_forget) =
+            group_by_mode(entries);
 
         let mut current_payload = payload;
         let mut current_extensions = extensions;
-        // Accumulator for errors from `on_error: ignore` / `on_error:
-        // disable` plugins across all phases. Surfaced to the caller
-        // via `PipelineResult.errors` so swallowed failures stay
-        // observable. Halt-condition errors (Fail, deny) skip this and
-        // become the violation directly.
-        let mut errors: Vec<crate::error::PluginErrorRecord> = Vec::new();
 
         // Phase 1: SEQUENTIAL — serial, chained, can block + modify
         if let Some(v) = self
@@ -312,17 +187,13 @@ impl Executor {
                 &mut current_payload,
                 &mut current_extensions,
                 &mut ctx_table,
-                true, // can_block
-                true, // can_modify
+                true,  // can_block
+                true,  // can_modify
                 "SEQUENTIAL",
-                &mut errors,
             )
             .await
         {
-            return (
-                PipelineResult::denied(v, current_extensions, ctx_table).with_errors(errors),
-                BackgroundTasks::empty(),
-            );
+            return PipelineResult::denied(v, current_extensions, ctx_table);
         }
 
         // Phase 2: TRANSFORM — serial, chained, can modify, cannot block
@@ -335,55 +206,29 @@ impl Executor {
             false, // can_block
             true,  // can_modify
             "TRANSFORM",
-            &mut errors,
         )
         .await;
 
         // Phase 3: AUDIT — serial, read-only, discard results
-        self.run_ref_phase(
-            &audit,
-            &*current_payload,
-            &current_extensions,
-            &ctx_table,
-            "AUDIT",
-            &mut errors,
-        )
-        .await;
+        self.run_ref_phase(&audit, &*current_payload, &current_extensions, &ctx_table, "AUDIT")
+            .await;
 
         // Phase 4: CONCURRENT — parallel, can block, cannot modify
         if let Some(violation) = self
-            .run_concurrent_phase(
-                &concurrent,
-                &*current_payload,
-                &current_extensions,
-                &ctx_table,
-                &mut errors,
-            )
+            .run_concurrent_phase(&concurrent, &*current_payload, &current_extensions, &ctx_table)
             .await
         {
-            return (
-                PipelineResult::denied(violation, current_extensions, ctx_table)
-                    .with_errors(errors),
-                BackgroundTasks::empty(),
-            );
+            return PipelineResult::denied(violation, current_extensions, ctx_table);
         }
 
-        // Phase 5: FIRE_AND_FORGET — background, read-only, ignore results.
-        // FAF errors don't go in PipelineResult.errors — they're delivered
-        // via BackgroundTasks::wait_for_background_tasks() instead.
-        let bg_handles = self.spawn_fire_and_forget(
+        // Phase 5: FIRE_AND_FORGET — background, read-only, ignore results
+        self.spawn_fire_and_forget(
             &fire_and_forget,
             &*current_payload,
-            &current_extensions,
             &ctx_table,
-            task_tracker,
         );
 
-        (
-            PipelineResult::allowed_with(current_payload, current_extensions, ctx_table)
-                .with_errors(errors),
-            BackgroundTasks::from_handles(bg_handles),
-        )
+        PipelineResult::allowed_with(current_payload, current_extensions, ctx_table)
     }
 
     // -----------------------------------------------------------------------
@@ -400,7 +245,6 @@ impl Executor {
     /// Each plugin's context is looked up in the context table (preserving
     /// `local_state` from previous hooks) or created fresh. After execution,
     /// `global_state` changes are merged back so the next plugin sees them.
-    #[allow(clippy::too_many_arguments)] // internal phase helper — args have distinct types and meaning
     async fn run_serial_phase(
         &self,
         entries: &[HookEntry],
@@ -410,53 +254,33 @@ impl Executor {
         can_block: bool,
         can_modify: bool,
         phase_label: &str,
-        errors: &mut Vec<crate::error::PluginErrorRecord>,
     ) -> Option<crate::error::PluginViolation> {
+        // Extract current global state from the table (use last plugin's
+        // global_state, or start empty). We maintain a running copy that
+        // gets set on each plugin's context and merged back after.
+        let mut global_state = ctx_table
+            .values()
+            .last()
+            .map(|c| c.global_state.clone())
+            .unwrap_or_default();
+
         for entry in entries {
-            // Borrow names/ids on the happy path — allocate only when
-            // building a violation or stashing the local_state back into
-            // the table. Previously `name.to_string()` + `id.to_string()`
-            // ran unconditionally on every plugin per invoke.
-            let plugin_name = entry.plugin_ref.name();
-            let plugin_id = entry.plugin_ref.id();
+            let plugin_name = entry.plugin_ref.name().to_string();
+            let plugin_id = entry.plugin_ref.id().to_string();
             let on_error = entry.plugin_ref.trusted_config().on_error;
 
-            // Take this plugin's context out of the table — pulls its stored
-            // local_state and seeds global_state from the canonical store.
-            // Replaces the previous values().last() seed, which was
-            // non-deterministic across HashMap iteration orders.
-            let mut ctx = ctx_table.take_context(plugin_id);
+            // Look up existing context (preserves local_state from prior hooks)
+            // or create a fresh one. Set global_state to the current running copy.
+            let mut ctx = ctx_table.remove(&plugin_id).unwrap_or_default();
+            ctx.global_state = global_state.clone();
 
-            // Filter extensions per plugin based on declared capabilities.
-            // Produces a filtered view with None for ungated slots.
-            // Also sets write tokens for plugins with write capabilities.
-            let capabilities: std::collections::HashSet<String> = entry
-                .plugin_ref
-                .trusted_config()
-                .capabilities
-                .iter()
-                .cloned()
-                .collect();
-            let mut filtered = filter_extensions(extensions, &capabilities);
+            // TODO: Capability-filter extensions per plugin (Phase 3)
+            let filtered = FilteredExtensions::default();
 
-            // Set write tokens based on capabilities
-            if capabilities.contains("write_headers") {
-                filtered.http_write_token = Some(WriteToken::new());
-            }
-            if capabilities.contains("append_labels") {
-                filtered.labels_write_token = Some(WriteToken::new());
-            }
-            if capabilities.contains("append_delegation") {
-                filtered.delegation_write_token = Some(WriteToken::new());
-            }
-
-            // Execute with timeout — handler borrows payload, gets filtered extensions
+            // Execute with timeout — handler borrows the payload
             let timeout_dur = Duration::from_secs(self.config.timeout_seconds);
-            let result = timeout(
-                timeout_dur,
-                entry.handler.invoke(&**payload, &filtered, &mut ctx),
-            )
-            .await;
+            let result = timeout(timeout_dur, entry.handler.invoke(&**payload, &filtered, &mut ctx))
+                .await;
 
             match result {
                 Ok(Ok(result_box)) => {
@@ -464,7 +288,7 @@ impl Executor {
                         // Check deny
                         if !erased.continue_processing && can_block {
                             if let Some(mut v) = erased.violation {
-                                v.plugin_name = Some(plugin_name.to_string());
+                                v.plugin_name = Some(plugin_name.clone());
                                 return Some(v);
                             }
                         }
@@ -474,126 +298,66 @@ impl Executor {
                             if let Some(mp) = erased.modified_payload {
                                 *payload = mp;
                             }
-                            if let Some(owned) = erased.modified_extensions {
-                                // Validate tier constraints before accepting
-                                let valid = extensions.validate_immutable(&owned);
-                                if !valid {
-                                    warn!(
-                                        "{} plugin '{}' violated immutable tier — \
-                                         modified an immutable extension slot. \
-                                         Extension changes rejected.",
-                                        phase_label, plugin_name
-                                    );
-                                } else if capabilities.contains("read_labels") {
-                                    // Only enforce monotonic labels if the plugin
-                                    // could see them. A plugin without read_labels
-                                    // has empty labels in its filtered view — that's
-                                    // not a removal.
-                                    if let (Some(ref orig_sec), Some(ref new_sec)) =
-                                        (&extensions.security, &owned.security)
-                                    {
-                                        if !new_sec.labels.is_superset(&orig_sec.labels) {
-                                            warn!(
-                                                "{} plugin '{}' violated monotonic tier — \
-                                                 removed a security label. \
-                                                 Extension changes rejected.",
-                                                phase_label, plugin_name
-                                            );
-                                        } else {
-                                            extensions.merge_owned(owned);
-                                        }
-                                    } else {
-                                        extensions.merge_owned(owned);
-                                    }
-                                } else {
-                                    extensions.merge_owned(owned);
-                                }
+                            if let Some(me) = erased.modified_extensions {
+                                // TODO: Merge with tier validation (Phase 3)
+                                *extensions = me;
                             }
                         }
 
-                        // Plugin writes to ctx.global_state are committed back
-                        // to the canonical store via store_context() below.
+                        // Merge global state changes back from the handler.
+                        // The handler received &mut PluginContext and may have
+                        // written to ctx.global_state directly.
+                        if ctx.global_state != global_state {
+                            global_state = ctx.global_state.clone();
+                        }
                     }
                     // If extract failed or no modifications — payload unchanged
                 }
                 Ok(Err(e)) => {
                     error!("{} plugin '{}' failed: {}", phase_label, plugin_name, e);
                     match on_error {
-                        OnError::Fail if can_block => {
+                        OnError::Fail => {
                             let mut v = crate::error::PluginViolation::new(
                                 "plugin_error",
                                 format!("Plugin '{}' failed: {}", plugin_name, e),
                             );
-                            v.plugin_name = Some(plugin_name.to_string());
+                            v.plugin_name = Some(plugin_name);
                             return Some(v);
                         }
-                        // Any non-halt outcome (Fail-in-non-blocking-phase,
-                        // Ignore, Disable): record the error so the caller
-                        // sees it in PipelineResult.errors instead of
-                        // having to read the warn-log.
-                        OnError::Fail => {
-                            warn!(
-                                "{} plugin '{}' on_error=fail in non-blocking phase — not halting",
-                                phase_label, plugin_name,
-                            );
-                            errors.push((&e).into());
-                        }
-                        OnError::Ignore => {
-                            errors.push((&e).into());
-                        }
+                        OnError::Ignore => {}
                         OnError::Disable => {
-                            warn!(
-                                "{} plugin '{}' disabled after error",
-                                phase_label, plugin_name
-                            );
-                            errors.push((&e).into());
+                            warn!("{} plugin '{}' disabled after error", phase_label, plugin_name);
                             entry.plugin_ref.disable();
                         }
                     }
                 }
                 Err(_) => {
                     error!("{} plugin '{}' timed out", phase_label, plugin_name);
-                    let timeout_err = crate::error::PluginError::Timeout {
-                        plugin_name: plugin_name.to_string(),
-                        timeout_ms: timeout_dur.as_millis() as u64,
-                        proto_error_code: None,
-                    };
                     match on_error {
-                        OnError::Fail if can_block => {
+                        OnError::Fail => {
                             let mut v = crate::error::PluginViolation::new(
                                 "plugin_timeout",
                                 format!("Plugin '{}' timed out", plugin_name),
                             );
-                            v.plugin_name = Some(plugin_name.to_string());
+                            v.plugin_name = Some(plugin_name);
                             return Some(v);
                         }
-                        OnError::Fail => {
-                            warn!(
-                                "{} plugin '{}' on_error=fail (timeout) in non-blocking phase — not halting",
-                                phase_label, plugin_name,
-                            );
-                            errors.push((&timeout_err).into());
-                        }
-                        OnError::Ignore => {
-                            errors.push((&timeout_err).into());
-                        }
+                        OnError::Ignore => {}
                         OnError::Disable => {
-                            warn!(
-                                "{} plugin '{}' disabled after timeout",
-                                phase_label, plugin_name
-                            );
-                            errors.push((&timeout_err).into());
+                            warn!("{} plugin '{}' disabled after error", phase_label, plugin_name);
                             entry.plugin_ref.disable();
                         }
                     }
                 }
             }
 
-            // Commit this plugin's context back to the table — replaces the
-            // canonical global_state with its (possibly modified) copy and
-            // stores the local_state for the next hook invocation. The
-            // global_state move is free; only the local_state insert allocates.
-            ctx_table.store_context(plugin_id, ctx);
+            // Store context back into the table (preserves local_state
+            // for the next hook invocation via the returned context_table).
+            // Note: global_state merging from plugin writes is deferred —
+            // handlers currently receive &PluginContext (shared ref) so
+            // they can't mutate global_state directly. When we add write-back
+            // (via PluginResult or interior mutability), merge here.
+            ctx_table.insert(plugin_id, ctx);
         }
 
         None // no denial
@@ -608,75 +372,38 @@ impl Executor {
         &self,
         entries: &[HookEntry],
         payload: &dyn PluginPayload,
-        extensions: &Extensions,
+        _extensions: &Extensions,
         ctx_table: &PluginContextTable,
         phase_label: &str,
-        errors: &mut Vec<crate::error::PluginErrorRecord>,
     ) {
+        // Read-only phases get a snapshot of global state but don't merge back.
+        let global_state: HashMap<String, serde_json::Value> = ctx_table
+            .values()
+            .last()
+            .map(|c| c.global_state.clone())
+            .unwrap_or_default();
+
         for entry in entries {
             let plugin_name = entry.plugin_ref.name().to_string();
             let plugin_id = entry.plugin_ref.id();
-            let on_error = entry.plugin_ref.trusted_config().on_error;
-            // Read-only phase — snapshot the plugin's local_state and the
-            // canonical global_state, no merge-back.
-            let mut ctx = ctx_table.snapshot_context(plugin_id);
-            // Filter extensions per plugin — read-only, no write tokens.
-            let capabilities: std::collections::HashSet<String> = entry
-                .plugin_ref
-                .trusted_config()
-                .capabilities
-                .iter()
+            let mut ctx = ctx_table
+                .get(plugin_id)
                 .cloned()
-                .collect();
-            let filtered = filter_extensions(extensions, &capabilities);
+                .map(|mut c| { c.global_state = global_state.clone(); c })
+                .unwrap_or_else(|| PluginContext::with_global_state(global_state.clone()));
+            let filtered = FilteredExtensions::default();
             let timeout_dur = Duration::from_secs(self.config.timeout_seconds);
 
-            let result = timeout(
-                timeout_dur,
-                entry.handler.invoke(payload, &filtered, &mut ctx),
-            )
-            .await;
+            let result = timeout(timeout_dur, entry.handler.invoke(payload, &filtered, &mut ctx))
+                .await;
 
-            // Audit / fire-and-forget cannot block, so OnError::Fail can't
-            // halt the pipeline — but OnError::Disable must still take a
-            // repeatedly-failing plugin out of rotation. The previous code
-            // ignored on_error entirely, so Disable plugins kept failing
-            // forever no matter how many invocations errored. All non-halt
-            // failures also push a record into PipelineResult.errors.
             match result {
-                Ok(Ok(_)) => {} // read-only — discard result and ext_clone
+                Ok(Ok(_)) => {} // read-only — discard result
                 Ok(Err(e)) => {
-                    warn!(
-                        "{} plugin '{}' error (ignored): {}",
-                        phase_label, plugin_name, e
-                    );
-                    errors.push((&e).into());
-                    if matches!(on_error, OnError::Disable) {
-                        warn!(
-                            "{} plugin '{}' disabled after error",
-                            phase_label, plugin_name
-                        );
-                        entry.plugin_ref.disable();
-                    }
+                    warn!("{} plugin '{}' error (ignored): {}", phase_label, plugin_name, e);
                 }
                 Err(_) => {
-                    warn!(
-                        "{} plugin '{}' timed out (ignored)",
-                        phase_label, plugin_name
-                    );
-                    let timeout_err = crate::error::PluginError::Timeout {
-                        plugin_name: plugin_name.clone(),
-                        timeout_ms: timeout_dur.as_millis() as u64,
-                        proto_error_code: None,
-                    };
-                    errors.push((&timeout_err).into());
-                    if matches!(on_error, OnError::Disable) {
-                        warn!(
-                            "{} plugin '{}' disabled after timeout",
-                            phase_label, plugin_name
-                        );
-                        entry.plugin_ref.disable();
-                    }
+                    warn!("{} plugin '{}' timed out (ignored)", phase_label, plugin_name);
                 }
             }
         }
@@ -688,239 +415,127 @@ impl Executor {
 
     /// Run the concurrent phase — plugins execute truly in parallel.
     /// Returns the first violation if any plugin denies.
-    ///
-    /// Built on `cpex_orchestration::run_branches`, the workspace's
-    /// shared "N async branches with abort-on-deny + per-branch timeout"
-    /// primitive (same crate apl-core's `Effect::Parallel` consumes).
-    /// Each branch returns a small `BranchData` carrying the plugin's
-    /// effective outcome (allow / deny / error). The orchestrator's
-    /// `is_deny` predicate inspects that — including the per-plugin
-    /// `on_error == Fail` case, which is treated as a halting outcome
-    /// so that an erroring/timing-out/panicking Fail-mode plugin
-    /// short-circuits the remaining branches the same way an explicit
-    /// deny does. Post-loop, we walk the outcomes in input order and
-    /// apply each plugin's `on_error` policy (Ignore / Disable) to
-    /// non-halting failures.
     async fn run_concurrent_phase(
         &self,
         entries: &[HookEntry],
         payload: &dyn PluginPayload,
-        extensions: &Extensions,
+        _extensions: &Extensions,
         ctx_table: &PluginContextTable,
-        errors: &mut Vec<crate::error::PluginErrorRecord>,
     ) -> Option<crate::error::PluginViolation> {
-        use cpex_orchestration::{run_branches, BranchConfig, BranchOutcome, ErasedBranch};
-
         if entries.is_empty() {
             return None;
         }
 
-        // Per-branch outcome. Carries just enough for post-loop policy
-        // application — plugin name / on_error are looked up via
-        // `entries[idx]` so we don't have to clone them into the
-        // future's captures.
-        enum BranchData {
-            Allow,
-            Deny(Option<crate::error::PluginViolation>),
-            Error(Box<PluginError>),
-        }
-
         // Clone the payload once so each spawned task can borrow from
         // an owned, 'static copy. Each task gets its own Arc'd clone.
-        let shared_payload: Arc<Box<dyn PluginPayload>> = Arc::new(payload.clone_boxed());
+        let shared_payload: Arc<Box<dyn PluginPayload>> =
+            Arc::new(payload.clone_boxed());
         let timeout_dur = Duration::from_secs(self.config.timeout_seconds);
 
-        // Snapshot per-entry on_error decisions BEFORE moving into
-        // futures — `is_deny` needs them at runtime to decide whether
-        // an Error outcome halts (Fail) or is logged (Ignore/Disable).
-        let on_error_by_idx: Vec<OnError> = entries
-            .iter()
-            .map(|e| e.plugin_ref.trusted_config().on_error)
-            .collect();
+        // Snapshot global state for all concurrent plugins
+        let global_state: HashMap<String, serde_json::Value> = ctx_table
+            .values()
+            .last()
+            .map(|c| c.global_state.clone())
+            .unwrap_or_default();
 
-        // Build branch futures. Each does the timing-bounded handler
-        // invoke and extracts the type-erased result, returning a
-        // `BranchData` that the orchestrator's `is_deny` predicate can
-        // inspect without further type knowledge.
-        let mut branches: Vec<ErasedBranch<BranchData>> = Vec::with_capacity(entries.len());
-        for entry in entries.iter() {
+        // Spawn all handlers concurrently — each task returns just
+        // the invoke result. We zip outcomes back with entries to
+        // access PluginRef for disable() without cloning it into the spawn.
+        let mut handles = Vec::with_capacity(entries.len());
+
+        for entry in entries {
             let handler = Arc::clone(&entry.handler);
             let payload_clone = Arc::clone(&shared_payload);
-            let plugin_id = entry.plugin_ref.id();
-            // Snapshot the plugin's local_state and the canonical global_state.
-            // Concurrent plugins do not merge back — each task owns its copy.
-            let mut ctx = ctx_table.snapshot_context(plugin_id);
-            let plugin_name = entry.plugin_ref.name().to_string();
-
-            // Filter per plugin — each may have different capabilities.
-            // Read-only, no write tokens. Wrap in Arc for 'static spawn.
-            let capabilities: std::collections::HashSet<String> = entry
-                .plugin_ref
-                .trusted_config()
-                .capabilities
-                .iter()
+            let plugin_id = entry.plugin_ref.id().to_string();
+            let mut ctx = ctx_table
+                .get(&plugin_id)
                 .cloned()
-                .collect();
-            let filtered = Arc::new(filter_extensions(extensions, &capabilities));
+                .map(|mut c| { c.global_state = global_state.clone(); c })
+                .unwrap_or_else(|| PluginContext::with_global_state(global_state.clone()));
+            let dur = timeout_dur;
 
-            branches.push(Box::pin(async move {
-                match handler.invoke(&**payload_clone, &filtered, &mut ctx).await {
-                    Ok(result_box) => match extract_erased(result_box) {
-                        Some(erased) if !erased.continue_processing => {
-                            let violation = erased.violation.map(|mut v| {
-                                v.plugin_name = Some(plugin_name);
-                                v
-                            });
-                            BranchData::Deny(violation)
-                        }
-                        // `Some(..)` with continue_processing=true, OR
-                        // `None` (downcast failed — historically logged
-                        // and treated as Allow) both fall through.
-                        _ => BranchData::Allow,
-                    },
-                    Err(e) => BranchData::Error(e),
-                }
-            }));
+            let handle = tokio::spawn(async move {
+                let filtered = FilteredExtensions::default();
+                timeout(dur, handler.invoke(&**payload_clone, &filtered, &mut ctx)).await
+            });
+
+            handles.push(handle);
         }
 
-        let cfg = BranchConfig {
-            timeout_per_branch: Some(timeout_dur),
-            short_circuit_on_deny: self.config.short_circuit_on_deny,
-        };
+        // Collect results — zip with entries for PluginRef access
+        let outcomes = futures::future::join_all(handles).await;
+        let mut denials = Vec::new();
 
-        // `is_deny` halts on explicit Deny only. It can't halt on
-        // Error/Timeout/Panic because the predicate sees only the
-        // value, not the branch index, so it can't read the per-entry
-        // `on_error` policy. Halting on those failures is handled in
-        // the post-loop: the first Fail-policy failure becomes the
-        // returned violation, and any in-flight tasks drop when the
-        // JoinSet inside `run_branches` goes out of scope.
-        //
-        // The original implementation called `set.abort_all()` on
-        // Fail-class errors too. The behavioural difference: the
-        // post-loop now waits for all branches to finish (or hit
-        // their own timeout) before returning. For the slow-plugin
-        // abort test that's fine — that test exercises the Deny
-        // path, which still goes through `is_deny` + abort_all.
-        let outcomes = run_branches(branches, cfg, |v: &BranchData| {
-            matches!(v, BranchData::Deny(_))
-        })
-        .await;
-
-        // Post-loop: walk outcomes in input order applying per-plugin
-        // policy. First halting outcome wins.
-        let mut first_violation: Option<crate::error::PluginViolation> = None;
-
-        for (idx, outcome) in outcomes.into_iter().enumerate() {
-            let entry = &entries[idx];
+        for (entry, outcome) in entries.iter().zip(outcomes) {
             let plugin_name = entry.plugin_ref.name();
-            let on_error = on_error_by_idx[idx];
+            let on_error = entry.plugin_ref.trusted_config().on_error;
 
-            match outcome {
-                BranchOutcome::Completed(BranchData::Allow) => {}
-                BranchOutcome::Completed(BranchData::Deny(opt_v)) => {
-                    let violation = opt_v.unwrap_or_else(|| {
-                        let mut v = crate::error::PluginViolation::new(
-                            "concurrent_deny",
-                            format!("Plugin '{}' denied", plugin_name),
-                        );
-                        v.plugin_name = Some(plugin_name.to_string());
-                        v
-                    });
-                    if first_violation.is_none() {
-                        first_violation = Some(violation);
+            let result = match outcome {
+                Ok(r) => r,
+                Err(e) => {
+                    error!("CONCURRENT task panicked: {}", e);
+                    continue;
+                }
+            };
+
+            match result {
+                Ok(Ok(result_box)) => {
+                    if let Some(erased) = extract_erased(result_box) {
+                        if !erased.continue_processing {
+                            let mut violation = erased.violation.unwrap_or_else(|| {
+                                crate::error::PluginViolation::new(
+                                    "concurrent_deny",
+                                    format!("Plugin '{}' denied", plugin_name),
+                                )
+                            });
+                            violation.plugin_name = Some(plugin_name.to_string());
+                            if self.config.short_circuit_on_deny {
+                                return Some(violation);
+                            }
+                            denials.push(violation);
+                        }
                     }
                 }
-                BranchOutcome::Completed(BranchData::Error(e)) => match on_error {
+                Ok(Err(e)) => match on_error {
                     OnError::Fail => {
-                        if first_violation.is_none() {
-                            let mut v = crate::error::PluginViolation::new(
-                                "plugin_error",
-                                format!("Plugin '{}' failed: {}", plugin_name, e),
-                            );
-                            v.plugin_name = Some(plugin_name.to_string());
-                            first_violation = Some(v);
-                        }
+                        let mut v = crate::error::PluginViolation::new(
+                            "plugin_error",
+                            format!("Plugin '{}' failed: {}", plugin_name, e),
+                        );
+                        v.plugin_name = Some(plugin_name.to_string());
+                        return Some(v);
                     }
                     OnError::Ignore => {
                         warn!("CONCURRENT plugin '{}' error (ignored): {}", plugin_name, e);
-                        errors.push((&*e).into());
                     }
                     OnError::Disable => {
                         warn!("CONCURRENT plugin '{}' disabled after error", plugin_name);
-                        errors.push((&*e).into());
                         entry.plugin_ref.disable();
                     }
                 },
-                BranchOutcome::TimedOut => {
-                    let timeout_err = crate::error::PluginError::Timeout {
-                        plugin_name: plugin_name.to_string(),
-                        timeout_ms: timeout_dur.as_millis() as u64,
-                        proto_error_code: None,
-                    };
-                    match on_error {
-                        OnError::Fail => {
-                            if first_violation.is_none() {
-                                let mut v = crate::error::PluginViolation::new(
-                                    "plugin_timeout",
-                                    format!("Plugin '{}' timed out", plugin_name),
-                                );
-                                v.plugin_name = Some(plugin_name.to_string());
-                                first_violation = Some(v);
-                            }
-                        }
-                        OnError::Ignore => {
-                            warn!("CONCURRENT plugin '{}' timed out (ignored)", plugin_name);
-                            errors.push((&timeout_err).into());
-                        }
-                        OnError::Disable => {
-                            warn!("CONCURRENT plugin '{}' disabled after timeout", plugin_name);
-                            errors.push((&timeout_err).into());
-                            entry.plugin_ref.disable();
-                        }
+                Err(_) => match on_error {
+                    OnError::Fail => {
+                        let mut v = crate::error::PluginViolation::new(
+                            "plugin_timeout",
+                            format!("Plugin '{}' timed out", plugin_name),
+                        );
+                        v.plugin_name = Some(plugin_name.to_string());
+                        return Some(v);
                     }
-                }
-                BranchOutcome::Panicked(s) => {
-                    error!("CONCURRENT plugin '{}' task panicked: {}", plugin_name, s);
-                    let panic_err = crate::error::PluginError::Execution {
-                        plugin_name: plugin_name.to_string(),
-                        message: format!("task panicked: {}", s),
-                        source: None,
-                        code: Some("panic".into()),
-                        details: std::collections::HashMap::new(),
-                        proto_error_code: None,
-                    };
-                    match on_error {
-                        OnError::Fail => {
-                            if first_violation.is_none() {
-                                let mut v = crate::error::PluginViolation::new(
-                                    "plugin_panic",
-                                    format!("Plugin '{}' task panicked: {}", plugin_name, s),
-                                );
-                                v.plugin_name = Some(plugin_name.to_string());
-                                first_violation = Some(v);
-                            }
-                        }
-                        OnError::Ignore => {
-                            warn!("CONCURRENT plugin '{}' panicked (ignored)", plugin_name);
-                            errors.push((&panic_err).into());
-                        }
-                        OnError::Disable => {
-                            warn!("CONCURRENT plugin '{}' disabled after panic", plugin_name);
-                            errors.push((&panic_err).into());
-                            entry.plugin_ref.disable();
-                        }
+                    OnError::Ignore => {
+                        warn!("CONCURRENT plugin '{}' timed out (ignored)", plugin_name);
                     }
-                }
-                BranchOutcome::Aborted => {
-                    // Cancelled because an earlier branch hit a halt
-                    // condition under short_circuit_on_deny. Intentional
-                    // — no error to record.
-                }
+                    OnError::Disable => {
+                        warn!("CONCURRENT plugin '{}' disabled after timeout", plugin_name);
+                        entry.plugin_ref.disable();
+                    }
+                },
             }
         }
 
-        first_violation
+        // Return first denial if any were collected (non-short-circuit mode)
+        denials.into_iter().next()
     }
 
     // -----------------------------------------------------------------------
@@ -932,76 +547,49 @@ impl Executor {
     /// Each handler runs in its own `tokio::spawn` — the pipeline does
     /// not wait for them. Errors and timeouts are logged but have no
     /// effect on the pipeline result.
-    ///
-    /// Returns the plugin name and join handle for each spawned task
-    /// so they can be stored on `PipelineResult` for optional awaiting
-    /// via `wait_for_background_tasks()`.
     fn spawn_fire_and_forget(
         &self,
         entries: &[HookEntry],
         payload: &dyn PluginPayload,
-        extensions: &Extensions,
         ctx_table: &PluginContextTable,
-        task_tracker: &tokio_util::task::TaskTracker,
-    ) -> Vec<(String, tokio::task::JoinHandle<()>)> {
+    ) {
         if entries.is_empty() {
-            return Vec::new();
+            return;
         }
 
         let timeout_dur = Duration::from_secs(self.config.timeout_seconds);
-
-        let mut handles = Vec::with_capacity(entries.len());
+        let global_state: HashMap<String, serde_json::Value> = ctx_table
+            .values()
+            .last()
+            .map(|c| c.global_state.clone())
+            .unwrap_or_default();
 
         for entry in entries {
             let plugin_name = entry.plugin_ref.name().to_string();
             let handler = Arc::clone(&entry.handler);
             let owned_payload = payload.clone_boxed();
-            // Snapshot per plugin so fire-and-forget tasks see their stored
-            // local_state from prior hooks, not just an empty context.
-            let mut ctx = ctx_table.snapshot_context(entry.plugin_ref.id());
+            let mut ctx = PluginContext::with_global_state(global_state.clone());
             let dur = timeout_dur;
-            let name_for_log = plugin_name.clone();
 
-            // Filter per plugin, read-only, no write tokens
-            let capabilities: std::collections::HashSet<String> = entry
-                .plugin_ref
-                .trusted_config()
-                .capabilities
-                .iter()
-                .cloned()
-                .collect();
-            let filtered = Arc::new(filter_extensions(extensions, &capabilities));
-
-            // Spawn through TaskTracker so `PluginManager::shutdown()`
-            // can drain in-flight fire-and-forget tasks before tearing
-            // down. The returned JoinHandle is the same shape as
-            // tokio::spawn's, so callers using BackgroundTasks still
-            // wait_for_background_tasks() over their own handles.
-            let handle = task_tracker.spawn(async move {
-                let result =
-                    timeout(dur, handler.invoke(&*owned_payload, &filtered, &mut ctx)).await;
+            tokio::spawn(async move {
+                let filtered = FilteredExtensions::default();
+                let result = timeout(
+                    dur,
+                    handler.invoke(&*owned_payload, &filtered, &mut ctx),
+                )
+                .await;
 
                 match result {
                     Ok(Ok(_)) => {} // discard
                     Ok(Err(e)) => {
-                        warn!(
-                            "FIRE_AND_FORGET plugin '{}' error (ignored): {}",
-                            name_for_log, e
-                        );
+                        warn!("FIRE_AND_FORGET plugin '{}' error (ignored): {}", plugin_name, e);
                     }
                     Err(_) => {
-                        warn!(
-                            "FIRE_AND_FORGET plugin '{}' timed out (ignored)",
-                            name_for_log
-                        );
+                        warn!("FIRE_AND_FORGET plugin '{}' timed out (ignored)", plugin_name);
                     }
                 }
             });
-
-            handles.push((plugin_name, handle));
         }
-
-        handles
     }
 }
 
@@ -1029,7 +617,7 @@ impl Default for Executor {
 pub struct ErasedResultFields {
     pub continue_processing: bool,
     pub modified_payload: Option<Box<dyn PluginPayload>>,
-    pub modified_extensions: Option<crate::hooks::payload::OwnedExtensions>,
+    pub modified_extensions: Option<Extensions>,
     pub violation: Option<crate::error::PluginViolation>,
 }
 
@@ -1072,7 +660,6 @@ mod tests {
     use crate::hooks::PluginResult;
 
     #[derive(Debug, Clone)]
-    #[allow(dead_code)] // test fixture — typed shape is the point, not field reads
     struct TestPayload {
         value: String,
     }
@@ -1090,8 +677,9 @@ mod tests {
 
     #[test]
     fn test_erase_result_deny() {
-        let result: PluginResult<TestPayload> =
-            PluginResult::deny(crate::error::PluginViolation::new("test", "denied"));
+        let result: PluginResult<TestPayload> = PluginResult::deny(
+            crate::error::PluginViolation::new("test", "denied"),
+        );
         let erased = erase_result(result);
         let fields = extract_erased(erased).unwrap();
         assert!(!fields.continue_processing);
@@ -1111,26 +699,14 @@ mod tests {
 
     #[test]
     fn test_erase_result_modify_extensions() {
-        let mut security = crate::extensions::SecurityExtension::default();
-        security.add_label("PII");
-        let ext = Extensions {
-            security: Some(Arc::new(security)),
-            ..Default::default()
-        };
-        let owned = ext.cow_copy();
-        let result: PluginResult<TestPayload> = PluginResult::modify_extensions(owned);
+        let mut ext = Extensions::default();
+        ext.labels.insert("PII".into());
+        let result: PluginResult<TestPayload> = PluginResult::modify_extensions(ext);
         let erased = erase_result(result);
         let fields = extract_erased(erased).unwrap();
         assert!(fields.continue_processing);
         assert!(fields.modified_extensions.is_some());
-        let sec = fields
-            .modified_extensions
-            .as_ref()
-            .unwrap()
-            .security
-            .as_ref()
-            .unwrap();
-        assert!(sec.has_label("PII"));
+        assert!(fields.modified_extensions.as_ref().unwrap().labels.contains("PII"));
     }
 
     #[test]
@@ -1138,34 +714,39 @@ mod tests {
         let payload: Box<dyn PluginPayload> = Box::new(TestPayload {
             value: "test".into(),
         });
-        let result =
-            PipelineResult::allowed_with(payload, Extensions::default(), PluginContextTable::new());
-        assert!(result.continue_processing);
-        assert!(result.modified_payload.is_some());
+        let result = PipelineResult::allowed_with(
+            payload,
+            Extensions::default(),
+            PluginContextTable::new(),
+        );
+        assert!(result.allowed);
+        assert!(result.payload.is_some());
         assert!(result.violation.is_none());
     }
 
     #[test]
     fn test_pipeline_result_denied() {
         let violation = crate::error::PluginViolation::new("test", "denied");
-        let result =
-            PipelineResult::denied(violation, Extensions::default(), PluginContextTable::new());
-        assert!(!result.continue_processing);
-        assert!(result.modified_payload.is_none());
+        let result = PipelineResult::denied(
+            violation,
+            Extensions::default(),
+            PluginContextTable::new(),
+        );
+        assert!(!result.allowed);
+        assert!(result.payload.is_none());
         assert!(result.violation.is_some());
     }
 
     #[tokio::test]
     async fn test_executor_empty_entries() {
         let executor = Executor::default();
-        let tracker = tokio_util::task::TaskTracker::new();
         let payload: Box<dyn PluginPayload> = Box::new(TestPayload {
             value: "test".into(),
         });
-        let (result, _) = executor
-            .execute(&[], payload, Extensions::default(), None, &tracker)
+        let result = executor
+            .execute(&[], payload, Extensions::default(), None)
             .await;
-        assert!(result.continue_processing);
-        assert!(result.modified_payload.is_some());
+        assert!(result.allowed);
+        assert!(result.payload.is_some());
     }
 }
