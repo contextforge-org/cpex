@@ -2189,7 +2189,7 @@ class PluginVersionInfo(BaseModel):
     deprecated: bool = False
     manifest_file: str
     changelog: Optional[str] = None
-    min_max_framework_version: Optional[str] = "0.1.0.dev4,0.1.0.dev4"
+    min_max_framework_version: Optional[str] = "0.1.0.dev12,0.1.0.dev12"
 
 
 class PluginVersionRegistry(BaseModel):
