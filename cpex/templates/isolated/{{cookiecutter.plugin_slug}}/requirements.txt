@@ -1,2 +1,7 @@
 cpex>=0.1.0.dev10
+# The requirements file is used to install the plugin for the isolated_venv scenario
+# The cpex cli tool first creates a venv for the plugin, and then uses pip to install the requirements.txt file into the venv.
+# The default package name is provided below, however if monorepo installation is desired use 
+# a format like this: 
+# git+https://github.com/tedhabeck/cpex-test-plugin
 {{ cookiecutter.plugin_name }}
