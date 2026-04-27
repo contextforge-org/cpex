@@ -252,7 +252,7 @@ class TestPluginCatalogDownloadOperations:
             catalog.catalog_folder = str(tmp_path / "catalog")
             
             # Mock the HTTP response
-            manifest_content = "name: test\nversion: 1.0.0\nkind: native\ndescription: Test\nauthor: Test\navailable_hooks: [tools]"
+            manifest_content = "name: test\nversion: 1.0.0\nkind: native\ndescription: Test\nauthor: Test\navailable_hooks: [tools]\ndefault_config: {}"
             b64_content = base64.b64encode(manifest_content.encode()).decode()
             mock_response = Mock()
             mock_response.status_code = 200
@@ -448,12 +448,19 @@ class TestPluginCatalogInstallFromPypi:
             patch("cpex.tools.catalog.PluginCatalog._find_manifest_in_extracted_package", return_value=manifest_file),
             patch("cpex.tools.catalog.subprocess.run") as mock_subprocess,
             patch("cpex.framework.utils.importlib.metadata.distributions") as mock_distributions,
+            patch("cpex.framework.utils.importlib.util.find_spec") as mock_find_spec,
             patch("shutil.rmtree") as mock_rmtree,
         ):
             # Setup mock distribution
             mock_dist = Mock()
             mock_dist.name = "test_package"
+            mock_dist.files = None  # No files attribute for non-isolated plugins
             mock_distributions.return_value = [mock_dist]
+            
+            # Setup mock spec for find_spec fallback
+            mock_spec = Mock()
+            mock_spec.origin = str(package_dir / "__init__.py")
+            mock_find_spec.return_value = mock_spec
             
             catalog = PluginCatalog()
             catalog.catalog_folder = str(tmp_path / "catalog")
@@ -462,7 +469,7 @@ class TestPluginCatalogInstallFromPypi:
             # Should call subprocess.run for non-isolated plugin
             mock_subprocess.assert_called_once()
             assert manifest.name == "test_package"
-            assert plugin_path is None  # Non-isolated plugins don't return a path
+            assert plugin_path == package_dir  # Non-isolated plugins return the package path
             # Should clean up temp directory
             mock_rmtree.assert_called_once()
 
@@ -661,7 +668,7 @@ class TestPluginCatalogFindAndSavePluginManifest:
         
         # Mock the repository and file content
         mock_repo = Mock()
-        manifest_content = "name: test\nversion: 1.0.0\nkind: native\ndescription: Test\nauthor: Test\navailable_hooks: [tools]"
+        manifest_content = "name: test\nversion: 1.0.0\nkind: native\ndescription: Test\nauthor: Test\navailable_hooks: [tools]\ndefault_config: {}"
         mock_file_content = Mock()
         mock_file_content.decoded_content = manifest_content.encode()
         mock_repo.get_contents.return_value = mock_file_content
@@ -772,11 +779,18 @@ class TestPluginCatalogInstallFromPypiExtended:
             patch("cpex.tools.catalog.PluginCatalog._find_manifest_in_extracted_package", return_value=manifest_file),
             patch("cpex.tools.catalog.subprocess.run") as mock_subprocess,
             patch("cpex.framework.utils.importlib.metadata.distributions") as mock_distributions,
+            patch("cpex.framework.utils.importlib.util.find_spec") as mock_find_spec,
             patch("shutil.rmtree"),
         ):
             mock_dist = Mock()
             mock_dist.name = "test_package"
+            mock_dist.files = None  # No files attribute for non-isolated plugins
             mock_distributions.return_value = [mock_dist]
+            
+            # Setup mock spec for find_spec fallback
+            mock_spec = Mock()
+            mock_spec.origin = str(package_dir / "__init__.py")
+            mock_find_spec.return_value = mock_spec
             
             catalog = PluginCatalog()
             catalog.catalog_folder = str(tmp_path / "catalog")
@@ -811,11 +825,18 @@ class TestPluginCatalogInstallFromPypiExtended:
             patch("cpex.tools.catalog.PluginCatalog._find_manifest_in_extracted_package", return_value=manifest_file),
             patch("cpex.tools.catalog.subprocess.run") as mock_subprocess,
             patch("cpex.framework.utils.importlib.metadata.distributions") as mock_distributions,
+            patch("cpex.framework.utils.importlib.util.find_spec") as mock_find_spec,
             patch("shutil.rmtree"),
         ):
             mock_dist = Mock()
             mock_dist.name = "test_package"
+            mock_dist.files = None  # No files attribute for non-isolated plugins
             mock_distributions.return_value = [mock_dist]
+            
+            # Setup mock spec for find_spec fallback
+            mock_spec = Mock()
+            mock_spec.origin = str(package_dir / "__init__.py")
+            mock_find_spec.return_value = mock_spec
             
             catalog = PluginCatalog()
             catalog.catalog_folder = str(tmp_path / "catalog")
@@ -851,11 +872,18 @@ class TestPluginCatalogInstallFromPypiExtended:
             patch("cpex.tools.catalog.PluginCatalog._find_manifest_in_extracted_package", return_value=manifest_file),
             patch("cpex.tools.catalog.subprocess.run") as mock_subprocess,
             patch("cpex.framework.utils.importlib.metadata.distributions") as mock_distributions,
+            patch("cpex.framework.utils.importlib.util.find_spec") as mock_find_spec,
             patch("shutil.rmtree"),
         ):
             mock_dist = Mock()
             mock_dist.name = "test_package"
+            mock_dist.files = None  # No files attribute for non-isolated plugins
             mock_distributions.return_value = [mock_dist]
+            
+            # Setup mock spec for find_spec fallback
+            mock_spec = Mock()
+            mock_spec.origin = str(package_dir / "__init__.py")
+            mock_find_spec.return_value = mock_spec
             
             catalog = PluginCatalog()
             catalog.catalog_folder = str(tmp_path / "catalog")
@@ -889,11 +917,18 @@ class TestPluginCatalogInstallFromPypiExtended:
             patch("cpex.tools.catalog.PluginCatalog._find_manifest_in_extracted_package", return_value=manifest_file),
             patch("cpex.tools.catalog.subprocess.run") as mock_subprocess,
             patch("cpex.framework.utils.importlib.metadata.distributions") as mock_distributions,
+            patch("cpex.framework.utils.importlib.util.find_spec") as mock_find_spec,
             patch("shutil.rmtree"),
         ):
             mock_dist = Mock()
             mock_dist.name = "test_package"
+            mock_dist.files = None  # No files attribute for non-isolated plugins
             mock_distributions.return_value = [mock_dist]
+            
+            # Setup mock spec for find_spec fallback
+            mock_spec = Mock()
+            mock_spec.origin = str(package_dir / "__init__.py")
+            mock_find_spec.return_value = mock_spec
             
             catalog = PluginCatalog()
             catalog.catalog_folder = str(tmp_path / "catalog")

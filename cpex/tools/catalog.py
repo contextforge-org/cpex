@@ -8,6 +8,10 @@ This module implements the plugin catalog object.
 """
 
 import base64
+import datetime
+import importlib.metadata
+import importlib.util
+import json
 import logging
 import os
 import subprocess
@@ -26,8 +30,7 @@ import zipfile
 import yaml
 from github import Auth, Github
 
-from cpex.framework.models import PiPyRepo, PluginManifest, PluginPackageInfo
-from cpex.framework.utils import find_package_path
+from cpex.framework.models import PiPyRepo, PluginManifest, PluginPackageInfo, PluginVersionInfo, PluginVersionRegistry
 from cpex.tools.settings import get_catalog_settings
 
 logger = logging.getLogger(__name__)
@@ -88,6 +91,73 @@ class PluginCatalog:
         updated_content = yaml.safe_dump(manifest.model_dump(), default_flow_style=False)
         relpath.write_text(updated_content, encoding="utf-8")
 
+    def update_plugin_version_registry(self, manifest: PluginManifest, relpath: Path):
+        """
+        Update the plugin version registry with the given manifest.
+        args:
+             manifest: The plugin manifest to be stored in the catalog
+             relpath: the relative path of the plugin package that was installed
+        """
+        plugin_version: PluginVersionInfo = PluginVersionInfo(
+            version=manifest.version,
+            manifest_file=str(relpath),
+            released=datetime.datetime.now(datetime.timezone.utc).isoformat() + "Z",
+        )
+        file_path = Path(self.catalog_folder) / manifest.name / "plugin_version_registry.json"
+        # Ensure the directory exists
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+        if file_path.exists():
+            with file_path.open("r") as f:
+                plugin_version_registry = PluginVersionRegistry(**json.load(f))
+        else:
+            plugin_version_registry = PluginVersionRegistry(versions=[])
+        if plugin_version not in plugin_version_registry.versions:
+            plugin_version_registry.versions.append(plugin_version)
+            plugin_version_registry.latest = plugin_version
+            file_path.write_text(
+                json.dumps(plugin_version_registry.model_dump(mode="json"), indent=2),
+                encoding="utf-8",
+            )
+
+    def find_package_path(self, package_name: str) -> Path:
+        """Locate installed package directory using importlib.metadata.
+
+        Args:
+            package_name: The name of the installed package.
+
+        Returns:
+            Path to the package directory.
+
+        Raises:
+            RuntimeError: If package cannot be found.
+        """
+        try:
+            # Use importlib.metadata for more reliable package discovery
+            for dist in importlib.metadata.distributions():
+                if dist.name == package_name or dist.metadata.get("Name") == package_name:
+                    if dist.files:
+                        # Get the package root from the plugin-manifest.yaml file
+                        for afile in dist.files:
+                            if afile.name == "plugin-manifest.yaml":
+                                located_path = dist.locate_file(afile)
+                                package_path = Path(str(located_path)).parent
+                                logger.debug("Found package %s at %s", package_name, package_path)
+                                return package_path
+
+            # Fallback to importlib.util.find_spec if metadata approach fails
+            spec = importlib.util.find_spec(package_name)
+            if spec is not None and spec.origin is not None:
+                package_path = Path(spec.origin).parent
+                logger.debug("Found package %s at %s (via find_spec)", package_name, package_path)
+                return package_path
+
+            raise RuntimeError(f"Could not find installed package: {package_name}")
+
+        except Exception as e:
+            if isinstance(e, RuntimeError):
+                raise
+            raise RuntimeError(f"Error locating package {package_name}: {str(e)}") from e
+
     def save_manifest_content(self, content: str, path, repo_url: httpx.URL):
         """
         write the manifest content to the supplied path relative to the ouptut folder,
@@ -107,6 +177,8 @@ class PluginCatalog:
 
         updated_content = yaml.safe_dump(manifest_data, default_flow_style=False)
         relpath.write_text(updated_content, encoding="utf-8")
+        pm: PluginManifest = PluginManifest(**manifest_data)
+        self.update_plugin_version_registry(pm, relpath)
 
     def save_content(self, base_path, content: str, path):
         """
@@ -164,7 +236,7 @@ class PluginCatalog:
             logger.error("Failed to download file: %s status_code: %d", item["path"], str(e))
 
     def _search_github_code(self, repo_path: str, member: str, headers) -> list[dict] | None:
-        """Search GitHub for plugin-manifest.yaml files in a specific path using PyGithub API.
+        """Search GitHub for plugin-manifest*.yaml files in a specific path using PyGithub API.
 
         Args:
             repo_path: Repository path (e.g., 'owner/repo')
@@ -175,11 +247,12 @@ class PluginCatalog:
             List of search result items as dicts with 'name' and 'git_url' keys, or None if request failed
         """
         try:
-            # Build search query for PyGithub
+            # Build search query for PyGithub - search for files starting with plugin-manifest and ending with .yaml
+            # Note: GitHub search doesn't support wildcards in filename, so we search broadly and filter results
             if member is not None:
-                query = f"repo:{repo_path} path:{member} filename:plugin-manifest extension:yaml"
+                query = f"repo:{repo_path} path:{member} extension:yaml"
             else:
-                query = f"repo:{repo_path} filename:plugin-manifest extension:yaml"
+                query = f"repo:{repo_path} extension:yaml"
             # Use PyGithub's search_code method
             search_results = self.gh.search_code(query=query)
 
@@ -188,14 +261,16 @@ class PluginCatalog:
             # Convert PyGithub ContentFile objects to dict format compatible with existing code
             items = []
             for content_file in search_results:
-                items.append(
-                    {
-                        "name": content_file.name,
-                        "path": content_file.path,
-                        "git_url": content_file.git_url,
-                        "html_url": content_file.html_url,
-                    }
-                )
+                # Filter to only include files that start with "plugin-manifest" and end with ".yaml"
+                if content_file.name.startswith("plugin-manifest") and content_file.name.endswith(".yaml"):
+                    items.append(
+                        {
+                            "name": content_file.name,
+                            "path": content_file.path,
+                            "git_url": content_file.git_url,
+                            "html_url": content_file.html_url,
+                        }
+                    )
 
             return items
 
@@ -274,12 +349,15 @@ class PluginCatalog:
 
         updated_content = yaml.safe_dump(manifest_content, default_flow_style=False)
         relpath.write_text(updated_content, encoding="utf-8")
+        pm: PluginManifest = PluginManifest(**manifest_content)
+        self.update_plugin_version_registry(pm, relpath)
+
         return True
 
     def find_and_save_plugin_manifest(
         self, member: str, name: str, repo_url: httpx.URL, headers, gh_repo
     ) -> PluginManifest | None:
-        """Find the plugin-manifest.yaml relative to the supplied member folder,
+        """Find plugin-manifest*.yaml files relative to the supplied member folder,
         download and save the manifest, updating the monorepo's package_folder, package_source and repo_url attributes
 
         Args:
@@ -295,15 +373,15 @@ class PluginCatalog:
         self.create_catalog_folder(name)
 
         repo_path = repo_url.path.removeprefix("/")
-        relpath = Path(self.catalog_folder) / name / "plugin-manifest.yaml"
 
         items = self._search_github_code(repo_path, member, headers)
         if items is None:
             return None
 
         for item in items:
-            if self._process_manifest_item(item, name, member, repo_url, headers, relpath, repo_path, gh_repo):
-                break  # Successfully processed first valid manifest
+            # Use the actual filename from the search result
+            relpath = Path(self.catalog_folder) / name / item["name"]
+            self._process_manifest_item(item, name, member, repo_url, headers, relpath, repo_path, gh_repo)
 
         return None
 
@@ -786,21 +864,19 @@ class PluginCatalog:
         # Validate requirements_file to prevent path traversal attacks
         # Normalize the path and check for suspicious patterns
         normalized_file = os.path.normpath(requirements_file)
-        
+
         # Check for path traversal attempts (../, absolute paths, etc.)
         if normalized_file.startswith("..") or os.path.isabs(normalized_file):
             raise ValueError(
-                f"Invalid requirements file path '{requirements_file}': "
-                "path traversal attempts are not allowed"
+                f"Invalid requirements file path '{requirements_file}': path traversal attempts are not allowed"
             )
-        
+
         # Additional check: ensure no path separators that could escape the directory
         if normalized_file != requirements_file.replace("\\", "/").strip("/"):
             raise ValueError(
-                f"Invalid requirements file path '{requirements_file}': "
-                "suspicious path components detected"
+                f"Invalid requirements file path '{requirements_file}': suspicious path components detected"
             )
-        
+
         # Search for requirements file in the extracted directory
         manifest_files = list(extract_dir.rglob(requirements_file))
 
@@ -915,9 +991,12 @@ class PluginCatalog:
                 # For non-isolated plugins, install normally into CLI's venv
                 logger.info("Installing non-isolated plugin: %s", manifest.name)
                 self._install_package(plugin_package_name, version_constraint, use_pytest)
+                plugin_path = self.find_package_path(plugin_package_name)
 
             # Step 5: Persist to catalog
             self._persist_manifest(manifest, plugin_package_name)
+            # Step 6: Update the plugin version registry
+            self.update_plugin_version_registry(manifest=manifest, relpath=plugin_path)
 
             logger.info("Successfully installed and cataloged %s", plugin_package_name)
             return manifest, plugin_path
