@@ -353,10 +353,15 @@ def install_from_manifest(manifest: PluginManifest, installation_type: str, cata
     if installation_type == "monorepo":
         logger.info("installation type: %s", installation_type)
         plugin_path = catalog.install_folder_via_pip(manifest)
+        actual_plugin_path = catalog._find_and_load_versions_json(manifest, plugin_path, manifest.name)
         plugin_registry: PluginRegistry = PluginRegistry()
         # add the newly downloaded plugin to the registry
         plugin_registry.update(
-            manifest=manifest, installation_type=installation_type, catalog=catalog, git_user_name=git_user_name(), plugin_path=plugin_path
+            manifest=manifest,
+            installation_type=installation_type,
+            catalog=catalog,
+            git_user_name=git_user_name(),
+            plugin_path=actual_plugin_path if actual_plugin_path is not None else plugin_path,
         )
         update_plugins_config_yaml(manifest)
 
@@ -372,6 +377,9 @@ def select_plugin_from_catalog(available_plugins: List[PluginManifest]) -> Optio
     """
     if not available_plugins:
         return None
+
+    # Sort plugins by name and version
+    available_plugins = sorted(available_plugins, key=lambda p: (p.name, p.version), reverse=True)
 
     # Build choices list with plugin information
     choices = []
@@ -554,6 +562,15 @@ def install(source: str, install_type: str | None, catalog: PluginCatalog):
     handler(source, catalog, use_test=True if install_type == "test-pypi" else False)
 
 
+def versions(plugin_name: str | None, catalog: PluginCatalog):
+    """List available versions of the plugin
+    Args:
+        plugin_name (str | None): The name of the plugin to search for.
+        catalog (PluginCatalog): The catalog to search in.
+    """
+    return search(plugin_name, catalog)
+
+
 def search(plugin_name: str | None, catalog: PluginCatalog):
     """Search for a plugin in the catalog
     Args:
@@ -675,11 +692,12 @@ def uninstall(plugin_name: str, catalog: PluginCatalog) -> None:
     "python cpex/tools/cli.py plugin --type monorepo search pii\n"
     "python cpex/tools/cli.py plugin --type monorepo install cpex-pii-filter\n"
     'python cpex/tools/cli.py plugin --type pypi install "ExamplePlugin@>=0.1.0"\n'
-    'python cpex/tools/cli.py plugin --type test-pypi install "cpex-plugin-test@>=0.1.1"\n'
+    'python cpex/tools/cli.py plugin --type test-pypi install "cpex-test-plugin@>=0.1.1"\n'
+    "python cpex/tools/cli.py plugin versions cpex-test-plugin"
     "python cpex/tools/cli.py plugin uninstall cpex-pii-filter"
 )
 def plugin(
-    cmd_action: str = typer.Argument(None, help="One of: list|info|install|search|uninstall"),
+    cmd_action: str = typer.Argument(None, help="One of: list|info|install|search|versions|uninstall"),
     source: str | None = typer.Argument(None, help="The pypi, git, or local folder where the plugin resides"),
     install_type: Annotated[
         str,
@@ -710,13 +728,17 @@ def plugin(
     # update the catalog before proceeding with install etc.
     pc = PluginCatalog()
     # optimized github search REST api takes ~14s to search & download all manifests
-    console.log("Update catalog")
-    with console.status("Updating catalog...", spinner="dots"):
-        rc = pc.update_catalog_with_pyproject()
-        if rc is False:
-            console.log("Catalog update completed.")
-        else:
-            console.log("❌ Catalog update failed.")
+    if install_type not in {"test-pypi", "pypi"}:
+        console.log("Update catalog")
+        with console.status("Updating catalog...", spinner="dots"):
+            rc = pc.update_catalog_with_pyproject()
+            if rc is False:
+                console.log("Catalog update completed.")
+            else:
+                console.log(":x: Catalog update failed.")
+
+    if cmd_action == "versions":
+        return versions(source, catalog=pc)
 
     if cmd_action == "list":
         return list(install_type)

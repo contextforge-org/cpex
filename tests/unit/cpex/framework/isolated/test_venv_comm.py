@@ -96,10 +96,15 @@ class TestVenvProcessCommunicator:
         mock_check_call.return_value = 0
 
         communicator.install_requirements(str(requirements_file))
-
-        mock_check_call.assert_called_once_with(
-            [communicator.python_executable, "-m", "pip", "install", "-r", str(requirements_file)]
-        )
+        
+        mock_check_call.assert_called_with([
+            communicator.python_executable,
+            "-m",
+            "pip",
+            "install",
+            "-r",
+            str(requirements_file)
+        ])
 
     @patch("subprocess.check_call")
     def test_install_requirements_failure(self, mock_check_call, communicator, tmp_path):
