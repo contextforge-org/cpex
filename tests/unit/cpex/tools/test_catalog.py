@@ -1097,6 +1097,98 @@ class TestPluginCatalogFindAndSavePluginManifestExtended:
         assert result is None
 
 
+class TestPluginCatalogVersionsJson:
+    """Tests for versions.json discovery and download."""
+
+    def test_search_github_code_for_versions_json_success(self, mock_github_env):
+        """Test _search_github_code_for_versions_json filters versions.json files."""
+        catalog = PluginCatalog()
+
+        mock_search_result = Mock()
+        matching_file = Mock()
+        matching_file.name = "versions.json"
+        matching_file.path = "plugin1/versions.json"
+        matching_file.git_url = "https://api.github.com/repos/org/repo/git/blobs/versions"
+        matching_file.html_url = "https://github.com/org/repo/blob/main/plugin1/versions.json"
+
+        ignored_file = Mock()
+        ignored_file.name = "plugin-manifest.yaml"
+        ignored_file.path = "plugin1/plugin-manifest.yaml"
+        ignored_file.git_url = "https://api.github.com/repos/org/repo/git/blobs/manifest"
+        ignored_file.html_url = "https://github.com/org/repo/blob/main/plugin1/plugin-manifest.yaml"
+
+        mock_search_result.totalCount = 2
+        mock_search_result.__iter__ = Mock(return_value=iter([matching_file, ignored_file]))
+        catalog.gh.search_code = Mock(return_value=mock_search_result)
+
+        result = catalog._search_github_code_for_versions_json("org/repo", "plugin1", {})
+
+        assert result == [
+            {
+                "name": "versions.json",
+                "path": "plugin1/versions.json",
+                "git_url": "https://api.github.com/repos/org/repo/git/blobs/versions",
+                "html_url": "https://github.com/org/repo/blob/main/plugin1/versions.json",
+            }
+        ]
+        catalog.gh.search_code.assert_called_once_with(
+            query="repo:org/repo path:plugin1 filename:versions extension:json"
+        )
+
+    def test_search_github_code_for_versions_json_exception(self, mock_github_env):
+        """Test _search_github_code_for_versions_json when exception occurs."""
+        with patch("cpex.tools.catalog.logger") as mock_logger:
+            catalog = PluginCatalog()
+            catalog.gh.search_code = Mock(side_effect=Exception("Search error"))
+
+            result = catalog._search_github_code_for_versions_json("org/repo", "plugin1", {})
+
+            assert result is None
+            mock_logger.error.assert_called()
+
+    def test_find_and_save_plugin_versions_json_success(self, tmp_path, mock_github_env):
+        """Test successful finding and saving of versions.json."""
+        catalog = PluginCatalog()
+        catalog.catalog_folder = str(tmp_path / "catalog")
+
+        mock_repo = Mock()
+        repo_url = httpx.URL("https://github.com/org/repo")
+
+        catalog._search_github_code_for_versions_json = Mock(
+            return_value=[
+                {
+                    "name": "versions.json",
+                    "path": "plugin1/versions.json",
+                    "git_url": "https://api.github.com/repos/org/repo/git/blobs/versions",
+                    "html_url": "https://github.com/org/repo/blob/main/plugin1/versions.json",
+                }
+            ]
+        )
+
+        versions_content = '{\n  "plugin1": [{"version": "1.0.0"}]\n}'
+        catalog.download_file = Mock(return_value=versions_content)
+
+        catalog.find_and_save_plugin_versions_json("plugin1", "plugin1", repo_url, {}, mock_repo)
+
+        saved_file = tmp_path / "catalog" / "plugin1" / "versions.json"
+        assert saved_file.exists()
+        assert saved_file.read_text(encoding="utf-8") == versions_content
+
+    def test_find_and_save_plugin_versions_json_search_returns_none(self, tmp_path, mock_github_env):
+        """Test find_and_save_plugin_versions_json when search returns None."""
+        catalog = PluginCatalog()
+        catalog.catalog_folder = str(tmp_path / "catalog")
+        catalog._search_github_code_for_versions_json = Mock(return_value=None)
+
+        mock_repo = Mock()
+        repo_url = httpx.URL("https://github.com/org/repo")
+
+        result = catalog.find_and_save_plugin_versions_json("plugin1", "plugin1", repo_url, {}, mock_repo)
+
+        assert result is None
+        assert not (tmp_path / "catalog" / "plugin1" / "versions.json").exists()
+
+
 class TestPluginCatalogLoadManifestFile:
     """Tests for _load_manifest_file method."""
 
@@ -1883,6 +1975,232 @@ class TestPluginCatalogFindRequirementsInExtractedPackage:
         
         assert result == custom_req
         assert result.exists()
+
+
+class TestPluginCatalogFindAndLoadVersionsJson:
+    """Tests for _find_and_load_versions_json method."""
+
+    def test_find_and_load_versions_json_non_isolated_success(self, tmp_path, mock_github_env):
+        """Test _find_and_load_versions_json for non-isolated plugin with versions.json."""
+        catalog = PluginCatalog()
+        catalog.catalog_folder = str(tmp_path / "catalog")
+        
+        # Create a plugin path with versions.json
+        plugin_path = tmp_path / "plugin_package"
+        plugin_path.mkdir()
+        versions_json = plugin_path / "versions.json"
+        versions_data = {"versions": [{"version": "1.0.0", "date": "2024-01-01"}]}
+        versions_json.write_text(json.dumps(versions_data))
+        
+        manifest = create_test_manifest(name="test_plugin", kind="native")
+        
+        catalog._find_and_load_versions_json(manifest, plugin_path, "test_plugin")
+        
+        # Check that versions.json was saved to catalog
+        catalog_versions = Path(catalog.catalog_folder) / "test_plugin" / "versions.json"
+        assert catalog_versions.exists()
+        saved_data = json.loads(catalog_versions.read_text())
+        assert saved_data == versions_data
+
+    def test_find_and_load_versions_json_non_isolated_no_file(self, tmp_path, mock_github_env):
+        """Test _find_and_load_versions_json for non-isolated plugin without versions.json."""
+        with patch("cpex.tools.catalog.logger") as mock_logger:
+            catalog = PluginCatalog()
+            catalog.catalog_folder = str(tmp_path / "catalog")
+            
+            # Create a plugin path without versions.json
+            plugin_path = tmp_path / "plugin_package"
+            plugin_path.mkdir()
+            
+            manifest = create_test_manifest(name="test_plugin", kind="native")
+            
+            catalog._find_and_load_versions_json(manifest, plugin_path, "test_plugin")
+            
+            # Check that no versions.json was saved to catalog
+            catalog_versions = Path(catalog.catalog_folder) / "test_plugin" / "versions.json"
+            assert not catalog_versions.exists()
+            mock_logger.debug.assert_called()
+
+    def test_find_and_load_versions_json_isolated_success(self, tmp_path, mock_github_env):
+        """Test _find_and_load_versions_json for isolated_venv plugin."""
+        catalog = PluginCatalog()
+        catalog.catalog_folder = str(tmp_path / "catalog")
+        
+        # Create a venv path
+        venv_path = tmp_path / ".venv"
+        venv_path.mkdir()
+        
+        # Mock the subprocess call to find package path
+        mock_package_path = tmp_path / "venv_package"
+        mock_package_path.mkdir()
+        versions_json = mock_package_path / "versions.json"
+        versions_data = {"versions": [{"version": "2.0.0", "date": "2024-02-01"}]}
+        versions_json.write_text(json.dumps(versions_data))
+        
+        manifest = create_test_manifest(name="test_plugin", kind="isolated_venv")
+        
+        with (
+            patch.object(catalog, "_get_venv_python_executable", return_value="/fake/python"),
+            patch("cpex.tools.catalog.subprocess.run") as mock_run,
+        ):
+            mock_result = Mock()
+            mock_result.returncode = 0
+            mock_result.stdout = str(mock_package_path)
+            mock_result.stderr = ""
+            mock_run.return_value = mock_result
+            
+            catalog._find_and_load_versions_json(manifest, venv_path, "test_plugin")
+        
+        # Check that versions.json was saved to catalog
+        catalog_versions = Path(catalog.catalog_folder) / "test_plugin" / "versions.json"
+        assert catalog_versions.exists()
+        saved_data = json.loads(catalog_versions.read_text())
+        assert saved_data == versions_data
+
+    def test_find_and_load_versions_json_isolated_subprocess_failure(self, tmp_path, mock_github_env):
+        """Test _find_and_load_versions_json for isolated_venv when subprocess fails."""
+        with patch("cpex.tools.catalog.logger") as mock_logger:
+            catalog = PluginCatalog()
+            catalog.catalog_folder = str(tmp_path / "catalog")
+            
+            venv_path = tmp_path / ".venv"
+            venv_path.mkdir()
+            
+            manifest = create_test_manifest(name="test_plugin", kind="isolated_venv")
+            
+            with patch("cpex.tools.catalog.subprocess.run") as mock_run:
+                mock_result = Mock()
+                mock_result.returncode = 1
+                mock_result.stdout = ""
+                mock_result.stderr = "NOT_FOUND"
+                mock_run.return_value = mock_result
+                
+                catalog._find_and_load_versions_json(manifest, venv_path, "test_plugin")
+            
+            # Check that no versions.json was saved
+            catalog_versions = Path(catalog.catalog_folder) / "test_plugin" / "versions.json"
+            assert not catalog_versions.exists()
+            mock_logger.warning.assert_called()
+
+    def test_find_and_load_versions_json_none_plugin_path(self, tmp_path, mock_github_env):
+        """Test _find_and_load_versions_json with None plugin_path."""
+        catalog = PluginCatalog()
+        catalog.catalog_folder = str(tmp_path / "catalog")
+        
+        manifest = create_test_manifest(name="test_plugin", kind="native")
+        
+        # Should handle None gracefully
+        catalog._find_and_load_versions_json(manifest, None, "test_plugin")
+        
+        catalog_versions = Path(catalog.catalog_folder) / "test_plugin" / "versions.json"
+        assert not catalog_versions.exists()
+
+    def test_find_and_load_versions_json_exception_handling(self, tmp_path, mock_github_env):
+        """Test _find_and_load_versions_json handles exceptions gracefully."""
+        with patch("cpex.tools.catalog.logger") as mock_logger:
+            catalog = PluginCatalog()
+            catalog.catalog_folder = str(tmp_path / "catalog")
+            
+            plugin_path = tmp_path / "plugin_package"
+            plugin_path.mkdir()
+            
+            manifest = create_test_manifest(name="test_plugin", kind="native")
+            
+            # Create a versions.json that will cause an error when reading
+            versions_json = plugin_path / "versions.json"
+            versions_json.write_text("invalid json {{{")
+            
+            catalog._find_and_load_versions_json(manifest, plugin_path, "test_plugin")
+            
+            mock_logger.warning.assert_called()
+
+
+class TestPluginCatalogGetVenvPythonExecutable:
+    """Tests for _get_venv_python_executable method."""
+
+    def test_get_venv_python_executable_unix(self, tmp_path, mock_github_env):
+        """Test _get_venv_python_executable on Unix-like systems."""
+        catalog = PluginCatalog()
+        
+        venv_path = tmp_path / ".venv"
+        venv_path.mkdir()
+        bin_dir = venv_path / "bin"
+        bin_dir.mkdir()
+        python_exe = bin_dir / "python"
+        python_exe.touch()
+        
+        with patch("sys.platform", "linux"):
+            result = catalog._get_venv_python_executable(venv_path)
+            assert result == str(python_exe)
+
+    def test_get_venv_python_executable_windows(self, tmp_path, mock_github_env):
+        """Test _get_venv_python_executable on Windows."""
+        catalog = PluginCatalog()
+        
+        venv_path = tmp_path / ".venv"
+        venv_path.mkdir()
+        scripts_dir = venv_path / "Scripts"
+        scripts_dir.mkdir()
+        python_exe = scripts_dir / "python.exe"
+        python_exe.touch()
+        
+        with patch("sys.platform", "win32"):
+            result = catalog._get_venv_python_executable(venv_path)
+            assert result == str(python_exe)
+
+    def test_get_venv_python_executable_not_found(self, tmp_path, mock_github_env):
+        """Test _get_venv_python_executable when executable doesn't exist."""
+        catalog = PluginCatalog()
+        
+        venv_path = tmp_path / ".venv"
+        venv_path.mkdir()
+        
+        with pytest.raises(FileNotFoundError, match="Python executable not found"):
+            catalog._get_venv_python_executable(venv_path)
+
+
+class TestPluginCatalogInstallFromPypiWithVersionsJson:
+    """Tests for install_from_pypi integration with versions.json."""
+
+    def test_install_from_pypi_calls_find_and_load_versions_json(self, tmp_path, mock_github_env):
+        """Test that install_from_pypi calls _find_and_load_versions_json."""
+        catalog = PluginCatalog()
+        catalog.catalog_folder = str(tmp_path / "catalog")
+        
+        # Create temporary package structure
+        temp_extract = tmp_path / "temp_extract"
+        temp_extract.mkdir()
+        package_dir = temp_extract / "test_plugin"
+        package_dir.mkdir()
+        
+        manifest_path = package_dir / "plugin-manifest.yaml"
+        manifest_data = {
+            "name": "test_plugin",
+            "version": "1.0.0",
+            "kind": "native",
+            "description": "Test",
+            "author": "Test",
+            "tags": ["test"],
+            "available_hooks": ["tools"],
+            "default_config": {}
+        }
+        manifest_path.write_text(yaml.dump(manifest_data))
+        
+        with (
+            patch.object(catalog, "_download_package_to_temp", return_value=temp_extract),
+            patch.object(catalog, "_install_package"),
+            patch.object(catalog, "find_package_path", return_value=package_dir),
+            patch.object(catalog, "_find_and_load_versions_json") as mock_find_versions,
+            patch.object(catalog, "update_plugin_version_registry"),
+        ):
+            manifest, plugin_path = catalog.install_from_pypi("test_plugin")
+            
+            # Verify _find_and_load_versions_json was called
+            mock_find_versions.assert_called_once()
+            call_args = mock_find_versions.call_args
+            assert call_args[0][0].name == "test_plugin"  # manifest
+            assert call_args[0][1] == package_dir  # plugin_path
+            assert call_args[0][2] == "test_plugin"  # package_name
 
 
 # Made with Bob

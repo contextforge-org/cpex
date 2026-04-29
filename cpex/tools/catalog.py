@@ -103,7 +103,7 @@ class PluginCatalog:
             manifest_file=str(relpath),
             released=datetime.datetime.now(datetime.timezone.utc).isoformat() + "Z",
         )
-        file_path = Path(self.catalog_folder) / manifest.name / "plugin_version_registry.json"
+        file_path = Path(self.catalog_folder) / manifest.name / "versions.json"
         # Ensure the directory exists
         file_path.parent.mkdir(parents=True, exist_ok=True)
         if file_path.exists():
@@ -111,13 +111,37 @@ class PluginCatalog:
                 plugin_version_registry = PluginVersionRegistry(**json.load(f))
         else:
             plugin_version_registry = PluginVersionRegistry(versions=[])
-        if plugin_version not in plugin_version_registry.versions:
+        found = False
+        latest = None
+        for pv in plugin_version_registry.versions:
+            if pv.version == plugin_version.version:
+                found = True
+                if latest is None:
+                    latest = pv
+                else:
+                    if latest.version < plugin_version.version:
+                        latest = plugin_version
+            else:
+                if latest is None:
+                    latest = pv
+                else:
+                    if latest.version < pv.version:
+                        latest = pv
+
+        if not found:
             plugin_version_registry.versions.append(plugin_version)
-            plugin_version_registry.latest = plugin_version
-            file_path.write_text(
-                json.dumps(plugin_version_registry.model_dump(mode="json"), indent=2),
-                encoding="utf-8",
-            )
+            if plugin_version_registry.latest is None:
+                plugin_version_registry.latest = plugin_version
+            else:
+                plugin_version_registry.latest = latest
+        else:
+            if plugin_version_registry.latest != latest:
+                plugin_version_registry.latest = plugin_version
+        # Write the updated version registry to the file
+        file_path.write_text(
+            json.dumps(plugin_version_registry.model_dump(mode="json"), indent=2),
+            encoding="utf-8",
+        )
 
     def find_package_path(self, package_name: str) -> Path:
         """Locate installed package directory using importlib.metadata.
@@ -235,7 +259,50 @@ class PluginCatalog:
         except Exception as e:
             logger.error("Failed to download file: %s status_code: %d", item["path"], str(e))
 
-    def _search_github_code(self, repo_path: str, member: str, headers) -> list[dict] | None:
+    def _search_github_code_for_versions_json(self, repo_path: str, member: str | None, headers) -> list[dict] | None:
+        """Search GitHub for plugin-manifest*.yaml files in a specific path using PyGithub API.
+
+        Args:
+            repo_path: Repository path (e.g., 'owner/repo')
+            member: Directory path within the repository
+            headers: HTTP headers for authentication (kept for compatibility but not used)
+
+        Returns:
+            List of search result items as dicts with 'name' and 'git_url' keys, or None if request failed
+        """
+        try:
+            # Build search query for PyGithub - search for files starting with plugin-manifest and ending with .yaml
+            # Note: GitHub search doesn't support wildcards in filename, so we search broadly and filter results
+            if member is not None:
+                query = f"repo:{repo_path} path:{member} filename:versions extension:json"
+            else:
+                query = f"repo:{repo_path} filename:versions extension:json"
+            # Use PyGithub's search_code method
+            search_results = self.gh.search_code(query=query)
+
+            logger.info("Found %d versions.json files in %s/%s", search_results.totalCount, repo_path, member)
+
+            # Convert PyGithub ContentFile objects to dict format compatible with existing code
+            items = []
+            for content_file in search_results:
+                # Filter to only include files that start with "plugin-manifest" and end with ".yaml"
+                if content_file.name.startswith("versions") and content_file.name.endswith(".json"):
+                    items.append(
+                        {
+                            "name": content_file.name,
+                            "path": content_file.path,
+                            "git_url": content_file.git_url,
+                            "html_url": content_file.html_url,
+                        }
+                    )
+
+            return items
+
+        except Exception as e:
+            logger.error("Catalog update failed with error: %s", str(e))
+            return None
+
+    def _search_github_code(self, repo_path: str, member: str | None, headers) -> list[dict] | None:
         """Search GitHub for plugin-manifest*.yaml files in a specific path using PyGithub API.
 
         Args:
@@ -278,7 +345,9 @@ class PluginCatalog:
             logger.error("Catalog update failed with error: %s", str(e))
             return None
 
-    def _transform_manifest_data(self, manifest_content: dict, name: str, member: str, repo_url: httpx.URL) -> dict:
+    def _transform_manifest_data(
+        self, manifest_content: dict, name: str, member: str | None, repo_url: httpx.URL
+    ) -> dict:
         """Apply standard transformations to manifest data.
 
         Args:
@@ -354,6 +423,45 @@ class PluginCatalog:
 
         return True
 
+    def _process_version_item(
+        self, item: dict, member: str, name: str, repo_url: httpx.URL, headers, relpath, repo_path, gh_repo
+    ) -> None:
+        """Find plugin-versions.json files relative to the supplied member folder,
+        download and save the manifest, updating the monorepo's package_folder, package_source and repo_url attributes
+        Args:
+            member: Directory path within the repository
+            name: Plugin name
+            repo_url: Repository URL
+            headers: HTTP headers for authentication
+        """
+        self.create_output_folder()
+        self.create_catalog_folder(name)
+        version_data = self.download_file(repo_path=repo_path, item=item, headers=headers, gh_repo=gh_repo)
+        relpath.write_text(version_data, encoding="utf-8")
+
+    def find_and_save_plugin_versions_json(self, member: str, name: str, repo_url: httpx.URL, headers, gh_repo) -> None:
+        """Find plugin-versions.json files relative to the supplied member folder,
+        download and save the manifest, updating the monorepo's package_folder, package_source and repo_url attributes
+        Args:
+           member: Directory path within the repository
+           name: Plugin name
+           repo_url: Repository URL
+           headers: HTTP headers for authentication
+           gh_repo: GitHub repository object
+        """
+        self.create_output_folder()
+        self.create_catalog_folder(name)
+
+        repo_path = repo_url.path.removeprefix("/")
+        items: list[dict[Any, Any]] | None = self._search_github_code_for_versions_json(
+            repo_path=repo_path, member=member, headers=headers
+        )
+        if items is None:
+            return None
+        for item in items:
+            relpath = Path(self.catalog_folder) / name / item["name"]
+            self._process_version_item(item, member, name, repo_url, headers, relpath, repo_path, gh_repo)
+
     def find_and_save_plugin_manifest(
         self, member: str, name: str, repo_url: httpx.URL, headers, gh_repo
     ) -> PluginManifest | None:
@@ -414,6 +522,11 @@ class PluginCatalog:
         # Parse the pyproject.toml
         project_data = tomllib.loads(pyproject_data)
 
+        # Find and save the versions.json file
+        self.find_and_save_plugin_versions_json(
+            member=member, name=project_data["project"]["name"], repo_url=repo_url, headers=headers, gh_repo=gh_repo
+        )
+
         # Find and save the plugin manifest
         self.find_and_save_plugin_manifest(
             member=member, name=project_data["project"]["name"], repo_url=repo_url, headers=headers, gh_repo=gh_repo
@@ -471,7 +584,7 @@ class PluginCatalog:
             return
 
         # Find all plugin-manifest.yaml files recursively
-        manifest_files = list(output_path.rglob("plugin-manifest.yaml"))
+        manifest_files = list(output_path.rglob("plugin-manifest*.yaml"))
 
         if not manifest_files:
             logger.warning("No plugin-manifest.yaml files found in '%s'.", self.catalog_folder)
@@ -943,6 +1056,112 @@ class PluginCatalog:
         except Exception as e:
             raise RuntimeError(f"Failed to initialize isolated venv for {manifest.name}: {str(e)}") from e
 
+    def _find_and_load_versions_json(
+        self, manifest: PluginManifest, plugin_path: Path | None, plugin_package_name: str
+    ) -> Path | None:
+        """Find and load versions.json file from installed package.
+
+        Args:
+            manifest: The plugin manifest
+            plugin_path: Path to the installed plugin (None for isolated_venv before installation)
+            plugin_package_name: The package name
+
+        This method handles two cases:
+        1. For non-isolated plugins: Uses the plugin_path directly
+        2. For isolated_venv plugins: Runs a subprocess in the venv to find the package path
+        """
+        try:
+            actual_plugin_path = plugin_path
+
+            # For isolated_venv plugins, we need to find the package path within the venv
+            if manifest.kind == "isolated_venv" and plugin_path:
+                # The plugin_path for isolated_venv is the venv directory
+                # We need to find where the package is actually installed within it
+                venv_path = plugin_path
+                python_executable = self._get_venv_python_executable(venv_path / ".venv")
+
+                # Create a simple Python script to find the package path
+                find_package_script = f"""
+import sys
+import importlib.metadata
+from pathlib import Path
+
+package_name = "{plugin_package_name}"
+try:
+    for dist in importlib.metadata.distributions():
+        if dist.name == package_name or dist.metadata.get("Name") == package_name:
+            if dist.files:
+                for afile in dist.files:
+                    if afile.name == "versions.json":
+                        located_path = dist.locate_file(afile)
+                        print(str(Path(located_path).parent))
+                        sys.exit(0)
+    print("NOT_FOUND", file=sys.stderr)
+    sys.exit(1)
+except Exception as e:
+    print(f"ERROR: {{e}}", file=sys.stderr)
+    sys.exit(1)
+"""
+
+                # Execute the script in the isolated venv
+                result = subprocess.run(
+                    [python_executable, "-c", find_package_script],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+
+                if result.returncode == 0 and result.stdout.strip():
+                    actual_plugin_path = Path(result.stdout.strip())
+                    logger.debug("Found package path in isolated venv: %s", actual_plugin_path)
+                else:
+                    logger.warning(
+                        "Could not find versions.json in isolated venv for %s: %s",
+                        plugin_package_name,
+                        result.stderr,
+                    )
+                    return
+
+            # Now load the versions.json file if it exists
+            if actual_plugin_path:
+                versions_json_path = actual_plugin_path / "versions.json"
+                if versions_json_path.exists():
+                    logger.info("Found versions.json at %s", versions_json_path)
+                    with open(versions_json_path, "r", encoding="utf8") as f:
+                        versions_data = json.load(f)
+                    # Save to catalog
+                    catalog_versions_path = Path(self.catalog_folder) / manifest.name / "versions.json"
+                    catalog_versions_path.parent.mkdir(parents=True, exist_ok=True)
+                    with open(catalog_versions_path, "w", encoding="utf8") as f:
+                        json.dump(versions_data, f, indent=2)
+                    logger.info("Saved versions.json to catalog: %s", catalog_versions_path)
+                    return actual_plugin_path
+                else:
+                    logger.debug("No versions.json found at %s", versions_json_path)
+
+        except Exception as e:
+            logger.warning("Failed to find/load versions.json for %s: %s", plugin_package_name, e)
+
+    def _get_venv_python_executable(self, venv_path: Path) -> str:
+        """Get the Python executable path for a virtual environment.
+
+        Args:
+            venv_path: Path to the virtual environment directory
+
+        Returns:
+            Path to the Python executable as a string
+        """
+        if sys.platform == "win32":
+            python_exe = venv_path / "Scripts" / "python.exe"
+        else:
+            python_exe = venv_path / "bin" / "python"
+
+        if not python_exe.exists():
+            raise FileNotFoundError(f"Python executable not found at {python_exe}")
+
+        return str(python_exe)
+
     def install_from_pypi(
         self, plugin_package_name: str, version_constraint: str | None = None, use_pytest: bool = False
     ) -> tuple[PluginManifest, Path | None]:
@@ -955,6 +1174,8 @@ class PluginCatalog:
         4. For isolated_venv plugins: initializes the target venv (plugin auto-installs via requirements.txt)
         5. For other plugins: installs normally into CLI's venv
         6. Persists the manifest to the plugin catalog
+        7. Finds and saves versions.json if available
+        8. Updates the plugin version registry
 
         Args:
             plugin_package_name: The name of the package hosted on PyPI.
@@ -995,10 +1216,15 @@ class PluginCatalog:
 
             # Step 5: Persist to catalog
             self._persist_manifest(manifest, plugin_package_name)
-            # Step 6: Update the plugin version registry
+
+            # Step 6: Find and save versions.json if available
+            actual_plugin_path = self._find_and_load_versions_json(manifest, plugin_path, plugin_package_name)
+
+            # Step 7: Update the plugin version registry
             self.update_plugin_version_registry(manifest=manifest, relpath=plugin_path)
 
             logger.info("Successfully installed and cataloged %s", plugin_package_name)
+            plugin_path = actual_plugin_path if actual_plugin_path is not None else plugin_path
             return manifest, plugin_path
 
         finally:
