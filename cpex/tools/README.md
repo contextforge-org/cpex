@@ -7,16 +7,18 @@
                                                                                                                                                                                                                                                                                                       
  List, search, install or uninstall plugins.                                                                                                                                                                                                                                                          
                                                                                                                                                                                                                                                                                                       
- default install type is monorepo                                                                                                                                                                                                                                                                     
- Examples:                                                                                                                                                                                                                                                                                            
- python cpex/tools/cli.py plugin info pii                                                                                                                                                                                                                                                             
- python cpex/tools/cli.py plugin search pii                                                                                                                                                                                                                                                           
- python cpex/tools/cli.py plugin --type monorepo search pii                                                                                                                                                                                                                                           
- python cpex/tools/cli.py plugin --type monorepo install cpex-pii-filter                                                                                                                                                                                                                              
- python cpex/tools/cli.py plugin --type pypi install "ExamplePlugin@>=0.1.0"                                                                                                                                                                                                                          
- python cpex/tools/cli.py plugin --type test-pypi install "cpex-plugin-test@>=0.1.1"                                                                                                                                                                                                                  
- python cpex/tools/cli.py plugin uninstall cpex-pii-filter                                                                                                                                                                                                                                            
-                                                                                                                                                                                                                                                                                                      
+default install type is monorepo                                                                                                                                
+ Examples:                                                                                                                                                       
+ python cpex/tools/cli.py plugin info pii                                                                                                                        
+ python cpex/tools/cli.py plugin search pii                                                                                                                      
+ python cpex/tools/cli.py plugin --type monorepo search pii                                                                                                      
+ python cpex/tools/cli.py plugin --type monorepo install cpex-pii-filter                                                                                         
+ python cpex/tools/cli.py plugin --type pypi install "ExamplePlugin@>=0.1.0"                                                                                     
+ python cpex/tools/cli.py plugin --type test-pypi install "cpex-test-plugin@>=0.1.1"                                                                             
+ python cpex/tools/cli.py plugin --type git install "cpex-test-plugin @ git+https://github.com/tedhabeck/cpex-test-plugin@main"                                  
+ python cpex/tools/cli.py plugin versions cpex-test-plugin                                                                                                       
+ python cpex/tools/cli.py plugin uninstall cpex-pii-filter.                                                                                                      
+
 ╭─ Arguments ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
 │   cmd_action      [CMD_ACTION]  One of: list|info|install|search|uninstall                                                                                                                                                                                                                         │
 │   source          [SOURCE]      The pypi, git, or local folder where the plugin resides                                                                                                                                                                                                            │
@@ -112,6 +114,16 @@ sequenceDiagram
      participant pypi (Python Package Index)
      User->>cli: python cpex/tools/cli.py plugin --type pypi install <package_name><version_constaint>
      cli->>catalog: install_from_pypi(<package_name><version_constraint>
+     catalog->>subprocess: python -m pip download <package_name><version_constraint> to temp
+     subprocess->>python: -m pip download <package_name><version_constraint> to temp
+     python->>pip: download <package_name><version_constraint>
+     pip->>pypi (Python Package Index): download <package_name> to temp
+     pypi (Python Package Index)->>python: downloaded OK
+     python->>subprocess: rc=0
+     subprocess->>catalog: extracted_folder
+     catalog->>catalog: Loads and parse the plugin-manifest.yaml
+     catalog->>catalog: if manifest.kind is isolated_venv initialize isolated venv and STOP here.
+     catalog->>cli: PluginManifest (isolated_venv)
      catalog->>subprocess: python -m pip install <package_name><version_constraint>
      subprocess->>python: -m pip install <package_name><version_constraint>
      python->>pip: install <package_name><version_constraint>
@@ -162,12 +174,12 @@ Example output:
 {
   "name": "cpex-test-plugin",
   "kind": "isolated_venv",
-  "version": "0.1.1",
-  "installation_type": "pypi",
-  "installation_path": "/Users/habeck/.venv/cpex/lib/python3.13/site-packages/cpex_test_plugin",
-  "installed_at": "2026-04-20T22:09:52.198619+00:00Z",
+  "version": "0.2.0",
+  "installation_type": "monorepo",
+  "installation_path": "/Users/habeck/tedhabeck/contextforge-plugins-framework/plugins/cpex_test_plugin/.venv/lib/python3.13/site-packages/cpex_test_plugin",
+  "installed_at": "2026-05-01T00:14:26.123924+00:00Z",
   "installed_by": "habeck",
-  "package_source": "cpex-test-plugin",
+  "package_source": "https://github.com/tedhabeck/cpex-test-plugin",
   "editable": false
 }
 ```
