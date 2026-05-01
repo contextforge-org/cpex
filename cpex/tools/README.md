@@ -1,3 +1,25 @@
+## Before you begin
+
+Update the environment variables in .env
+
+All values except PLUGINS_GITHUB_TOKEN have defaults.
+
+```dotenv
+### Plugin installation
+# Comma Separated Values used by install with --type monorepo
+# The default value is https://github.com/ibm/cpex-plugins
+# PLUGINS_REPO_URLS="https://github.com/ibm/cpex-plugins"
+
+# registry path (default shown below)
+# PLUGIN_REGISTRY_FOLDER=data
+
+# Github API (default shown below)
+# PLUGINS_GITHUB_API=api.github.com
+
+# PLUGINS_GITHUB_TOKEN=<github token>
+### end Plugin installation
+```
+
 ## Plugin installation using the cli
 
 ```bash
