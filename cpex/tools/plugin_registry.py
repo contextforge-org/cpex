@@ -38,7 +38,13 @@ class PluginRegistry:
             self.registry = InstalledPluginRegistry()
 
     def update(
-        self, manifest: PluginManifest, installation_type: str, catalog: PluginCatalog, git_user_name: str, plugin_path: Path | None = None
+        self,
+        manifest: PluginManifest,
+        installation_type: str,
+        catalog: PluginCatalog,
+        git_user_name: str,
+        plugin_path: Path | None = None,
+        editable: bool = False,
     ) -> None:
         """
         Given a plugin manifest, register it in the plugin registry.
@@ -61,6 +67,16 @@ class PluginRegistry:
             if manifest.package_info is None:
                 raise RuntimeError("PluginManifest.package_info can not be None.")
             package_source = manifest.package_info.pypi_package
+        elif installation_type == "local":
+            if manifest.local is None:
+                raise RuntimeError("PluginManifest local path can not be None.")
+            package_source = manifest.local
+        elif installation_type == "git":
+            if manifest.git_repo is None:
+                raise RuntimeError("PluginManifest.git_repo can not be None.")
+            package_source = manifest.name + " @ " + manifest.git_repo.git_repository
+            if manifest.git_repo.git_branch_tag_commit is not None:
+                package_source += f"@{manifest.git_repo.git_branch_tag_commit}"
         else:
             raise ValueError(f"Invalid installation type: {installation_type}")
 
@@ -75,7 +91,7 @@ class PluginRegistry:
             installed_at=datetime.datetime.now(datetime.timezone.utc).isoformat() + "Z",
             installed_by=git_user_name,
             package_source=package_source,
-            editable=False,
+            editable=editable,
         )
         # add the newly downloaded plugin to the registry
         self.registry.register_plugin(ipi)

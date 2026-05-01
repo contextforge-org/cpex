@@ -1499,14 +1499,17 @@ class TestPluginCatalogFindManifestInExtractedPackage:
 class TestPluginCatalogUninstallPackage:
     """Tests for uninstall_package method."""
 
-    def test_uninstall_package_success(self, mock_github_env):
-        """Test successful package uninstallation."""
+    def test_uninstall_package_success_native(self, mock_github_env):
+        """Test successful package uninstallation for native plugin."""
         catalog = PluginCatalog()
+        
+        # Create a native plugin manifest
+        manifest = create_test_manifest(kind="native")
         
         with patch('subprocess.run') as mock_run:
             mock_run.return_value = MagicMock(returncode=0)
             
-            result = catalog.uninstall_package("test_plugin")
+            result = catalog.uninstall_package("test_plugin", manifest)
             
             assert result is True
             mock_run.assert_called_once()
@@ -1515,30 +1518,105 @@ class TestPluginCatalogUninstallPackage:
             assert "uninstall" in call_args
             assert "-y" in call_args
             assert "test_plugin" in call_args
+            # Should use current python executable for native plugins
+            assert call_args[0] == catalog.python_executable
+
+    def test_uninstall_package_success_isolated_venv(self, tmp_path, mock_github_env):
+        """Test successful package uninstallation for isolated_venv plugin."""
+        catalog = PluginCatalog()
+        catalog.plugin_folder = str(tmp_path / "plugins")
+        
+        # Create an isolated_venv plugin manifest
+        manifest = create_test_manifest(kind="isolated_venv")
+        
+        # Create mock venv structure
+        plugin_path = tmp_path / "plugins" / "test_plugin"
+        plugin_path.mkdir(parents=True)
+        venv_path = plugin_path / ".venv"
+        venv_bin = venv_path / "bin"
+        venv_bin.mkdir(parents=True)
+        venv_python = venv_bin / "python"
+        venv_python.touch()
+        
+        # Mock the IsolatedVenvPlugin
+        mock_isolated_plugin = MagicMock()
+        mock_isolated_plugin.plugin_path = plugin_path
+        
+        with (
+            patch('subprocess.run') as mock_run,
+            patch('cpex.framework.isolated.client.IsolatedVenvPlugin', return_value=mock_isolated_plugin),
+            patch.object(catalog, '_get_venv_python_executable', return_value=str(venv_python)),
+        ):
+            mock_run.return_value = MagicMock(returncode=0)
+            
+            result = catalog.uninstall_package("test_plugin", manifest)
+            
+            assert result is True
+            mock_run.assert_called_once()
+            call_args = mock_run.call_args[0][0]
+            assert "pip" in call_args
+            assert "uninstall" in call_args
+            assert "-y" in call_args
+            assert "test_plugin" in call_args
+            # Should use venv python executable for isolated plugins
+            assert call_args[0] == str(venv_python)
 
     def test_uninstall_package_subprocess_error(self, mock_github_env):
         """Test subprocess error during uninstallation."""
         catalog = PluginCatalog()
+        manifest = create_test_manifest(kind="native")
         
         with patch('subprocess.run') as mock_run:
             mock_run.side_effect = subprocess.CalledProcessError(1, "pip", stderr="Uninstall failed")
             
             with pytest.raises(RuntimeError) as exc_info:
-                catalog.uninstall_package("test_plugin")
+                catalog.uninstall_package("test_plugin", manifest)
             
             assert "Failed to uninstall" in str(exc_info.value)
 
     def test_uninstall_package_unexpected_error(self, mock_github_env):
         """Test unexpected error during uninstallation."""
         catalog = PluginCatalog()
+        manifest = create_test_manifest(kind="native")
         
         with patch('subprocess.run') as mock_run:
             mock_run.side_effect = Exception("Unexpected error")
             
             with pytest.raises(RuntimeError) as exc_info:
-                catalog.uninstall_package("test_plugin")
+                catalog.uninstall_package("test_plugin", manifest)
             
             assert "Unexpected error uninstalling" in str(exc_info.value)
+
+    def test_uninstall_package_isolated_venv_error(self, tmp_path, mock_github_env):
+        """Test error during isolated_venv plugin uninstallation."""
+        catalog = PluginCatalog()
+        catalog.plugin_folder = str(tmp_path / "plugins")
+        manifest = create_test_manifest(kind="isolated_venv")
+        
+        # Create mock venv structure
+        plugin_path = tmp_path / "plugins" / "test_plugin"
+        plugin_path.mkdir(parents=True)
+        venv_path = plugin_path / ".venv"
+        venv_bin = venv_path / "bin"
+        venv_bin.mkdir(parents=True)
+        venv_python = venv_bin / "python"
+        venv_python.touch()
+        
+        # Mock the IsolatedVenvPlugin
+        mock_isolated_plugin = MagicMock()
+        mock_isolated_plugin.plugin_path = plugin_path
+        
+        with (
+            patch('subprocess.run') as mock_run,
+            patch('cpex.framework.isolated.client.IsolatedVenvPlugin', return_value=mock_isolated_plugin),
+            patch.object(catalog, '_get_venv_python_executable', return_value=str(venv_python)),
+        ):
+            mock_run.side_effect = subprocess.CalledProcessError(1, "pip", stderr="Uninstall failed")
+            
+            with pytest.raises(RuntimeError) as exc_info:
+                catalog.uninstall_package("test_plugin", manifest)
+            
+            assert "Failed to uninstall" in str(exc_info.value)
 
 
 class TestPluginCatalogInstallFolderViaPipIsolated:
@@ -2204,3 +2282,811 @@ class TestPluginCatalogInstallFromPypiWithVersionsJson:
 
 
 # Made with Bob
+
+
+class TestPluginCatalogInstallFromLocal:
+    """Tests for PluginCatalog.install_from_local method."""
+
+    def test_install_from_local_manifest_in_root(self, tmp_path, mock_github_env):
+        """Test installing from local source with manifest in root directory."""
+        catalog = PluginCatalog()
+        catalog.catalog_folder = str(tmp_path / "catalog")
+        
+        # Create source directory with pyproject and manifest in root
+        source_dir = tmp_path / "my_plugin"
+        source_dir.mkdir()
+        (source_dir / "pyproject.toml").write_text('[project]\nname = "my_plugin"\nversion = "1.0.0"\n')
+        
+        manifest_data = {
+            "name": "my_plugin",
+            "version": "1.0.0",
+            "kind": "native",
+            "description": "Test plugin",
+            "author": "Test Author",
+            "tags": ["test"],
+            "available_hooks": ["tools"],
+            "default_config": {},
+        }
+        manifest_file = source_dir / "plugin-manifest.yaml"
+        manifest_file.write_text(yaml.safe_dump(manifest_data))
+        
+        with (
+            patch("cpex.tools.catalog.subprocess.run") as mock_subprocess,
+            patch.object(catalog, "find_package_path", return_value=source_dir),
+            patch.object(catalog, "_persist_manifest"),
+            patch.object(catalog, "_find_and_load_versions_json", return_value=source_dir),
+            patch.object(catalog, "update_plugin_version_registry"),
+        ):
+            manifest, plugin_path = catalog.install_from_local(source_dir)
+            
+            # Verify subprocess was called with pip install -e
+            mock_subprocess.assert_called_once()
+            call_args = mock_subprocess.call_args[0][0]
+            assert "-m" in call_args
+            assert "pip" in call_args
+            assert "install" in call_args
+            assert "-e" in call_args
+            assert str(source_dir) in call_args
+            
+            assert manifest.name == "my_plugin"
+            assert manifest.kind == "native"
+            assert plugin_path == source_dir
+
+    def test_install_from_local_manifest_in_subdirectory(self, tmp_path, mock_github_env):
+        """Test installing from local source with manifest in subdirectory."""
+        catalog = PluginCatalog()
+        catalog.catalog_folder = str(tmp_path / "catalog")
+        
+        # Create source directory with pyproject and manifest in subdirectory
+        source_dir = tmp_path / "my_plugin_project"
+        source_dir.mkdir()
+        plugin_subdir = source_dir / "my_plugin"
+        plugin_subdir.mkdir()
+        (plugin_subdir / "pyproject.toml").write_text('[project]\nname = "my_plugin"\nversion = "1.0.0"\n')
+        
+        manifest_data = {
+            "name": "my_plugin",
+            "version": "1.0.0",
+            "kind": "native",
+            "description": "Test plugin",
+            "author": "Test Author",
+            "tags": ["test"],
+            "available_hooks": ["tools"],
+            "default_config": {},
+        }
+        manifest_file = plugin_subdir / "plugin-manifest.yaml"
+        manifest_file.write_text(yaml.safe_dump(manifest_data))
+        
+        with (
+            patch("cpex.tools.catalog.subprocess.run") as mock_subprocess,
+            patch.object(catalog, "find_package_path", return_value=source_dir),
+            patch.object(catalog, "_persist_manifest"),
+            patch.object(catalog, "_find_and_load_versions_json", return_value=source_dir),
+            patch.object(catalog, "update_plugin_version_registry"),
+        ):
+            manifest, plugin_path = catalog.install_from_local(source_dir)
+            
+            assert manifest.name == "my_plugin"
+            mock_subprocess.assert_called_once()
+
+    def test_install_from_local_manifest_not_found(self, tmp_path, mock_github_env):
+        """Test error when manifest is not found in source or subdirectories."""
+        catalog = PluginCatalog()
+        
+        # Create source directory without pyproject or manifest
+        source_dir = tmp_path / "my_plugin"
+        source_dir.mkdir()
+        
+        with pytest.raises(FileNotFoundError, match="pyproject.toml not found"):
+            catalog.install_from_local(source_dir)
+
+    def test_install_from_local_isolated_venv(self, tmp_path, mock_github_env):
+        """Test installing an isolated_venv plugin from local source."""
+        catalog = PluginCatalog()
+        catalog.catalog_folder = str(tmp_path / "catalog")
+        catalog.plugin_folder = str(tmp_path / "plugins")
+        
+        # Create source directory with isolated_venv pyproject and manifest
+        source_dir = tmp_path / "my_isolated_plugin"
+        source_dir.mkdir()
+        (source_dir / "pyproject.toml").write_text('[project]\nname = "my_isolated_plugin"\nversion = "1.0.0"\n')
+        
+        manifest_data = {
+            "name": "my_isolated_plugin",
+            "version": "1.0.0",
+            "kind": "isolated_venv",
+            "description": "Test isolated plugin",
+            "author": "Test Author",
+            "tags": ["test"],
+            "available_hooks": ["tools"],
+            "default_config": {"requirements_file": "requirements.txt"},
+        }
+        manifest_file = source_dir / "plugin-manifest.yaml"
+        manifest_file.write_text(yaml.safe_dump(manifest_data))
+        
+        # Mock IsolatedVenvPlugin
+        mock_isolated_plugin = Mock()
+        mock_isolated_plugin.plugin_path = tmp_path / "plugins" / "my_isolated_plugin"
+        mock_isolated_plugin.plugin_path.mkdir(parents=True, exist_ok=True)
+        venv_path = mock_isolated_plugin.plugin_path / ".venv"
+        venv_path.mkdir(parents=True, exist_ok=True)
+        
+        # Create mock venv python executable
+        if sys.platform == "win32":
+            python_exe = venv_path / "Scripts" / "python.exe"
+        else:
+            python_exe = venv_path / "bin" / "python"
+        python_exe.parent.mkdir(parents=True, exist_ok=True)
+        python_exe.touch()
+        
+        with (
+            patch("cpex.framework.isolated.client.IsolatedVenvPlugin", return_value=mock_isolated_plugin),
+            patch("asyncio.run"),
+            patch("cpex.tools.catalog.subprocess.run") as mock_subprocess,
+            patch.object(catalog, "_persist_manifest"),
+            patch.object(catalog, "_find_and_load_versions_json", return_value=mock_isolated_plugin.plugin_path),
+            patch.object(catalog, "update_plugin_version_registry"),
+        ):
+            manifest, plugin_path = catalog.install_from_local(source_dir)
+            
+            # Verify subprocess was called with venv python
+            mock_subprocess.assert_called_once()
+            call_args = mock_subprocess.call_args[0][0]
+            assert str(python_exe) == call_args[0]
+            assert "-m" in call_args
+            assert "pip" in call_args
+            assert "install" in call_args
+            assert "-e" in call_args
+            assert str(source_dir) in call_args
+            
+            assert manifest.name == "my_isolated_plugin"
+            assert manifest.kind == "isolated_venv"
+            assert plugin_path == mock_isolated_plugin.plugin_path
+
+    def test_install_from_local_subprocess_error(self, tmp_path, mock_github_env):
+        """Test error handling when pip install fails."""
+        catalog = PluginCatalog()
+        catalog.catalog_folder = str(tmp_path / "catalog")
+        
+        # Create source directory with pyproject and manifest
+        source_dir = tmp_path / "my_plugin"
+        source_dir.mkdir()
+        (source_dir / "pyproject.toml").write_text('[project]\nname = "my_plugin"\nversion = "1.0.0"\n')
+        
+        manifest_data = {
+            "name": "my_plugin",
+            "version": "1.0.0",
+            "kind": "native",
+            "description": "Test plugin",
+            "author": "Test Author",
+            "tags": ["test"],
+            "available_hooks": ["tools"],
+            "default_config": {},
+        }
+        manifest_file = source_dir / "plugin-manifest.yaml"
+        manifest_file.write_text(yaml.safe_dump(manifest_data))
+        
+        with patch("cpex.tools.catalog.subprocess.run") as mock_subprocess:
+            mock_subprocess.side_effect = subprocess.CalledProcessError(
+                1, ["pip", "install"], stderr="Installation failed"
+            )
+            
+            with pytest.raises(RuntimeError, match="Failed to install plugin from"):
+                catalog.install_from_local(source_dir)
+
+    def test_install_from_local_invalid_manifest(self, tmp_path, mock_github_env):
+        """Test error handling when manifest is invalid."""
+        catalog = PluginCatalog()
+        
+        # Create source directory with pyproject and invalid manifest
+        source_dir = tmp_path / "my_plugin"
+        source_dir.mkdir()
+        (source_dir / "pyproject.toml").write_text('[project]\nname = "my_plugin"\nversion = "1.0.0"\n')
+        
+        manifest_file = source_dir / "plugin-manifest.yaml"
+        manifest_file.write_text("invalid: yaml: content:")
+        
+        with pytest.raises(RuntimeError, match="Failed to parse manifest YAML"):
+            catalog.install_from_local(source_dir)
+
+    def test_install_from_local_calls_persist_and_registry(self, tmp_path, mock_github_env):
+        """Test that install_from_local calls persist_manifest and update_plugin_version_registry."""
+        catalog = PluginCatalog()
+        catalog.catalog_folder = str(tmp_path / "catalog")
+        
+        # Create source directory with pyproject and manifest
+        source_dir = tmp_path / "my_plugin"
+        source_dir.mkdir()
+        (source_dir / "pyproject.toml").write_text('[project]\nname = "my_plugin"\nversion = "1.0.0"\n')
+        
+        manifest_data = {
+            "name": "my_plugin",
+            "version": "1.0.0",
+            "kind": "native",
+            "description": "Test plugin",
+            "author": "Test Author",
+            "tags": ["test"],
+            "available_hooks": ["tools"],
+            "default_config": {},
+        }
+        manifest_file = source_dir / "plugin-manifest.yaml"
+        manifest_file.write_text(yaml.safe_dump(manifest_data))
+        
+        with (
+            patch("cpex.tools.catalog.subprocess.run"),
+            patch.object(catalog, "find_package_path", return_value=source_dir),
+            patch.object(catalog, "_persist_manifest") as mock_persist,
+            patch.object(catalog, "_find_and_load_versions_json", return_value=source_dir) as mock_versions,
+            patch.object(catalog, "update_plugin_version_registry") as mock_registry,
+        ):
+            manifest, plugin_path = catalog.install_from_local(source_dir)
+            
+            # Verify all post-install steps were called
+            mock_persist.assert_called_once()
+            mock_versions.assert_called_once()
+            mock_registry.assert_called_once()
+            
+            # Verify the manifest was passed correctly
+            persist_call_args = mock_persist.call_args[0]
+            assert persist_call_args[0].name == "my_plugin"
+
+    def test_install_from_local_isolated_venv_initialization_error(self, tmp_path, mock_github_env):
+        """Test error handling when isolated venv initialization fails."""
+        catalog = PluginCatalog()
+        catalog.catalog_folder = str(tmp_path / "catalog")
+        catalog.plugin_folder = str(tmp_path / "plugins")
+        
+        # Create source directory with isolated_venv pyproject and manifest
+        source_dir = tmp_path / "my_isolated_plugin"
+        source_dir.mkdir()
+        (source_dir / "pyproject.toml").write_text('[project]\nname = "my_isolated_plugin"\nversion = "1.0.0"\n')
+        
+        manifest_data = {
+            "name": "my_isolated_plugin",
+            "version": "1.0.0",
+            "kind": "isolated_venv",
+            "description": "Test isolated plugin",
+            "author": "Test Author",
+            "tags": ["test"],
+            "available_hooks": ["tools"],
+            "default_config": {"requirements_file": "requirements.txt"},
+        }
+        manifest_file = source_dir / "plugin-manifest.yaml"
+        manifest_file.write_text(yaml.safe_dump(manifest_data))
+        
+        with (
+            patch("cpex.framework.isolated.client.IsolatedVenvPlugin") as mock_plugin_class,
+            patch("asyncio.run") as mock_asyncio_run,
+        ):
+            mock_asyncio_run.side_effect = Exception("Venv initialization failed")
+            
+            with pytest.raises(RuntimeError, match="Failed to install isolated_venv plugin"):
+                catalog.install_from_local(source_dir)
+
+    def test_install_from_local_fallback_to_source_path(self, tmp_path, mock_github_env):
+        """Test that source path is used as fallback when find_package_path returns None."""
+        catalog = PluginCatalog()
+        catalog.catalog_folder = str(tmp_path / "catalog")
+        
+        # Create source directory with pyproject and manifest
+        source_dir = tmp_path / "my_plugin"
+        source_dir.mkdir()
+        (source_dir / "pyproject.toml").write_text('[project]\nname = "my_plugin"\nversion = "1.0.0"\n')
+        
+        manifest_data = {
+            "name": "my_plugin",
+            "version": "1.0.0",
+            "kind": "native",
+            "description": "Test plugin",
+            "author": "Test Author",
+            "tags": ["test"],
+            "available_hooks": ["tools"],
+            "default_config": {},
+        }
+        manifest_file = source_dir / "plugin-manifest.yaml"
+        manifest_file.write_text(yaml.safe_dump(manifest_data))
+        
+        with (
+            patch("cpex.tools.catalog.subprocess.run"),
+            patch.object(catalog, "_persist_manifest"),
+            patch.object(catalog, "_find_and_load_versions_json", return_value=None),
+            patch.object(catalog, "update_plugin_version_registry"),
+        ):
+            manifest, plugin_path = catalog.install_from_local(source_dir)
+            
+            # Non-isolated installs now derive plugin_path from manifest location
+            assert plugin_path == source_dir
+
+    def test_install_from_local_with_versions_json(self, tmp_path, mock_github_env):
+        """Test that versions.json is found and loaded correctly."""
+        catalog = PluginCatalog()
+        catalog.catalog_folder = str(tmp_path / "catalog")
+        
+        # Create source directory with pyproject and manifest
+        source_dir = tmp_path / "my_plugin"
+        source_dir.mkdir()
+        (source_dir / "pyproject.toml").write_text('[project]\nname = "my_plugin"\nversion = "1.0.0"\n')
+        
+        manifest_data = {
+            "name": "my_plugin",
+            "version": "1.0.0",
+            "kind": "native",
+            "description": "Test plugin",
+            "author": "Test Author",
+            "tags": ["test"],
+            "available_hooks": ["tools"],
+            "default_config": {},
+        }
+        manifest_file = source_dir / "plugin-manifest.yaml"
+        manifest_file.write_text(yaml.safe_dump(manifest_data))
+        
+        # Create a different path that versions.json returns
+        actual_path = tmp_path / "actual_plugin_path"
+        actual_path.mkdir()
+        
+        with (
+            patch("cpex.tools.catalog.subprocess.run"),
+            patch.object(catalog, "find_package_path", return_value=source_dir),
+            patch.object(catalog, "_persist_manifest"),
+            patch.object(catalog, "_find_and_load_versions_json", return_value=actual_path),
+            patch.object(catalog, "update_plugin_version_registry"),
+        ):
+            manifest, plugin_path = catalog.install_from_local(source_dir)
+            
+            # Should return the actual path from versions.json
+            assert plugin_path == actual_path
+
+
+
+class TestPluginCatalogInstallFromGit:
+    """Tests for PluginCatalog.install_from_git method."""
+
+    def test_install_from_git_success_https(self, tmp_path, mock_github_env):
+        """Test successful installation from Git using HTTPS URL."""
+        catalog = PluginCatalog()
+        catalog.catalog_folder = str(tmp_path / "catalog")
+        
+        # Create mock extracted package with manifest
+        extract_dir = tmp_path / "extracted"
+        extract_dir.mkdir()
+        plugin_dir = extract_dir / "test_plugin"
+        plugin_dir.mkdir()
+        
+        manifest_data = {
+            "name": "test_plugin",
+            "version": "1.0.0",
+            "kind": "native",
+            "description": "Test plugin",
+            "author": "Test Author",
+            "tags": ["test"],
+            "available_hooks": ["tools"],
+            "default_config": {},
+        }
+        manifest_file = plugin_dir / "plugin-manifest.yaml"
+        manifest_file.write_text(yaml.safe_dump(manifest_data))
+        
+        # Create a mock archive
+        archive_path = tmp_path / "test_plugin-1.0.0.tar.gz"
+        with tarfile.open(archive_path, "w:gz") as tar:
+            tar.add(plugin_dir, arcname="test_plugin")
+        
+        with (
+            patch("cpex.tools.catalog.subprocess.run") as mock_subprocess,
+            patch("cpex.tools.catalog.tempfile.mkdtemp", return_value=str(tmp_path)),
+            patch.object(catalog, "find_package_path", return_value=plugin_dir),
+            patch.object(catalog, "_persist_manifest"),
+            patch.object(catalog, "_find_and_load_versions_json", return_value=plugin_dir),
+            patch.object(catalog, "update_plugin_version_registry"),
+            patch("shutil.rmtree"),
+        ):
+            # Mock pip download to create the archive
+            def mock_run(*args, **kwargs):
+                if "download" in args[0]:
+                    # Simulate pip download creating the archive
+                    pass
+                return Mock(returncode=0)
+            
+            mock_subprocess.side_effect = mock_run
+            
+            url = "test_plugin @ git+https://github.com/example/test_plugin.git"
+            manifest, plugin_path = catalog.install_from_git(url)
+            
+            assert manifest.name == "test_plugin"
+            assert manifest.kind == "native"
+            assert plugin_path == plugin_dir
+            # Should call subprocess twice: once for download, once for install
+            assert mock_subprocess.call_count == 2
+
+    def test_install_from_git_success_ssh(self, tmp_path, mock_github_env):
+        """Test successful installation from Git using SSH URL."""
+        catalog = PluginCatalog()
+        catalog.catalog_folder = str(tmp_path / "catalog")
+        
+        extract_dir = tmp_path / "extracted"
+        extract_dir.mkdir()
+        plugin_dir = extract_dir / "test_plugin"
+        plugin_dir.mkdir()
+        
+        manifest_data = {
+            "name": "test_plugin",
+            "version": "1.0.0",
+            "kind": "native",
+            "description": "Test plugin",
+            "author": "Test Author",
+            "tags": ["test"],
+            "available_hooks": ["tools"],
+            "default_config": {},
+        }
+        manifest_file = plugin_dir / "plugin-manifest.yaml"
+        manifest_file.write_text(yaml.safe_dump(manifest_data))
+        
+        archive_path = tmp_path / "test_plugin-1.0.0.tar.gz"
+        with tarfile.open(archive_path, "w:gz") as tar:
+            tar.add(plugin_dir, arcname="test_plugin")
+        
+        with (
+            patch("cpex.tools.catalog.subprocess.run") as mock_subprocess,
+            patch("cpex.tools.catalog.tempfile.mkdtemp", return_value=str(tmp_path)),
+            patch.object(catalog, "find_package_path", return_value=plugin_dir),
+            patch.object(catalog, "_persist_manifest"),
+            patch.object(catalog, "_find_and_load_versions_json", return_value=plugin_dir),
+            patch.object(catalog, "update_plugin_version_registry"),
+            patch("shutil.rmtree"),
+        ):
+            mock_subprocess.return_value = Mock(returncode=0)
+            
+            # Use git@ format which is the standard SSH format
+            url = "test_plugin @ git+git@github.com:example/test_plugin.git"
+            manifest, plugin_path = catalog.install_from_git(url)
+            
+            assert manifest.name == "test_plugin"
+            assert plugin_path == plugin_dir
+
+    def test_install_from_git_with_branch(self, tmp_path, mock_github_env):
+        """Test installation from Git with specific branch."""
+        catalog = PluginCatalog()
+        catalog.catalog_folder = str(tmp_path / "catalog")
+        
+        extract_dir = tmp_path / "extracted"
+        extract_dir.mkdir()
+        plugin_dir = extract_dir / "test_plugin"
+        plugin_dir.mkdir()
+        
+        manifest_data = {
+            "name": "test_plugin",
+            "version": "1.0.0",
+            "kind": "native",
+            "description": "Test plugin",
+            "author": "Test Author",
+            "tags": ["test"],
+            "available_hooks": ["tools"],
+            "default_config": {},
+        }
+        manifest_file = plugin_dir / "plugin-manifest.yaml"
+        manifest_file.write_text(yaml.safe_dump(manifest_data))
+        
+        archive_path = tmp_path / "test_plugin-1.0.0.tar.gz"
+        with tarfile.open(archive_path, "w:gz") as tar:
+            tar.add(plugin_dir, arcname="test_plugin")
+        
+        with (
+            patch("cpex.tools.catalog.subprocess.run") as mock_subprocess,
+            patch("cpex.tools.catalog.tempfile.mkdtemp", return_value=str(tmp_path)),
+            patch.object(catalog, "find_package_path", return_value=plugin_dir),
+            patch.object(catalog, "_persist_manifest"),
+            patch.object(catalog, "_find_and_load_versions_json", return_value=plugin_dir),
+            patch.object(catalog, "update_plugin_version_registry"),
+            patch("shutil.rmtree"),
+        ):
+            mock_subprocess.return_value = Mock(returncode=0)
+            
+            url = "test_plugin @ git+https://github.com/example/test_plugin.git@master"
+            manifest, plugin_path = catalog.install_from_git(url)
+            
+            assert manifest.name == "test_plugin"
+            # Verify that the branch was included in the pip install command
+            install_call = [call for call in mock_subprocess.call_args_list if "install" in str(call)]
+            assert len(install_call) > 0
+
+    def test_install_from_git_isolated_venv(self, tmp_path, mock_github_env):
+        """Test installation of isolated_venv plugin from Git."""
+        catalog = PluginCatalog()
+        catalog.catalog_folder = str(tmp_path / "catalog")
+        
+        extract_dir = tmp_path / "extracted"
+        extract_dir.mkdir()
+        plugin_dir = extract_dir / "test_plugin"
+        plugin_dir.mkdir()
+        
+        manifest_data = {
+            "name": "test_plugin",
+            "version": "1.0.0",
+            "kind": "isolated_venv",
+            "description": "Test isolated plugin",
+            "author": "Test Author",
+            "tags": ["test"],
+            "available_hooks": ["tools"],
+            "default_config": {"requirements_file": "requirements.txt"},
+        }
+        manifest_file = plugin_dir / "plugin-manifest.yaml"
+        manifest_file.write_text(yaml.safe_dump(manifest_data))
+        
+        # Create requirements file
+        requirements_file = plugin_dir / "requirements.txt"
+        requirements_file.write_text("pytest>=7.0.0\n")
+        
+        archive_path = tmp_path / "test_plugin-1.0.0.tar.gz"
+        with tarfile.open(archive_path, "w:gz") as tar:
+            tar.add(plugin_dir, arcname="test_plugin")
+            tar.add(requirements_file, arcname="test_plugin/requirements.txt")
+        
+        venv_path = tmp_path / "venv_path"
+        venv_path.mkdir()
+        venv_bin = venv_path / "venv" / "bin"
+        venv_bin.mkdir(parents=True)
+        venv_python = venv_bin / "python"
+        
+        with (
+            patch("cpex.tools.catalog.subprocess.run") as mock_subprocess,
+            patch("cpex.tools.catalog.tempfile.mkdtemp", return_value=str(tmp_path)),
+            patch.object(catalog, "_initialize_isolated_venv", return_value=venv_path),
+            patch.object(catalog, "_get_venv_python_executable", return_value=str(venv_python)),
+            patch.object(catalog, "_persist_manifest"),
+            patch.object(catalog, "_find_and_load_versions_json", return_value=venv_path),
+            patch.object(catalog, "update_plugin_version_registry"),
+            patch("shutil.rmtree"),
+        ):
+            mock_subprocess.return_value = Mock(returncode=0)
+            
+            url = "test_plugin @ git+https://github.com/example/test_plugin.git"
+            manifest, plugin_path = catalog.install_from_git(url)
+            
+            assert manifest.kind == "isolated_venv"
+            assert plugin_path == venv_path
+            # Should call subprocess twice: download and install into isolated venv
+            assert mock_subprocess.call_count == 2
+            # Verify install was called with venv python (not download which also contains "install")
+            install_calls = [call for call in mock_subprocess.call_args_list if "pip', 'install" in str(call)]
+            assert len(install_calls) == 1
+            assert str(venv_python) in str(install_calls[0])
+
+    def test_install_from_git_invalid_url_format(self, mock_github_env):
+        """Test error when URL format is invalid (missing @)."""
+        catalog = PluginCatalog()
+        
+        with pytest.raises(ValueError) as exc_info:
+            catalog.install_from_git("test_plugin")
+        
+        assert "Invalid Git URL format" in str(exc_info.value)
+        assert "Expected format" in str(exc_info.value)
+
+    def test_install_from_git_missing_git_prefix(self, mock_github_env):
+        """Test error when git+ prefix is missing."""
+        catalog = PluginCatalog()
+        
+        with pytest.raises(ValueError) as exc_info:
+            catalog.install_from_git("test_plugin @ https://github.com/example/test_plugin.git")
+        
+        assert "Git URL must start with 'git+'" in str(exc_info.value)
+
+    def test_install_from_git_invalid_git_url(self, mock_github_env):
+        """Test error when Git URL is invalid."""
+        catalog = PluginCatalog()
+        
+        with pytest.raises(ValueError) as exc_info:
+            catalog.install_from_git("test_plugin @ git+invalid://not-a-valid-url")
+        
+        assert "Invalid Git repository URL" in str(exc_info.value)
+
+    def test_install_from_git_download_failure(self, tmp_path, mock_github_env):
+        """Test error when pip download fails."""
+        catalog = PluginCatalog()
+        
+        with (
+            patch("cpex.tools.catalog.subprocess.run") as mock_subprocess,
+            patch("cpex.tools.catalog.tempfile.mkdtemp", return_value=str(tmp_path)),
+            patch("shutil.rmtree"),
+        ):
+            mock_subprocess.side_effect = subprocess.CalledProcessError(
+                1, ["pip", "download"], stderr="Download failed"
+            )
+            
+            with pytest.raises(RuntimeError) as exc_info:
+                catalog.install_from_git("test_plugin @ git+https://github.com/example/test_plugin.git")
+            
+            assert "Failed to install test_plugin from Git" in str(exc_info.value)
+
+    def test_install_from_git_no_archive_found(self, tmp_path, mock_github_env):
+        """Test error when no archive is found after download."""
+        catalog = PluginCatalog()
+        
+        with (
+            patch("cpex.tools.catalog.subprocess.run") as mock_subprocess,
+            patch("cpex.tools.catalog.tempfile.mkdtemp", return_value=str(tmp_path)),
+            patch("shutil.rmtree"),
+        ):
+            mock_subprocess.return_value = Mock(returncode=0)
+            
+            with pytest.raises(RuntimeError) as exc_info:
+                catalog.install_from_git("test_plugin @ git+https://github.com/example/test_plugin.git")
+            
+            assert "No package archive found" in str(exc_info.value)
+
+    def test_install_from_git_manifest_not_found(self, tmp_path, mock_github_env):
+        """Test error when manifest is not found in package."""
+        catalog = PluginCatalog()
+        
+        # Create archive without manifest
+        extract_dir = tmp_path / "extracted"
+        extract_dir.mkdir()
+        plugin_dir = extract_dir / "test_plugin"
+        plugin_dir.mkdir()
+        
+        archive_path = tmp_path / "test_plugin-1.0.0.tar.gz"
+        with tarfile.open(archive_path, "w:gz") as tar:
+            tar.add(plugin_dir, arcname="test_plugin")
+        
+        with (
+            patch("cpex.tools.catalog.subprocess.run") as mock_subprocess,
+            patch("cpex.tools.catalog.tempfile.mkdtemp", return_value=str(tmp_path)),
+            patch("shutil.rmtree"),
+        ):
+            mock_subprocess.return_value = Mock(returncode=0)
+            
+            # The method wraps FileNotFoundError in RuntimeError
+            with pytest.raises(RuntimeError) as exc_info:
+                catalog.install_from_git("test_plugin @ git+https://github.com/example/test_plugin.git")
+            
+            assert "Unexpected error installing test_plugin from Git" in str(exc_info.value)
+            assert "plugin-manifest.yaml not found" in str(exc_info.value)
+
+    def test_install_from_git_install_failure(self, tmp_path, mock_github_env):
+        """Test error when pip install fails."""
+        catalog = PluginCatalog()
+        catalog.catalog_folder = str(tmp_path / "catalog")
+        
+        extract_dir = tmp_path / "extracted"
+        extract_dir.mkdir()
+        plugin_dir = extract_dir / "test_plugin"
+        plugin_dir.mkdir()
+        
+        manifest_data = {
+            "name": "test_plugin",
+            "version": "1.0.0",
+            "kind": "native",
+            "description": "Test plugin",
+            "author": "Test Author",
+            "tags": ["test"],
+            "available_hooks": ["tools"],
+            "default_config": {},
+        }
+        manifest_file = plugin_dir / "plugin-manifest.yaml"
+        manifest_file.write_text(yaml.safe_dump(manifest_data))
+        
+        archive_path = tmp_path / "test_plugin-1.0.0.tar.gz"
+        with tarfile.open(archive_path, "w:gz") as tar:
+            tar.add(plugin_dir, arcname="test_plugin")
+        
+        with (
+            patch("cpex.tools.catalog.subprocess.run") as mock_subprocess,
+            patch("cpex.tools.catalog.tempfile.mkdtemp", return_value=str(tmp_path)),
+            patch("shutil.rmtree"),
+        ):
+            # First call (download) succeeds, second call (install) fails
+            mock_subprocess.side_effect = [
+                Mock(returncode=0),  # download succeeds
+                subprocess.CalledProcessError(1, ["pip", "install"], stderr="Install failed"),  # install fails
+            ]
+            
+            with pytest.raises(RuntimeError) as exc_info:
+                catalog.install_from_git("test_plugin @ git+https://github.com/example/test_plugin.git")
+            
+            assert "Failed to install test_plugin from Git" in str(exc_info.value)
+
+    def test_install_from_git_cleanup_on_error(self, tmp_path, mock_github_env):
+        """Test that temporary directory is cleaned up even on error."""
+        catalog = PluginCatalog()
+        
+        with (
+            patch("cpex.tools.catalog.subprocess.run") as mock_subprocess,
+            patch("cpex.tools.catalog.tempfile.mkdtemp", return_value=str(tmp_path)),
+            patch("shutil.rmtree") as mock_rmtree,
+        ):
+            mock_subprocess.side_effect = subprocess.CalledProcessError(
+                1, ["pip", "download"], stderr="Download failed"
+            )
+            
+            with pytest.raises(RuntimeError):
+                catalog.install_from_git("test_plugin @ git+https://github.com/example/test_plugin.git")
+            
+            # Verify cleanup was called
+            mock_rmtree.assert_called_once()
+            assert str(tmp_path) in str(mock_rmtree.call_args)
+
+    def test_install_from_git_with_zip_archive(self, tmp_path, mock_github_env):
+        """Test installation from Git with zip archive."""
+        catalog = PluginCatalog()
+        catalog.catalog_folder = str(tmp_path / "catalog")
+        
+        extract_dir = tmp_path / "extracted"
+        extract_dir.mkdir()
+        plugin_dir = extract_dir / "test_plugin"
+        plugin_dir.mkdir()
+        
+        manifest_data = {
+            "name": "test_plugin",
+            "version": "1.0.0",
+            "kind": "native",
+            "description": "Test plugin",
+            "author": "Test Author",
+            "tags": ["test"],
+            "available_hooks": ["tools"],
+            "default_config": {},
+        }
+        manifest_file = plugin_dir / "plugin-manifest.yaml"
+        manifest_file.write_text(yaml.safe_dump(manifest_data))
+        
+        # Create a zip archive
+        archive_path = tmp_path / "test_plugin-1.0.0.zip"
+        with zipfile.ZipFile(archive_path, "w") as zipf:
+            zipf.write(manifest_file, arcname="test_plugin/plugin-manifest.yaml")
+        
+        with (
+            patch("cpex.tools.catalog.subprocess.run") as mock_subprocess,
+            patch("cpex.tools.catalog.tempfile.mkdtemp", return_value=str(tmp_path)),
+            patch.object(catalog, "find_package_path", return_value=plugin_dir),
+            patch.object(catalog, "_persist_manifest"),
+            patch.object(catalog, "_find_and_load_versions_json", return_value=plugin_dir),
+            patch.object(catalog, "update_plugin_version_registry"),
+            patch("shutil.rmtree"),
+        ):
+            mock_subprocess.return_value = Mock(returncode=0)
+            
+            url = "test_plugin @ git+https://github.com/example/test_plugin.git"
+            manifest, plugin_path = catalog.install_from_git(url)
+            
+            assert manifest.name == "test_plugin"
+
+    def test_install_from_git_with_wheel(self, tmp_path, mock_github_env):
+        """Test installation from Git with wheel archive."""
+        catalog = PluginCatalog()
+        catalog.catalog_folder = str(tmp_path / "catalog")
+        
+        extract_dir = tmp_path / "extracted"
+        extract_dir.mkdir()
+        plugin_dir = extract_dir / "test_plugin"
+        plugin_dir.mkdir()
+        
+        manifest_data = {
+            "name": "test_plugin",
+            "version": "1.0.0",
+            "kind": "native",
+            "description": "Test plugin",
+            "author": "Test Author",
+            "tags": ["test"],
+            "available_hooks": ["tools"],
+            "default_config": {},
+        }
+        manifest_file = plugin_dir / "plugin-manifest.yaml"
+        manifest_file.write_text(yaml.safe_dump(manifest_data))
+        
+        # Create a wheel archive (which is a zip file)
+        archive_path = tmp_path / "test_plugin-1.0.0-py3-none-any.whl"
+        with zipfile.ZipFile(archive_path, "w") as zipf:
+            zipf.write(manifest_file, arcname="test_plugin/plugin-manifest.yaml")
+        
+        with (
+            patch("cpex.tools.catalog.subprocess.run") as mock_subprocess,
+            patch("cpex.tools.catalog.tempfile.mkdtemp", return_value=str(tmp_path)),
+            patch.object(catalog, "find_package_path", return_value=plugin_dir),
+            patch.object(catalog, "_persist_manifest"),
+            patch.object(catalog, "_find_and_load_versions_json", return_value=plugin_dir),
+            patch.object(catalog, "update_plugin_version_registry"),
+            patch("shutil.rmtree"),
+        ):
+            mock_subprocess.return_value = Mock(returncode=0)
+            
+            url = "test_plugin @ git+https://github.com/example/test_plugin.git"
+            manifest, plugin_path = catalog.install_from_git(url)
+            
+            assert manifest.name == "test_plugin"

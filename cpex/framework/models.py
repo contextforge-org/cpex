@@ -1411,7 +1411,7 @@ class Monorepo(BaseModel):
     package_folder: str
 
 
-class PiPyRepo(BaseModel):
+class PyPiRepo(BaseModel):
     """PyPi model.
     Attributes:
         name (str): The name of the pypi package.
@@ -1499,6 +1499,99 @@ class PiPyRepo(BaseModel):
         return version_constraint if version_constraint != "" else None
 
 
+class GitRepo(BaseModel):
+    """Git repository model.
+    Attributes:
+        git_repository: The URL of the git repository.
+        git_branch_tag_commit: The branch, tag or commit of the git repository.
+    """
+
+    git_repository: str = Field(
+        title="URL",
+        description='The URL of the git repository. (e.g., "https://github.com/example/plugin.git")',
+    )
+    git_branch_tag_commit: Optional[str] = Field(
+        title="Branch, tag or commit",
+        description="The branch, tag or commit of the git repository.",
+    )
+
+    @field_validator("git_repository", mode="after")
+    @classmethod
+    def validate_git_repository(cls, git_repository: str | None) -> str | None:
+        """Validate Git repository URL format.
+
+        Args:
+            git_repository: The Git repository URL to validate.
+
+        Returns:
+            The validated repository URL or None if none is set.
+
+        Raises:
+            ValueError: If the repository URL is invalid.
+        """
+        if git_repository is not None and git_repository != "":
+            if not git_repository.strip():
+                raise ValueError("Git repository URL cannot be empty or whitespace")
+
+            # Support common Git URL formats: https://, git://, ssh://, git@
+            git_url_pattern = re.compile(
+                r"^(https?://|git://|git@)" r"[a-zA-Z0-9._-]+" r"(/|:)" r"[a-zA-Z0-9._/-]+" r"(\.git)?$"
+            )
+
+            if not git_url_pattern.match(git_repository):
+                raise ValueError(
+                    f"Invalid Git repository URL '{git_repository}'. "
+                    "Must be a valid Git URL (e.g., https://github.com/user/repo.git, "
+                    "git@github.com:user/repo.git)"
+                )
+
+            # Additional validation for https/http URLs using existing validator
+            if git_repository.startswith(("http://", "https://")):
+                validate_plugin_url(git_repository, "Git repository URL")
+
+        return git_repository if git_repository != "" else None
+
+    @field_validator("git_branch_tag_commit", mode="after")
+    @classmethod
+    def validate_git_branch_tag_commit(cls, git_branch_tag_commit: str | None) -> str | None:
+        """Validate Git branch, tag, or commit reference.
+
+        Args:
+            git_branch_tag_commit: The Git reference to validate.
+
+        Returns:
+            The validated reference or None if none is set.
+
+        Raises:
+            ValueError: If the reference is invalid.
+        """
+        if git_branch_tag_commit is not None and git_branch_tag_commit != "":
+            if not git_branch_tag_commit.strip():
+                raise ValueError("Git branch/tag/commit cannot be empty or whitespace")
+
+            # Git refs can contain alphanumeric characters, hyphens, underscores, slashes, and periods
+            # Commit hashes are typically 7-40 hex characters
+            if not re.match(r"^[a-zA-Z0-9._/-]+$", git_branch_tag_commit):
+                raise ValueError(
+                    f"Invalid Git branch/tag/commit '{git_branch_tag_commit}'. "
+                    "Must contain only alphanumeric characters, hyphens, underscores, slashes, and periods."
+                )
+
+            # Check for common invalid patterns
+            if git_branch_tag_commit.startswith(("/", ".", "-")) or git_branch_tag_commit.endswith(("/", ".")):
+                raise ValueError(
+                    f"Invalid Git branch/tag/commit '{git_branch_tag_commit}'. "
+                    "Cannot start with /, ., or - or end with / or ."
+                )
+
+            if len(git_branch_tag_commit) > 255:
+                raise ValueError(
+                    f"Git branch/tag/commit '{git_branch_tag_commit}' exceeds maximum length of 255 characters"
+                )
+
+        return git_branch_tag_commit if git_branch_tag_commit != "" else None
+
+
 class PluginManifest(BaseModel):
     """Plugin manifest.
 
@@ -1511,6 +1604,10 @@ class PluginManifest(BaseModel):
         tags (list[str]): a list of tags for making the plugin searchable.
         available_hooks (list[str]): a list of the hook points where the plugin is callable.
         default_config (dict[str, Any]): the default configurations.
+        monorepo (Monorepo): A git monorepo where the plugin originates (Initialized by cepx cli during plugin installation)
+        package_info: (PyPiRepo): The package name and version constraint of the package (Initialized by cepx cli during plugin installation)
+        local: The path to the locally installed plugin (Initialized by cepx cli during plugin installation)
+        git_repo: GitRepo: The git repo where the plugin originates (Initialized by cepx cli during plugin installation)
     """
 
     name: str
@@ -1522,7 +1619,9 @@ class PluginManifest(BaseModel):
     available_hooks: list[str]
     default_config: dict[str, Any]
     monorepo: Optional[Monorepo] = None
-    package_info: Optional[PiPyRepo] = None
+    package_info: Optional[PyPiRepo] = None
+    local: Optional[str] = None
+    git_repo: Optional[GitRepo] = None
 
     def suggest_instance_name(self) -> str:
         """Suggest a name for the plugin instance.

@@ -40,7 +40,7 @@ from cpex.tools.cli import (
     uninstall,
 )
 from cpex.tools.plugin_registry import PluginRegistry
-from cpex.framework.models import PluginManifest, Monorepo, Config, PluginConfig, PluginMode, PiPyRepo
+from cpex.framework.models import PluginManifest, Monorepo, Config, PluginConfig, PluginMode, PyPiRepo
 
 runner = CliRunner()
 
@@ -558,7 +558,7 @@ class TestPluginRegistryCoverage:
         manifest = create_test_manifest(
             name="pypi_plugin",
             monorepo=None,
-            package_info=PiPyRepo(pypi_package="pypi-plugin", version_constraint=None),
+            package_info=PyPiRepo(pypi_package="pypi-plugin", version_constraint=None),
         )
 
         mock_catalog = Mock()
@@ -600,6 +600,80 @@ class TestPluginRegistryCoverage:
 
         with pytest.raises(ValueError, match="Invalid installation type: invalid"):
             plugin_registry.update(manifest, "invalid", Mock(), "test_user")
+    
+    def test_update_with_local_installation_and_explicit_plugin_path(self, temp_registry_dir):
+        """Test registry update for local installation with explicit plugin_path."""
+        manifest = create_test_manifest(monorepo=None, package_info=None)
+        manifest.local = "/tmp/local-plugin-source"
+        explicit_path = temp_registry_dir / "installed" / "local_plugin"
+        explicit_path.mkdir(parents=True)
+
+        plugin_registry = PluginRegistry()
+        plugin_registry.update(manifest, "local", Mock(), "test_user", plugin_path=explicit_path, editable=True)
+
+        registry_file = temp_registry_dir / "installed-plugins.json"
+        updated_data = json.loads(registry_file.read_text())
+        assert len(updated_data["plugins"]) == 1
+        assert updated_data["plugins"][0]["name"] == manifest.name
+        assert updated_data["plugins"][0]["package_source"] == "/tmp/local-plugin-source"
+        assert updated_data["plugins"][0]["installation_type"] == "local"
+        assert updated_data["plugins"][0]["installation_path"] == str(explicit_path.resolve())
+        assert updated_data["plugins"][0]["editable"] is True
+
+    def test_update_with_local_installation_raises_without_local_metadata(self, temp_registry_dir):
+        """Test local update fails when manifest.local is missing."""
+        manifest = create_test_manifest(monorepo=None, package_info=None)
+        manifest.local = None
+
+        plugin_registry = PluginRegistry()
+
+        with pytest.raises(RuntimeError, match="PluginManifest local path can not be None."):
+            plugin_registry.update(manifest, "local", Mock(), "test_user")
+
+    def test_update_uses_find_package_path_when_plugin_path_not_provided(self, temp_registry_dir):
+        """Test registry update falls back to find_package_path when plugin_path is omitted."""
+        manifest = create_test_manifest()
+
+        with patch("cpex.tools.plugin_registry.find_package_path", return_value=Path("/fake/path/from/find_package_path")):
+            plugin_registry = PluginRegistry()
+            plugin_registry.update(manifest, "monorepo", Mock(), "test_user")
+
+        registry_file = temp_registry_dir / "installed-plugins.json"
+        updated_data = json.loads(registry_file.read_text())
+        assert updated_data["plugins"][0]["installation_path"] == str(Path("/fake/path/from/find_package_path").resolve())
+
+    def test_has_returns_true_when_plugin_present(self, temp_registry_dir):
+        """Test has() returns True for an installed plugin."""
+        registry_file = temp_registry_dir / "installed-plugins.json"
+        registry_data = {
+            "plugins": [
+                {
+                    "name": "test_plugin",
+                    "version": "1.0.0",
+                    "kind": "native",
+                    "installation_type": "monorepo",
+                    "installation_path": "/path/to/test_plugin",
+                    "installed_at": "2024-01-01T00:00:00.000000Z",
+                    "installed_by": "test_user",
+                    "package_source": "https://example.com/repo/plugin",
+                    "editable": False,
+                }
+            ]
+        }
+        registry_file.write_text(json.dumps(registry_data))
+
+        plugin_registry = PluginRegistry()
+
+        assert plugin_registry.has("test_plugin") is True
+
+    def test_has_returns_false_when_plugin_absent(self, temp_registry_dir):
+        """Test has() returns False for a missing plugin."""
+        registry_file = temp_registry_dir / "installed-plugins.json"
+        registry_file.write_text(json.dumps({"plugins": []}))
+
+        plugin_registry = PluginRegistry()
+
+        assert plugin_registry.has("missing_plugin") is False
 
 
 class TestInstanceNameIsUnique:
@@ -718,11 +792,28 @@ class TestInstallFromManifest:
 class TestInstallFunction:
     """Tests for install() function."""
 
-    def test_install_git_not_implemented(self):
-        """Test that git installation raises NotImplementedError."""
+    def test_install_git_implementation(self):
+        """Test that git installation works with install_from_git."""
         mock_catalog = Mock()
-        with pytest.raises(NotImplementedError, match="Git installation is not yet implemented"):
-            install("source", "git", mock_catalog)
+        test_manifest = create_test_manifest(name="test_plugin", kind="native")
+        mock_catalog.install_from_git = Mock(return_value=(test_manifest, Path("/path/to/plugin")))
+        
+        with (
+            patch("cpex.tools.cli._finalize_installation") as mock_finalize,
+            patch("cpex.tools.cli.console") as mock_console,
+            patch("cpex.tools.cli.update_plugins_config_yaml") as mock_update_config,
+        ):
+            mock_status = Mock()
+            mock_status.__enter__ = Mock(return_value=mock_status)
+            mock_status.__exit__ = Mock(return_value=False)
+            mock_console.status = Mock(return_value=mock_status)
+            
+            install("test_plugin @ git+https://github.com/example/test_plugin.git", "git", mock_catalog)
+            
+            # Verify install_from_git was called
+            mock_catalog.install_from_git.assert_called_once()
+            mock_update_config.assert_called_once_with(manifest=test_manifest)
+            mock_finalize.assert_called_once()
 
     def test_install_monorepo_no_plugins_found(self):
         """Test monorepo install when no plugins found."""
@@ -1071,7 +1162,6 @@ class TestUninstallFunction:
         registry_file.write_text(json.dumps(registry_data))
         
         mock_catalog = Mock()
-        mock_catalog.uninstall_package = Mock()
         
         # Create a manifest to return from find
         test_manifest = create_test_manifest(name="test_plugin", kind="native")
@@ -1082,9 +1172,10 @@ class TestUninstallFunction:
             patch("cpex.tools.cli.remove_from_plugins_config_yaml", return_value=True) as mock_remove,
             patch("cpex.tools.cli.PluginCatalog") as mock_catalog_class,
         ):
-            # Mock the catalog.find method
+            # Mock the catalog instance created inside uninstall()
             mock_catalog_instance = Mock()
             mock_catalog_instance.find = Mock(return_value=test_manifest)
+            mock_catalog_instance.uninstall_package = Mock()
             mock_catalog_class.return_value = mock_catalog_instance
             
             mock_status = Mock()
@@ -1094,7 +1185,8 @@ class TestUninstallFunction:
             
             uninstall("test_plugin", mock_catalog)
             
-            mock_catalog.uninstall_package.assert_called_once_with("test_plugin")
+            # Verify uninstall_package was called with both plugin_name and manifest
+            mock_catalog_instance.uninstall_package.assert_called_once_with("test_plugin", test_manifest)
             mock_remove.assert_called_once_with(test_manifest)
             mock_console.print.assert_any_call(":white_heavy_check_mark: test_plugin uninstalled successfully.")
 
@@ -1119,13 +1211,22 @@ class TestUninstallFunction:
         registry_file.write_text(json.dumps(registry_data))
         
         mock_catalog = Mock()
-        mock_catalog.uninstall_package = Mock(side_effect=RuntimeError("Uninstall failed"))
+        
+        # Create a manifest to return from find
+        test_manifest = create_test_manifest(name="test_plugin", kind="native")
         
         with (
             patch("cpex.tools.cli.inquirer.prompt", return_value={"confirm": True}),
             patch("cpex.tools.cli.console") as mock_console,
             patch("cpex.tools.cli.logger") as mock_logger,
+            patch("cpex.tools.cli.PluginCatalog") as mock_catalog_class,
         ):
+            # Mock the catalog instance created inside uninstall()
+            mock_catalog_instance = Mock()
+            mock_catalog_instance.find = Mock(return_value=test_manifest)
+            mock_catalog_instance.uninstall_package = Mock(side_effect=RuntimeError("Uninstall failed"))
+            mock_catalog_class.return_value = mock_catalog_instance
+            
             mock_status = Mock()
             mock_status.__enter__ = Mock(return_value=mock_status)
             mock_status.__exit__ = Mock(return_value=False)
@@ -1194,7 +1295,8 @@ class TestPluginUninstallCommand:
             
             result = runner.invoke(app, ["plugin", "uninstall", "test_plugin"])
             assert result.exit_code == 0
-            mock_catalog.uninstall_package.assert_called_once_with("test_plugin")
+            # Verify uninstall_package was called with both plugin_name and manifest
+            mock_catalog.uninstall_package.assert_called_once_with("test_plugin", test_manifest)
 
     def test_plugin_uninstall_command_not_found(self, temp_registry_dir):
         """Test plugin uninstall command when plugin not found."""
@@ -1217,13 +1319,16 @@ class TestCatalogUninstallPackage:
         """Test successful package uninstallation."""
         from cpex.tools.catalog import PluginCatalog
         
+        # Create a test manifest
+        test_manifest = create_test_manifest(name="test_package", kind="native")
+        
         with (
             patch.dict("os.environ", {"PLUGINS_GITHUB_TOKEN": "test_token"}),
             patch("cpex.tools.catalog.Github"),
             patch("cpex.tools.catalog.subprocess.run") as mock_subprocess,
         ):
             catalog = PluginCatalog()
-            result = catalog.uninstall_package("test_package")
+            result = catalog.uninstall_package("test_package", test_manifest)
             
             assert result is True
             mock_subprocess.assert_called_once()
@@ -1238,6 +1343,9 @@ class TestCatalogUninstallPackage:
         from cpex.tools.catalog import PluginCatalog
         import subprocess
         
+        # Create a test manifest
+        test_manifest = create_test_manifest(name="test_package", kind="native")
+        
         with (
             patch.dict("os.environ", {"PLUGINS_GITHUB_TOKEN": "test_token"}),
             patch("cpex.tools.catalog.Github"),
@@ -1246,11 +1354,14 @@ class TestCatalogUninstallPackage:
             catalog = PluginCatalog()
             
             with pytest.raises(RuntimeError, match="Failed to uninstall"):
-                catalog.uninstall_package("test_package")
+                catalog.uninstall_package("test_package", test_manifest)
 
     def test_uninstall_package_unexpected_error(self, temp_registry_dir):
         """Test package uninstallation with unexpected error."""
         from cpex.tools.catalog import PluginCatalog
+        
+        # Create a test manifest
+        test_manifest = create_test_manifest(name="test_package", kind="native")
         
         with (
             patch.dict("os.environ", {"PLUGINS_GITHUB_TOKEN": "test_token"}),
@@ -1260,7 +1371,7 @@ class TestCatalogUninstallPackage:
             catalog = PluginCatalog()
             
             with pytest.raises(RuntimeError, match="Unexpected error uninstalling"):
-                catalog.uninstall_package("test_package")
+                catalog.uninstall_package("test_package", test_manifest)
 
 
 class TestPluginRegistryRemove:
@@ -1380,6 +1491,306 @@ class TestInstalledPluginRegistryUnregister:
         
         assert result is False
         assert len(registry.plugins) == 1
+
+
+
+class TestSelectPluginFromCatalog:
+    """Tests for select_plugin_from_catalog() function."""
+
+    def test_returns_none_for_empty_list(self):
+        """Test that function returns None when given empty list."""
+        from cpex.tools.cli import select_plugin_from_catalog
+        
+        result = select_plugin_from_catalog([])
+        assert result is None
+
+    def test_returns_none_when_user_cancels(self):
+        """Test that function returns None when user cancels selection."""
+        from cpex.tools.cli import select_plugin_from_catalog
+        
+        manifest = create_test_manifest()
+        
+        with patch("cpex.tools.cli.inquirer.prompt", return_value=None):
+            result = select_plugin_from_catalog([manifest])
+            assert result is None
+
+
+class TestParsePypiSource:
+    """Tests for _parse_pypi_source() function."""
+
+    def test_parse_package_without_version(self):
+        """Test parsing package name without version constraint."""
+        from cpex.tools.cli import _parse_pypi_source
+        
+        package_name, version_constraint = _parse_pypi_source("my-package")
+        assert package_name == "my-package"
+        assert version_constraint is None
+
+    def test_parse_package_with_version(self):
+        """Test parsing package name with version constraint."""
+        from cpex.tools.cli import _parse_pypi_source
+        
+        package_name, version_constraint = _parse_pypi_source("my-package@>=1.0.0")
+        assert package_name == "my-package"
+        assert version_constraint == ">=1.0.0"
+
+
+class TestFinalizeInstallation:
+    """Tests for _finalize_installation() function."""
+
+    def test_finalize_installation_updates_registry_and_config(self, temp_registry_dir):
+        """Test that finalize_installation updates registry and config."""
+        from cpex.tools.cli import _finalize_installation
+        from cpex.tools.catalog import PluginCatalog
+        
+        manifest = create_test_manifest()
+        mock_catalog = Mock(spec=PluginCatalog)
+        
+        with (
+            patch("cpex.tools.cli.PluginRegistry") as mock_registry_class,
+            patch("cpex.tools.cli.update_plugins_config_yaml") as mock_update_config,
+            patch("cpex.tools.cli.git_user_name", return_value="test_user"),
+        ):
+            mock_registry = Mock()
+            mock_registry_class.return_value = mock_registry
+            
+            _finalize_installation(manifest, "pypi", mock_catalog, Path("/test/path"))
+            
+            mock_registry.update.assert_called_once()
+            mock_update_config.assert_called_once_with(manifest=manifest)
+
+
+class TestInstallFromLocal:
+    """Tests for _install_from_local() function."""
+
+    def test_install_from_local_calls_catalog_method(self, temp_registry_dir, tmp_path):
+        """Test that _install_from_local calls catalog.install_from_local."""
+        from cpex.tools.cli import _install_from_local
+        from cpex.tools.catalog import PluginCatalog
+        
+        source_dir = tmp_path / "my_plugin"
+        source_dir.mkdir()
+        
+        manifest = create_test_manifest()
+        manifest.local = str(source_dir)
+        mock_catalog = Mock(spec=PluginCatalog)
+        mock_catalog.install_from_local = Mock(return_value=(manifest, source_dir))
+        
+        with (
+            patch("cpex.tools.cli.console") as mock_console,
+            patch("cpex.tools.cli.update_plugins_config_yaml") as mock_update_config,
+            patch("cpex.tools.cli._finalize_installation") as mock_finalize,
+        ):
+            mock_status = Mock()
+            mock_status.__enter__ = Mock(return_value=mock_status)
+            mock_status.__exit__ = Mock(return_value=False)
+            mock_console.status = Mock(return_value=mock_status)
+            
+            _install_from_local(str(source_dir), mock_catalog)
+            
+            mock_catalog.install_from_local.assert_called_once()
+            mock_update_config.assert_called_once_with(manifest=manifest)
+            mock_finalize.assert_called_once_with(manifest, "local", mock_catalog, source_dir)
+
+
+class TestInstallFromMonorepo:
+    """Tests for _install_from_monorepo() function."""
+
+    def test_returns_early_when_no_plugin_selected(self):
+        """Test that function returns early when user doesn't select a plugin."""
+        from cpex.tools.cli import _install_from_monorepo
+        from cpex.tools.catalog import PluginCatalog
+        
+        manifest = create_test_manifest()
+        mock_catalog = Mock(spec=PluginCatalog)
+        mock_catalog.search = Mock(return_value=[manifest])
+        
+        with (
+            patch("cpex.tools.cli.select_plugin_from_catalog", return_value=None),
+            patch("cpex.tools.cli.console"),
+        ):
+            # Should return early without error
+            _install_from_monorepo("test_plugin", mock_catalog)
+
+
+class TestInstallFromPypi:
+    """Tests for _install_from_pypi() function."""
+
+    def test_install_from_pypi_handles_none_manifest(self, temp_registry_dir):
+        """Test that _install_from_pypi handles None manifest gracefully."""
+        from cpex.tools.cli import _install_from_pypi
+        from cpex.tools.catalog import PluginCatalog
+        
+        mock_catalog = Mock(spec=PluginCatalog)
+        mock_catalog.install_from_pypi = Mock(return_value=(None, None))
+        
+        with patch("cpex.tools.cli.console") as mock_console:
+            mock_status = Mock()
+            mock_status.__enter__ = Mock(return_value=mock_status)
+            mock_status.__exit__ = Mock(return_value=False)
+            mock_console.status = Mock(return_value=mock_status)
+            
+            _install_from_pypi("test_package", mock_catalog)
+            
+            mock_console.print.assert_called_with(":x: Failed to install test_package")
+
+
+class TestInstallFunctionAdditional:
+    """Additional tests for install() function."""
+
+    def test_install_with_unsupported_type_raises_error(self):
+        """Test that install raises ValueError for unsupported installation type."""
+        from cpex.tools.cli import install
+        from cpex.tools.catalog import PluginCatalog
+        
+        mock_catalog = Mock(spec=PluginCatalog)
+        
+        with pytest.raises(ValueError, match="Unsupported installation type"):
+            install("test_plugin", "unsupported_type", mock_catalog)
+
+
+class TestVersionsFunction:
+    """Tests for versions() function."""
+
+    def test_versions_calls_search(self):
+        """Test that versions() function calls search()."""
+        from cpex.tools.cli import versions
+        from cpex.tools.catalog import PluginCatalog
+        
+        mock_catalog = Mock(spec=PluginCatalog)
+        mock_catalog.search = Mock(return_value=[])
+        
+        with patch("cpex.tools.cli.console"):
+            versions("test_plugin", mock_catalog)
+            mock_catalog.search.assert_called_once_with("test_plugin")
+
+
+class TestUpdatePluginsConfigYamlWithNonePlugins:
+    """Test update_plugins_config_yaml when config.plugins is None."""
+
+    def test_creates_plugins_list_when_none(self, tmp_path):
+        """Test that function creates plugins list when it's None."""
+        import yaml as yaml_module
+        
+        config_file = tmp_path / "config.yaml"
+        config_data = {
+            "plugins": None,  # Explicitly None
+        }
+        config_file.write_text(yaml_module.safe_dump(config_data))
+        
+        manifest = create_test_manifest(name="test_plugin")
+        
+        with (
+            patch("cpex.tools.cli.settings") as mock_settings,
+            patch("cpex.tools.cli.ConfigLoader.load_config") as mock_load,
+            patch("cpex.tools.cli.ConfigSaver.save_config") as mock_save,
+        ):
+            mock_settings.config_file = str(config_file)
+            
+            # Create a Config object with plugins=None
+            config_obj = Config(plugins=None)
+            mock_load.return_value = config_obj
+            
+            update_plugins_config_yaml(manifest)
+            
+            # Verify that plugins list was created
+            mock_save.assert_called_once()
+            saved_config = mock_save.call_args[0][0]
+            assert saved_config.plugins is not None
+            assert len(saved_config.plugins) == 1
+
+
+class TestPluginCommandCatalogUpdate:
+    """Tests for plugin command catalog update paths."""
+
+    def test_plugin_search_updates_catalog(self, temp_registry_dir):
+        """Test that plugin search command updates catalog."""
+        with (
+            patch("cpex.tools.cli.PluginCatalog") as mock_catalog_class,
+            patch("cpex.tools.cli.console") as mock_console,
+        ):
+            mock_catalog = Mock()
+            mock_catalog.update_catalog_with_pyproject = Mock(return_value=False)
+            mock_catalog.search = Mock(return_value=[])
+            mock_catalog_class.return_value = mock_catalog
+            
+            mock_status = Mock()
+            mock_status.__enter__ = Mock(return_value=mock_status)
+            mock_status.__exit__ = Mock(return_value=False)
+            mock_console.status = Mock(return_value=mock_status)
+            
+            result = runner.invoke(app, ["plugin", "search", "test"])
+            assert result.exit_code == 0
+            mock_catalog.update_catalog_with_pyproject.assert_called_once()
+
+    def test_plugin_versions_command(self, temp_registry_dir):
+        """Test plugin versions command."""
+        with (
+            patch("cpex.tools.cli.PluginCatalog") as mock_catalog_class,
+            patch("cpex.tools.cli.console") as mock_console,
+        ):
+            mock_catalog = Mock()
+            mock_catalog.update_catalog_with_pyproject = Mock(return_value=False)
+            mock_catalog.search = Mock(return_value=[])
+            mock_catalog_class.return_value = mock_catalog
+            
+            mock_status = Mock()
+            mock_status.__enter__ = Mock(return_value=mock_status)
+            mock_status.__exit__ = Mock(return_value=False)
+            mock_console.status = Mock(return_value=mock_status)
+            
+            result = runner.invoke(app, ["plugin", "versions", "test_plugin"])
+            assert result.exit_code == 0
+            mock_catalog.search.assert_called_once_with("test_plugin")
+
+
+class TestUninstallManifestNotFound:
+    """Test uninstall when manifest is not found in catalog."""
+
+    def test_uninstall_when_manifest_not_found(self, temp_registry_dir):
+        """Test uninstall handles case when manifest is not found."""
+        registry_file = temp_registry_dir / "installed-plugins.json"
+        registry_data = {
+            "plugins": [
+                {
+                    "name": "test_plugin",
+                    "version": "1.0.0",
+                    "kind": "native",
+                    "installation_type": "monorepo",
+                    "installation_path": "/path/to/test_plugin",
+                    "installed_at": "2024-01-01T00:00:00.000000Z",
+                    "installed_by": "test_user",
+                    "package_source": "https://example.com/repo/plugin",
+                    "editable": False,
+                }
+            ]
+        }
+        registry_file.write_text(json.dumps(registry_data))
+        
+        mock_catalog = Mock()
+        
+        with (
+            patch("cpex.tools.cli.inquirer.prompt", return_value={"confirm": True}),
+            patch("cpex.tools.cli.console") as mock_console,
+            patch("cpex.tools.cli.PluginCatalog") as mock_catalog_class,
+        ):
+            # Mock the catalog.find method to return None (manifest not found)
+            mock_catalog_instance = Mock()
+            mock_catalog_instance.find = Mock(return_value=None)
+            mock_catalog_class.return_value = mock_catalog_instance
+            
+            mock_status = Mock()
+            mock_status.__enter__ = Mock(return_value=mock_status)
+            mock_status.__exit__ = Mock(return_value=False)
+            mock_console.status = Mock(return_value=mock_status)
+            
+            uninstall("test_plugin", mock_catalog)
+            
+            # When manifest is not found, uninstall should print error and return early
+            # So uninstall_package should NOT be called
+            mock_catalog_instance.uninstall_package.assert_not_called()
+            mock_console.print.assert_any_call(":x: Plugin test_plugin not found in catalog.")
+
 
 
 # Made with Bob

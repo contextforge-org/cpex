@@ -451,8 +451,14 @@ def _finalize_installation(manifest: PluginManifest, install_type: str, catalog:
         catalog: The plugin catalog.
     """
     plugin_registry = PluginRegistry()
+    editable = install_type == "local"
     plugin_registry.update(
-        manifest=manifest, installation_type=install_type, catalog=catalog, git_user_name=git_user_name(), plugin_path=plugin_path
+        manifest=manifest,
+        installation_type=install_type,
+        catalog=catalog,
+        git_user_name=git_user_name(),
+        plugin_path=plugin_path,
+        editable=editable,
     )
     update_plugins_config_yaml(manifest=manifest)
 
@@ -465,9 +471,15 @@ def _install_from_local(source: str, catalog: PluginCatalog, use_test: bool = Fa
         catalog: The plugin catalog.
 
     Raises:
-        NotImplementedError: local installation is not yet supported.
+        FileNotFoundError: If plugin-manifest.yaml is not found in source or subdirectories.
+        RuntimeError: If installation fails.
     """
-    raise NotImplementedError("Local installation is not yet implemented")
+    install_source = Path(source)
+    with console.status(f"Installing plugin from source {source}...", spinner="dots"):
+        manifest, installation_path = catalog.install_from_local(install_source)
+        update_plugins_config_yaml(manifest=manifest)
+        _finalize_installation(manifest, "local", catalog, installation_path)
+        console.print(f":white_heavy_check_mark: {manifest.name} installation complete.")
 
 
 def _install_from_git(source: str, catalog: PluginCatalog, use_test: bool = False):
@@ -480,7 +492,11 @@ def _install_from_git(source: str, catalog: PluginCatalog, use_test: bool = Fals
     Raises:
         NotImplementedError: Git installation is not yet supported.
     """
-    raise NotImplementedError("Git installation is not yet implemented")
+    with console.status(f"Installing plugin from source {source}...", spinner="dots"):
+        manifest, installation_path = catalog.install_from_git(source)
+        update_plugins_config_yaml(manifest=manifest)
+        _finalize_installation(manifest, "git", catalog, installation_path)
+        console.print(f":white_heavy_check_mark: {manifest.name} installation complete.")
 
 
 def _install_from_monorepo(source: str, catalog: PluginCatalog, use_test: bool = False):
@@ -662,19 +678,18 @@ def uninstall(plugin_name: str, catalog: PluginCatalog) -> None:
 
     try:
         with console.status(f"Uninstalling plugin {plugin_name}...", spinner="dots"):
-            # Uninstall the package using pip
-            catalog.uninstall_package(plugin_name)
-
-            # Remove from plugin registry
-            plugin_registry.remove(plugin_name)
             # retrieve the manifest so we can match on kind value
             catalog = PluginCatalog()
             manifest = catalog.find(plugin_name)
             # Remove from plugins/config.yaml
             if manifest:
                 remove_from_plugins_config_yaml(manifest)
+                catalog.uninstall_package(plugin_name, manifest)
+                # Remove from plugin registry
+                plugin_registry.remove(plugin_name)
             else:
-                console.print(f"Plugin {plugin_name} not found in plugins config.yaml.")
+                console.print(f":x: Plugin {plugin_name} not found in catalog.")
+                return
 
         console.print(f":white_heavy_check_mark: {plugin_name} uninstalled successfully.")
 
@@ -693,6 +708,7 @@ def uninstall(plugin_name: str, catalog: PluginCatalog) -> None:
     "python cpex/tools/cli.py plugin --type monorepo install cpex-pii-filter\n"
     'python cpex/tools/cli.py plugin --type pypi install "ExamplePlugin@>=0.1.0"\n'
     'python cpex/tools/cli.py plugin --type test-pypi install "cpex-test-plugin@>=0.1.1"\n'
+    'python cpex/tools/cli.py plugin --type git install "cpex-test-plugin @ git+https://github.com/tedhabeck/cpex-test-plugin@main"\n'
     "python cpex/tools/cli.py plugin versions cpex-test-plugin"
     "python cpex/tools/cli.py plugin uninstall cpex-pii-filter"
 )
@@ -728,7 +744,7 @@ def plugin(
     # update the catalog before proceeding with install etc.
     pc = PluginCatalog()
     # optimized github search REST api takes ~14s to search & download all manifests
-    if install_type not in {"test-pypi", "pypi"}:
+    if install_type not in {"test-pypi", "pypi", "local"}:
         console.log("Update catalog")
         with console.status("Updating catalog...", spinner="dots"):
             rc = pc.update_catalog_with_pyproject()
