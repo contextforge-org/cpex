@@ -709,8 +709,8 @@ def uninstall(plugin_name: str, catalog: PluginCatalog) -> None:
     'python cpex/tools/cli.py plugin --type pypi install "ExamplePlugin@>=0.1.0"\n'
     'python cpex/tools/cli.py plugin --type test-pypi install "cpex-test-plugin@>=0.1.1"\n'
     'python cpex/tools/cli.py plugin --type git install "cpex-test-plugin @ git+https://github.com/tedhabeck/cpex-test-plugin@main"\n'
-    "python cpex/tools/cli.py plugin versions cpex-test-plugin"
-    "python cpex/tools/cli.py plugin uninstall cpex-pii-filter"
+    "python cpex/tools/cli.py plugin versions cpex-test-plugin\n"
+    "python cpex/tools/cli.py plugin uninstall cpex-pii-filter\n"
 )
 def plugin(
     cmd_action: str = typer.Argument(None, help="One of: list|info|install|search|versions|uninstall"),
