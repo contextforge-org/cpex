@@ -3362,3 +3362,294 @@ class TestVerFunction:
         result = _ver("42")
         assert isinstance(result, Version)
         assert str(result) == "42"
+
+
+
+class TestPluginCatalogUpdatePluginVersionRegistry:
+    """Tests for PluginCatalog.update_plugin_version_registry method."""
+
+    def test_update_plugin_version_registry_creates_new_file(self, tmp_path, mock_github_env):
+        """Test creating a new versions.json file when none exists."""
+        catalog = PluginCatalog()
+        catalog.catalog_folder = str(tmp_path / "catalog")
+        
+        manifest = create_test_manifest(name="test_plugin", version="1.0.0")
+        relpath = Path("plugins/test_plugin")
+        
+        catalog.update_plugin_version_registry(manifest, relpath)
+        
+        # Verify file was created
+        versions_file = tmp_path / "catalog" / "test_plugin" / "versions.json"
+        assert versions_file.exists()
+        
+        # Verify content
+        with versions_file.open("r") as f:
+            data = json.load(f)
+        
+        assert len(data["versions"]) == 1
+        assert data["versions"][0]["version"] == "1.0.0"
+        assert data["versions"][0]["manifest_file"] == str(relpath)
+        assert data["latest"]["version"] == "1.0.0"
+
+    def test_update_plugin_version_registry_adds_new_version(self, tmp_path, mock_github_env):
+        """Test adding a new version to existing registry."""
+        catalog = PluginCatalog()
+        catalog.catalog_folder = str(tmp_path / "catalog")
+        
+        # Create initial version
+        manifest1 = create_test_manifest(name="test_plugin", version="1.0.0")
+        relpath1 = Path("plugins/test_plugin")
+        catalog.update_plugin_version_registry(manifest1, relpath1)
+        
+        # Add new version
+        manifest2 = create_test_manifest(name="test_plugin", version="2.0.0")
+        relpath2 = Path("plugins/test_plugin")
+        catalog.update_plugin_version_registry(manifest2, relpath2)
+        
+        # Verify both versions exist
+        versions_file = tmp_path / "catalog" / "test_plugin" / "versions.json"
+        with versions_file.open("r") as f:
+            data = json.load(f)
+        
+        assert len(data["versions"]) == 2
+        versions = [v["version"] for v in data["versions"]]
+        assert "1.0.0" in versions
+        assert "2.0.0" in versions
+        assert data["latest"]["version"] == "2.0.0"
+
+    def test_update_plugin_version_registry_handles_duplicate_version(self, tmp_path, mock_github_env):
+        """Test that duplicate versions are not added."""
+        catalog = PluginCatalog()
+        catalog.catalog_folder = str(tmp_path / "catalog")
+        
+        manifest = create_test_manifest(name="test_plugin", version="1.0.0")
+        relpath = Path("plugins/test_plugin")
+        
+        # Add same version twice
+        catalog.update_plugin_version_registry(manifest, relpath)
+        catalog.update_plugin_version_registry(manifest, relpath)
+        
+        # Verify only one version exists
+        versions_file = tmp_path / "catalog" / "test_plugin" / "versions.json"
+        with versions_file.open("r") as f:
+            data = json.load(f)
+        
+        assert len(data["versions"]) == 1
+        assert data["versions"][0]["version"] == "1.0.0"
+
+    def test_update_plugin_version_registry_updates_latest_correctly(self, tmp_path, mock_github_env):
+        """Test that latest version is updated correctly when adding versions out of order."""
+        catalog = PluginCatalog()
+        catalog.catalog_folder = str(tmp_path / "catalog")
+        
+        # Add version 2.0.0 first
+        manifest2 = create_test_manifest(name="test_plugin", version="2.0.0")
+        catalog.update_plugin_version_registry(manifest2, Path("plugins/test_plugin"))
+        
+        # Add version 1.0.0
+        manifest1 = create_test_manifest(name="test_plugin", version="1.0.0")
+        catalog.update_plugin_version_registry(manifest1, Path("plugins/test_plugin"))
+        
+        # Add version 3.0.0
+        manifest3 = create_test_manifest(name="test_plugin", version="3.0.0")
+        catalog.update_plugin_version_registry(manifest3, Path("plugins/test_plugin"))
+        
+        # Verify latest is 3.0.0
+        versions_file = tmp_path / "catalog" / "test_plugin" / "versions.json"
+        with versions_file.open("r") as f:
+            data = json.load(f)
+        
+        assert data["latest"]["version"] == "3.0.0"
+        assert len(data["versions"]) == 3
+
+    def test_update_plugin_version_registry_with_prerelease_versions(self, tmp_path, mock_github_env):
+        """Test handling of pre-release versions."""
+        catalog = PluginCatalog()
+        catalog.catalog_folder = str(tmp_path / "catalog")
+        
+        # Add stable version
+        manifest1 = create_test_manifest(name="test_plugin", version="1.0.0")
+        catalog.update_plugin_version_registry(manifest1, Path("plugins/test_plugin"))
+        
+        # Add pre-release version
+        manifest2 = create_test_manifest(name="test_plugin", version="2.0.0rc1")
+        catalog.update_plugin_version_registry(manifest2, Path("plugins/test_plugin"))
+        
+        # Verify latest is the rc version (higher version number)
+        versions_file = tmp_path / "catalog" / "test_plugin" / "versions.json"
+        with versions_file.open("r") as f:
+            data = json.load(f)
+        
+        assert len(data["versions"]) == 2
+        assert data["latest"]["version"] == "2.0.0rc1"
+
+    def test_update_plugin_version_registry_with_dev_versions(self, tmp_path, mock_github_env):
+        """Test handling of development versions."""
+        catalog = PluginCatalog()
+        catalog.catalog_folder = str(tmp_path / "catalog")
+        
+        # Add dev version
+        manifest1 = create_test_manifest(name="test_plugin", version="1.0.0.dev1")
+        catalog.update_plugin_version_registry(manifest1, Path("plugins/test_plugin"))
+        
+        # Add stable version
+        manifest2 = create_test_manifest(name="test_plugin", version="1.0.0")
+        catalog.update_plugin_version_registry(manifest2, Path("plugins/test_plugin"))
+        
+        # Verify latest is stable version
+        versions_file = tmp_path / "catalog" / "test_plugin" / "versions.json"
+        with versions_file.open("r") as f:
+            data = json.load(f)
+        
+        assert len(data["versions"]) == 2
+        assert data["latest"]["version"] == "1.0.0"
+
+    def test_update_plugin_version_registry_preserves_existing_data(self, tmp_path, mock_github_env):
+        """Test that existing version data is preserved when adding new versions."""
+        catalog = PluginCatalog()
+        catalog.catalog_folder = str(tmp_path / "catalog")
+        
+        # Manually create a versions.json with additional metadata
+        versions_dir = tmp_path / "catalog" / "test_plugin"
+        versions_dir.mkdir(parents=True)
+        versions_file = versions_dir / "versions.json"
+        
+        initial_data = {
+            "latest": {
+                "version": "1.0.0",
+                "released": "2024-01-01T00:00:00Z",
+                "manifest_file": "plugins/test_plugin",
+                "deprecated": False,
+                "breaking_changes": False,
+                "changelog": "Initial release"
+            },
+            "versions": [
+                {
+                    "version": "1.0.0",
+                    "released": "2024-01-01T00:00:00Z",
+                    "manifest_file": "plugins/test_plugin",
+                    "deprecated": False,
+                    "breaking_changes": False,
+                    "changelog": "Initial release"
+                }
+            ]
+        }
+        versions_file.write_text(json.dumps(initial_data, indent=2))
+        
+        # Add new version
+        manifest2 = create_test_manifest(name="test_plugin", version="2.0.0")
+        catalog.update_plugin_version_registry(manifest2, Path("plugins/test_plugin"))
+        
+        # Verify old version data is preserved
+        with versions_file.open("r") as f:
+            data = json.load(f)
+        
+        assert len(data["versions"]) == 2
+        old_version = next(v for v in data["versions"] if v["version"] == "1.0.0")
+        assert old_version["changelog"] == "Initial release"
+        assert old_version["released"] == "2024-01-01T00:00:00Z"
+
+    def test_update_plugin_version_registry_with_complex_version_ordering(self, tmp_path, mock_github_env):
+        """Test version ordering with complex version strings."""
+        catalog = PluginCatalog()
+        catalog.catalog_folder = str(tmp_path / "catalog")
+        
+        # Add versions in random order
+        versions = ["1.0.0", "2.0.0rc1", "1.5.0", "2.0.0", "1.0.1", "2.1.0a1"]
+        for version in versions:
+            manifest = create_test_manifest(name="test_plugin", version=version)
+            catalog.update_plugin_version_registry(manifest, Path("plugins/test_plugin"))
+        
+        # Verify latest is 2.1.0a1 (highest version)
+        versions_file = tmp_path / "catalog" / "test_plugin" / "versions.json"
+        with versions_file.open("r") as f:
+            data = json.load(f)
+        
+        assert len(data["versions"]) == 6
+        assert data["latest"]["version"] == "2.1.0a1"
+
+    def test_update_plugin_version_registry_creates_parent_directories(self, tmp_path, mock_github_env):
+        """Test that parent directories are created if they don't exist."""
+        catalog = PluginCatalog()
+        catalog.catalog_folder = str(tmp_path / "catalog")
+        
+        # Don't create the directory beforehand
+        manifest = create_test_manifest(name="test_plugin", version="1.0.0")
+        catalog.update_plugin_version_registry(manifest, Path("plugins/test_plugin"))
+        
+        # Verify directory and file were created
+        versions_file = tmp_path / "catalog" / "test_plugin" / "versions.json"
+        assert versions_file.exists()
+        assert versions_file.parent.exists()
+
+    def test_update_plugin_version_registry_with_invalid_existing_json(self, tmp_path, mock_github_env):
+        """Test handling of corrupted existing versions.json file."""
+        catalog = PluginCatalog()
+        catalog.catalog_folder = str(tmp_path / "catalog")
+        
+        # Create corrupted versions.json
+        versions_dir = tmp_path / "catalog" / "test_plugin"
+        versions_dir.mkdir(parents=True)
+        versions_file = versions_dir / "versions.json"
+        versions_file.write_text("invalid json content")
+        
+        # Attempt to update should raise an error
+        manifest = create_test_manifest(name="test_plugin", version="1.0.0")
+        with pytest.raises(json.JSONDecodeError):
+            catalog.update_plugin_version_registry(manifest, Path("plugins/test_plugin"))
+
+    def test_update_plugin_version_registry_timestamp_format(self, tmp_path, mock_github_env):
+        """Test that timestamp is in correct ISO format with Z suffix."""
+        catalog = PluginCatalog()
+        catalog.catalog_folder = str(tmp_path / "catalog")
+        
+        manifest = create_test_manifest(name="test_plugin", version="1.0.0")
+        catalog.update_plugin_version_registry(manifest, Path("plugins/test_plugin"))
+        
+        versions_file = tmp_path / "catalog" / "test_plugin" / "versions.json"
+        with versions_file.open("r") as f:
+            data = json.load(f)
+        
+        released = data["versions"][0]["released"]
+        # Verify format: ends with Z and contains T
+        assert released.endswith("Z")
+        assert "T" in released
+        # Verify it's a valid ISO format
+        from datetime import datetime
+        datetime.fromisoformat(released.replace("Z", "+00:00"))
+
+    def test_update_plugin_version_registry_with_epoch_versions(self, tmp_path, mock_github_env):
+        """Test handling of versions with epochs."""
+        catalog = PluginCatalog()
+        catalog.catalog_folder = str(tmp_path / "catalog")
+        
+        # Add version with epoch
+        manifest1 = create_test_manifest(name="test_plugin", version="1!1.0.0")
+        catalog.update_plugin_version_registry(manifest1, Path("plugins/test_plugin"))
+        
+        # Add version without epoch (should be lower)
+        manifest2 = create_test_manifest(name="test_plugin", version="2.0.0")
+        catalog.update_plugin_version_registry(manifest2, Path("plugins/test_plugin"))
+        
+        # Verify epoch version is latest
+        versions_file = tmp_path / "catalog" / "test_plugin" / "versions.json"
+        with versions_file.open("r") as f:
+            data = json.load(f)
+        
+        assert data["latest"]["version"] == "1!1.0.0"
+
+    def test_update_plugin_version_registry_relpath_stored_correctly(self, tmp_path, mock_github_env):
+        """Test that relative path is stored correctly in manifest_file."""
+        catalog = PluginCatalog()
+        catalog.catalog_folder = str(tmp_path / "catalog")
+        
+        manifest = create_test_manifest(name="test_plugin", version="1.0.0")
+        relpath = Path("custom/path/to/plugin")
+        
+        catalog.update_plugin_version_registry(manifest, relpath)
+        
+        versions_file = tmp_path / "catalog" / "test_plugin" / "versions.json"
+        with versions_file.open("r") as f:
+            data = json.load(f)
+        
+        assert data["versions"][0]["manifest_file"] == "custom/path/to/plugin"
