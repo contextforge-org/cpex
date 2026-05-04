@@ -824,10 +824,10 @@ def plugin(
         console.log("Update catalog")
         with console.status("Updating catalog...", spinner="dots"):
             rc = pc.update_catalog_with_pyproject()
-            if rc is False:
-                console.log("Catalog update completed.")
-            else:
+            if rc:
                 console.log(":x: Catalog update failed.")
+            else:
+                console.log("Catalog update completed.")
 
     if cmd_action == "versions":
         return versions(source, catalog=pc, fmt=fmt)
