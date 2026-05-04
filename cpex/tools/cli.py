@@ -255,7 +255,7 @@ def list(type: str, fmt: str = "text") -> None:
     registered_plugins = pr.registry.plugins
 
     if fmt == "json":
-        print(
+        console.print(
             json.dumps(
                 {
                     "plugins": [
@@ -269,12 +269,7 @@ def list(type: str, fmt: str = "text") -> None:
 
     if registered_plugins:
         for plug_in in registered_plugins:
-            logger.info(
-                "name: %s version: %s installation type: %s",
-                plug_in.name,
-                plug_in.version,
-                plug_in.installation_type,
-            )
+            console.print(f"name: {plug_in.name} version: {plug_in.version} installation type: {plug_in.installation_type}\n")
     else:
         logger.info("No plugins registered.")
 
