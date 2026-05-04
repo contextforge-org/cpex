@@ -269,7 +269,9 @@ def list(type: str, fmt: str = "text") -> None:
 
     if registered_plugins:
         for plug_in in registered_plugins:
-            console.print(f"name: {plug_in.name} version: {plug_in.version} installation type: {plug_in.installation_type}\n")
+            console.print(
+                f"name: {plug_in.name} version: {plug_in.version} installation type: {plug_in.installation_type}\n"
+            )
     else:
         logger.info("No plugins registered.")
 

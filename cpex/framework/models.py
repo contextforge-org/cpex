@@ -2419,8 +2419,11 @@ class InstalledPluginRegistry(BaseModel):
         data = orjson.dumps(self.model_dump(), option=orjson.OPT_INDENT_2)
 
         tmp = tempfile.NamedTemporaryFile(
-            mode="wb", delete=False, dir=str(folder),
-            prefix="installed-plugins.", suffix=".tmp",
+            mode="wb",
+            delete=False,
+            dir=str(folder),
+            prefix="installed-plugins.",
+            suffix=".tmp",
         )
         try:
             try:
