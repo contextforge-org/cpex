@@ -17,6 +17,7 @@
 // - [`manager`] — PluginManager lifecycle and hook dispatch
 // - [`registry`] — PluginInstanceRegistry and HookRegistry
 // - [`config`] — Unified YAML configuration parsing
+// - [`factory`] — Plugin factory registry for config-driven instantiation
 // - [`context`] — PluginContext (local_state + global_state)
 // - [`error`] — Error types, violations, and result types
 
@@ -24,6 +25,7 @@ pub mod config;
 pub mod context;
 pub mod error;
 pub mod executor;
+pub mod factory;
 pub mod hooks;
 pub mod manager;
 pub mod plugin;

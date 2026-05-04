@@ -39,11 +39,16 @@ use serde::{Deserialize, Serialize};
 /// This is a Phase 1 stub with minimal fields. Phase 3 adds the
 /// full CMF extension types (SecurityExtension with MonotonicSet,
 /// DelegationExtension with scope-narrowing chain, HttpExtension
-/// with Guarded<T>, MetaExtension, etc.).
+/// with Guarded<T>, etc.).
 ///
 /// Mirrors Python's `cpex.framework.extensions.Extensions`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Extensions {
+    /// Host-provided operational metadata — entity identification,
+    /// tags, scope, and arbitrary properties. Immutable.
+    #[serde(default)]
+    pub meta: Option<MetaExtension>,
+
     /// Security labels (monotonic — add-only in the full implementation).
     #[serde(default)]
     pub labels: std::collections::HashSet<String>,
@@ -51,6 +56,42 @@ pub struct Extensions {
     /// Custom extensions (mutable — no restrictions).
     #[serde(default)]
     pub custom: HashMap<String, serde_json::Value>,
+}
+
+/// Host-provided operational metadata about the entity being processed.
+///
+/// Carries entity identification (type + name) for route resolution,
+/// operational tags for policy group inheritance, scope for host-defined
+/// grouping, and arbitrary properties for policy conditions.
+///
+/// Immutable — set by the host before invoking the hook. Plugins
+/// can read but not modify.
+///
+/// Mirrors Python's `cpex.framework.extensions.meta.MetaExtension`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct MetaExtension {
+    /// Entity type: "tool", "resource", "prompt", "llm".
+    /// Used by the manager for route resolution.
+    #[serde(default)]
+    pub entity_type: Option<String>,
+
+    /// Entity name: "get_compensation", "hr://employees/*", etc.
+    /// Used by the manager for route resolution.
+    #[serde(default)]
+    pub entity_name: Option<String>,
+
+    /// Operational tags — drive policy group inheritance.
+    /// Merged with static tags from the matching route's `meta.tags`.
+    #[serde(default)]
+    pub tags: std::collections::HashSet<String>,
+
+    /// Host-defined grouping (virtual server ID, namespace, etc.).
+    #[serde(default)]
+    pub scope: Option<String>,
+
+    /// Arbitrary key-value metadata.
+    #[serde(default)]
+    pub properties: HashMap<String, String>,
 }
 
 /// Capability-filtered view of Extensions for a specific plugin.
@@ -63,6 +104,9 @@ pub struct Extensions {
 /// the Python `filter_extensions()` implementation.
 #[derive(Debug, Clone, Default)]
 pub struct FilteredExtensions {
+    /// Meta extension (always visible — immutable, no capability needed).
+    pub meta: Option<MetaExtension>,
+
     /// Security labels (visible with `read_labels` capability).
     pub labels: Option<std::collections::HashSet<String>>,
 

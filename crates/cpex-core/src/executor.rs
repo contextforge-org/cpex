@@ -26,6 +26,7 @@
 
 use std::any::Any;
 use std::collections::HashMap;
+use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -67,23 +68,34 @@ impl Default for ExecutorConfig {
 /// Aggregate result from a full hook invocation across all phases.
 ///
 /// Wraps the final payload, extensions, any violation, and the
-/// context table. The caller should pass `context_table` into the
-/// next hook invocation to preserve per-plugin local state across
-/// hooks in the same request lifecycle.
+/// context table. Immutable by design — policy decisions cannot be
+/// tampered with after the executor returns them.
+///
+/// The caller should pass `context_table` into the next hook
+/// invocation to preserve per-plugin local state across hooks in
+/// the same request lifecycle.
+///
+/// Background tasks are returned separately as [`BackgroundTasks`]
+/// to keep the policy result immutable.
 #[derive(Debug)]
 pub struct PipelineResult {
-    /// Whether the pipeline completed without a deny.
-    pub allowed: bool,
+    /// Whether the pipeline should continue processing.
+    /// `false` means a plugin denied — the pipeline was halted.
+    pub continue_processing: bool,
 
     /// The final payload after all modifications (type-erased).
     /// `None` if the pipeline was denied before any modifications.
-    pub payload: Option<Box<dyn PluginPayload>>,
+    pub modified_payload: Option<Box<dyn PluginPayload>>,
 
     /// The final extensions after all modifications.
-    pub extensions: Extensions,
+    /// `None` if no plugin modified extensions.
+    pub modified_extensions: Option<Extensions>,
 
     /// The violation that caused a deny, if any.
     pub violation: Option<crate::error::PluginViolation>,
+
+    /// Optional metadata aggregated from plugins (telemetry, diagnostics).
+    pub metadata: Option<serde_json::Value>,
 
     /// Plugin contexts indexed by plugin ID. Thread this into the
     /// next hook invocation to preserve per-plugin `local_state`.
@@ -98,10 +110,11 @@ impl PipelineResult {
         context_table: PluginContextTable,
     ) -> Self {
         Self {
-            allowed: true,
-            payload: Some(payload),
-            extensions,
+            continue_processing: true,
+            modified_payload: Some(payload),
+            modified_extensions: Some(extensions),
             violation: None,
+            metadata: None,
             context_table,
         }
     }
@@ -113,12 +126,90 @@ impl PipelineResult {
         context_table: PluginContextTable,
     ) -> Self {
         Self {
-            allowed: false,
-            payload: None,
-            extensions,
+            continue_processing: false,
+            modified_payload: None,
+            modified_extensions: Some(extensions),
             violation: Some(violation),
+            metadata: None,
             context_table,
         }
+    }
+
+    /// Whether this result represents a denial.
+    pub fn is_denied(&self) -> bool {
+        !self.continue_processing
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Background Tasks
+// ---------------------------------------------------------------------------
+
+/// Handles to fire-and-forget background tasks spawned by the executor.
+///
+/// Returned separately from [`PipelineResult`] so that the policy
+/// result stays immutable. If not awaited, tasks complete on their
+/// own in the background. Call `wait_for_background_tasks()` when you
+/// need to ensure tasks have finished (tests, graceful shutdown,
+/// audit flush).
+pub struct BackgroundTasks {
+    tasks: Vec<(String, tokio::task::JoinHandle<()>)>,
+}
+
+impl BackgroundTasks {
+    /// Create an empty set of background tasks.
+    pub fn empty() -> Self {
+        Self { tasks: Vec::new() }
+    }
+
+    /// Create from a list of (plugin_name, handle) pairs.
+    fn from_handles(tasks: Vec<(String, tokio::task::JoinHandle<()>)>) -> Self {
+        Self { tasks }
+    }
+
+    /// Whether there are any background tasks.
+    pub fn is_empty(&self) -> bool {
+        self.tasks.is_empty()
+    }
+
+    /// Number of background tasks.
+    pub fn len(&self) -> usize {
+        self.tasks.len()
+    }
+
+    /// Wait for all fire-and-forget background tasks to complete.
+    ///
+    /// Returns a list of errors from any tasks that panicked.
+    /// An empty list means all tasks completed successfully.
+    ///
+    /// Consumes `self` — each task handle can only be awaited once.
+    ///
+    /// If not called, background tasks still complete on their own.
+    /// Use this for tests, graceful shutdown, or when you need to
+    /// ensure audit/logging tasks have flushed before proceeding.
+    pub async fn wait_for_background_tasks(self) -> Vec<crate::error::PluginError> {
+        let mut errors = Vec::new();
+        for (plugin_name, handle) in self.tasks {
+            if let Err(e) = handle.await {
+                errors.push(crate::error::PluginError::Execution {
+                    plugin_name,
+                    message: format!("background task panicked: {}", e),
+                    source: None,
+                    code: None,
+                    details: std::collections::HashMap::new(),
+                    proto_error_code: None,
+                });
+            }
+        }
+        errors
+    }
+}
+
+impl fmt::Debug for BackgroundTasks {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("BackgroundTasks")
+            .field("count", &self.tasks.len())
+            .finish()
     }
 }
 
@@ -158,19 +249,26 @@ impl Executor {
     ///
     /// # Returns
     ///
-    /// A `PipelineResult` with the final payload, extensions, violation,
-    /// and the updated context table for threading into the next hook.
+    /// A tuple of:
+    /// - `PipelineResult` — immutable policy result with payload,
+    ///   extensions, violation, and context table.
+    /// - `BackgroundTasks` — handles to fire-and-forget tasks. Call
+    ///   `wait_for_background_tasks()` to await them, or drop to let
+    ///   them complete in the background.
     pub async fn execute(
         &self,
         entries: &[HookEntry],
         payload: Box<dyn PluginPayload>,
         extensions: Extensions,
         context_table: Option<PluginContextTable>,
-    ) -> PipelineResult {
+    ) -> (PipelineResult, BackgroundTasks) {
         let mut ctx_table = context_table.unwrap_or_default();
 
         if entries.is_empty() {
-            return PipelineResult::allowed_with(payload, extensions, ctx_table);
+            return (
+                PipelineResult::allowed_with(payload, extensions, ctx_table),
+                BackgroundTasks::empty(),
+            );
         }
 
         // Group entries by mode (from trusted_config)
@@ -193,7 +291,10 @@ impl Executor {
             )
             .await
         {
-            return PipelineResult::denied(v, current_extensions, ctx_table);
+            return (
+                PipelineResult::denied(v, current_extensions, ctx_table),
+                BackgroundTasks::empty(),
+            );
         }
 
         // Phase 2: TRANSFORM — serial, chained, can modify, cannot block
@@ -218,17 +319,23 @@ impl Executor {
             .run_concurrent_phase(&concurrent, &*current_payload, &current_extensions, &ctx_table)
             .await
         {
-            return PipelineResult::denied(violation, current_extensions, ctx_table);
+            return (
+                PipelineResult::denied(violation, current_extensions, ctx_table),
+                BackgroundTasks::empty(),
+            );
         }
 
         // Phase 5: FIRE_AND_FORGET — background, read-only, ignore results
-        self.spawn_fire_and_forget(
+        let bg_handles = self.spawn_fire_and_forget(
             &fire_and_forget,
             &*current_payload,
             &ctx_table,
         );
 
-        PipelineResult::allowed_with(current_payload, current_extensions, ctx_table)
+        (
+            PipelineResult::allowed_with(current_payload, current_extensions, ctx_table),
+            BackgroundTasks::from_handles(bg_handles),
+        )
     }
 
     // -----------------------------------------------------------------------
@@ -547,14 +654,18 @@ impl Executor {
     /// Each handler runs in its own `tokio::spawn` — the pipeline does
     /// not wait for them. Errors and timeouts are logged but have no
     /// effect on the pipeline result.
+    ///
+    /// Returns the plugin name and join handle for each spawned task
+    /// so they can be stored on `PipelineResult` for optional awaiting
+    /// via `wait_for_background_tasks()`.
     fn spawn_fire_and_forget(
         &self,
         entries: &[HookEntry],
         payload: &dyn PluginPayload,
         ctx_table: &PluginContextTable,
-    ) {
+    ) -> Vec<(String, tokio::task::JoinHandle<()>)> {
         if entries.is_empty() {
-            return;
+            return Vec::new();
         }
 
         let timeout_dur = Duration::from_secs(self.config.timeout_seconds);
@@ -564,14 +675,17 @@ impl Executor {
             .map(|c| c.global_state.clone())
             .unwrap_or_default();
 
+        let mut handles = Vec::with_capacity(entries.len());
+
         for entry in entries {
             let plugin_name = entry.plugin_ref.name().to_string();
             let handler = Arc::clone(&entry.handler);
             let owned_payload = payload.clone_boxed();
             let mut ctx = PluginContext::with_global_state(global_state.clone());
             let dur = timeout_dur;
+            let name_for_log = plugin_name.clone();
 
-            tokio::spawn(async move {
+            let handle = tokio::spawn(async move {
                 let filtered = FilteredExtensions::default();
                 let result = timeout(
                     dur,
@@ -582,14 +696,18 @@ impl Executor {
                 match result {
                     Ok(Ok(_)) => {} // discard
                     Ok(Err(e)) => {
-                        warn!("FIRE_AND_FORGET plugin '{}' error (ignored): {}", plugin_name, e);
+                        warn!("FIRE_AND_FORGET plugin '{}' error (ignored): {}", name_for_log, e);
                     }
                     Err(_) => {
-                        warn!("FIRE_AND_FORGET plugin '{}' timed out (ignored)", plugin_name);
+                        warn!("FIRE_AND_FORGET plugin '{}' timed out (ignored)", name_for_log);
                     }
                 }
             });
+
+            handles.push((plugin_name, handle));
         }
+
+        handles
     }
 }
 
@@ -719,8 +837,8 @@ mod tests {
             Extensions::default(),
             PluginContextTable::new(),
         );
-        assert!(result.allowed);
-        assert!(result.payload.is_some());
+        assert!(result.continue_processing);
+        assert!(result.modified_payload.is_some());
         assert!(result.violation.is_none());
     }
 
@@ -732,8 +850,8 @@ mod tests {
             Extensions::default(),
             PluginContextTable::new(),
         );
-        assert!(!result.allowed);
-        assert!(result.payload.is_none());
+        assert!(!result.continue_processing);
+        assert!(result.modified_payload.is_none());
         assert!(result.violation.is_some());
     }
 
@@ -743,10 +861,10 @@ mod tests {
         let payload: Box<dyn PluginPayload> = Box::new(TestPayload {
             value: "test".into(),
         });
-        let result = executor
+        let (result, _) = executor
             .execute(&[], payload, Extensions::default(), None)
             .await;
-        assert!(result.allowed);
-        assert!(result.payload.is_some());
+        assert!(result.continue_processing);
+        assert!(result.modified_payload.is_some());
     }
 }

@@ -24,6 +24,12 @@ use thiserror::Error;
 /// Covers plugin execution failures, policy violations, timeouts,
 /// and configuration issues. Each variant carries enough context
 /// for the caller to log, report, or recover.
+///
+/// Mirrors the Python framework's `PluginErrorModel` with:
+/// - `code` — business-logic error code (e.g., `"rate_limit_exceeded"`)
+/// - `details` — structured diagnostic data for logging
+/// - `proto_error_code` — protocol-level error code for the host to
+///   map back to the wire format (MCP JSON-RPC, HTTP status, etc.)
 #[derive(Debug, Error)]
 pub enum PluginError {
     /// A plugin raised an execution error.
@@ -31,8 +37,17 @@ pub enum PluginError {
     Execution {
         plugin_name: String,
         message: String,
+        /// Business-logic error code (e.g., `"invalid_token"`).
         #[source]
         source: Option<Box<dyn std::error::Error + Send + Sync>>,
+        /// Business-logic error code set by the plugin.
+        code: Option<String>,
+        /// Structured diagnostic data for logging or debugging.
+        details: HashMap<String, serde_json::Value>,
+        /// Protocol-level error code for the host to map to the wire
+        /// format. MCP: JSON-RPC codes (e.g., -32603). HTTP: status
+        /// codes. The host interprets this; CPEX just carries it.
+        proto_error_code: Option<i64>,
     },
 
     /// A plugin exceeded its execution timeout.
@@ -40,6 +55,8 @@ pub enum PluginError {
     Timeout {
         plugin_name: String,
         timeout_ms: u64,
+        /// Protocol-level error code for the host.
+        proto_error_code: Option<i64>,
     },
 
     /// A plugin returned a policy violation (deny).
@@ -93,6 +110,12 @@ pub struct PluginViolation {
     /// Name of the plugin that produced the violation.
     /// Set by the framework after the plugin returns, not by the plugin itself.
     pub plugin_name: Option<String>,
+
+    /// Protocol-level error code for the host to map to the wire format.
+    /// MCP: JSON-RPC codes (e.g., -32603). HTTP: status codes (e.g., 403).
+    /// Set by the plugin; the host interprets it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proto_error_code: Option<i64>,
 }
 
 impl PluginViolation {
@@ -104,6 +127,7 @@ impl PluginViolation {
             description: None,
             details: HashMap::new(),
             plugin_name: None,
+            proto_error_code: None,
         }
     }
 
@@ -116,6 +140,12 @@ impl PluginViolation {
     /// Attach structured diagnostic details.
     pub fn with_details(mut self, details: HashMap<String, serde_json::Value>) -> Self {
         self.details = details;
+        self
+    }
+
+    /// Attach a protocol-level error code.
+    pub fn with_proto_error_code(mut self, code: i64) -> Self {
+        self.proto_error_code = Some(code);
         self
     }
 }

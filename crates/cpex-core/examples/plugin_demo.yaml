@@ -1,0 +1,59 @@
+# CPEX Plugin Demo Configuration
+#
+# Three plugins, policy groups with tag-based activation,
+# and routes that map tools to different plugin combinations.
+
+plugin_settings:
+  routing_enabled: true
+  plugin_timeout: 30
+
+global:
+  policies:
+    # "all" is reserved — these plugins fire on every invocation
+    all:
+      plugins: [identity-resolver]
+    # "pii" group — activated when a route has the "pii" tag
+    pii:
+      plugins: [pii-guard]
+
+plugins:
+  - name: identity-resolver
+    kind: builtin/identity
+    hooks: [tool_pre_invoke, tool_post_invoke]
+    mode: sequential
+    priority: 10
+    on_error: fail
+
+  - name: pii-guard
+    kind: builtin/pii
+    hooks: [tool_pre_invoke]
+    mode: sequential
+    priority: 20
+    on_error: fail
+    config:
+      clearance_level: confidential
+
+  - name: audit-logger
+    kind: builtin/audit
+    hooks: [tool_pre_invoke, tool_post_invoke]
+    mode: fire_and_forget
+    priority: 100
+    on_error: ignore
+
+routes:
+  # HR compensation tool — contains PII, gets full security stack
+  - tool: get_compensation
+    meta:
+      tags: [pii, hr]
+    plugins:
+      - audit-logger
+
+  # Public department listing — standard security only
+  - tool: list_departments
+    plugins:
+      - audit-logger
+
+  # Wildcard — catch-all for unmatched tools
+  - tool: "*"
+    plugins:
+      - audit-logger
