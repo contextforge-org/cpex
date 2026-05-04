@@ -34,7 +34,8 @@ use tokio::time::timeout;
 use tracing::{error, warn};
 
 use crate::context::{PluginContext, PluginContextTable};
-use crate::hooks::payload::{Extensions, FilteredExtensions, PluginPayload};
+use crate::extensions::filter_extensions;
+use crate::hooks::payload::{Extensions, PluginPayload, WriteToken};
 use crate::plugin::OnError;
 use crate::registry::{group_by_mode, HookEntry};
 
@@ -329,6 +330,7 @@ impl Executor {
         let bg_handles = self.spawn_fire_and_forget(
             &fire_and_forget,
             &*current_payload,
+            &current_extensions,
             &ctx_table,
         );
 
@@ -381,10 +383,30 @@ impl Executor {
             let mut ctx = ctx_table.remove(&plugin_id).unwrap_or_default();
             ctx.global_state = global_state.clone();
 
-            // TODO: Capability-filter extensions per plugin (Phase 3)
-            let filtered = FilteredExtensions::default();
+            // Filter extensions per plugin based on declared capabilities.
+            // Produces a filtered view with None for ungated slots.
+            // Also sets write tokens for plugins with write capabilities.
+            let capabilities: std::collections::HashSet<String> = entry
+                .plugin_ref
+                .trusted_config()
+                .capabilities
+                .iter()
+                .cloned()
+                .collect();
+            let mut filtered = filter_extensions(extensions, &capabilities);
 
-            // Execute with timeout — handler borrows the payload
+            // Set write tokens based on capabilities
+            if capabilities.contains("write_headers") {
+                filtered.http_write_token = Some(WriteToken::new());
+            }
+            if capabilities.contains("append_labels") {
+                filtered.labels_write_token = Some(WriteToken::new());
+            }
+            if capabilities.contains("append_delegation") {
+                filtered.delegation_write_token = Some(WriteToken::new());
+            }
+
+            // Execute with timeout — handler borrows payload, gets filtered extensions
             let timeout_dur = Duration::from_secs(self.config.timeout_seconds);
             let result = timeout(timeout_dur, entry.handler.invoke(&**payload, &filtered, &mut ctx))
                 .await;
@@ -405,9 +427,33 @@ impl Executor {
                             if let Some(mp) = erased.modified_payload {
                                 *payload = mp;
                             }
-                            if let Some(me) = erased.modified_extensions {
-                                // TODO: Merge with tier validation (Phase 3)
-                                *extensions = me;
+                            if let Some(owned) = erased.modified_extensions {
+                                // Validate tier constraints before accepting
+                                if !extensions.validate_immutable(&owned) {
+                                    warn!(
+                                        "{} plugin '{}' violated immutable tier — \
+                                         modified an immutable extension slot. \
+                                         Extension changes rejected.",
+                                        phase_label, plugin_name
+                                    );
+                                } else if let Some(ref orig_sec) = extensions.security {
+                                    if let Some(ref new_sec) = owned.security {
+                                        if !new_sec.labels.is_superset(&orig_sec.labels) {
+                                            warn!(
+                                                "{} plugin '{}' violated monotonic tier — \
+                                                 removed a security label. \
+                                                 Extension changes rejected.",
+                                                phase_label, plugin_name
+                                            );
+                                        } else {
+                                            extensions.merge_owned(owned);
+                                        }
+                                    } else {
+                                        extensions.merge_owned(owned);
+                                    }
+                                } else {
+                                    extensions.merge_owned(owned);
+                                }
                             }
                         }
 
@@ -479,7 +525,7 @@ impl Executor {
         &self,
         entries: &[HookEntry],
         payload: &dyn PluginPayload,
-        _extensions: &Extensions,
+        extensions: &Extensions,
         ctx_table: &PluginContextTable,
         phase_label: &str,
     ) {
@@ -498,14 +544,22 @@ impl Executor {
                 .cloned()
                 .map(|mut c| { c.global_state = global_state.clone(); c })
                 .unwrap_or_else(|| PluginContext::with_global_state(global_state.clone()));
-            let filtered = FilteredExtensions::default();
+            // Filter extensions per plugin — read-only, no write tokens.
+            let capabilities: std::collections::HashSet<String> = entry
+                .plugin_ref
+                .trusted_config()
+                .capabilities
+                .iter()
+                .cloned()
+                .collect();
+            let filtered = filter_extensions(extensions, &capabilities);
             let timeout_dur = Duration::from_secs(self.config.timeout_seconds);
 
             let result = timeout(timeout_dur, entry.handler.invoke(payload, &filtered, &mut ctx))
                 .await;
 
             match result {
-                Ok(Ok(_)) => {} // read-only — discard result
+                Ok(Ok(_)) => {} // read-only — discard result and ext_clone
                 Ok(Err(e)) => {
                     warn!("{} plugin '{}' error (ignored): {}", phase_label, plugin_name, e);
                 }
@@ -526,7 +580,7 @@ impl Executor {
         &self,
         entries: &[HookEntry],
         payload: &dyn PluginPayload,
-        _extensions: &Extensions,
+        extensions: &Extensions,
         ctx_table: &PluginContextTable,
     ) -> Option<crate::error::PluginViolation> {
         if entries.is_empty() {
@@ -562,8 +616,18 @@ impl Executor {
                 .unwrap_or_else(|| PluginContext::with_global_state(global_state.clone()));
             let dur = timeout_dur;
 
+            // Filter per plugin — each may have different capabilities.
+            // Read-only, no write tokens. Wrap in Arc for 'static spawn.
+            let capabilities: std::collections::HashSet<String> = entry
+                .plugin_ref
+                .trusted_config()
+                .capabilities
+                .iter()
+                .cloned()
+                .collect();
+            let filtered = Arc::new(filter_extensions(extensions, &capabilities));
+
             let handle = tokio::spawn(async move {
-                let filtered = FilteredExtensions::default();
                 timeout(dur, handler.invoke(&**payload_clone, &filtered, &mut ctx)).await
             });
 
@@ -662,6 +726,7 @@ impl Executor {
         &self,
         entries: &[HookEntry],
         payload: &dyn PluginPayload,
+        extensions: &Extensions,
         ctx_table: &PluginContextTable,
     ) -> Vec<(String, tokio::task::JoinHandle<()>)> {
         if entries.is_empty() {
@@ -685,8 +750,17 @@ impl Executor {
             let dur = timeout_dur;
             let name_for_log = plugin_name.clone();
 
+            // Filter per plugin, read-only, no write tokens
+            let capabilities: std::collections::HashSet<String> = entry
+                .plugin_ref
+                .trusted_config()
+                .capabilities
+                .iter()
+                .cloned()
+                .collect();
+            let filtered = Arc::new(filter_extensions(extensions, &capabilities));
+
             let handle = tokio::spawn(async move {
-                let filtered = FilteredExtensions::default();
                 let result = timeout(
                     dur,
                     handler.invoke(&*owned_payload, &filtered, &mut ctx),
@@ -735,7 +809,7 @@ impl Default for Executor {
 pub struct ErasedResultFields {
     pub continue_processing: bool,
     pub modified_payload: Option<Box<dyn PluginPayload>>,
-    pub modified_extensions: Option<Extensions>,
+    pub modified_extensions: Option<crate::hooks::payload::OwnedExtensions>,
     pub violation: Option<crate::error::PluginViolation>,
 }
 
@@ -817,14 +891,20 @@ mod tests {
 
     #[test]
     fn test_erase_result_modify_extensions() {
-        let mut ext = Extensions::default();
-        ext.labels.insert("PII".into());
-        let result: PluginResult<TestPayload> = PluginResult::modify_extensions(ext);
+        let mut security = crate::extensions::SecurityExtension::default();
+        security.add_label("PII");
+        let ext = Extensions {
+            security: Some(Arc::new(security)),
+            ..Default::default()
+        };
+        let owned = ext.cow_copy();
+        let result: PluginResult<TestPayload> = PluginResult::modify_extensions(owned);
         let erased = erase_result(result);
         let fields = extract_erased(erased).unwrap();
         assert!(fields.continue_processing);
         assert!(fields.modified_extensions.is_some());
-        assert!(fields.modified_extensions.as_ref().unwrap().labels.contains("PII"));
+        let sec = fields.modified_extensions.as_ref().unwrap().security.as_ref().unwrap();
+        assert!(sec.has_label("PII"));
     }
 
     #[test]

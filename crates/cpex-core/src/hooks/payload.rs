@@ -21,98 +21,15 @@
 // modification without copying the payload.
 
 use std::any::Any;
-use std::collections::HashMap;
 use std::fmt;
 
-use serde::{Deserialize, Serialize};
-
-// ---------------------------------------------------------------------------
-// Extensions (stub — fleshed out in Phase 3 with full CMF types)
-// ---------------------------------------------------------------------------
-
-/// Typed container for all message extensions.
-///
-/// Each field corresponds to an extension with an explicit mutability
-/// tier enforced by the processing pipeline. Extensions are always
-/// passed separately from the payload to handlers.
-///
-/// This is a Phase 1 stub with minimal fields. Phase 3 adds the
-/// full CMF extension types (SecurityExtension with MonotonicSet,
-/// DelegationExtension with scope-narrowing chain, HttpExtension
-/// with Guarded<T>, etc.).
-///
-/// Mirrors Python's `cpex.framework.extensions.Extensions`.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct Extensions {
-    /// Host-provided operational metadata — entity identification,
-    /// tags, scope, and arbitrary properties. Immutable.
-    #[serde(default)]
-    pub meta: Option<MetaExtension>,
-
-    /// Security labels (monotonic — add-only in the full implementation).
-    #[serde(default)]
-    pub labels: std::collections::HashSet<String>,
-
-    /// Custom extensions (mutable — no restrictions).
-    #[serde(default)]
-    pub custom: HashMap<String, serde_json::Value>,
-}
-
-/// Host-provided operational metadata about the entity being processed.
-///
-/// Carries entity identification (type + name) for route resolution,
-/// operational tags for policy group inheritance, scope for host-defined
-/// grouping, and arbitrary properties for policy conditions.
-///
-/// Immutable — set by the host before invoking the hook. Plugins
-/// can read but not modify.
-///
-/// Mirrors Python's `cpex.framework.extensions.meta.MetaExtension`.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct MetaExtension {
-    /// Entity type: "tool", "resource", "prompt", "llm".
-    /// Used by the manager for route resolution.
-    #[serde(default)]
-    pub entity_type: Option<String>,
-
-    /// Entity name: "get_compensation", "hr://employees/*", etc.
-    /// Used by the manager for route resolution.
-    #[serde(default)]
-    pub entity_name: Option<String>,
-
-    /// Operational tags — drive policy group inheritance.
-    /// Merged with static tags from the matching route's `meta.tags`.
-    #[serde(default)]
-    pub tags: std::collections::HashSet<String>,
-
-    /// Host-defined grouping (virtual server ID, namespace, etc.).
-    #[serde(default)]
-    pub scope: Option<String>,
-
-    /// Arbitrary key-value metadata.
-    #[serde(default)]
-    pub properties: HashMap<String, String>,
-}
-
-/// Capability-filtered view of Extensions for a specific plugin.
-///
-/// Built by the framework before dispatching to each plugin. Fields
-/// the plugin hasn't declared capabilities for are `None`. Plugins
-/// receive this as a separate parameter — never inside the payload.
-///
-/// Phase 1 stub — Phase 3 adds per-field capability gating matching
-/// the Python `filter_extensions()` implementation.
-#[derive(Debug, Clone, Default)]
-pub struct FilteredExtensions {
-    /// Meta extension (always visible — immutable, no capability needed).
-    pub meta: Option<MetaExtension>,
-
-    /// Security labels (visible with `read_labels` capability).
-    pub labels: Option<std::collections::HashSet<String>>,
-
-    /// Custom extensions (always visible).
-    pub custom: Option<HashMap<String, serde_json::Value>>,
-}
+// Re-export Extensions and OwnedExtensions from the extensions module.
+// These are the typed containers for all extension data. They live in
+// extensions/container.rs but are re-exported here for backward
+// compatibility with existing code that imports from hooks::payload.
+pub use crate::extensions::{
+    Extensions, Guarded, MetaExtension, OwnedExtensions, WriteToken,
+};
 
 // ---------------------------------------------------------------------------
 // PluginPayload Trait
@@ -139,7 +56,7 @@ pub struct FilteredExtensions {
 /// - `'static` — payloads must be owned types (no borrowed references).
 ///
 /// Extensions are **not** part of the payload. They are passed as a
-/// separate `&FilteredExtensions` parameter to handlers.
+/// separate `&Extensions` parameter to handlers.
 ///
 /// # Examples
 ///
@@ -216,3 +133,4 @@ macro_rules! impl_plugin_payload {
         }
     };
 }
+

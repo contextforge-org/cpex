@@ -25,7 +25,6 @@ use super::llm::LLMExtension;
 use super::mcp::MCPExtension;
 use super::meta::MetaExtension;
 use super::provenance::ProvenanceExtension;
-use super::raw_credentials::RawCredentialsExtension;
 use super::request::RequestExtension;
 use super::security::SecurityExtension;
 
@@ -66,19 +65,6 @@ pub struct Extensions {
     /// Delegation chain (frozen as Arc).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delegation: Option<Arc<DelegationExtension>>,
-
-    /// Raw credential material — Layer 3 of the credential storage
-    /// model (see `RawCredentialsExtension` docs). Capability-gated;
-    /// `filter_extensions` strips this slot for plugins without
-    /// `read_inbound_credentials` / `read_delegated_tokens`. Token
-    /// fields inside this extension are `#[serde(skip)]`, so any
-    /// serialization (logs, audit dumps, hot-reload snapshots) drops
-    /// secret material even when the slot itself survives. The
-    /// out-of-process consequence — remote / WASM plugins can't see
-    /// raw tokens at all — is intentional and documented on
-    /// `RawCredentialsExtension`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub raw_credentials: Option<Arc<RawCredentialsExtension>>,
 
     /// MCP entity metadata (immutable).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -127,7 +113,6 @@ impl Clone for Extensions {
             http: self.http.clone(),
             security: self.security.clone(),
             delegation: self.delegation.clone(),
-            raw_credentials: self.raw_credentials.clone(),
             mcp: self.mcp.clone(),
             completion: self.completion.clone(),
             provenance: self.provenance.clone(),
@@ -173,7 +158,6 @@ impl Extensions {
             llm: self.llm.clone(),
             framework: self.framework.clone(),
             meta: self.meta.clone(),
-            raw_credentials: self.raw_credentials.clone(),
 
             // Mutable/monotonic/guarded — cloned out of Arc into owned
             http: self.http.as_ref().map(|arc| Guarded::new((**arc).clone())),
@@ -201,19 +185,12 @@ impl Extensions {
     }
 
     /// Validate that immutable slots were not tampered with.
-    ///
-    /// A slot that is `None` in modified (because capability filtering
-    /// hid it from the plugin) is always valid — the plugin never saw
-    /// it. Only flag as tampering when both are `Some` with different
-    /// Arc pointers, or when the original is `None` but modified is
-    /// `Some` (the plugin fabricated a slot it shouldn't have).
     pub fn validate_immutable(&self, modified: &OwnedExtensions) -> bool {
         fn ptr_eq_opt<T>(a: &Option<Arc<T>>, b: &Option<Arc<T>>) -> bool {
             match (a, b) {
                 (Some(a), Some(b)) => Arc::ptr_eq(a, b),
                 (None, None) => true,
-                (_, None) => true,        // plugin never saw it — not tampering
-                (None, Some(_)) => false, // plugin fabricated a slot
+                _ => false,
             }
         }
 
@@ -225,16 +202,6 @@ impl Extensions {
             && ptr_eq_opt(&self.llm, &modified.llm)
             && ptr_eq_opt(&self.framework, &modified.framework)
             && ptr_eq_opt(&self.meta, &modified.meta)
-        // NOTE: `raw_credentials` is INTENTIONALLY excluded from the
-        // immutable check. Framework orchestrators (apl-cpex's
-        // DelegationPluginInvoker) legitimately write
-        // `delegated_tokens.*` via the shared Mutex during route
-        // evaluation, producing a new Arc by the time the synthetic
-        // handler returns. Per-plugin write authority is enforced at
-        // the capability layer (`write_delegated_tokens` /
-        // `write_inbound_credentials`), not at this pointer-equality
-        // gate. Until cap-tier-aware merge lands, treat raw_credentials
-        // as merge-able like `security` and `delegation`.
     }
 
     /// Merge an OwnedExtensions back into this Extensions.
@@ -243,18 +210,6 @@ impl Extensions {
         self.security = owned.security.map(Arc::new);
         self.delegation = owned.delegation.map(Arc::new);
         self.custom = owned.custom.map(Arc::new);
-        // `raw_credentials` is shared by Arc in `OwnedExtensions` —
-        // plugins don't mutate it directly. But framework orchestrators
-        // (apl-cpex's DelegationPluginInvoker) DO write delegated_tokens
-        // / inbound_tokens through the shared `Arc<Mutex<Extensions>>`
-        // before the synthetic handler returns. We must propagate
-        // those writes back so callers of `invoke_named` see the
-        // minted tokens in `PipelineResult.modified_extensions`.
-        // Without this, `delegate(...)` steps silently lose their
-        // results at the executor merge boundary.
-        if owned.raw_credentials.is_some() {
-            self.raw_credentials = owned.raw_credentials;
-        }
     }
 }
 
@@ -286,11 +241,6 @@ pub struct OwnedExtensions {
     pub llm: Option<Arc<LLMExtension>>,
     pub framework: Option<Arc<FrameworkExtension>>,
     pub meta: Option<Arc<MetaExtension>>,
-    /// Raw credentials are shared by Arc here too — write tokens for
-    /// `inbound_tokens` and `delegated_tokens` mutation paths land in
-    /// slice 2 (IdentityResolve) and slice 3 (TokenDelegate). Until
-    /// then, no plugin writes through `OwnedExtensions.raw_credentials`.
-    pub raw_credentials: Option<Arc<RawCredentialsExtension>>,
 
     // Mutable/monotonic/guarded — owned, modifiable
     pub http: Option<Guarded<HttpExtension>>,
@@ -339,14 +289,8 @@ mod tests {
         let cow = ext.cow_copy();
 
         // Immutable slots share the same Arc — zero copy
-        assert!(Arc::ptr_eq(
-            ext.request.as_ref().unwrap(),
-            cow.request.as_ref().unwrap()
-        ));
-        assert!(Arc::ptr_eq(
-            ext.meta.as_ref().unwrap(),
-            cow.meta.as_ref().unwrap()
-        ));
+        assert!(Arc::ptr_eq(ext.request.as_ref().unwrap(), cow.request.as_ref().unwrap()));
+        assert!(Arc::ptr_eq(ext.meta.as_ref().unwrap(), cow.meta.as_ref().unwrap()));
     }
 
     #[test]
@@ -393,11 +337,7 @@ mod tests {
 
         // Can read without token
         assert_eq!(
-            cow.http
-                .as_ref()
-                .unwrap()
-                .read()
-                .get_header("Authorization"),
+            cow.http.as_ref().unwrap().read().get_header("Authorization"),
             Some("Bearer token")
         );
 
@@ -486,8 +426,8 @@ mod tests {
 
     #[test]
     fn test_cow_copy_modify_multiple_fields() {
-        use crate::extensions::delegation::DelegationHop;
         use crate::extensions::DelegationExtension;
+        use crate::extensions::delegation::DelegationHop;
 
         // Build extensions with security, http, delegation, custom
         let mut security = SecurityExtension::default();
@@ -500,9 +440,7 @@ mod tests {
             security: Some(Arc::new(security)),
             http: Some(Arc::new(http)),
             delegation: Some(Arc::new(DelegationExtension::default())),
-            custom: Some(Arc::new(
-                [("existing".to_string(), serde_json::json!("value"))].into(),
-            )),
+            custom: Some(Arc::new([("existing".to_string(), serde_json::json!("value"))].into())),
             meta: Some(Arc::new(MetaExtension {
                 entity_type: Some("tool".into()),
                 ..Default::default()
@@ -524,16 +462,8 @@ mod tests {
 
         // 2. Inject HTTP headers (guarded)
         let token = cow.http_write_token.as_ref().unwrap();
-        cow.http
-            .as_mut()
-            .unwrap()
-            .write(token)
-            .set_header("X-Checked", "true");
-        cow.http
-            .as_mut()
-            .unwrap()
-            .write(token)
-            .set_header("X-Policy", "v2");
+        cow.http.as_mut().unwrap().write(token).set_header("X-Checked", "true");
+        cow.http.as_mut().unwrap().write(token).set_header("X-Policy", "v2");
 
         // 3. Append delegation hop (monotonic)
         cow.delegation.as_mut().unwrap().append_hop(DelegationHop {
@@ -543,36 +473,27 @@ mod tests {
         });
 
         // 4. Add custom data (mutable, no token needed)
-        cow.custom
-            .as_mut()
-            .unwrap()
-            .insert("audit.timestamp".into(), serde_json::json!("2026-04-29"));
+        cow.custom.as_mut().unwrap().insert(
+            "audit.timestamp".into(),
+            serde_json::json!("2026-04-29"),
+        );
 
         // Verify COW copy has all modifications
         let sec = cow.security.as_ref().unwrap();
-        assert!(sec.has_label("PII")); // original
-        assert!(sec.has_label("CHECKED")); // added
+        assert!(sec.has_label("PII"));       // original
+        assert!(sec.has_label("CHECKED"));   // added
         assert!(sec.has_label("COMPLIANT")); // added
 
         let http = cow.http.as_ref().unwrap().read();
         assert_eq!(http.get_header("Authorization"), Some("Bearer token")); // original
-        assert_eq!(http.get_header("X-Checked"), Some("true")); // added
-        assert_eq!(http.get_header("X-Policy"), Some("v2")); // added
+        assert_eq!(http.get_header("X-Checked"), Some("true"));            // added
+        assert_eq!(http.get_header("X-Policy"), Some("v2"));               // added
 
         assert_eq!(cow.delegation.as_ref().unwrap().chain.len(), 1);
-        assert_eq!(
-            cow.delegation.as_ref().unwrap().chain[0].subject_id,
-            "service-a"
-        );
+        assert_eq!(cow.delegation.as_ref().unwrap().chain[0].subject_id, "service-a");
 
-        assert_eq!(
-            cow.custom.as_ref().unwrap().get("existing").unwrap(),
-            "value"
-        );
-        assert_eq!(
-            cow.custom.as_ref().unwrap().get("audit.timestamp").unwrap(),
-            "2026-04-29"
-        );
+        assert_eq!(cow.custom.as_ref().unwrap().get("existing").unwrap(), "value");
+        assert_eq!(cow.custom.as_ref().unwrap().get("audit.timestamp").unwrap(), "2026-04-29");
 
         // Verify original is unchanged
         assert!(!ext.security.as_ref().unwrap().has_label("CHECKED"));
@@ -585,168 +506,25 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_immutable_passes_when_slot_filtered_out() {
-        // Bug fix regression: when capability filtering hides a slot
-        // from the plugin (e.g., agent=None in owned because plugin
-        // lacks read_agent), validate_immutable must NOT treat that
-        // as tampering.
-        let ext = make_extensions();
-        let mut cow = ext.cow_copy();
-
-        // Simulate capability filtering hiding the agent slot
-        cow.agent = None;
-
-        // Validation should pass — plugin never saw the slot
-        assert!(ext.validate_immutable(&cow));
-    }
-
-    #[test]
-    fn test_validate_immutable_fails_when_slot_fabricated() {
-        // If the original has no agent but the plugin returns one,
-        // that's fabrication — should fail.
-        let ext = Extensions::default(); // no agent
-        let mut cow = ext.cow_copy();
-
-        cow.agent = Some(Arc::new(AgentExtension {
-            agent_id: Some("fabricated".into()),
-            ..Default::default()
-        }));
-
-        assert!(!ext.validate_immutable(&cow));
-    }
-
-    #[test]
-    fn test_validate_immutable_passes_multiple_slots_filtered() {
-        // Multiple immutable slots filtered out — all should pass
-        let ext = make_extensions();
-        let mut cow = ext.cow_copy();
-
-        cow.agent = None;
-        cow.mcp = None;
-        cow.completion = None;
-        cow.framework = None;
-
-        assert!(ext.validate_immutable(&cow));
-    }
-
-    #[test]
-    fn test_merge_owned_preserves_http_response_headers() {
-        // Bug fix regression: merge_owned must preserve response
-        // headers written by a plugin through Guarded write access.
-        let mut http = HttpExtension::default();
-        http.set_request_header("Authorization", "Bearer tok");
-
-        let mut ext = Extensions {
-            http: Some(Arc::new(http)),
-            ..Default::default()
-        };
-        ext.http_write_token = Some(WriteToken::new());
-
-        let mut cow = ext.cow_copy();
-
-        // Plugin writes response headers through the guard
-        let token = cow.http_write_token.as_ref().unwrap();
-        let h = cow.http.as_mut().unwrap().write(token);
-        h.set_response_header("X-Tool-Name", "get_compensation");
-        h.set_response_header("X-Status", "success");
-
-        // Merge back
-        ext.merge_owned(cow);
-
-        // Response headers must be present after merge
-        let merged_http = ext.http.as_ref().unwrap();
-        assert_eq!(
-            merged_http.get_response_header("X-Tool-Name"),
-            Some("get_compensation")
-        );
-        assert_eq!(merged_http.get_response_header("X-Status"), Some("success"));
-        // Original request headers preserved
-        assert_eq!(
-            merged_http.get_request_header("Authorization"),
-            Some("Bearer tok")
-        );
-    }
-
-    #[test]
-    fn test_merge_owned_with_filtered_security() {
-        // A plugin without read_labels gets empty labels in its
-        // filtered view. After cow_copy + merge_owned, the pipeline's
-        // security labels must be preserved (not overwritten with empty).
-        let mut security = SecurityExtension::default();
-        security.add_label("PII");
-        security.add_label("HR");
-
-        let ext = Extensions {
-            security: Some(Arc::new(security)),
-            ..Default::default()
-        };
-
-        // Simulate: plugin has no read_labels, so filtered security
-        // has empty labels. cow_copy of filtered would have empty labels.
-        let mut cow = ext.cow_copy();
-
-        // Plugin's owned security has the labels (from cow_copy of full ext)
-        // But in the real flow, it would be from the filtered ext.
-        // Simulate filtered: clear labels
-        cow.security.as_mut().unwrap().labels = crate::extensions::MonotonicSet::new();
-
-        // merge_owned replaces pipeline security with owned
-        let mut ext_mut = ext.clone();
-        ext_mut.merge_owned(cow);
-
-        // After merge, the security comes from the owned (which had empty labels)
-        // This is expected — the executor's monotonic check should prevent
-        // this case. merge_owned itself is just a field replacement.
-        let merged_sec = ext_mut.security.as_ref().unwrap();
-        assert!(!merged_sec.has_label("PII")); // replaced by owned
-    }
-
-    #[test]
-    fn test_merge_owned_none_http_preserves_pipeline() {
-        // If owned.http is None (plugin had no read_headers capability),
-        // merge_owned replaces with None. The executor should only call
-        // merge_owned when the plugin actually modified something.
-        let mut http = HttpExtension::default();
-        http.set_request_header("X-Original", "value");
-
-        let mut ext = Extensions {
-            http: Some(Arc::new(http)),
-            ..Default::default()
-        };
-
-        let mut cow = ext.cow_copy();
-        cow.http = None; // simulate filtered-out HTTP
-
-        ext.merge_owned(cow);
-
-        // HTTP is now None — this is the raw merge behavior.
-        // The executor guards against this by only calling merge_owned
-        // when the plugin returned modify_extensions.
-        assert!(ext.http.is_none());
-    }
-
-    #[test]
     fn test_read_only_plugin_zero_cost() {
         // Plugin that only reads — no cow_copy, no clone
         let ext = make_extensions();
 
         // Read security labels
-        let has_pii = ext
-            .security
-            .as_ref()
+        let has_pii = ext.security.as_ref()
             .map(|s| s.has_label("PII"))
             .unwrap_or(false);
         assert!(has_pii);
 
         // Read HTTP headers
-        let auth = ext
-            .http
-            .as_ref()
-            .and_then(|h| h.get_header("Authorization"));
+        let auth = ext.http.as_ref()
+            .map(|h| h.get_header("Authorization"))
+            .flatten();
         assert_eq!(auth, Some("Bearer token"));
 
         // Read meta
-        let entity = ext.meta.as_ref().and_then(|m| m.entity_type.as_deref());
+        let entity = ext.meta.as_ref()
+            .and_then(|m| m.entity_type.as_deref());
         assert_eq!(entity, Some("tool"));
 
         // No cow_copy called — zero allocations for read-only access

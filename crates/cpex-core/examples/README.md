@@ -41,3 +41,40 @@ The demo runs five scenarios against three registered plugins:
 
 - `plugin_demo.rs` — Rust source with plugins, factories, and main
 - `plugin_demo.yaml` — YAML config with plugins, policy groups, and routes
+
+---
+
+## cmf_capabilities_demo
+
+Demonstrates CMF messages with capability-gated extension access. Shows how different plugins see different views of the same extensions based on their declared capabilities.
+
+### What it demonstrates
+
+- **CMF Message** — typed content parts (`Text`, `ToolCall`) with the standard CMF format
+- **Capability gating** — plugins declare capabilities in YAML config; the executor filters extensions per plugin
+- **Security labels** — `MonotonicSet` (add-only, no remove at compile time)
+- **Guarded HTTP headers** — `.read()` is free, `.write(token)` requires a `WriteToken`
+- **COW copy** — `extensions.cow_copy()` for plugins that need to modify; zero-cost for read-only plugins
+- **Write tokens** — executor sets tokens based on capabilities; propagated through `cow_copy()`
+- **Three capability levels** — identity-checker (security), header-injector (http + labels), audit-logger (http + labels read-only)
+
+### Running
+
+From the workspace root:
+
+```
+cargo run --example cmf_capabilities_demo
+```
+
+### What each plugin sees
+
+| Plugin | Capabilities | Security Labels | Subject | HTTP Headers | Can Write |
+|--------|-------------|-----------------|---------|--------------|-----------|
+| identity-checker | read_labels, read_subject, read_roles | visible | visible (id + roles) | hidden | no |
+| header-injector | read_headers, write_headers, append_labels | visible | hidden | visible | yes (headers + labels) |
+| audit-logger | read_headers, read_labels | visible | hidden | visible | no (audit mode) |
+
+### Files
+
+- `cmf_capabilities_demo.rs` — Rust source with CMF plugins and capability-gated access
+- `cmf_capabilities_demo.yaml` — YAML config with per-plugin capabilities

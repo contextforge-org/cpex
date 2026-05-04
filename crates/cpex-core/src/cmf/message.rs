@@ -61,21 +61,9 @@ impl Message {
         Self {
             schema_version: super::constants::SCHEMA_VERSION.to_string(),
             role,
-            content: vec![ContentPart::Text { text: text.into() }],
-            channel: None,
-        }
-    }
-
-    /// Create a message from an arbitrary list of typed content
-    /// parts. The schema version is set from `SCHEMA_VERSION` —
-    /// callers never hardcode it. Use this when the content isn't a
-    /// single text blob (tool calls, prompt requests, resource refs,
-    /// multimodal mixes).
-    pub fn with_content(role: Role, content: Vec<ContentPart>) -> Self {
-        Self {
-            schema_version: super::constants::SCHEMA_VERSION.to_string(),
-            role,
-            content,
+            content: vec![ContentPart::Text {
+                text: text.into(),
+            }],
             channel: None,
         }
     }
