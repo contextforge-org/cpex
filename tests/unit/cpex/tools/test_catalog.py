@@ -3195,3 +3195,170 @@ class TestExtractPackageArchivePathTraversal:
         catalog._extract_package_archive(archive, extract_dir)
 
         assert (extract_dir / "pkg" / "hello.txt").read_text() == "world"
+
+
+
+class TestVerFunction:
+    """Tests for the _ver utility function."""
+
+    def test_ver_valid_simple_version(self):
+        """Test _ver with a simple valid version string."""
+        from cpex.tools.catalog import _ver
+        from packaging.version import Version
+
+        result = _ver("1.0.0")
+        assert isinstance(result, Version)
+        assert str(result) == "1.0.0"
+
+    def test_ver_valid_complex_version(self):
+        """Test _ver with a complex valid PEP 440 version string."""
+        from cpex.tools.catalog import _ver
+        from packaging.version import Version
+
+        result = _ver("2.1.3rc1.post0.dev5")
+        assert isinstance(result, Version)
+        assert str(result) == "2.1.3rc1.post0.dev5"
+
+    def test_ver_valid_version_with_epoch(self):
+        """Test _ver with a version string containing an epoch."""
+        from cpex.tools.catalog import _ver
+        from packaging.version import Version
+
+        result = _ver("1!2.0.0")
+        assert isinstance(result, Version)
+        assert str(result) == "1!2.0.0"
+
+    def test_ver_valid_prerelease_version(self):
+        """Test _ver with pre-release version strings."""
+        from cpex.tools.catalog import _ver
+        from packaging.version import Version
+
+        # Test alpha
+        result = _ver("1.0.0a1")
+        assert isinstance(result, Version)
+        assert str(result) == "1.0.0a1"
+
+        # Test beta
+        result = _ver("1.0.0b2")
+        assert isinstance(result, Version)
+        assert str(result) == "1.0.0b2"
+
+        # Test release candidate
+        result = _ver("1.0.0rc3")
+        assert isinstance(result, Version)
+        assert str(result) == "1.0.0rc3"
+
+    def test_ver_valid_post_release_version(self):
+        """Test _ver with post-release version strings."""
+        from cpex.tools.catalog import _ver
+        from packaging.version import Version
+
+        result = _ver("1.0.0.post1")
+        assert isinstance(result, Version)
+        assert str(result) == "1.0.0.post1"
+
+    def test_ver_valid_dev_version(self):
+        """Test _ver with development version strings."""
+        from cpex.tools.catalog import _ver
+        from packaging.version import Version
+
+        result = _ver("1.0.0.dev0")
+        assert isinstance(result, Version)
+        assert str(result) == "1.0.0.dev0"
+
+    def test_ver_invalid_version_returns_zero(self):
+        """Test _ver with an invalid version string returns Version('0')."""
+        from cpex.tools.catalog import _ver
+        from packaging.version import Version
+
+        result = _ver("not-a-valid-version")
+        assert isinstance(result, Version)
+        assert str(result) == "0"
+
+    def test_ver_invalid_version_with_special_chars(self):
+        """Test _ver with invalid version containing special characters."""
+        from cpex.tools.catalog import _ver
+        from packaging.version import Version
+
+        result = _ver("v1.0.0@latest")
+        assert isinstance(result, Version)
+        assert str(result) == "0"
+
+    def test_ver_empty_string_returns_zero(self):
+        """Test _ver with an empty string returns Version('0')."""
+        from cpex.tools.catalog import _ver
+        from packaging.version import Version
+
+        result = _ver("")
+        assert isinstance(result, Version)
+        assert str(result) == "0"
+
+    def test_ver_invalid_semantic_version(self):
+        """Test _ver with invalid semantic version format."""
+        from cpex.tools.catalog import _ver
+        from packaging.version import Version
+
+        # Missing patch version
+        result = _ver("1.0")
+        assert isinstance(result, Version)
+        # Note: "1.0" is actually valid in PEP 440, normalized to "1.0"
+        assert str(result) == "1.0"
+
+        # Completely invalid
+        result = _ver("abc.def.ghi")
+        assert isinstance(result, Version)
+        assert str(result) == "0"
+
+    def test_ver_version_with_local_identifier(self):
+        """Test _ver with version containing local version identifier."""
+        from cpex.tools.catalog import _ver
+        from packaging.version import Version
+
+        result = _ver("1.0.0+local.version")
+        assert isinstance(result, Version)
+        assert str(result) == "1.0.0+local.version"
+
+    def test_ver_logs_debug_on_invalid_version(self):
+        """Test _ver logs a debug message when version is invalid."""
+        from cpex.tools.catalog import _ver
+
+        with patch("cpex.tools.catalog.logger") as mock_logger:
+            result = _ver("invalid-version-string")
+            
+            # Verify debug was called with appropriate message
+            mock_logger.debug.assert_called_once()
+            call_args = mock_logger.debug.call_args[0]
+            assert "Could not parse version" in call_args[0]
+            assert "invalid-version-string" in call_args
+
+    def test_ver_whitespace_version(self):
+        """Test _ver with whitespace-only version string."""
+        from cpex.tools.catalog import _ver
+        from packaging.version import Version
+
+        result = _ver("   ")
+        assert isinstance(result, Version)
+        assert str(result) == "0"
+
+    def test_ver_version_with_v_prefix(self):
+        """Test _ver with version string that has 'v' prefix."""
+        from cpex.tools.catalog import _ver
+        from packaging.version import Version
+
+        # 'v1.0.0' is accepted by packaging.version and normalized to '1.0.0'
+        result = _ver("v1.0.0")
+        assert isinstance(result, Version)
+        assert str(result) == "1.0.0"
+
+    def test_ver_numeric_only_version(self):
+        """Test _ver with numeric-only version strings."""
+        from cpex.tools.catalog import _ver
+        from packaging.version import Version
+
+        result = _ver("1")
+        assert isinstance(result, Version)
+        assert str(result) == "1"
+
+        result = _ver("42")
+        assert isinstance(result, Version)
+        assert str(result) == "42"
