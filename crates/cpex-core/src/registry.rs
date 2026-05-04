@@ -278,6 +278,66 @@ impl PluginRegistry {
         self.register_for_names_inner(plugin, config, handler, names)
     }
 
+    /// Register a plugin with a handler for multiple hook names.
+    ///
+    /// Like `register_for_names` but without requiring a `HookTypeDef`
+    /// type parameter. Used by the config-driven factory path where
+    /// the hook type is not known at compile time — the factory
+    /// provides the handler directly.
+    pub fn register_for_names_with_handler(
+        &mut self,
+        plugin: Arc<dyn Plugin>,
+        config: PluginConfig,
+        handler: Arc<dyn AnyHookHandler>,
+        names: &[&str],
+    ) -> Result<(), String> {
+        self.register_for_names_inner(plugin, config, handler, names)
+    }
+
+
+    /// Register a plugin with multiple handlers, each for a specific hook.
+    ///
+    /// Used when a plugin implements multiple hook types with different
+    /// payloads (e.g., `ToolPreInvoke` and `ToolPostInvoke`). Each
+    /// handler is registered under its paired hook name.
+    ///
+    /// The plugin is registered once in the name index. Each handler
+    /// gets its own `HookEntry` in the hook index under the specified name.
+    pub fn register_multi_handler(
+        &mut self,
+        plugin: Arc<dyn Plugin>,
+        config: PluginConfig,
+        handlers: Vec<(&str, Arc<dyn AnyHookHandler>)>,
+    ) -> Result<(), String> {
+        let name = config.name.clone();
+
+        if self.plugins.contains_key(&name) {
+            return Err(format!("plugin '{}' is already registered", name));
+        }
+
+        let plugin_ref = PluginRef::new(plugin, config);
+
+        for (hook_name, handler) in &handlers {
+            let hook_type = HookType::new(*hook_name);
+            let entry = HookEntry {
+                plugin_ref: plugin_ref.clone(),
+                handler: Arc::clone(handler),
+            };
+            self.hook_index.entry(hook_type).or_default().push(entry);
+        }
+
+        // Sort each affected hook's entry list by trusted priority
+        for (hook_name, _) in &handlers {
+            let hook_type = HookType::new(*hook_name);
+            if let Some(entries) = self.hook_index.get_mut(&hook_type) {
+                entries.sort_by_key(|e| e.plugin_ref.priority());
+            }
+        }
+
+        self.plugins.insert(name, plugin_ref);
+        Ok(())
+    }
+
     /// Internal: register handler under one or more hook names.
     fn register_for_names_inner(
         &mut self,

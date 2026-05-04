@@ -89,13 +89,19 @@ pub trait Plugin: Send + Sync {
     ///
     /// Called before any hook invocations. Use this to establish
     /// connections, load resources, or validate configuration.
-    async fn initialize(&self) -> Result<(), PluginError>;
+    /// Default implementation does nothing.
+    async fn initialize(&self) -> Result<(), PluginError> {
+        Ok(())
+    }
 
     /// Graceful shutdown.
     ///
     /// Called once during teardown. Use this to flush buffers, close
     /// connections, or release resources.
-    async fn shutdown(&self) -> Result<(), PluginError>;
+    /// Default implementation does nothing.
+    async fn shutdown(&self) -> Result<(), PluginError> {
+        Ok(())
+    }
 }
 
 // ---------------------------------------------------------------------------
