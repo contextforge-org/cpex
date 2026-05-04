@@ -594,7 +594,7 @@ class PluginCatalog:
             self.load()
         for manifest in self.manifests:
             if plugin_name is not None:
-                if manifest.name.lower().count(plugin_name) > 0:
+                if manifest.name.lower().count(plugin_name.lower()) > 0:
                     matching.append(manifest)
                 elif plugin_name.lower() in manifest.tags:
                     matching.append(manifest)
