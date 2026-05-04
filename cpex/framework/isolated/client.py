@@ -336,3 +336,10 @@ class IsolatedVenvPlugin(Plugin):
         except Exception as e:
             logger.exception("Unexpected error invoking hook '%s' for plugin '%s'", hook_type, self.name)
             raise PluginError(error=convert_exception_to_error(e, plugin_name=self.name)) from e
+
+    def remove_venv(self)   :
+        """
+        Remove the virtual environment associated with the plugin.
+        """
+        shutil.rmtree(self.plugin_path.joinpath(".cpex"))
+        shutil.rmtree(self.plugin_path.joinpath(".venv"))
