@@ -501,9 +501,9 @@ class TestListFunction:
         }
         registry_file.write_text(json.dumps(registry_data))
 
-        with patch("cpex.tools.cli.logger") as mock_logger:
+        with patch("cpex.tools.cli.console") as mock_console:
             list("all")
-            assert mock_logger.info.call_count == 2
+            assert mock_console.print.call_count == 2
 
 
 class TestUpdatePluginRegistry:
@@ -1494,6 +1494,95 @@ class TestInstalledPluginRegistryUnregister:
         assert result is False
         assert len(registry.plugins) == 1
 
+
+class TestInstalledPluginRegistrySaveAtomic:
+    """Tests for atomic write behaviour of InstalledPluginRegistry.save()."""
+
+    def _make_plugin(self):
+        from cpex.framework.models import InstalledPluginInfo, PluginInstallationType
+        return InstalledPluginInfo(
+            name="test_plugin",
+            kind="native",
+            version="1.0.0",
+            installation_type=PluginInstallationType.MONOREPO,
+            installation_path="/path/to/plugin",
+            installed_at="2024-01-01T00:00:00.000000Z",
+            installed_by="test_user",
+            package_source="https://example.com/repo/plugin",
+            editable=False,
+        )
+
+    def test_happy_path_no_tmp_litter(self, temp_registry_dir):
+        """save() writes the file and leaves no .tmp siblings."""
+        from cpex.framework.models import InstalledPluginRegistry
+        registry = InstalledPluginRegistry()
+        registry.register_plugin(self._make_plugin())
+
+        registry_file = temp_registry_dir / "installed-plugins.json"
+        assert registry_file.exists()
+        data = json.loads(registry_file.read_text())
+        assert len(data["plugins"]) == 1
+        assert data["plugins"][0]["name"] == "test_plugin"
+        assert [*temp_registry_dir.glob("installed-plugins.*.tmp")] == []
+
+    def test_crash_mid_rename_preserves_original(self, temp_registry_dir, monkeypatch):
+        """If os.replace raises, the original file is untouched and no .tmp remains."""
+        import os
+        from cpex.framework.models import InstalledPluginRegistry
+
+        original_content = b'{"plugins":[]}'
+        registry_file = temp_registry_dir / "installed-plugins.json"
+        registry_file.write_bytes(original_content)
+
+        def exploding_replace(*args, **kwargs):
+            raise OSError("simulated mid-rename crash")
+
+        monkeypatch.setattr(os, "replace", exploding_replace)
+
+        registry = InstalledPluginRegistry()
+        with pytest.raises(OSError, match="simulated mid-rename crash"):
+            registry.save()
+
+        assert registry_file.read_bytes() == original_content
+        assert [*temp_registry_dir.glob("installed-plugins.*.tmp")] == []
+
+    def test_crash_mid_write_cleans_up_tmp(self, temp_registry_dir, monkeypatch):
+        """If writing to the temp file raises, the temp file is cleaned up."""
+        import tempfile as _tempfile
+        from cpex.framework.models import InstalledPluginRegistry
+
+        original_NamedTemporaryFile = _tempfile.NamedTemporaryFile
+
+        class _ExplodingFile:
+            def __init__(self, *args, **kwargs):
+                self._real = original_NamedTemporaryFile(*args, **kwargs)
+                self.name = self._real.name
+
+            def write(self, data):
+                raise OSError("simulated write failure")
+
+            def flush(self):
+                pass
+
+            def fileno(self):
+                return self._real.fileno()
+
+            def close(self):
+                self._real.close()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                self.close()
+
+        monkeypatch.setattr(_tempfile, "NamedTemporaryFile", _ExplodingFile)
+
+        registry = InstalledPluginRegistry()
+        with pytest.raises(OSError, match="simulated write failure"):
+            registry.save()
+
+        assert [*temp_registry_dir.glob("installed-plugins.*.tmp")] == []
 
 
 class TestSelectPluginFromCatalog:

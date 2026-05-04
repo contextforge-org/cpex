@@ -10,10 +10,12 @@ the base plugin layer including configurations, and contexts.
 """
 
 # Standard
-import json
+import asyncio
+import contextlib
 import logging
 import os
 import re
+import tempfile
 from datetime import datetime
 from enum import Enum, StrEnum
 from pathlib import Path
@@ -2411,10 +2413,24 @@ class InstalledPluginRegistry(BaseModel):
         return False
 
     def save(self) -> None:
-        """Serialize the registry to disk."""
-        DEFAULT_PLUGIN_REGISTRY_FOLDER = Path(os.environ.get("PLUGIN_REGISTRY_FILE", "data"))
-        DEFAULT_PLUGIN_REGISTRY_FILE = "installed-plugins.json"
+        """Serialize the registry to disk atomically."""
+        folder = Path(os.environ.get("PLUGIN_REGISTRY_FILE", "data"))
+        target = folder / "installed-plugins.json"
+        data = orjson.dumps(self.model_dump(), option=orjson.OPT_INDENT_2)
 
-        ipr_file = DEFAULT_PLUGIN_REGISTRY_FOLDER / DEFAULT_PLUGIN_REGISTRY_FILE
-        with open(ipr_file, "w", encoding="utf-8") as ipr:
-            json.dump(self.model_dump(), ipr, indent=2)
+        tmp = tempfile.NamedTemporaryFile(
+            mode="wb", delete=False, dir=str(folder),
+            prefix="installed-plugins.", suffix=".tmp",
+        )
+        try:
+            try:
+                tmp.write(data)
+                tmp.flush()
+                os.fsync(tmp.fileno())
+            finally:
+                tmp.close()
+            os.replace(tmp.name, target)
+        except Exception:
+            with contextlib.suppress(FileNotFoundError):
+                os.unlink(tmp.name)
+            raise
