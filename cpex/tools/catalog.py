@@ -43,13 +43,6 @@ from cpex.tools.settings import get_catalog_settings
 logger = logging.getLogger(__name__)
 
 
-def _ver(version_str: str) -> Version:
-    try:
-        return Version(version_str)
-    except InvalidVersion:
-        logger.debug("Could not parse version %r as PEP 440; treating as lowest", version_str)
-        return Version("0")
-
 
 class PluginCatalog:
     """
@@ -106,6 +99,23 @@ class PluginCatalog:
         updated_content = yaml.safe_dump(manifest.model_dump(), default_flow_style=False)
         relpath.write_text(updated_content, encoding="utf-8")
 
+    def _ver(self, version_str: str) -> Version:
+        """
+        Parse a version string into a Version object.
+        
+        Args:
+            version_str: Version string to parse (e.g., "1.0.0", "2.0.0rc1")
+            
+        Returns:
+            Version object. Returns Version("0") if parsing fails.
+        """
+        try:
+            return Version(version_str)
+        except InvalidVersion:
+            logger.debug("Could not parse version %r as PEP 440; treating as lowest", version_str)
+            return Version("0")
+
+
     def update_plugin_version_registry(self, manifest: PluginManifest, relpath: Path):
         """
         Update the plugin version registry with the given manifest.
@@ -138,7 +148,7 @@ class PluginCatalog:
 
         # Recalculate latest version from all versions
         if plugin_version_registry.versions:
-            plugin_version_registry.latest = max(plugin_version_registry.versions, key=lambda pv: _ver(pv.version))
+            plugin_version_registry.latest = max(plugin_version_registry.versions, key=lambda pv: self._ver(pv.version))
 
         # Write the updated version registry to the file
         file_path.write_text(

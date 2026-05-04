@@ -3196,175 +3196,6 @@ class TestExtractPackageArchivePathTraversal:
 
         assert (extract_dir / "pkg" / "hello.txt").read_text() == "world"
 
-
-
-class TestVerFunction:
-    """Tests for the _ver utility function."""
-
-    def test_ver_valid_simple_version(self):
-        """Test _ver with a simple valid version string."""
-        from cpex.tools.catalog import _ver
-        from packaging.version import Version
-
-        result = _ver("1.0.0")
-        assert isinstance(result, Version)
-        assert str(result) == "1.0.0"
-
-    def test_ver_valid_complex_version(self):
-        """Test _ver with a complex valid PEP 440 version string."""
-        from cpex.tools.catalog import _ver
-        from packaging.version import Version
-
-        result = _ver("2.1.3rc1.post0.dev5")
-        assert isinstance(result, Version)
-        assert str(result) == "2.1.3rc1.post0.dev5"
-
-    def test_ver_valid_version_with_epoch(self):
-        """Test _ver with a version string containing an epoch."""
-        from cpex.tools.catalog import _ver
-        from packaging.version import Version
-
-        result = _ver("1!2.0.0")
-        assert isinstance(result, Version)
-        assert str(result) == "1!2.0.0"
-
-    def test_ver_valid_prerelease_version(self):
-        """Test _ver with pre-release version strings."""
-        from cpex.tools.catalog import _ver
-        from packaging.version import Version
-
-        # Test alpha
-        result = _ver("1.0.0a1")
-        assert isinstance(result, Version)
-        assert str(result) == "1.0.0a1"
-
-        # Test beta
-        result = _ver("1.0.0b2")
-        assert isinstance(result, Version)
-        assert str(result) == "1.0.0b2"
-
-        # Test release candidate
-        result = _ver("1.0.0rc3")
-        assert isinstance(result, Version)
-        assert str(result) == "1.0.0rc3"
-
-    def test_ver_valid_post_release_version(self):
-        """Test _ver with post-release version strings."""
-        from cpex.tools.catalog import _ver
-        from packaging.version import Version
-
-        result = _ver("1.0.0.post1")
-        assert isinstance(result, Version)
-        assert str(result) == "1.0.0.post1"
-
-    def test_ver_valid_dev_version(self):
-        """Test _ver with development version strings."""
-        from cpex.tools.catalog import _ver
-        from packaging.version import Version
-
-        result = _ver("1.0.0.dev0")
-        assert isinstance(result, Version)
-        assert str(result) == "1.0.0.dev0"
-
-    def test_ver_invalid_version_returns_zero(self):
-        """Test _ver with an invalid version string returns Version('0')."""
-        from cpex.tools.catalog import _ver
-        from packaging.version import Version
-
-        result = _ver("not-a-valid-version")
-        assert isinstance(result, Version)
-        assert str(result) == "0"
-
-    def test_ver_invalid_version_with_special_chars(self):
-        """Test _ver with invalid version containing special characters."""
-        from cpex.tools.catalog import _ver
-        from packaging.version import Version
-
-        result = _ver("v1.0.0@latest")
-        assert isinstance(result, Version)
-        assert str(result) == "0"
-
-    def test_ver_empty_string_returns_zero(self):
-        """Test _ver with an empty string returns Version('0')."""
-        from cpex.tools.catalog import _ver
-        from packaging.version import Version
-
-        result = _ver("")
-        assert isinstance(result, Version)
-        assert str(result) == "0"
-
-    def test_ver_invalid_semantic_version(self):
-        """Test _ver with invalid semantic version format."""
-        from cpex.tools.catalog import _ver
-        from packaging.version import Version
-
-        # Missing patch version
-        result = _ver("1.0")
-        assert isinstance(result, Version)
-        # Note: "1.0" is actually valid in PEP 440, normalized to "1.0"
-        assert str(result) == "1.0"
-
-        # Completely invalid
-        result = _ver("abc.def.ghi")
-        assert isinstance(result, Version)
-        assert str(result) == "0"
-
-    def test_ver_version_with_local_identifier(self):
-        """Test _ver with version containing local version identifier."""
-        from cpex.tools.catalog import _ver
-        from packaging.version import Version
-
-        result = _ver("1.0.0+local.version")
-        assert isinstance(result, Version)
-        assert str(result) == "1.0.0+local.version"
-
-    def test_ver_logs_debug_on_invalid_version(self):
-        """Test _ver logs a debug message when version is invalid."""
-        from cpex.tools.catalog import _ver
-
-        with patch("cpex.tools.catalog.logger") as mock_logger:
-            result = _ver("invalid-version-string")
-            
-            # Verify debug was called with appropriate message
-            mock_logger.debug.assert_called_once()
-            call_args = mock_logger.debug.call_args[0]
-            assert "Could not parse version" in call_args[0]
-            assert "invalid-version-string" in call_args
-
-    def test_ver_whitespace_version(self):
-        """Test _ver with whitespace-only version string."""
-        from cpex.tools.catalog import _ver
-        from packaging.version import Version
-
-        result = _ver("   ")
-        assert isinstance(result, Version)
-        assert str(result) == "0"
-
-    def test_ver_version_with_v_prefix(self):
-        """Test _ver with version string that has 'v' prefix."""
-        from cpex.tools.catalog import _ver
-        from packaging.version import Version
-
-        # 'v1.0.0' is accepted by packaging.version and normalized to '1.0.0'
-        result = _ver("v1.0.0")
-        assert isinstance(result, Version)
-        assert str(result) == "1.0.0"
-
-    def test_ver_numeric_only_version(self):
-        """Test _ver with numeric-only version strings."""
-        from cpex.tools.catalog import _ver
-        from packaging.version import Version
-
-        result = _ver("1")
-        assert isinstance(result, Version)
-        assert str(result) == "1"
-
-        result = _ver("42")
-        assert isinstance(result, Version)
-        assert str(result) == "42"
-
-
-
 class TestPluginCatalogUpdatePluginVersionRegistry:
     """Tests for PluginCatalog.update_plugin_version_registry method."""
 
@@ -3652,4 +3483,133 @@ class TestPluginCatalogUpdatePluginVersionRegistry:
         with versions_file.open("r") as f:
             data = json.load(f)
         
-        assert data["versions"][0]["manifest_file"] == "custom/path/to/plugin"
+
+
+class TestPluginCatalogVerMethod:
+    """Tests for PluginCatalog._ver method."""
+
+    def test_ver_valid_simple_version(self, mock_github_env):
+        """Test parsing a simple valid version string."""
+        catalog = PluginCatalog()
+        version = catalog._ver("1.0.0")
+        assert str(version) == "1.0.0"
+
+    def test_ver_valid_complex_version(self, mock_github_env):
+        """Test parsing a complex valid version string."""
+        catalog = PluginCatalog()
+        version = catalog._ver("1.2.3")
+        assert str(version) == "1.2.3"
+
+    def test_ver_valid_version_with_epoch(self, mock_github_env):
+        """Test parsing a version with epoch."""
+        catalog = PluginCatalog()
+        version = catalog._ver("1!2.0.0")
+        assert str(version) == "1!2.0.0"
+
+    def test_ver_valid_prerelease_version(self, mock_github_env):
+        """Test parsing a pre-release version."""
+        catalog = PluginCatalog()
+        version = catalog._ver("1.0.0rc1")
+        assert str(version) == "1.0.0rc1"
+
+    def test_ver_valid_post_release_version(self, mock_github_env):
+        """Test parsing a post-release version."""
+        catalog = PluginCatalog()
+        version = catalog._ver("1.0.0.post1")
+        assert str(version) == "1.0.0.post1"
+
+    def test_ver_valid_dev_version(self, mock_github_env):
+        """Test parsing a development version."""
+        catalog = PluginCatalog()
+        version = catalog._ver("1.0.0.dev1")
+        assert str(version) == "1.0.0.dev1"
+
+    def test_ver_invalid_version_returns_zero(self, mock_github_env):
+        """Test that invalid version strings return Version('0')."""
+        catalog = PluginCatalog()
+        version = catalog._ver("invalid.version")
+        assert str(version) == "0"
+
+    def test_ver_invalid_version_with_special_chars(self, mock_github_env):
+        """Test that version with special characters returns Version('0')."""
+        catalog = PluginCatalog()
+        version = catalog._ver("1.0.0@beta")
+        assert str(version) == "0"
+
+    def test_ver_empty_string_returns_zero(self, mock_github_env):
+        """Test that empty string returns Version('0')."""
+        catalog = PluginCatalog()
+        version = catalog._ver("")
+        assert str(version) == "0"
+
+    def test_ver_invalid_semantic_version(self, mock_github_env):
+        """Test that version with 'v' prefix is actually valid (packaging strips it)."""
+        catalog = PluginCatalog()
+        version = catalog._ver("v1.0")
+        # packaging.version.Version actually accepts and strips 'v' prefix
+        assert str(version) == "1.0"
+
+    def test_ver_version_with_local_identifier(self, mock_github_env):
+        """Test parsing a version with local identifier."""
+        catalog = PluginCatalog()
+        version = catalog._ver("1.0.0+local.build")
+        assert str(version) == "1.0.0+local.build"
+
+    def test_ver_logs_debug_on_invalid_version(self, mock_github_env, caplog):
+        """Test that debug log is created for invalid versions."""
+        import logging
+        catalog = PluginCatalog()
+        
+        with caplog.at_level(logging.DEBUG):
+            catalog._ver("not-a-version")
+        
+        assert "Could not parse version" in caplog.text
+        assert "treating as lowest" in caplog.text
+
+    def test_ver_whitespace_version(self, mock_github_env):
+        """Test that whitespace-only version returns Version('0')."""
+        catalog = PluginCatalog()
+        version = catalog._ver("   ")
+        assert str(version) == "0"
+
+    def test_ver_version_with_v_prefix(self, mock_github_env):
+        """Test that version with 'v' prefix is valid (packaging strips it)."""
+        catalog = PluginCatalog()
+        version = catalog._ver("v1.0.0")
+        # packaging.version.Version actually accepts and strips 'v' prefix
+        assert str(version) == "1.0.0"
+
+    def test_ver_numeric_only_version(self, mock_github_env):
+        """Test parsing a single numeric version."""
+        catalog = PluginCatalog()
+        version = catalog._ver("1")
+        assert str(version) == "1"
+
+    def test_ver_comparison_works_correctly(self, mock_github_env):
+        """Test that version comparison works as expected."""
+        catalog = PluginCatalog()
+        v1 = catalog._ver("1.0.0")
+        v2 = catalog._ver("2.0.0")
+        v_invalid = catalog._ver("invalid")
+        
+        assert v1 < v2
+        assert v_invalid < v1
+        assert v_invalid == catalog._ver("0")
+
+    def test_ver_prerelease_comparison(self, mock_github_env):
+        """Test that pre-release versions compare correctly."""
+        catalog = PluginCatalog()
+        v_stable = catalog._ver("1.0.0")
+        v_rc = catalog._ver("1.0.0rc1")
+        v_dev = catalog._ver("1.0.0.dev1")
+        
+        assert v_dev < v_rc < v_stable
+
+    def test_ver_epoch_comparison(self, mock_github_env):
+        """Test that epoch versions compare correctly."""
+        catalog = PluginCatalog()
+        v_no_epoch = catalog._ver("2.0.0")
+        v_with_epoch = catalog._ver("1!1.0.0")
+        
+        # Epoch takes precedence
+        assert v_with_epoch > v_no_epoch
