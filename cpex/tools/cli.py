@@ -244,17 +244,28 @@ def bootstrap(
         logger.exception("An error was caught while copying template.")
 
 
-def list(type: str) -> None:
+def list(type: str, fmt: str = "text") -> None:
     """List the installed plugins
     Args:
     type (str): The type of plugins to list. Can be "native" or "external".
-
-    Raises:
-    typer.Exit: If the type is not "native" or "external".
+    fmt (str): Output format — "text" (default) or "json".
     """
     pr = PluginRegistry()
 
     registered_plugins = pr.registry.plugins
+
+    if fmt == "json":
+        print(
+            json.dumps(
+                {
+                    "plugins": [
+                        {"name": p.name, "version": p.version, "installation_type": p.installation_type}
+                        for p in registered_plugins
+                    ]
+                }
+            )
+        )
+        return
 
     if registered_plugins:
         for plug_in in registered_plugins:
@@ -366,11 +377,15 @@ def install_from_manifest(manifest: PluginManifest, installation_type: str, cata
         update_plugins_config_yaml(manifest)
 
 
-def select_plugin_from_catalog(available_plugins: List[PluginManifest]) -> Optional[PluginManifest]:
+def select_plugin_from_catalog(
+    available_plugins: List[PluginManifest], assume_yes: bool = False
+) -> Optional[PluginManifest]:
     """Select a plugin from a list of available plugins using an interactive prompt.
 
     Args:
         available_plugins: List of available plugin manifests to choose from.
+        assume_yes: When True, skip the interactive prompt and return the first
+            match (sorted by name/version descending).
 
     Returns:
         The selected PluginManifest, or None if no selection was made.
@@ -380,6 +395,25 @@ def select_plugin_from_catalog(available_plugins: List[PluginManifest]) -> Optio
 
     # Sort plugins by name and version
     available_plugins = sorted(available_plugins, key=lambda p: (p.name, p.version), reverse=True)
+
+    if assume_yes:
+        selected_plugin = available_plugins[0]
+        installation_type = (
+            "monorepo"
+            if selected_plugin.monorepo is not None
+            else "pypi"
+            if selected_plugin.package_info is not None
+            else "local"
+        )
+        console.print(
+            "name: ",
+            selected_plugin.name,
+            "Version: ",
+            selected_plugin.version,
+            "type: ",
+            installation_type,
+        )
+        return selected_plugin
 
     # Build choices list with plugin information
     choices = []
@@ -477,7 +511,6 @@ def _install_from_local(source: str, catalog: PluginCatalog, use_test: bool = Fa
     install_source = Path(source)
     with console.status(f"Installing plugin from source {source}...", spinner="dots"):
         manifest, installation_path = catalog.install_from_local(install_source)
-        update_plugins_config_yaml(manifest=manifest)
         _finalize_installation(manifest, "local", catalog, installation_path)
         console.print(f":white_heavy_check_mark: {manifest.name} installation complete.")
 
@@ -494,17 +527,17 @@ def _install_from_git(source: str, catalog: PluginCatalog, use_test: bool = Fals
     """
     with console.status(f"Installing plugin from source {source}...", spinner="dots"):
         manifest, installation_path = catalog.install_from_git(source)
-        update_plugins_config_yaml(manifest=manifest)
         _finalize_installation(manifest, "git", catalog, installation_path)
         console.print(f":white_heavy_check_mark: {manifest.name} installation complete.")
 
 
-def _install_from_monorepo(source: str, catalog: PluginCatalog, use_test: bool = False):
+def _install_from_monorepo(source: str, catalog: PluginCatalog, use_test: bool = False, assume_yes: bool = False):
     """Handle monorepo-based installation.
 
     Args:
         source: Plugin name or search term in the monorepo.
         catalog: The plugin catalog.
+        assume_yes: Skip the interactive selection prompt.
     """
     logger.info("Trying to install from git monorepo: %s", source)
     available_plugins = catalog.search(source)
@@ -513,7 +546,7 @@ def _install_from_monorepo(source: str, catalog: PluginCatalog, use_test: bool =
         console.print("No matching plugins found.")
         return
 
-    selected_plugin = select_plugin_from_catalog(available_plugins)
+    selected_plugin = select_plugin_from_catalog(available_plugins, assume_yes=assume_yes)
     if not selected_plugin:
         return
 
@@ -548,13 +581,14 @@ def _install_from_pypi(source: str, catalog: PluginCatalog, use_test: bool = Fal
     console.print(f":white_heavy_check_mark: {package_name} installation complete.")
 
 
-def install(source: str, install_type: str | None, catalog: PluginCatalog):
+def install(source: str, install_type: str | None, catalog: PluginCatalog, assume_yes: bool = False):
     """Install a plugin from its associated source.
 
     Args:
         source: The source of the plugin (package name, repo URL, or search term).
         install_type: The type of installation ("git", "monorepo", or "pypi").
         catalog: The catalog of plugins.
+        assume_yes: Skip interactive selection prompt for monorepo installs.
 
     Raises:
         ValueError: If install_type is not supported.
@@ -563,9 +597,12 @@ def install(source: str, install_type: str | None, catalog: PluginCatalog):
     if install_type is None:
         install_type = "monorepo"
 
+    if install_type == "monorepo":
+        _install_from_monorepo(source, catalog, assume_yes=assume_yes)
+        return
+
     handlers = {
         "git": _install_from_git,
-        "monorepo": _install_from_monorepo,
         "pypi": _install_from_pypi,
         "test-pypi": _install_from_pypi,
         "local": _install_from_local,
@@ -578,26 +615,51 @@ def install(source: str, install_type: str | None, catalog: PluginCatalog):
     handler(source, catalog, use_test=True if install_type == "test-pypi" else False)
 
 
-def versions(plugin_name: str | None, catalog: PluginCatalog):
+def versions(plugin_name: str | None, catalog: PluginCatalog, fmt: str = "text"):
     """List available versions of the plugin
     Args:
         plugin_name (str | None): The name of the plugin to search for.
         catalog (PluginCatalog): The catalog to search in.
+        fmt (str): Output format — "text" (default) or "json".
     """
-    return search(plugin_name, catalog)
+    return search(plugin_name, catalog, fmt=fmt)
 
 
-def search(plugin_name: str | None, catalog: PluginCatalog):
+def search(plugin_name: str | None, catalog: PluginCatalog, fmt: str = "text"):
     """Search for a plugin in the catalog
     Args:
         plugin_name (str | None): The name of the plugin to search for.
         catalog (PluginCatalog): The catalog to search in.
+        fmt (str): Output format — "text" (default) or "json".
     Returns:
         list[Plugin]: A list of plugins that match the search criteria.
     """
-    # lookup the plugin from the catalog's plugin-manifest.yaml
     with console.status("Searching for available plugins ...", spinner="dots"):
         available_plugins = catalog.search(plugin_name)
+
+    if fmt == "json":
+        print(
+            json.dumps(
+                {
+                    "results": [
+                        {
+                            "name": p.name,
+                            "version": p.version,
+                            "installation_type": (
+                                "monorepo"
+                                if p.monorepo is not None
+                                else "pypi"
+                                if p.package_info is not None
+                                else "local"
+                            ),
+                        }
+                        for p in (available_plugins or [])
+                    ]
+                }
+            )
+        )
+        return
+
     if available_plugins:
         console.log("Available plugins:")
         for plug_in in available_plugins:
@@ -607,42 +669,42 @@ def search(plugin_name: str | None, catalog: PluginCatalog):
         console.log("No plugins found.")
 
 
-def info(plugin_name: str | None):
+def info(plugin_name: str | None, fmt: str = "text"):
     """Search for or list all installed plugins
 
     Args:
         plugin_name (str | None): The name of the plugin to search for.
-        If None, list all installed plugins.
-
-        Returns:
-            list[Plugin]: A list of plugins that match the search criteria.
+            If None, list all installed plugins.
+        fmt (str): Output format — "text" (default) or "json".
     """
     registry = PluginRegistry().registry
 
-    found = 0
-    for plug_in in registry.plugins:
-        if plugin_name is None:
+    matches = [
+        p
+        for p in registry.plugins
+        if plugin_name is None
+        or p.name.lower().count(plugin_name.lower()) > 0
+        or p.kind.lower().count(plugin_name.lower()) > 0
+    ]
+
+    if fmt == "json":
+        print(json.dumps({"plugins": [p.model_dump() for p in matches]}))
+        return
+
+    if matches:
+        for plug_in in matches:
             console.print_json(json.dumps(plug_in.model_dump()))
-            # console.print(yaml.dump(plug_in.model_dump(), default_flow_style=False))
-            found += 1
-        else:
-            if (
-                plug_in.name.lower().count(plugin_name.lower()) > 0
-                or plug_in.kind.lower().count(plugin_name.lower()) > 0
-            ):
-                console.print_json(json.dumps(plug_in.model_dump()))
-                # console.print(yaml.dump(plug_in.model_dump()))
-                found += 1
-    if found == 0:
+    else:
         console.print("No plugins found")
 
 
-def uninstall(plugin_name: str, catalog: PluginCatalog) -> None:
+def uninstall(plugin_name: str, catalog: PluginCatalog, assume_yes: bool = False) -> None:
     """Uninstall a plugin.
 
     Args:
         plugin_name: The name of the plugin to uninstall.
         catalog: The plugin catalog.
+        assume_yes: Skip the confirmation prompt.
     """
     # Get plugin registry to find the installed plugin
     plugin_registry = PluginRegistry()
@@ -663,18 +725,19 @@ def uninstall(plugin_name: str, catalog: PluginCatalog) -> None:
     console.print(f"Installation type: {installed_plugin.installation_type}")
     console.print(f"Installation path: {installed_plugin.installation_path}")
 
-    questions = [
-        inquirer.Confirm(
-            "confirm",
-            message=f"Are you sure you want to uninstall '{plugin_name}'?",
-            default=False,
-        ),
-    ]
-    answers = inquirer.prompt(questions)
+    if not assume_yes:
+        questions = [
+            inquirer.Confirm(
+                "confirm",
+                message=f"Are you sure you want to uninstall '{plugin_name}'?",
+                default=False,
+            ),
+        ]
+        answers = inquirer.prompt(questions)
 
-    if not answers or not answers["confirm"]:
-        console.print("Uninstall cancelled.")
-        return
+        if not answers or not answers["confirm"]:
+            console.print("Uninstall cancelled.")
+            return
 
     try:
         with console.status(f"Uninstalling plugin {plugin_name}...", spinner="dots"):
@@ -723,10 +786,26 @@ def plugin(
             help="The types of plugins to list.  One of: monorepo|pypi|test-pypi|git|local  Defaults to monorepo if unspecified.",
         ),
     ] = None,
+    assume_yes: Annotated[
+        bool,
+        typer.Option(
+            "--yes",
+            "-y",
+            help="Bypass interactive prompts: pick the first match on install, skip confirm on uninstall.",
+        ),
+    ] = False,
+    fmt: Annotated[
+        str,
+        typer.Option(
+            "--format",
+            "-f",
+            help="Output format for read commands: 'text' (default) or 'json'.",
+        ),
+    ] = "text",
 ) -> None:
     """Lists installed plugins"""
     if cmd_action == "info":
-        return info(source)
+        return info(source, fmt=fmt)
 
     # For uninstall, we don't need to update the catalog
     if cmd_action == "uninstall":
@@ -734,7 +813,7 @@ def plugin(
             console.print(":x: Please specify a plugin name to uninstall.")
             return
         pc = PluginCatalog()
-        return uninstall(source, catalog=pc)
+        return uninstall(source, catalog=pc, assume_yes=assume_yes)
     if cmd_action == "install" and source is not None:
         registry = PluginRegistry()
         if registry.has(source):
@@ -754,14 +833,14 @@ def plugin(
                 console.log(":x: Catalog update failed.")
 
     if cmd_action == "versions":
-        return versions(source, catalog=pc)
+        return versions(source, catalog=pc, fmt=fmt)
 
     if cmd_action == "list":
-        return list(install_type)
+        return list(install_type, fmt=fmt)
     if cmd_action == "install" and source is not None:
-        return install(source, install_type, catalog=pc)
+        return install(source, install_type, catalog=pc, assume_yes=assume_yes)
     if cmd_action == "search":
-        return search(source, catalog=pc)
+        return search(source, catalog=pc, fmt=fmt)
 
 
 @app.callback()

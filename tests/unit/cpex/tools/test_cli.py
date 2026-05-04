@@ -809,10 +809,12 @@ class TestInstallFunction:
             mock_console.status = Mock(return_value=mock_status)
             
             install("test_plugin @ git+https://github.com/example/test_plugin.git", "git", mock_catalog)
-            
+
             # Verify install_from_git was called
             mock_catalog.install_from_git.assert_called_once()
-            mock_update_config.assert_called_once_with(manifest=test_manifest)
+            # update_plugins_config_yaml is called inside _finalize_installation (mocked),
+            # not directly from _install_from_git — verify no duplicate direct call.
+            mock_update_config.assert_not_called()
             mock_finalize.assert_called_once()
 
     def test_install_monorepo_no_plugins_found(self):
@@ -1589,7 +1591,9 @@ class TestInstallFromLocal:
             _install_from_local(str(source_dir), mock_catalog)
             
             mock_catalog.install_from_local.assert_called_once()
-            mock_update_config.assert_called_once_with(manifest=manifest)
+            # update_plugins_config_yaml is called inside _finalize_installation (mocked),
+            # not directly from _install_from_local — verify no duplicate direct call.
+            mock_update_config.assert_not_called()
             mock_finalize.assert_called_once_with(manifest, "local", mock_catalog, source_dir)
 
 

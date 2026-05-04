@@ -1418,7 +1418,7 @@ class PyPiRepo(BaseModel):
     """
 
     pypi_package: str
-    version_constraint: Optional[str]
+    version_constraint: Optional[str] = None
 
     @field_validator("pypi_package", mode="after")
     @classmethod

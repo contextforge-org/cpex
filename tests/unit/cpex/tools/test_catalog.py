@@ -2267,7 +2267,7 @@ class TestPluginCatalogInstallFromPypiWithVersionsJson:
         with (
             patch.object(catalog, "_download_package_to_temp", return_value=temp_extract),
             patch.object(catalog, "_install_package"),
-            patch.object(catalog, "find_package_path", return_value=package_dir),
+            patch("cpex.tools.catalog.find_package_path", return_value=package_dir),
             patch.object(catalog, "_find_and_load_versions_json") as mock_find_versions,
             patch.object(catalog, "update_plugin_version_registry"),
         ):
@@ -2312,7 +2312,7 @@ class TestPluginCatalogInstallFromLocal:
         
         with (
             patch("cpex.tools.catalog.subprocess.run") as mock_subprocess,
-            patch.object(catalog, "find_package_path", return_value=source_dir),
+            patch("cpex.tools.catalog.find_package_path", return_value=source_dir),
             patch.object(catalog, "_persist_manifest"),
             patch.object(catalog, "_find_and_load_versions_json", return_value=source_dir),
             patch.object(catalog, "update_plugin_version_registry"),
@@ -2359,7 +2359,7 @@ class TestPluginCatalogInstallFromLocal:
         
         with (
             patch("cpex.tools.catalog.subprocess.run") as mock_subprocess,
-            patch.object(catalog, "find_package_path", return_value=source_dir),
+            patch("cpex.tools.catalog.find_package_path", return_value=source_dir),
             patch.object(catalog, "_persist_manifest"),
             patch.object(catalog, "_find_and_load_versions_json", return_value=source_dir),
             patch.object(catalog, "update_plugin_version_registry"),
@@ -2514,7 +2514,7 @@ class TestPluginCatalogInstallFromLocal:
         
         with (
             patch("cpex.tools.catalog.subprocess.run"),
-            patch.object(catalog, "find_package_path", return_value=source_dir),
+            patch("cpex.tools.catalog.find_package_path", return_value=source_dir),
             patch.object(catalog, "_persist_manifest") as mock_persist,
             patch.object(catalog, "_find_and_load_versions_json", return_value=source_dir) as mock_versions,
             patch.object(catalog, "update_plugin_version_registry") as mock_registry,
@@ -2626,7 +2626,7 @@ class TestPluginCatalogInstallFromLocal:
         
         with (
             patch("cpex.tools.catalog.subprocess.run"),
-            patch.object(catalog, "find_package_path", return_value=source_dir),
+            patch("cpex.tools.catalog.find_package_path", return_value=source_dir),
             patch.object(catalog, "_persist_manifest"),
             patch.object(catalog, "_find_and_load_versions_json", return_value=actual_path),
             patch.object(catalog, "update_plugin_version_registry"),
@@ -2673,7 +2673,7 @@ class TestPluginCatalogInstallFromGit:
         with (
             patch("cpex.tools.catalog.subprocess.run") as mock_subprocess,
             patch("cpex.tools.catalog.tempfile.mkdtemp", return_value=str(tmp_path)),
-            patch.object(catalog, "find_package_path", return_value=plugin_dir),
+            patch("cpex.tools.catalog.find_package_path", return_value=plugin_dir),
             patch.object(catalog, "_persist_manifest"),
             patch.object(catalog, "_find_and_load_versions_json", return_value=plugin_dir),
             patch.object(catalog, "update_plugin_version_registry"),
@@ -2727,7 +2727,7 @@ class TestPluginCatalogInstallFromGit:
         with (
             patch("cpex.tools.catalog.subprocess.run") as mock_subprocess,
             patch("cpex.tools.catalog.tempfile.mkdtemp", return_value=str(tmp_path)),
-            patch.object(catalog, "find_package_path", return_value=plugin_dir),
+            patch("cpex.tools.catalog.find_package_path", return_value=plugin_dir),
             patch.object(catalog, "_persist_manifest"),
             patch.object(catalog, "_find_and_load_versions_json", return_value=plugin_dir),
             patch.object(catalog, "update_plugin_version_registry"),
@@ -2772,7 +2772,7 @@ class TestPluginCatalogInstallFromGit:
         with (
             patch("cpex.tools.catalog.subprocess.run") as mock_subprocess,
             patch("cpex.tools.catalog.tempfile.mkdtemp", return_value=str(tmp_path)),
-            patch.object(catalog, "find_package_path", return_value=plugin_dir),
+            patch("cpex.tools.catalog.find_package_path", return_value=plugin_dir),
             patch.object(catalog, "_persist_manifest"),
             patch.object(catalog, "_find_and_load_versions_json", return_value=plugin_dir),
             patch.object(catalog, "update_plugin_version_registry"),
@@ -3034,7 +3034,7 @@ class TestPluginCatalogInstallFromGit:
         with (
             patch("cpex.tools.catalog.subprocess.run") as mock_subprocess,
             patch("cpex.tools.catalog.tempfile.mkdtemp", return_value=str(tmp_path)),
-            patch.object(catalog, "find_package_path", return_value=plugin_dir),
+            patch("cpex.tools.catalog.find_package_path", return_value=plugin_dir),
             patch.object(catalog, "_persist_manifest"),
             patch.object(catalog, "_find_and_load_versions_json", return_value=plugin_dir),
             patch.object(catalog, "update_plugin_version_registry"),
@@ -3078,7 +3078,7 @@ class TestPluginCatalogInstallFromGit:
         with (
             patch("cpex.tools.catalog.subprocess.run") as mock_subprocess,
             patch("cpex.tools.catalog.tempfile.mkdtemp", return_value=str(tmp_path)),
-            patch.object(catalog, "find_package_path", return_value=plugin_dir),
+            patch("cpex.tools.catalog.find_package_path", return_value=plugin_dir),
             patch.object(catalog, "_persist_manifest"),
             patch.object(catalog, "_find_and_load_versions_json", return_value=plugin_dir),
             patch.object(catalog, "update_plugin_version_registry"),

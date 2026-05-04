@@ -9,8 +9,6 @@ This module implements the plugin catalog object.
 
 import base64
 import datetime
-import importlib.metadata
-import importlib.util
 import json
 import logging
 import os
@@ -29,6 +27,7 @@ import zipfile
 
 import yaml
 from github import Auth, Github
+from packaging.version import InvalidVersion, Version
 
 from cpex.framework.models import (
     GitRepo,
@@ -38,9 +37,18 @@ from cpex.framework.models import (
     PluginVersionRegistry,
     PyPiRepo,
 )
+from cpex.framework.utils import find_package_path
 from cpex.tools.settings import get_catalog_settings
 
 logger = logging.getLogger(__name__)
+
+
+def _ver(version_str: str) -> Version:
+    try:
+        return Version(version_str)
+    except InvalidVersion:
+        logger.debug("Could not parse version %r as PEP 440; treating as lowest", version_str)
+        return Version("0")
 
 
 class PluginCatalog:
@@ -126,13 +134,13 @@ class PluginCatalog:
                 if latest is None:
                     latest = pv
                 else:
-                    if latest.version < plugin_version.version:
+                    if _ver(latest.version) < _ver(plugin_version.version):
                         latest = plugin_version
             else:
                 if latest is None:
                     latest = pv
                 else:
-                    if latest.version < pv.version:
+                    if _ver(latest.version) < _ver(pv.version):
                         latest = pv
 
         if not found:
@@ -149,45 +157,6 @@ class PluginCatalog:
             json.dumps(plugin_version_registry.model_dump(mode="json"), indent=2),
             encoding="utf-8",
         )
-
-    def find_package_path(self, package_name: str) -> Path:
-        """Locate installed package directory using importlib.metadata.
-
-        Args:
-            package_name: The name of the installed package.
-
-        Returns:
-            Path to the package directory.
-
-        Raises:
-            RuntimeError: If package cannot be found.
-        """
-        try:
-            # Use importlib.metadata for more reliable package discovery
-            for dist in importlib.metadata.distributions():
-                if dist.name == package_name or dist.metadata.get("Name") == package_name:
-                    if dist.files:
-                        # Get the package root from the plugin-manifest.yaml file
-                        for afile in dist.files:
-                            if afile.name == "plugin-manifest.yaml":
-                                located_path = dist.locate_file(afile)
-                                package_path = Path(str(located_path)).parent
-                                logger.debug("Found package %s at %s", package_name, package_path)
-                                return package_path
-
-            # Fallback to importlib.util.find_spec if metadata approach fails
-            spec = importlib.util.find_spec(package_name)
-            if spec is not None and spec.origin is not None:
-                package_path = Path(spec.origin).parent
-                logger.debug("Found package %s at %s (via find_spec)", package_name, package_path)
-                return package_path
-
-            raise RuntimeError(f"Could not find installed package: {package_name}")
-
-        except Exception as e:
-            if isinstance(e, RuntimeError):
-                raise
-            raise RuntimeError(f"Error locating package {package_name}: {str(e)}") from e
 
     def save_manifest_content(self, content: str, path, repo_url: httpx.URL):
         """
@@ -234,7 +203,7 @@ class PluginCatalog:
         """
         Download the contents of the file using the github REST API.
         """
-        result = httpx.get(git_url, headers=headers)
+        result = httpx.get(git_url, headers=headers, timeout=30.0)
         if result.status_code == 200:
             js = result.json()
             b64_content = js["content"]
@@ -264,7 +233,7 @@ class PluginCatalog:
             content = file_content.decoded_content.decode("utf-8")
             return content
         except Exception as e:
-            logger.error("Failed to download file: %s status_code: %d", item["path"], str(e))
+            logger.error("Failed to download file: %s error: %s", item["path"], str(e))
 
     def _search_github_code_for_versions_json(self, repo_path: str, member: str | None, headers) -> list[dict] | None:
         """Search GitHub for plugin-manifest*.yaml files in a specific path using PyGithub API.
@@ -444,6 +413,9 @@ class PluginCatalog:
         self.create_output_folder()
         self.create_catalog_folder(name)
         version_data = self.download_file(repo_path=repo_path, item=item, headers=headers, gh_repo=gh_repo)
+        if version_data is None:
+            logger.error("Skipping version item for %s (%s) — download failed", name, item.get("path"))
+            return
         relpath.write_text(version_data, encoding="utf-8")
 
     def find_and_save_plugin_versions_json(self, member: str, name: str, repo_url: httpx.URL, headers, gh_repo) -> None:
@@ -674,7 +646,11 @@ class PluginCatalog:
                 # For non-isolated plugins, install normally into CLI's venv
                 logger.info("Installing non-isolated plugin from monorepo: %s", manifest.name)
                 subprocess.run(
-                    [self.python_executable, "-m", "pip", "install", repo_url], check=True, capture_output=True, text=True
+                    [self.python_executable, "-m", "pip", "install", repo_url],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=600,
                 )
                 logger.info("Successfully installed package: %s", manifest.name)
             return plugin_path
@@ -714,11 +690,15 @@ class PluginCatalog:
                     check=True,
                     capture_output=True,
                     text=True,
+                    timeout=600,
                 )
             else:
-                # Use subprocess.run for better error handling
                 subprocess.run(
-                    [self.python_executable, "-m", "pip", "install", tgt], check=True, capture_output=True, text=True
+                    [self.python_executable, "-m", "pip", "install", tgt],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=600,
                 )
             logger.info("Successfully installed package: %s", package_name)
 
@@ -854,31 +834,32 @@ class PluginCatalog:
 
     def _download_monorepo_folder_to_temp(self, repo_url: str, package_name: str) -> Path:
         """Download monorepo folder to temporary directory.
+
         Args:
             repo_url: The URL of the monorepo.
+            package_name: Name used in error messages.
+
         Returns:
-            Path to the downloaded monorepo folder.
+            Path to the extracted package directory. Caller is responsible for cleanup.
         """
+        tmpid = uuid.uuid4()
+        temp_dir = Path(tempfile.mkdtemp(prefix=f"cpex_plugin_{tmpid}_"))
         try:
-            tmpid    = uuid.uuid4()
-            temp_dir = Path(tempfile.mkdtemp(prefix=f"cpex_plugin_{tmpid}_"))
             logger.info("Downloading monorepo folder to %s", temp_dir)
 
-            # Download package without installing
             download_args = [
                 self.python_executable,
                 "-m",
                 "pip",
                 "download",
-                "--no-deps",  # Don't download dependencies
+                "--no-deps",
                 "--dest",
                 str(temp_dir),
             ]
             download_args.append(repo_url)
 
-            subprocess.run(download_args, check=True, capture_output=True, text=True)
+            subprocess.run(download_args, check=True, capture_output=True, text=True, timeout=600)
 
-            # Find the downloaded file
             downloaded_files = list(temp_dir.glob("*"))
             if not downloaded_files:
                 raise RuntimeError(f"No files downloaded for {package_name}")
@@ -886,15 +867,16 @@ class PluginCatalog:
             extract_dir = temp_dir / "extracted"
             extract_dir.mkdir()
 
-            # Extract the package using common helper
             self._extract_package_archive(package_file, extract_dir)
 
             logger.info("Downloaded and extracted %s to %s", package_name, extract_dir)
             return extract_dir
 
         except subprocess.CalledProcessError as e:
+            shutil.rmtree(temp_dir, ignore_errors=True)
             raise RuntimeError(f"Failed to download {package_name}: {e.stderr}") from e
         except Exception as e:
+            shutil.rmtree(temp_dir, ignore_errors=True)
             raise RuntimeError(f"Unexpected error downloading {package_name}: {str(e)}") from e
 
 
@@ -941,7 +923,7 @@ class PluginCatalog:
 
             download_args.append(tgt)
 
-            subprocess.run(download_args, check=True, capture_output=True, text=True)
+            subprocess.run(download_args, check=True, capture_output=True, text=True, timeout=600)
 
             # Find the downloaded file
             downloaded_files = list(temp_dir.glob("*"))
@@ -1074,8 +1056,20 @@ class PluginCatalog:
             shutil.copy(source_path, isolated_plugin.plugin_path / requirements_file)
             # Initialize the venv (this will create venv and install requirements)
             import asyncio
+            import concurrent.futures
 
-            asyncio.run(isolated_plugin.initialize())
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                loop = None
+
+            if loop is None:
+                asyncio.run(isolated_plugin.initialize())
+            else:
+                # Called from within a running event loop (e.g. Jupyter, async CLI).
+                # Run in a thread to avoid "asyncio.run cannot be called from a running event loop".
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+                    ex.submit(asyncio.run, isolated_plugin.initialize()).result()
 
             logger.info("Successfully initialized isolated venv for %s", manifest.name)
 
@@ -1108,13 +1102,13 @@ class PluginCatalog:
                 venv_path = plugin_path
                 python_executable = self._get_venv_python_executable(venv_path / ".venv")
 
-                # Create a simple Python script to find the package path
-                find_package_script = f"""
+                # Script receives the package name via sys.argv to avoid f-string injection.
+                find_package_script = """
 import sys
 import importlib.metadata
 from pathlib import Path
 
-package_name = "{plugin_package_name}"
+package_name = sys.argv[1]
 try:
     for dist in importlib.metadata.distributions():
         if dist.name == package_name or dist.metadata.get("Name") == package_name:
@@ -1127,17 +1121,17 @@ try:
     print("NOT_FOUND", file=sys.stderr)
     sys.exit(1)
 except Exception as e:
-    print(f"ERROR: {{e}}", file=sys.stderr)
+    print(f"ERROR: {e}", file=sys.stderr)
     sys.exit(1)
 """
 
                 # Execute the script in the isolated venv
                 result = subprocess.run(
-                    [python_executable, "-c", find_package_script],
+                    [python_executable, "-c", find_package_script, plugin_package_name],
                     check=True,
                     capture_output=True,
                     text=True,
-                    timeout=10,
+                    timeout=60,
                 )
 
                 if result.returncode == 0 and result.stdout.strip():
@@ -1194,21 +1188,21 @@ except Exception as e:
         self, manifest: PluginManifest, package_path: Path, install_command: list[str] | None = None
     ) -> Path | None:
         """Handle plugin installation based on its kind (isolated_venv or regular).
-        
+
         Args:
             manifest: The plugin manifest.
             package_path: Path to the package source.
             install_command: Optional custom install command for non-isolated plugins.
                            If None, no installation is performed for non-isolated plugins.
-        
+
         Returns:
             Path to the installed plugin, or None if not applicable.
-            
+
         Raises:
             RuntimeError: If installation fails.
         """
         plugin_path = None
-        
+
         if manifest.kind == "isolated_venv":
             logger.info("Detected isolated_venv plugin: %s", manifest.name)
             plugin_path = self._initialize_isolated_venv(manifest, package_path)
@@ -1222,21 +1216,22 @@ except Exception as e:
                     check=True,
                     capture_output=True,
                     text=True,
+                    timeout=600,
                 )
                 logger.info("Successfully installed package: %s", manifest.name)
-        
+
         return plugin_path
 
     def _finalize_plugin_installation(
         self, manifest: PluginManifest, plugin_path: Path | None, package_name: str
     ) -> Path | None:
         """Perform post-installation steps: persist manifest, find versions.json, update registry.
-        
+
         Args:
             manifest: The plugin manifest.
             plugin_path: Path to the installed plugin (plugins/{manifest.name} directory).
             package_name: Name of the package.
-            
+
         Returns:
             The actual plugin path from versions.json (inside .venv for isolated plugins),
             or plugin_path if versions.json not found.
@@ -1256,7 +1251,7 @@ except Exception as e:
             self.update_plugin_version_registry(manifest=manifest, relpath=plugin_path)
 
         logger.info("Successfully installed and cataloged %s", package_name)
-        
+
         # Return actual_plugin_path for reference (may be inside .venv)
         return actual_plugin_path if actual_plugin_path is not None else plugin_path
 
@@ -1304,17 +1299,17 @@ except Exception as e:
             plugin_path = self._handle_plugin_installation(
                 manifest,
                 package_path,
-                install_command=None  # Will install separately for non-isolated
+                install_command=None,  # Will install separately for non-isolated
             )
-            
+
             # For non-isolated plugins, install via pip and find package path
             if manifest.kind != "isolated_venv":
                 self._install_package(plugin_package_name, version_constraint, use_pytest)
-                plugin_path = self.find_package_path(plugin_package_name)
+                plugin_path = find_package_path(plugin_package_name)
 
             # Step 5-7: Finalize installation (persist, versions.json, registry)
             plugin_path = self._finalize_plugin_installation(manifest, plugin_path, plugin_package_name)
-            
+
             return manifest, plugin_path
 
         finally:
@@ -1415,6 +1410,7 @@ except Exception as e:
                 check=True,
                 capture_output=True,
                 text=True,
+                timeout=600,
             )
 
             # Find the downloaded archive
@@ -1431,10 +1427,10 @@ except Exception as e:
             # Step 3: Find and load the manifest file
             manifest_path = self._find_manifest_in_extracted_package(temp_extract_dir, package_name)
             manifest_data = self._load_manifest_file(manifest_path)
-            
+
             # Step 4: Normalize and validate the manifest
             manifest = self._normalize_manifest_data(manifest_data, package_name, None)
-            
+
             # Update the manifest with the git repo information
             git_repo: GitRepo = GitRepo(
                 git_repository=git_url,
@@ -1449,9 +1445,9 @@ except Exception as e:
             plugin_path = self._handle_plugin_installation(
                 manifest,
                 package_path,
-                install_command=None  # Will install separately
+                install_command=None,  # Will install separately
             )
-            
+
             # Install the package from git
             if manifest.kind == "isolated_venv":
                 # Install into isolated venv
@@ -1464,6 +1460,7 @@ except Exception as e:
                     check=True,
                     capture_output=True,
                     text=True,
+                    timeout=600,
                 )
                 logger.info("Successfully installed into isolated venv")
             else:
@@ -1473,12 +1470,13 @@ except Exception as e:
                     check=True,
                     capture_output=True,
                     text=True,
+                    timeout=600,
                 )
-                plugin_path = self.find_package_path(package_name)
+                plugin_path = find_package_path(package_name)
 
             # Step 6-8: Finalize installation (persist, versions.json, registry)
             plugin_path = self._finalize_plugin_installation(manifest, plugin_path, package_name)
-            
+
             return manifest, plugin_path
 
         except subprocess.CalledProcessError as e:
@@ -1527,13 +1525,18 @@ except Exception as e:
                     check=True,
                     capture_output=True,
                     text=True,
+                    timeout=120,
                 )
+                isolated_plugin.remove_venv()
+                logger.info("Successfully uninstalled package: %s", package_name)
+                return True
             else:
                 subprocess.run(
                     [self.python_executable, "-m", "pip", "uninstall", "-y", package_name],
                     check=True,
                     capture_output=True,
                     text=True,
+                    timeout=120,
                 )
             logger.info("Successfully uninstalled package: %s", package_name)
             return True
@@ -1654,8 +1657,18 @@ except Exception as e:
 
                 # Initialize the venv (creates venv directory structure)
                 import asyncio
+                import concurrent.futures
 
-                asyncio.run(isolated_plugin.initialize())
+                try:
+                    loop = asyncio.get_running_loop()
+                except RuntimeError:
+                    loop = None
+
+                if loop is None:
+                    asyncio.run(isolated_plugin.initialize())
+                else:
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+                        ex.submit(asyncio.run, isolated_plugin.initialize()).result()
 
                 # Get the venv python executable
                 venv_path = isolated_plugin.plugin_path / ".venv"
@@ -1668,6 +1681,7 @@ except Exception as e:
                     check=True,
                     capture_output=True,
                     text=True,
+                    timeout=600,
                 )
 
                 plugin_path = isolated_plugin.plugin_path
@@ -1686,6 +1700,7 @@ except Exception as e:
                     check=True,
                     capture_output=True,
                     text=True,
+                    timeout=600,
                 )
 
                 # For non-isolated plugins, the plugin_path is the same folder that hosts the plugin-manifest.yaml
