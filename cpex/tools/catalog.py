@@ -118,40 +118,33 @@ class PluginCatalog:
             manifest_file=str(relpath),
             released=datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z"),
         )
-        
+
         file_path = Path(self.catalog_folder) / manifest.name / "versions.json"
         file_path.parent.mkdir(parents=True, exist_ok=True)
-        
+
         # Load or create registry
         if file_path.exists():
             with file_path.open("r") as f:
                 plugin_version_registry = PluginVersionRegistry(**json.load(f))
         else:
             plugin_version_registry = PluginVersionRegistry(versions=[])
-        
+
         # Check if version already exists (avoid duplicates)
-        version_exists = any(
-            pv.version == plugin_version.version 
-            for pv in plugin_version_registry.versions
-        )
-        
+        version_exists = any(pv.version == plugin_version.version for pv in plugin_version_registry.versions)
+
         # Add new version if not duplicate
         if not version_exists:
             plugin_version_registry.versions.append(plugin_version)
-        
+
         # Recalculate latest version from all versions
         if plugin_version_registry.versions:
-            plugin_version_registry.latest = max(
-                plugin_version_registry.versions,
-                key=lambda pv: _ver(pv.version)
-            )
-        
+            plugin_version_registry.latest = max(plugin_version_registry.versions, key=lambda pv: _ver(pv.version))
+
         # Write the updated version registry to the file
         file_path.write_text(
             json.dumps(plugin_version_registry.model_dump(mode="json"), indent=2),
             encoding="utf-8",
         )
-
 
     def save_manifest_content(self, content: str, path, repo_url: httpx.URL):
         """
