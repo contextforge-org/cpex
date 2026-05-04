@@ -43,7 +43,6 @@ from cpex.tools.settings import get_catalog_settings
 logger = logging.getLogger(__name__)
 
 
-
 class PluginCatalog:
     """
     Utility class to initialize the plugin catalog from configured monorepos
@@ -102,10 +101,10 @@ class PluginCatalog:
     def _ver(self, version_str: str) -> Version:
         """
         Parse a version string into a Version object.
-        
+
         Args:
             version_str: Version string to parse (e.g., "1.0.0", "2.0.0rc1")
-            
+
         Returns:
             Version object. Returns Version("0") if parsing fails.
         """
@@ -114,7 +113,6 @@ class PluginCatalog:
         except InvalidVersion:
             logger.debug("Could not parse version %r as PEP 440; treating as lowest", version_str)
             return Version("0")
-
 
     def update_plugin_version_registry(self, manifest: PluginManifest, relpath: Path):
         """
