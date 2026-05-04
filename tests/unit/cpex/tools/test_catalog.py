@@ -3090,3 +3090,108 @@ class TestPluginCatalogInstallFromGit:
             manifest, plugin_path = catalog.install_from_git(url)
             
             assert manifest.name == "test_plugin"
+
+
+# ---------------------------------------------------------------------------
+# _extract_package_archive — path traversal guards
+# ---------------------------------------------------------------------------
+
+class TestExtractPackageArchivePathTraversal:
+    """Verify that _extract_package_archive rejects archives with unsafe member paths."""
+
+    @pytest.fixture()
+    def catalog(self):
+        with patch("cpex.tools.catalog.PluginCatalog.__init__", return_value=None):
+            c = PluginCatalog.__new__(PluginCatalog)
+            c.python_executable = sys.executable
+            return c
+
+    # --- tar.gz -----------------------------------------------------------
+
+    def test_tar_traversal_rejected(self, catalog, tmp_path):
+        """A tar member whose path escapes extract_dir raises and writes nothing."""
+        import io
+        archive = tmp_path / "evil.tar.gz"
+        with tarfile.open(archive, "w:gz") as tf:
+            data = b"pwned"
+            info = tarfile.TarInfo(name="../evil.txt")
+            info.size = len(data)
+            tf.addfile(info, io.BytesIO(data))
+
+        extract_dir = tmp_path / "out"
+        extract_dir.mkdir()
+
+        with pytest.raises(Exception):
+            catalog._extract_package_archive(archive, extract_dir)
+
+        assert not (tmp_path / "evil.txt").exists()
+
+    def test_tar_benign_succeeds(self, catalog, tmp_path):
+        """A well-formed tar.gz extracts correctly."""
+        import io
+        archive = tmp_path / "good.tar.gz"
+        with tarfile.open(archive, "w:gz") as tf:
+            data = b"hello"
+            info = tarfile.TarInfo(name="subdir/hello.txt")
+            info.size = len(data)
+            tf.addfile(info, io.BytesIO(data))
+
+        extract_dir = tmp_path / "out"
+        extract_dir.mkdir()
+        catalog._extract_package_archive(archive, extract_dir)
+
+        assert (extract_dir / "subdir" / "hello.txt").read_bytes() == b"hello"
+
+    # --- zip / .whl -------------------------------------------------------
+
+    def test_zip_traversal_rejected(self, catalog, tmp_path):
+        """A zip member whose path escapes extract_dir raises and writes nothing."""
+        archive = tmp_path / "evil.zip"
+        with zipfile.ZipFile(archive, "w") as zf:
+            zf.writestr("../evil.txt", "pwned")
+
+        extract_dir = tmp_path / "out"
+        extract_dir.mkdir()
+
+        with pytest.raises(RuntimeError, match="Unsafe path"):
+            catalog._extract_package_archive(archive, extract_dir)
+
+        assert not (tmp_path / "evil.txt").exists()
+
+    def test_whl_traversal_rejected(self, catalog, tmp_path):
+        """A .whl (zip) member whose path escapes extract_dir raises and writes nothing."""
+        archive = tmp_path / "evil-1.0.0-py3-none-any.whl"
+        with zipfile.ZipFile(archive, "w") as zf:
+            zf.writestr("../evil.txt", "pwned")
+
+        extract_dir = tmp_path / "out"
+        extract_dir.mkdir()
+
+        with pytest.raises(RuntimeError, match="Unsafe path"):
+            catalog._extract_package_archive(archive, extract_dir)
+
+        assert not (tmp_path / "evil.txt").exists()
+
+    def test_zip_absolute_path_rejected(self, catalog, tmp_path):
+        """A zip member with an absolute path raises before any extraction."""
+        archive = tmp_path / "absolute.zip"
+        with zipfile.ZipFile(archive, "w") as zf:
+            zf.writestr("/etc/passwd", "root:x:0:0")
+
+        extract_dir = tmp_path / "out"
+        extract_dir.mkdir()
+
+        with pytest.raises(RuntimeError, match="Unsafe path"):
+            catalog._extract_package_archive(archive, extract_dir)
+
+    def test_zip_benign_succeeds(self, catalog, tmp_path):
+        """A well-formed zip extracts correctly."""
+        archive = tmp_path / "good.zip"
+        with zipfile.ZipFile(archive, "w") as zf:
+            zf.writestr("pkg/hello.txt", "world")
+
+        extract_dir = tmp_path / "out"
+        extract_dir.mkdir()
+        catalog._extract_package_archive(archive, extract_dir)
+
+        assert (extract_dir / "pkg" / "hello.txt").read_text() == "world"

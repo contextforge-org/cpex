@@ -817,25 +817,38 @@ class PluginCatalog:
         except Exception as e:
             raise RuntimeError(f"Failed to save manifest for {package_name}: {str(e)}") from e
 
+    @staticmethod
+    def _safe_zip_extract(zip_ref: zipfile.ZipFile, extract_dir: Path) -> None:
+        """Extract a zip archive, rejecting members whose paths escape extract_dir."""
+        base = extract_dir.resolve()
+        for info in zip_ref.infolist():
+            name = info.filename
+            if os.path.isabs(name):
+                raise RuntimeError(f"Unsafe path in archive: {name}")
+            target = (base / name).resolve()
+            if not target.is_relative_to(base):
+                raise RuntimeError(f"Unsafe path in archive: {name}")
+        zip_ref.extractall(extract_dir)
+
     def _extract_package_archive(self, package_file: Path, extract_dir: Path) -> None:
         """Extract a package archive (zip, tar.gz, wheel, etc.) to a directory.
-        
+
         Args:
             package_file: Path to the archive file.
             extract_dir: Directory to extract to.
-            
+
         Raises:
-            RuntimeError: If the archive format is unsupported.
+            RuntimeError: If the archive format is unsupported or contains unsafe paths.
         """
         if package_file.suffix == ".whl" or package_file.name.endswith(".whl"):
             with zipfile.ZipFile(package_file, "r") as zip_ref:
-                zip_ref.extractall(extract_dir)
+                self._safe_zip_extract(zip_ref, extract_dir)
         elif package_file.suffix == ".zip" or package_file.name.endswith(".zip"):
             with zipfile.ZipFile(package_file, "r") as zip_ref:
-                zip_ref.extractall(extract_dir)
+                self._safe_zip_extract(zip_ref, extract_dir)
         elif package_file.suffix in [".gz", ".bz2"] or ".tar" in package_file.name:
             with tarfile.open(package_file, "r:*") as tar_ref:
-                tar_ref.extractall(extract_dir)
+                tar_ref.extractall(extract_dir, filter="data")
         else:
             raise RuntimeError(f"Unsupported package format: {package_file}")
 
