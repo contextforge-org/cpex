@@ -18,7 +18,7 @@ use std::sync::Arc;
 use crate::context::PluginContext;
 use crate::error::PluginError;
 use crate::executor::erase_result;
-use crate::hooks::payload::{FilteredExtensions, PluginPayload};
+use crate::hooks::payload::{Extensions, PluginPayload};
 use crate::hooks::trait_def::{HookHandler, HookTypeDef, PluginResult};
 use crate::plugin::Plugin;
 use crate::registry::AnyHookHandler;
@@ -82,7 +82,7 @@ where
     async fn invoke(
         &self,
         payload: &dyn PluginPayload,
-        extensions: &FilteredExtensions,
+        extensions: &Extensions,
         ctx: &mut PluginContext,
     ) -> Result<Box<dyn std::any::Any + Send + Sync>, PluginError> {
         let typed_ref: &H::Payload = payload

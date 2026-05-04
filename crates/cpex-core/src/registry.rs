@@ -34,7 +34,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use crate::context::PluginContext;
-use crate::hooks::payload::{FilteredExtensions, PluginPayload};
+use crate::hooks::payload::{Extensions, PluginPayload};
 use crate::hooks::trait_def::HookTypeDef;
 use crate::hooks::HookType;
 use crate::plugin::{Plugin, PluginConfig, PluginMode};
@@ -173,7 +173,7 @@ pub trait AnyHookHandler: Send + Sync {
     async fn invoke(
         &self,
         payload: &dyn PluginPayload,
-        extensions: &FilteredExtensions,
+        extensions: &Extensions,
         ctx: &mut PluginContext,
     ) -> Result<Box<dyn std::any::Any + Send + Sync>, crate::error::PluginError>;
 
@@ -499,7 +499,7 @@ mod tests {
         async fn invoke(
             &self,
             _payload: &dyn PluginPayload,
-            _extensions: &FilteredExtensions,
+            _extensions: &Extensions,
             _ctx: &mut PluginContext,
         ) -> Result<Box<dyn std::any::Any + Send + Sync>, PluginError> {
             let result: PluginResult<TestPayload> = PluginResult::allow();
@@ -675,7 +675,7 @@ mod tests {
         let payload = TestPayload {
             value: "test".into(),
         };
-        let ext = FilteredExtensions::default();
+        let ext = Extensions::default();
         let mut ctx = PluginContext::new();
 
         let result = handler.invoke(&payload as &dyn PluginPayload, &ext, &mut ctx).await.unwrap();

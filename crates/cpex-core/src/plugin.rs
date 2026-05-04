@@ -56,7 +56,7 @@ use crate::error::PluginError;
 /// }
 ///
 /// impl CmfHookHandler for MyPlugin {
-///     fn cmf_hook(&self, payload: MessagePayload, ext: &FilteredExtensions, ctx: &PluginContext) -> PluginResult<MessagePayload> {
+///     fn cmf_hook(&self, payload: MessagePayload, ext: &Extensions, ctx: &PluginContext) -> PluginResult<MessagePayload> {
 ///         PluginResult::allow()
 ///     }
 /// }

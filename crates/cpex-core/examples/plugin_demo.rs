@@ -17,7 +17,7 @@ use cpex_core::error::{PluginError, PluginViolation};
 use cpex_core::executor::PipelineResult;
 use cpex_core::factory::{PluginFactory, PluginInstance};
 use cpex_core::hooks::adapter::TypedHandlerAdapter;
-use cpex_core::hooks::payload::{Extensions, FilteredExtensions, MetaExtension};
+use cpex_core::hooks::payload::{Extensions, MetaExtension};
 use cpex_core::hooks::trait_def::{HookHandler, HookTypeDef, PluginResult};
 use cpex_core::manager::PluginManager;
 use cpex_core::plugin::{Plugin, PluginConfig};
@@ -77,7 +77,7 @@ impl HookHandler<ToolPreInvoke> for IdentityResolver {
     fn handle(
         &self,
         payload: &ToolInvokePayload,
-        _extensions: &FilteredExtensions,
+        _extensions: &Extensions,
         _ctx: &mut PluginContext,
     ) -> PluginResult<ToolInvokePayload> {
         if payload.user.is_empty() {
@@ -95,7 +95,7 @@ impl HookHandler<ToolPostInvoke> for IdentityResolver {
     fn handle(
         &self,
         payload: &ToolInvokePayload,
-        _extensions: &FilteredExtensions,
+        _extensions: &Extensions,
         _ctx: &mut PluginContext,
     ) -> PluginResult<ToolInvokePayload> {
         println!("  [identity-resolver] post-invoke: user '{}' completed '{}'",
@@ -119,7 +119,7 @@ impl HookHandler<ToolPreInvoke> for PiiGuard {
     fn handle(
         &self,
         payload: &ToolInvokePayload,
-        _extensions: &FilteredExtensions,
+        _extensions: &Extensions,
         ctx: &mut PluginContext,
     ) -> PluginResult<ToolInvokePayload> {
         // Check if the user has PII clearance (simulated via context)
@@ -156,7 +156,7 @@ impl HookHandler<ToolPreInvoke> for AuditLogger {
     fn handle(
         &self,
         payload: &ToolInvokePayload,
-        _extensions: &FilteredExtensions,
+        _extensions: &Extensions,
         _ctx: &mut PluginContext,
     ) -> PluginResult<ToolInvokePayload> {
         println!("  [audit-logger] LOG: user='{}' tool='{}' args='{}'",
@@ -169,7 +169,7 @@ impl HookHandler<ToolPostInvoke> for AuditLogger {
     fn handle(
         &self,
         payload: &ToolInvokePayload,
-        _extensions: &FilteredExtensions,
+        _extensions: &Extensions,
         _ctx: &mut PluginContext,
     ) -> PluginResult<ToolInvokePayload> {
         println!("  [audit-logger] LOG: post-invoke user='{}' tool='{}'",
@@ -229,12 +229,12 @@ impl PluginFactory for AuditLoggerFactory {
 
 fn make_tool_extensions(tool_name: &str, tags: &[&str]) -> Extensions {
     Extensions {
-        meta: Some(MetaExtension {
+        meta: Some(Arc::new(MetaExtension {
             entity_type: Some("tool".into()),
             entity_name: Some(tool_name.into()),
             tags: tags.iter().map(|s| s.to_string()).collect(),
             ..Default::default()
-        }),
+        })),
         ..Default::default()
     }
 }

@@ -21,7 +21,7 @@
 
 use crate::context::PluginContext;
 use crate::error::PluginViolation;
-use crate::hooks::payload::{Extensions, FilteredExtensions, PluginPayload};
+use crate::hooks::payload::{Extensions, PluginPayload};
 use crate::plugin::Plugin;
 
 // ---------------------------------------------------------------------------
@@ -90,7 +90,7 @@ pub trait HookTypeDef: Send + Sync + 'static {
 ///     fn handle(
 ///         &self,
 ///         payload: MessagePayload,
-///         extensions: &FilteredExtensions,
+///         extensions: &Extensions,
 ///         ctx: &PluginContext,
 ///     ) -> PluginResult<MessagePayload> {
 ///         PluginResult::allow()
@@ -115,7 +115,7 @@ pub trait HookHandler<H: HookTypeDef>: Plugin + Send + Sync {
     fn handle(
         &self,
         payload: &H::Payload,
-        extensions: &FilteredExtensions,
+        extensions: &Extensions,
         ctx: &mut PluginContext,
     ) -> H::Result;
 }
@@ -163,7 +163,7 @@ pub trait HookHandler<H: HookTypeDef>: Plugin + Send + Sync {
 /// assert!(!result.continue_processing);
 /// assert!(result.violation.is_some());
 /// ```
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct PluginResult<P: PluginPayload> {
     /// Whether the pipeline should continue processing.
     /// `false` halts the pipeline (deny). Only respected for
@@ -175,10 +175,10 @@ pub struct PluginResult<P: PluginPayload> {
     pub modified_payload: Option<P>,
 
     /// Modified extensions. `None` means no extension changes.
-    /// Merged back by the framework using tier validation
-    /// (immutable rejected, monotonic superset-checked, etc.).
-    /// Only accepted from Sequential and Transform mode plugins.
-    pub modified_extensions: Option<Extensions>,
+    /// Return an `OwnedExtensions` from `extensions.cow_copy()`.
+    /// The executor validates (immutable unchanged, monotonic superset)
+    /// and merges back into the pipeline's `Extensions`.
+    pub modified_extensions: Option<crate::hooks::payload::OwnedExtensions>,
 
     /// Policy violation. Present when `continue_processing` is `false`.
     pub violation: Option<PluginViolation>,
@@ -226,7 +226,8 @@ impl<P: PluginPayload> PluginResult<P> {
     }
 
     /// Modify extensions only — payload unchanged.
-    pub fn modify_extensions(extensions: Extensions) -> Self {
+    /// Takes an `OwnedExtensions` from `extensions.cow_copy()`.
+    pub fn modify_extensions(extensions: crate::hooks::payload::OwnedExtensions) -> Self {
         Self {
             continue_processing: true,
             modified_payload: None,
@@ -238,7 +239,8 @@ impl<P: PluginPayload> PluginResult<P> {
     }
 
     /// Modify both payload and extensions.
-    pub fn modify(payload: P, extensions: Extensions) -> Self {
+    /// Takes an `OwnedExtensions` from `extensions.cow_copy()`.
+    pub fn modify(payload: P, extensions: crate::hooks::payload::OwnedExtensions) -> Self {
         Self {
             continue_processing: true,
             modified_payload: Some(payload),

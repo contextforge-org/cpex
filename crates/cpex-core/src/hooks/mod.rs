@@ -10,7 +10,7 @@
 // - [`HookTypeDef`] — marker trait associating a typed payload + result with a hook name.
 // - [`PluginPayload`] — base trait for all hook payloads (mirrors Python's PluginPayload).
 // - [`PluginResult`] — result type with separate payload and extension modifications.
-// - [`FilteredExtensions`] — capability-gated extension view passed to handlers.
+// - [`Extensions`] — capability-gated extension view passed to handlers.
 // - [`define_hook!`] — macro for declaring new hook types with handler traits.
 // - [`hook_names`] / [`cmf_hook_names`] — string constants for built-in hooks.
 //
@@ -24,6 +24,6 @@ pub mod types;
 
 // Re-export core types at the hooks level
 pub use adapter::TypedHandlerAdapter;
-pub use payload::{Extensions, FilteredExtensions, PluginPayload};
+pub use payload::{Extensions, PluginPayload};
 pub use trait_def::{HookHandler, HookTypeDef, PluginResult};
 pub use types::{builtin_hook_types, hook_type_from_str, HookType};

@@ -19,9 +19,12 @@
 // - [`config`] — Unified YAML configuration parsing
 // - [`factory`] — Plugin factory registry for config-driven instantiation
 // - [`context`] — PluginContext (local_state + global_state)
+// - [`cmf`] — ContextForge Message Format (Message, ContentPart, enums)
 // - [`error`] — Error types, violations, and result types
 
+pub mod cmf;
 pub mod config;
+pub mod extensions;
 pub mod context;
 pub mod error;
 pub mod executor;
