@@ -2390,8 +2390,12 @@ class InstalledPluginRegistry(BaseModel):
     plugins: List[InstalledPluginInfo] = []
 
     def register_plugin(self, plugin: InstalledPluginInfo) -> None:
-        """Register a new plugin in the registry"""
-        # load the registry
+        """Register a plugin in the registry.
+
+        If a plugin with the same name is already registered, its entry is
+        replaced so the registry reflects the most-recent install.
+        """
+        self.plugins = [p for p in self.plugins if p.name != plugin.name]
         self.plugins.append(plugin)
         self.save()
 

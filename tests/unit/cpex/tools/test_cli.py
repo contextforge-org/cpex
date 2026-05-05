@@ -1495,6 +1495,74 @@ class TestInstalledPluginRegistryUnregister:
         assert len(registry.plugins) == 1
 
 
+class TestInstalledPluginRegistryRegisterDedup:
+    """Tests for dedup behaviour of InstalledPluginRegistry.register_plugin()."""
+
+    def _make_plugin(self, name="foo", version="1.0.0", path="/path/to/plugin", installed_at="2024-01-01T00:00:00.000000Z"):
+        from cpex.framework.models import InstalledPluginInfo, PluginInstallationType
+        return InstalledPluginInfo(
+            name=name,
+            kind="native",
+            version=version,
+            installation_type=PluginInstallationType.LOCAL,
+            installation_path=path,
+            installed_at=installed_at,
+            installed_by="test_user",
+            package_source="https://example.com/repo",
+            editable=False,
+        )
+
+    def test_first_register_appends(self, temp_registry_dir):
+        """Registering into an empty registry results in exactly one entry."""
+        import json
+        from cpex.framework.models import InstalledPluginRegistry
+
+        registry = InstalledPluginRegistry()
+        registry.register_plugin(self._make_plugin())
+
+        assert len(registry.plugins) == 1
+        registry_file = temp_registry_dir / "installed-plugins.json"
+        data = json.loads(registry_file.read_text())
+        assert len(data["plugins"]) == 1
+        assert data["plugins"][0]["name"] == "foo"
+
+    def test_reregister_replaces_existing(self, temp_registry_dir):
+        """Registering a plugin that is already present replaces the old entry."""
+        import json
+        from cpex.framework.models import InstalledPluginRegistry
+
+        registry = InstalledPluginRegistry()
+        registry.register_plugin(self._make_plugin(version="1.0.0", installed_at="2024-01-01T00:00:00.000000Z"))
+        registry.register_plugin(self._make_plugin(version="2.0.0", path="/new/path", installed_at="2025-06-01T00:00:00.000000Z"))
+
+        assert len(registry.plugins) == 1
+        assert registry.plugins[0].version == "2.0.0"
+        assert registry.plugins[0].installation_path == "/new/path"
+        assert registry.plugins[0].installed_at == "2025-06-01T00:00:00.000000Z"
+
+        registry_file = temp_registry_dir / "installed-plugins.json"
+        data = json.loads(registry_file.read_text())
+        assert len(data["plugins"]) == 1
+        assert data["plugins"][0]["version"] == "2.0.0"
+
+    def test_reregister_does_not_affect_other_plugins(self, temp_registry_dir):
+        """Re-registering one plugin leaves other plugins untouched."""
+        from cpex.framework.models import InstalledPluginRegistry
+
+        registry = InstalledPluginRegistry()
+        registry.register_plugin(self._make_plugin(name="foo", version="1.0.0"))
+        registry.register_plugin(self._make_plugin(name="bar", version="1.0.0"))
+        registry.register_plugin(self._make_plugin(name="foo", version="2.0.0"))
+
+        assert len(registry.plugins) == 2
+        names = {p.name for p in registry.plugins}
+        assert names == {"foo", "bar"}
+        foo = next(p for p in registry.plugins if p.name == "foo")
+        bar = next(p for p in registry.plugins if p.name == "bar")
+        assert foo.version == "2.0.0"
+        assert bar.version == "1.0.0"
+
+
 class TestInstalledPluginRegistrySaveAtomic:
     """Tests for atomic write behaviour of InstalledPluginRegistry.save()."""
 
