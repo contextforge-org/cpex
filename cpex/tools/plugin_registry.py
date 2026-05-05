@@ -38,11 +38,10 @@ class PluginRegistry:
             except (json.JSONDecodeError, ValueError, KeyError) as e:
                 # If registry is corrupted, log error and start fresh
                 import logging
+
                 logger = logging.getLogger(__name__)
                 logger.error(
-                    "Corrupted plugin registry file at %s: %s. Starting with empty registry.",
-                    ipr_file,
-                    str(e)
+                    "Corrupted plugin registry file at %s: %s. Starting with empty registry.", ipr_file, str(e)
                 )
                 # Backup the corrupted file
                 backup_file = ipr_file.with_suffix(".json.corrupted")
