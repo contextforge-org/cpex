@@ -50,10 +50,10 @@ def get_catalog_settings() -> CatalogSettings:
 
 def get_plugin_registry_path() -> Path:
     """Get the plugin registry file path.
-    
+
     This centralizes the logic for determining where the plugin registry is stored.
     Uses PLUGIN_REGISTRY_FILE env var if set, otherwise falls back to 'data' folder.
-    
+
     Returns:
         Path: Path to the installed-plugins.json file.
     """

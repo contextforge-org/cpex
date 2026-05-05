@@ -28,7 +28,6 @@ $ mcpplugins --help
 # Standard
 import json
 import logging
-import os
 import shutil
 import subprocess  # nosec B404 # Safe: Used only for git commands with hardcoded args
 from pathlib import Path

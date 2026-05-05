@@ -2419,7 +2419,7 @@ class InstalledPluginRegistry(BaseModel):
     def save(self) -> None:
         """Serialize the registry to disk atomically."""
         from cpex.tools.settings import get_plugin_registry_path
-        
+
         target = get_plugin_registry_path()
         folder = target.parent
         data = orjson.dumps(self.model_dump(), option=orjson.OPT_INDENT_2)
