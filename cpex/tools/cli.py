@@ -338,10 +338,14 @@ def remove_from_plugins_config_yaml(manifest: PluginManifest) -> bool:
             return False
 
         initial_count = len(plugin_configs.plugins)
-        # Need to match by manifest.kind or if plugin.name starts with manifest.name
+        # Need to match by manifest.kind and plugin.name starts with manifest.name
         # e.g. if it is an external plugin or a venv plugin then kind will match many plugin configurations in config.yaml
+        # remove plugins that match the manifest.kind and plugin.name is part of the manifest.name
+        # plugin_configs.plugins = [
+        #     p for p in plugin_configs.plugins if p.kind != manifest.kind and p.name.count(manifest.name) == 0
+        # ]
         plugin_configs.plugins = [
-            p for p in plugin_configs.plugins if p.kind != manifest.kind and p.name.count(manifest.name) == 0
+            p for p in plugin_configs.plugins if not (p.kind == manifest.kind and p.name.count(manifest.name) > 0)
         ]
         if len(plugin_configs.plugins) < initial_count:
             ConfigSaver.save_config(plugin_configs, settings.config_file)

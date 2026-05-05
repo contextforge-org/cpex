@@ -1067,6 +1067,54 @@ class TestRemoveFromPluginsConfigYaml:
             assert len(mock_config.plugins) == 1
             assert mock_config.plugins[0].kind == "test.plugin.keep"
 
+    def test_removes_isolated_venv_plugin_from_config(self, tmp_path):
+        """Test removing a plugin from config."""
+        config_file = tmp_path / "config.yaml"
+        
+        config_1 = {
+                "class_name": "test.plugin.remove",
+                "requirements_file": "requirements.txt"
+        }
+
+        config_2 = {
+                "class_name": "test.plugin.keep",
+                "requirements_file": "requirements.txt"
+        }
+
+        plugin1 = PluginConfig(
+            name="plugin_to_remove",
+            kind="isolated_venv",
+            mode=PluginMode.SEQUENTIAL,
+            priority=100,
+            config=config_1
+        )
+        plugin2 = PluginConfig(
+            name="plugin_to_keep",
+            kind="test.plugin.keep",
+            mode=PluginMode.SEQUENTIAL,
+            priority=100,
+            config=config_2
+        )
+        mock_config = Config(plugins=[plugin1, plugin2])
+        
+        # Create a manifest with matching kind
+        manifest = create_test_manifest(
+                name="plugin_to_remove",
+                kind="isolated_venv",
+                default_config=config_1
+            )
+        
+        with (
+            patch("cpex.tools.cli.ConfigLoader.load_config", return_value=mock_config),
+            patch("cpex.tools.cli.ConfigSaver.save_config") as mock_save,
+        ):
+            result = remove_from_plugins_config_yaml(manifest)
+            assert result is True
+            mock_save.assert_called_once()
+            assert len(mock_config.plugins) == 1
+            assert mock_config.plugins[0].kind == "test.plugin.keep"
+
+
     def test_returns_false_when_plugin_not_found(self, tmp_path):
         """Test that function returns False when plugin not found."""
         plugin1 = PluginConfig(
