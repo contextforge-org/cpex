@@ -57,7 +57,8 @@ class PluginCatalog:
         self.plugin_folder = os.environ.get("PLUGINS_FOLDER", settings.PLUGINS_FOLDER)
         self.catalog_folder = os.environ.get("PLUGINS_CATALOG_FOLDER", settings.PLUGINS_CATALOG_FOLDER)
         self.manifests: list[PluginManifest] = []
-        self.auth = Auth.Token(self.github_token)
+        # Only create Auth.Token if a token is provided to avoid errors with None
+        self.auth = Auth.Token(self.github_token) if self.github_token else None
         self.gh = Github(auth=self.auth, base_url=f"https://{self.github_api}", per_page=100)
         self.python_executable = self._get_python_executable()
 
