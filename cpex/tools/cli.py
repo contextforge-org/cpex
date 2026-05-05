@@ -31,8 +31,7 @@ import logging
 import os
 import shutil
 import subprocess  # nosec B404 # Safe: Used only for git commands with hardcoded args
-
-# import sys
+import sys
 from pathlib import Path
 from typing import List, Optional
 
@@ -40,6 +39,13 @@ import inquirer
 import typer
 from rich.console import Console
 from typing_extensions import Annotated
+
+# Exit codes for CLI commands
+EXIT_SUCCESS = 0
+EXIT_GENERAL_ERROR = 1
+EXIT_INVALID_ARGS = 2
+EXIT_NOT_FOUND = 3
+EXIT_OPERATION_FAILED = 4
 
 # First-Party
 from cpex.framework.loader.config import ConfigLoader, ConfigSaver
@@ -237,11 +243,14 @@ def bootstrap(
                 extra_context=extra_context,
             )
         else:
-            logger.warning("No local templates found and git is not available to fetch remote template.")
+            logger.error("No local templates found and git is not available to fetch remote template.")
+            raise typer.Exit(EXIT_OPERATION_FAILED)
     except (SystemExit, typer.Exit):
         raise
-    except Exception:
+    except Exception as e:
         logger.exception("An error was caught while copying template.")
+        console.print(f":x: Failed to create plugin project: {str(e)}")
+        raise typer.Exit(EXIT_OPERATION_FAILED)
 
 
 def list(type: str, fmt: str = "text") -> None:
@@ -588,15 +597,20 @@ def install(source: str, install_type: str | None, catalog: PluginCatalog, assum
         assume_yes: Skip interactive selection prompt for monorepo installs.
 
     Raises:
-        ValueError: If install_type is not supported.
-        NotImplementedError: If the installation type is not yet implemented.
+        typer.Exit: With EXIT_INVALID_ARGS if install_type is not supported.
+        typer.Exit: With EXIT_OPERATION_FAILED if installation fails.
     """
     if install_type is None:
         install_type = "monorepo"
 
     if install_type == "monorepo":
-        _install_from_monorepo(source, catalog, assume_yes=assume_yes)
-        return
+        try:
+            _install_from_monorepo(source, catalog, assume_yes=assume_yes)
+            return
+        except Exception as e:
+            console.print(f":x: Installation failed: {str(e)}")
+            logger.error("Install error: %s", str(e), exc_info=True)
+            raise typer.Exit(EXIT_OPERATION_FAILED)
 
     handlers = {
         "git": _install_from_git,
@@ -607,9 +621,15 @@ def install(source: str, install_type: str | None, catalog: PluginCatalog, assum
 
     handler = handlers.get(install_type)
     if handler is None:
-        raise ValueError(f"Unsupported installation type: {install_type}. Must be one of: {', '.join(handlers.keys())}")
+        console.print(f":x: Unsupported installation type: {install_type}. Must be one of: {', '.join(handlers.keys())}")
+        raise typer.Exit(EXIT_INVALID_ARGS)
 
-    handler(source, catalog, use_test=True if install_type == "test-pypi" else False)
+    try:
+        handler(source, catalog, use_test=True if install_type == "test-pypi" else False)
+    except Exception as e:
+        console.print(f":x: Installation failed: {str(e)}")
+        logger.error("Install error: %s", str(e), exc_info=True)
+        raise typer.Exit(EXIT_OPERATION_FAILED)
 
 
 def versions(plugin_name: str | None, catalog: PluginCatalog, fmt: str = "text"):
@@ -715,7 +735,7 @@ def uninstall(plugin_name: str, catalog: PluginCatalog, assume_yes: bool = False
 
     if installed_plugin is None:
         console.print(f":x: Plugin '{plugin_name}' is not installed.")
-        return
+        raise typer.Exit(EXIT_NOT_FOUND)
 
     # Confirm uninstallation
     console.print(f"Found plugin: {installed_plugin.name} (version {installed_plugin.version})")
@@ -749,18 +769,27 @@ def uninstall(plugin_name: str, catalog: PluginCatalog, assume_yes: bool = False
                 plugin_registry.remove(plugin_name)
             else:
                 console.print(f":x: Plugin {plugin_name} not found in catalog.")
-                return
+                raise typer.Exit(EXIT_NOT_FOUND)
 
         console.print(f":white_heavy_check_mark: {plugin_name} uninstalled successfully.")
 
+    except typer.Exit:
+        raise
     except Exception as e:
         console.print(f":x: Failed to uninstall {plugin_name}: {str(e)}")
         logger.error("Uninstall error: %s", str(e), exc_info=True)
+        raise typer.Exit(EXIT_OPERATION_FAILED)
 
 
 @app.command(
     help="List, search, install or uninstall plugins.\n\n"
-    "\ndefault install type is monorepo\n"
+    "Exit Codes:\n"
+    "  0 - Success\n"
+    "  1 - General error\n"
+    "  2 - Invalid arguments\n"
+    "  3 - Plugin not found\n"
+    "  4 - Operation failed\n\n"
+    "Default install type is monorepo\n\n"
     "Examples:\n"
     "python cpex/tools/cli.py plugin info pii\n"
     "python cpex/tools/cli.py plugin search pii\n"
@@ -808,7 +837,7 @@ def plugin(
     if cmd_action == "uninstall":
         if source is None:
             console.print(":x: Please specify a plugin name to uninstall.")
-            return
+            raise typer.Exit(EXIT_INVALID_ARGS)
         pc = PluginCatalog()
         return uninstall(source, catalog=pc, assume_yes=assume_yes)
     if cmd_action == "install" and source is not None:

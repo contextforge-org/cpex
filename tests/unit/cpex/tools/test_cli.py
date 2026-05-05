@@ -395,10 +395,12 @@ class TestBootstrapRemoteFallback:
             patch("cpex.tools.cli.command_exists", return_value=False),
             patch(_CC_PATCH_TARGET) as mock_cc,
             patch("cpex.tools.cli.logger") as mock_logger,
+            patch("cpex.tools.cli.console") as mock_console,
         ):
-            runner.invoke(app, ["bootstrap", "-d", "/tmp/test_nogit", "--no_input"])
+            result = runner.invoke(app, ["bootstrap", "-d", "/tmp/test_nogit", "--no_input"])
+            assert result.exit_code == 4  # EXIT_OPERATION_FAILED
             mock_cc.assert_not_called()
-            mock_logger.warning.assert_called_once()
+            mock_logger.error.assert_called_once()
 
 
 class TestBootstrapErrorHandling:
@@ -408,9 +410,10 @@ class TestBootstrapErrorHandling:
         with (
             patch(_CC_PATCH_TARGET, side_effect=RuntimeError("template error")),
             patch("cpex.tools.cli.logger") as mock_logger,
+            patch("cpex.tools.cli.console") as mock_console,
         ):
             result = runner.invoke(app, ["bootstrap", "-d", "/tmp/test_err", "--no_input"])
-            assert result.exit_code == 0  # error is caught and logged
+            assert result.exit_code == 4  # EXIT_OPERATION_FAILED
             mock_logger.exception.assert_called_once()
 
 
@@ -845,10 +848,14 @@ class TestInstallFunction:
             mock_catalog.install_folder_via_pip.assert_called_once()
 
     def test_install_requires_type_parameter(self):
-        """Test that install raises ValueError for unsupported type."""
+        """Test that install raises typer.Exit for unsupported type."""
         mock_catalog = Mock()
-        with pytest.raises(ValueError, match="Unsupported installation type"):
+        with (
+            patch("cpex.tools.cli.console") as mock_console,
+            pytest.raises(click.exceptions.Exit) as exc_info,
+        ):
             install("source", "", mock_catalog)
+        assert exc_info.value.exit_code == 2  # EXIT_INVALID_ARGS
 
 
 class TestSearchFunction:
@@ -1110,9 +1117,13 @@ class TestUninstallFunction:
         """Test uninstalling a plugin that is not installed."""
         mock_catalog = Mock()
         
-        with patch("cpex.tools.cli.console") as mock_console:
+        with (
+            patch("cpex.tools.cli.console") as mock_console,
+            pytest.raises(click.exceptions.Exit) as exc_info,
+        ):
             uninstall("nonexistent_plugin", mock_catalog)
-            mock_console.print.assert_called_with(":x: Plugin 'nonexistent_plugin' is not installed.")
+        assert exc_info.value.exit_code == 3  # EXIT_NOT_FOUND
+        mock_console.print.assert_called_with(":x: Plugin 'nonexistent_plugin' is not installed.")
 
     def test_uninstall_cancelled_by_user(self, temp_registry_dir):
         """Test uninstall cancelled by user."""
@@ -1211,33 +1222,35 @@ class TestUninstallFunction:
             ]
         }
         registry_file.write_text(json.dumps(registry_data))
-        
+
         mock_catalog = Mock()
-        
+
         # Create a manifest to return from find
         test_manifest = create_test_manifest(name="test_plugin", kind="native")
-        
+
         with (
             patch("cpex.tools.cli.inquirer.prompt", return_value={"confirm": True}),
             patch("cpex.tools.cli.console") as mock_console,
             patch("cpex.tools.cli.logger") as mock_logger,
             patch("cpex.tools.cli.PluginCatalog") as mock_catalog_class,
+            pytest.raises(click.exceptions.Exit) as exc_info,
         ):
             # Mock the catalog instance created inside uninstall()
             mock_catalog_instance = Mock()
             mock_catalog_instance.find = Mock(return_value=test_manifest)
             mock_catalog_instance.uninstall_package = Mock(side_effect=RuntimeError("Uninstall failed"))
             mock_catalog_class.return_value = mock_catalog_instance
-            
+
             mock_status = Mock()
             mock_status.__enter__ = Mock(return_value=mock_status)
             mock_status.__exit__ = Mock(return_value=False)
             mock_console.status = Mock(return_value=mock_status)
-            
+
             uninstall("test_plugin", mock_catalog)
-            
-            mock_console.print.assert_any_call(":x: Failed to uninstall test_plugin: Uninstall failed")
-            mock_logger.error.assert_called_once()
+
+        assert exc_info.value.exit_code == 4  # EXIT_OPERATION_FAILED
+        mock_console.print.assert_any_call(":x: Failed to uninstall test_plugin: Uninstall failed")
+        mock_logger.error.assert_called_once()
 
 
 class TestPluginUninstallCommand:
@@ -1251,9 +1264,9 @@ class TestPluginUninstallCommand:
         ):
             mock_catalog = Mock()
             mock_catalog_class.return_value = mock_catalog
-            
+
             result = runner.invoke(app, ["plugin", "uninstall"])
-            assert result.exit_code == 0
+            assert result.exit_code == 2  # EXIT_INVALID_ARGS
             mock_console.print.assert_called_with(":x: Please specify a plugin name to uninstall.")
 
     def test_plugin_uninstall_command_success(self, temp_registry_dir):
@@ -1308,9 +1321,9 @@ class TestPluginUninstallCommand:
         ):
             mock_catalog = Mock()
             mock_catalog_class.return_value = mock_catalog
-            
+
             result = runner.invoke(app, ["plugin", "uninstall", "nonexistent_plugin"])
-            assert result.exit_code == 0
+            assert result.exit_code == 3  # EXIT_NOT_FOUND
             mock_console.print.assert_called_with(":x: Plugin 'nonexistent_plugin' is not installed.")
 
 
@@ -1800,14 +1813,18 @@ class TestInstallFunctionAdditional:
     """Additional tests for install() function."""
 
     def test_install_with_unsupported_type_raises_error(self):
-        """Test that install raises ValueError for unsupported installation type."""
+        """Test that install raises typer.Exit for unsupported installation type."""
         from cpex.tools.cli import install
         from cpex.tools.catalog import PluginCatalog
         
         mock_catalog = Mock(spec=PluginCatalog)
         
-        with pytest.raises(ValueError, match="Unsupported installation type"):
+        with (
+            patch("cpex.tools.cli.console") as mock_console,
+            pytest.raises(click.exceptions.Exit) as exc_info,
+        ):
             install("test_plugin", "unsupported_type", mock_catalog)
+        assert exc_info.value.exit_code == 2  # EXIT_INVALID_ARGS
 
 
 class TestVersionsFunction:
@@ -1934,6 +1951,7 @@ class TestUninstallManifestNotFound:
             patch("cpex.tools.cli.inquirer.prompt", return_value={"confirm": True}),
             patch("cpex.tools.cli.console") as mock_console,
             patch("cpex.tools.cli.PluginCatalog") as mock_catalog_class,
+            pytest.raises(click.exceptions.Exit) as exc_info,
         ):
             # Mock the catalog.find method to return None (manifest not found)
             mock_catalog_instance = Mock()
@@ -1946,11 +1964,12 @@ class TestUninstallManifestNotFound:
             mock_console.status = Mock(return_value=mock_status)
             
             uninstall("test_plugin", mock_catalog)
-            
-            # When manifest is not found, uninstall should print error and return early
-            # So uninstall_package should NOT be called
-            mock_catalog_instance.uninstall_package.assert_not_called()
-            mock_console.print.assert_any_call(":x: Plugin test_plugin not found in catalog.")
+        
+        assert exc_info.value.exit_code == 3  # EXIT_NOT_FOUND
+        # When manifest is not found, uninstall should print error and exit
+        # So uninstall_package should NOT be called
+        mock_catalog_instance.uninstall_package.assert_not_called()
+        mock_console.print.assert_any_call(":x: Plugin test_plugin not found in catalog.")
 
 
 
