@@ -7,6 +7,8 @@ This module implements the plugin catalog object.
 """
 
 import logging
+import os
+from pathlib import Path
 
 from dotenv import find_dotenv, load_dotenv
 from pydantic import Field
@@ -44,3 +46,16 @@ def get_catalog_settings() -> CatalogSettings:
         CatalogSettings: Catalog settings.
     """
     return CatalogSettings()
+
+
+def get_plugin_registry_path() -> Path:
+    """Get the plugin registry file path.
+    
+    This centralizes the logic for determining where the plugin registry is stored.
+    Uses PLUGIN_REGISTRY_FILE env var if set, otherwise falls back to 'data' folder.
+    
+    Returns:
+        Path: Path to the installed-plugins.json file.
+    """
+    folder = Path(os.environ.get("PLUGIN_REGISTRY_FILE", "data"))
+    return folder / "installed-plugins.json"

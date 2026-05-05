@@ -15,6 +15,7 @@ from pathlib import Path
 from cpex.framework.models import InstalledPluginInfo, InstalledPluginRegistry, PluginInstallationType, PluginManifest
 from cpex.framework.utils import find_package_path
 from cpex.tools.catalog import PluginCatalog
+from cpex.tools.settings import get_plugin_registry_path
 
 
 class PluginRegistry:
@@ -27,10 +28,8 @@ class PluginRegistry:
     def __init__(self, *args, **kwargs):
         """Initialize the plugin registry."""
         super().__init__(*args, **kwargs)
-        DEFAULT_PLUGIN_REGISTRY_FOLDER = Path(os.environ.get("PLUGIN_REGISTRY_FILE", "data"))
-        os.makedirs(DEFAULT_PLUGIN_REGISTRY_FOLDER, exist_ok=True)
-        DEFAULT_PLUGIN_REGISTRY_FILE = "installed-plugins.json"
-        ipr_file = DEFAULT_PLUGIN_REGISTRY_FOLDER / DEFAULT_PLUGIN_REGISTRY_FILE
+        ipr_file = get_plugin_registry_path()
+        os.makedirs(ipr_file.parent, exist_ok=True)
         if ipr_file.exists():
             try:
                 with open(ipr_file, "r", encoding="utf-8") as ipr:
