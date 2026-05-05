@@ -31,7 +31,6 @@ import logging
 import os
 import shutil
 import subprocess  # nosec B404 # Safe: Used only for git commands with hardcoded args
-import sys
 from pathlib import Path
 from typing import List, Optional
 
@@ -39,13 +38,6 @@ import inquirer
 import typer
 from rich.console import Console
 from typing_extensions import Annotated
-
-# Exit codes for CLI commands
-EXIT_SUCCESS = 0
-EXIT_GENERAL_ERROR = 1
-EXIT_INVALID_ARGS = 2
-EXIT_NOT_FOUND = 3
-EXIT_OPERATION_FAILED = 4
 
 # First-Party
 from cpex.framework.loader.config import ConfigLoader, ConfigSaver
@@ -59,6 +51,13 @@ from cpex.tools.catalog import PluginCatalog
 
 # Third-Party
 from cpex.tools.plugin_registry import PluginRegistry
+
+# Exit codes for CLI commands
+EXIT_SUCCESS = 0
+EXIT_GENERAL_ERROR = 1
+EXIT_INVALID_ARGS = 2
+EXIT_NOT_FOUND = 3
+EXIT_OPERATION_FAILED = 4
 
 logger = logging.getLogger(__name__)
 console = Console()
@@ -621,7 +620,9 @@ def install(source: str, install_type: str | None, catalog: PluginCatalog, assum
 
     handler = handlers.get(install_type)
     if handler is None:
-        console.print(f":x: Unsupported installation type: {install_type}. Must be one of: {', '.join(handlers.keys())}")
+        console.print(
+            f":x: Unsupported installation type: {install_type}. Must be one of: {', '.join(handlers.keys())}"
+        )
         raise typer.Exit(EXIT_INVALID_ARGS)
 
     try:
