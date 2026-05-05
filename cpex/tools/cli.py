@@ -252,7 +252,7 @@ def bootstrap(
         raise typer.Exit(EXIT_OPERATION_FAILED)
 
 
-def list(type: str, fmt: str = "text") -> None:
+def list_registered_plugins(type: str, fmt: str = "text") -> None:
     """List the installed plugins
     Args:
     type (str): The type of plugins to list. Can be "native" or "external".
@@ -863,7 +863,7 @@ def plugin(
         return versions(source, catalog=pc, fmt=fmt)
 
     if cmd_action == "list":
-        return list(install_type, fmt=fmt)
+        return list_registered_plugins(install_type, fmt=fmt)
     if cmd_action == "install" and source is not None:
         return install(source, install_type, catalog=pc, assume_yes=assume_yes)
     if cmd_action == "search":

@@ -29,7 +29,7 @@ from cpex.tools.cli import (
     command_exists,
     git_user_email,
     git_user_name,
-    list,
+    list_registered_plugins,
     install_from_manifest,
     install,
     search,
@@ -474,7 +474,7 @@ class TestListFunction:
     def test_list_with_no_registry_file(self, temp_registry_dir):
         """Test list when registry file doesn't exist."""
         with patch("cpex.tools.cli.logger") as mock_logger:
-            list("all")
+            list_registered_plugins("all")
             mock_logger.info.assert_called_with("No plugins registered.")
 
     def test_list_with_existing_plugins(self, temp_registry_dir):
@@ -505,7 +505,7 @@ class TestListFunction:
         registry_file.write_text(json.dumps(registry_data))
 
         with patch("cpex.tools.cli.console") as mock_console:
-            list("all")
+            list_registered_plugins("all")
             assert mock_console.print.call_count == 2
 
 
