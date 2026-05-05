@@ -32,8 +32,26 @@ class PluginRegistry:
         DEFAULT_PLUGIN_REGISTRY_FILE = "installed-plugins.json"
         ipr_file = DEFAULT_PLUGIN_REGISTRY_FOLDER / DEFAULT_PLUGIN_REGISTRY_FILE
         if ipr_file.exists():
-            with open(ipr_file, "r", encoding="utf-8") as ipr:
-                self.registry = InstalledPluginRegistry(**json.load(ipr))
+            try:
+                with open(ipr_file, "r", encoding="utf-8") as ipr:
+                    self.registry = InstalledPluginRegistry(**json.load(ipr))
+            except (json.JSONDecodeError, ValueError, KeyError) as e:
+                # If registry is corrupted, log error and start fresh
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.error(
+                    "Corrupted plugin registry file at %s: %s. Starting with empty registry.",
+                    ipr_file,
+                    str(e)
+                )
+                # Backup the corrupted file
+                backup_file = ipr_file.with_suffix(".json.corrupted")
+                try:
+                    ipr_file.rename(backup_file)
+                    logger.info("Backed up corrupted registry to %s", backup_file)
+                except Exception as backup_error:
+                    logger.warning("Could not backup corrupted registry: %s", str(backup_error))
+                self.registry = InstalledPluginRegistry()
         else:
             self.registry = InstalledPluginRegistry()
 
