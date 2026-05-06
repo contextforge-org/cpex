@@ -47,6 +47,7 @@ from cpex.framework.models import (
 )
 from cpex.framework.settings import settings
 from cpex.tools.catalog import PluginCatalog
+from cpex.tools.settings import get_catalog_settings
 
 # Third-Party
 from cpex.tools.plugin_registry import PluginRegistry
@@ -516,17 +517,24 @@ def _install_from_local(source: str, catalog: PluginCatalog, use_test: bool = Fa
 
 
 def _install_from_git(source: str, catalog: PluginCatalog, use_test: bool = False):
-    """Handle git-based installation (not yet implemented).
+    """Handle git-based installation.
 
     Args:
         source: Git repository URL or path.
         catalog: The plugin catalog.
-
-    Raises:
-        NotImplementedError: Git installation is not yet supported.
+        use_test: Unused for git installations (kept for consistency).
     """
+    # Get integrity verification setting from catalog settings
+    catalog_settings = get_catalog_settings()
+    verify_integrity = catalog_settings.VERIFY_PACKAGE_INTEGRITY
+
+    if verify_integrity:
+        console.log("Package integrity verification: enabled (hash will be computed and logged)")
+    else:
+        console.log("Package integrity verification: disabled")
+
     with console.status(f"Installing plugin from source {source}...", spinner="dots"):
-        manifest, installation_path = catalog.install_from_git(source)
+        manifest, installation_path = catalog.install_from_git(source, verify_integrity=verify_integrity)
         _finalize_installation(manifest, "git", catalog, installation_path)
         console.print(f":white_heavy_check_mark: {manifest.name} installation complete.")
 
@@ -562,15 +570,28 @@ def _install_from_pypi(source: str, catalog: PluginCatalog, use_test: bool = Fal
     Args:
         source: PyPI package name, optionally with version constraint (e.g., "package@>=1.0.0").
         catalog: The plugin catalog.
+        use_test: Whether to use test.pypi.org instead of pypi.org.
     """
     logger.info("Trying to install from pypi package %s", source)
 
     # Parse version constraint
     package_name, version_constraint = _parse_pypi_source(source)
 
+    # Get integrity verification setting from catalog settings
+    catalog_settings = get_catalog_settings()
+    verify_integrity = catalog_settings.VERIFY_PACKAGE_INTEGRITY
+
+    if verify_integrity:
+        console.log(f"Package integrity verification: enabled")
+    else:
+        console.log(f"Package integrity verification: disabled")
+
     with console.status(f"Installing plugin {package_name} via pypi", spinner="dots"):
         manifest, plugin_path = catalog.install_from_pypi(
-            plugin_package_name=package_name, version_constraint=version_constraint, use_pytest=use_test
+            plugin_package_name=package_name,
+            version_constraint=version_constraint,
+            use_pytest=use_test,
+            verify_integrity=verify_integrity,
         )
 
     if manifest is None:

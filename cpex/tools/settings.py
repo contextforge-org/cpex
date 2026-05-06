@@ -39,6 +39,14 @@ class CatalogSettings(BaseSettings):
         default="plugin-catalog", description="The folder where the plugin catalog is located (r/w)"
     )
     FOLDER: str = Field(default="plugins", description="The folder where the plugins are located (r/w)")
+    VERIFY_PACKAGE_INTEGRITY: bool = Field(
+        default=True,
+        description="Enable SHA256 hash verification for downloaded packages from PyPI"
+    )
+    STRICT_INTEGRITY_MODE: bool = Field(
+        default=False,
+        description="Fail installation if package hashes are unavailable (strict mode)"
+    )
 
 
 def get_catalog_settings() -> CatalogSettings:

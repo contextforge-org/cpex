@@ -38,6 +38,12 @@ from cpex.framework.models import (
     PyPiRepo,
 )
 from cpex.framework.utils import find_package_path
+from cpex.tools.integrity import (
+    IntegrityVerificationError,
+    fetch_pypi_package_hashes,
+    find_matching_hash,
+    verify_package_integrity,
+)
 from cpex.tools.settings import get_catalog_settings
 
 logger = logging.getLogger(__name__)
@@ -614,7 +620,7 @@ class PluginCatalog:
                 return manifest
         return None
 
-    def install_folder_via_pip(self, manifest: PluginManifest) -> Path | None:
+    def install_folder_via_pip(self, manifest: PluginManifest, verify_integrity: bool = True) -> Path | None:
         """
         Runs a pip install using subfolder syntax for monorepo plugins.
         For isolated_venv plugins, checks manifest kind BEFORE installing to avoid dependency conflicts.
@@ -622,6 +628,7 @@ class PluginCatalog:
 
         Args:
             manifest: The PluginManifest of the plugin to be installed
+            verify_integrity: Whether to compute and log package hash for verification
 
         Raises:
             RuntimeError: If package installation fails.
@@ -636,7 +643,7 @@ class PluginCatalog:
             if manifest.kind == "isolated_venv":
                 logger.info("Detected isolated_venv plugin from monorepo: %s", manifest.name)
                 # Install the package to make it available for venv initialization
-                package_path = self._download_monorepo_folder_to_temp(repo_url, manifest.name)
+                package_path = self._download_monorepo_folder_to_temp(repo_url, manifest.name, verify_integrity=verify_integrity)
                 plugin_path = self._initialize_isolated_venv(manifest, package_path)
                 logger.info("Isolated venv initialized. Plugin will be auto-installed via requirements.txt")
             else:
@@ -829,12 +836,13 @@ class PluginCatalog:
         else:
             raise RuntimeError(f"Unsupported package format: {package_file}")
 
-    def _download_monorepo_folder_to_temp(self, repo_url: str, package_name: str) -> Path:
+    def _download_monorepo_folder_to_temp(self, repo_url: str, package_name: str, verify_integrity: bool = True) -> Path:
         """Download monorepo folder to temporary directory.
 
         Args:
             repo_url: The URL of the monorepo.
             package_name: Name used in error messages.
+            verify_integrity: Whether to compute and log package hash for verification.
 
         Returns:
             Path to the extracted package directory. Caller is responsible for cleanup.
@@ -861,6 +869,24 @@ class PluginCatalog:
             if not downloaded_files:
                 raise RuntimeError(f"No files downloaded for {package_name}")
             package_file = downloaded_files[0]
+
+            # Compute and log hash for integrity verification
+            if verify_integrity:
+                try:
+                    from cpex.tools.integrity import compute_file_hash
+                    package_hash = compute_file_hash(package_file)
+                    logger.info(
+                        "Package integrity hash for %s (%s): SHA256=%s",
+                        package_name,
+                        package_file.name,
+                        package_hash
+                    )
+                    logger.info(
+                        "Store this hash for future verification or to detect tampering"
+                    )
+                except Exception as e:
+                    logger.warning("Failed to compute package hash: %s", str(e))
+
             extract_dir = temp_dir / "extracted"
             extract_dir.mkdir()
 
@@ -878,7 +904,7 @@ class PluginCatalog:
 
 
     def _download_package_to_temp(
-        self, package_name: str, version_constraint: str | None, use_test: bool = False
+        self, package_name: str, version_constraint: str | None, use_test: bool = False, verify_integrity: bool = True
     ) -> Path:
         """Download package to a temporary directory without installing it.
 
@@ -886,12 +912,14 @@ class PluginCatalog:
             package_name: The PyPI package name to download.
             version_constraint: Optional version constraint.
             use_test: Whether to use test.pypi.org.
+            verify_integrity: Whether to verify package integrity using SHA256 hashes.
 
         Returns:
             Path to the downloaded package directory.
 
         Raises:
             RuntimeError: If download fails.
+            IntegrityVerificationError: If hash verification fails.
         """
 
         try:
@@ -903,6 +931,33 @@ class PluginCatalog:
             tgt = ppi.pypi_package
             if ppi.version_constraint is not None:
                 tgt = f"{tgt}{ppi.version_constraint}"
+
+            # Fetch expected hashes from PyPI before downloading (if verification enabled)
+            expected_hashes = {}
+            if verify_integrity:
+                try:
+                    logger.info("Fetching package hashes from PyPI for %s", package_name)
+                    # Extract version from constraint if available, otherwise fetch latest
+                    version_to_fetch = None
+                    if version_constraint:
+                        # Try to extract exact version from constraint (e.g., "==1.0.0" -> "1.0.0")
+                        import re
+                        version_match = re.search(r'==\s*([0-9.]+)', version_constraint)
+                        if version_match:
+                            version_to_fetch = version_match.group(1)
+                    
+                    expected_hashes = fetch_pypi_package_hashes(
+                        package_name=package_name,
+                        version=version_to_fetch,
+                        use_test=use_test
+                    )
+                    if expected_hashes:
+                        logger.info("Retrieved hashes for %d distribution files", len(expected_hashes))
+                    else:
+                        logger.warning("No hashes available from PyPI for %s", package_name)
+                except Exception as e:
+                    logger.warning("Failed to fetch hashes from PyPI: %s. Proceeding without verification.", str(e))
+                    expected_hashes = {}
 
             # Download package without installing
             download_args = [
@@ -928,6 +983,24 @@ class PluginCatalog:
                 raise RuntimeError(f"No files downloaded for {package_name}")
 
             package_file = downloaded_files[0]
+
+            # Verify package integrity if hashes are available
+            if verify_integrity and expected_hashes:
+                expected_hash = find_matching_hash(package_file, expected_hashes, package_name)
+                if expected_hash:
+                    logger.info("Verifying integrity of %s", package_file.name)
+                    verify_package_integrity(
+                        file_path=package_file,
+                        expected_hash=expected_hash,
+                        package_name=package_name,
+                        strict=True
+                    )
+                else:
+                    logger.warning(
+                        "No matching hash found for %s. Proceeding without verification.",
+                        package_file.name
+                    )
+
             extract_dir = temp_dir / "extracted"
             extract_dir.mkdir()
 
@@ -937,9 +1010,15 @@ class PluginCatalog:
             logger.info("Downloaded and extracted %s to %s", package_name, extract_dir)
             return extract_dir
 
+        except IntegrityVerificationError:
+            # Re-raise integrity errors without wrapping
+            shutil.rmtree(temp_dir, ignore_errors=True)
+            raise
         except subprocess.CalledProcessError as e:
+            shutil.rmtree(temp_dir, ignore_errors=True)
             raise RuntimeError(f"Failed to download {package_name}: {e.stderr}") from e
         except Exception as e:
+            shutil.rmtree(temp_dir, ignore_errors=True)
             raise RuntimeError(f"Unexpected error downloading {package_name}: {str(e)}") from e
 
     def _find_manifest_in_extracted_package(self, extract_dir: Path, package_name: str) -> Path:
@@ -1253,7 +1332,11 @@ except Exception as e:
         return actual_plugin_path if actual_plugin_path is not None else plugin_path
 
     def install_from_pypi(
-        self, plugin_package_name: str, version_constraint: str | None = None, use_pytest: bool = False
+        self,
+        plugin_package_name: str,
+        version_constraint: str | None = None,
+        use_pytest: bool = False,
+        verify_integrity: bool = True,
     ) -> tuple[PluginManifest, Path | None]:
         """Install Python package from PyPI and load its plugin-manifest.yaml.
 
@@ -1270,6 +1353,8 @@ except Exception as e:
         Args:
             plugin_package_name: The name of the package hosted on PyPI.
             version_constraint: Optional version constraint (e.g., ">=1.0.0,<2.0.0").
+            use_pytest: Whether to use test.pypi.org instead of pypi.org.
+            verify_integrity: Whether to verify package integrity using SHA256 hashes from PyPI.
 
         Returns:
             The loaded and validated plugin manifest.
@@ -1277,10 +1362,13 @@ except Exception as e:
         Raises:
             RuntimeError: If any step of the installation process fails.
             FileNotFoundError: If plugin-manifest.yaml is not found in the package.
+            IntegrityVerificationError: If package hash verification fails.
         """
 
-        # Step 1: Download package to temporary location to read manifest
-        temp_extract_dir = self._download_package_to_temp(plugin_package_name, version_constraint, use_pytest)
+        # Step 1: Download package to temporary location to read manifest (with integrity verification)
+        temp_extract_dir = self._download_package_to_temp(
+            plugin_package_name, version_constraint, use_pytest, verify_integrity=verify_integrity
+        )
 
         try:
             # Step 2: Find and load the manifest file
@@ -1314,7 +1402,7 @@ except Exception as e:
             if temp_extract_dir.exists():
                 shutil.rmtree(temp_extract_dir.parent)
 
-    def install_from_git(self, url: str) -> tuple[PluginManifest, Path | None]:
+    def install_from_git(self, url: str, verify_integrity: bool = True) -> tuple[PluginManifest, Path | None]:
         """Install Python package from Git repository and load its plugin-manifest.yaml.
 
         This method performs the following steps:
@@ -1333,6 +1421,7 @@ except Exception as e:
                 - MyProject @ git+ssh://git@git.example.com/MyProject
                 - MyProject @ git+https://git.example.com/MyProject
                 - MyProject @ git+https://git.example.com/MyProject@master
+            verify_integrity: Whether to compute and log package hash for verification
 
         Returns:
             Tuple of (PluginManifest, Path to plugin or None)
@@ -1417,6 +1506,23 @@ except Exception as e:
 
             archive_path = archives[0]
             logger.info("Downloaded archive: %s", archive_path.name)
+
+            # Compute and log hash for integrity verification
+            if verify_integrity:
+                try:
+                    from cpex.tools.integrity import compute_file_hash
+                    package_hash = compute_file_hash(archive_path)
+                    logger.info(
+                        "Package integrity hash for %s (%s): SHA256=%s",
+                        package_name,
+                        archive_path.name,
+                        package_hash
+                    )
+                    logger.info(
+                        "Store this hash for future verification or to detect tampering"
+                    )
+                except Exception as e:
+                    logger.warning("Failed to compute package hash: %s", str(e))
 
             # Extract the archive using common helper
             self._extract_package_archive(archive_path, temp_extract_dir)
