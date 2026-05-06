@@ -297,4 +297,5 @@ def find_matching_hash(
     logger.warning("No matching hash found for %s in PyPI metadata", pkg_name)
     return None
 
+
 # Made with Bob

@@ -47,10 +47,10 @@ from cpex.framework.models import (
 )
 from cpex.framework.settings import settings
 from cpex.tools.catalog import PluginCatalog
-from cpex.tools.settings import get_catalog_settings
 
 # Third-Party
 from cpex.tools.plugin_registry import PluginRegistry
+from cpex.tools.settings import get_catalog_settings
 
 # Exit codes for CLI commands
 EXIT_SUCCESS = 0
@@ -582,9 +582,9 @@ def _install_from_pypi(source: str, catalog: PluginCatalog, use_test: bool = Fal
     verify_integrity = catalog_settings.VERIFY_PACKAGE_INTEGRITY
 
     if verify_integrity:
-        console.log(f"Package integrity verification: enabled")
+        console.log("Package integrity verification: enabled")
     else:
-        console.log(f"Package integrity verification: disabled")
+        console.log("Package integrity verification: disabled")
 
     with console.status(f"Installing plugin {package_name} via pypi", spinner="dots"):
         manifest, plugin_path = catalog.install_from_pypi(

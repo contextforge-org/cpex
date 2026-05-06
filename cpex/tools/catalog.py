@@ -643,7 +643,9 @@ class PluginCatalog:
             if manifest.kind == "isolated_venv":
                 logger.info("Detected isolated_venv plugin from monorepo: %s", manifest.name)
                 # Install the package to make it available for venv initialization
-                package_path = self._download_monorepo_folder_to_temp(repo_url, manifest.name, verify_integrity=verify_integrity)
+                package_path = self._download_monorepo_folder_to_temp(
+                    repo_url, manifest.name, verify_integrity=verify_integrity
+                )
                 plugin_path = self._initialize_isolated_venv(manifest, package_path)
                 logger.info("Isolated venv initialized. Plugin will be auto-installed via requirements.txt")
             else:
@@ -836,7 +838,9 @@ class PluginCatalog:
         else:
             raise RuntimeError(f"Unsupported package format: {package_file}")
 
-    def _download_monorepo_folder_to_temp(self, repo_url: str, package_name: str, verify_integrity: bool = True) -> Path:
+    def _download_monorepo_folder_to_temp(
+        self, repo_url: str, package_name: str, verify_integrity: bool = True
+    ) -> Path:
         """Download monorepo folder to temporary directory.
 
         Args:
@@ -874,16 +878,12 @@ class PluginCatalog:
             if verify_integrity:
                 try:
                     from cpex.tools.integrity import compute_file_hash
+
                     package_hash = compute_file_hash(package_file)
                     logger.info(
-                        "Package integrity hash for %s (%s): SHA256=%s",
-                        package_name,
-                        package_file.name,
-                        package_hash
+                        "Package integrity hash for %s (%s): SHA256=%s", package_name, package_file.name, package_hash
                     )
-                    logger.info(
-                        "Store this hash for future verification or to detect tampering"
-                    )
+                    logger.info("Store this hash for future verification or to detect tampering")
                 except Exception as e:
                     logger.warning("Failed to compute package hash: %s", str(e))
 
@@ -942,14 +942,13 @@ class PluginCatalog:
                     if version_constraint:
                         # Try to extract exact version from constraint (e.g., "==1.0.0" -> "1.0.0")
                         import re
-                        version_match = re.search(r'==\s*([0-9.]+)', version_constraint)
+
+                        version_match = re.search(r"==\s*([0-9.]+)", version_constraint)
                         if version_match:
                             version_to_fetch = version_match.group(1)
-                    
+
                     expected_hashes = fetch_pypi_package_hashes(
-                        package_name=package_name,
-                        version=version_to_fetch,
-                        use_test=use_test
+                        package_name=package_name, version=version_to_fetch, use_test=use_test
                     )
                     if expected_hashes:
                         logger.info("Retrieved hashes for %d distribution files", len(expected_hashes))
@@ -990,16 +989,10 @@ class PluginCatalog:
                 if expected_hash:
                     logger.info("Verifying integrity of %s", package_file.name)
                     verify_package_integrity(
-                        file_path=package_file,
-                        expected_hash=expected_hash,
-                        package_name=package_name,
-                        strict=True
+                        file_path=package_file, expected_hash=expected_hash, package_name=package_name, strict=True
                     )
                 else:
-                    logger.warning(
-                        "No matching hash found for %s. Proceeding without verification.",
-                        package_file.name
-                    )
+                    logger.warning("No matching hash found for %s. Proceeding without verification.", package_file.name)
 
             extract_dir = temp_dir / "extracted"
             extract_dir.mkdir()
@@ -1511,16 +1504,12 @@ except Exception as e:
             if verify_integrity:
                 try:
                     from cpex.tools.integrity import compute_file_hash
+
                     package_hash = compute_file_hash(archive_path)
                     logger.info(
-                        "Package integrity hash for %s (%s): SHA256=%s",
-                        package_name,
-                        archive_path.name,
-                        package_hash
+                        "Package integrity hash for %s (%s): SHA256=%s", package_name, archive_path.name, package_hash
                     )
-                    logger.info(
-                        "Store this hash for future verification or to detect tampering"
-                    )
+                    logger.info("Store this hash for future verification or to detect tampering")
                 except Exception as e:
                     logger.warning("Failed to compute package hash: %s", str(e))
 
