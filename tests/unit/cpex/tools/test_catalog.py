@@ -62,7 +62,17 @@ class TestPluginCatalogInit:
     def test_init_with_defaults(self):
         """Test initialization with default environment variables."""
         with (
-            patch.dict("os.environ", {"PLUGINS_GITHUB_TOKEN": "test_token"}, clear=True),
+            patch.dict(
+                "os.environ",
+                {
+                    "PLUGINS_GITHUB_TOKEN": "test_token",
+                    "PLUGINS_GITHUB_API": "api.github.com",
+                    "PLUGINS_REPO_URLS": "https://github.com/ibm/cpex-plugins",
+                    "PLUGINS_FOLDER": "plugins",
+                    "PLUGINS_CATALOG_FOLDER": "plugin-catalog",
+                },
+                clear=True,
+            ),
             patch("cpex.tools.catalog.Github"),
         ):
             catalog = PluginCatalog()

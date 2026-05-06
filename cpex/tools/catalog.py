@@ -51,11 +51,11 @@ class PluginCatalog:
     def __init__(self) -> None:
         """Utility for creating the catalog from one or more monorepos."""
         settings = get_catalog_settings()
-        self.github_api = os.environ.get("PLUGINS_GITHUB_API", settings.PLUGINS_GITHUB_API)
-        self.github_token = os.environ.get("PLUGINS_GITHUB_TOKEN", None)
-        self.monorepos = os.environ.get("PLUGINS_REPO_URLS", settings.PLUGINS_REPO_URLS or "").split(",")
-        self.plugin_folder = os.environ.get("PLUGINS_FOLDER", settings.PLUGINS_FOLDER)
-        self.catalog_folder = os.environ.get("PLUGINS_CATALOG_FOLDER", settings.PLUGINS_CATALOG_FOLDER)
+        self.github_api = settings.GITHUB_API
+        self.github_token = settings.GITHUB_TOKEN
+        self.monorepos = settings.REPO_URLS.split(",")
+        self.plugin_folder = settings.FOLDER
+        self.catalog_folder = settings.CATALOG_FOLDER
         self.manifests: list[PluginManifest] = []
         # Only create Auth.Token if a token is provided to avoid errors with None
         self.auth = Auth.Token(self.github_token) if self.github_token else None
