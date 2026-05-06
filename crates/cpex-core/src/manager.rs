@@ -26,6 +26,7 @@
 
 use std::hash::{Hash, Hasher};
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 
 use hashbrown::HashMap;
@@ -47,17 +48,28 @@ use crate::registry::{AnyHookHandler, PluginRef, PluginRegistry};
 // Manager Configuration
 // ---------------------------------------------------------------------------
 
+/// Default upper bound on the routing cache. Caps memory growth from
+/// attacker-controlled entity names without forcing operators to tune.
+pub const DEFAULT_ROUTE_CACHE_MAX_ENTRIES: usize = 10_000;
+
 /// Configuration for the PluginManager.
 #[derive(Debug, Clone)]
 pub struct ManagerConfig {
     /// Executor configuration (timeout, short-circuit behavior).
     pub executor: ExecutorConfig,
+
+    /// Maximum number of entries in the routing cache. When the cache
+    /// reaches this size, further inserts are rejected (with a one-shot
+    /// warn log) and resolutions fall back to the slow path. See
+    /// `PluginSettings::route_cache_max_entries` for the YAML surface.
+    pub route_cache_max_entries: usize,
 }
 
 impl Default for ManagerConfig {
     fn default() -> Self {
         Self {
             executor: ExecutorConfig::default(),
+            route_cache_max_entries: DEFAULT_ROUTE_CACHE_MAX_ENTRIES,
         }
     }
 }
@@ -132,8 +144,20 @@ impl PartialEq for RouteCacheKey {
 
 impl Eq for RouteCacheKey {}
 
-
-pub struct PluginManager {
+/// Mutable runtime state held atomically swappable behind `ArcSwap`.
+///
+/// Every read on the hot path (`invoke_*`) does a single atomic load to
+/// get an `Arc<RuntimeSnapshot>` — no locks. Mutating operations
+/// (`register_*`, `load_config`, `unregister`) clone the current snapshot,
+/// mutate the clone, and atomically swap the new `Arc` in. Old readers
+/// finish on the old snapshot; new readers see the new one. This is the
+/// classic Read-Copy-Update / RCU pattern: lock-free reads, copy-on-write
+/// writes, no reader-writer contention.
+///
+/// Cloning `PluginRegistry` is cheap because every value inside (`PluginRef`,
+/// `AnyHookHandler`) is `Arc`-counted — only the `HashMap` shells duplicate.
+#[derive(Clone)]
+struct RuntimeSnapshot {
     /// Plugin registry — stores PluginRefs and hook-to-handler mappings.
     registry: PluginRegistry,
 
@@ -143,10 +167,25 @@ pub struct PluginManager {
     /// Parsed CPEX config (when loaded from file). Used for route resolution.
     cpex_config: Option<CpexConfig>,
 
+    /// Maximum number of entries the route cache will hold. Once reached,
+    /// new resolutions are computed normally but not memoized (reject-on-full).
+    route_cache_max_entries: usize,
+}
+
+pub struct PluginManager {
+    /// Hot-path runtime state. Swapped atomically on registration / config
+    /// reload — readers see a consistent view via a single `load_full()`.
+    runtime: arc_swap::ArcSwap<RuntimeSnapshot>,
+
     /// Factory registry — owned by the manager. Used for initial
     /// instantiation and for creating override instances when routes
     /// override a plugin's base config.
-    factories: PluginFactoryRegistry,
+    ///
+    /// Held in a `RwLock` rather than the `ArcSwap` snapshot because
+    /// `Box<dyn PluginFactory>` is not `Clone`. Read on the slow path
+    /// (route cache miss + override config); write on `register_factory`.
+    /// The hot path never touches it.
+    factories: RwLock<PluginFactoryRegistry>,
 
     /// Cache of resolved hook entries per (entity, hook, scope).
     /// Populated on first access, invalidated on config reload.
@@ -156,24 +195,167 @@ pub struct PluginManager {
     /// Hasher builder for zero-allocation cache lookups via raw_entry.
     cache_hasher: hashbrown::DefaultHashBuilder,
 
+    /// Set to true after the first time the cache rejects an insert in a
+    /// given fill cycle, so the warn log fires once per cycle rather than
+    /// on every miss under DoS. Reset by `clear_routing_cache()`.
+    route_cache_full_warned: AtomicBool,
 
-    /// Whether initialize() has been called.
-    initialized: bool,
+    /// Whether initialize() has been called. Atomic so lifecycle methods
+    /// can be `&self` and the manager itself can sit behind `Arc`.
+    initialized: AtomicBool,
+
+    /// Tracks in-flight fire-and-forget background tasks across all
+    /// invocations so `shutdown()` can wait for them to drain before
+    /// returning. Without this, audit/telemetry tasks spawned by recent
+    /// invokes get cancelled when the runtime tears down. Tasks are
+    /// `tracker.spawn`'d in `spawn_fire_and_forget`; `shutdown()` calls
+    /// `close().wait().await`.
+    ///
+    /// `TaskTracker` is internally `Arc`'d, so cloning is a refcount bump.
+    task_tracker: tokio_util::task::TaskTracker,
+}
+
+/// Emit warnings for YAML settings that the runtime doesn't currently
+/// honor. Called once per `load_config` / `from_config` so operators
+/// who set these knobs aren't silently ignored.
+///
+/// `user_patterns` / `content_types` on `PluginCondition` are not warned
+/// — they were wired up alongside this fix and now actually filter.
+fn warn_on_inactive_settings(cfg: &CpexConfig) {
+    if !cfg.plugin_dirs.is_empty() {
+        warn!(
+            "config sets `plugin_dirs` (count={}) but the runtime does not \
+             scan directories for plugins — plugins must be registered via \
+             `register_factory()` and listed under `plugins:`. Setting ignored.",
+            cfg.plugin_dirs.len(),
+        );
+    }
+    if cfg.plugin_settings.parallel_execution_within_band {
+        warn!(
+            "config sets `plugin_settings.parallel_execution_within_band: true` \
+             but the runtime does not honor it — use `mode: concurrent` on \
+             individual plugins for parallel execution. Setting ignored.",
+        );
+    }
+    if cfg.plugin_settings.fail_on_plugin_error {
+        warn!(
+            "config sets `plugin_settings.fail_on_plugin_error: true` but the \
+             runtime does not honor it — use per-plugin `on_error: fail` for \
+             that behavior. Setting ignored.",
+        );
+    }
+}
+
+/// Instantiate every plugin in `plugin_configs` via the matching factory
+/// and register the resulting handlers into `target_registry`. Shared by
+/// `PluginManager::from_config` (fresh registry) and `load_config` (clone
+/// of the existing registry) so the instantiation loop lives in one place.
+///
+/// Returns on the first failure (factory missing, factory.create error, or
+/// duplicate-name registration). On error, `target_registry` is in a
+/// partial state — both callers discard it on failure (load_config builds
+/// the new registry on a clone and only swaps on Ok; from_config bails
+/// before publishing the snapshot).
+fn instantiate_plugins_into(
+    target_registry: &mut PluginRegistry,
+    plugin_configs: &[crate::plugin::PluginConfig],
+    factories: &PluginFactoryRegistry,
+) -> Result<(), Box<PluginError>> {
+    for plugin_config in plugin_configs {
+        let factory = factories
+            .get(&plugin_config.kind)
+            .ok_or_else(|| PluginError::Config {
+                message: format!(
+                    "no factory registered for plugin kind '{}' (plugin '{}')",
+                    plugin_config.kind, plugin_config.name
+                ),
+            })?;
+
+        let instance = factory.create(plugin_config)?;
+
+        target_registry
+            .register_multi_handler(instance.plugin, plugin_config.clone(), instance.handlers)
+            .map_err(|msg| Box::new(PluginError::Config { message: msg }))?;
+
+        info!(
+            "Registered plugin '{}' (kind: '{}') for hooks: {:?}",
+            plugin_config.name, plugin_config.kind, plugin_config.hooks
+        );
+    }
+    Ok(())
+}
+
+/// Build a `RuntimeSnapshot` from a populated registry plus the YAML
+/// settings on `cpex_config`. Pulls executor timeout / short-circuit and
+/// the route-cache cap from `plugin_settings` so both registration paths
+/// agree on field-by-field translation.
+fn snapshot_from_config(registry: PluginRegistry, cpex_config: CpexConfig) -> RuntimeSnapshot {
+    let executor = Executor::new(ExecutorConfig {
+        timeout_seconds: cpex_config.plugin_settings.plugin_timeout,
+        short_circuit_on_deny: cpex_config.plugin_settings.short_circuit_on_deny,
+    });
+    let route_cache_max_entries = cpex_config.plugin_settings.route_cache_max_entries;
+    RuntimeSnapshot {
+        registry,
+        executor,
+        cpex_config: Some(cpex_config),
+        route_cache_max_entries,
+    }
 }
 
 impl PluginManager {
     /// Create a new PluginManager with the given configuration.
     pub fn new(config: ManagerConfig) -> Self {
         let cache_hasher = hashbrown::DefaultHashBuilder::default();
-        Self {
+        let snapshot = RuntimeSnapshot {
             registry: PluginRegistry::new(),
             executor: Executor::new(config.executor),
             cpex_config: None,
-            factories: PluginFactoryRegistry::new(),
-            route_cache: RwLock::new(HashMap::with_hasher(cache_hasher.clone())),
+            route_cache_max_entries: config.route_cache_max_entries,
+        };
+        Self {
+            runtime: arc_swap::ArcSwap::from_pointee(snapshot),
+            factories: RwLock::new(PluginFactoryRegistry::new()),
+            route_cache: RwLock::new(HashMap::with_hasher(cache_hasher)),
             cache_hasher,
-            initialized: false,
+            route_cache_full_warned: AtomicBool::new(false),
+            initialized: AtomicBool::new(false),
+            task_tracker: tokio_util::task::TaskTracker::new(),
         }
+    }
+
+    /// Load the current runtime snapshot (lock-free, single atomic op).
+    fn load_runtime(&self) -> Arc<RuntimeSnapshot> {
+        self.runtime.load_full()
+    }
+
+    /// Apply a mutation to the runtime snapshot via copy-on-write.
+    /// Clones the current snapshot, runs the closure on the clone, and
+    /// atomically swaps it in. Concurrent readers continue using the old
+    /// snapshot; subsequent readers see the new one.
+    fn mutate_runtime<F, R>(&self, f: F) -> R
+    where
+        F: FnOnce(&mut RuntimeSnapshot) -> R,
+    {
+        let current = self.runtime.load_full();
+        let mut next = (*current).clone();
+        let result = f(&mut next);
+        self.runtime.store(Arc::new(next));
+        result
+    }
+
+    /// Like `mutate_runtime` but the mutation can fail — the new snapshot
+    /// is only published on `Ok`. On `Err`, the original snapshot is
+    /// untouched, so a partially-mutated clone is silently discarded.
+    fn try_mutate_runtime<F, T, E>(&self, f: F) -> Result<T, E>
+    where
+        F: FnOnce(&mut RuntimeSnapshot) -> Result<T, E>,
+    {
+        let current = self.runtime.load_full();
+        let mut next = (*current).clone();
+        let result = f(&mut next)?;
+        self.runtime.store(Arc::new(next));
+        Ok(result)
     }
 
     // -----------------------------------------------------------------------
@@ -194,11 +376,14 @@ impl PluginManager {
     /// manager.load_config(Path::new("plugins.yaml"))?;
     /// ```
     pub fn register_factory(
-        &mut self,
+        &self,
         kind: impl Into<String>,
         factory: Box<dyn crate::factory::PluginFactory>,
     ) {
-        self.factories.register(kind, factory);
+        self.factories
+            .write()
+            .unwrap_or_else(|p| p.into_inner())
+            .register(kind, factory);
     }
 
     // -----------------------------------------------------------------------
@@ -220,7 +405,7 @@ impl PluginManager {
     /// manager.load_config_file(Path::new("plugins/config.yaml"))?;
     /// manager.initialize().await?;
     /// ```
-    pub fn load_config_file(&mut self, path: &Path) -> Result<(), PluginError> {
+    pub fn load_config_file(&self, path: &Path) -> Result<(), Box<PluginError>> {
         let cpex_config = config::load_config(path)?;
         self.load_config(cpex_config)
     }
@@ -230,45 +415,29 @@ impl PluginManager {
     /// Looks up each plugin's `kind` in the factory registry,
     /// instantiates the plugins, and registers them with their
     /// hook names from the config.
-    pub fn load_config(&mut self, cpex_config: CpexConfig) -> Result<(), PluginError> {
-        // Update executor settings from config
-        self.executor = Executor::new(ExecutorConfig {
-            timeout_seconds: cpex_config.plugin_settings.plugin_timeout,
-            short_circuit_on_deny: cpex_config.plugin_settings.short_circuit_on_deny,
-        });
+    pub fn load_config(&self, cpex_config: CpexConfig) -> Result<(), Box<PluginError>> {
+        warn_on_inactive_settings(&cpex_config);
 
-        // Instantiate and register each plugin from config
-        for plugin_config in &cpex_config.plugins {
-            let factory = self.factories.get(&plugin_config.kind).ok_or_else(|| {
-                PluginError::Config {
-                    message: format!(
-                        "no factory registered for plugin kind '{}' (plugin '{}')",
-                        plugin_config.kind, plugin_config.name
-                    ),
-                }
-            })?;
+        // Build the new snapshot from the current one — copy-on-write so
+        // concurrent invokes keep using the existing config until we swap.
+        // We can't use mutate_runtime here because we need to atomically
+        // ALSO build a new executor + new cache cap from the same config —
+        // the snapshot fields are coupled.
+        let factories = self.factories.read().unwrap_or_else(|p| p.into_inner());
+        let current = self.runtime.load_full();
+        let mut new_registry = current.registry.clone();
 
-            let instance = factory.create(plugin_config)?;
+        instantiate_plugins_into(&mut new_registry, &cpex_config.plugins, &factories)?;
 
-            self.registry
-                .register_multi_handler(
-                    instance.plugin,
-                    plugin_config.clone(),
-                    instance.handlers,
-                )
-                .map_err(|msg| PluginError::Config { message: msg })?;
+        // Drop the factories read lock before taking other locks
+        // (route_cache write below) to avoid lock-ordering hazards.
+        drop(factories);
 
-            info!(
-                "Registered plugin '{}' (kind: '{}') for hooks: {:?}",
-                plugin_config.name, plugin_config.kind, plugin_config.hooks
-            );
-        }
+        self.runtime
+            .store(Arc::new(snapshot_from_config(new_registry, cpex_config)));
 
-        // Clear routing cache — config changed
+        // Clear routing cache — config changed.
         self.clear_routing_cache();
-
-        // Store config for route resolution
-        self.cpex_config = Some(cpex_config);
 
         Ok(())
     }
@@ -282,39 +451,22 @@ impl PluginManager {
     pub fn from_config(
         cpex_config: CpexConfig,
         factories: &PluginFactoryRegistry,
-    ) -> Result<Self, PluginError> {
-        let mut manager = Self::new(ManagerConfig::default());
+    ) -> Result<Self, Box<PluginError>> {
+        warn_on_inactive_settings(&cpex_config);
 
-        // Instantiate and register each plugin
-        for plugin_config in &cpex_config.plugins {
-            let factory = factories.get(&plugin_config.kind).ok_or_else(|| {
-                PluginError::Config {
-                    message: format!(
-                        "no factory registered for plugin kind '{}' (plugin '{}')",
-                        plugin_config.kind, plugin_config.name
-                    ),
-                }
-            })?;
-
-            let instance = factory.create(plugin_config)?;
-
-            manager
-                .registry
-                .register_multi_handler(
-                    instance.plugin,
-                    plugin_config.clone(),
-                    instance.handlers,
-                )
-                .map_err(|msg| PluginError::Config { message: msg })?;
-        }
-
-        // Update executor from config settings
-        manager.executor = Executor::new(ExecutorConfig {
-            timeout_seconds: cpex_config.plugin_settings.plugin_timeout,
-            short_circuit_on_deny: cpex_config.plugin_settings.short_circuit_on_deny,
+        let manager = Self::new(ManagerConfig {
+            executor: ExecutorConfig::default(),
+            route_cache_max_entries: cpex_config.plugin_settings.route_cache_max_entries,
         });
 
-        manager.cpex_config = Some(cpex_config);
+        // Instantiate into a fresh registry, then publish atomically.
+        let mut new_registry = PluginRegistry::new();
+        instantiate_plugins_into(&mut new_registry, &cpex_config.plugins, factories)?;
+
+        manager
+            .runtime
+            .store(Arc::new(snapshot_from_config(new_registry, cpex_config)));
+
         Ok(manager)
     }
 
@@ -343,10 +495,10 @@ impl PluginManager {
     /// manager.register_handler::<CmfHook, _>(plugin, config)?;
     /// ```
     pub fn register_handler<H, P>(
-        &mut self,
+        &self,
         plugin: Arc<P>,
         config: PluginConfig,
-    ) -> Result<(), PluginError>
+    ) -> Result<(), Box<PluginError>>
     where
         H: HookTypeDef,
         H::Result: Into<PluginResult<H::Payload>>,
@@ -354,9 +506,13 @@ impl PluginManager {
     {
         let handler: Arc<dyn AnyHookHandler> =
             Arc::new(TypedHandlerAdapter::<H, P>::new(Arc::clone(&plugin)));
-        self.registry
-            .register::<H>(plugin, config, handler)
-            .map_err(|msg| PluginError::Config { message: msg })
+        self.try_mutate_runtime(|snap| {
+            snap.registry
+                .register::<H>(plugin, config, handler)
+                .map_err(|msg| Box::new(PluginError::Config { message: msg }))
+        })?;
+        self.clear_routing_cache();
+        Ok(())
     }
 
     /// Register a plugin handler for multiple hook names.
@@ -373,11 +529,11 @@ impl PluginManager {
     /// )?;
     /// ```
     pub fn register_handler_for_names<H, P>(
-        &mut self,
+        &self,
         plugin: Arc<P>,
         config: PluginConfig,
         names: &[&str],
-    ) -> Result<(), PluginError>
+    ) -> Result<(), Box<PluginError>>
     where
         H: HookTypeDef,
         H::Result: Into<PluginResult<H::Payload>>,
@@ -385,9 +541,13 @@ impl PluginManager {
     {
         let handler: Arc<dyn AnyHookHandler> =
             Arc::new(TypedHandlerAdapter::<H, P>::new(Arc::clone(&plugin)));
-        self.registry
-            .register_for_names::<H>(plugin, config, handler, names)
-            .map_err(|msg| PluginError::Config { message: msg })
+        self.try_mutate_runtime(|snap| {
+            snap.registry
+                .register_for_names::<H>(plugin, config, handler, names)
+                .map_err(|msg| Box::new(PluginError::Config { message: msg }))
+        })?;
+        self.clear_routing_cache();
+        Ok(())
     }
 
     /// Register with an explicit AnyHookHandler (advanced use).
@@ -396,14 +556,18 @@ impl PluginManager {
     /// Python/WASM bridge hosts that implement AnyHookHandler directly.
     /// Most callers should use `register_handler` instead.
     pub fn register_raw<H: HookTypeDef>(
-        &mut self,
+        &self,
         plugin: Arc<dyn Plugin>,
         config: PluginConfig,
         handler: Arc<dyn AnyHookHandler>,
-    ) -> Result<(), PluginError> {
-        self.registry
-            .register::<H>(plugin, config, handler)
-            .map_err(|msg| PluginError::Config { message: msg })
+    ) -> Result<(), Box<PluginError>> {
+        self.try_mutate_runtime(|snap| {
+            snap.registry
+                .register::<H>(plugin, config, handler)
+                .map_err(|msg| Box::new(PluginError::Config { message: msg }))
+        })?;
+        self.clear_routing_cache();
+        Ok(())
     }
 
     // -----------------------------------------------------------------------
@@ -415,29 +579,33 @@ impl PluginManager {
     /// Calls `plugin.initialize()` on each registered plugin. Must be
     /// called before invoking any hooks. Idempotent — calling twice
     /// has no effect.
-    pub async fn initialize(&mut self) -> Result<(), PluginError> {
-        if self.initialized {
+    pub async fn initialize(&self) -> Result<(), Box<PluginError>> {
+        if self.initialized.load(Ordering::Acquire) {
             return Ok(());
         }
 
+        // Snapshot once at start — subsequent registrations don't affect
+        // this initialize() call. They'd need their own initialize.
+        let snapshot = self.load_runtime();
+
         info!(
             "Initializing PluginManager with {} plugins",
-            self.registry.plugin_count()
+            snapshot.registry.plugin_count()
         );
 
         let mut initialized_plugins: Vec<String> = Vec::new();
 
-        for name in self.registry.plugin_names() {
-            if let Some(plugin_ref) = self.registry.get(name) {
+        for name in snapshot.registry.plugin_names() {
+            if let Some(plugin_ref) = snapshot.registry.get(&name) {
                 let plugin = plugin_ref.plugin().clone();
-                let plugin_name = name.to_string();
+                let plugin_name = name;
 
                 if let Err(e) = plugin.initialize().await {
                     error!("Failed to initialize plugin '{}': {}", plugin_name, e);
 
                     // Clean up already-initialized plugins
                     for init_name in initialized_plugins.iter().rev() {
-                        if let Some(pr) = self.registry.get(init_name) {
+                        if let Some(pr) = snapshot.registry.get(init_name) {
                             if let Err(shutdown_err) = pr.plugin().shutdown().await {
                                 error!(
                                     "Error shutting down plugin '{}' during rollback: {}",
@@ -447,21 +615,21 @@ impl PluginManager {
                         }
                     }
 
-                    return Err(PluginError::Execution {
+                    return Err(Box::new(PluginError::Execution {
                         plugin_name,
                         message: format!("initialization failed: {}", e),
                         source: Some(Box::new(e)),
                         code: None,
                         details: std::collections::HashMap::new(),
                         proto_error_code: None,
-                    });
+                    }));
                 }
 
                 initialized_plugins.push(plugin_name);
             }
         }
 
-        self.initialized = true;
+        self.initialized.store(true, Ordering::Release);
         info!("PluginManager initialized successfully");
         Ok(())
     }
@@ -471,15 +639,29 @@ impl PluginManager {
     /// Calls `plugin.shutdown()` on each registered plugin in reverse
     /// registration order. Errors are logged but do not halt the
     /// shutdown process — all plugins get a chance to clean up.
-    pub async fn shutdown(&mut self) {
-        if !self.initialized {
+    /// Shut the manager down. **Terminal:** after `shutdown()` returns,
+    /// no further `register_*` / `invoke_*` should be called. New
+    /// fire-and-forget tasks spawned after `close()` will not be tracked
+    /// (the `TaskTracker` is single-shot by design).
+    pub async fn shutdown(&self) {
+        if !self.initialized.load(Ordering::Acquire) {
             return;
         }
 
         info!("Shutting down PluginManager");
 
-        for name in self.registry.plugin_names() {
-            if let Some(plugin_ref) = self.registry.get(name) {
+        // Drain in-flight fire-and-forget tasks BEFORE tearing down
+        // plugins — otherwise audit/telemetry tasks that depend on the
+        // plugin being alive (or the runtime being up) get cancelled
+        // mid-flight. `close()` prevents new tasks from being tracked
+        // (existing in-flight ones still complete); `wait()` returns
+        // when the in-flight count drops to zero.
+        self.task_tracker.close();
+        self.task_tracker.wait().await;
+
+        let snapshot = self.load_runtime();
+        for name in snapshot.registry.plugin_names() {
+            if let Some(plugin_ref) = snapshot.registry.get(&name) {
                 let plugin = plugin_ref.plugin().clone();
 
                 if let Err(e) = plugin.shutdown().await {
@@ -489,7 +671,7 @@ impl PluginManager {
             }
         }
 
-        self.initialized = false;
+        self.initialized.store(false, Ordering::Release);
         info!("PluginManager shutdown complete");
     }
 
@@ -524,8 +706,12 @@ impl PluginManager {
         extensions: Extensions,
         context_table: Option<PluginContextTable>,
     ) -> (PipelineResult, BackgroundTasks) {
+        // Single atomic load — own the snapshot for the rest of the call so
+        // a concurrent register/load_config swapping in a new snapshot doesn't
+        // change our view mid-pipeline.
+        let snapshot = self.load_runtime();
         let hook_type = HookType::new(hook_name);
-        let all_entries = self.registry.entries_for_hook(&hook_type);
+        let all_entries = snapshot.registry.entries_for_hook(&hook_type);
 
         if all_entries.is_empty() {
             return (
@@ -538,7 +724,9 @@ impl PluginManager {
             );
         }
 
-        let entries = self.filter_entries_by_route(all_entries, &extensions, hook_name);
+        let entries = self
+            .filter_entries_by_route(&snapshot, all_entries, &extensions, hook_name)
+            .await;
 
         if entries.is_empty() {
             return (
@@ -551,8 +739,15 @@ impl PluginManager {
             );
         }
 
-        self.executor
-            .execute(&entries, payload, extensions, context_table)
+        snapshot
+            .executor
+            .execute(
+                &entries,
+                payload,
+                extensions,
+                context_table,
+                &self.task_tracker,
+            )
             .await
     }
 
@@ -592,38 +787,40 @@ impl PluginManager {
         extensions: Extensions,
         context_table: Option<PluginContextTable>,
     ) -> (PipelineResult, BackgroundTasks) {
+        let snapshot = self.load_runtime();
         let hook_type = HookType::new(H::NAME);
-        let all_entries = self.registry.entries_for_hook(&hook_type);
+        let all_entries = snapshot.registry.entries_for_hook(&hook_type);
 
         if all_entries.is_empty() {
             let boxed: Box<dyn PluginPayload> = Box::new(payload);
             return (
-                PipelineResult::allowed_with(
-                    boxed,
-                    extensions,
-                    context_table.unwrap_or_default(),
-                ),
+                PipelineResult::allowed_with(boxed, extensions, context_table.unwrap_or_default()),
                 BackgroundTasks::empty(),
             );
         }
 
-        let entries = self.filter_entries_by_route(all_entries, &extensions, H::NAME);
+        let entries = self
+            .filter_entries_by_route(&snapshot, all_entries, &extensions, H::NAME)
+            .await;
 
         if entries.is_empty() {
             let boxed: Box<dyn PluginPayload> = Box::new(payload);
             return (
-                PipelineResult::allowed_with(
-                    boxed,
-                    extensions,
-                    context_table.unwrap_or_default(),
-                ),
+                PipelineResult::allowed_with(boxed, extensions, context_table.unwrap_or_default()),
                 BackgroundTasks::empty(),
             );
         }
 
         let boxed: Box<dyn PluginPayload> = Box::new(payload);
-        self.executor
-            .execute(&entries, boxed, extensions, context_table)
+        snapshot
+            .executor
+            .execute(
+                &entries,
+                boxed,
+                extensions,
+                context_table,
+                &self.task_tracker,
+            )
             .await
     }
 
@@ -661,38 +858,40 @@ impl PluginManager {
         extensions: Extensions,
         context_table: Option<PluginContextTable>,
     ) -> (PipelineResult, BackgroundTasks) {
+        let snapshot = self.load_runtime();
         let hook_type = HookType::new(hook_name);
-        let all_entries = self.registry.entries_for_hook(&hook_type);
+        let all_entries = snapshot.registry.entries_for_hook(&hook_type);
 
         if all_entries.is_empty() {
             let boxed: Box<dyn PluginPayload> = Box::new(payload);
             return (
-                PipelineResult::allowed_with(
-                    boxed,
-                    extensions,
-                    context_table.unwrap_or_default(),
-                ),
+                PipelineResult::allowed_with(boxed, extensions, context_table.unwrap_or_default()),
                 BackgroundTasks::empty(),
             );
         }
 
-        let entries = self.filter_entries_by_route(all_entries, &extensions, hook_name);
+        let entries = self
+            .filter_entries_by_route(&snapshot, all_entries, &extensions, hook_name)
+            .await;
 
         if entries.is_empty() {
             let boxed: Box<dyn PluginPayload> = Box::new(payload);
             return (
-                PipelineResult::allowed_with(
-                    boxed,
-                    extensions,
-                    context_table.unwrap_or_default(),
-                ),
+                PipelineResult::allowed_with(boxed, extensions, context_table.unwrap_or_default()),
                 BackgroundTasks::empty(),
             );
         }
 
         let boxed: Box<dyn PluginPayload> = Box::new(payload);
-        self.executor
-            .execute(&entries, boxed, extensions, context_table)
+        snapshot
+            .executor
+            .execute(
+                &entries,
+                boxed,
+                extensions,
+                context_table,
+                &self.task_tracker,
+            )
             .await
     }
 
@@ -710,16 +909,27 @@ impl PluginManager {
     /// (refcount bump, no data copy).
     ///
     /// When routing is disabled or meta is absent, returns all entries.
-    fn filter_entries_by_route(
+    async fn filter_entries_by_route(
         &self,
+        snapshot: &RuntimeSnapshot,
         entries: &[crate::registry::HookEntry],
         extensions: &Extensions,
         hook_name: &str,
     ) -> Arc<Vec<crate::registry::HookEntry>> {
-        // If no config or routing disabled, return all
-        let cpex_config = match &self.cpex_config {
+        // Routing disabled (or no config): fall back to per-plugin
+        // condition filtering. Empty conditions Vec means "fire always",
+        // so this is backward-compatible with configs that don't use
+        // conditions. Mirrors the Python implementation.
+        let cpex_config = match &snapshot.cpex_config {
             Some(c) if c.routing_enabled() => c,
-            _ => return Arc::new(entries.to_vec()),
+            _ => {
+                let filtered: Vec<_> = entries
+                    .iter()
+                    .filter(|e| e.plugin_ref.trusted_config().passes_conditions(extensions))
+                    .cloned()
+                    .collect();
+                return Arc::new(filtered);
+            }
         };
 
         // Extract entity info from meta extension
@@ -746,7 +956,16 @@ impl PluginManager {
             hasher.finish()
         };
         {
-            let cache = self.route_cache.read().unwrap();
+            // Recover from poisoning: a panic in another thread while holding
+            // this lock leaves the cache flagged poisoned. The cache's contents
+            // are still valid (HashMap operations are panic-safe and stale
+            // entries are healed by `clear_routing_cache()`), so we don't want
+            // a one-time panic to permanently disable dispatch. Same idiom
+            // applies to all four lock sites in this file.
+            let cache = self
+                .route_cache
+                .read()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             if let Some((_, cached)) = cache.raw_entry().from_hash(hash, |key| {
                 key.entity_type == entity_type
                     && key.entity_name == entity_name
@@ -771,10 +990,15 @@ impl PluginManager {
         // create a new instance with the merged config.
         let mut filtered = Vec::new();
         for resolved_plugin in &resolved {
-            if let Some(entry) = entries.iter().find(|e| e.plugin_ref.name() == resolved_plugin.name) {
+            if let Some(entry) = entries
+                .iter()
+                .find(|e| e.plugin_ref.name() == resolved_plugin.name)
+            {
                 if let Some(overrides) = &resolved_plugin.config_overrides {
                     // Try to create an override instance
-                    if let Some(override_entry) = self.create_override_instance(entry, overrides) {
+                    if let Some(override_entry) =
+                        self.create_override_instance(entry, overrides).await
+                    {
                         filtered.push(override_entry);
                         continue;
                     }
@@ -785,16 +1009,37 @@ impl PluginManager {
 
         let cached = Arc::new(filtered);
 
-        // Store in cache — owned key allocated only on cache miss
+        // Store in cache — owned key allocated only on cache miss.
+        // Reject-on-full: when the cache is at capacity we still return
+        // the freshly resolved Vec but skip memoization, bounding memory
+        // growth from attacker-controlled entity names.
         let cache_key = RouteCacheKey {
             entity_type: entity_type.to_string(),
             entity_name: entity_name.to_string(),
             hook_name: hook_name.to_string(),
             scope: meta.scope.clone(),
         };
-        {
-            let mut cache = self.route_cache.write().unwrap();
-            cache.insert(cache_key, Arc::clone(&cached));
+        // Decide under the lock; log outside it so I/O doesn't block readers.
+        // One warn per fill cycle — prevents log spam under DoS.
+        let should_warn = {
+            let mut cache = self
+                .route_cache
+                .write()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if cache.len() >= snapshot.route_cache_max_entries {
+                !self.route_cache_full_warned.swap(true, Ordering::AcqRel)
+            } else {
+                cache.insert(cache_key, Arc::clone(&cached));
+                false
+            }
+        };
+        if should_warn {
+            warn!(
+                max_entries = snapshot.route_cache_max_entries,
+                "Routing cache at capacity — further routes will not be cached. \
+                 Increase plugin_settings.route_cache_max_entries or \
+                 investigate entity name growth.",
+            );
         }
 
         cached
@@ -803,17 +1048,34 @@ impl PluginManager {
     /// Create an override plugin instance with merged config.
     ///
     /// When a route overrides a plugin's config, we create a new
-    /// instance via the factory with the merged config. Returns
-    /// None if no factory is available for the plugin's kind.
-    fn create_override_instance(
+    /// instance via the factory with the merged config and call
+    /// `initialize()` on it so plugins that open DB connections / file
+    /// handles / network clients run their setup.
+    ///
+    /// The override gets its OWN circuit breaker (`disabled` flag) and
+    /// its own UUID, independent of the base. Config is part of the
+    /// failure surface — an override with a bad connection string /
+    /// wrong credentials / wrong limit value can fail for reasons that
+    /// have nothing to do with the base's reliability. Coupling them
+    /// would let a config-specific failure on one route silently
+    /// disable the plugin on every other route, which is the opposite
+    /// of the per-route blast-radius guarantee operators reach for
+    /// overrides to get. The fresh UUID also keys the override's
+    /// `local_state` in the context table, isolating per-instance
+    /// state from the base for the same reason.
+    ///
+    /// Returns `None` (and the caller falls back to the base entry) if:
+    /// - no factory is available for the plugin's kind,
+    /// - the factory fails to create the instance,
+    /// - the new instance has no handler for the target hook,
+    /// - or `initialize()` fails on the new instance.
+    async fn create_override_instance(
         &self,
         base_entry: &crate::registry::HookEntry,
         overrides: &serde_json::Value,
     ) -> Option<crate::registry::HookEntry> {
         let base_config = base_entry.plugin_ref.trusted_config();
         let kind = &base_config.kind;
-
-        let factory = self.factories.get(kind)?;
 
         // Merge: start with base config, overlay with overrides
         let mut merged_config = base_config.clone();
@@ -834,52 +1096,88 @@ impl PluginManager {
             }
         }
 
-        // Create new instance with merged config
+        // Create new instance with merged config — hold the factories
+        // read lock just long enough to construct the instance, then drop
+        // it before any `.await` so we never hold a sync lock across awaits.
         let target_hook = base_entry.handler.hook_type_name();
-        match factory.create(&merged_config) {
-            Ok(instance) => {
-                // Find the handler matching the current hook
-                let handler = instance
-                    .handlers
-                    .into_iter()
-                    .find(|(name, _)| *name == target_hook)
-                    .map(|(_, h)| h);
-
-                if let Some(handler) = handler {
-                    let plugin_ref =
-                        crate::registry::PluginRef::new(instance.plugin, merged_config);
-                    Some(crate::registry::HookEntry {
-                        plugin_ref,
-                        handler,
-                    })
-                } else {
-                    warn!(
-                        "Override instance for '{}' has no handler for hook '{}'",
-                        base_config.name, target_hook
+        let instance = {
+            let factories = self.factories.read().unwrap_or_else(|p| p.into_inner());
+            let factory = match factories.get(kind) {
+                Some(f) => f,
+                None => return None,
+            };
+            match factory.create(&merged_config) {
+                Ok(i) => i,
+                Err(e) => {
+                    error!(
+                        "Failed to create override instance for '{}': {}",
+                        base_config.name, e
                     );
-                    None
+                    return None; // fall back to base instance
                 }
             }
-            Err(e) => {
-                error!(
-                    "Failed to create override instance for '{}': {}",
-                    base_config.name, e
+        };
+
+        // Find the handler matching the current hook before consuming
+        // the instance so we don't pay for initialization on a doomed instance.
+        let handler = instance
+            .handlers
+            .into_iter()
+            .find(|(name, _)| *name == target_hook)
+            .map(|(_, h)| h);
+        let handler = match handler {
+            Some(h) => h,
+            None => {
+                warn!(
+                    "Override instance for '{}' has no handler for hook '{}'",
+                    base_config.name, target_hook
                 );
-                None // fall back to base instance
+                return None;
             }
+        };
+
+        // Initialize the new instance — without this, plugins that need to
+        // set up DB connections / file handles / network clients run with
+        // default state.
+        if let Err(e) = instance.plugin.initialize().await {
+            error!(
+                "Failed to initialize override instance for '{}': {} — falling back to base",
+                base_config.name, e
+            );
+            return None;
         }
+
+        // Independent circuit breaker + fresh UUID per (kind, name, config)
+        // — see the doc comment above for why we don't share with the base.
+        // Arc-wrapped for cheap cloning under group_by_mode.
+        let plugin_ref = Arc::new(crate::registry::PluginRef::new(
+            instance.plugin,
+            merged_config,
+        ));
+        Some(crate::registry::HookEntry {
+            plugin_ref,
+            handler,
+        })
     }
 
     /// Clear the routing cache. Call when config is reloaded or
-    /// plugins are registered/unregistered.
+    /// plugins are registered/unregistered. Also resets the
+    /// "cache full" warn-once latch so the next fill cycle can warn again.
     pub fn clear_routing_cache(&self) {
-        let mut cache = self.route_cache.write().unwrap();
+        let mut cache = self
+            .route_cache
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         cache.clear();
+        self.route_cache_full_warned.store(false, Ordering::Release);
     }
 
     /// Number of entries in the routing cache.
     pub fn routing_cache_size(&self) -> usize {
-        self.route_cache.read().unwrap().len()
+        self.route_cache
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .len()
     }
 
     // -----------------------------------------------------------------------
@@ -888,32 +1186,42 @@ impl PluginManager {
 
     /// Whether any plugins are registered for the given hook name.
     pub fn has_hooks_for(&self, hook_name: &str) -> bool {
-        self.registry.has_hooks_for(&HookType::new(hook_name))
+        self.load_runtime()
+            .registry
+            .has_hooks_for(&HookType::new(hook_name))
     }
 
-    /// Look up a plugin by name.
-    pub fn get_plugin(&self, name: &str) -> Option<&PluginRef> {
-        self.registry.get(name)
+    /// Look up a plugin by name. Returns an `Arc<PluginRef>` clone — works
+    /// with the snapshot-based dispatch model where the registry sits
+    /// behind a transient `Arc<RuntimeSnapshot>` guard. `Arc<PluginRef>`
+    /// derefs to `PluginRef`, so callers can chain methods directly:
+    /// `mgr.get_plugin("name").unwrap().is_disabled()` still compiles.
+    pub fn get_plugin(&self, name: &str) -> Option<Arc<PluginRef>> {
+        self.load_runtime().registry.get(name)
     }
 
     /// Total number of registered plugins.
     pub fn plugin_count(&self) -> usize {
-        self.registry.plugin_count()
+        self.load_runtime().registry.plugin_count()
     }
 
-    /// All registered plugin names.
-    pub fn plugin_names(&self) -> Vec<&str> {
-        self.registry.plugin_names()
+    /// All registered plugin names (owned, not borrowed from the registry).
+    pub fn plugin_names(&self) -> Vec<String> {
+        self.load_runtime().registry.plugin_names()
     }
 
     /// Whether the manager has been initialized.
     pub fn is_initialized(&self) -> bool {
-        self.initialized
+        self.initialized.load(Ordering::Acquire)
     }
 
     /// Unregister a plugin by name.
-    pub fn unregister(&mut self, name: &str) -> Option<PluginRef> {
-        self.registry.unregister(name)
+    pub fn unregister(&self, name: &str) -> Option<Arc<PluginRef>> {
+        let removed = self.mutate_runtime(|snap| snap.registry.unregister(name));
+        if removed.is_some() {
+            self.clear_routing_cache();
+        }
+        removed
     }
 }
 
@@ -960,9 +1268,15 @@ mod tests {
 
     #[async_trait]
     impl Plugin for AllowPlugin {
-        fn config(&self) -> &PluginConfig { &self.cfg }
-        async fn initialize(&self) -> Result<(), PluginError> { Ok(()) }
-        async fn shutdown(&self) -> Result<(), PluginError> { Ok(()) }
+        fn config(&self) -> &PluginConfig {
+            &self.cfg
+        }
+        async fn initialize(&self) -> Result<(), Box<PluginError>> {
+            Ok(())
+        }
+        async fn shutdown(&self) -> Result<(), Box<PluginError>> {
+            Ok(())
+        }
     }
 
     impl HookHandler<TestHook> for AllowPlugin {
@@ -983,9 +1297,15 @@ mod tests {
 
     #[async_trait]
     impl Plugin for DenyPlugin {
-        fn config(&self) -> &PluginConfig { &self.cfg }
-        async fn initialize(&self) -> Result<(), PluginError> { Ok(()) }
-        async fn shutdown(&self) -> Result<(), PluginError> { Ok(()) }
+        fn config(&self) -> &PluginConfig {
+            &self.cfg
+        }
+        async fn initialize(&self) -> Result<(), Box<PluginError>> {
+            Ok(())
+        }
+        async fn shutdown(&self) -> Result<(), Box<PluginError>> {
+            Ok(())
+        }
     }
 
     impl HookHandler<TestHook> for DenyPlugin {
@@ -1009,15 +1329,15 @@ mod tests {
             _payload: &dyn PluginPayload,
             _extensions: &Extensions,
             _ctx: &mut PluginContext,
-        ) -> Result<Box<dyn std::any::Any + Send + Sync>, PluginError> {
-            Err(PluginError::Execution {
+        ) -> Result<Box<dyn std::any::Any + Send + Sync>, Box<PluginError>> {
+            Err(Box::new(PluginError::Execution {
                 plugin_name: "error-plugin".into(),
                 message: "simulated failure".into(),
                 source: None,
                 code: None,
                 details: std::collections::HashMap::new(),
                 proto_error_code: None,
-            })
+            }))
         }
 
         fn hook_type_name(&self) -> &'static str {
@@ -1054,11 +1374,20 @@ mod tests {
         }
     }
 
+    fn make_config_with_conditions(
+        name: &str,
+        conditions: Vec<crate::plugin::PluginCondition>,
+    ) -> PluginConfig {
+        let mut cfg = make_config(name, 10, PluginMode::Sequential);
+        cfg.conditions = conditions;
+        cfg
+    }
+
     // -- Tests --
 
     #[tokio::test]
     async fn test_manager_lifecycle() {
-        let mut mgr = PluginManager::default();
+        let mgr = PluginManager::default();
         assert!(!mgr.is_initialized());
         assert_eq!(mgr.plugin_count(), 0);
 
@@ -1079,7 +1408,6 @@ mod tests {
             value: "test".into(),
         });
 
-
         let (result, _) = mgr
             .invoke_by_name("test_hook", payload, Extensions::default(), None)
             .await;
@@ -1090,9 +1418,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_invoke_by_name_allow() {
-        let mut mgr = PluginManager::default();
+        let mgr = PluginManager::default();
         let config = make_config("allow-plugin", 10, PluginMode::Sequential);
-        let plugin = Arc::new(AllowPlugin { cfg: config.clone() });
+        let plugin = Arc::new(AllowPlugin {
+            cfg: config.clone(),
+        });
 
         // Clean registration — no AnyHookHandler needed
         mgr.register_handler::<TestHook, _>(plugin, config).unwrap();
@@ -1101,7 +1431,6 @@ mod tests {
         let payload: Box<dyn PluginPayload> = Box::new(TestPayload {
             value: "test".into(),
         });
-
 
         let (result, _) = mgr
             .invoke_by_name("test_hook", payload, Extensions::default(), None)
@@ -1112,9 +1441,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_invoke_by_name_deny() {
-        let mut mgr = PluginManager::default();
+        let mgr = PluginManager::default();
         let config = make_config("deny-plugin", 10, PluginMode::Sequential);
-        let plugin = Arc::new(DenyPlugin { cfg: config.clone() });
+        let plugin = Arc::new(DenyPlugin {
+            cfg: config.clone(),
+        });
 
         mgr.register_handler::<TestHook, _>(plugin, config).unwrap();
         mgr.initialize().await.unwrap();
@@ -1122,7 +1453,6 @@ mod tests {
         let payload: Box<dyn PluginPayload> = Box::new(TestPayload {
             value: "test".into(),
         });
-
 
         let (result, _) = mgr
             .invoke_by_name("test_hook", payload, Extensions::default(), None)
@@ -1134,9 +1464,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_invoke_typed() {
-        let mut mgr = PluginManager::default();
+        let mgr = PluginManager::default();
         let config = make_config("allow-plugin", 10, PluginMode::Sequential);
-        let plugin = Arc::new(AllowPlugin { cfg: config.clone() });
+        let plugin = Arc::new(AllowPlugin {
+            cfg: config.clone(),
+        });
 
         mgr.register_handler::<TestHook, _>(plugin, config).unwrap();
         mgr.initialize().await.unwrap();
@@ -1144,7 +1476,6 @@ mod tests {
         let payload = TestPayload {
             value: "typed".into(),
         };
-
 
         let (result, _) = mgr
             .invoke::<TestHook>(payload, Extensions::default(), None)
@@ -1157,9 +1488,11 @@ mod tests {
     async fn test_invoke_named() {
         // invoke_named::<H>(hook_name, ...) gives compile-time payload
         // type checking while routing to a specific hook name.
-        let mut mgr = PluginManager::default();
+        let mgr = PluginManager::default();
         let config = make_config("allow-plugin", 10, PluginMode::Sequential);
-        let plugin = Arc::new(AllowPlugin { cfg: config.clone() });
+        let plugin = Arc::new(AllowPlugin {
+            cfg: config.clone(),
+        });
 
         mgr.register_handler::<TestHook, _>(plugin, config).unwrap();
         mgr.initialize().await.unwrap();
@@ -1180,9 +1513,11 @@ mod tests {
     #[tokio::test]
     async fn test_invoke_named_no_plugins_for_hook() {
         // invoke_named with a hook name that has no registered plugins
-        let mut mgr = PluginManager::default();
+        let mgr = PluginManager::default();
         let config = make_config("allow-plugin", 10, PluginMode::Sequential);
-        let plugin = Arc::new(AllowPlugin { cfg: config.clone() });
+        let plugin = Arc::new(AllowPlugin {
+            cfg: config.clone(),
+        });
 
         mgr.register_handler::<TestHook, _>(plugin, config).unwrap();
         mgr.initialize().await.unwrap();
@@ -1202,9 +1537,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_invoke_named_deny() {
-        let mut mgr = PluginManager::default();
+        let mgr = PluginManager::default();
         let config = make_config("deny-plugin", 10, PluginMode::Sequential);
-        let plugin = Arc::new(DenyPlugin { cfg: config.clone() });
+        let plugin = Arc::new(DenyPlugin {
+            cfg: config.clone(),
+        });
 
         mgr.register_handler::<TestHook, _>(plugin, config).unwrap();
         mgr.initialize().await.unwrap();
@@ -1223,22 +1560,208 @@ mod tests {
 
     #[tokio::test]
     async fn test_has_hooks_for() {
-        let mut mgr = PluginManager::default();
+        let mgr = PluginManager::default();
         assert!(!mgr.has_hooks_for("test_hook"));
 
         let config = make_config("p1", 10, PluginMode::Sequential);
-        let plugin = Arc::new(AllowPlugin { cfg: config.clone() });
+        let plugin = Arc::new(AllowPlugin {
+            cfg: config.clone(),
+        });
         mgr.register_handler::<TestHook, _>(plugin, config).unwrap();
 
         assert!(mgr.has_hooks_for("test_hook"));
         assert!(!mgr.has_hooks_for("other_hook"));
     }
 
+    /// When `routing_enabled` is `false` (the legacy / default mode),
+    /// each plugin's `conditions:` must be evaluated per request — a
+    /// non-matching condition should keep the plugin from firing.
+    /// Mirrors the Python implementation's per-plugin filtering.
+    #[tokio::test]
+    async fn test_conditions_filter_plugins_when_routing_disabled() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc as StdArc;
+
+        let counts: StdArc<[AtomicUsize; 2]> =
+            StdArc::new([AtomicUsize::new(0), AtomicUsize::new(0)]);
+
+        struct CountingHandler {
+            idx: usize,
+            counts: StdArc<[AtomicUsize; 2]>,
+        }
+        #[async_trait]
+        impl AnyHookHandler for CountingHandler {
+            async fn invoke(
+                &self,
+                _payload: &dyn PluginPayload,
+                _extensions: &Extensions,
+                _ctx: &mut PluginContext,
+            ) -> Result<Box<dyn std::any::Any + Send + Sync>, Box<PluginError>> {
+                self.counts[self.idx].fetch_add(1, Ordering::SeqCst);
+                let result: PluginResult<TestPayload> = PluginResult::allow();
+                Ok(crate::executor::erase_result(result))
+            }
+            fn hook_type_name(&self) -> &'static str {
+                "test_hook"
+            }
+        }
+
+        let mgr = PluginManager::default();
+
+        // Plugin A: condition requires tool == "wanted_tool" — fires for matching requests.
+        let mut tools = std::collections::HashSet::new();
+        tools.insert("wanted_tool".to_string());
+        let cfg_a = make_config_with_conditions(
+            "plugin_a",
+            vec![crate::plugin::PluginCondition {
+                tools: Some(tools),
+                ..Default::default()
+            }],
+        );
+        let plugin_a = Arc::new(AllowPlugin { cfg: cfg_a.clone() });
+        let handler_a: Arc<dyn AnyHookHandler> = Arc::new(CountingHandler {
+            idx: 0,
+            counts: StdArc::clone(&counts),
+        });
+        mgr.register_raw::<TestHook>(plugin_a, cfg_a, handler_a)
+            .unwrap();
+
+        // Plugin B: empty conditions — fires unconditionally.
+        let cfg_b = make_config("plugin_b", 20, PluginMode::Sequential);
+        let plugin_b = Arc::new(AllowPlugin { cfg: cfg_b.clone() });
+        let handler_b: Arc<dyn AnyHookHandler> = Arc::new(CountingHandler {
+            idx: 1,
+            counts: StdArc::clone(&counts),
+        });
+        mgr.register_raw::<TestHook>(plugin_b, cfg_b, handler_b)
+            .unwrap();
+
+        mgr.initialize().await.unwrap();
+
+        // Request 1: tool=wanted_tool → both A and B should fire.
+        let ext_match = Extensions {
+            meta: Some(std::sync::Arc::new(crate::hooks::payload::MetaExtension {
+                entity_type: Some("tool".into()),
+                entity_name: Some("wanted_tool".into()),
+                ..Default::default()
+            })),
+            ..Default::default()
+        };
+        let p: Box<dyn PluginPayload> = Box::new(TestPayload { value: "1".into() });
+        let _ = mgr.invoke_by_name("test_hook", p, ext_match, None).await;
+        assert_eq!(
+            counts[0].load(Ordering::SeqCst),
+            1,
+            "plugin_a should fire on matching tool"
+        );
+        assert_eq!(
+            counts[1].load(Ordering::SeqCst),
+            1,
+            "plugin_b should fire (no conditions)"
+        );
+
+        // Request 2: tool=other_tool → only B fires (A's condition rejects).
+        let ext_no_match = Extensions {
+            meta: Some(std::sync::Arc::new(crate::hooks::payload::MetaExtension {
+                entity_type: Some("tool".into()),
+                entity_name: Some("other_tool".into()),
+                ..Default::default()
+            })),
+            ..Default::default()
+        };
+        let p: Box<dyn PluginPayload> = Box::new(TestPayload { value: "2".into() });
+        let _ = mgr.invoke_by_name("test_hook", p, ext_no_match, None).await;
+        assert_eq!(
+            counts[0].load(Ordering::SeqCst),
+            1,
+            "plugin_a should NOT fire on non-matching tool"
+        );
+        assert_eq!(
+            counts[1].load(Ordering::SeqCst),
+            2,
+            "plugin_b should fire on every request"
+        );
+    }
+
+    /// `user_patterns` glob matches against `extensions.security.subject.id`.
+    /// Specifically: pattern `admin-*` matches `admin-alice` but not `user-bob`.
+    #[tokio::test]
+    async fn test_conditions_user_patterns_glob_filters() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        static FIRED: AtomicUsize = AtomicUsize::new(0);
+        FIRED.store(0, Ordering::SeqCst);
+
+        struct CountHandler;
+        #[async_trait]
+        impl AnyHookHandler for CountHandler {
+            async fn invoke(
+                &self,
+                _payload: &dyn PluginPayload,
+                _extensions: &Extensions,
+                _ctx: &mut PluginContext,
+            ) -> Result<Box<dyn std::any::Any + Send + Sync>, Box<PluginError>> {
+                FIRED.fetch_add(1, Ordering::SeqCst);
+                let result: PluginResult<TestPayload> = PluginResult::allow();
+                Ok(crate::executor::erase_result(result))
+            }
+            fn hook_type_name(&self) -> &'static str {
+                "test_hook"
+            }
+        }
+
+        let mgr = PluginManager::default();
+        let cfg = make_config_with_conditions(
+            "admin_only",
+            vec![crate::plugin::PluginCondition {
+                user_patterns: Some(vec!["admin-*".to_string()]),
+                ..Default::default()
+            }],
+        );
+        let plugin = Arc::new(AllowPlugin { cfg: cfg.clone() });
+        let handler: Arc<dyn AnyHookHandler> = Arc::new(CountHandler);
+        mgr.register_raw::<TestHook>(plugin, cfg, handler).unwrap();
+        mgr.initialize().await.unwrap();
+
+        let ext_with_user = |id: &str| Extensions {
+            security: Some(std::sync::Arc::new(crate::extensions::SecurityExtension {
+                subject: Some(crate::extensions::security::SubjectExtension {
+                    id: Some(id.to_string()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            })),
+            ..Default::default()
+        };
+
+        let p: Box<dyn PluginPayload> = Box::new(TestPayload { value: "1".into() });
+        let _ = mgr
+            .invoke_by_name("test_hook", p, ext_with_user("admin-alice"), None)
+            .await;
+        assert_eq!(
+            FIRED.load(Ordering::SeqCst),
+            1,
+            "admin-alice should match admin-*"
+        );
+
+        let p: Box<dyn PluginPayload> = Box::new(TestPayload { value: "2".into() });
+        let _ = mgr
+            .invoke_by_name("test_hook", p, ext_with_user("user-bob"), None)
+            .await;
+        assert_eq!(
+            FIRED.load(Ordering::SeqCst),
+            1,
+            "user-bob should NOT match admin-*"
+        );
+    }
+
     #[tokio::test]
     async fn test_unregister() {
-        let mut mgr = PluginManager::default();
+        let mgr = PluginManager::default();
         let config = make_config("removable", 10, PluginMode::Sequential);
-        let plugin = Arc::new(AllowPlugin { cfg: config.clone() });
+        let plugin = Arc::new(AllowPlugin {
+            cfg: config.clone(),
+        });
         mgr.register_handler::<TestHook, _>(plugin, config).unwrap();
 
         assert_eq!(mgr.plugin_count(), 1);
@@ -1247,11 +1770,93 @@ mod tests {
         assert!(!mgr.has_hooks_for("test_hook"));
     }
 
+    /// Wraps the manager in `Arc` and dispatches concurrently from many
+    /// tasks. Also issues a `register_handler` call mid-flight to prove
+    /// that runtime registration is safe alongside invocations — the whole
+    /// point of the `ArcSwap`-based snapshot redesign. Before this fix,
+    /// `register_*` was `&mut self`, so this pattern wouldn't even compile.
+    #[tokio::test]
+    async fn test_manager_arc_shareable_with_concurrent_dispatch_and_registration() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        static INVOKE_COUNT: AtomicUsize = AtomicUsize::new(0);
+        INVOKE_COUNT.store(0, Ordering::SeqCst);
+
+        struct CountingHandler;
+        #[async_trait]
+        impl AnyHookHandler for CountingHandler {
+            async fn invoke(
+                &self,
+                _payload: &dyn PluginPayload,
+                _extensions: &Extensions,
+                _ctx: &mut PluginContext,
+            ) -> Result<Box<dyn std::any::Any + Send + Sync>, Box<PluginError>> {
+                INVOKE_COUNT.fetch_add(1, Ordering::SeqCst);
+                let result: PluginResult<TestPayload> = PluginResult::allow();
+                Ok(crate::executor::erase_result(result))
+            }
+            fn hook_type_name(&self) -> &'static str {
+                "test_hook"
+            }
+        }
+
+        let mgr = Arc::new(PluginManager::default());
+
+        // Register an initial plugin and initialize.
+        let cfg = make_config("p0", 10, PluginMode::Sequential);
+        let plugin: Arc<AllowPlugin> = Arc::new(AllowPlugin { cfg: cfg.clone() });
+        let handler: Arc<dyn AnyHookHandler> = Arc::new(CountingHandler);
+        mgr.register_raw::<TestHook>(plugin, cfg, handler).unwrap();
+        mgr.initialize().await.unwrap();
+
+        // Spawn N concurrent invokers; midway, register a second plugin
+        // from a different task — the snapshot swaps under their feet.
+        let n = 16;
+        let mut handles = Vec::with_capacity(n + 1);
+        for i in 0..n {
+            let mgr = Arc::clone(&mgr);
+            handles.push(tokio::spawn(async move {
+                let payload: Box<dyn PluginPayload> = Box::new(TestPayload {
+                    value: format!("call-{}", i),
+                });
+                let (result, _) = mgr
+                    .invoke_by_name("test_hook", payload, Extensions::default(), None)
+                    .await;
+                assert!(result.continue_processing);
+            }));
+        }
+
+        // Concurrent registration — proves register_handler works through &Arc.
+        {
+            let mgr = Arc::clone(&mgr);
+            handles.push(tokio::spawn(async move {
+                let cfg = make_config("p1-late", 20, PluginMode::Sequential);
+                let plugin: Arc<AllowPlugin> = Arc::new(AllowPlugin { cfg: cfg.clone() });
+                let handler: Arc<dyn AnyHookHandler> = Arc::new(CountingHandler);
+                mgr.register_raw::<TestHook>(plugin, cfg, handler).unwrap();
+            }));
+        }
+
+        for h in handles {
+            h.await.unwrap();
+        }
+
+        // At least the initial plugin ran for every invoke (some invokes
+        // may have raced past the registration and only seen the initial
+        // plugin; others may have seen both). The exact count depends on
+        // the race, but lower bound is `n` (one fire per invoke for p0).
+        assert!(INVOKE_COUNT.load(Ordering::SeqCst) >= n);
+        // Late registration is now visible.
+        assert_eq!(mgr.plugin_count(), 2);
+    }
+
     #[tokio::test]
     async fn test_audit_plugin_cannot_block() {
-        let mut mgr = PluginManager::default();
+        let mgr = PluginManager::default();
         let config = make_config("audit-denier", 10, PluginMode::Audit);
-        let plugin = Arc::new(DenyPlugin { cfg: config.clone() });
+        let plugin = Arc::new(DenyPlugin {
+            cfg: config.clone(),
+        });
 
         mgr.register_handler::<TestHook, _>(plugin, config).unwrap();
         mgr.initialize().await.unwrap();
@@ -1259,7 +1864,6 @@ mod tests {
         let payload: Box<dyn PluginPayload> = Box::new(TestPayload {
             value: "test".into(),
         });
-
 
         let (result, _) = mgr
             .invoke_by_name("test_hook", payload, Extensions::default(), None)
@@ -1271,28 +1875,36 @@ mod tests {
 
     #[tokio::test]
     async fn test_on_error_disable_skips_plugin_on_subsequent_invocations() {
-        let mut mgr = PluginManager::default();
+        let mgr = PluginManager::default();
 
         // Register an error handler with on_error: Disable
-        let config = make_config_with_on_error(
-            "flaky-plugin", 10, PluginMode::Sequential, OnError::Disable,
-        );
-        let plugin = Arc::new(AllowPlugin { cfg: config.clone() });
+        let config =
+            make_config_with_on_error("flaky-plugin", 10, PluginMode::Sequential, OnError::Disable);
+        let plugin = Arc::new(AllowPlugin {
+            cfg: config.clone(),
+        });
         let handler: Arc<dyn AnyHookHandler> = Arc::new(ErrorHandler);
-        mgr.register_raw::<TestHook>(plugin, config, handler).unwrap();
+        mgr.register_raw::<TestHook>(plugin, config, handler)
+            .unwrap();
 
         // Also register a normal allow plugin (lower priority = runs second)
         let config2 = make_config("allow-plugin", 20, PluginMode::Sequential);
-        let plugin2 = Arc::new(AllowPlugin { cfg: config2.clone() });
-        mgr.register_handler::<TestHook, _>(plugin2, config2).unwrap();
+        let plugin2 = Arc::new(AllowPlugin {
+            cfg: config2.clone(),
+        });
+        mgr.register_handler::<TestHook, _>(plugin2, config2)
+            .unwrap();
 
         mgr.initialize().await.unwrap();
 
-
         // First invocation — flaky plugin errors, gets disabled, pipeline continues
         // because on_error is Disable (not Fail). allow-plugin still runs.
-        let payload: Box<dyn PluginPayload> = Box::new(TestPayload { value: "first".into() });
-        let (result, _) = mgr.invoke_by_name("test_hook", payload, Extensions::default(), None).await;
+        let payload: Box<dyn PluginPayload> = Box::new(TestPayload {
+            value: "first".into(),
+        });
+        let (result, _) = mgr
+            .invoke_by_name("test_hook", payload, Extensions::default(), None)
+            .await;
         assert!(result.continue_processing);
 
         // Verify the plugin is now disabled
@@ -1302,29 +1914,38 @@ mod tests {
 
         // Second invocation — flaky plugin should be skipped entirely
         // (group_by_mode filters it out). Only allow-plugin runs.
-        let payload2: Box<dyn PluginPayload> = Box::new(TestPayload { value: "second".into() });
-        let (result2, _) = mgr.invoke_by_name("test_hook", payload2, Extensions::default(), None).await;
+        let payload2: Box<dyn PluginPayload> = Box::new(TestPayload {
+            value: "second".into(),
+        });
+        let (result2, _) = mgr
+            .invoke_by_name("test_hook", payload2, Extensions::default(), None)
+            .await;
         assert!(result2.continue_processing);
     }
 
     #[tokio::test]
     async fn test_on_error_ignore_continues_without_disabling() {
-        let mut mgr = PluginManager::default();
+        let mgr = PluginManager::default();
 
         // Register an error handler with on_error: Ignore
-        let config = make_config_with_on_error(
-            "flaky-plugin", 10, PluginMode::Sequential, OnError::Ignore,
-        );
-        let plugin = Arc::new(AllowPlugin { cfg: config.clone() });
+        let config =
+            make_config_with_on_error("flaky-plugin", 10, PluginMode::Sequential, OnError::Ignore);
+        let plugin = Arc::new(AllowPlugin {
+            cfg: config.clone(),
+        });
         let handler: Arc<dyn AnyHookHandler> = Arc::new(ErrorHandler);
-        mgr.register_raw::<TestHook>(plugin, config, handler).unwrap();
+        mgr.register_raw::<TestHook>(plugin, config, handler)
+            .unwrap();
 
         mgr.initialize().await.unwrap();
 
-
         // First invocation — plugin errors, ignored, pipeline continues
-        let payload: Box<dyn PluginPayload> = Box::new(TestPayload { value: "test".into() });
-        let (result, _) = mgr.invoke_by_name("test_hook", payload, Extensions::default(), None).await;
+        let payload: Box<dyn PluginPayload> = Box::new(TestPayload {
+            value: "test".into(),
+        });
+        let (result, _) = mgr
+            .invoke_by_name("test_hook", payload, Extensions::default(), None)
+            .await;
         assert!(result.continue_processing);
 
         // Plugin should NOT be disabled — still in its original mode
@@ -1333,24 +1954,91 @@ mod tests {
         assert_eq!(plugin_ref.mode(), PluginMode::Sequential);
     }
 
+    /// Errors from `on_error: ignore` plugins must surface in
+    /// `PipelineResult.errors` so callers can see swallowed failures
+    /// programmatically — not just in log output.
     #[tokio::test]
-    async fn test_on_error_fail_halts_pipeline() {
-        let mut mgr = PluginManager::default();
-
-        // Register an error handler with on_error: Fail (default)
-        let config = make_config_with_on_error(
-            "strict-plugin", 10, PluginMode::Sequential, OnError::Fail,
-        );
-        let plugin = Arc::new(AllowPlugin { cfg: config.clone() });
+    async fn test_on_error_ignore_records_in_pipeline_errors() {
+        let mgr = PluginManager::default();
+        let config =
+            make_config_with_on_error("flaky-plugin", 10, PluginMode::Sequential, OnError::Ignore);
+        let plugin = Arc::new(AllowPlugin {
+            cfg: config.clone(),
+        });
         let handler: Arc<dyn AnyHookHandler> = Arc::new(ErrorHandler);
-        mgr.register_raw::<TestHook>(plugin, config, handler).unwrap();
+        mgr.register_raw::<TestHook>(plugin, config, handler)
+            .unwrap();
 
         mgr.initialize().await.unwrap();
 
+        let payload: Box<dyn PluginPayload> = Box::new(TestPayload { value: "x".into() });
+        let (result, _) = mgr
+            .invoke_by_name("test_hook", payload, Extensions::default(), None)
+            .await;
+
+        // Pipeline continued (Ignore policy)…
+        assert!(result.continue_processing);
+        // …but the swallowed error is in result.errors with structured fields.
+        assert_eq!(result.errors.len(), 1, "expected one error record");
+        let rec = &result.errors[0];
+        assert_eq!(rec.plugin_name, "error-plugin");
+        assert!(
+            rec.message.contains("simulated failure"),
+            "message lost: {}",
+            rec.message,
+        );
+    }
+
+    /// Errors from `on_error: disable` plugins must ALSO appear in
+    /// `PipelineResult.errors` (not just trip the circuit breaker).
+    #[tokio::test]
+    async fn test_on_error_disable_records_in_pipeline_errors() {
+        let mgr = PluginManager::default();
+        let config =
+            make_config_with_on_error("flaky-plugin", 10, PluginMode::Sequential, OnError::Disable);
+        let plugin = Arc::new(AllowPlugin {
+            cfg: config.clone(),
+        });
+        let handler: Arc<dyn AnyHookHandler> = Arc::new(ErrorHandler);
+        mgr.register_raw::<TestHook>(plugin, config, handler)
+            .unwrap();
+
+        mgr.initialize().await.unwrap();
+
+        let payload: Box<dyn PluginPayload> = Box::new(TestPayload { value: "x".into() });
+        let (result, _) = mgr
+            .invoke_by_name("test_hook", payload, Extensions::default(), None)
+            .await;
+
+        assert!(result.continue_processing);
+        assert_eq!(result.errors.len(), 1);
+        // Plugin was also disabled (the Disable policy's other effect).
+        assert!(mgr.get_plugin("flaky-plugin").unwrap().is_disabled());
+    }
+
+    #[tokio::test]
+    async fn test_on_error_fail_halts_pipeline() {
+        let mgr = PluginManager::default();
+
+        // Register an error handler with on_error: Fail (default)
+        let config =
+            make_config_with_on_error("strict-plugin", 10, PluginMode::Sequential, OnError::Fail);
+        let plugin = Arc::new(AllowPlugin {
+            cfg: config.clone(),
+        });
+        let handler: Arc<dyn AnyHookHandler> = Arc::new(ErrorHandler);
+        mgr.register_raw::<TestHook>(plugin, config, handler)
+            .unwrap();
+
+        mgr.initialize().await.unwrap();
 
         // Invocation — plugin errors, pipeline halts with a violation
-        let payload: Box<dyn PluginPayload> = Box::new(TestPayload { value: "test".into() });
-        let (result, _) = mgr.invoke_by_name("test_hook", payload, Extensions::default(), None).await;
+        let payload: Box<dyn PluginPayload> = Box::new(TestPayload {
+            value: "test".into(),
+        });
+        let (result, _) = mgr
+            .invoke_by_name("test_hook", payload, Extensions::default(), None)
+            .await;
         assert!(!result.continue_processing);
         assert_eq!(result.violation.as_ref().unwrap().code, "plugin_error");
         assert_eq!(
@@ -1368,9 +2056,15 @@ mod tests {
 
     #[async_trait]
     impl Plugin for TransformPlugin {
-        fn config(&self) -> &PluginConfig { &self.cfg }
-        async fn initialize(&self) -> Result<(), PluginError> { Ok(()) }
-        async fn shutdown(&self) -> Result<(), PluginError> { Ok(()) }
+        fn config(&self) -> &PluginConfig {
+            &self.cfg
+        }
+        async fn initialize(&self) -> Result<(), Box<PluginError>> {
+            Ok(())
+        }
+        async fn shutdown(&self) -> Result<(), Box<PluginError>> {
+            Ok(())
+        }
     }
 
     impl HookHandler<TestHook> for TransformPlugin {
@@ -1398,7 +2092,7 @@ mod tests {
             _payload: &dyn PluginPayload,
             _extensions: &Extensions,
             _ctx: &mut PluginContext,
-        ) -> Result<Box<dyn std::any::Any + Send + Sync>, PluginError> {
+        ) -> Result<Box<dyn std::any::Any + Send + Sync>, Box<PluginError>> {
             tokio::time::sleep(std::time::Duration::from_millis(self.delay_ms)).await;
             let result: PluginResult<TestPayload> = PluginResult::allow();
             Ok(crate::executor::erase_result(result))
@@ -1413,21 +2107,93 @@ mod tests {
 
     #[tokio::test]
     async fn test_transform_modifies_payload() {
-        let mut mgr = PluginManager::default();
+        let mgr = PluginManager::default();
         let config = make_config("transformer", 10, PluginMode::Transform);
-        let plugin = Arc::new(TransformPlugin { cfg: config.clone() });
+        let plugin = Arc::new(TransformPlugin {
+            cfg: config.clone(),
+        });
 
         mgr.register_handler::<TestHook, _>(plugin, config).unwrap();
         mgr.initialize().await.unwrap();
 
-        let payload = TestPayload { value: "original".into() };
+        let payload = TestPayload {
+            value: "original".into(),
+        };
 
-        let (result, _) = mgr.invoke::<TestHook>(payload, Extensions::default(), None).await;
+        let (result, _) = mgr
+            .invoke::<TestHook>(payload, Extensions::default(), None)
+            .await;
 
         assert!(result.continue_processing);
         let final_payload = result.modified_payload.unwrap();
-        let typed = final_payload.as_any().downcast_ref::<TestPayload>().unwrap();
+        let typed = final_payload
+            .as_any()
+            .downcast_ref::<TestPayload>()
+            .unwrap();
         assert_eq!(typed.value, "original_transformed");
+    }
+
+    /// Transform phase is documented `can_block: No` (plugin.rs PluginMode
+    /// table). An `on_error: Fail` plugin error or timeout in Transform must
+    /// NOT halt the pipeline — non-blocking is non-blocking, regardless of
+    /// the plugin's stated on_error preference. Disable still works.
+    #[tokio::test]
+    async fn test_transform_on_error_fail_does_not_halt_pipeline() {
+        let mgr = PluginManager::default();
+        let config =
+            make_config_with_on_error("flaky-transform", 10, PluginMode::Transform, OnError::Fail);
+        let plugin = Arc::new(AllowPlugin {
+            cfg: config.clone(),
+        });
+        let handler: Arc<dyn AnyHookHandler> = Arc::new(ErrorHandler);
+        mgr.register_raw::<TestHook>(plugin, config, handler)
+            .unwrap();
+
+        mgr.initialize().await.unwrap();
+
+        let payload: Box<dyn PluginPayload> = Box::new(TestPayload { value: "x".into() });
+        let (result, _) = mgr
+            .invoke_by_name("test_hook", payload, Extensions::default(), None)
+            .await;
+
+        assert!(
+            result.continue_processing,
+            "Transform on_error:Fail must not halt the pipeline (phase is non-blocking)",
+        );
+        assert!(result.violation.is_none());
+    }
+
+    /// Audit phase previously ignored `on_error` entirely, so an
+    /// `on_error: Disable` plugin would error forever without the circuit
+    /// breaker tripping. After the fix Audit honors Disable.
+    #[tokio::test]
+    async fn test_audit_on_error_disable_disables_plugin() {
+        let mgr = PluginManager::default();
+        let config =
+            make_config_with_on_error("flaky-audit", 10, PluginMode::Audit, OnError::Disable);
+        let plugin = Arc::new(AllowPlugin {
+            cfg: config.clone(),
+        });
+        let handler: Arc<dyn AnyHookHandler> = Arc::new(ErrorHandler);
+        mgr.register_raw::<TestHook>(plugin, config, handler)
+            .unwrap();
+
+        mgr.initialize().await.unwrap();
+
+        assert!(!mgr.get_plugin("flaky-audit").unwrap().is_disabled());
+
+        // Invoke once — handler errors, on_error=Disable, plugin must be
+        // disabled. Pipeline still returns success (Audit can't block).
+        let payload: Box<dyn PluginPayload> = Box::new(TestPayload { value: "x".into() });
+        let (result, _) = mgr
+            .invoke_by_name("test_hook", payload, Extensions::default(), None)
+            .await;
+        assert!(result.continue_processing);
+
+        assert!(
+            mgr.get_plugin("flaky-audit").unwrap().is_disabled(),
+            "Audit phase must honor on_error:Disable",
+        );
     }
 
     #[tokio::test]
@@ -1447,7 +2213,7 @@ mod tests {
                 _payload: &dyn PluginPayload,
                 _extensions: &Extensions,
                 _ctx: &mut PluginContext,
-            ) -> Result<Box<dyn std::any::Any + Send + Sync>, PluginError> {
+            ) -> Result<Box<dyn std::any::Any + Send + Sync>, Box<PluginError>> {
                 // Small sleep to ensure both tasks are spawned before either finishes
                 tokio::time::sleep(std::time::Duration::from_millis(50)).await;
                 CALL_COUNT.fetch_add(1, Ordering::SeqCst);
@@ -1460,7 +2226,7 @@ mod tests {
             }
         }
 
-        let mut mgr = PluginManager::default();
+        let mgr = PluginManager::default();
 
         let c1 = make_config("concurrent-1", 10, PluginMode::Concurrent);
         let p1 = Arc::new(AllowPlugin { cfg: c1.clone() });
@@ -1475,14 +2241,340 @@ mod tests {
         mgr.initialize().await.unwrap();
 
         let start = std::time::Instant::now();
-        let payload: Box<dyn PluginPayload> = Box::new(TestPayload { value: "test".into() });
-        let (result, _) = mgr.invoke_by_name("test_hook", payload, Extensions::default(), None).await;
+        let payload: Box<dyn PluginPayload> = Box::new(TestPayload {
+            value: "test".into(),
+        });
+        let (result, _) = mgr
+            .invoke_by_name("test_hook", payload, Extensions::default(), None)
+            .await;
         let elapsed = start.elapsed();
 
         assert!(result.continue_processing);
         assert_eq!(CALL_COUNT.load(Ordering::SeqCst), 2);
         // If they ran in parallel, total time should be ~50ms, not ~100ms
-        assert!(elapsed.as_millis() < 90, "concurrent plugins ran serially: {}ms", elapsed.as_millis());
+        assert!(
+            elapsed.as_millis() < 90,
+            "concurrent plugins ran serially: {}ms",
+            elapsed.as_millis()
+        );
+    }
+
+    /// A deny on one concurrent plugin should short-circuit the pipeline
+    /// AND cancel the slow plugin still running in another task. Previously
+    /// `join_all` waited for every task before noticing the deny, so
+    /// short_circuit_on_deny was a no-op in wall-clock terms and the slow
+    /// plugin completed its side effects after the pipeline returned.
+    #[tokio::test]
+    async fn test_concurrent_short_circuit_aborts_slow_plugin() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::time::Duration;
+
+        static SLOW_COMPLETED: AtomicUsize = AtomicUsize::new(0);
+        SLOW_COMPLETED.store(0, Ordering::SeqCst);
+
+        struct DenyImmediately;
+        #[async_trait]
+        impl AnyHookHandler for DenyImmediately {
+            async fn invoke(
+                &self,
+                _payload: &dyn PluginPayload,
+                _extensions: &Extensions,
+                _ctx: &mut PluginContext,
+            ) -> Result<Box<dyn std::any::Any + Send + Sync>, Box<PluginError>> {
+                let result: PluginResult<TestPayload> =
+                    PluginResult::deny(PluginViolation::new("denied", "fast deny"));
+                Ok(crate::executor::erase_result(result))
+            }
+            fn hook_type_name(&self) -> &'static str {
+                "test_hook"
+            }
+        }
+
+        struct SlowSideEffect;
+        #[async_trait]
+        impl AnyHookHandler for SlowSideEffect {
+            async fn invoke(
+                &self,
+                _payload: &dyn PluginPayload,
+                _extensions: &Extensions,
+                _ctx: &mut PluginContext,
+            ) -> Result<Box<dyn std::any::Any + Send + Sync>, Box<PluginError>> {
+                tokio::time::sleep(Duration::from_secs(2)).await;
+                // If the task isn't aborted at the sleep's await point,
+                // this fetch_add fires after the pipeline already returned.
+                SLOW_COMPLETED.fetch_add(1, Ordering::SeqCst);
+                let result: PluginResult<TestPayload> = PluginResult::allow();
+                Ok(crate::executor::erase_result(result))
+            }
+            fn hook_type_name(&self) -> &'static str {
+                "test_hook"
+            }
+        }
+
+        let mgr = PluginManager::default();
+
+        let cfg_deny = make_config("denier", 10, PluginMode::Concurrent);
+        let plugin_deny = Arc::new(AllowPlugin {
+            cfg: cfg_deny.clone(),
+        });
+        mgr.register_raw::<TestHook>(
+            plugin_deny,
+            cfg_deny,
+            Arc::new(DenyImmediately) as Arc<dyn AnyHookHandler>,
+        )
+        .unwrap();
+
+        let cfg_slow = make_config("slow", 20, PluginMode::Concurrent);
+        let plugin_slow = Arc::new(AllowPlugin {
+            cfg: cfg_slow.clone(),
+        });
+        mgr.register_raw::<TestHook>(
+            plugin_slow,
+            cfg_slow,
+            Arc::new(SlowSideEffect) as Arc<dyn AnyHookHandler>,
+        )
+        .unwrap();
+
+        mgr.initialize().await.unwrap();
+
+        // Pipeline must return quickly — the deny short-circuits before
+        // the 2s sleep completes.
+        let start = std::time::Instant::now();
+        let payload: Box<dyn PluginPayload> = Box::new(TestPayload { value: "x".into() });
+        let (result, _) = mgr
+            .invoke_by_name("test_hook", payload, Extensions::default(), None)
+            .await;
+        let elapsed = start.elapsed();
+
+        assert!(!result.continue_processing);
+        assert!(
+            elapsed < Duration::from_millis(500),
+            "pipeline should short-circuit on deny, but took {}ms (slow plugin not aborted)",
+            elapsed.as_millis(),
+        );
+
+        // Wait long enough that the slow plugin's sleep would have finished
+        // if it hadn't been aborted, then verify its side effect didn't fire.
+        tokio::time::sleep(Duration::from_millis(2_500)).await;
+        assert_eq!(
+            SLOW_COMPLETED.load(Ordering::SeqCst),
+            0,
+            "slow plugin's side effect ran after pipeline returned — task was not aborted",
+        );
+    }
+
+    /// short_circuit_on_deny=false: every concurrent plugin must run to
+    /// completion (no abort), and the earliest deny is returned at the end.
+    #[tokio::test]
+    async fn test_concurrent_no_short_circuit_runs_every_plugin() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        static ALLOW_RAN: AtomicUsize = AtomicUsize::new(0);
+        ALLOW_RAN.store(0, Ordering::SeqCst);
+
+        struct DenyImmediately;
+        #[async_trait]
+        impl AnyHookHandler for DenyImmediately {
+            async fn invoke(
+                &self,
+                _payload: &dyn PluginPayload,
+                _extensions: &Extensions,
+                _ctx: &mut PluginContext,
+            ) -> Result<Box<dyn std::any::Any + Send + Sync>, Box<PluginError>> {
+                let result: PluginResult<TestPayload> =
+                    PluginResult::deny(PluginViolation::new("denied", "fast deny"));
+                Ok(crate::executor::erase_result(result))
+            }
+            fn hook_type_name(&self) -> &'static str {
+                "test_hook"
+            }
+        }
+
+        struct AllowAndCount;
+        #[async_trait]
+        impl AnyHookHandler for AllowAndCount {
+            async fn invoke(
+                &self,
+                _payload: &dyn PluginPayload,
+                _extensions: &Extensions,
+                _ctx: &mut PluginContext,
+            ) -> Result<Box<dyn std::any::Any + Send + Sync>, Box<PluginError>> {
+                ALLOW_RAN.fetch_add(1, Ordering::SeqCst);
+                let result: PluginResult<TestPayload> = PluginResult::allow();
+                Ok(crate::executor::erase_result(result))
+            }
+            fn hook_type_name(&self) -> &'static str {
+                "test_hook"
+            }
+        }
+
+        let config = ManagerConfig {
+            executor: crate::executor::ExecutorConfig {
+                timeout_seconds: 30,
+                short_circuit_on_deny: false,
+            },
+            route_cache_max_entries: DEFAULT_ROUTE_CACHE_MAX_ENTRIES,
+        };
+        let mgr = PluginManager::new(config);
+
+        let cfg_deny = make_config("denier", 10, PluginMode::Concurrent);
+        let plugin_deny = Arc::new(AllowPlugin {
+            cfg: cfg_deny.clone(),
+        });
+        mgr.register_raw::<TestHook>(
+            plugin_deny,
+            cfg_deny,
+            Arc::new(DenyImmediately) as Arc<dyn AnyHookHandler>,
+        )
+        .unwrap();
+
+        let cfg_allow = make_config("allow", 20, PluginMode::Concurrent);
+        let plugin_allow = Arc::new(AllowPlugin {
+            cfg: cfg_allow.clone(),
+        });
+        mgr.register_raw::<TestHook>(
+            plugin_allow,
+            cfg_allow,
+            Arc::new(AllowAndCount) as Arc<dyn AnyHookHandler>,
+        )
+        .unwrap();
+
+        mgr.initialize().await.unwrap();
+
+        let payload: Box<dyn PluginPayload> = Box::new(TestPayload { value: "x".into() });
+        let (result, _) = mgr
+            .invoke_by_name("test_hook", payload, Extensions::default(), None)
+            .await;
+
+        // Earliest deny is returned…
+        assert!(!result.continue_processing);
+        // …but the non-denying plugin must still have run (no abort).
+        assert_eq!(ALLOW_RAN.load(Ordering::SeqCst), 1);
+    }
+
+    /// Plugin handler that panics inside its async invoke. With tokio::spawn,
+    /// the panic surfaces as a JoinError on the task's JoinHandle.
+    struct PanicHandler;
+
+    #[async_trait]
+    impl AnyHookHandler for PanicHandler {
+        async fn invoke(
+            &self,
+            _payload: &dyn PluginPayload,
+            _extensions: &Extensions,
+            _ctx: &mut PluginContext,
+        ) -> Result<Box<dyn std::any::Any + Send + Sync>, Box<PluginError>> {
+            panic!("simulated panic in concurrent plugin task");
+        }
+        fn hook_type_name(&self) -> &'static str {
+            "test_hook"
+        }
+    }
+
+    /// A panicking concurrent plugin with `on_error: Fail` must halt the
+    /// pipeline with a violation. Previously the JoinError was just logged
+    /// and the panic was silently swallowed.
+    ///
+    /// Note: this test prints "thread 'tokio-runtime-worker' panicked at..."
+    /// to stderr — that's tokio reporting the captured panic. Expected.
+    #[tokio::test]
+    async fn test_concurrent_panic_with_on_error_fail_halts_pipeline() {
+        let mgr = PluginManager::default();
+
+        let cfg =
+            make_config_with_on_error("panic-plugin", 10, PluginMode::Concurrent, OnError::Fail);
+        let plugin = Arc::new(AllowPlugin { cfg: cfg.clone() });
+        let handler: Arc<dyn AnyHookHandler> = Arc::new(PanicHandler);
+        mgr.register_raw::<TestHook>(plugin, cfg, handler).unwrap();
+
+        mgr.initialize().await.unwrap();
+
+        let payload: Box<dyn PluginPayload> = Box::new(TestPayload { value: "x".into() });
+        let (result, _) = mgr
+            .invoke_by_name("test_hook", payload, Extensions::default(), None)
+            .await;
+
+        assert!(
+            !result.continue_processing,
+            "Fail must halt the pipeline on panic"
+        );
+        let v = result.violation.as_ref().expect("expected violation");
+        assert_eq!(v.code, "plugin_panic");
+        assert_eq!(v.plugin_name.as_deref(), Some("panic-plugin"));
+    }
+
+    /// A panicking concurrent plugin with `on_error: Disable` must trip
+    /// the plugin's circuit breaker so it's skipped on subsequent invokes.
+    /// A second non-panicking plugin in the same phase still runs.
+    #[tokio::test]
+    async fn test_concurrent_panic_with_on_error_disable_trips_circuit_breaker() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        static SURVIVOR_CALLS: AtomicUsize = AtomicUsize::new(0);
+        SURVIVOR_CALLS.store(0, Ordering::SeqCst);
+
+        struct SurvivorHandler;
+        #[async_trait]
+        impl AnyHookHandler for SurvivorHandler {
+            async fn invoke(
+                &self,
+                _payload: &dyn PluginPayload,
+                _extensions: &Extensions,
+                _ctx: &mut PluginContext,
+            ) -> Result<Box<dyn std::any::Any + Send + Sync>, Box<PluginError>> {
+                SURVIVOR_CALLS.fetch_add(1, Ordering::SeqCst);
+                let result: PluginResult<TestPayload> = PluginResult::allow();
+                Ok(crate::executor::erase_result(result))
+            }
+            fn hook_type_name(&self) -> &'static str {
+                "test_hook"
+            }
+        }
+
+        let mgr = PluginManager::default();
+
+        let panic_cfg =
+            make_config_with_on_error("panic-plugin", 10, PluginMode::Concurrent, OnError::Disable);
+        let panic_plugin = Arc::new(AllowPlugin {
+            cfg: panic_cfg.clone(),
+        });
+        let panic_handler: Arc<dyn AnyHookHandler> = Arc::new(PanicHandler);
+        mgr.register_raw::<TestHook>(panic_plugin, panic_cfg, panic_handler)
+            .unwrap();
+
+        let survivor_cfg = make_config("survivor", 20, PluginMode::Concurrent);
+        let survivor_plugin = Arc::new(AllowPlugin {
+            cfg: survivor_cfg.clone(),
+        });
+        let survivor_handler: Arc<dyn AnyHookHandler> = Arc::new(SurvivorHandler);
+        mgr.register_raw::<TestHook>(survivor_plugin, survivor_cfg, survivor_handler)
+            .unwrap();
+
+        mgr.initialize().await.unwrap();
+
+        // First invoke — panic plugin panics, gets disabled. Survivor still runs.
+        let payload: Box<dyn PluginPayload> = Box::new(TestPayload { value: "1".into() });
+        let (result1, _) = mgr
+            .invoke_by_name("test_hook", payload, Extensions::default(), None)
+            .await;
+        assert!(
+            result1.continue_processing,
+            "Disable must not halt the pipeline"
+        );
+        assert_eq!(SURVIVOR_CALLS.load(Ordering::SeqCst), 1);
+        assert!(
+            mgr.get_plugin("panic-plugin").unwrap().is_disabled(),
+            "panic plugin must be disabled after the panic",
+        );
+
+        // Second invoke — disabled plugin is skipped, doesn't panic again.
+        let payload2: Box<dyn PluginPayload> = Box::new(TestPayload { value: "2".into() });
+        let (result2, _) = mgr
+            .invoke_by_name("test_hook", payload2, Extensions::default(), None)
+            .await;
+        assert!(result2.continue_processing);
+        // Survivor ran a second time; panic plugin did not.
+        assert_eq!(SURVIVOR_CALLS.load(Ordering::SeqCst), 2);
     }
 
     #[tokio::test]
@@ -1493,27 +2585,39 @@ mod tests {
                 timeout_seconds: 1,
                 short_circuit_on_deny: true,
             },
+            route_cache_max_entries: DEFAULT_ROUTE_CACHE_MAX_ENTRIES,
         };
-        let mut mgr = PluginManager::new(config);
+        let mgr = PluginManager::new(config);
 
         // Register a handler that sleeps longer than the timeout
         let plugin_config = make_config("slow-plugin", 10, PluginMode::Sequential);
-        let plugin = Arc::new(AllowPlugin { cfg: plugin_config.clone() });
+        let plugin = Arc::new(AllowPlugin {
+            cfg: plugin_config.clone(),
+        });
         let handler: Arc<dyn AnyHookHandler> = Arc::new(SlowHandler { delay_ms: 5000 });
-        mgr.register_raw::<TestHook>(plugin, plugin_config, handler).unwrap();
+        mgr.register_raw::<TestHook>(plugin, plugin_config, handler)
+            .unwrap();
 
         mgr.initialize().await.unwrap();
 
         let start = std::time::Instant::now();
-        let payload: Box<dyn PluginPayload> = Box::new(TestPayload { value: "test".into() });
-        let (result, _) = mgr.invoke_by_name("test_hook", payload, Extensions::default(), None).await;
+        let payload: Box<dyn PluginPayload> = Box::new(TestPayload {
+            value: "test".into(),
+        });
+        let (result, _) = mgr
+            .invoke_by_name("test_hook", payload, Extensions::default(), None)
+            .await;
         let elapsed = start.elapsed();
 
         // Should have timed out and denied (on_error: Fail)
         assert!(!result.continue_processing);
         assert_eq!(result.violation.as_ref().unwrap().code, "plugin_timeout");
         // Should have returned in ~1s, not 5s
-        assert!(elapsed.as_secs() < 3, "timeout didn't fire: {}s", elapsed.as_secs());
+        assert!(
+            elapsed.as_secs() < 3,
+            "timeout didn't fire: {}s",
+            elapsed.as_secs()
+        );
     }
 
     #[tokio::test]
@@ -1532,7 +2636,7 @@ mod tests {
                 _payload: &dyn PluginPayload,
                 _extensions: &Extensions,
                 _ctx: &mut PluginContext,
-            ) -> Result<Box<dyn std::any::Any + Send + Sync>, PluginError> {
+            ) -> Result<Box<dyn std::any::Any + Send + Sync>, Box<PluginError>> {
                 tokio::time::sleep(std::time::Duration::from_millis(200)).await;
                 TASK_COMPLETED.store(true, Ordering::SeqCst);
                 let result: PluginResult<TestPayload> = PluginResult::allow();
@@ -1544,26 +2648,105 @@ mod tests {
             }
         }
 
-        let mut mgr = PluginManager::default();
+        let mgr = PluginManager::default();
 
         let config = make_config("fire-forget", 10, PluginMode::FireAndForget);
-        let plugin = Arc::new(AllowPlugin { cfg: config.clone() });
+        let plugin = Arc::new(AllowPlugin {
+            cfg: config.clone(),
+        });
         let handler: Arc<dyn AnyHookHandler> = Arc::new(SlowFireAndForgetHandler);
-        mgr.register_raw::<TestHook>(plugin, config, handler).unwrap();
+        mgr.register_raw::<TestHook>(plugin, config, handler)
+            .unwrap();
 
         mgr.initialize().await.unwrap();
 
-        let payload: Box<dyn PluginPayload> = Box::new(TestPayload { value: "test".into() });
-        let (result, bg) = mgr.invoke_by_name("test_hook", payload, Extensions::default(), None).await;
+        let payload: Box<dyn PluginPayload> = Box::new(TestPayload {
+            value: "test".into(),
+        });
+        let (result, bg) = mgr
+            .invoke_by_name("test_hook", payload, Extensions::default(), None)
+            .await;
 
         // Pipeline should return immediately — before the background task finishes
         assert!(result.continue_processing);
-        assert!(!TASK_COMPLETED.load(Ordering::SeqCst), "fire-and-forget task completed before pipeline returned");
+        assert!(
+            !TASK_COMPLETED.load(Ordering::SeqCst),
+            "fire-and-forget task completed before pipeline returned"
+        );
 
         // Wait for background tasks using wait_for_background_tasks()
         let errors = bg.wait_for_background_tasks().await;
-        assert!(errors.is_empty(), "background task had errors: {:?}", errors);
-        assert!(TASK_COMPLETED.load(Ordering::SeqCst), "fire-and-forget task never completed");
+        assert!(
+            errors.is_empty(),
+            "background task had errors: {:?}",
+            errors
+        );
+        assert!(
+            TASK_COMPLETED.load(Ordering::SeqCst),
+            "fire-and-forget task never completed"
+        );
+    }
+
+    /// `shutdown()` must wait for in-flight fire-and-forget tasks to drain
+    /// before returning, so audit / telemetry plugins that flush at the
+    /// end of a request lifetime aren't cancelled mid-write. The caller
+    /// drops `BackgroundTasks` (the common case for fire-and-forget),
+    /// so the only way the manager knows about the in-flight task is the
+    /// internal `TaskTracker`.
+    #[tokio::test]
+    async fn test_shutdown_drains_in_flight_fire_and_forget_tasks() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        static FAF_COMPLETED: AtomicBool = AtomicBool::new(false);
+        FAF_COMPLETED.store(false, Ordering::SeqCst);
+
+        struct SlowFafHandler;
+        #[async_trait]
+        impl AnyHookHandler for SlowFafHandler {
+            async fn invoke(
+                &self,
+                _payload: &dyn PluginPayload,
+                _extensions: &Extensions,
+                _ctx: &mut PluginContext,
+            ) -> Result<Box<dyn std::any::Any + Send + Sync>, Box<PluginError>> {
+                tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+                FAF_COMPLETED.store(true, Ordering::SeqCst);
+                let result: PluginResult<TestPayload> = PluginResult::allow();
+                Ok(crate::executor::erase_result(result))
+            }
+            fn hook_type_name(&self) -> &'static str {
+                "test_hook"
+            }
+        }
+
+        let mgr = PluginManager::default();
+        let config = make_config("slow-faf", 10, PluginMode::FireAndForget);
+        let plugin = Arc::new(AllowPlugin {
+            cfg: config.clone(),
+        });
+        let handler: Arc<dyn AnyHookHandler> = Arc::new(SlowFafHandler);
+        mgr.register_raw::<TestHook>(plugin, config, handler)
+            .unwrap();
+        mgr.initialize().await.unwrap();
+
+        // Invoke and drop BackgroundTasks immediately — simulating the
+        // common case where the caller doesn't explicitly wait for FAF.
+        let payload: Box<dyn PluginPayload> = Box::new(TestPayload { value: "x".into() });
+        let (_result, _bg_dropped) = mgr
+            .invoke_by_name("test_hook", payload, Extensions::default(), None)
+            .await;
+
+        // Task should still be in flight (sleeping 150ms).
+        assert!(!FAF_COMPLETED.load(Ordering::SeqCst));
+
+        // shutdown() must drain in-flight FAF tasks before returning.
+        mgr.shutdown().await;
+
+        // After shutdown, the FAF task must have run to completion.
+        assert!(
+            FAF_COMPLETED.load(Ordering::SeqCst),
+            "shutdown returned before fire-and-forget task finished — task was abandoned",
+        );
     }
 
     #[tokio::test]
@@ -1579,12 +2762,14 @@ mod tests {
                 _payload: &dyn PluginPayload,
                 _extensions: &Extensions,
                 ctx: &mut PluginContext,
-            ) -> Result<Box<dyn std::any::Any + Send + Sync>, PluginError> {
+            ) -> Result<Box<dyn std::any::Any + Send + Sync>, Box<PluginError>> {
                 ctx.set_global("writer_was_here", serde_json::Value::Bool(true));
                 let result: PluginResult<TestPayload> = PluginResult::allow();
                 Ok(crate::executor::erase_result(result))
             }
-            fn hook_type_name(&self) -> &'static str { "test_hook" }
+            fn hook_type_name(&self) -> &'static str {
+                "test_hook"
+            }
         }
 
         struct ReaderHandler {
@@ -1598,19 +2783,22 @@ mod tests {
                 _payload: &dyn PluginPayload,
                 _extensions: &Extensions,
                 ctx: &mut PluginContext,
-            ) -> Result<Box<dyn std::any::Any + Send + Sync>, PluginError> {
+            ) -> Result<Box<dyn std::any::Any + Send + Sync>, Box<PluginError>> {
                 if ctx.get_global("writer_was_here").is_some() {
-                    self.saw_writer.store(true, std::sync::atomic::Ordering::SeqCst);
+                    self.saw_writer
+                        .store(true, std::sync::atomic::Ordering::SeqCst);
                 }
                 let result: PluginResult<TestPayload> = PluginResult::allow();
                 Ok(crate::executor::erase_result(result))
             }
-            fn hook_type_name(&self) -> &'static str { "test_hook" }
+            fn hook_type_name(&self) -> &'static str {
+                "test_hook"
+            }
         }
 
         let saw_writer = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
 
-        let mut mgr = PluginManager::default();
+        let mgr = PluginManager::default();
 
         // Writer runs first (priority 10)
         let c1 = make_config("writer", 10, PluginMode::Sequential);
@@ -1621,13 +2809,19 @@ mod tests {
         // Reader runs second (priority 20)
         let c2 = make_config("reader", 20, PluginMode::Sequential);
         let p2 = Arc::new(AllowPlugin { cfg: c2.clone() });
-        let h2: Arc<dyn AnyHookHandler> = Arc::new(ReaderHandler { saw_writer: saw_writer.clone() });
+        let h2: Arc<dyn AnyHookHandler> = Arc::new(ReaderHandler {
+            saw_writer: saw_writer.clone(),
+        });
         mgr.register_raw::<TestHook>(p2, c2, h2).unwrap();
 
         mgr.initialize().await.unwrap();
 
-        let payload: Box<dyn PluginPayload> = Box::new(TestPayload { value: "test".into() });
-        let (result, _) = mgr.invoke_by_name("test_hook", payload, Extensions::default(), None).await;
+        let payload: Box<dyn PluginPayload> = Box::new(TestPayload {
+            value: "test".into(),
+        });
+        let (result, _) = mgr
+            .invoke_by_name("test_hook", payload, Extensions::default(), None)
+            .await;
 
         assert!(result.continue_processing);
         assert!(
@@ -1650,48 +2844,598 @@ mod tests {
                 _payload: &dyn PluginPayload,
                 _extensions: &Extensions,
                 ctx: &mut PluginContext,
-            ) -> Result<Box<dyn std::any::Any + Send + Sync>, PluginError> {
+            ) -> Result<Box<dyn std::any::Any + Send + Sync>, Box<PluginError>> {
                 // Increment a counter in local_state
-                let count = ctx.get_local("call_count")
+                let count = ctx
+                    .get_local("call_count")
                     .and_then(|v| v.as_u64())
                     .unwrap_or(0);
                 ctx.set_local("call_count", serde_json::Value::from(count + 1));
                 let result: PluginResult<TestPayload> = PluginResult::allow();
                 Ok(crate::executor::erase_result(result))
             }
-            fn hook_type_name(&self) -> &'static str { "test_hook" }
+            fn hook_type_name(&self) -> &'static str {
+                "test_hook"
+            }
         }
 
-        let mut mgr = PluginManager::default();
+        let mgr = PluginManager::default();
 
         let config = make_config("counter", 10, PluginMode::Sequential);
-        let plugin = Arc::new(AllowPlugin { cfg: config.clone() });
+        let plugin = Arc::new(AllowPlugin {
+            cfg: config.clone(),
+        });
         let handler: Arc<dyn AnyHookHandler> = Arc::new(LocalWriterHandler);
-        mgr.register_raw::<TestHook>(plugin, config, handler).unwrap();
+        mgr.register_raw::<TestHook>(plugin, config, handler)
+            .unwrap();
 
         mgr.initialize().await.unwrap();
 
         // First invocation — no context table, starts fresh
-        let payload: Box<dyn PluginPayload> = Box::new(TestPayload { value: "first".into() });
-        let (result1, _) = mgr.invoke_by_name("test_hook", payload, Extensions::default(), None).await;
+        let payload: Box<dyn PluginPayload> = Box::new(TestPayload {
+            value: "first".into(),
+        });
+        let (result1, _) = mgr
+            .invoke_by_name("test_hook", payload, Extensions::default(), None)
+            .await;
         assert!(result1.continue_processing);
 
         // Check call_count = 1 in the returned context table
         let table = &result1.context_table;
-        let ctx = table.values().next().expect("context table should have one entry");
-        assert_eq!(ctx.get_local("call_count").unwrap().as_u64().unwrap(), 1);
+        let local = table
+            .local_states
+            .values()
+            .next()
+            .expect("context table should have one local_state entry");
+        assert_eq!(local.get("call_count").unwrap().as_u64().unwrap(), 1);
 
         // Second invocation — pass the context table from the first call
-        let payload2: Box<dyn PluginPayload> = Box::new(TestPayload { value: "second".into() });
-        let (result2, _) = mgr.invoke_by_name(
-            "test_hook", payload2, Extensions::default(), Some(result1.context_table),
-        ).await;
+        let payload2: Box<dyn PluginPayload> = Box::new(TestPayload {
+            value: "second".into(),
+        });
+        let (result2, _) = mgr
+            .invoke_by_name(
+                "test_hook",
+                payload2,
+                Extensions::default(),
+                Some(result1.context_table),
+            )
+            .await;
         assert!(result2.continue_processing);
 
         // call_count should now be 2 — local_state persisted across invocations
         let table2 = &result2.context_table;
-        let ctx2 = table2.values().next().expect("context table should have one entry");
-        assert_eq!(ctx2.get_local("call_count").unwrap().as_u64().unwrap(), 2);
+        let local2 = table2
+            .local_states
+            .values()
+            .next()
+            .expect("context table should have one local_state entry");
+        assert_eq!(local2.get("call_count").unwrap().as_u64().unwrap(), 2);
+    }
+
+    /// global_state writes by an earlier plugin must be visible to a later
+    /// plugin in the same serial phase, and the canonical state on the
+    /// returned context_table must reflect every plugin's contribution in
+    /// priority order. Previously this relied on `ctx_table.values().last()`
+    /// (HashMap iteration order — non-deterministic).
+    #[tokio::test]
+    async fn test_global_state_propagates_in_priority_order() {
+        /// Handler that appends `tag` to global_state["chain"] (creating
+        /// an array if absent). After running, the array reveals the
+        /// observed run order from each plugin's perspective.
+        struct GlobalChainHandler {
+            tag: &'static str,
+        }
+
+        #[async_trait]
+        impl AnyHookHandler for GlobalChainHandler {
+            async fn invoke(
+                &self,
+                _payload: &dyn PluginPayload,
+                _extensions: &Extensions,
+                ctx: &mut PluginContext,
+            ) -> Result<Box<dyn std::any::Any + Send + Sync>, Box<PluginError>> {
+                let mut chain = ctx
+                    .get_global("chain")
+                    .and_then(|v| v.as_array())
+                    .cloned()
+                    .unwrap_or_default();
+                chain.push(serde_json::Value::String(self.tag.into()));
+                ctx.set_global("chain", serde_json::Value::Array(chain));
+                let result: PluginResult<TestPayload> = PluginResult::allow();
+                Ok(crate::executor::erase_result(result))
+            }
+            fn hook_type_name(&self) -> &'static str {
+                "test_hook"
+            }
+        }
+
+        let mgr = PluginManager::default();
+
+        // Plugin A — priority 10 (runs first)
+        let cfg_a = make_config("plugin_a", 10, PluginMode::Sequential);
+        let plugin_a = Arc::new(AllowPlugin { cfg: cfg_a.clone() });
+        let handler_a: Arc<dyn AnyHookHandler> = Arc::new(GlobalChainHandler { tag: "a" });
+        mgr.register_raw::<TestHook>(plugin_a, cfg_a, handler_a)
+            .unwrap();
+
+        // Plugin B — priority 20 (runs second)
+        let cfg_b = make_config("plugin_b", 20, PluginMode::Sequential);
+        let plugin_b = Arc::new(AllowPlugin { cfg: cfg_b.clone() });
+        let handler_b: Arc<dyn AnyHookHandler> = Arc::new(GlobalChainHandler { tag: "b" });
+        mgr.register_raw::<TestHook>(plugin_b, cfg_b, handler_b)
+            .unwrap();
+
+        mgr.initialize().await.unwrap();
+
+        let payload: Box<dyn PluginPayload> = Box::new(TestPayload { value: "x".into() });
+        let (result, _) = mgr
+            .invoke_by_name("test_hook", payload, Extensions::default(), None)
+            .await;
+        assert!(result.continue_processing);
+
+        // Canonical global_state on the returned table must contain both
+        // contributions in priority order — proving plugin B observed plugin
+        // A's write, and the table holds the merged result, not an arbitrary
+        // plugin's snapshot.
+        let chain = result
+            .context_table
+            .global_state
+            .get("chain")
+            .and_then(|v| v.as_array())
+            .expect("global_state.chain should be an array");
+        let tags: Vec<&str> = chain.iter().filter_map(|v| v.as_str()).collect();
+        assert_eq!(tags, vec!["a", "b"]);
+    }
+
+    /// All five phases (Sequential, Transform, Audit, Concurrent,
+    /// FireAndForget) execute in the documented order, with payload
+    /// modifications from earlier phases visible in later ones. Closes
+    /// the review's "no multi-phase combination test" gap.
+    #[tokio::test]
+    async fn test_all_five_phases_run_in_order_with_payload_chaining() {
+        use std::sync::Arc as StdArc;
+        use std::sync::Mutex as StdMutex;
+
+        let log: StdArc<StdMutex<Vec<&'static str>>> = StdArc::new(StdMutex::new(Vec::new()));
+
+        // Sequential — modifies payload, logs "seq".
+        struct SeqHandler {
+            log: StdArc<StdMutex<Vec<&'static str>>>,
+        }
+        #[async_trait]
+        impl AnyHookHandler for SeqHandler {
+            async fn invoke(
+                &self,
+                payload: &dyn PluginPayload,
+                _extensions: &Extensions,
+                _ctx: &mut PluginContext,
+            ) -> Result<Box<dyn std::any::Any + Send + Sync>, Box<PluginError>> {
+                self.log.lock().unwrap().push("seq");
+                let typed = payload.as_any().downcast_ref::<TestPayload>().unwrap();
+                let modified = TestPayload {
+                    value: format!("{}|seq", typed.value),
+                };
+                let result: PluginResult<TestPayload> = PluginResult::modify_payload(modified);
+                Ok(crate::executor::erase_result(result))
+            }
+            fn hook_type_name(&self) -> &'static str {
+                "test_hook"
+            }
+        }
+
+        // Transform — modifies payload, logs "transform".
+        struct TransformLogger {
+            log: StdArc<StdMutex<Vec<&'static str>>>,
+        }
+        #[async_trait]
+        impl AnyHookHandler for TransformLogger {
+            async fn invoke(
+                &self,
+                payload: &dyn PluginPayload,
+                _extensions: &Extensions,
+                _ctx: &mut PluginContext,
+            ) -> Result<Box<dyn std::any::Any + Send + Sync>, Box<PluginError>> {
+                self.log.lock().unwrap().push("transform");
+                let typed = payload.as_any().downcast_ref::<TestPayload>().unwrap();
+                let modified = TestPayload {
+                    value: format!("{}|transform", typed.value),
+                };
+                let result: PluginResult<TestPayload> = PluginResult::modify_payload(modified);
+                Ok(crate::executor::erase_result(result))
+            }
+            fn hook_type_name(&self) -> &'static str {
+                "test_hook"
+            }
+        }
+
+        // Logger that asserts the payload it observes contains both prior
+        // phases' marks (proving payload chaining made it this far).
+        struct ObserverHandler {
+            tag: &'static str,
+            log: StdArc<StdMutex<Vec<&'static str>>>,
+            expected_payload: &'static str,
+        }
+        #[async_trait]
+        impl AnyHookHandler for ObserverHandler {
+            async fn invoke(
+                &self,
+                payload: &dyn PluginPayload,
+                _extensions: &Extensions,
+                _ctx: &mut PluginContext,
+            ) -> Result<Box<dyn std::any::Any + Send + Sync>, Box<PluginError>> {
+                let typed = payload.as_any().downcast_ref::<TestPayload>().unwrap();
+                assert_eq!(
+                    typed.value, self.expected_payload,
+                    "{} observed unexpected payload: got '{}', expected '{}'",
+                    self.tag, typed.value, self.expected_payload,
+                );
+                self.log.lock().unwrap().push(self.tag);
+                let result: PluginResult<TestPayload> = PluginResult::allow();
+                Ok(crate::executor::erase_result(result))
+            }
+            fn hook_type_name(&self) -> &'static str {
+                "test_hook"
+            }
+        }
+
+        let mgr = PluginManager::default();
+
+        let cfg_seq = make_config("seq", 10, PluginMode::Sequential);
+        mgr.register_raw::<TestHook>(
+            Arc::new(AllowPlugin {
+                cfg: cfg_seq.clone(),
+            }),
+            cfg_seq,
+            Arc::new(SeqHandler {
+                log: StdArc::clone(&log),
+            }),
+        )
+        .unwrap();
+
+        let cfg_transform = make_config("transform", 10, PluginMode::Transform);
+        mgr.register_raw::<TestHook>(
+            Arc::new(AllowPlugin {
+                cfg: cfg_transform.clone(),
+            }),
+            cfg_transform,
+            Arc::new(TransformLogger {
+                log: StdArc::clone(&log),
+            }),
+        )
+        .unwrap();
+
+        let cfg_audit = make_config("audit", 10, PluginMode::Audit);
+        mgr.register_raw::<TestHook>(
+            Arc::new(AllowPlugin {
+                cfg: cfg_audit.clone(),
+            }),
+            cfg_audit,
+            Arc::new(ObserverHandler {
+                tag: "audit",
+                log: StdArc::clone(&log),
+                expected_payload: "start|seq|transform",
+            }),
+        )
+        .unwrap();
+
+        let cfg_concurrent = make_config("concurrent", 10, PluginMode::Concurrent);
+        mgr.register_raw::<TestHook>(
+            Arc::new(AllowPlugin {
+                cfg: cfg_concurrent.clone(),
+            }),
+            cfg_concurrent,
+            Arc::new(ObserverHandler {
+                tag: "concurrent",
+                log: StdArc::clone(&log),
+                expected_payload: "start|seq|transform",
+            }),
+        )
+        .unwrap();
+
+        let cfg_faf = make_config("faf", 10, PluginMode::FireAndForget);
+        mgr.register_raw::<TestHook>(
+            Arc::new(AllowPlugin {
+                cfg: cfg_faf.clone(),
+            }),
+            cfg_faf,
+            Arc::new(ObserverHandler {
+                tag: "faf",
+                log: StdArc::clone(&log),
+                expected_payload: "start|seq|transform",
+            }),
+        )
+        .unwrap();
+
+        mgr.initialize().await.unwrap();
+
+        let payload: Box<dyn PluginPayload> = Box::new(TestPayload {
+            value: "start".into(),
+        });
+        let (result, bg) = mgr
+            .invoke_by_name("test_hook", payload, Extensions::default(), None)
+            .await;
+
+        assert!(result.continue_processing);
+        // Final payload should have both modify-phase marks.
+        let final_payload = result.modified_payload.unwrap();
+        let typed = final_payload
+            .as_any()
+            .downcast_ref::<TestPayload>()
+            .unwrap();
+        assert_eq!(typed.value, "start|seq|transform");
+
+        // Drain the FAF task before checking ordering — its log entry
+        // races the rest of the function otherwise.
+        let _ = bg.wait_for_background_tasks().await;
+
+        let log = log.lock().unwrap();
+        // Sequential, Transform, Audit are guaranteed in order (serial phases).
+        assert_eq!(log[0], "seq", "first should be sequential phase");
+        assert_eq!(log[1], "transform", "second should be transform phase");
+        assert_eq!(log[2], "audit", "third should be audit phase");
+        // Concurrent runs before invoke returns; FAF was waited on above.
+        // Their relative order with each other is not strictly guaranteed
+        // (FAF spawns *after* concurrent finishes, but tokio scheduling
+        // can interleave). Just check both present in indices 3 / 4.
+        let post_audit: std::collections::HashSet<&&'static str> = log[3..].iter().collect();
+        assert!(
+            post_audit.contains(&"concurrent"),
+            "concurrent phase must run"
+        );
+        assert!(post_audit.contains(&"faf"), "fire-and-forget must run");
+        assert_eq!(log.len(), 5, "all five phases should have logged");
+    }
+
+    /// Routing must work for `resource`, `prompt`, and `llm` entity types
+    /// — not just `tool`. Closes the review's "no test verifying entity
+    /// types other than tool in routing" gap.
+    #[tokio::test]
+    async fn test_routing_works_for_all_entity_types() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc as StdArc;
+
+        // One counter per entity-type test; each plugin only fires when
+        // the route resolves to it.
+        struct CountHandler {
+            counter: StdArc<AtomicUsize>,
+        }
+        #[async_trait]
+        impl AnyHookHandler for CountHandler {
+            async fn invoke(
+                &self,
+                _payload: &dyn PluginPayload,
+                _extensions: &Extensions,
+                _ctx: &mut PluginContext,
+            ) -> Result<Box<dyn std::any::Any + Send + Sync>, Box<PluginError>> {
+                self.counter.fetch_add(1, Ordering::SeqCst);
+                let result: PluginResult<TestPayload> = PluginResult::allow();
+                Ok(crate::executor::erase_result(result))
+            }
+            fn hook_type_name(&self) -> &'static str {
+                "test_hook"
+            }
+        }
+
+        // Each row: (entity_type, route field name, route value, request entity_name, should_match)
+        // We build a fresh manager per entity type so routes don't bleed.
+        for (entity_type, route_field, route_value, request_name, should_match) in [
+            ("resource", "resource", "my_resource", "my_resource", true),
+            (
+                "resource",
+                "resource",
+                "my_resource",
+                "other_resource",
+                false,
+            ),
+            ("prompt", "prompt", "my_prompt", "my_prompt", true),
+            ("prompt", "prompt", "my_prompt", "other_prompt", false),
+            ("llm", "llm", "gpt-4", "gpt-4", true),
+            ("llm", "llm", "gpt-4", "claude", false),
+        ] {
+            let yaml = format!(
+                r#"
+plugin_settings:
+  routing_enabled: true
+plugins:
+  - name: target
+    kind: test/allow
+    hooks: [test_hook]
+    mode: sequential
+routes:
+  - {route_field}: {route_value}
+    plugins:
+      - target
+"#
+            );
+            let cpex_config = crate::config::parse_config(&yaml).unwrap();
+
+            let mgr = PluginManager::default();
+            let counter = StdArc::new(AtomicUsize::new(0));
+            // Custom factory that hands out a CountHandler with our shared counter.
+            struct ParamFactory(StdArc<AtomicUsize>);
+            impl crate::factory::PluginFactory for ParamFactory {
+                fn create(
+                    &self,
+                    config: &PluginConfig,
+                ) -> Result<crate::factory::PluginInstance, Box<PluginError>> {
+                    Ok(crate::factory::PluginInstance {
+                        plugin: Arc::new(AllowPlugin {
+                            cfg: config.clone(),
+                        }),
+                        handlers: vec![(
+                            "test_hook",
+                            Arc::new(CountHandler {
+                                counter: StdArc::clone(&self.0),
+                            }),
+                        )],
+                    })
+                }
+            }
+            mgr.register_factory(
+                "test/allow",
+                Box::new(ParamFactory(StdArc::clone(&counter))),
+            );
+            mgr.load_config(cpex_config).unwrap();
+            mgr.initialize().await.unwrap();
+
+            let p: Box<dyn PluginPayload> = Box::new(TestPayload { value: "x".into() });
+            let ext = Extensions {
+                meta: Some(std::sync::Arc::new(crate::hooks::payload::MetaExtension {
+                    entity_type: Some(entity_type.into()),
+                    entity_name: Some(request_name.into()),
+                    ..Default::default()
+                })),
+                ..Default::default()
+            };
+            let _ = mgr.invoke_by_name("test_hook", p, ext, None).await;
+
+            let expected = if should_match { 1 } else { 0 };
+            assert_eq!(
+                counter.load(Ordering::SeqCst),
+                expected,
+                "entity_type={} route_field={} route_value={} request_name={} expected fire={}",
+                entity_type,
+                route_field,
+                route_value,
+                request_name,
+                should_match,
+            );
+        }
+    }
+
+    /// `initialize()` must roll back already-initialized plugins by
+    /// calling `shutdown()` on each, in reverse order, when a later
+    /// plugin's `initialize()` fails. Closes the review's "no test for
+    /// initialize() rollback path" gap.
+    #[tokio::test]
+    async fn test_initialize_rollback_on_failure() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc as StdArc;
+
+        // Track per-plugin init / shutdown invocations.
+        let init_count_a = StdArc::new(AtomicUsize::new(0));
+        let shutdown_count_a = StdArc::new(AtomicUsize::new(0));
+        let init_count_b = StdArc::new(AtomicUsize::new(0));
+        let shutdown_count_b = StdArc::new(AtomicUsize::new(0));
+        let init_count_c = StdArc::new(AtomicUsize::new(0));
+        let shutdown_count_c = StdArc::new(AtomicUsize::new(0));
+
+        struct LifecyclePlugin {
+            cfg: PluginConfig,
+            init_counter: StdArc<AtomicUsize>,
+            shutdown_counter: StdArc<AtomicUsize>,
+            fail_init: bool,
+        }
+        #[async_trait]
+        impl Plugin for LifecyclePlugin {
+            fn config(&self) -> &PluginConfig {
+                &self.cfg
+            }
+            async fn initialize(&self) -> Result<(), Box<PluginError>> {
+                self.init_counter.fetch_add(1, Ordering::SeqCst);
+                if self.fail_init {
+                    Err(Box::new(PluginError::Config {
+                        message: "intentional init failure".into(),
+                    }))
+                } else {
+                    Ok(())
+                }
+            }
+            async fn shutdown(&self) -> Result<(), Box<PluginError>> {
+                self.shutdown_counter.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            }
+        }
+        impl HookHandler<TestHook> for LifecyclePlugin {
+            fn handle(
+                &self,
+                _payload: &TestPayload,
+                _extensions: &Extensions,
+                _ctx: &mut PluginContext,
+            ) -> PluginResult<TestPayload> {
+                PluginResult::allow()
+            }
+        }
+
+        let mgr = PluginManager::default();
+
+        // Plugin A: initializes successfully (priority 10, registered first).
+        let cfg_a = make_config("a", 10, PluginMode::Sequential);
+        let plugin_a = Arc::new(LifecyclePlugin {
+            cfg: cfg_a.clone(),
+            init_counter: StdArc::clone(&init_count_a),
+            shutdown_counter: StdArc::clone(&shutdown_count_a),
+            fail_init: false,
+        });
+        mgr.register_handler::<TestHook, _>(plugin_a, cfg_a)
+            .unwrap();
+
+        // Plugin B: initialize() returns Err — should trigger rollback.
+        let cfg_b = make_config("b", 20, PluginMode::Sequential);
+        let plugin_b = Arc::new(LifecyclePlugin {
+            cfg: cfg_b.clone(),
+            init_counter: StdArc::clone(&init_count_b),
+            shutdown_counter: StdArc::clone(&shutdown_count_b),
+            fail_init: true,
+        });
+        mgr.register_handler::<TestHook, _>(plugin_b, cfg_b)
+            .unwrap();
+
+        // Plugin C: never reached (init aborts at B).
+        let cfg_c = make_config("c", 30, PluginMode::Sequential);
+        let plugin_c = Arc::new(LifecyclePlugin {
+            cfg: cfg_c.clone(),
+            init_counter: StdArc::clone(&init_count_c),
+            shutdown_counter: StdArc::clone(&shutdown_count_c),
+            fail_init: false,
+        });
+        mgr.register_handler::<TestHook, _>(plugin_c, cfg_c)
+            .unwrap();
+
+        let result = mgr.initialize().await;
+        assert!(
+            result.is_err(),
+            "initialize() must propagate the init failure"
+        );
+
+        // The registry iterates plugins in `HashMap` order, which is
+        // randomized — so we don't know whether A and C were reached
+        // before B failed. The rollback invariants are order-independent:
+        //
+        // - For non-failing plugins (A, C): if init() was called, shutdown()
+        //   must have been called too (rolled back). If init() was not
+        //   called (B happened to iterate first), shutdown() shouldn't
+        //   have either. In both cases, init_count == shutdown_count.
+        // - B's init() was called and failed, so its shutdown() must NOT
+        //   run — failed-init plugins are not part of the rollback set.
+        let assert_pair_invariant =
+            |init: &AtomicUsize, shutdown: &AtomicUsize, tag: &str| {
+                let i = init.load(Ordering::SeqCst);
+                let s = shutdown.load(Ordering::SeqCst);
+                assert!(
+                (i == 0 && s == 0) || (i == 1 && s == 1),
+                "{}: init/shutdown should be paired (both 0 or both 1), got init={} shutdown={}",
+                tag, i, s,
+            );
+            };
+        assert_pair_invariant(&init_count_a, &shutdown_count_a, "A");
+        assert_pair_invariant(&init_count_c, &shutdown_count_c, "C");
+
+        // B specifically: init was called and failed; no shutdown for it.
+        assert_eq!(
+            init_count_b.load(Ordering::SeqCst),
+            1,
+            "B's initialize was called",
+        );
+        assert_eq!(
+            shutdown_count_b.load(Ordering::SeqCst),
+            0,
+            "B failed to initialize; shutdown should not run for it",
+        );
+
+        // Manager must report not-initialized after the failure.
+        assert!(!mgr.is_initialized());
     }
 
     // -- Factory-based tests --
@@ -1703,11 +3447,14 @@ mod tests {
         fn create(
             &self,
             config: &PluginConfig,
-        ) -> Result<crate::factory::PluginInstance, PluginError> {
-            let plugin = Arc::new(AllowPlugin { cfg: config.clone() });
-            let handler: Arc<dyn AnyHookHandler> = Arc::new(
-                TypedHandlerAdapter::<TestHook, AllowPlugin>::new(Arc::clone(&plugin)),
-            );
+        ) -> Result<crate::factory::PluginInstance, Box<PluginError>> {
+            let plugin = Arc::new(AllowPlugin {
+                cfg: config.clone(),
+            });
+            let handler: Arc<dyn AnyHookHandler> =
+                Arc::new(TypedHandlerAdapter::<TestHook, AllowPlugin>::new(
+                    Arc::clone(&plugin),
+                ));
             Ok(crate::factory::PluginInstance {
                 plugin,
                 handlers: vec![("test_hook", handler)],
@@ -1722,11 +3469,14 @@ mod tests {
         fn create(
             &self,
             config: &PluginConfig,
-        ) -> Result<crate::factory::PluginInstance, PluginError> {
-            let plugin = Arc::new(DenyPlugin { cfg: config.clone() });
-            let handler: Arc<dyn AnyHookHandler> = Arc::new(
-                TypedHandlerAdapter::<TestHook, DenyPlugin>::new(Arc::clone(&plugin)),
-            );
+        ) -> Result<crate::factory::PluginInstance, Box<PluginError>> {
+            let plugin = Arc::new(DenyPlugin {
+                cfg: config.clone(),
+            });
+            let handler: Arc<dyn AnyHookHandler> =
+                Arc::new(TypedHandlerAdapter::<TestHook, DenyPlugin>::new(
+                    Arc::clone(&plugin),
+                ));
             Ok(crate::factory::PluginInstance {
                 plugin,
                 handlers: vec![("test_hook", handler)],
@@ -1752,7 +3502,7 @@ plugin_settings:
         let mut factories = PluginFactoryRegistry::new();
         factories.register("test/allow", Box::new(AllowPluginFactory));
 
-        let mut mgr = PluginManager::from_config(cpex_config, &factories).unwrap();
+        let mgr = PluginManager::from_config(cpex_config, &factories).unwrap();
         mgr.initialize().await.unwrap();
 
         assert_eq!(mgr.plugin_count(), 1);
@@ -1774,7 +3524,7 @@ plugins:
         let mut factories = PluginFactoryRegistry::new();
         factories.register("test/deny", Box::new(DenyPluginFactory));
 
-        let mut mgr = PluginManager::from_config(cpex_config, &factories).unwrap();
+        let mgr = PluginManager::from_config(cpex_config, &factories).unwrap();
         mgr.initialize().await.unwrap();
 
         let payload: Box<dyn PluginPayload> = Box::new(TestPayload {
@@ -1803,7 +3553,11 @@ plugins:
 
         let result = PluginManager::from_config(cpex_config, &factories);
         match result {
-            Err(e) => assert!(e.to_string().contains("no factory registered"), "got: {}", e),
+            Err(e) => assert!(
+                e.to_string().contains("no factory registered"),
+                "got: {}",
+                e
+            ),
             Ok(_) => panic!("expected error for unknown kind"),
         }
     }
@@ -1829,7 +3583,7 @@ plugins:
         factories.register("test/allow", Box::new(AllowPluginFactory));
         factories.register("test/deny", Box::new(DenyPluginFactory));
 
-        let mut mgr = PluginManager::from_config(cpex_config, &factories).unwrap();
+        let mgr = PluginManager::from_config(cpex_config, &factories).unwrap();
         mgr.initialize().await.unwrap();
 
         assert_eq!(mgr.plugin_count(), 2);
@@ -1871,13 +3625,15 @@ routes:
         let mut factories = PluginFactoryRegistry::new();
         factories.register("test/allow", Box::new(AllowPluginFactory));
 
-        let mut mgr = PluginManager::from_config(cpex_config, &factories).unwrap();
+        let mgr = PluginManager::from_config(cpex_config, &factories).unwrap();
         mgr.initialize().await.unwrap();
 
         assert_eq!(mgr.routing_cache_size(), 0);
 
         // First invoke — populates cache
-        let payload: Box<dyn PluginPayload> = Box::new(TestPayload { value: "test".into() });
+        let payload: Box<dyn PluginPayload> = Box::new(TestPayload {
+            value: "test".into(),
+        });
         let ext = Extensions {
             meta: Some(std::sync::Arc::new(crate::hooks::payload::MetaExtension {
                 entity_type: Some("tool".into()),
@@ -1892,7 +3648,9 @@ routes:
         assert_eq!(mgr.routing_cache_size(), 1);
 
         // Second invoke — cache hit, still size 1
-        let payload2: Box<dyn PluginPayload> = Box::new(TestPayload { value: "test2".into() });
+        let payload2: Box<dyn PluginPayload> = Box::new(TestPayload {
+            value: "test2".into(),
+        });
         let ext2 = Extensions {
             meta: Some(std::sync::Arc::new(crate::hooks::payload::MetaExtension {
                 entity_type: Some("tool".into()),
@@ -1928,7 +3686,7 @@ routes:
         let mut factories = PluginFactoryRegistry::new();
         factories.register("test/allow", Box::new(AllowPluginFactory));
 
-        let mut mgr = PluginManager::from_config(cpex_config, &factories).unwrap();
+        let mgr = PluginManager::from_config(cpex_config, &factories).unwrap();
         mgr.initialize().await.unwrap();
 
         // context_table = None (first invocation)
@@ -1981,7 +3739,7 @@ routes:
         let mut factories = PluginFactoryRegistry::new();
         factories.register("test/allow", Box::new(AllowPluginFactory));
 
-        let mut mgr = PluginManager::from_config(cpex_config, &factories).unwrap();
+        let mgr = PluginManager::from_config(cpex_config, &factories).unwrap();
         mgr.initialize().await.unwrap();
 
         // context_table = None (first invocation)
@@ -1998,6 +3756,202 @@ routes:
         assert_eq!(mgr.routing_cache_size(), 1);
 
         mgr.clear_routing_cache();
+        assert_eq!(mgr.routing_cache_size(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_unregister_invalidates_routing_cache() {
+        let yaml = r#"
+plugin_settings:
+  routing_enabled: true
+global:
+  policies:
+    all:
+      plugins: [allow_plugin]
+plugins:
+  - name: allow_plugin
+    kind: test/allow
+    hooks: [test_hook]
+    mode: sequential
+routes:
+  - tool: get_compensation
+"#;
+        let cpex_config = crate::config::parse_config(yaml).unwrap();
+        let mut factories = PluginFactoryRegistry::new();
+        factories.register("test/allow", Box::new(AllowPluginFactory));
+
+        let mgr = PluginManager::from_config(cpex_config, &factories).unwrap();
+        mgr.initialize().await.unwrap();
+
+        let payload: Box<dyn PluginPayload> = Box::new(TestPayload { value: "t".into() });
+        let ext = Extensions {
+            meta: Some(std::sync::Arc::new(crate::hooks::payload::MetaExtension {
+                entity_type: Some("tool".into()),
+                entity_name: Some("get_compensation".into()),
+                ..Default::default()
+            })),
+            ..Default::default()
+        };
+        mgr.invoke_by_name("test_hook", payload, ext, None).await;
+        assert_eq!(mgr.routing_cache_size(), 1);
+
+        // Unregister should invalidate the cache so removed plugins
+        // don't continue firing from stale cached entries.
+        mgr.unregister("allow_plugin");
+        assert_eq!(mgr.routing_cache_size(), 0);
+    }
+
+    #[test]
+    fn test_routing_cache_recovers_from_poisoned_lock() {
+        // A panic while holding the cache lock poisons it. Before the fix,
+        // every subsequent read()/write() would unwrap a PoisonError and
+        // panic, permanently breaking dispatch. With unwrap_or_else +
+        // into_inner, the cache stays usable.
+        //
+        // Note: this test intentionally panics inside catch_unwind, which
+        // prints "thread 'manager::tests::...' panicked at..." to test
+        // output even though the panic is caught. That's expected.
+        use std::panic::AssertUnwindSafe;
+
+        let mgr = PluginManager::default();
+
+        let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+            let _guard = mgr.route_cache.write().unwrap();
+            panic!("simulated panic while holding cache lock");
+        }));
+        assert!(result.is_err(), "expected the panic to be caught");
+        assert!(
+            mgr.route_cache.is_poisoned(),
+            "lock should be poisoned after the panic",
+        );
+
+        // All four lock sites must now succeed despite the poison flag.
+        assert_eq!(mgr.routing_cache_size(), 0);
+        mgr.clear_routing_cache();
+        assert_eq!(mgr.routing_cache_size(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_routing_cache_rejects_inserts_at_capacity() {
+        // Cap of 2 — verifies bound holds AND uncached requests still resolve correctly.
+        let yaml = r#"
+plugin_settings:
+  routing_enabled: true
+  route_cache_max_entries: 2
+global:
+  policies:
+    all:
+      plugins: [allow_plugin]
+plugins:
+  - name: allow_plugin
+    kind: test/allow
+    hooks: [test_hook]
+    mode: sequential
+routes:
+  - tool: a
+  - tool: b
+  - tool: c
+"#;
+        let cpex_config = crate::config::parse_config(yaml).unwrap();
+        let mut factories = PluginFactoryRegistry::new();
+        factories.register("test/allow", Box::new(AllowPluginFactory));
+
+        let mgr = PluginManager::from_config(cpex_config, &factories).unwrap();
+        mgr.initialize().await.unwrap();
+
+        let invoke_for = |entity: &'static str| -> (Box<dyn PluginPayload>, Extensions) {
+            let p: Box<dyn PluginPayload> = Box::new(TestPayload {
+                value: entity.into(),
+            });
+            let e = Extensions {
+                meta: Some(std::sync::Arc::new(crate::hooks::payload::MetaExtension {
+                    entity_type: Some("tool".into()),
+                    entity_name: Some(entity.into()),
+                    ..Default::default()
+                })),
+                ..Default::default()
+            };
+            (p, e)
+        };
+
+        // Fill to cap (2 distinct entities).
+        let (p1, e1) = invoke_for("a");
+        let (r1, _) = mgr.invoke_by_name("test_hook", p1, e1, None).await;
+        assert!(r1.continue_processing);
+        assert_eq!(mgr.routing_cache_size(), 1);
+
+        let (p2, e2) = invoke_for("b");
+        let (r2, _) = mgr.invoke_by_name("test_hook", p2, e2, None).await;
+        assert!(r2.continue_processing);
+        assert_eq!(mgr.routing_cache_size(), 2);
+
+        // Third entity — cache is full, insert is rejected.
+        // Pipeline must still run correctly (slow path resolves the route).
+        let (p3, e3) = invoke_for("c");
+        let (r3, _) = mgr.invoke_by_name("test_hook", p3, e3, None).await;
+        assert!(
+            r3.continue_processing,
+            "slow path must still resolve when cache is full"
+        );
+        assert_eq!(mgr.routing_cache_size(), 2, "cache must not exceed cap");
+
+        // Repeated request for the same uncached entity also works.
+        let (p4, e4) = invoke_for("c");
+        let (r4, _) = mgr.invoke_by_name("test_hook", p4, e4, None).await;
+        assert!(r4.continue_processing);
+        assert_eq!(mgr.routing_cache_size(), 2);
+
+        // Clearing the cache lets new entries memoize again.
+        mgr.clear_routing_cache();
+        let (p5, e5) = invoke_for("c");
+        mgr.invoke_by_name("test_hook", p5, e5, None).await;
+        assert_eq!(mgr.routing_cache_size(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_register_handler_invalidates_routing_cache() {
+        let yaml = r#"
+plugin_settings:
+  routing_enabled: true
+global:
+  policies:
+    all:
+      plugins: [allow_plugin]
+plugins:
+  - name: allow_plugin
+    kind: test/allow
+    hooks: [test_hook]
+    mode: sequential
+routes:
+  - tool: get_compensation
+"#;
+        let cpex_config = crate::config::parse_config(yaml).unwrap();
+        let mut factories = PluginFactoryRegistry::new();
+        factories.register("test/allow", Box::new(AllowPluginFactory));
+
+        let mgr = PluginManager::from_config(cpex_config, &factories).unwrap();
+        mgr.initialize().await.unwrap();
+
+        let payload: Box<dyn PluginPayload> = Box::new(TestPayload { value: "t".into() });
+        let ext = Extensions {
+            meta: Some(std::sync::Arc::new(crate::hooks::payload::MetaExtension {
+                entity_type: Some("tool".into()),
+                entity_name: Some("get_compensation".into()),
+                ..Default::default()
+            })),
+            ..Default::default()
+        };
+        mgr.invoke_by_name("test_hook", payload, ext, None).await;
+        assert_eq!(mgr.routing_cache_size(), 1);
+
+        // Registering a new handler must invalidate the cache so the
+        // new plugin is visible to subsequent route resolutions.
+        let extra_cfg = make_config("late_plugin", 20, PluginMode::Sequential);
+        let extra = Arc::new(AllowPlugin {
+            cfg: extra_cfg.clone(),
+        });
+        mgr.register_handler::<TestHook, _>(extra, extra_cfg)
+            .unwrap();
         assert_eq!(mgr.routing_cache_size(), 0);
     }
 
@@ -2022,7 +3976,7 @@ routes:
         let mut factories = PluginFactoryRegistry::new();
         factories.register("test/allow", Box::new(AllowPluginFactory));
 
-        let mut mgr = PluginManager::from_config(cpex_config, &factories).unwrap();
+        let mgr = PluginManager::from_config(cpex_config, &factories).unwrap();
         mgr.initialize().await.unwrap();
 
         // context_table = None (first invocation)
@@ -2080,7 +4034,7 @@ routes:
         let cpex_config = crate::config::parse_config(yaml).unwrap();
 
         // Use register_factory + load_config so manager owns factories
-        let mut mgr = PluginManager::default();
+        let mgr = PluginManager::default();
         mgr.register_factory("test/allow", Box::new(AllowPluginFactory));
         mgr.load_config(cpex_config).unwrap();
         mgr.initialize().await.unwrap();
@@ -2097,14 +4051,193 @@ routes:
         };
         // context_table = None (first invocation)
 
-        let (result, _) = mgr
-            .invoke_by_name("test_hook", payload, ext, None)
-            .await;
+        let (result, _) = mgr.invoke_by_name("test_hook", payload, ext, None).await;
 
         // Plugin executed (allow plugin returns allowed)
         assert!(result.continue_processing);
         // Cache populated
         assert_eq!(mgr.routing_cache_size(), 1);
+    }
+
+    /// Override instances must have `initialize()` called so plugins that
+    /// open DB connections / file handles / network clients on init don't
+    /// run with default state. Uses a tracking factory whose plugin
+    /// increments a counter inside its `initialize()`.
+    #[tokio::test]
+    async fn test_route_override_initializes_new_instance() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        static INIT_COUNT: AtomicUsize = AtomicUsize::new(0);
+        INIT_COUNT.store(0, Ordering::SeqCst);
+
+        struct InitTrackingPlugin {
+            cfg: PluginConfig,
+        }
+
+        #[async_trait]
+        impl Plugin for InitTrackingPlugin {
+            fn config(&self) -> &PluginConfig {
+                &self.cfg
+            }
+            async fn initialize(&self) -> Result<(), Box<PluginError>> {
+                INIT_COUNT.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            }
+            async fn shutdown(&self) -> Result<(), Box<PluginError>> {
+                Ok(())
+            }
+        }
+
+        impl HookHandler<TestHook> for InitTrackingPlugin {
+            fn handle(
+                &self,
+                _payload: &TestPayload,
+                _extensions: &Extensions,
+                _ctx: &mut PluginContext,
+            ) -> PluginResult<TestPayload> {
+                PluginResult::allow()
+            }
+        }
+
+        struct InitTrackingFactory;
+        impl crate::factory::PluginFactory for InitTrackingFactory {
+            fn create(
+                &self,
+                config: &PluginConfig,
+            ) -> Result<crate::factory::PluginInstance, Box<PluginError>> {
+                let plugin = Arc::new(InitTrackingPlugin {
+                    cfg: config.clone(),
+                });
+                let handler: Arc<dyn AnyHookHandler> =
+                    Arc::new(TypedHandlerAdapter::<TestHook, InitTrackingPlugin>::new(
+                        Arc::clone(&plugin),
+                    ));
+                Ok(crate::factory::PluginInstance {
+                    plugin,
+                    handlers: vec![("test_hook", handler)],
+                })
+            }
+        }
+
+        let yaml = r#"
+plugin_settings:
+  routing_enabled: true
+plugins:
+  - name: tracker
+    kind: test/init_tracking
+    hooks: [test_hook]
+    mode: sequential
+    priority: 10
+    config:
+      max_requests: 100
+routes:
+  - tool: get_compensation
+    plugins:
+      - tracker:
+          config:
+            max_requests: 10
+"#;
+        let cpex_config = crate::config::parse_config(yaml).unwrap();
+
+        let mgr = PluginManager::default();
+        mgr.register_factory("test/init_tracking", Box::new(InitTrackingFactory));
+        mgr.load_config(cpex_config).unwrap();
+        mgr.initialize().await.unwrap();
+
+        // Base plugin was initialized exactly once during mgr.initialize().
+        assert_eq!(INIT_COUNT.load(Ordering::SeqCst), 1);
+
+        // Invoke with route override — creates a new instance via factory.
+        // That new instance must also be initialized.
+        let payload: Box<dyn PluginPayload> = Box::new(TestPayload { value: "t".into() });
+        let (result, _) = mgr
+            .invoke_by_name(
+                "test_hook",
+                payload,
+                make_meta("tool", "get_compensation", None, &[]),
+                None,
+            )
+            .await;
+        assert!(result.continue_processing);
+
+        assert_eq!(
+            INIT_COUNT.load(Ordering::SeqCst),
+            2,
+            "override instance must have initialize() called",
+        );
+    }
+
+    /// Override and base must have INDEPENDENT circuit breakers. A failure
+    /// on an override-only route (e.g., bad credentials in the merged
+    /// config) must not silently disable the plugin for every other route
+    /// using the base config — config is part of the failure surface, and
+    /// per-route blast radius is the point of having overrides.
+    #[tokio::test]
+    async fn test_route_override_circuit_breaker_isolated_from_base() {
+        struct ErrorOnInvokeFactory;
+        impl crate::factory::PluginFactory for ErrorOnInvokeFactory {
+            fn create(
+                &self,
+                config: &PluginConfig,
+            ) -> Result<crate::factory::PluginInstance, Box<PluginError>> {
+                let plugin = Arc::new(AllowPlugin {
+                    cfg: config.clone(),
+                });
+                let handler: Arc<dyn AnyHookHandler> = Arc::new(ErrorHandler);
+                Ok(crate::factory::PluginInstance {
+                    plugin,
+                    handlers: vec![("test_hook", handler)],
+                })
+            }
+        }
+
+        let yaml = r#"
+plugin_settings:
+  routing_enabled: true
+plugins:
+  - name: flaky
+    kind: test/error_on_invoke
+    hooks: [test_hook]
+    mode: sequential
+    priority: 10
+    on_error: disable
+routes:
+  - tool: get_compensation
+    plugins:
+      - flaky:
+          config:
+            something: changed
+"#;
+        let cpex_config = crate::config::parse_config(yaml).unwrap();
+
+        let mgr = PluginManager::default();
+        mgr.register_factory("test/error_on_invoke", Box::new(ErrorOnInvokeFactory));
+        mgr.load_config(cpex_config).unwrap();
+        mgr.initialize().await.unwrap();
+
+        assert!(
+            !mgr.get_plugin("flaky").unwrap().is_disabled(),
+            "should start enabled"
+        );
+
+        // Invoke a route that uses the override. The override's handler
+        // errors with `on_error: Disable`, so the executor calls disable()
+        // on the *override's* plugin_ref. Independent circuit breakers
+        // mean the base must stay enabled.
+        let payload: Box<dyn PluginPayload> = Box::new(TestPayload { value: "t".into() });
+        let _ = mgr
+            .invoke_by_name(
+                "test_hook",
+                payload,
+                make_meta("tool", "get_compensation", None, &[]),
+                None,
+            )
+            .await;
+
+        assert!(
+            !mgr.get_plugin("flaky").unwrap().is_disabled(),
+            "base must NOT be disabled when an override trips its own circuit breaker",
+        );
     }
 
     #[tokio::test]
@@ -2122,7 +4255,7 @@ plugin_settings:
 "#;
         let cpex_config = crate::config::parse_config(yaml).unwrap();
 
-        let mut mgr = PluginManager::default();
+        let mgr = PluginManager::default();
         mgr.register_factory("test/allow", Box::new(AllowPluginFactory));
         mgr.load_config(cpex_config).unwrap();
         mgr.initialize().await.unwrap();
@@ -2203,7 +4336,7 @@ routes:
       - rate_limiter
 "#;
         let cpex_config = crate::config::parse_config(yaml).unwrap();
-        let mut mgr = PluginManager::default();
+        let mgr = PluginManager::default();
         mgr.register_factory("test/allow", Box::new(AllowPluginFactory));
         mgr.register_factory("test/deny", Box::new(DenyPluginFactory));
         mgr.load_config(cpex_config).unwrap();
@@ -2215,7 +4348,12 @@ routes:
         // apl_policy denies → overall denied
         let p1: Box<dyn PluginPayload> = Box::new(TestPayload { value: "t".into() });
         let (r1, _) = mgr
-            .invoke_by_name("test_hook", p1, make_meta("tool", "get_compensation", None, &[]), None)
+            .invoke_by_name(
+                "test_hook",
+                p1,
+                make_meta("tool", "get_compensation", None, &[]),
+                None,
+            )
             .await;
         assert!(!r1.continue_processing); // apl_policy (deny) fires due to pii tag
 
@@ -2223,7 +4361,12 @@ routes:
         // both allow → overall allowed
         let p2: Box<dyn PluginPayload> = Box::new(TestPayload { value: "t".into() });
         let (r2, _) = mgr
-            .invoke_by_name("test_hook", p2, make_meta("tool", "send_email", None, &[]), None)
+            .invoke_by_name(
+                "test_hook",
+                p2,
+                make_meta("tool", "send_email", None, &[]),
+                None,
+            )
             .await;
         assert!(r2.continue_processing); // no deny plugin fires
     }
@@ -2245,7 +4388,7 @@ plugins:
     priority: 20
 "#;
         let cpex_config = crate::config::parse_config(yaml).unwrap();
-        let mut mgr = PluginManager::default();
+        let mgr = PluginManager::default();
         mgr.register_factory("test/allow", Box::new(AllowPluginFactory));
         mgr.register_factory("test/deny", Box::new(DenyPluginFactory));
         mgr.load_config(cpex_config).unwrap();
@@ -2256,7 +4399,12 @@ plugins:
         // Even with meta, routing disabled → all plugins fire → denier wins
         let p: Box<dyn PluginPayload> = Box::new(TestPayload { value: "t".into() });
         let (result, _) = mgr
-            .invoke_by_name("test_hook", p, make_meta("tool", "anything", None, &[]), None)
+            .invoke_by_name(
+                "test_hook",
+                p,
+                make_meta("tool", "anything", None, &[]),
+                None,
+            )
             .await;
         assert!(!result.continue_processing); // denier fires (all plugins active)
     }
@@ -2286,7 +4434,7 @@ routes:
       - denier
 "#;
         let cpex_config = crate::config::parse_config(yaml).unwrap();
-        let mut mgr = PluginManager::default();
+        let mgr = PluginManager::default();
         mgr.register_factory("test/allow", Box::new(AllowPluginFactory));
         mgr.register_factory("test/deny", Box::new(DenyPluginFactory));
         mgr.load_config(cpex_config).unwrap();
@@ -2299,10 +4447,17 @@ routes:
         let (result, _) = mgr
             .invoke_by_name("test_hook", p, Extensions::default(), None)
             .await;
-        // denier has default priority 100, allower has default 100 — order depends on registration
-        // but at least both fire (not filtered by routing)
-        // We can't assert allow/deny specifically since both run — just check it executed
-        assert!(result.continue_processing || !result.continue_processing); // both plugins fired
+        // No meta → no route resolution → both plugins fire. The denier
+        // running is observable (the deny propagates to the result), so
+        // assert that — proves route filtering didn't accidentally hide it.
+        assert!(
+            !result.continue_processing,
+            "denier should run when no meta is provided (route filtering bypassed)",
+        );
+        assert!(
+            result.violation.is_some(),
+            "deny should produce a violation"
+        );
     }
 
     #[tokio::test]
@@ -2339,7 +4494,7 @@ routes:
       - fallback_plugin
 "#;
         let cpex_config = crate::config::parse_config(yaml).unwrap();
-        let mut mgr = PluginManager::default();
+        let mgr = PluginManager::default();
         mgr.register_factory("test/allow", Box::new(AllowPluginFactory));
         mgr.register_factory("test/deny", Box::new(DenyPluginFactory));
         mgr.load_config(cpex_config).unwrap();
@@ -2350,14 +4505,24 @@ routes:
         // get_compensation matches exact route → specific_plugin (deny)
         let p1: Box<dyn PluginPayload> = Box::new(TestPayload { value: "t".into() });
         let (r1, _) = mgr
-            .invoke_by_name("test_hook", p1, make_meta("tool", "get_compensation", None, &[]), None)
+            .invoke_by_name(
+                "test_hook",
+                p1,
+                make_meta("tool", "get_compensation", None, &[]),
+                None,
+            )
             .await;
         assert!(!r1.continue_processing); // specific_plugin denies
 
         // unknown_tool matches wildcard → fallback_plugin (allow)
         let p2: Box<dyn PluginPayload> = Box::new(TestPayload { value: "t".into() });
         let (r2, _) = mgr
-            .invoke_by_name("test_hook", p2, make_meta("tool", "unknown_tool", None, &[]), None)
+            .invoke_by_name(
+                "test_hook",
+                p2,
+                make_meta("tool", "unknown_tool", None, &[]),
+                None,
+            )
             .await;
         assert!(r2.continue_processing); // fallback_plugin allows
     }
@@ -2388,7 +4553,7 @@ routes:
   - tool: get_compensation
 "#;
         let cpex_config = crate::config::parse_config(yaml).unwrap();
-        let mut mgr = PluginManager::default();
+        let mgr = PluginManager::default();
         mgr.register_factory("test/allow", Box::new(AllowPluginFactory));
         mgr.register_factory("test/deny", Box::new(DenyPluginFactory));
         mgr.load_config(cpex_config).unwrap();
@@ -2399,7 +4564,12 @@ routes:
         // Without urgent tag → only identity fires → allowed
         let p1: Box<dyn PluginPayload> = Box::new(TestPayload { value: "t".into() });
         let (r1, _) = mgr
-            .invoke_by_name("test_hook", p1, make_meta("tool", "get_compensation", None, &[]), None)
+            .invoke_by_name(
+                "test_hook",
+                p1,
+                make_meta("tool", "get_compensation", None, &[]),
+                None,
+            )
             .await;
         assert!(r1.continue_processing);
 
@@ -2409,7 +4579,12 @@ routes:
         // With urgent tag from host → denier also fires → denied
         let p2: Box<dyn PluginPayload> = Box::new(TestPayload { value: "t".into() });
         let (r2, _) = mgr
-            .invoke_by_name("test_hook", p2, make_meta("tool", "get_compensation", None, &["urgent"]), None)
+            .invoke_by_name(
+                "test_hook",
+                p2,
+                make_meta("tool", "get_compensation", None, &["urgent"]),
+                None,
+            )
             .await;
         assert!(!r2.continue_processing);
     }
@@ -2443,7 +4618,7 @@ routes:
   - tool: send_email
 "#;
         let cpex_config = crate::config::parse_config(yaml).unwrap();
-        let mut mgr = PluginManager::default();
+        let mgr = PluginManager::default();
         mgr.register_factory("test/allow", Box::new(AllowPluginFactory));
         mgr.register_factory("test/deny", Box::new(DenyPluginFactory));
         mgr.load_config(cpex_config).unwrap();
@@ -2484,7 +4659,7 @@ routes:
             _payload: &dyn PluginPayload,
             extensions: &Extensions,
             _ctx: &mut PluginContext,
-        ) -> Result<Box<dyn std::any::Any + Send + Sync>, PluginError> {
+        ) -> Result<Box<dyn std::any::Any + Send + Sync>, Box<PluginError>> {
             let mut ext = extensions.cow_copy();
             if let Some(ref mut sec) = ext.security {
                 sec.add_label("PLUGIN_ADDED");
@@ -2493,7 +4668,9 @@ routes:
             result.modified_extensions = Some(ext);
             Ok(crate::executor::erase_result(result))
         }
-        fn hook_type_name(&self) -> &'static str { "test_hook" }
+        fn hook_type_name(&self) -> &'static str {
+            "test_hook"
+        }
     }
 
     /// Handler that tampers with an immutable extension slot.
@@ -2506,30 +4683,33 @@ routes:
             _payload: &dyn PluginPayload,
             extensions: &Extensions,
             _ctx: &mut PluginContext,
-        ) -> Result<Box<dyn std::any::Any + Send + Sync>, PluginError> {
+        ) -> Result<Box<dyn std::any::Any + Send + Sync>, Box<PluginError>> {
             let mut ext = extensions.cow_copy();
             // Tamper: replace the immutable request extension
-            ext.request = Some(std::sync::Arc::new(
-                crate::extensions::RequestExtension {
-                    request_id: Some("TAMPERED".into()),
-                    ..Default::default()
-                }
-            ));
+            ext.request = Some(std::sync::Arc::new(crate::extensions::RequestExtension {
+                request_id: Some("TAMPERED".into()),
+                ..Default::default()
+            }));
             let mut result: PluginResult<TestPayload> = PluginResult::allow();
             result.modified_extensions = Some(ext);
             Ok(crate::executor::erase_result(result))
         }
-        fn hook_type_name(&self) -> &'static str { "test_hook" }
+        fn hook_type_name(&self) -> &'static str {
+            "test_hook"
+        }
     }
 
     #[tokio::test]
     async fn test_executor_accepts_valid_label_addition() {
-        let mut mgr = PluginManager::default();
+        let mgr = PluginManager::default();
         let mut config = make_config("label-adder", 10, PluginMode::Sequential);
         config.capabilities = ["append_labels".to_string(), "read_labels".to_string()].into();
-        let plugin = Arc::new(AllowPlugin { cfg: config.clone() });
+        let plugin = Arc::new(AllowPlugin {
+            cfg: config.clone(),
+        });
         let handler: Arc<dyn AnyHookHandler> = Arc::new(LabelAdderHandler);
-        mgr.register_raw::<TestHook>(plugin, config, handler).unwrap();
+        mgr.register_raw::<TestHook>(plugin, config, handler)
+            .unwrap();
         mgr.initialize().await.unwrap();
 
         // Build extensions with a security label
@@ -2541,7 +4721,9 @@ routes:
             ..Default::default()
         };
 
-        let payload: Box<dyn PluginPayload> = Box::new(TestPayload { value: "test".into() });
+        let payload: Box<dyn PluginPayload> = Box::new(TestPayload {
+            value: "test".into(),
+        });
         let (result, _) = mgr.invoke_by_name("test_hook", payload, ext, None).await;
 
         assert!(result.continue_processing);
@@ -2554,11 +4736,14 @@ routes:
 
     #[tokio::test]
     async fn test_executor_rejects_immutable_tampering() {
-        let mut mgr = PluginManager::default();
+        let mgr = PluginManager::default();
         let config = make_config("tamperer", 10, PluginMode::Sequential);
-        let plugin = Arc::new(AllowPlugin { cfg: config.clone() });
+        let plugin = Arc::new(AllowPlugin {
+            cfg: config.clone(),
+        });
         let handler: Arc<dyn AnyHookHandler> = Arc::new(ImmutableTampererHandler);
-        mgr.register_raw::<TestHook>(plugin, config, handler).unwrap();
+        mgr.register_raw::<TestHook>(plugin, config, handler)
+            .unwrap();
         mgr.initialize().await.unwrap();
 
         // Build extensions with a request extension
@@ -2570,7 +4755,9 @@ routes:
             ..Default::default()
         };
 
-        let payload: Box<dyn PluginPayload> = Box::new(TestPayload { value: "test".into() });
+        let payload: Box<dyn PluginPayload> = Box::new(TestPayload {
+            value: "test".into(),
+        });
         let (result, _) = mgr.invoke_by_name("test_hook", payload, ext, None).await;
 
         assert!(result.continue_processing);
@@ -2600,27 +4787,33 @@ routes:
                 _payload: &dyn PluginPayload,
                 extensions: &Extensions,
                 _ctx: &mut PluginContext,
-            ) -> Result<Box<dyn std::any::Any + Send + Sync>, PluginError> {
+            ) -> Result<Box<dyn std::any::Any + Send + Sync>, Box<PluginError>> {
                 // Check if security is visible
                 if extensions.security.is_some() {
-                    self.saw_security.store(true, std::sync::atomic::Ordering::SeqCst);
+                    self.saw_security
+                        .store(true, std::sync::atomic::Ordering::SeqCst);
                 }
                 let result: PluginResult<TestPayload> = PluginResult::allow();
                 Ok(crate::executor::erase_result(result))
             }
-            fn hook_type_name(&self) -> &'static str { "test_hook" }
+            fn hook_type_name(&self) -> &'static str {
+                "test_hook"
+            }
         }
 
         let saw_security = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
 
-        let mut mgr = PluginManager::default();
+        let mgr = PluginManager::default();
         // No security capabilities declared
         let config = make_config("no-sec-caps", 10, PluginMode::Sequential);
-        let plugin = Arc::new(AllowPlugin { cfg: config.clone() });
+        let plugin = Arc::new(AllowPlugin {
+            cfg: config.clone(),
+        });
         let handler: Arc<dyn AnyHookHandler> = Arc::new(SecurityCheckerHandler {
             saw_security: saw_security.clone(),
         });
-        mgr.register_raw::<TestHook>(plugin, config, handler).unwrap();
+        mgr.register_raw::<TestHook>(plugin, config, handler)
+            .unwrap();
         mgr.initialize().await.unwrap();
 
         // Build extensions WITH security data
@@ -2636,7 +4829,9 @@ routes:
             ..Default::default()
         };
 
-        let payload: Box<dyn PluginPayload> = Box::new(TestPayload { value: "test".into() });
+        let payload: Box<dyn PluginPayload> = Box::new(TestPayload {
+            value: "test".into(),
+        });
         let (result, _) = mgr.invoke_by_name("test_hook", payload, ext, None).await;
 
         assert!(result.continue_processing);

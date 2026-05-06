@@ -27,9 +27,7 @@ use std::fmt;
 // These are the typed containers for all extension data. They live in
 // extensions/container.rs but are re-exported here for backward
 // compatibility with existing code that imports from hooks::payload.
-pub use crate::extensions::{
-    Extensions, Guarded, MetaExtension, OwnedExtensions, WriteToken,
-};
+pub use crate::extensions::{Extensions, Guarded, MetaExtension, OwnedExtensions, WriteToken};
 
 // ---------------------------------------------------------------------------
 // PluginPayload Trait
@@ -133,4 +131,3 @@ macro_rules! impl_plugin_payload {
         }
     };
 }
-

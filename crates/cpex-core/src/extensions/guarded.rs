@@ -135,7 +135,10 @@ mod tests {
         assert!(guarded.read().map.is_empty());
 
         // Write — token required
-        guarded.write(&token).map.insert("X-Auth".into(), "Bearer tok".into());
+        guarded
+            .write(&token)
+            .map
+            .insert("X-Auth".into(), "Bearer tok".into());
         assert_eq!(guarded.read().map.get("X-Auth").unwrap(), "Bearer tok");
     }
 }

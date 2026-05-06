@@ -82,15 +82,17 @@ impl ViewKind {
             ViewKind::PromptRequest => ViewAction::Invoke,
             ViewKind::PromptResult => ViewAction::Receive,
             // Direction-dependent kinds
-            ViewKind::Text | ViewKind::Thinking | ViewKind::Image
-            | ViewKind::Video | ViewKind::Audio | ViewKind::Document => {
-                match role {
-                    Role::User => ViewAction::Send,
-                    Role::Assistant => ViewAction::Generate,
-                    Role::Tool => ViewAction::Receive,
-                    Role::System | Role::Developer => ViewAction::Write,
-                }
-            }
+            ViewKind::Text
+            | ViewKind::Thinking
+            | ViewKind::Image
+            | ViewKind::Video
+            | ViewKind::Audio
+            | ViewKind::Document => match role {
+                Role::User => ViewAction::Send,
+                Role::Assistant => ViewAction::Generate,
+                Role::Tool => ViewAction::Receive,
+                Role::System | Role::Developer => ViewAction::Write,
+            },
         }
     }
 
@@ -210,12 +212,12 @@ impl<'a> MessageView<'a> {
 
     /// Whether this is a pre-execution hook (tool_pre_invoke, prompt_pre_fetch, etc.).
     pub fn is_pre(&self) -> bool {
-        self.hook.map_or(false, |h| h.contains("pre"))
+        self.hook.is_some_and(|h| h.contains("pre"))
     }
 
     /// Whether this is a post-execution hook.
     pub fn is_post(&self) -> bool {
-        self.hook.map_or(false, |h| h.contains("post"))
+        self.hook.is_some_and(|h| h.contains("post"))
     }
 
     // -- Universal properties --
@@ -225,7 +227,7 @@ impl<'a> MessageView<'a> {
         match self.part {
             ContentPart::Text { text } | ContentPart::Thinking { text } => Some(text),
             ContentPart::ToolResult { content: tr } => {
-                tr.content.as_str().map(|s| Some(s)).unwrap_or(None)
+                tr.content.as_str().map(Some).unwrap_or(None)
             }
             ContentPart::Resource { content: r } => r.content.as_deref(),
             ContentPart::PromptResult { content: pr } => pr.content.as_deref(),
@@ -249,14 +251,10 @@ impl<'a> MessageView<'a> {
     /// URI for the entity.
     pub fn uri(&self) -> Option<String> {
         match self.part {
-            ContentPart::ToolCall { content: tc } => {
-                Some(format!("tool://_/{}", tc.name))
-            }
+            ContentPart::ToolCall { content: tc } => Some(format!("tool://_/{}", tc.name)),
             ContentPart::Resource { content: r } => Some(r.uri.clone()),
             ContentPart::ResourceRef { content: rr } => Some(rr.uri.clone()),
-            ContentPart::PromptRequest { content: pr } => {
-                Some(format!("prompt://_/{}", pr.name))
-            }
+            ContentPart::PromptRequest { content: pr } => Some(format!("prompt://_/{}", pr.name)),
             _ => None,
         }
     }
@@ -303,11 +301,21 @@ impl<'a> MessageView<'a> {
 
     // -- Type helpers --
 
-    pub fn is_tool(&self) -> bool { self.kind.is_tool() }
-    pub fn is_resource(&self) -> bool { self.kind.is_resource() }
-    pub fn is_prompt(&self) -> bool { self.kind.is_prompt() }
-    pub fn is_media(&self) -> bool { self.kind.is_media() }
-    pub fn is_text(&self) -> bool { self.kind.is_text() }
+    pub fn is_tool(&self) -> bool {
+        self.kind.is_tool()
+    }
+    pub fn is_resource(&self) -> bool {
+        self.kind.is_resource()
+    }
+    pub fn is_prompt(&self) -> bool {
+        self.kind.is_prompt()
+    }
+    pub fn is_media(&self) -> bool {
+        self.kind.is_media()
+    }
+    pub fn is_text(&self) -> bool {
+        self.kind.is_text()
+    }
 
     // -- Extension accessors --
 
@@ -341,11 +349,7 @@ impl<'a> MessageView<'a> {
     /// Includes the view's properties, arguments, and optionally
     /// text content and extension context. Sensitive headers
     /// (Authorization, Cookie, X-API-Key) are stripped.
-    pub fn to_dict(
-        &self,
-        include_content: bool,
-        include_context: bool,
-    ) -> serde_json::Value {
+    pub fn to_dict(&self, include_content: bool, include_context: bool) -> serde_json::Value {
         use super::constants::*;
 
         let mut result = serde_json::Map::new();
@@ -417,7 +421,8 @@ impl<'a> MessageView<'a> {
                             sub_map.insert(FIELD_TEAMS.into(), serde_json::json!(teams));
                         }
                         if !sub_map.is_empty() {
-                            ext_map.insert(FIELD_SUBJECT.into(), serde_json::Value::Object(sub_map));
+                            ext_map
+                                .insert(FIELD_SUBJECT.into(), serde_json::Value::Object(sub_map));
                         }
                     }
 
@@ -540,9 +545,10 @@ pub fn iter_views<'a>(
     hook: Option<&'a str>,
     extensions: Option<&'a Extensions>,
 ) -> impl Iterator<Item = MessageView<'a>> {
-    message.content.iter().map(move |part| {
-        MessageView::new(part, message.role, hook, extensions)
-    })
+    message
+        .content
+        .iter()
+        .map(move |part| MessageView::new(part, message.role, hook, extensions))
 }
 
 // Also add iter_views to Message
@@ -571,8 +577,12 @@ mod tests {
             schema_version: "2.0".into(),
             role: Role::Assistant,
             content: vec![
-                ContentPart::Thinking { text: "Let me think...".into() },
-                ContentPart::Text { text: "Here's the answer.".into() },
+                ContentPart::Thinking {
+                    text: "Let me think...".into(),
+                },
+                ContentPart::Text {
+                    text: "Here's the answer.".into(),
+                },
                 ContentPart::ToolCall {
                     content: ToolCall {
                         tool_call_id: "tc_001".into(),
@@ -658,8 +668,8 @@ mod tests {
         let views: Vec<_> = msg.iter_views(None, None).collect();
         assert_eq!(views[0].action(), ViewAction::Generate); // thinking from assistant
         assert_eq!(views[1].action(), ViewAction::Generate); // text from assistant
-        assert_eq!(views[2].action(), ViewAction::Execute);  // tool call
-        assert_eq!(views[3].action(), ViewAction::Read);     // resource
+        assert_eq!(views[2].action(), ViewAction::Execute); // tool call
+        assert_eq!(views[3].action(), ViewAction::Read); // resource
     }
 
     #[test]
@@ -685,9 +695,9 @@ mod tests {
     fn test_view_type_helpers() {
         let msg = make_test_message();
         let views: Vec<_> = msg.iter_views(None, None).collect();
-        assert!(views[0].is_text());     // thinking
-        assert!(views[1].is_text());     // text
-        assert!(views[2].is_tool());     // tool call
+        assert!(views[0].is_text()); // thinking
+        assert!(views[1].is_text()); // text
+        assert!(views[2].is_tool()); // tool call
         assert!(views[3].is_resource()); // resource
     }
 
@@ -700,8 +710,8 @@ mod tests {
 
     #[test]
     fn test_view_with_extensions() {
+        use crate::extensions::{HttpExtension, SecurityExtension};
         use std::sync::Arc;
-        use crate::extensions::{SecurityExtension, HttpExtension};
 
         let mut security = SecurityExtension::default();
         security.add_label("PII");
@@ -766,10 +776,10 @@ mod tests {
 
     #[test]
     fn test_to_dict_with_extensions() {
-        use std::sync::Arc;
         use crate::extensions::{
-            SecurityExtension, HttpExtension, RequestExtension, AgentExtension,
+            AgentExtension, HttpExtension, RequestExtension, SecurityExtension,
         };
+        use std::sync::Arc;
 
         let mut security = SecurityExtension::default();
         security.add_label("PII");
@@ -813,10 +823,16 @@ mod tests {
 
         // Subject visible
         assert_eq!(extensions["subject"]["id"], "alice");
-        assert!(extensions["subject"]["roles"].as_array().unwrap().contains(&serde_json::json!("admin")));
+        assert!(extensions["subject"]["roles"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!("admin")));
 
         // Labels visible
-        assert!(extensions["labels"].as_array().unwrap().contains(&serde_json::json!("PII")));
+        assert!(extensions["labels"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!("PII")));
 
         // Environment visible
         assert_eq!(extensions["environment"], "production");

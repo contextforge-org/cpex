@@ -24,10 +24,10 @@
 
 pub mod cmf;
 pub mod config;
-pub mod extensions;
 pub mod context;
 pub mod error;
 pub mod executor;
+pub mod extensions;
 pub mod factory;
 pub mod hooks;
 pub mod manager;

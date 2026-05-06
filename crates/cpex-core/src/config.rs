@@ -21,7 +21,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::error::PluginError;
 use crate::plugin::PluginConfig;
@@ -100,6 +100,18 @@ pub struct PluginSettings {
     /// Whether to halt the pipeline on any plugin error.
     #[serde(default)]
     pub fail_on_plugin_error: bool,
+
+    /// Maximum number of entries in the routing cache.
+    ///
+    /// When the cache reaches this size, new resolutions are computed
+    /// normally but not memoized — the cache rejects further inserts
+    /// and emits a warning. This bounds memory growth from
+    /// attacker-controlled entity names without the reasoning hazards
+    /// of eviction (silently dropped entries, stale-vs-current
+    /// confusion). Operators see the warning and tune the cap or
+    /// investigate the entity-name growth.
+    #[serde(default = "default_route_cache_max_entries")]
+    pub route_cache_max_entries: usize,
 }
 
 impl Default for PluginSettings {
@@ -110,8 +122,13 @@ impl Default for PluginSettings {
             short_circuit_on_deny: true,
             parallel_execution_within_band: false,
             fail_on_plugin_error: false,
+            route_cache_max_entries: default_route_cache_max_entries(),
         }
     }
+}
+
+fn default_route_cache_max_entries() -> usize {
+    10_000
 }
 
 fn default_timeout() -> u64 {
@@ -163,7 +180,7 @@ pub struct PolicyGroup {
 
     /// Plugin references to activate when this group matches.
     #[serde(default)]
-    pub plugins: Vec<PluginRef>,
+    pub plugins: Vec<PluginRouteRef>,
 }
 
 // ---------------------------------------------------------------------------
@@ -181,14 +198,14 @@ pub struct PolicyGroup {
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
-pub enum PluginRef {
+pub enum PluginRouteRef {
     /// Just the name — activate the plugin with no config overrides.
     Name(String),
     /// Name with config overrides — single-key map.
     WithOverrides(HashMap<String, serde_json::Value>),
 }
 
-impl PluginRef {
+impl PluginRouteRef {
     /// Extract the plugin name from this reference.
     pub fn name(&self) -> &str {
         match self {
@@ -244,7 +261,7 @@ pub struct RouteEntry {
 
     /// Plugin references to activate for this route.
     #[serde(default)]
-    pub plugins: Vec<PluginRef>,
+    pub plugins: Vec<PluginRouteRef>,
 }
 
 // ---------------------------------------------------------------------------
@@ -272,19 +289,82 @@ pub struct RouteMeta {
 // String or List (for tool matching)
 // ---------------------------------------------------------------------------
 
+/// An entity-name pattern. Holds the original pattern string (for
+/// serialization round-tripping and operator-facing diagnostics) plus a
+/// `WildMatch` matcher pre-compiled at deserialize time so route resolution
+/// doesn't re-parse the pattern on every request. Custom `Serialize` /
+/// `Deserialize` make this transparent to YAML — it serializes as a plain
+/// string, just like the previous `String` field did.
+///
+/// Glob syntax (via `wildmatch`):
+/// - `*` matches any sequence of characters (including empty).
+/// - `?` matches any single character.
+///
+/// The previous hand-rolled matcher only handled trailing-`*` correctly:
+/// `*suffix` patterns silently matched almost nothing, and multi-star
+/// patterns like `**` accidentally matched everything. Both shapes are
+/// real security footguns for scope/tool restriction rules — switching to
+/// `wildmatch` gives us full single-segment glob semantics.
+#[derive(Debug, Clone)]
+pub struct Pattern {
+    pattern: String,
+    matcher: wildmatch::WildMatch,
+}
+
+impl Pattern {
+    /// Compile a pattern. Done once at config load; subsequent `matches()`
+    /// calls reuse the compiled `WildMatch`.
+    pub fn new(pattern: impl Into<String>) -> Self {
+        let pattern = pattern.into();
+        let matcher = wildmatch::WildMatch::new(&pattern);
+        Self { pattern, matcher }
+    }
+
+    /// Match the given name against the compiled pattern.
+    pub fn matches(&self, name: &str) -> bool {
+        self.matcher.matches(name)
+    }
+
+    /// The original pattern string (e.g., `"hr-*"`).
+    pub fn as_str(&self) -> &str {
+        &self.pattern
+    }
+}
+
+impl Default for Pattern {
+    fn default() -> Self {
+        Self::new("")
+    }
+}
+
+impl Serialize for Pattern {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.pattern)
+    }
+}
+
+impl<'de> Deserialize<'de> for Pattern {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(deserializer)?;
+        Ok(Pattern::new(s))
+    }
+}
+
 /// A tool matcher — single name, list of names, or glob pattern.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum StringOrList {
-    /// Single string (exact name or glob pattern).
-    Single(String),
+    /// Single string (exact name or glob pattern). Pre-compiled at
+    /// deserialize time so the route-resolution slow path doesn't re-parse
+    /// on each request.
+    Single(Pattern),
     /// List of exact names.
     List(Vec<String>),
 }
 
 impl Default for StringOrList {
     fn default() -> Self {
-        Self::Single(String::new())
+        Self::Single(Pattern::default())
     }
 }
 
@@ -292,16 +372,7 @@ impl StringOrList {
     /// Check if this matcher matches the given name.
     pub fn matches(&self, name: &str) -> bool {
         match self {
-            Self::Single(pattern) => {
-                if pattern == "*" {
-                    true
-                } else if pattern.contains('*') {
-                    let prefix = pattern.trim_end_matches('*');
-                    name.starts_with(prefix)
-                } else {
-                    name == pattern
-                }
-            }
+            Self::Single(pattern) => pattern.matches(name),
             Self::List(names) => names.iter().any(|n| n == name),
         }
     }
@@ -312,7 +383,7 @@ impl StringOrList {
 // ---------------------------------------------------------------------------
 
 /// Load and parse a CPEX config from a YAML file.
-pub fn load_config(path: &Path) -> Result<CpexConfig, PluginError> {
+pub fn load_config(path: &Path) -> Result<CpexConfig, Box<PluginError>> {
     let content = std::fs::read_to_string(path).map_err(|e| PluginError::Config {
         message: format!("failed to read config file '{}': {}", path.display(), e),
     })?;
@@ -320,11 +391,10 @@ pub fn load_config(path: &Path) -> Result<CpexConfig, PluginError> {
 }
 
 /// Parse a CPEX config from a YAML string.
-pub fn parse_config(yaml: &str) -> Result<CpexConfig, PluginError> {
-    let config: CpexConfig =
-        serde_yaml::from_str(yaml).map_err(|e| PluginError::Config {
-            message: format!("failed to parse config YAML: {}", e),
-        })?;
+pub fn parse_config(yaml: &str) -> Result<CpexConfig, Box<PluginError>> {
+    let config: CpexConfig = serde_yaml::from_str(yaml).map_err(|e| PluginError::Config {
+        message: format!("failed to parse config YAML: {}", e),
+    })?;
     validate_config(&config)?;
     Ok(config)
 }
@@ -334,19 +404,18 @@ pub fn parse_config(yaml: &str) -> Result<CpexConfig, PluginError> {
 // ---------------------------------------------------------------------------
 
 /// Validate a parsed config for structural correctness.
-fn validate_config(config: &CpexConfig) -> Result<(), PluginError> {
+fn validate_config(config: &CpexConfig) -> Result<(), Box<PluginError>> {
     let mut seen_names = HashSet::new();
     for plugin in &config.plugins {
         if !seen_names.insert(&plugin.name) {
-            return Err(PluginError::Config {
+            return Err(Box::new(PluginError::Config {
                 message: format!("duplicate plugin name: '{}'", plugin.name),
-            });
+            }));
         }
     }
 
     if config.routing_enabled() {
-        let plugin_names: HashSet<&str> =
-            config.plugins.iter().map(|p| p.name.as_str()).collect();
+        let plugin_names: HashSet<&str> = config.plugins.iter().map(|p| p.name.as_str()).collect();
 
         for (i, route) in config.routes.iter().enumerate() {
             let count = [
@@ -360,24 +429,31 @@ fn validate_config(config: &CpexConfig) -> Result<(), PluginError> {
             .count();
 
             if count == 0 {
-                return Err(PluginError::Config {
+                return Err(Box::new(PluginError::Config {
                     message: format!(
                         "route {} has no entity matcher (need tool, resource, prompt, or llm)",
                         i
                     ),
-                });
+                }));
             }
             if count > 1 {
-                return Err(PluginError::Config {
-                    message: format!("route {} has multiple entity matchers (need exactly one)", i),
-                });
+                return Err(Box::new(PluginError::Config {
+                    message: format!(
+                        "route {} has multiple entity matchers (need exactly one)",
+                        i
+                    ),
+                }));
             }
 
             for plugin_ref in &route.plugins {
                 if !plugin_names.contains(plugin_ref.name()) {
-                    return Err(PluginError::Config {
-                        message: format!("route {} references unknown plugin '{}'", i, plugin_ref.name()),
-                    });
+                    return Err(Box::new(PluginError::Config {
+                        message: format!(
+                            "route {} references unknown plugin '{}'",
+                            i,
+                            plugin_ref.name()
+                        ),
+                    }));
                 }
             }
         }
@@ -385,13 +461,13 @@ fn validate_config(config: &CpexConfig) -> Result<(), PluginError> {
         for (group_name, group) in &config.global.policies {
             for plugin_ref in &group.plugins {
                 if !plugin_names.contains(plugin_ref.name()) {
-                    return Err(PluginError::Config {
+                    return Err(Box::new(PluginError::Config {
                         message: format!(
                             "policy group '{}' references unknown plugin '{}'",
                             group_name,
                             plugin_ref.name()
                         ),
-                    });
+                    }));
                 }
             }
         }
@@ -410,6 +486,24 @@ const SPECIFICITY_NAME_LIST: usize = 500;
 const SPECIFICITY_GLOB: usize = 300;
 const SPECIFICITY_WHEN_ONLY: usize = 10;
 const SPECIFICITY_WILDCARD: usize = 0;
+
+/// Score a single entity matcher (tool / resource / prompt / llm) against
+/// a request entity name, returning the specificity bucket if it matches
+/// or `None` if it doesn't (or the matcher is absent). Replaces four
+/// copy-pasted match arms in `resolve_plugins_for_entity`.
+fn score_entity_match(matcher: Option<&StringOrList>, entity_name: &str) -> Option<usize> {
+    let matcher = matcher?;
+    if !matcher.matches(entity_name) {
+        return None;
+    }
+    let score = match matcher {
+        StringOrList::Single(p) if p.as_str() == "*" => SPECIFICITY_WILDCARD,
+        StringOrList::Single(p) if p.as_str().contains('*') => SPECIFICITY_GLOB,
+        StringOrList::List(_) => SPECIFICITY_NAME_LIST,
+        StringOrList::Single(_) => SPECIFICITY_EXACT_NAME,
+    };
+    Some(score)
+}
 
 /// Resolve which plugins should fire for a given entity.
 ///
@@ -502,7 +596,7 @@ pub struct ResolvedPlugin {
 
 /// Collect plugin refs into the resolved list.
 fn collect_plugin_refs(
-    refs: &[PluginRef],
+    refs: &[PluginRouteRef],
     resolved: &mut Vec<ResolvedPlugin>,
     route_when: Option<&str>,
 ) {
@@ -531,79 +625,31 @@ fn find_matching_route<'a>(
         // Check scope compatibility
         let route_scope = route.meta.as_ref().and_then(|m| m.scope.as_deref());
         let scope_bonus = match (route_scope, request_scope) {
-            (None, _) => 0,                              // route is global
-            (Some(rs), Some(rq)) if rs == rq => 100,     // scopes match
-            (Some(_), _) => continue,                     // scope mismatch — skip
+            (None, _) => 0,                          // route is global
+            (Some(rs), Some(rq)) if rs == rq => 100, // scopes match
+            (Some(_), _) => continue,                // scope mismatch — skip
         };
 
-        let base_specificity = match entity_type {
-            "tool" => {
-                if let Some(matcher) = &route.tool {
-                    if !matcher.matches(entity_name) {
-                        continue;
-                    }
-                    match matcher {
-                        StringOrList::Single(s) if s == "*" => SPECIFICITY_WILDCARD,
-                        StringOrList::Single(s) if s.contains('*') => SPECIFICITY_GLOB,
-                        StringOrList::List(_) => SPECIFICITY_NAME_LIST,
-                        StringOrList::Single(_) => SPECIFICITY_EXACT_NAME,
-                    }
-                } else {
-                    continue;
-                }
-            }
-            "resource" => {
-                if let Some(matcher) = &route.resource {
-                    if !matcher.matches(entity_name) {
-                        continue;
-                    }
-                    match matcher {
-                        StringOrList::Single(s) if s == "*" => SPECIFICITY_WILDCARD,
-                        StringOrList::Single(s) if s.contains('*') => SPECIFICITY_GLOB,
-                        StringOrList::List(_) => SPECIFICITY_NAME_LIST,
-                        StringOrList::Single(_) => SPECIFICITY_EXACT_NAME,
-                    }
-                } else {
-                    continue;
-                }
-            }
-            "prompt" => {
-                if let Some(matcher) = &route.prompt {
-                    if !matcher.matches(entity_name) {
-                        continue;
-                    }
-                    match matcher {
-                        StringOrList::Single(s) if s == "*" => SPECIFICITY_WILDCARD,
-                        StringOrList::Single(s) if s.contains('*') => SPECIFICITY_GLOB,
-                        StringOrList::List(_) => SPECIFICITY_NAME_LIST,
-                        StringOrList::Single(_) => SPECIFICITY_EXACT_NAME,
-                    }
-                } else {
-                    continue;
-                }
-            }
-            "llm" => {
-                if let Some(matcher) = &route.llm {
-                    if !matcher.matches(entity_name) {
-                        continue;
-                    }
-                    match matcher {
-                        StringOrList::Single(s) if s == "*" => SPECIFICITY_WILDCARD,
-                        StringOrList::Single(s) if s.contains('*') => SPECIFICITY_GLOB,
-                        StringOrList::List(_) => SPECIFICITY_NAME_LIST,
-                        StringOrList::Single(_) => SPECIFICITY_EXACT_NAME,
-                    }
-                } else {
-                    continue;
-                }
-            }
+        let entity_matcher = match entity_type {
+            "tool" => route.tool.as_ref(),
+            "resource" => route.resource.as_ref(),
+            "prompt" => route.prompt.as_ref(),
+            "llm" => route.llm.as_ref(),
             _ => continue,
         };
+        let base_specificity = match score_entity_match(entity_matcher, entity_name) {
+            Some(score) => score,
+            None => continue,
+        };
 
-        let when_bonus = if route.when.is_some() { SPECIFICITY_WHEN_ONLY } else { 0 };
+        let when_bonus = if route.when.is_some() {
+            SPECIFICITY_WHEN_ONLY
+        } else {
+            0
+        };
         let total = base_specificity + scope_bonus + when_bonus;
 
-        if best.map_or(true, |(s, _)| total > s) {
+        if best.is_none_or(|(s, _)| total > s) {
             best = Some((total, route));
         }
     }
@@ -803,7 +849,8 @@ routes:
       tags: [pii]
 "#;
         let config = parse_config(yaml).unwrap();
-        let resolved = resolve_plugins_for_entity(&config, "tool", "get_compensation", None, &no_tags());
+        let resolved =
+            resolve_plugins_for_entity(&config, "tool", "get_compensation", None, &no_tags());
         let names: Vec<&str> = resolved.iter().map(|r| r.name.as_str()).collect();
         assert!(names.contains(&"identity"));
         assert!(names.contains(&"apl_policy"));
@@ -827,7 +874,8 @@ routes:
   - tool: get_compensation
 "#;
         let config = parse_config(yaml).unwrap();
-        let resolved = resolve_plugins_for_entity(&config, "tool", "unknown_tool", None, &no_tags());
+        let resolved =
+            resolve_plugins_for_entity(&config, "tool", "unknown_tool", None, &no_tags());
         let names: Vec<&str> = resolved.iter().map(|r| r.name.as_str()).collect();
         assert_eq!(names, vec!["identity"]);
     }
@@ -853,7 +901,8 @@ routes:
       - specific
 "#;
         let config = parse_config(yaml).unwrap();
-        let resolved = resolve_plugins_for_entity(&config, "tool", "hr-compensation", None, &no_tags());
+        let resolved =
+            resolve_plugins_for_entity(&config, "tool", "hr-compensation", None, &no_tags());
         let names: Vec<&str> = resolved.iter().map(|r| r.name.as_str()).collect();
         assert!(names.contains(&"specific"));
         assert!(!names.contains(&"general"));
@@ -874,7 +923,8 @@ routes:
       - rate_limiter
 "#;
         let config = parse_config(yaml).unwrap();
-        let resolved = resolve_plugins_for_entity(&config, "tool", "get_compensation", None, &no_tags());
+        let resolved =
+            resolve_plugins_for_entity(&config, "tool", "get_compensation", None, &no_tags());
         assert_eq!(resolved[0].name, "rate_limiter");
         assert!(resolved[0].config_overrides.is_none());
     }
@@ -898,7 +948,8 @@ routes:
             max_requests: 10
 "#;
         let config = parse_config(yaml).unwrap();
-        let resolved = resolve_plugins_for_entity(&config, "tool", "get_compensation", None, &no_tags());
+        let resolved =
+            resolve_plugins_for_entity(&config, "tool", "get_compensation", None, &no_tags());
         assert_eq!(resolved[0].name, "rate_limiter");
         assert!(resolved[0].config_overrides.is_some());
         let overrides = resolved[0].config_overrides.as_ref().unwrap();
@@ -926,7 +977,8 @@ routes:
             sensitivity: high
 "#;
         let config = parse_config(yaml).unwrap();
-        let resolved = resolve_plugins_for_entity(&config, "tool", "get_compensation", None, &no_tags());
+        let resolved =
+            resolve_plugins_for_entity(&config, "tool", "get_compensation", None, &no_tags());
         assert_eq!(resolved.len(), 2);
         assert_eq!(resolved[0].name, "rate_limiter");
         assert!(resolved[0].config_overrides.is_none());
@@ -961,23 +1013,100 @@ routes:
       tags: [pii]
 "#;
         let config = parse_config(yaml).unwrap();
-        let resolved = resolve_plugins_for_entity(&config, "tool", "get_compensation", None, &no_tags());
+        let resolved =
+            resolve_plugins_for_entity(&config, "tool", "get_compensation", None, &no_tags());
         let names: Vec<&str> = resolved.iter().map(|r| r.name.as_str()).collect();
         assert_eq!(names, vec!["a", "b", "c"]);
     }
 
     #[test]
-    fn test_glob_matches() {
-        let matcher = StringOrList::Single("hr-*".to_string());
+    fn test_glob_trailing_wildcard() {
+        let matcher = StringOrList::Single(Pattern::new("hr-*"));
         assert!(matcher.matches("hr-compensation"));
         assert!(matcher.matches("hr-benefits"));
+        assert!(matcher.matches("hr-")); // empty match for *
         assert!(!matcher.matches("finance-report"));
+        assert!(!matcher.matches("hr"));
     }
 
     #[test]
     fn test_wildcard_matches_everything() {
-        let matcher = StringOrList::Single("*".to_string());
+        let matcher = StringOrList::Single(Pattern::new("*"));
         assert!(matcher.matches("anything"));
+        assert!(matcher.matches(""));
+    }
+
+    /// Regression for the security footgun: `*suffix` patterns were
+    /// silently matching almost nothing because the previous matcher
+    /// looked for `"*suffix"` as a literal prefix.
+    #[test]
+    fn test_glob_leading_wildcard() {
+        let matcher = StringOrList::Single(Pattern::new("*-prod"));
+        assert!(matcher.matches("foo-prod"));
+        assert!(matcher.matches("-prod")); // empty match for *
+        assert!(!matcher.matches("foo-staging"));
+        assert!(!matcher.matches("prod"));
+    }
+
+    /// Regression for `prefix*suffix` patterns also broken before.
+    #[test]
+    fn test_glob_mid_wildcard() {
+        let matcher = StringOrList::Single(Pattern::new("hr-*-v1"));
+        assert!(matcher.matches("hr-comp-v1"));
+        assert!(matcher.matches("hr--v1")); // empty match for *
+        assert!(!matcher.matches("hr-comp-v2"));
+        assert!(!matcher.matches("finance-comp-v1"));
+    }
+
+    /// Multiple-wildcard patterns must work everywhere `*` appears.
+    #[test]
+    fn test_glob_multiple_wildcards() {
+        let matcher = StringOrList::Single(Pattern::new("*hr*comp*"));
+        assert!(matcher.matches("hr-comp"));
+        assert!(matcher.matches("xyz-hr-comp-foo"));
+        assert!(!matcher.matches("hr-only"));
+        assert!(!matcher.matches("comp-only"));
+    }
+
+    /// Regression for the OTHER security footgun: multi-star patterns
+    /// like `**` were `trim_end_matches('*')`'d to `""` and then matched
+    /// every name via `starts_with("")`. With wildmatch this is a
+    /// degenerate-but-correct "match anything" pattern, equivalent to `*`.
+    #[test]
+    fn test_glob_multi_star_is_equivalent_to_single_star() {
+        for pattern in &["**", "***", "*****"] {
+            let matcher = StringOrList::Single(Pattern::new(*pattern));
+            assert!(
+                matcher.matches("anything"),
+                "pattern {} should match",
+                pattern
+            );
+            assert!(
+                matcher.matches(""),
+                "pattern {} should match empty",
+                pattern
+            );
+        }
+    }
+
+    /// `WildMatch` is built once at deserialize / `Pattern::new` time and
+    /// reused; this test just sanity-checks the round-trip through serde.
+    #[test]
+    fn test_pattern_round_trips_through_yaml() {
+        let yaml = "tool: '*-prod'";
+        #[derive(Deserialize, Serialize)]
+        struct Wrap {
+            tool: StringOrList,
+        }
+        let parsed: Wrap = serde_yaml::from_str(yaml).unwrap();
+        assert!(parsed.tool.matches("foo-prod"));
+        assert!(!parsed.tool.matches("foo-staging"));
+        let back = serde_yaml::to_string(&parsed).unwrap();
+        assert!(
+            back.contains("*-prod"),
+            "serialized YAML should preserve pattern: {}",
+            back
+        );
     }
 
     #[test]
@@ -1034,23 +1163,30 @@ routes:
 
         // With matching scope — scoped route wins (more specific)
         let resolved = resolve_plugins_for_entity(
-            &config, "tool", "get_compensation", Some("hr-services"), &no_tags(),
+            &config,
+            "tool",
+            "get_compensation",
+            Some("hr-services"),
+            &no_tags(),
         );
         let names: Vec<&str> = resolved.iter().map(|r| r.name.as_str()).collect();
         assert!(names.contains(&"scoped_plugin"));
         assert!(!names.contains(&"global_plugin"));
 
         // Without scope — global route matches
-        let resolved = resolve_plugins_for_entity(
-            &config, "tool", "get_compensation", None, &no_tags(),
-        );
+        let resolved =
+            resolve_plugins_for_entity(&config, "tool", "get_compensation", None, &no_tags());
         let names: Vec<&str> = resolved.iter().map(|r| r.name.as_str()).collect();
         assert!(names.contains(&"global_plugin"));
         assert!(!names.contains(&"scoped_plugin"));
 
         // With different scope — global route matches (scoped doesn't)
         let resolved = resolve_plugins_for_entity(
-            &config, "tool", "get_compensation", Some("billing"), &no_tags(),
+            &config,
+            "tool",
+            "get_compensation",
+            Some("billing"),
+            &no_tags(),
         );
         let names: Vec<&str> = resolved.iter().map(|r| r.name.as_str()).collect();
         assert!(names.contains(&"global_plugin"));
@@ -1088,9 +1224,8 @@ routes:
         let mut host_tags = HashSet::new();
         host_tags.insert("runtime_tag".to_string());
 
-        let resolved = resolve_plugins_for_entity(
-            &config, "tool", "get_compensation", None, &host_tags,
-        );
+        let resolved =
+            resolve_plugins_for_entity(&config, "tool", "get_compensation", None, &host_tags);
         let names: Vec<&str> = resolved.iter().map(|r| r.name.as_str()).collect();
 
         // Both route's static tag (pii) and host's runtime tag activate their groups
@@ -1116,11 +1251,13 @@ routes:
       - conditional_plugin
 "#;
         let config = parse_config(yaml).unwrap();
-        let resolved = resolve_plugins_for_entity(
-            &config, "tool", "get_compensation", None, &no_tags(),
-        );
+        let resolved =
+            resolve_plugins_for_entity(&config, "tool", "get_compensation", None, &no_tags());
         assert_eq!(resolved[0].name, "conditional_plugin");
-        assert_eq!(resolved[0].when.as_deref(), Some("args.include_ssn == true"));
+        assert_eq!(
+            resolved[0].when.as_deref(),
+            Some("args.include_ssn == true")
+        );
     }
 
     #[test]
@@ -1146,9 +1283,8 @@ routes:
       - route_plugin
 "#;
         let config = parse_config(yaml).unwrap();
-        let resolved = resolve_plugins_for_entity(
-            &config, "tool", "get_compensation", None, &no_tags(),
-        );
+        let resolved =
+            resolve_plugins_for_entity(&config, "tool", "get_compensation", None, &no_tags());
 
         // global_plugin has no when clause (from all group)
         let global = resolved.iter().find(|r| r.name == "global_plugin").unwrap();

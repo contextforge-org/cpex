@@ -1,0 +1,31 @@
+# Location: ./crates/cpex-ffi/Cargo.toml
+# Copyright 2025
+# SPDX-License-Identifier: Apache-2.0
+# Authors: Teryl Taylor
+#
+# CPEX FFI — C API for embedding the CPEX runtime in Go, Python, etc.
+# Compiles to a shared library (cdylib) exporting extern "C" functions.
+# Payloads cross the FFI boundary as MessagePack bytes.
+
+[package]
+name = "cpex-ffi"
+description = "CPEX C FFI — shared library for Go/Python/WASM host bindings."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[lib]
+crate-type = ["lib", "cdylib", "staticlib"]
+
+[dependencies]
+cpex-core = { path = "../cpex-core" }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+rmp-serde = { workspace = true }
+serde_bytes = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+async-trait = { workspace = true }

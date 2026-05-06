@@ -13,12 +13,10 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use cpex_core::cmf::{ContentPart, CmfHook, Message, MessagePayload, Role, ToolCall};
+use cpex_core::cmf::{CmfHook, ContentPart, Message, MessagePayload, Role, ToolCall};
 use cpex_core::context::PluginContext;
 use cpex_core::error::{PluginError, PluginViolation};
-use cpex_core::extensions::{
-    HttpExtension, RequestExtension, SecurityExtension,
-};
+use cpex_core::extensions::{HttpExtension, RequestExtension, SecurityExtension};
 use cpex_core::factory::{PluginFactory, PluginInstance};
 use cpex_core::hooks::adapter::TypedHandlerAdapter;
 use cpex_core::hooks::payload::{Extensions, MetaExtension};
@@ -38,7 +36,9 @@ struct IdentityChecker {
 
 #[async_trait]
 impl Plugin for IdentityChecker {
-    fn config(&self) -> &PluginConfig { &self.cfg }
+    fn config(&self) -> &PluginConfig {
+        &self.cfg
+    }
 }
 
 impl HookHandler<CmfHook> for IdentityChecker {
@@ -53,33 +53,49 @@ impl HookHandler<CmfHook> for IdentityChecker {
 
         if is_result {
             // POST-INVOKE: verify the tool result came from an authorized call
-            let tool_name = payload.message.get_tool_results()
+            let tool_name = payload
+                .message
+                .get_tool_results()
                 .first()
                 .map(|tr| tr.tool_name.as_str())
                 .unwrap_or("unknown");
-            println!("  [identity-checker] POST-INVOKE: verifying result from '{}'", tool_name);
+            println!(
+                "  [identity-checker] POST-INVOKE: verifying result from '{}'",
+                tool_name
+            );
 
             if let Some(ref security) = extensions.security {
                 if let Some(ref subject) = security.subject {
-                    println!("  [identity-checker] Result authorized for subject: {:?}", subject.id);
+                    println!(
+                        "  [identity-checker] Result authorized for subject: {:?}",
+                        subject.id
+                    );
                 }
             }
             println!("  [identity-checker] POST-INVOKE ALLOWED");
         } else {
             // PRE-INVOKE: check caller identity and roles
-            let tool_name = payload.message.get_tool_calls()
+            let tool_name = payload
+                .message
+                .get_tool_calls()
                 .first()
                 .map(|tc| tc.name.as_str())
                 .unwrap_or("unknown");
-            println!("  [identity-checker] PRE-INVOKE: checking identity for '{}'", tool_name);
+            println!(
+                "  [identity-checker] PRE-INVOKE: checking identity for '{}'",
+                tool_name
+            );
 
             if let Some(ref security) = extensions.security {
                 let labels: Vec<&String> = security.labels.iter().collect();
                 println!("  [identity-checker] Security labels: {:?}", labels);
 
                 if let Some(ref subject) = security.subject {
-                    println!("  [identity-checker] Subject: {:?}, Roles: {:?}",
-                        subject.id, subject.roles.iter().collect::<Vec<_>>());
+                    println!(
+                        "  [identity-checker] Subject: {:?}, Roles: {:?}",
+                        subject.id,
+                        subject.roles.iter().collect::<Vec<_>>()
+                    );
 
                     if security.has_label("PII") && !subject.roles.contains("hr_admin") {
                         return PluginResult::deny(PluginViolation::new(
@@ -114,7 +130,9 @@ struct HeaderInjector {
 
 #[async_trait]
 impl Plugin for HeaderInjector {
-    fn config(&self) -> &PluginConfig { &self.cfg }
+    fn config(&self) -> &PluginConfig {
+        &self.cfg
+    }
 }
 
 impl HookHandler<CmfHook> for HeaderInjector {
@@ -126,7 +144,10 @@ impl HookHandler<CmfHook> for HeaderInjector {
     ) -> PluginResult<MessagePayload> {
         // Can see HTTP (has read_headers)
         if let Some(ref http) = extensions.http {
-            println!("  [header-injector] HTTP headers visible: {:?}", http.request_headers);
+            println!(
+                "  [header-injector] HTTP headers visible: {:?}",
+                http.request_headers
+            );
         }
 
         // Can NOT see security subject (no read_subject)
@@ -149,7 +170,12 @@ impl HookHandler<CmfHook> for HeaderInjector {
 
         // Inject a header via Guarded (has write_headers)
         if let Some(ref token) = modified.http_write_token {
-            modified.http.as_mut().unwrap().write(token).set_header("X-Processed-By", "header-injector");
+            modified
+                .http
+                .as_mut()
+                .unwrap()
+                .write(token)
+                .set_header("X-Processed-By", "header-injector");
             println!("  [header-injector] Injected header 'X-Processed-By'");
         }
 
@@ -169,7 +195,9 @@ struct AuditLogger {
 
 #[async_trait]
 impl Plugin for AuditLogger {
-    fn config(&self) -> &PluginConfig { &self.cfg }
+    fn config(&self) -> &PluginConfig {
+        &self.cfg
+    }
 }
 
 impl HookHandler<CmfHook> for AuditLogger {
@@ -183,12 +211,16 @@ impl HookHandler<CmfHook> for AuditLogger {
         let phase = if is_result { "POST" } else { "PRE" };
 
         let tool_name = if is_result {
-            payload.message.get_tool_results()
+            payload
+                .message
+                .get_tool_results()
                 .first()
                 .map(|tr| tr.tool_name.as_str())
                 .unwrap_or("unknown")
         } else {
-            payload.message.get_tool_calls()
+            payload
+                .message
+                .get_tool_calls()
                 .first()
                 .map(|tc| tc.name.as_str())
                 .unwrap_or("unknown")
@@ -208,7 +240,9 @@ impl HookHandler<CmfHook> for AuditLogger {
         }
 
         if is_result {
-            let is_error = payload.message.get_tool_results()
+            let is_error = payload
+                .message
+                .get_tool_results()
                 .first()
                 .map(|tr| tr.is_error)
                 .unwrap_or(false);
@@ -226,13 +260,21 @@ impl HookHandler<CmfHook> for AuditLogger {
 
 struct IdentityCheckerFactory;
 impl PluginFactory for IdentityCheckerFactory {
-    fn create(&self, config: &PluginConfig) -> Result<PluginInstance, PluginError> {
-        let plugin = Arc::new(IdentityChecker { cfg: config.clone() });
+    fn create(&self, config: &PluginConfig) -> Result<PluginInstance, Box<PluginError>> {
+        let plugin = Arc::new(IdentityChecker {
+            cfg: config.clone(),
+        });
         Ok(PluginInstance {
             plugin: plugin.clone(),
             handlers: vec![
-                ("cmf.tool_pre_invoke", Arc::new(TypedHandlerAdapter::<CmfHook, _>::new(plugin.clone()))),
-                ("cmf.tool_post_invoke", Arc::new(TypedHandlerAdapter::<CmfHook, _>::new(plugin))),
+                (
+                    "cmf.tool_pre_invoke",
+                    Arc::new(TypedHandlerAdapter::<CmfHook, _>::new(plugin.clone())),
+                ),
+                (
+                    "cmf.tool_post_invoke",
+                    Arc::new(TypedHandlerAdapter::<CmfHook, _>::new(plugin)),
+                ),
             ],
         })
     }
@@ -240,26 +282,37 @@ impl PluginFactory for IdentityCheckerFactory {
 
 struct HeaderInjectorFactory;
 impl PluginFactory for HeaderInjectorFactory {
-    fn create(&self, config: &PluginConfig) -> Result<PluginInstance, PluginError> {
-        let plugin = Arc::new(HeaderInjector { cfg: config.clone() });
+    fn create(&self, config: &PluginConfig) -> Result<PluginInstance, Box<PluginError>> {
+        let plugin = Arc::new(HeaderInjector {
+            cfg: config.clone(),
+        });
         Ok(PluginInstance {
             plugin: plugin.clone(),
-            handlers: vec![
-                ("cmf.tool_pre_invoke", Arc::new(TypedHandlerAdapter::<CmfHook, _>::new(plugin))),
-            ],
+            handlers: vec![(
+                "cmf.tool_pre_invoke",
+                Arc::new(TypedHandlerAdapter::<CmfHook, _>::new(plugin)),
+            )],
         })
     }
 }
 
 struct AuditLoggerFactory;
 impl PluginFactory for AuditLoggerFactory {
-    fn create(&self, config: &PluginConfig) -> Result<PluginInstance, PluginError> {
-        let plugin = Arc::new(AuditLogger { cfg: config.clone() });
+    fn create(&self, config: &PluginConfig) -> Result<PluginInstance, Box<PluginError>> {
+        let plugin = Arc::new(AuditLogger {
+            cfg: config.clone(),
+        });
         Ok(PluginInstance {
             plugin: plugin.clone(),
             handlers: vec![
-                ("cmf.tool_pre_invoke", Arc::new(TypedHandlerAdapter::<CmfHook, _>::new(plugin.clone()))),
-                ("cmf.tool_post_invoke", Arc::new(TypedHandlerAdapter::<CmfHook, _>::new(plugin))),
+                (
+                    "cmf.tool_pre_invoke",
+                    Arc::new(TypedHandlerAdapter::<CmfHook, _>::new(plugin.clone())),
+                ),
+                (
+                    "cmf.tool_post_invoke",
+                    Arc::new(TypedHandlerAdapter::<CmfHook, _>::new(plugin)),
+                ),
             ],
         })
     }
@@ -280,7 +333,7 @@ async fn main() {
         .unwrap_or_else(|e| panic!("Failed to read {}: {}", config_path, e));
     let cpex_config = cpex_core::config::parse_config(&yaml).unwrap();
 
-    let mut mgr = PluginManager::default();
+    let mgr = PluginManager::default();
     mgr.register_factory("builtin/identity-checker", Box::new(IdentityCheckerFactory));
     mgr.register_factory("builtin/header-injector", Box::new(HeaderInjectorFactory));
     mgr.register_factory("builtin/audit-logger", Box::new(AuditLoggerFactory));
@@ -293,7 +346,9 @@ async fn main() {
             schema_version: cpex_core::cmf::constants::SCHEMA_VERSION.into(),
             role: Role::Assistant,
             content: vec![
-                ContentPart::Text { text: "Looking up compensation.".into() },
+                ContentPart::Text {
+                    text: "Looking up compensation.".into(),
+                },
                 ContentPart::ToolCall {
                     content: ToolCall {
                         tool_call_id: "tc_001".into(),
@@ -346,12 +401,14 @@ async fn main() {
 
     // invoke_named<CmfHook> gives compile-time payload type checking
     // while routing to the specific "cmf.tool_pre_invoke" hook name
-    let (pre_result, bg) = mgr.invoke_named::<CmfHook>(
-        "cmf.tool_pre_invoke",
-        payload,
-        ext,
-        None,  // first hook — no context table
-    ).await;
+    let (pre_result, bg) = mgr
+        .invoke_named::<CmfHook>(
+            "cmf.tool_pre_invoke",
+            payload,
+            ext,
+            None, // first hook — no context table
+        )
+        .await;
 
     println!();
     if pre_result.continue_processing {
@@ -366,7 +423,10 @@ async fn main() {
             }
         }
     } else {
-        println!("Pre-invoke result: DENIED — {}", pre_result.violation.as_ref().unwrap().reason);
+        println!(
+            "Pre-invoke result: DENIED — {}",
+            pre_result.violation.as_ref().unwrap().reason
+        );
         bg.wait_for_background_tasks().await;
         println!("\n=== Demo complete ===");
         return;
@@ -384,16 +444,14 @@ async fn main() {
         message: Message {
             schema_version: cpex_core::cmf::constants::SCHEMA_VERSION.into(),
             role: Role::Tool,
-            content: vec![
-                ContentPart::ToolResult {
-                    content: cpex_core::cmf::ToolResult {
-                        tool_call_id: "tc_001".into(),
-                        tool_name: "get_compensation".into(),
-                        content: serde_json::json!({"salary": 150000, "currency": "USD"}),
-                        is_error: false,
-                    },
+            content: vec![ContentPart::ToolResult {
+                content: cpex_core::cmf::ToolResult {
+                    tool_call_id: "tc_001".into(),
+                    tool_name: "get_compensation".into(),
+                    content: serde_json::json!({"salary": 150000, "currency": "USD"}),
+                    is_error: false,
                 },
-            ],
+            }],
             channel: None,
         },
     };
@@ -416,18 +474,23 @@ async fn main() {
     });
 
     // Thread the context table from pre-invoke to preserve plugin state
-    let (post_result, post_bg) = mgr.invoke_named::<CmfHook>(
-        "cmf.tool_post_invoke",
-        post_payload,
-        post_ext,
-        Some(pre_result.context_table),
-    ).await;
+    let (post_result, post_bg) = mgr
+        .invoke_named::<CmfHook>(
+            "cmf.tool_post_invoke",
+            post_payload,
+            post_ext,
+            Some(pre_result.context_table),
+        )
+        .await;
 
     println!();
     if post_result.continue_processing {
         println!("Post-invoke result: ALLOWED");
     } else {
-        println!("Post-invoke result: DENIED — {}", post_result.violation.as_ref().unwrap().reason);
+        println!(
+            "Post-invoke result: DENIED — {}",
+            post_result.violation.as_ref().unwrap().reason
+        );
     }
 
     post_bg.wait_for_background_tasks().await;

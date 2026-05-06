@@ -62,12 +62,14 @@ struct IdentityResolver {
 
 #[async_trait]
 impl Plugin for IdentityResolver {
-    fn config(&self) -> &PluginConfig { &self.cfg }
-    async fn initialize(&self) -> Result<(), PluginError> {
+    fn config(&self) -> &PluginConfig {
+        &self.cfg
+    }
+    async fn initialize(&self) -> Result<(), Box<PluginError>> {
         println!("  [identity-resolver] initialized");
         Ok(())
     }
-    async fn shutdown(&self) -> Result<(), PluginError> {
+    async fn shutdown(&self) -> Result<(), Box<PluginError>> {
         println!("  [identity-resolver] shutdown");
         Ok(())
     }
@@ -82,11 +84,15 @@ impl HookHandler<ToolPreInvoke> for IdentityResolver {
     ) -> PluginResult<ToolInvokePayload> {
         if payload.user.is_empty() {
             println!("  [identity-resolver] DENIED: no user identity");
-            return PluginResult::deny(
-                PluginViolation::new("no_identity", "User identity is required"),
-            );
+            return PluginResult::deny(PluginViolation::new(
+                "no_identity",
+                "User identity is required",
+            ));
         }
-        println!("  [identity-resolver] OK: user '{}' identified", payload.user);
+        println!(
+            "  [identity-resolver] OK: user '{}' identified",
+            payload.user
+        );
         PluginResult::allow()
     }
 }
@@ -98,8 +104,10 @@ impl HookHandler<ToolPostInvoke> for IdentityResolver {
         _extensions: &Extensions,
         _ctx: &mut PluginContext,
     ) -> PluginResult<ToolInvokePayload> {
-        println!("  [identity-resolver] post-invoke: user '{}' completed '{}'",
-            payload.user, payload.tool_name);
+        println!(
+            "  [identity-resolver] post-invoke: user '{}' completed '{}'",
+            payload.user, payload.tool_name
+        );
         PluginResult::allow()
     }
 }
@@ -111,7 +119,9 @@ struct PiiGuard {
 
 #[async_trait]
 impl Plugin for PiiGuard {
-    fn config(&self) -> &PluginConfig { &self.cfg }
+    fn config(&self) -> &PluginConfig {
+        &self.cfg
+    }
     // initialize() and shutdown() use defaults — no setup needed
 }
 
@@ -129,14 +139,20 @@ impl HookHandler<ToolPreInvoke> for PiiGuard {
             .unwrap_or(false);
 
         if !has_clearance {
-            println!("  [pii-guard] DENIED: user '{}' lacks PII clearance for '{}'",
-                payload.user, payload.tool_name);
-            return PluginResult::deny(
-                PluginViolation::new("pii_access_denied", "PII clearance required"),
+            println!(
+                "  [pii-guard] DENIED: user '{}' lacks PII clearance for '{}'",
+                payload.user, payload.tool_name
             );
+            return PluginResult::deny(PluginViolation::new(
+                "pii_access_denied",
+                "PII clearance required",
+            ));
         }
 
-        println!("  [pii-guard] OK: user '{}' has PII clearance", payload.user);
+        println!(
+            "  [pii-guard] OK: user '{}' has PII clearance",
+            payload.user
+        );
         PluginResult::allow()
     }
 }
@@ -148,7 +164,9 @@ struct AuditLogger {
 
 #[async_trait]
 impl Plugin for AuditLogger {
-    fn config(&self) -> &PluginConfig { &self.cfg }
+    fn config(&self) -> &PluginConfig {
+        &self.cfg
+    }
     // initialize() and shutdown() use defaults — no setup needed
 }
 
@@ -159,8 +177,10 @@ impl HookHandler<ToolPreInvoke> for AuditLogger {
         _extensions: &Extensions,
         _ctx: &mut PluginContext,
     ) -> PluginResult<ToolInvokePayload> {
-        println!("  [audit-logger] LOG: user='{}' tool='{}' args='{}'",
-            payload.user, payload.tool_name, payload.arguments);
+        println!(
+            "  [audit-logger] LOG: user='{}' tool='{}' args='{}'",
+            payload.user, payload.tool_name, payload.arguments
+        );
         PluginResult::allow()
     }
 }
@@ -172,8 +192,10 @@ impl HookHandler<ToolPostInvoke> for AuditLogger {
         _extensions: &Extensions,
         _ctx: &mut PluginContext,
     ) -> PluginResult<ToolInvokePayload> {
-        println!("  [audit-logger] LOG: post-invoke user='{}' tool='{}'",
-            payload.user, payload.tool_name);
+        println!(
+            "  [audit-logger] LOG: post-invoke user='{}' tool='{}'",
+            payload.user, payload.tool_name
+        );
         PluginResult::allow()
     }
 }
@@ -184,13 +206,21 @@ impl HookHandler<ToolPostInvoke> for AuditLogger {
 
 struct IdentityFactory;
 impl PluginFactory for IdentityFactory {
-    fn create(&self, config: &PluginConfig) -> Result<PluginInstance, PluginError> {
-        let plugin = Arc::new(IdentityResolver { cfg: config.clone() });
+    fn create(&self, config: &PluginConfig) -> Result<PluginInstance, Box<PluginError>> {
+        let plugin = Arc::new(IdentityResolver {
+            cfg: config.clone(),
+        });
         Ok(PluginInstance {
             plugin: plugin.clone(),
             handlers: vec![
-                ("tool_pre_invoke", Arc::new(TypedHandlerAdapter::<ToolPreInvoke, _>::new(plugin.clone()))),
-                ("tool_post_invoke", Arc::new(TypedHandlerAdapter::<ToolPostInvoke, _>::new(plugin))),
+                (
+                    "tool_pre_invoke",
+                    Arc::new(TypedHandlerAdapter::<ToolPreInvoke, _>::new(plugin.clone())),
+                ),
+                (
+                    "tool_post_invoke",
+                    Arc::new(TypedHandlerAdapter::<ToolPostInvoke, _>::new(plugin)),
+                ),
             ],
         })
     }
@@ -198,26 +228,37 @@ impl PluginFactory for IdentityFactory {
 
 struct PiiGuardFactory;
 impl PluginFactory for PiiGuardFactory {
-    fn create(&self, config: &PluginConfig) -> Result<PluginInstance, PluginError> {
-        let plugin = Arc::new(PiiGuard { cfg: config.clone() });
+    fn create(&self, config: &PluginConfig) -> Result<PluginInstance, Box<PluginError>> {
+        let plugin = Arc::new(PiiGuard {
+            cfg: config.clone(),
+        });
         Ok(PluginInstance {
             plugin: plugin.clone(),
-            handlers: vec![
-                ("tool_pre_invoke", Arc::new(TypedHandlerAdapter::<ToolPreInvoke, _>::new(plugin))),
-            ],
+            handlers: vec![(
+                "tool_pre_invoke",
+                Arc::new(TypedHandlerAdapter::<ToolPreInvoke, _>::new(plugin)),
+            )],
         })
     }
 }
 
 struct AuditLoggerFactory;
 impl PluginFactory for AuditLoggerFactory {
-    fn create(&self, config: &PluginConfig) -> Result<PluginInstance, PluginError> {
-        let plugin = Arc::new(AuditLogger { cfg: config.clone() });
+    fn create(&self, config: &PluginConfig) -> Result<PluginInstance, Box<PluginError>> {
+        let plugin = Arc::new(AuditLogger {
+            cfg: config.clone(),
+        });
         Ok(PluginInstance {
             plugin: plugin.clone(),
             handlers: vec![
-                ("tool_pre_invoke", Arc::new(TypedHandlerAdapter::<ToolPreInvoke, _>::new(plugin.clone()))),
-                ("tool_post_invoke", Arc::new(TypedHandlerAdapter::<ToolPostInvoke, _>::new(plugin))),
+                (
+                    "tool_pre_invoke",
+                    Arc::new(TypedHandlerAdapter::<ToolPreInvoke, _>::new(plugin.clone())),
+                ),
+                (
+                    "tool_post_invoke",
+                    Arc::new(TypedHandlerAdapter::<ToolPostInvoke, _>::new(plugin)),
+                ),
             ],
         })
     }
@@ -248,7 +289,8 @@ fn print_result(_label: &str, result: &PipelineResult) {
         println!("  Result: ALLOWED");
     } else {
         let violation = result.violation.as_ref().unwrap();
-        println!("  Result: DENIED by '{}' — {} [{}]",
+        println!(
+            "  Result: DENIED by '{}' — {} [{}]",
             violation.plugin_name.as_deref().unwrap_or("unknown"),
             violation.reason,
             violation.code,
@@ -272,7 +314,7 @@ async fn main() {
         .unwrap_or_else(|e| panic!("Failed to read {}: {}", config_path, e));
     let cpex_config = cpex_core::config::parse_config(&yaml).unwrap();
 
-    let mut mgr = PluginManager::default();
+    let mgr = PluginManager::default();
     mgr.register_factory("builtin/identity", Box::new(IdentityFactory));
     mgr.register_factory("builtin/pii", Box::new(PiiGuardFactory));
     mgr.register_factory("builtin/audit", Box::new(AuditLoggerFactory));
@@ -282,7 +324,8 @@ async fn main() {
     mgr.initialize().await.unwrap();
 
     println!("\nPlugins loaded: {}", mgr.plugin_count());
-    println!("Hooks registered: tool_pre_invoke={}, tool_post_invoke={}\n",
+    println!(
+        "Hooks registered: tool_pre_invoke={}, tool_post_invoke={}\n",
         mgr.has_hooks_for("tool_pre_invoke"),
         mgr.has_hooks_for("tool_post_invoke"),
     );
@@ -295,9 +338,7 @@ async fn main() {
         arguments: "employee_id=42".into(),
     };
     let ext = make_tool_extensions("get_compensation", &[]);
-    let (result, bg) = mgr.invoke::<ToolPreInvoke>(
-        payload, ext, None,
-    ).await;
+    let (result, bg) = mgr.invoke::<ToolPreInvoke>(payload, ext, None).await;
     print_result("get_compensation (no clearance)", &result);
     // Wait for any fire-and-forget tasks
     bg.wait_for_background_tasks().await;
@@ -312,21 +353,13 @@ async fn main() {
     let ext = make_tool_extensions("get_compensation", &[]);
     // Simulate clearance by pre-populating global_state
     // (In production, an earlier hook would set this from a token claim)
-    let mut global_state = std::collections::HashMap::new();
-    global_state.insert(
-        "pii_clearance".into(),
-        serde_json::Value::Bool(true),
-    );
-    // Pass global state via context table
     let mut ctx_table = cpex_core::context::PluginContextTable::new();
-    // We need to seed global_state — create a dummy entry
-    ctx_table.insert(
-        "__seed__".into(),
-        cpex_core::context::PluginContext::with_global_state(global_state),
-    );
-    let (result, bg) = mgr.invoke::<ToolPreInvoke>(
-        payload, ext, Some(ctx_table),
-    ).await;
+    ctx_table
+        .global_state
+        .insert("pii_clearance".into(), serde_json::Value::Bool(true));
+    let (result, bg) = mgr
+        .invoke::<ToolPreInvoke>(payload, ext, Some(ctx_table))
+        .await;
     print_result("get_compensation (with clearance)", &result);
     bg.wait_for_background_tasks().await;
 
@@ -338,9 +371,9 @@ async fn main() {
         arguments: "employee_id=42".into(),
     };
     let ext = make_tool_extensions("get_compensation", &[]);
-    let (post_result, bg) = mgr.invoke::<ToolPostInvoke>(
-        payload, ext, Some(result.context_table),
-    ).await;
+    let (post_result, bg) = mgr
+        .invoke::<ToolPostInvoke>(payload, ext, Some(result.context_table))
+        .await;
     print_result("get_compensation post-invoke", &post_result);
     bg.wait_for_background_tasks().await;
 
@@ -352,9 +385,7 @@ async fn main() {
         arguments: "".into(),
     };
     let ext = make_tool_extensions("list_departments", &[]);
-    let (result, bg) = mgr.invoke::<ToolPreInvoke>(
-        payload, ext, None,
-    ).await;
+    let (result, bg) = mgr.invoke::<ToolPreInvoke>(payload, ext, None).await;
     print_result("list_departments", &result);
     bg.wait_for_background_tasks().await;
 
@@ -366,9 +397,7 @@ async fn main() {
         arguments: "foo=bar".into(),
     };
     let ext = make_tool_extensions("some_other_tool", &[]);
-    let (result, bg) = mgr.invoke::<ToolPreInvoke>(
-        payload, ext, None,
-    ).await;
+    let (result, bg) = mgr.invoke::<ToolPreInvoke>(payload, ext, None).await;
     print_result("some_other_tool (wildcard)", &result);
     bg.wait_for_background_tasks().await;
 
@@ -380,9 +409,7 @@ async fn main() {
         arguments: "".into(),
     };
     let ext = make_tool_extensions("list_departments", &[]);
-    let (result, bg) = mgr.invoke::<ToolPreInvoke>(
-        payload, ext, None,
-    ).await;
+    let (result, bg) = mgr.invoke::<ToolPreInvoke>(payload, ext, None).await;
     print_result("list_departments (no user)", &result);
     bg.wait_for_background_tasks().await;
 

@@ -1,0 +1,27 @@
+# Location: ./examples/go-demo/ffi/Cargo.toml
+# Copyright 2025
+# SPDX-License-Identifier: Apache-2.0
+# Authors: Teryl Taylor
+#
+# CPEX Demo FFI — demo plugins for Go example.
+#
+# Builds a staticlib that includes cpex-ffi symbols transitively.
+# Go links only this library to get both the core FFI surface and
+# the demo plugin factories.
+
+[package]
+name = "cpex-demo-ffi"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+publish = false
+
+[lib]
+crate-type = ["staticlib", "cdylib"]
+
+[dependencies]
+cpex-core = { path = "../../../crates/cpex-core" }
+cpex-ffi = { path = "../../../crates/cpex-ffi" }
+async-trait = "0.1"
+serde_json = "1"
+tracing = "0.1"

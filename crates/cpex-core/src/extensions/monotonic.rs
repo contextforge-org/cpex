@@ -80,11 +80,7 @@ impl<T: Eq + Hash> MonotonicSet<T> {
 
     /// Removal requires a DeclassifierToken — privileged, audited operation.
     /// Only the security subsystem can construct the token.
-    pub fn remove_with_declassifier(
-        &mut self,
-        value: &T,
-        _token: &DeclassifierToken,
-    ) -> bool {
+    pub fn remove_with_declassifier(&mut self, value: &T, _token: &DeclassifierToken) -> bool {
         self.inner.remove(value)
     }
 }

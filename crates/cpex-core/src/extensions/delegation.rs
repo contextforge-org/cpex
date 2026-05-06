@@ -113,8 +113,10 @@ mod tests {
 
     #[test]
     fn test_append_multiple_hops() {
-        let mut del = DelegationExtension::default();
-        del.origin_subject_id = Some("alice".into());
+        let mut del = DelegationExtension {
+            origin_subject_id: Some("alice".into()),
+            ..Default::default()
+        };
 
         del.append_hop(DelegationHop {
             subject_id: "alice".into(),
@@ -139,9 +141,11 @@ mod tests {
 
     #[test]
     fn test_delegation_serde_roundtrip() {
-        let mut del = DelegationExtension::default();
-        del.origin_subject_id = Some("alice".into());
-        del.actor_subject_id = Some("service-b".into());
+        let mut del = DelegationExtension {
+            origin_subject_id: Some("alice".into()),
+            actor_subject_id: Some("service-b".into()),
+            ..Default::default()
+        };
         del.append_hop(DelegationHop {
             subject_id: "alice".into(),
             subject_type: Some("user".into()),
