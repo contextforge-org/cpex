@@ -20,10 +20,6 @@ const (
 	PayloadGeneric uint8 = 0
 	// PayloadCMFMessage is a CMF MessagePayload.
 	PayloadCMFMessage uint8 = 1
-	// PayloadIdentity is an IdentityPayload — the input/output state of
-	// the identity.resolve hook. Send request headers in; read the
-	// resolved subject / client / raw credentials back out.
-	PayloadIdentity uint8 = 2
 )
 
 // ContentType values — the discriminator for ContentPart's tagged union.

@@ -35,7 +35,7 @@ import (
 	"os"
 	"unsafe"
 
-	cpex "github.com/contextforge-org/cpex/go/cpex"
+	cpex "github.com/contextforge-org/contextforge-plugins-framework/go/cpex"
 )
 
 func main() {

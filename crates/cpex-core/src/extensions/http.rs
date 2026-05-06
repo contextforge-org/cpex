@@ -49,7 +49,11 @@ impl HttpExtension {
     }
 
     /// Add request header only if it doesn't exist. Returns true if added.
-    pub fn add_request_header(&mut self, name: impl Into<String>, value: impl Into<String>) -> bool {
+    pub fn add_request_header(
+        &mut self,
+        name: impl Into<String>,
+        value: impl Into<String>,
+    ) -> bool {
         let name = name.into();
         if self.has_request_header(&name) {
             return false;
@@ -110,10 +114,7 @@ fn get_header_ci<'a>(headers: &'a HashMap<String, String>, name: &str) -> Option
 
 fn remove_header_ci(headers: &mut HashMap<String, String>, name: &str) -> Option<String> {
     let lower = name.to_lowercase();
-    let key = headers
-        .keys()
-        .find(|k| k.to_lowercase() == lower)
-        .cloned();
+    let key = headers.keys().find(|k| k.to_lowercase() == lower).cloned();
     key.and_then(|k| headers.remove(&k))
 }
 
@@ -125,7 +126,10 @@ mod tests {
     fn test_request_header_set_and_get() {
         let mut http = HttpExtension::default();
         http.set_request_header("Content-Type", "application/json");
-        assert_eq!(http.get_request_header("Content-Type"), Some("application/json"));
+        assert_eq!(
+            http.get_request_header("Content-Type"),
+            Some("application/json")
+        );
     }
 
     #[test]
@@ -194,7 +198,13 @@ mod tests {
         let json = serde_json::to_string(&http).unwrap();
         let deserialized: HttpExtension = serde_json::from_str(&json).unwrap();
 
-        assert_eq!(deserialized.get_request_header("Authorization"), Some("Bearer tok"));
-        assert_eq!(deserialized.get_response_header("Content-Type"), Some("application/json"));
+        assert_eq!(
+            deserialized.get_request_header("Authorization"),
+            Some("Bearer tok")
+        );
+        assert_eq!(
+            deserialized.get_response_header("Content-Type"),
+            Some("application/json")
+        );
     }
 }

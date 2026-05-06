@@ -23,6 +23,7 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use uuid::Uuid;
 
 // ---------------------------------------------------------------------------
 // Plugin Context
@@ -107,13 +108,88 @@ impl Default for PluginContext {
 // Plugin Context Table
 // ---------------------------------------------------------------------------
 
-/// Lookup table of `PluginContext` instances indexed by plugin ID.
+/// Threaded execution state carried from one hook invocation to the next
+/// within a single request lifecycle (e.g., `pre_invoke` → `post_invoke`).
 ///
-/// Threaded across hook invocations so that a plugin's `local_state`
-/// persists from one hook to the next within the same request lifecycle
-/// (e.g., `pre_invoke` → `post_invoke`).
+/// The table holds the canonical pipeline state in two parts:
 ///
-/// The caller receives the table back in `PipelineResult` and passes
-/// it into the next hook invocation. On the first hook call, pass
-/// `None` — the executor creates fresh contexts for each plugin.
-pub type PluginContextTable = HashMap<String, PluginContext>;
+/// - `global_state` — a single shared map across all plugins. The executor
+///   clones this into each plugin's `PluginContext.global_state` at the
+///   start of a run, then commits the plugin's possibly-modified copy back
+///   when the run completes (last-writer-wins for serial phases).
+/// - `local_states` — per-plugin private state, indexed by plugin ID.
+///   Persists across hook invocations so a plugin's `pre_invoke` can stash
+///   data its `post_invoke` will read.
+///
+/// Storing `global_state` once (rather than copying it inside every per-plugin
+/// `PluginContext`) makes the canonical state explicit and removes the
+/// non-deterministic "pick an arbitrary plugin's snapshot" pattern that was
+/// previously needed to recover it.
+///
+/// Returned by the executor in `PipelineResult` and passed back into the
+/// next hook call. On the first hook call pass `None` — the executor
+/// creates a fresh table.
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+pub struct PluginContextTable {
+    /// Authoritative shared state across all plugins in the pipeline.
+    #[serde(default)]
+    pub global_state: HashMap<String, Value>,
+
+    /// Per-plugin local state, indexed by plugin ID (`Uuid`).
+    #[serde(default)]
+    pub local_states: HashMap<Uuid, HashMap<String, Value>>,
+}
+
+impl PluginContextTable {
+    /// Create an empty context table.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Build a `PluginContext` for the given plugin, *removing* its stored
+    /// local_state from the table and seeding it with a fresh clone of the
+    /// canonical global_state. Use in serial phases where the plugin will
+    /// commit its local_state changes back via [`store_context`].
+    ///
+    /// If the plugin has no stored local_state yet, its context starts
+    /// empty (first invocation in the request lifecycle).
+    pub fn take_context(&mut self, plugin_id: Uuid) -> PluginContext {
+        PluginContext {
+            local_state: self.local_states.remove(&plugin_id).unwrap_or_default(),
+            global_state: self.global_state.clone(),
+        }
+    }
+
+    /// Build a `PluginContext` for the given plugin without mutating the
+    /// table — the local_state is *cloned* and the global_state is cloned.
+    /// Use in read-only phases (audit, concurrent, fire-and-forget) where
+    /// per-plugin mutations should not influence subsequent plugins.
+    pub fn snapshot_context(&self, plugin_id: Uuid) -> PluginContext {
+        PluginContext {
+            local_state: self
+                .local_states
+                .get(&plugin_id)
+                .cloned()
+                .unwrap_or_default(),
+            global_state: self.global_state.clone(),
+        }
+    }
+
+    /// Commit a plugin's context back into the table after it ran. Replaces
+    /// the canonical global_state with the plugin's possibly-modified copy
+    /// (move, no clone) and stores the plugin's local_state for next time.
+    pub fn store_context(&mut self, plugin_id: Uuid, ctx: PluginContext) {
+        self.global_state = ctx.global_state;
+        self.local_states.insert(plugin_id, ctx.local_state);
+    }
+
+    /// Number of plugins with stored local_state in the table.
+    pub fn len(&self) -> usize {
+        self.local_states.len()
+    }
+
+    /// Whether the table holds no per-plugin local_state.
+    pub fn is_empty(&self) -> bool {
+        self.local_states.is_empty()
+    }
+}

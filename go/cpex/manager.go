@@ -1,7 +1,7 @@
 // Location: ./go/cpex/manager.go
 // Copyright 2025
 // SPDX-License-Identifier: Apache-2.0
-// Authors: Teryl Taylor, Fred Araujo
+// Authors: Teryl Taylor
 //
 // PluginManager — Go wrapper for the CPEX plugin runtime.
 //
@@ -66,18 +66,6 @@ extern int cpex_is_initialized(CpexManager mgr);
 extern int cpex_plugin_names(CpexManager mgr, uint8_t** names_msgpack_out, int* names_len_out);
 extern int cpex_invoke(
     CpexManager mgr,
-    const char* hook_name, int hook_len,
-    uint8_t payload_type,
-    const uint8_t* payload_msgpack, int payload_len,
-    const uint8_t* extensions_msgpack, int extensions_len,
-    CpexContextTable context_table,
-    uint8_t** result_msgpack_out, int* result_len_out,
-    CpexContextTable* context_table_out,
-    CpexBackgroundTasks* bg_handle_out
-);
-extern int cpex_invoke_resolved(
-    CpexManager mgr,
-    const uint8_t* identity_msgpack, int identity_len,
     const char* hook_name, int hook_len,
     uint8_t payload_type,
     const uint8_t* payload_msgpack, int payload_len,
@@ -353,18 +341,19 @@ func (m *PluginManager) InvokeByName(
 	cHookName := C.CString(hookName)
 	defer C.free(unsafe.Pointer(cHookName))
 
-	// Pass the context-table handle to Rust. Per the post-P0-1 FFI
-	// contract, `cpex_invoke` takes ownership of `ctHandle`
-	// UNCONDITIONALLY on entry — same pattern as `cpex_wait_background`
-	// with `bg_handle`. We nil our local reference immediately so the
-	// caller's `ContextTable` can't be accidentally reused after this
-	// call (its underlying Box is gone regardless of the eventual rc).
-	// On RC_OK a fresh handle lands in `ctOut`; on any error path
-	// `ctOut` stays nil and the caller's context-table chain ends here.
+	// Pass the context-table handle to Rust but DO NOT nil our local
+	// reference until we know Rust succeeded. Rust consumes the handle
+	// only at the moment of invoke (after all input validation), so
+	// pre-invoke failures (bad payload, bad extensions, etc.) leave
+	// the handle untouched and the caller's ContextTable remains valid.
+	//
+	// Caveat: on a post-invoke failure (rare — only result-serialization
+	// OOM), Rust has consumed the box but doesn't write ctOut, so the
+	// caller's ContextTable handle becomes dangling. The caller should
+	// not reuse a ContextTable after an InvokeByName error.
 	var ctHandle C.CpexContextTable
 	if contextTable != nil {
 		ctHandle = contextTable.handle
-		contextTable.handle = nil
 	}
 
 	var resultPtr *C.uint8_t
@@ -397,11 +386,14 @@ func (m *PluginManager) InvokeByName(
 	)
 
 	if rc != 0 {
-		// `ctOut` is null on every non-OK return per the post-P0-1
-		// contract. The caller's `contextTable.handle` is already nil
-		// (we cleared it above before the call), so there's no
-		// dangling-handle risk on error paths.
 		return nil, nil, nil, errorFromRC(int(rc), "InvokeByName")
+	}
+
+	// Rust succeeded — it consumed ctHandle and produced ctOut.
+	// NOW it's safe to nil the caller's reference (the original Box
+	// was consumed by Rust; its successor is in ctOut).
+	if contextTable != nil {
+		contextTable.handle = nil
 	}
 
 	// Deserialize result from MessagePack
@@ -422,116 +414,6 @@ func (m *PluginManager) InvokeByName(
 	// Hold *PluginManager (not the raw C handle) so Wait() can check
 	// mgr.handle != nil under the manager's mutex — preventing UAF
 	// if Shutdown is called between this invoke and Wait().
-	bg := &BackgroundTasks{handle: bgOut, mgr: m}
-
-	return &result, resultCT, bg, nil
-}
-
-// InvokeResolved runs identity.resolve and the named hook in a single FFI
-// call. The resolved Extensions — including raw_credentials, whose inbound
-// tokens are skip-serialized and so can't survive an FFI round-trip — are
-// threaded from identity into the hook in Rust memory. This lets an
-// out-of-process host drive delegate() flows that need the inbound bearer
-// token, which a separate resolve-then-invoke pair loses.
-//
-// `identity` carries the request headers the resolvers read (X-User-Token,
-// Authorization, …). When the manager has no identity.resolve hook
-// registered, this degrades to a plain InvokeByName(hookName, ...).
-// Otherwise the semantics (ContextTable threading, ownership, result
-// shape) match InvokeByName.
-func (m *PluginManager) InvokeResolved(
-	identity IdentityPayload,
-	hookName string,
-	payloadType uint8,
-	payload any,
-	extensions *Extensions,
-	contextTable *ContextTable,
-) (*PipelineResult, *ContextTable, *BackgroundTasks, error) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	if m.handle == nil {
-		return nil, nil, nil, fmt.Errorf("InvokeResolved: %w", ErrCpexInvalidHandle)
-	}
-
-	idBytes, err := msgpack.Marshal(identity)
-	if err != nil {
-		return nil, nil, nil, fmt.Errorf("cpex: identity marshal failed: %w", err)
-	}
-	payloadBytes, err := msgpack.Marshal(payload)
-	if err != nil {
-		return nil, nil, nil, fmt.Errorf("cpex: payload marshal failed: %w", err)
-	}
-	var extBytes []byte
-	if extensions != nil {
-		extBytes, err = msgpack.Marshal(extensions)
-		if err != nil {
-			return nil, nil, nil, fmt.Errorf("cpex: extensions marshal failed: %w", err)
-		}
-	}
-
-	cHookName := C.CString(hookName)
-	defer C.free(unsafe.Pointer(cHookName))
-
-	var ctHandle C.CpexContextTable
-	if contextTable != nil {
-		ctHandle = contextTable.handle
-	}
-
-	var resultPtr *C.uint8_t
-	var resultLen C.int
-	var ctOut C.CpexContextTable
-	var bgOut C.CpexBackgroundTasks
-
-	var idPtr *C.uint8_t
-	if len(idBytes) > 0 {
-		idPtr = (*C.uint8_t)(unsafe.Pointer(&idBytes[0]))
-	}
-	var payloadPtr *C.uint8_t
-	if len(payloadBytes) > 0 {
-		payloadPtr = (*C.uint8_t)(unsafe.Pointer(&payloadBytes[0]))
-	}
-	var extPtr *C.uint8_t
-	var extLen C.int
-	if len(extBytes) > 0 {
-		extPtr = (*C.uint8_t)(unsafe.Pointer(&extBytes[0]))
-		extLen = C.int(len(extBytes))
-	}
-
-	rc := C.cpex_invoke_resolved(
-		m.handle,
-		idPtr, C.int(len(idBytes)),
-		cHookName, C.int(len(hookName)),
-		C.uint8_t(payloadType),
-		payloadPtr, C.int(len(payloadBytes)),
-		extPtr, extLen,
-		ctHandle,
-		&resultPtr, &resultLen,
-		&ctOut,
-		&bgOut,
-	)
-
-	if rc != 0 {
-		return nil, nil, nil, errorFromRC(int(rc), "InvokeResolved")
-	}
-
-	// Rust consumed ctHandle and produced ctOut — safe to nil our ref.
-	if contextTable != nil {
-		contextTable.handle = nil
-	}
-
-	resultBytes := C.GoBytes(unsafe.Pointer(resultPtr), resultLen)
-	C.cpex_free_bytes((*C.uint8_t)(unsafe.Pointer(resultPtr)), resultLen)
-
-	var result PipelineResult
-	if err := msgpack.Unmarshal(resultBytes, &result); err != nil {
-		return nil, nil, nil, fmt.Errorf("cpex: result unmarshal failed: %w", err)
-	}
-
-	resultCT := &ContextTable{handle: ctOut}
-	runtime.SetFinalizer(resultCT, func(ct *ContextTable) {
-		ct.Close()
-	})
-
 	bg := &BackgroundTasks{handle: bgOut, mgr: m}
 
 	return &result, resultCT, bg, nil

@@ -84,17 +84,18 @@ where
         payload: &dyn PluginPayload,
         extensions: &Extensions,
         ctx: &mut PluginContext,
-    ) -> Result<Box<dyn std::any::Any + Send + Sync>, PluginError> {
-        let typed_ref: &H::Payload = payload
-            .as_any()
-            .downcast_ref::<H::Payload>()
-            .ok_or_else(|| PluginError::Config {
-                message: format!(
-                    "payload type mismatch for hook '{}': expected {}",
-                    H::NAME,
-                    std::any::type_name::<H::Payload>()
-                ),
-            })?;
+    ) -> Result<Box<dyn std::any::Any + Send + Sync>, Box<PluginError>> {
+        let typed_ref: &H::Payload =
+            payload
+                .as_any()
+                .downcast_ref::<H::Payload>()
+                .ok_or_else(|| PluginError::Config {
+                    message: format!(
+                        "payload type mismatch for hook '{}': expected {}",
+                        H::NAME,
+                        std::any::type_name::<H::Payload>()
+                    ),
+                })?;
 
         let result = self.plugin.handle(typed_ref, extensions, ctx);
         let plugin_result: PluginResult<H::Payload> = result.into();

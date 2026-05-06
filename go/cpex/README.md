@@ -27,7 +27,7 @@ go/cpex/
 ## Quick Start
 
 ```go
-import cpex "github.com/contextforge-org/cpex/go/cpex"
+import cpex "github.com/contextforge-org/contextforge-plugins-framework/go/cpex"
 
 // 1. Create a manager
 mgr, err := cpex.NewPluginManagerDefault()

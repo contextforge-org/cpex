@@ -203,8 +203,10 @@ mod tests {
 
     #[test]
     fn test_security_classification() {
-        let mut sec = SecurityExtension::default();
-        sec.classification = Some("confidential".into());
+        let sec = SecurityExtension {
+            classification: Some("confidential".into()),
+            ..Default::default()
+        };
         assert_eq!(sec.classification.as_deref(), Some("confidential"));
     }
 
@@ -275,8 +277,14 @@ mod tests {
         // Caller identity
         assert_eq!(sec.subject.as_ref().unwrap().id.as_deref(), Some("alice"));
         // Agent identity (distinct from caller)
-        assert_eq!(sec.agent.as_ref().unwrap().client_id.as_deref(), Some("hr-agent"));
-        assert_eq!(sec.agent.as_ref().unwrap().trust_domain.as_deref(), Some("corp.com"));
+        assert_eq!(
+            sec.agent.as_ref().unwrap().client_id.as_deref(),
+            Some("hr-agent")
+        );
+        assert_eq!(
+            sec.agent.as_ref().unwrap().trust_domain.as_deref(),
+            Some("corp.com")
+        );
         // Auth method
         assert_eq!(sec.auth_method.as_deref(), Some("jwt"));
         // Labels
@@ -332,6 +340,9 @@ mod tests {
         };
         assert_eq!(policy.apply_labels[0], "PII");
         assert!(policy.retention.is_some());
-        assert_eq!(policy.retention.as_ref().unwrap().max_age_seconds, Some(86400));
+        assert_eq!(
+            policy.retention.as_ref().unwrap().max_age_seconds,
+            Some(86400)
+        );
     }
 }

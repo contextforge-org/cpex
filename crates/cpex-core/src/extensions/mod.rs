@@ -35,6 +35,7 @@ pub use container::{Extensions, OwnedExtensions};
 pub use agent::{AgentExtension, ConversationContext};
 pub use completion::{CompletionExtension, StopReason, TokenUsage};
 pub use delegation::{DelegationExtension, DelegationHop};
+pub use filter::{filter_extensions, SlotName};
 pub use framework::FrameworkExtension;
 pub use guarded::{Guarded, WriteToken};
 pub use http::HttpExtension;
@@ -48,5 +49,4 @@ pub use security::{
     AgentIdentity, DataPolicy, ObjectSecurityProfile, RetentionPolicy, SecurityExtension,
     SubjectExtension, SubjectType,
 };
-pub use filter::{filter_extensions, SlotName};
 pub use tiers::{AccessPolicy, Capability, MutabilityTier, SlotPolicy};

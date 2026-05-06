@@ -14,9 +14,7 @@
 pub use cpex_core::plugin::{OnError, Plugin, PluginConfig, PluginMode};
 
 // Hook system
-pub use cpex_core::hooks::{
-    Extensions, HookHandler, HookTypeDef, PluginPayload, PluginResult,
-};
+pub use cpex_core::hooks::{Extensions, HookHandler, HookTypeDef, PluginPayload, PluginResult};
 
 // Context
 pub use cpex_core::context::PluginContext;
@@ -29,11 +27,25 @@ pub use cpex_core::define_hook;
 
 // CMF types
 pub use cpex_core::cmf::{
-    // Message and payload
-    CmfHook, Message, MessagePayload,
-    // Enums
-    Channel, ContentType, ResourceType, Role,
     // Content parts and domain objects
-    AudioSource, ContentPart, DocumentSource, ImageSource, PromptRequest, PromptResult, Resource,
-    ResourceReference, ToolCall, ToolResult, VideoSource,
+    AudioSource,
+    // Enums
+    Channel,
+    // Message and payload
+    CmfHook,
+    ContentPart,
+    ContentType,
+    DocumentSource,
+    ImageSource,
+    Message,
+    MessagePayload,
+    PromptRequest,
+    PromptResult,
+    Resource,
+    ResourceReference,
+    ResourceType,
+    Role,
+    ToolCall,
+    ToolResult,
+    VideoSource,
 };

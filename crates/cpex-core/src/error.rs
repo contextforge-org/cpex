@@ -75,6 +75,124 @@ pub enum PluginError {
     UnknownHook { hook_type: String },
 }
 
+impl PluginError {
+    /// Box this error for use in `Result<T, Box<PluginError>>`.
+    ///
+    /// Public APIs return `Result<T, Box<PluginError>>` rather than
+    /// `Result<T, Box<PluginError>>` because the enum is large (~184 bytes
+    /// — `details: HashMap` and the `source: Box<dyn Error>` push it
+    /// well past clippy's `result_large_err` threshold). Boxing keeps
+    /// `Result<T, _>` pointer-sized on the success path; the
+    /// allocation only happens on the error path.
+    ///
+    /// `.boxed()` is sugar for `Box::new(...)` that reads better at
+    /// construction sites: `PluginError::Config { ... }.boxed()`.
+    /// `?` already calls `From::from`, and `From<T> for Box<T>` is
+    /// built into std, so existing `?` chains keep working.
+    pub fn boxed(self) -> Box<Self> {
+        Box::new(self)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Plugin Error Record
+// ---------------------------------------------------------------------------
+
+/// A `Clone`-able, serialization-friendly snapshot of a `PluginError`.
+///
+/// Used in `PipelineResult.errors` to surface execution failures from
+/// `on_error: ignore` / `on_error: disable` plugins to the caller —
+/// previously those errors were only logged via `tracing::warn!` and
+/// were invisible to programmatic consumers (agents, dashboards,
+/// retry logic).
+///
+/// `PluginError` itself can't be `Clone` because of its
+/// `Box<dyn std::error::Error + Send + Sync>` source field, and that
+/// field doesn't survive serialization anyway. `PluginErrorRecord`
+/// flattens the five enum variants into a single shape — the
+/// `From<&PluginError>` impl handles the variant-to-fields mapping.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PluginErrorRecord {
+    pub plugin_name: String,
+    pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code: Option<String>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub details: HashMap<String, serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proto_error_code: Option<i64>,
+}
+
+/// Forward `&Box<PluginError>` to the `&PluginError` impl.
+///
+/// Public APIs return `Result<T, Box<PluginError>>` (see
+/// `PluginError::boxed`), which means error-handling code in the
+/// pipeline (e.g., `Ok(Err(e))` inside `executor::run_*_phase`) holds
+/// `e: Box<PluginError>`. This blanket forward keeps existing
+/// `(&e).into()` call sites working without forcing every caller to
+/// write `(&*e).into()` after the boxing migration.
+impl From<&Box<PluginError>> for PluginErrorRecord {
+    fn from(e: &Box<PluginError>) -> Self {
+        PluginErrorRecord::from(e.as_ref())
+    }
+}
+
+impl From<&PluginError> for PluginErrorRecord {
+    fn from(e: &PluginError) -> Self {
+        match e {
+            PluginError::Execution {
+                plugin_name,
+                message,
+                code,
+                details,
+                proto_error_code,
+                ..
+            } => Self {
+                plugin_name: plugin_name.clone(),
+                message: message.clone(),
+                code: code.clone(),
+                details: details.clone(),
+                proto_error_code: *proto_error_code,
+            },
+            PluginError::Timeout {
+                plugin_name,
+                timeout_ms,
+                proto_error_code,
+            } => Self {
+                plugin_name: plugin_name.clone(),
+                message: format!("plugin timed out after {}ms", timeout_ms),
+                code: Some("timeout".into()),
+                details: HashMap::new(),
+                proto_error_code: *proto_error_code,
+            },
+            PluginError::Violation {
+                plugin_name,
+                violation,
+            } => Self {
+                plugin_name: plugin_name.clone(),
+                message: format!("plugin denied: {}", violation.reason),
+                code: Some(violation.code.clone()),
+                details: violation.details.clone(),
+                proto_error_code: violation.proto_error_code,
+            },
+            PluginError::Config { message } => Self {
+                plugin_name: String::new(),
+                message: message.clone(),
+                code: Some("config".into()),
+                details: HashMap::new(),
+                proto_error_code: None,
+            },
+            PluginError::UnknownHook { hook_type } => Self {
+                plugin_name: String::new(),
+                message: format!("unknown hook type: {}", hook_type),
+                code: Some("unknown_hook".into()),
+                details: HashMap::new(),
+                proto_error_code: None,
+            },
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Plugin Violations
 // ---------------------------------------------------------------------------

@@ -1,7 +1,7 @@
 // Location: ./crates/cpex-ffi/src/lib.rs
 // Copyright 2025
 // SPDX-License-Identifier: Apache-2.0
-// Authors: Teryl Taylor, Fred Araujo
+// Authors: Teryl Taylor
 //
 // CPEX FFI — C API for embedding the CPEX runtime.
 //
@@ -15,18 +15,14 @@
 use std::os::raw::{c_char, c_int};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::ptr;
-use std::sync::{Arc, OnceLock};
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use cpex_core::context::PluginContextTable;
 use cpex_core::executor::BackgroundTasks;
 use cpex_core::extensions::Extensions;
 use cpex_core::hooks::payload::PluginPayload;
-use cpex_core::identity::IdentityPayload;
 use cpex_core::manager::PluginManager;
-
-// APL governance wiring — the `cpex_apl_install` extern "C" entry point.
-mod apl;
 
 // ---------------------------------------------------------------------------
 // FFI Result Codes
@@ -62,50 +58,6 @@ pub const RC_SERIALIZE_ERROR: c_int = -5;
 pub const RC_TIMEOUT: c_int = -6;
 /// Plugin panicked; caught by `catch_unwind` at the FFI boundary.
 pub const RC_PANIC: c_int = -7;
-
-// ---------------------------------------------------------------------------
-// FFI ABI Version
-// ---------------------------------------------------------------------------
-//
-// The FFI ABI version is an integer that identifies the C-surface
-// contract this crate exposes. Bump it on any breaking change to the
-// C surface:
-//
-//   - added / removed / renamed extern "C" function
-//   - argument count, argument type, or return type change on an
-//     existing function
-//   - layout change of a struct that crosses the boundary
-//   - semantic change to an existing function (e.g. new RC_* value
-//     returned for a previously-success case, change in pointer
-//     ownership)
-//
-// Adding a new RC_* code at the end of the existing range is *not* a
-// breaking change (the wire codes are stable; consumers handle unknown
-// codes as generic failure).
-//
-// Consumers — every language binding — MUST call `cpex_ffi_abi_version`
-// at init and compare against the version their binding was generated
-// for. Mismatch is a hard error: the C surface they generated against
-// is not the one they're linked against. Document the binding's
-// expected ABI version in its source.
-//
-// Bumps are recorded in CHANGELOG.md under "Changed" with the from→to
-// integers and a one-line description of what moved.
-
-/// FFI ABI version. Bump on breaking C-surface changes; see module
-/// docs above for what counts as breaking.
-pub const FFI_ABI_VERSION: u32 = 2;
-
-/// Returns the FFI ABI version this `libcpex_ffi` was built with.
-/// Language bindings call this at `init` and panic on mismatch
-/// against the version they were generated for.
-///
-/// Pure const access — no allocation, no runtime, no panics. Safe to
-/// call from anywhere including signal handlers.
-#[no_mangle]
-pub extern "C" fn cpex_ffi_abi_version() -> u32 {
-    FFI_ABI_VERSION
-}
 
 /// Outer wall-clock timeout for any FFI-driven async call. Per-plugin
 /// `tokio::time::timeout` only catches cooperative-async timeouts; this
@@ -322,14 +274,6 @@ where
 /// Payload type IDs — must match Go constants.
 pub const PAYLOAD_GENERIC: u8 = 0;
 pub const PAYLOAD_CMF_MESSAGE: u8 = 1;
-/// `IdentityPayload` — the input/output state of the `identity.resolve`
-/// hook. Lets non-Rust hosts (the Go bindings) drive identity resolution
-/// over the FFI: send the request headers in, read the resolved
-/// `subject` / `client` / `raw_credentials` back out. Without this an
-/// FFI host can't run `identity.resolve` (its payload is neither a
-/// generic value nor a CMF message), so per-route APL gates that read
-/// `subject.*` never see a principal.
-pub const PAYLOAD_IDENTITY: u8 = 2;
 
 /// Deserialize a MessagePack payload based on its type ID.
 /// Array-indexed — O(1) lookup, zero allocation.
@@ -344,11 +288,6 @@ fn deserialize_payload(payload_type: u8, bytes: &[u8]) -> Result<Box<dyn PluginP
             let msg: cpex_core::cmf::MessagePayload = rmp_serde::from_slice(bytes)
                 .map_err(|e| format!("CMF payload deserialize failed: {}", e))?;
             Ok(Box::new(msg))
-        }
-        PAYLOAD_IDENTITY => {
-            let idp: IdentityPayload = rmp_serde::from_slice(bytes)
-                .map_err(|e| format!("identity payload deserialize failed: {}", e))?;
-            Ok(Box::new(idp))
         }
         _ => Err(format!("unknown payload type: {}", payload_type)),
     }
@@ -381,13 +320,6 @@ fn serialize_payload(payload: &dyn PluginPayload) -> Result<(u8, Vec<u8>), Strin
             .map(|b| (PAYLOAD_GENERIC, b))
             .map_err(|e| format!("generic payload serialize failed: {e}"));
     }
-    // Try IdentityPayload — carries the resolved subject/client/raw
-    // credentials back to an FFI host after `identity.resolve`.
-    if let Some(idp) = payload.as_any().downcast_ref::<IdentityPayload>() {
-        return rmp_serde::to_vec_named(idp)
-            .map(|b| (PAYLOAD_IDENTITY, b))
-            .map_err(|e| format!("identity payload serialize failed: {e}"));
-    }
     Err("unknown payload type, cannot serialize across FFI".to_string())
 }
 
@@ -400,11 +332,7 @@ fn serialize_payload(payload: &dyn PluginPayload) -> Result<(u8, Vec<u8>), Strin
 /// All managers share the process-singleton runtime returned by
 /// `shared_runtime()` — see the `SHARED_RUNTIME` doc-comment for why.
 pub struct CpexManagerInner {
-    /// Held as `Arc` so the APL config visitor — registered via
-    /// `cpex_apl_install` — can keep a `Weak<PluginManager>` that upgrades
-    /// during `load_config_yaml`. See `apl::cpex_apl_install` and
-    /// `apl_cpex::register_apl`.
-    pub manager: Arc<PluginManager>,
+    pub manager: PluginManager,
 }
 
 /// Opaque handle to a ContextTable (Rust-owned, not serialized).
@@ -503,12 +431,9 @@ pub unsafe extern "C" fn cpex_manager_new(
     // silently no-op.
     let _ = shared_runtime();
 
-    let manager = Arc::new(PluginManager::default());
+    let manager = PluginManager::default();
 
-    // Load config — factories must be registered separately via cpex_register_factory.
-    // Note: this one-shot path uses `load_config` (no visitor walk), so APL is
-    // NOT wired here. APL requires the cpex_manager_new_default →
-    // cpex_apl_install → cpex_load_config flow.
+    // Load config — factories must be registered separately via cpex_register_factory
     if let Err(e) = manager.load_config(cpex_config) {
         tracing::error!("cpex_manager_new: load_config failed: {}", e);
         return ptr::null_mut();
@@ -523,7 +448,7 @@ pub unsafe extern "C" fn cpex_manager_new(
 #[no_mangle]
 pub extern "C" fn cpex_manager_new_default() -> *mut CpexManagerInner {
     let _ = shared_runtime();
-    let manager = Arc::new(PluginManager::default());
+    let manager = PluginManager::default();
     Box::into_raw(Box::new(CpexManagerInner { manager }))
 }
 
@@ -554,22 +479,17 @@ pub unsafe extern "C" fn cpex_load_config(
         None => return RC_INVALID_INPUT,
     };
 
-    // Validate first (duplicate plugin names, route shape) — preserves the
-    // RC_PARSE_ERROR contract. We discard the parsed value and hand the raw
-    // YAML to `load_config_yaml`, which re-parses into both a typed
-    // CpexConfig and a raw serde_yaml::Value so registered config visitors
-    // (e.g. the APL visitor installed by cpex_apl_install) can walk the
-    // `apl:` blocks and install per-route handlers. Plain `load_config`
-    // does NOT run that visitor walk.
-    if let Err(e) = cpex_core::config::parse_config(yaml) {
-        tracing::error!("cpex_load_config: config parse failed: {}", e);
-        return RC_PARSE_ERROR;
-    }
+    let cpex_config = match cpex_core::config::parse_config(yaml) {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::error!("cpex_load_config: config parse failed: {}", e);
+            return RC_PARSE_ERROR;
+        }
+    };
 
-    // load_config_yaml is sync (no .await), but we still wrap in catch_unwind
-    // so a panic in serde / config validation / a visitor doesn't unwind
-    // across FFI.
-    let load_result = catch_unwind(AssertUnwindSafe(|| inner.manager.load_config_yaml(yaml)));
+    // load_config is sync (no .await), but we still wrap in catch_unwind
+    // so a panic in serde / config validation doesn't unwind across FFI.
+    let load_result = catch_unwind(AssertUnwindSafe(|| inner.manager.load_config(cpex_config)));
     match load_result {
         Ok(Ok(())) => RC_OK,
         Ok(Err(e)) => {
@@ -727,29 +647,7 @@ pub unsafe extern "C" fn cpex_plugin_names(
 /// Returns MessagePack-encoded PipelineResult + opaque handles for
 /// context table and background tasks.
 ///
-/// # Ownership contract
-///
-/// **The caller's input `context_table` is unconditionally consumed
-/// by this function** — even on error paths (RC_INVALID_HANDLE,
-/// RC_INVALID_INPUT, RC_PARSE_ERROR, RC_TIMEOUT, RC_PANIC, etc.).
-/// The Box is freed inside `cpex_invoke`; the caller's pointer is
-/// dead once this function returns. This mirrors the pattern used
-/// by `cpex_wait_background` and lets the Go binding nil its handle
-/// unconditionally after the call without leaking the underlying Box.
-///
-/// On `RC_OK`, a **fresh** `CpexContextTableInner` Box is allocated
-/// and its raw pointer is written to `*context_table_out`. On any
-/// non-OK return, `*context_table_out` is left as a null pointer
-/// (initialized at function entry). The other out parameters
-/// (`result_msgpack_out`, `result_len_out`, `bg_handle_out`) follow
-/// the same discipline: null/zero on error, populated on success.
-///
-/// Pre-P0-1 the function consumed the input only after validation
-/// passed but before `run_safely`. On `RC_TIMEOUT` / `RC_PANIC` the
-/// input had been consumed but `*context_table_out` was never written,
-/// so the Go wrapper kept its stale handle and a subsequent
-/// `ContextTable.Close()` ran `cpex_release_context_table` on
-/// already-freed memory.
+/// Returns 0 on success, -1 on failure.
 ///
 /// # Safety
 /// All pointer parameters must be valid or NULL where documented.
@@ -774,43 +672,7 @@ pub unsafe extern "C" fn cpex_invoke(
     context_table_out: *mut *mut CpexContextTableInner,
     bg_handle_out: *mut *mut CpexBackgroundTasksInner,
 ) -> c_int {
-    // Initialize all out params to safe defaults. Any early return
-    // from here on leaves a consistent state for the caller: every
-    // out pointer is null/zero, so a downstream attempt to dereference
-    // produces a clean null-deref crash rather than reading uninit
-    // stack memory. The success path overwrites these at the end.
-    *result_msgpack_out = std::ptr::null_mut();
-    *result_len_out = 0;
-    *context_table_out = std::ptr::null_mut();
-    *bg_handle_out = std::ptr::null_mut();
-
-    // Take ownership of the input context_table *immediately*, before
-    // any validation that could return an error code. From this point
-    // on, the caller's `context_table` pointer is dead — equivalent
-    // to free'd memory from the caller's perspective. This mirrors
-    // how `cpex_wait_background` handles `bg_handle`: ownership
-    // transfers on entry, the caller nils its reference, and Rust
-    // is responsible for the Box's lifetime from then on. Pre-fix,
-    // consumption happened mid-function after some validations, which
-    // meant validation errors left the input alive (one ownership
-    // model) and post-validation errors left it consumed without
-    // writing `*context_table_out` (a *different* ownership model).
-    // Two contracts in one function is exactly what produced the
-    // P0-1 UAF.
-    let input_ctx_table: Option<PluginContextTable> = if context_table.is_null() {
-        None
-    } else {
-        // Box::from_raw consumes the allocation; it'll drop at the
-        // end of this scope if not moved into Some(...). When moved
-        // into Some(...), the table value lives until invoke_by_name
-        // either uses it or it's dropped on a Future-cancellation
-        // path (RC_TIMEOUT). Either way the Box is gone.
-        let ct = Box::from_raw(context_table);
-        Some(ct.table)
-    };
-
-    // Validate manager handle. `input_ctx_table` already owns the
-    // input data — if we return here, it drops cleanly.
+    // Validate manager handle
     let inner = match mgr.as_ref() {
         Some(m) => m,
         None => return RC_INVALID_HANDLE,
@@ -853,17 +715,22 @@ pub unsafe extern "C" fn cpex_invoke(
         Extensions::default()
     };
 
+    // Get or create context table
+    let ctx_table: Option<PluginContextTable> = if context_table.is_null() {
+        None
+    } else {
+        let ct = Box::from_raw(context_table);
+        Some(ct.table)
+    };
+
     // Invoke the hook with wall-clock timeout + panic catch.
     let (mut result, bg) = match run_safely(
         inner
             .manager
-            .invoke_by_name(name, payload, extensions, input_ctx_table),
+            .invoke_by_name(name, payload, extensions, ctx_table),
         "cpex_invoke",
     ) {
         SafeRun::Ok(r) => r,
-        // *context_table_out is already null (set at function entry);
-        // the input table has been consumed by invoke_by_name's call
-        // frame and dropped. Caller's handle is dead, no replacement.
         other => return other.rc(), // RC_TIMEOUT or RC_PANIC; already logged
     };
 
@@ -930,257 +797,6 @@ pub unsafe extern "C" fn cpex_invoke(
 
     // Return background tasks as opaque handle
     *bg_handle_out = Box::into_raw(Box::new(CpexBackgroundTasksInner { tasks: bg }));
-
-    RC_OK
-}
-
-/// Fused `identity.resolve` + hook invoke.
-///
-/// Runs `identity.resolve` and the named hook in ONE FFI call so the
-/// resolved `Extensions` — including `raw_credentials`, whose inbound
-/// tokens are `#[serde(skip)]` + `Zeroizing` and therefore cannot survive
-/// an FFI round-trip — flow from identity into the hook entirely in Rust
-/// memory. This is the FFI analogue of an in-process host calling
-/// `IdentityPayload::apply_to_extensions(...)` between hooks; it lets
-/// out-of-process hosts (Go / Python / WASM) drive `delegate()` flows
-/// that need the inbound bearer token, which a two-call
-/// resolve-then-invoke sequence loses on the way back out.
-///
-/// `identity_msgpack` is a `PAYLOAD_IDENTITY`-shaped `IdentityPayload`
-/// carrying request headers. When `identity_len <= 0` or no
-/// `identity.resolve` hook is registered, this degrades to a plain hook
-/// invoke against the supplied extensions. If `identity.resolve` denies
-/// (e.g. bad token), that denial is returned and the hook does not run.
-///
-/// # Safety / ownership
-/// Identical contract to [`cpex_invoke`]: the input `context_table` is
-/// consumed unconditionally (used for the hook invoke; the internal
-/// identity invoke gets a fresh one); out params are null/zero on error
-/// and populated on `RC_OK`.
-#[no_mangle]
-pub unsafe extern "C" fn cpex_invoke_resolved(
-    mgr: *const CpexManagerInner,
-    identity_msgpack: *const u8,
-    identity_len: c_int,
-    hook_name: *const c_char,
-    hook_len: c_int,
-    payload_type: u8,
-    payload_msgpack: *const u8,
-    payload_len: c_int,
-    extensions_msgpack: *const u8,
-    extensions_len: c_int,
-    context_table: *mut CpexContextTableInner, // NULL for first call
-    result_msgpack_out: *mut *mut u8,
-    result_len_out: *mut c_int,
-    context_table_out: *mut *mut CpexContextTableInner,
-    bg_handle_out: *mut *mut CpexBackgroundTasksInner,
-) -> c_int {
-    *result_msgpack_out = std::ptr::null_mut();
-    *result_len_out = 0;
-    *context_table_out = std::ptr::null_mut();
-    *bg_handle_out = std::ptr::null_mut();
-
-    // Consume the input context table up front (used for the hook invoke),
-    // matching cpex_invoke's unconditional-consume ownership contract.
-    let input_ctx_table: Option<PluginContextTable> = if context_table.is_null() {
-        None
-    } else {
-        Some(Box::from_raw(context_table).table)
-    };
-
-    let inner = match mgr.as_ref() {
-        Some(m) => m,
-        None => return RC_INVALID_HANDLE,
-    };
-
-    let name = match c_str_to_slice(hook_name, hook_len) {
-        Some(s) => s,
-        None => return RC_INVALID_INPUT,
-    };
-
-    let payload_bytes = match c_bytes_to_slice(payload_msgpack, payload_len) {
-        Some(b) => b,
-        None => return RC_INVALID_INPUT,
-    };
-    let payload: Box<dyn PluginPayload> = match deserialize_payload(payload_type, payload_bytes) {
-        Ok(p) => p,
-        Err(e) => {
-            tracing::error!("cpex_invoke_resolved: {}", e);
-            return RC_PARSE_ERROR;
-        }
-    };
-
-    let base_extensions: Extensions = if extensions_len > 0 {
-        let ext_bytes = match c_bytes_to_slice(extensions_msgpack, extensions_len) {
-            Some(b) => b,
-            None => return RC_INVALID_INPUT,
-        };
-        match rmp_serde::from_slice(ext_bytes) {
-            Ok(e) => e,
-            Err(e) => {
-                tracing::error!("cpex_invoke_resolved: extensions deserialize failed: {}", e);
-                return RC_PARSE_ERROR;
-            }
-        }
-    } else {
-        Extensions::default()
-    };
-
-    // ---- Identity resolution (in-process) ----
-    // Resolve identity and merge the result into the extensions BEFORE the
-    // hook runs, so raw_credentials (skip-serialized across FFI) reach the
-    // hook in Rust memory. Skipped when no identity payload was supplied or
-    // no identity.resolve hook is registered.
-    let merged_extensions: Extensions = if identity_len > 0
-        && inner
-            .manager
-            .has_hooks_for(cpex_core::identity::HOOK_IDENTITY_RESOLVE)
-    {
-        let id_bytes = match c_bytes_to_slice(identity_msgpack, identity_len) {
-            Some(b) => b,
-            None => return RC_INVALID_INPUT,
-        };
-        let id_payload: IdentityPayload = match rmp_serde::from_slice(id_bytes) {
-            Ok(p) => p,
-            Err(e) => {
-                tracing::error!(
-                    "cpex_invoke_resolved: identity payload deserialize failed: {}",
-                    e
-                );
-                return RC_PARSE_ERROR;
-            }
-        };
-
-        let (id_result, _id_bg) = match run_safely(
-            inner.manager.invoke_by_name(
-                cpex_core::identity::HOOK_IDENTITY_RESOLVE,
-                Box::new(id_payload),
-                Extensions::default(),
-                None,
-            ),
-            "cpex_invoke_resolved/identity",
-        ) {
-            SafeRun::Ok(r) => r,
-            other => return other.rc(),
-        };
-
-        // Identity denied (bad / missing credential): surface that denial
-        // as the result; the hook never runs. Identity resolvers (jwt,
-        // mtls) are synchronous and don't spawn background tasks, so the
-        // identity bg is dropped.
-        if !id_result.continue_processing {
-            return finish_pipeline_result(
-                id_result,
-                None,
-                payload_type,
-                result_msgpack_out,
-                result_len_out,
-                context_table_out,
-                bg_handle_out,
-            );
-        }
-
-        match IdentityPayload::from_pipeline_result(&id_result) {
-            Some(resolved) => resolved.apply_to_extensions(base_extensions),
-            None => base_extensions,
-        }
-    } else {
-        base_extensions
-    };
-
-    // ---- Hook invoke with the identity-enriched extensions ----
-    let (result, bg) = match run_safely(
-        inner
-            .manager
-            .invoke_by_name(name, payload, merged_extensions, input_ctx_table),
-        "cpex_invoke_resolved",
-    ) {
-        SafeRun::Ok(r) => r,
-        other => return other.rc(),
-    };
-
-    finish_pipeline_result(
-        result,
-        Some(bg),
-        payload_type,
-        result_msgpack_out,
-        result_len_out,
-        context_table_out,
-        bg_handle_out,
-    )
-}
-
-/// Serialize a `(PipelineResult, Option<BackgroundTasks>)` into the FFI
-/// out-params. Shared tail for [`cpex_invoke_resolved`]'s hook-result and
-/// identity-denial paths; mirrors [`cpex_invoke`]'s inline serialization.
-/// `bg` is `None` on the identity-denial path (no hook background tasks to
-/// hand back) — `*bg_handle_out` is then left null.
-///
-/// # Safety
-/// Out pointers must be writable. Returns `RC_OK` on success or
-/// `RC_SERIALIZE_ERROR` if the result can't be MessagePack-encoded.
-unsafe fn finish_pipeline_result(
-    mut result: cpex_core::executor::PipelineResult,
-    bg: Option<BackgroundTasks>,
-    payload_type: u8,
-    result_msgpack_out: *mut *mut u8,
-    result_len_out: *mut c_int,
-    context_table_out: *mut *mut CpexContextTableInner,
-    bg_handle_out: *mut *mut CpexBackgroundTasksInner,
-) -> c_int {
-    let (result_payload_type, modified_payload_bytes) = match result.modified_payload.as_ref() {
-        None => (payload_type, None),
-        Some(p) => match serialize_payload(p.as_ref()) {
-            Ok((t, b)) => (t, Some(b)),
-            Err(e) => {
-                tracing::warn!("cpex_invoke_resolved: dropped modified payload — {}", e);
-                result.errors.push(cpex_core::error::PluginErrorRecord {
-                    plugin_name: "<ffi>".to_string(),
-                    message: format!("modified payload could not be serialized across FFI: {e}"),
-                    code: Some("ffi_serialize_error".to_string()),
-                    details: std::collections::HashMap::new(),
-                    proto_error_code: None,
-                });
-                (payload_type, None)
-            }
-        },
-    };
-
-    let modified_extensions_bytes: Option<Vec<u8>> = result
-        .modified_extensions
-        .as_ref()
-        .and_then(|ext| rmp_serde::to_vec_named(ext).ok());
-
-    let ffi_result = FfiPipelineResult {
-        continue_processing: result.continue_processing,
-        violation: result.violation,
-        errors: result.errors,
-        metadata: result.metadata,
-        payload_type: result_payload_type,
-        modified_payload: modified_payload_bytes,
-        modified_extensions: modified_extensions_bytes,
-    };
-
-    let result_bytes = match rmp_serde::to_vec_named(&ffi_result) {
-        Ok(b) => b,
-        Err(e) => {
-            tracing::error!("cpex_invoke_resolved: result serialize failed: {}", e);
-            return RC_SERIALIZE_ERROR;
-        }
-    };
-
-    let (ptr, len) = alloc_bytes(&result_bytes);
-    *result_msgpack_out = ptr;
-    *result_len_out = len;
-
-    *context_table_out = Box::into_raw(Box::new(CpexContextTableInner {
-        table: result.context_table,
-    }));
-
-    *bg_handle_out = match bg {
-        Some(b) => Box::into_raw(Box::new(CpexBackgroundTasksInner { tasks: b })),
-        None => std::ptr::null_mut(),
-    };
 
     RC_OK
 }
@@ -1416,7 +1032,7 @@ mod tests {
     }
 
     impl cpex_core::hooks::HookHandler<TestHook> for PanickingPlugin {
-        async fn handle(
+        fn handle(
             &self,
             _payload: &GenericPayload,
             _extensions: &Extensions,
@@ -1433,7 +1049,7 @@ mod tests {
         // Touch the shared runtime so it's initialized; tests use it
         // rather than a per-manager runtime.
         let _ = shared_runtime();
-        let manager = Arc::new(cpex_core::manager::PluginManager::default());
+        let manager = cpex_core::manager::PluginManager::default();
         Box::into_raw(Box::new(CpexManagerInner { manager }))
     }
 
@@ -1692,55 +1308,6 @@ mod tests {
 
             assert_eq!(cpex_initialize(ptr::null()), RC_INVALID_HANDLE);
             assert_eq!(cpex_is_initialized(ptr::null()), 0);
-        }
-    }
-
-    #[test]
-    fn cpex_apl_install_rejects_null_handle() {
-        unsafe {
-            assert_eq!(crate::apl::cpex_apl_install(ptr::null()), RC_INVALID_HANDLE);
-        }
-    }
-
-    /// Full APL flow through the FFI surface: default manager →
-    /// cpex_apl_install (registers bundled factories + APL visitor) →
-    /// cpex_load_config over an `apl:`-annotated YAML using a bundled
-    /// plugin kind (`audit/logger`) → cpex_initialize. Proves the visitor
-    /// walk runs (load uses load_config_yaml) and the bundled factory is
-    /// reachable, so the plugin actually instantiates.
-    #[test]
-    fn cpex_apl_install_then_load_apl_config_initializes() {
-        const YAML: &str = r#"
-plugins:
-  - name: auditor
-    kind: audit/logger
-    hooks: [cmf.tool_pre_invoke]
-routes:
-  - tool: get_weather
-    apl:
-      policy:
-        - "plugin(auditor)"
-"#;
-        unsafe {
-            let mgr = build_test_manager();
-
-            assert_eq!(crate::apl::cpex_apl_install(mgr), RC_OK);
-
-            let rc = cpex_load_config(mgr, YAML.as_ptr() as *const c_char, YAML.len() as c_int);
-            assert_eq!(rc, RC_OK, "load of APL config should succeed");
-
-            assert_eq!(cpex_initialize(mgr), RC_OK);
-
-            // The bundled `audit/logger` factory instantiated a plugin on
-            // cmf.tool_pre_invoke — proves cpex_apl_install wired the kind.
-            assert!(cpex_plugin_count(mgr) >= 1);
-            let hook = "cmf.tool_pre_invoke";
-            assert_eq!(
-                cpex_has_hooks_for(mgr, hook.as_ptr() as *const c_char, hook.len() as c_int),
-                1,
-            );
-
-            cpex_shutdown(mgr);
         }
     }
 }

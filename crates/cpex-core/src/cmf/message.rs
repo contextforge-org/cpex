@@ -61,9 +61,7 @@ impl Message {
         Self {
             schema_version: super::constants::SCHEMA_VERSION.to_string(),
             role,
-            content: vec![ContentPart::Text {
-                text: text.into(),
-            }],
+            content: vec![ContentPart::Text { text: text.into() }],
             channel: None,
         }
     }

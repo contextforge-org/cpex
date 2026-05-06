@@ -20,31 +20,12 @@ crate-type = ["lib", "cdylib", "staticlib"]
 
 [dependencies]
 cpex-core = { path = "../cpex-core" }
-# APL governance layer — bundled so Go/Python hosts can enable APL
-# policies, route handlers, and the standard plugin/PDP factories via
-# the `cpex_apl_install` FFI entry point. Symbols survive in the
-# staticlib because that entry point references each factory.
-apl-cpex = { path = "../apl-cpex" }
-apl-pii-scanner = { path = "../apl-pii-scanner" }
-apl-audit-logger = { path = "../apl-audit-logger" }
-apl-identity-jwt = { path = "../apl-identity-jwt" }
-apl-delegator-oauth = { path = "../apl-delegator-oauth" }
-apl-pdp-cedar-direct = { path = "../apl-pdp-cedar-direct" }
-# Heavy (~200 transitive deps via the Cedarling git dep); kept out of the
-# default `.a` and behind the `cedarling` feature.
-apl-cedarling = { path = "../apl-cedarling", optional = true }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 rmp-serde = { workspace = true }
 serde_bytes = { workspace = true }
 tracing = { workspace = true }
-
-[features]
-default = []
-# Opt-in Cedarling-backed identity + PDP. Build with
-# `cargo build -p cpex-ffi --features cedarling`.
-cedarling = ["dep:apl-cedarling"]
 
 [dev-dependencies]
 async-trait = { workspace = true }

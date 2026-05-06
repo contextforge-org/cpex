@@ -45,7 +45,7 @@ use crate::registry::AnyHookHandler;
 ///
 /// impl PluginFactory for RateLimiterFactory {
 ///     fn create(&self, config: &PluginConfig)
-///         -> Result<PluginInstance, PluginError>
+///         -> Result<PluginInstance, Box<PluginError>>
 ///     {
 ///         let plugin = Arc::new(RateLimiter::from_config(config)?);
 ///         let handler = Arc::new(TypedHandlerAdapter::<RequestHeadersReceived, _>::new(
@@ -62,7 +62,7 @@ pub trait PluginFactory: Send + Sync {
     /// Create a plugin instance and its handler from config.
     ///
     /// The `config` is the plugin's entry from the YAML file.
-    fn create(&self, config: &PluginConfig) -> Result<PluginInstance, PluginError>;
+    fn create(&self, config: &PluginConfig) -> Result<PluginInstance, Box<PluginError>>;
 }
 
 /// A created plugin instance — the plugin and its type-erased handlers.
@@ -110,11 +110,7 @@ impl PluginFactoryRegistry {
     }
 
     /// Register a factory for a given `kind` name.
-    pub fn register(
-        &mut self,
-        kind: impl Into<String>,
-        factory: Box<dyn PluginFactory>,
-    ) {
+    pub fn register(&mut self, kind: impl Into<String>, factory: Box<dyn PluginFactory>) {
         self.factories.insert(kind.into(), factory);
     }
 

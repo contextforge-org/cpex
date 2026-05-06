@@ -68,7 +68,7 @@ impl Plugin for ToolPolicyPlugin {
 }
 
 impl HookHandler<CmfHook> for ToolPolicyPlugin {
-    async fn handle(
+    fn handle(
         &self,
         payload: &MessagePayload,
         extensions: &Extensions,
@@ -197,7 +197,7 @@ impl Plugin for HeaderInjectorPlugin {
 }
 
 impl HookHandler<CmfHook> for HeaderInjectorPlugin {
-    async fn handle(
+    fn handle(
         &self,
         payload: &MessagePayload,
         extensions: &Extensions,
@@ -265,7 +265,7 @@ impl PluginFactory for HeaderInjectorFactory {
 }
 
 /// Register CMF demo plugin factories on a manager.
-pub fn register_cmf_factories(manager: &cpex_core::manager::PluginManager) {
+pub fn register_cmf_factories(manager: &mut cpex_core::manager::PluginManager) {
     manager.register_factory("builtin/cmf-tool-policy", Box::new(ToolPolicyFactory));
     manager.register_factory(
         "builtin/cmf-header-injector",

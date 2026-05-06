@@ -238,21 +238,20 @@ fn cap_str(cap: Capability) -> String {
 /// For the security extension, filtering is granular: unrestricted
 /// sub-fields (objects, data, classification) are always included,
 /// while labels and subject sub-fields are gated by capabilities.
-pub fn filter_extensions(
-    extensions: &Extensions,
-    capabilities: &HashSet<String>,
-) -> Extensions {
-    let mut filtered = Extensions::default();
-
-    // Unrestricted immutable — always visible
-    filtered.request = extensions.request.clone();
-    filtered.provenance = extensions.provenance.clone();
-    filtered.completion = extensions.completion.clone();
-    filtered.llm = extensions.llm.clone();
-    filtered.framework = extensions.framework.clone();
-    filtered.mcp = extensions.mcp.clone();
-    filtered.meta = extensions.meta.clone();
-    filtered.custom = extensions.custom.clone();
+pub fn filter_extensions(extensions: &Extensions, capabilities: &HashSet<String>) -> Extensions {
+    // Build the unrestricted-immutable fields up front; capability-gated
+    // slots stay default and are filled in below.
+    let mut filtered = Extensions {
+        request: extensions.request.clone(),
+        provenance: extensions.provenance.clone(),
+        completion: extensions.completion.clone(),
+        llm: extensions.llm.clone(),
+        framework: extensions.framework.clone(),
+        mcp: extensions.mcp.clone(),
+        meta: extensions.meta.clone(),
+        custom: extensions.custom.clone(),
+        ..Default::default()
+    };
 
     // Capability-gated: delegation
     if extensions.delegation.is_some() {
@@ -362,8 +361,8 @@ fn build_filtered_subject(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::extensions::SecurityExtension;
     use crate::extensions::meta::MetaExtension;
+    use crate::extensions::SecurityExtension;
 
     fn make_full_extensions() -> Extensions {
         let mut security = SecurityExtension::default();
@@ -401,7 +400,9 @@ mod tests {
                 entity_name: Some("get_compensation".into()),
                 ..Default::default()
             })),
-            custom: Some(Arc::new([("key".to_string(), serde_json::json!("value"))].into())),
+            custom: Some(Arc::new(
+                [("key".to_string(), serde_json::json!("value"))].into(),
+            )),
             ..Default::default()
         }
     }
@@ -451,10 +452,7 @@ mod tests {
         let filtered = filter_extensions(&ext, &caps);
 
         assert!(filtered.agent.is_some());
-        assert_eq!(
-            filtered.agent.unwrap().agent_id,
-            Some("agent-1".into())
-        );
+        assert_eq!(filtered.agent.unwrap().agent_id, Some("agent-1".into()));
         assert!(filtered.http.is_none());
     }
 
