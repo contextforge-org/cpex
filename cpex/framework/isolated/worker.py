@@ -24,7 +24,7 @@ from cpex.framework.constants import HOOK_TYPE
 from cpex.framework.loader.plugin import ALLOWED_PLUGIN_DIRS
 from cpex.framework.manager import PluginExecutor
 from cpex.framework.models import PluginConfig, PluginContext
-from cpex.framework.utils import parse_class_name
+from cpex.framework.utils import import_module, parse_class_name
 
 logger = logging.getLogger(__name__)
 
@@ -115,7 +115,7 @@ async def process_task(task_data, tp: TaskProcessor):
             hook_type = task_data.get(HOOK_TYPE)
             cls_name: str = task_data.get("class_name")
             mod_name, n_cls_name = parse_class_name(cls_name)
-            module: ModuleType = importlib.import_module(mod_name)
+            module: ModuleType = import_module(mod_name)
             # cool, we found the module, and verified it implemented the hook type.
             class_ = getattr(module, n_cls_name)
             plugin_type = cast(Type[Plugin], class_)
