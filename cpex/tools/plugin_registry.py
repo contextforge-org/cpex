@@ -96,7 +96,7 @@ class PluginRegistry:
         else:
             raise ValueError(f"Invalid installation type: {installation_type}")
 
-        installation_path =  plugin_path if plugin_path is not None else find_package_path(manifest.name)
+        installation_path = plugin_path if plugin_path is not None else find_package_path(manifest.name)
 
         ipi: InstalledPluginInfo = InstalledPluginInfo(
             name=manifest.name,

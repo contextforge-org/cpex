@@ -314,7 +314,7 @@ def update_plugins_config_yaml(manifest: PluginManifest):
     )
     if plugin_configs.plugins is None:
         plugin_configs.plugins = []
-    if plugin_configs.plugin_dirs is None or len(plugin_configs.plugin_dirs)==0:
+    if plugin_configs.plugin_dirs is None or len(plugin_configs.plugin_dirs) == 0:
         catalog_settings = get_catalog_settings()
         plugin_configs.plugin_dirs = [f"{catalog_settings.FOLDER}"]
     plugin_configs.plugins.append(plugin_config)
@@ -480,7 +480,9 @@ def _parse_pypi_source(source: str) -> tuple[str, Optional[str]]:
     return package_name, version_constraint
 
 
-def _finalize_installation(manifest: PluginManifest, install_type: str, catalog: PluginCatalog, plugin_path: Path | None = None):
+def _finalize_installation(
+    manifest: PluginManifest, install_type: str, catalog: PluginCatalog, plugin_path: Path | None = None
+):
     """Common finalization steps for plugin installation.
 
     Args:

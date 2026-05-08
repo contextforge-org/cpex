@@ -12,19 +12,18 @@ import datetime
 import json
 import logging
 import os
+import shutil
 import subprocess
 import sys
-import tomllib
-from pathlib import Path
-from typing import Any, Optional
-import uuid
-
-import httpx
-import shutil
 import tarfile
 import tempfile
+import tomllib
+import uuid
 import zipfile
+from pathlib import Path
+from typing import Any, Optional
 
+import httpx
 import yaml
 from github import Auth, Github
 from packaging.version import InvalidVersion, Version
@@ -637,7 +636,7 @@ class PluginCatalog:
             raise RuntimeError("PluginManifest.monorepo can not be None.")
         try:
             repo_url = f"git+{manifest.monorepo.package_source}"
-            
+
             plugin_path = None
             # Check manifest kind BEFORE installing
             if manifest.kind == "isolated_venv":
@@ -901,7 +900,6 @@ class PluginCatalog:
         except Exception as e:
             shutil.rmtree(temp_dir, ignore_errors=True)
             raise RuntimeError(f"Unexpected error downloading {package_name}: {str(e)}") from e
-
 
     def _download_package_to_temp(
         self, package_name: str, version_constraint: str | None, use_test: bool = False, verify_integrity: bool = True
