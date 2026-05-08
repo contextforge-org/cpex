@@ -8,11 +8,12 @@ Pydantic models for tool hooks.
 """
 
 # Standard
+import warnings
 from enum import Enum
 from typing import Any, Optional
 
 # Third-Party
-from pydantic import Field
+from pydantic import Field, field_validator
 
 # First-Party
 from cpex.framework.hooks.http import HttpHeaderPayload
@@ -69,6 +70,20 @@ class ToolPreInvokePayload(PluginPayload):
     name: str
     args: Optional[dict[str, Any]] = Field(default_factory=dict)
     headers: Optional[HttpHeaderPayload] = None
+
+    @field_validator("headers", mode="before")
+    @classmethod
+    def _warn_headers_deprecated(cls, v: object) -> object:
+        """Emit deprecation warning for headers field."""
+        if v is not None:
+            warnings.warn(
+                "ToolPreInvokePayload.headers is deprecated; "
+                "use extensions.http.headers instead. "
+                "This field will be removed in a future release.",
+                DeprecationWarning,
+                stacklevel=4,
+            )
+        return v
 
 
 class ToolPostInvokePayload(PluginPayload):

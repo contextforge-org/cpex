@@ -65,6 +65,11 @@ class Plugin(ABC):
     ) -> None:
         """Initialize a plugin with a configuration and context.
 
+        The plugin receives the config directly. When the plugin is
+        registered with the Manager, the PluginRef retains the
+        authoritative config and gives the plugin a defensive copy,
+        so the Manager never trusts config read back from the plugin.
+
         Args:
             config: The plugin configuration
             hook_payloads: optional mapping of hookpoints to payloads for the plugin.
@@ -267,11 +272,18 @@ class PluginRef:
         ['ref', 'test']
     """
 
-    def __init__(self, plugin: Plugin):
+    def __init__(self, plugin: Plugin, trusted_config: PluginConfig | None = None):
         """Initialize a plugin reference.
+
+        Stores the authoritative config separately from the plugin.
+        The Manager reads policy-sensitive fields (capabilities, mode,
+        on_error) from the trusted config, never from the plugin.
 
         Args:
             plugin: The plugin to reference.
+            trusted_config: The authoritative config retained by the
+                Manager. If not provided, falls back to plugin.config
+                (for backward compatibility in tests).
 
         Examples:
             >>> from cpex.framework import PluginConfig
@@ -293,6 +305,7 @@ class PluginRef:
             True
         """
         self._plugin = plugin
+        self._trusted_config = trusted_config or plugin.config
         self._uuid = uuid.uuid4()
 
     @property
@@ -303,6 +316,15 @@ class PluginRef:
             The underlying plugin.
         """
         return self._plugin
+
+    @property
+    def trusted_config(self) -> PluginConfig:
+        """Return the authoritative config held by the Manager.
+
+        Returns:
+            The trusted PluginConfig (not the plugin's copy).
+        """
+        return self._trusted_config
 
     @property
     def uuid(self) -> str:
@@ -320,7 +342,7 @@ class PluginRef:
         Returns:
             Plugin's priority.
         """
-        return self._plugin.priority
+        return self._trusted_config.priority
 
     @property
     def name(self) -> str:
@@ -329,7 +351,7 @@ class PluginRef:
         Returns:
             Plugin's name.
         """
-        return self._plugin.name
+        return self._trusted_config.name
 
     @property
     def hooks(self) -> list[str]:
@@ -338,7 +360,7 @@ class PluginRef:
         Returns:
             Plugin's configured hooks.
         """
-        return self._plugin.hooks
+        return self._trusted_config.hooks
 
     @property
     def tags(self) -> list[str]:
@@ -347,7 +369,7 @@ class PluginRef:
         Returns:
             Plugin's tags.
         """
-        return self._plugin.tags
+        return self._trusted_config.tags
 
     @property
     def conditions(self) -> list[PluginCondition] | None:
@@ -356,7 +378,7 @@ class PluginRef:
         Returns:
             Plugin's conditions for operation.
         """
-        return self._plugin.conditions
+        return self._trusted_config.conditions
 
     @property
     def mode(self) -> PluginMode:
@@ -365,7 +387,7 @@ class PluginRef:
         Returns:
             Plugin's mode.
         """
-        return self.plugin.mode
+        return self._trusted_config.mode
 
     @property
     def on_error(self) -> OnError:
@@ -374,7 +396,16 @@ class PluginRef:
         Returns:
             Plugin's on_error behavior.
         """
-        return self.plugin.config.on_error
+        return self._trusted_config.on_error
+
+    @property
+    def capabilities(self) -> frozenset[str]:
+        """Return the plugin's declared capabilities.
+
+        Returns:
+            The authoritative capability set from the trusted config.
+        """
+        return self._trusted_config.capabilities
 
 
 class HookRef:
@@ -424,7 +455,7 @@ class HookRef:
 
                 # Check for @hook decorator metadata
                 metadata = get_hook_metadata(method)
-                if metadata and metadata.hook_type == hook:
+                if metadata and metadata.matches(hook):
                     self._func = method
                     break
 
@@ -439,19 +470,25 @@ class HookRef:
             )
 
         # Validate hook method signature (parameter count and async)
-        self._validate_hook_signature(hook, self._func, plugin_ref.plugin.name)
+        param_count = self._validate_hook_signature(hook, self._func, plugin_ref.plugin.name)
 
-    def _validate_hook_signature(self, hook: str, func: Callable, plugin_name: str) -> None:
+        # Store whether the plugin accepts extensions as a third argument
+        self._accepts_extensions = param_count == 3
+
+    def _validate_hook_signature(self, hook: str, func: Callable, plugin_name: str) -> int:
         """Validate that the hook method has the correct signature.
 
         Checks:
-        1. Method accepts correct number of parameters (self, payload, context)
+        1. Method accepts 2 parameters (payload, context) or 3 (payload, context, extensions)
         2. Method is async (returns coroutine)
 
         Args:
             hook: The hook type being validated
             func: The hook method to validate
             plugin_name: Name of the plugin (for error messages)
+
+        Returns:
+            The number of parameters (2 or 3).
 
         Raises:
             PluginError: If the signature is invalid
@@ -462,14 +499,16 @@ class HookRef:
         sig = inspect.signature(func)
         params = list(sig.parameters.values())
 
-        # Check parameter count (should be: payload, context)
+        # Check parameter count (should be: payload, context[, extensions])
         # Note: 'self' is not included in bound method signatures
-        if len(params) != 2:
+        if len(params) not in (2, 3):
             raise PluginError(
                 error=PluginErrorModel(
                     message=f"Plugin '{plugin_name}' hook '{hook}' has invalid signature. "
-                    f"Expected 2 parameters (payload, context), got {len(params)}: {list(sig.parameters.keys())}. "
-                    f"Correct signature: async def {hook}(self, payload: PayloadType, context: PluginContext) -> ResultType",
+                    f"Expected 2 or 3 parameters (payload, context[, extensions]), "
+                    f"got {len(params)}: {list(sig.parameters.keys())}. "
+                    f"Correct signature: async def {hook}(self, payload: PayloadType, "
+                    f"context: PluginContext[, extensions: Extensions]) -> ResultType",
                     plugin_name=plugin_name,
                 )
             )
@@ -485,13 +524,7 @@ class HookRef:
                 )
             )
 
-        # ========== OPTIONAL: Type Hint Validation ==========
-        # Uncomment to enable strict type checking of payload and return types.
-        # This validates that type hints match the expected types from the hook registry.
-        # Pros: Catches type errors at plugin load time instead of runtime
-        # Cons: Requires all plugins to have type hints, adds validation overhead
-        #
-        # self._validate_type_hints(hook, func, params, plugin_name)
+        return len(params)
 
     def _validate_type_hints(self, hook: str, func: Callable, params: list, plugin_name: str) -> None:
         """Validate that type hints match expected payload and result types.
@@ -608,7 +641,16 @@ class HookRef:
         return self._hook
 
     @property
-    def hook(self) -> Callable[[PluginPayload, PluginContext], Awaitable[PluginResult]] | None:
+    def accepts_extensions(self) -> bool:
+        """Whether the hook method accepts extensions as a third argument.
+
+        Returns:
+            True if the hook signature has 3 parameters (payload, context, extensions).
+        """
+        return self._accepts_extensions
+
+    @property
+    def hook(self) -> Callable[..., Awaitable[PluginResult]] | None:
         """The hooking function that can be invoked within the reference.
 
         Returns:

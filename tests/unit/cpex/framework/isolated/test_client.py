@@ -7,11 +7,10 @@ Authors: Ted Habeck
 Unit tests for IsolatedVenvPlugin.
 """
 
-import asyncio
 import json
 import sys
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, Mock, patch, mock_open
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -31,11 +30,11 @@ class TestIsolatedVenvPlugin:
         # Create the test_plugin directory structure
         plugin_dir = tmp_path / "test_plugin"
         plugin_dir.mkdir(parents=True, exist_ok=True)
-        
+
         # Create requirements.txt file
         requirements_file = plugin_dir / "requirements.txt"
         requirements_file.write_text("pytest>=7.0.0\n")
-        
+
         venv_path = tmp_path / ".venv"
 
         config_dict = {
@@ -49,7 +48,7 @@ class TestIsolatedVenvPlugin:
                 "class_name": "test_plugin.TestPlugin",
                 "venv_path": venv_path,
                 "requirements_file": "requirements.txt",  # Use relative path
-            }
+            },
         }
 
         return PluginConfig(**config_dict)
@@ -155,11 +154,11 @@ class TestIsolatedVenvPlugin:
 
         mock_registry.json_to_result = MagicMock()
         mock_registry.json_to_result.return_value = ToolPreInvokeResult(
-                    continue_processing=response_data.get("continue_processing"),
-                    modified_payload=response_data.get("modified_payload"),
-                    violation=response_data.get("violation"),
-                    metadata=response_data.get("metadata"),
-                )
+            continue_processing=response_data.get("continue_processing"),
+            modified_payload=response_data.get("modified_payload"),
+            violation=response_data.get("violation"),
+            metadata=response_data.get("metadata"),
+        )
         # Setup communicator
         mock_comm = MagicMock()
         mock_comm.send_task.return_value = response_data
@@ -193,10 +192,10 @@ class TestIsolatedVenvPlugin:
         mock_comm.send_task.return_value = response_data
         mock_registry.json_to_result = MagicMock()
         mock_registry.json_to_result.return_value = ToolPostInvokeResult(
-                    continue_processing=response_data.get("continue_processing"),
-                    modified_payload=response_data.get("modified_payload"),
-                    violation=response_data.get("violation"),
-                    metadata=response_data.get("metadata"),
+            continue_processing=response_data.get("continue_processing"),
+            modified_payload=response_data.get("modified_payload"),
+            violation=response_data.get("violation"),
+            metadata=response_data.get("metadata"),
         )
         plugin.comm = mock_comm
 
@@ -227,10 +226,10 @@ class TestIsolatedVenvPlugin:
         }
         mock_comm.send_task.return_value = response_data
         mock_registry.json_to_result.return_value = PromptPrehookResult(
-                    continue_processing=response_data.get("continue_processing"),
-                    modified_payload=response_data.get("modified_payload"),
-                    violation=response_data.get("violation"),
-                    metadata=response_data.get("metadata"),
+            continue_processing=response_data.get("continue_processing"),
+            modified_payload=response_data.get("modified_payload"),
+            violation=response_data.get("violation"),
+            metadata=response_data.get("metadata"),
         )
         plugin.comm = mock_comm
 
@@ -260,10 +259,10 @@ class TestIsolatedVenvPlugin:
         }
         mock_registry.json_to_result = MagicMock()
         mock_registry.json_to_result.return_value = PromptPosthookResult(
-                    continue_processing=response_data.get("continue_processing"),
-                    modified_payload=response_data.get("modified_payload"),
-                    violation=response_data.get("violation"),
-                    metadata=response_data.get("metadata"),
+            continue_processing=response_data.get("continue_processing"),
+            modified_payload=response_data.get("modified_payload"),
+            violation=response_data.get("violation"),
+            metadata=response_data.get("metadata"),
         )
         mock_comm.send_task.return_value = response_data
         plugin.comm = mock_comm
@@ -289,18 +288,17 @@ class TestIsolatedVenvPlugin:
         response_data = {
             "continue_processing": False,
             "modified_payload": None,
-            "violation": {"reason": "Policy violation", "description":"severity high", "code": "PROHIBITED_CONTENT"},
+            "violation": {"reason": "Policy violation", "description": "severity high", "code": "PROHIBITED_CONTENT"},
             "metadata": {},
         }
         mock_comm.send_task.return_value = response_data
         plugin.comm = mock_comm
         mock_registry.json_to_result.return_value = ToolPreInvokeResult(
-                    continue_processing=response_data.get("continue_processing"),
-                    modified_payload=response_data.get("modified_payload"),
-                    violation=response_data.get("violation"),
-                    metadata=response_data.get("metadata"),
+            continue_processing=response_data.get("continue_processing"),
+            modified_payload=response_data.get("modified_payload"),
+            violation=response_data.get("violation"),
+            metadata=response_data.get("metadata"),
         )
-
 
         from cpex.framework.hooks.tools import ToolPreInvokePayload
 
@@ -369,8 +367,8 @@ class TestIsolatedVenvPlugin:
         mock_comm.send_task.return_value = response_data
         plugin.comm = mock_comm
 
-        from cpex.framework.hooks.tools import ToolPreInvokePayload
         from cpex.framework import GlobalContext
+        from cpex.framework.hooks.tools import ToolPreInvokePayload
 
         payload = ToolPreInvokePayload(name="test_tool", args={"key": "value"})
         global_ctx = GlobalContext(request_id="req-123", user="alice")
@@ -407,11 +405,11 @@ class TestIsolatedVenvPlugin:
         """Test computing hash of existing requirements file."""
         req_file = tmp_path / "requirements.txt"
         req_file.write_text("pytest==7.0.0\nrequests==2.28.0\n")
-        
+
         hash1 = plugin._compute_requirements_hash(str(req_file))
         assert isinstance(hash1, str)
         assert len(hash1) == 64  # SHA256 produces 64 hex characters
-        
+
         # Same content should produce same hash
         hash2 = plugin._compute_requirements_hash(str(req_file))
         assert hash1 == hash2
@@ -420,20 +418,20 @@ class TestIsolatedVenvPlugin:
         """Test that different content produces different hashes."""
         req_file1 = tmp_path / "requirements1.txt"
         req_file1.write_text("pytest==7.0.0\n")
-        
+
         req_file2 = tmp_path / "requirements2.txt"
         req_file2.write_text("pytest==8.0.0\n")
-        
+
         hash1 = plugin._compute_requirements_hash(str(req_file1))
         hash2 = plugin._compute_requirements_hash(str(req_file2))
-        
+
         assert hash1 != hash2
 
     def test_compute_requirements_hash_nonexistent_file(self, plugin, tmp_path):
         """Test computing hash of non-existent file."""
         nonexistent = tmp_path / "nonexistent.txt"
         hash_result = plugin._compute_requirements_hash(str(nonexistent))
-        
+
         # Should return hash of empty content
         assert isinstance(hash_result, str)
         assert len(hash_result) == 64
@@ -442,7 +440,7 @@ class TestIsolatedVenvPlugin:
         """Test getting cache metadata path."""
         venv_path = tmp_path / ".venv"
         metadata_path = plugin._get_cache_metadata_path(str(venv_path))
-        
+
         assert metadata_path.parent == plugin.cache_dir
         assert metadata_path.name == ".venv_metadata.json"
         assert isinstance(metadata_path, Path)
@@ -452,7 +450,7 @@ class TestIsolatedVenvPlugin:
         venv_path = tmp_path / ".venv"
         req_file = tmp_path / "requirements.txt"
         req_file.write_text("pytest==7.0.0\n")
-        
+
         result = plugin._is_venv_cache_valid(str(venv_path), str(req_file))
         assert result is False
 
@@ -462,7 +460,7 @@ class TestIsolatedVenvPlugin:
         venv_path.mkdir()
         req_file = tmp_path / "requirements.txt"
         req_file.write_text("pytest==7.0.0\n")
-        
+
         result = plugin._is_venv_cache_valid(str(venv_path), str(req_file))
         assert result is False
 
@@ -472,17 +470,17 @@ class TestIsolatedVenvPlugin:
         venv_path.mkdir()
         req_file = tmp_path / "requirements.txt"
         req_file.write_text("pytest==7.0.0\n")
-        
+
         # Create metadata with different hash
         metadata_path = plugin._get_cache_metadata_path(str(venv_path))
         metadata = {
             "venv_path": str(venv_path),
             "requirements_file": str(req_file),
             "requirements_hash": "different_hash",
-            "python_version": f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
+            "python_version": f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",
         }
         metadata_path.write_text(json.dumps(metadata))
-        
+
         result = plugin._is_venv_cache_valid(str(venv_path), str(req_file))
         assert result is False
 
@@ -492,7 +490,7 @@ class TestIsolatedVenvPlugin:
         venv_path.mkdir()
         req_file = tmp_path / "requirements.txt"
         req_file.write_text("pytest==7.0.0\n")
-        
+
         # Create metadata with correct hash
         req_hash = plugin._compute_requirements_hash(str(req_file))
         metadata_path = plugin._get_cache_metadata_path(str(venv_path))
@@ -500,10 +498,10 @@ class TestIsolatedVenvPlugin:
             "venv_path": str(venv_path),
             "requirements_file": str(req_file),
             "requirements_hash": req_hash,
-            "python_version": f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
+            "python_version": f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",
         }
         metadata_path.write_text(json.dumps(metadata))
-        
+
         result = plugin._is_venv_cache_valid(str(venv_path), str(req_file))
         assert result is True
 
@@ -513,11 +511,11 @@ class TestIsolatedVenvPlugin:
         venv_path.mkdir()
         req_file = tmp_path / "requirements.txt"
         req_file.write_text("pytest==7.0.0\n")
-        
+
         # Create invalid JSON metadata
         metadata_path = plugin._get_cache_metadata_path(str(venv_path))
         metadata_path.write_text("invalid json {")
-        
+
         result = plugin._is_venv_cache_valid(str(venv_path), str(req_file))
         assert result is False
 
@@ -527,15 +525,15 @@ class TestIsolatedVenvPlugin:
         venv_path.mkdir()
         req_file = tmp_path / "requirements.txt"
         req_file.write_text("pytest==7.0.0\n")
-        
+
         plugin._save_cache_metadata(str(venv_path), str(req_file))
-        
+
         metadata_path = plugin._get_cache_metadata_path(str(venv_path))
         assert metadata_path.exists()
-        
+
         with open(metadata_path) as f:
             metadata = json.load(f)
-        
+
         assert "venv_path" in metadata
         assert "requirements_file" in metadata
         assert "requirements_hash" in metadata
@@ -547,15 +545,15 @@ class TestIsolatedVenvPlugin:
         venv_path = tmp_path / ".venv"
         venv_path.mkdir()
         req_file = tmp_path / "nonexistent.txt"
-        
+
         plugin._save_cache_metadata(str(venv_path), str(req_file))
-        
+
         metadata_path = plugin._get_cache_metadata_path(str(venv_path))
         assert metadata_path.exists()
-        
+
         with open(metadata_path) as f:
             metadata = json.load(f)
-        
+
         assert metadata["requirements_file"] is None
 
     @pytest.mark.asyncio
@@ -567,12 +565,12 @@ class TestIsolatedVenvPlugin:
         venv_path.mkdir()
         req_file = tmp_path / "requirements.txt"
         req_file.write_text("pytest==7.0.0\n")
-        
+
         # Setup valid cache
         plugin._save_cache_metadata(str(venv_path), str(req_file))
-        
+
         await plugin.create_venv(str(venv_path), str(req_file), use_cache=True)
-        
+
         # Should not create new venv or remove existing
         mock_builder_class.assert_not_called()
         mock_rmtree.assert_not_called()
@@ -586,22 +584,22 @@ class TestIsolatedVenvPlugin:
         venv_path.mkdir()
         req_file = tmp_path / "requirements.txt"
         req_file.write_text("pytest==7.0.0\n")
-        
+
         # Setup invalid cache (wrong hash)
         metadata_path = plugin._get_cache_metadata_path(str(venv_path))
         metadata = {
             "venv_path": str(venv_path),
             "requirements_file": str(req_file),
             "requirements_hash": "wrong_hash",
-            "python_version": f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
+            "python_version": f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",
         }
         metadata_path.write_text(json.dumps(metadata))
-        
+
         mock_builder = MagicMock()
         mock_builder_class.return_value = mock_builder
-        
+
         await plugin.create_venv(str(venv_path), str(req_file), use_cache=True)
-        
+
         # Should remove old venv and create new one
         mock_rmtree.assert_called_once_with(venv_path)
         mock_builder_class.assert_called_once()
@@ -614,12 +612,12 @@ class TestIsolatedVenvPlugin:
         venv_path = tmp_path / ".venv"
         req_file = tmp_path / "requirements.txt"
         req_file.write_text("pytest==7.0.0\n")
-        
+
         mock_builder = MagicMock()
         mock_builder_class.return_value = mock_builder
-        
+
         await plugin.create_venv(str(venv_path), str(req_file), use_cache=False)
-        
+
         # Should create new venv
         mock_builder_class.assert_called_once()
         mock_builder.create.assert_called_once()
@@ -634,9 +632,9 @@ class TestIsolatedVenvPlugin:
         mock_create_venv.return_value = None
         mock_comm = MagicMock()
         mock_comm_class.return_value = mock_comm
-        
+
         await plugin.initialize()
-        
+
         # Should not install requirements when cache is valid
         mock_comm.install_requirements.assert_not_called()
 
@@ -645,26 +643,29 @@ class TestIsolatedVenvPlugin:
     @patch.object(IsolatedVenvPlugin, "create_venv")
     @patch.object(IsolatedVenvPlugin, "_is_venv_cache_valid")
     @patch.object(IsolatedVenvPlugin, "_save_cache_metadata")
-    async def test_initialize_with_invalid_cache(self, mock_save_metadata, mock_cache_valid, mock_create_venv, mock_comm_class, plugin):
+    async def test_initialize_with_invalid_cache(
+        self, mock_save_metadata, mock_cache_valid, mock_create_venv, mock_comm_class, plugin
+    ):
         """Test initialize with invalid cache installs requirements."""
         mock_cache_valid.return_value = False
         mock_create_venv.return_value = True
         mock_comm = MagicMock()
         mock_comm_class.return_value = mock_comm
-        
+
         await plugin.initialize()
-        
+
         # Should install requirements when cache is invalid
         mock_comm.install_requirements.assert_called_once()
         mock_save_metadata.assert_called_once()
+
     @pytest.mark.asyncio
     async def test_cleanup(self, plugin):
         """Test cleanup method stops worker process."""
         mock_comm = MagicMock()
         plugin.comm = mock_comm
-        
+
         await plugin.cleanup()
-        
+
         mock_comm.stop_worker.assert_called_once()
         assert plugin.comm is None
 
@@ -672,10 +673,9 @@ class TestIsolatedVenvPlugin:
     async def test_cleanup_no_comm(self, plugin):
         """Test cleanup when comm is None."""
         plugin.comm = None
-        
+
         # Should not raise error
         await plugin.cleanup()
-
 
 
 # Made with Bob

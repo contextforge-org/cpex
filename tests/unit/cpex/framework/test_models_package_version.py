@@ -60,61 +60,42 @@ class TestPluginPackageInfoEdgeCases:
 
     def test_git_branch_single_character(self):
         """Single character branch names should be valid."""
-        pkg = PluginPackageInfo(
-            git_repository="https://github.com/user/repo.git",
-            git_branch_tag_commit="v"
-        )
+        pkg = PluginPackageInfo(git_repository="https://github.com/user/repo.git", git_branch_tag_commit="v")
         assert pkg.git_branch_tag_commit == "v"
 
     def test_git_branch_with_multiple_slashes(self):
         """Branch names with multiple slashes should be valid."""
         pkg = PluginPackageInfo(
-            git_repository="https://github.com/user/repo.git",
-            git_branch_tag_commit="feature/sub/branch"
+            git_repository="https://github.com/user/repo.git", git_branch_tag_commit="feature/sub/branch"
         )
         assert pkg.git_branch_tag_commit == "feature/sub/branch"
 
     def test_git_commit_short_hash(self):
         """Short commit hashes (7 characters) should be valid."""
-        pkg = PluginPackageInfo(
-            git_repository="https://github.com/user/repo.git",
-            git_branch_tag_commit="abc1234"
-        )
+        pkg = PluginPackageInfo(git_repository="https://github.com/user/repo.git", git_branch_tag_commit="abc1234")
         assert pkg.git_branch_tag_commit == "abc1234"
 
     def test_git_commit_full_hash(self):
         """Full commit hashes (40 characters) should be valid."""
         full_hash = "a" * 40
-        pkg = PluginPackageInfo(
-            git_repository="https://github.com/user/repo.git",
-            git_branch_tag_commit=full_hash
-        )
+        pkg = PluginPackageInfo(git_repository="https://github.com/user/repo.git", git_branch_tag_commit=full_hash)
         assert pkg.git_branch_tag_commit == full_hash
 
     def test_version_constraint_with_spaces(self):
         """Version constraints with spaces around operators should be valid."""
-        pkg = PluginPackageInfo(
-            pypi_package="my-package",
-            version_constraint=">= 1.0.0, < 2.0.0"
-        )
+        pkg = PluginPackageInfo(pypi_package="my-package", version_constraint=">= 1.0.0, < 2.0.0")
         assert pkg.version_constraint == ">= 1.0.0, < 2.0.0"
 
     def test_version_constraint_triple_equals(self):
         """Version constraints with === operator should be valid."""
-        pkg = PluginPackageInfo(
-            pypi_package="my-package",
-            version_constraint="===1.0.0"
-        )
+        pkg = PluginPackageInfo(pypi_package="my-package", version_constraint="===1.0.0")
         assert pkg.version_constraint == "===1.0.0"
 
     def test_version_constraint_with_local_version(self):
         """Version constraints with local version identifiers are not supported by current validator."""
         # The current regex doesn't support + in version constraints
         with pytest.raises(ValueError, match="Invalid version constraint"):
-            PluginPackageInfo(
-                pypi_package="my-package",
-                version_constraint="==1.0.0+local.version"
-            )
+            PluginPackageInfo(pypi_package="my-package", version_constraint="==1.0.0+local.version")
 
     def test_both_installation_methods_with_all_fields(self):
         """Both installation methods with all optional fields should be valid."""
@@ -122,7 +103,7 @@ class TestPluginPackageInfoEdgeCases:
             pypi_package="my-package",
             git_repository="https://github.com/user/repo.git",
             git_branch_tag_commit="v1.0.0",
-            version_constraint=">=1.0.0,<2.0.0"
+            version_constraint=">=1.0.0,<2.0.0",
         )
         assert pkg.pypi_package == "my-package"
         assert pkg.git_repository == "https://github.com/user/repo.git"
@@ -135,11 +116,7 @@ class TestPluginVersionInfoEdgeCases:
 
     def test_version_info_minimal_fields(self):
         """PluginVersionInfo with only required fields should be valid."""
-        info = PluginVersionInfo(
-            version="1.0.0",
-            released="2024-01-01",
-            manifest_file="manifest.json"
-        )
+        info = PluginVersionInfo(version="1.0.0", released="2024-01-01", manifest_file="manifest.json")
         assert info.version == "1.0.0"
         assert info.released == "2024-01-01"
         assert info.manifest_file == "manifest.json"
@@ -156,7 +133,7 @@ class TestPluginVersionInfoEdgeCases:
             deprecated=True,
             manifest_file="manifest.json",
             changelog="Major update with breaking changes",
-            min_max_framework_version="0.2.0,0.3.0"
+            min_max_framework_version="0.2.0,0.3.0",
         )
         assert info.version == "2.0.0"
         assert info.breaking_changes is True
@@ -166,11 +143,7 @@ class TestPluginVersionInfoEdgeCases:
 
     def test_version_info_prerelease_version(self):
         """PluginVersionInfo with pre-release version should be valid."""
-        info = PluginVersionInfo(
-            version="1.0.0-alpha.1",
-            released="2024-01-01",
-            manifest_file="manifest.json"
-        )
+        info = PluginVersionInfo(version="1.0.0-alpha.1", released="2024-01-01", manifest_file="manifest.json")
         assert info.version == "1.0.0-alpha.1"
 
     def test_version_info_dev_version(self):
@@ -179,7 +152,7 @@ class TestPluginVersionInfoEdgeCases:
             version="1.0.0.dev1",
             released="2024-01-01",
             manifest_file="manifest.json",
-            min_max_framework_version="0.1.0.dev1,0.1.0.dev10"
+            min_max_framework_version="0.1.0.dev1,0.1.0.dev10",
         )
         assert info.version == "1.0.0.dev1"
 
@@ -193,15 +166,11 @@ class TestPluginVersionRegistryEdgeCases:
             version="1.0.0-alpha",
             released="2024-01-01",
             manifest_file="manifest.json",
-            min_max_framework_version="0.1.0,0.2.0"
+            min_max_framework_version="0.1.0,0.2.0",
         )
-        
-        registry = PluginVersionRegistry(
-            latest=None,
-            latest_prerelease=v1,
-            versions=[v1]
-        )
-        
+
+        registry = PluginVersionRegistry(latest=None, latest_prerelease=v1, versions=[v1])
+
         assert registry.get_version() is None
         assert registry.latest_prerelease == v1
 
@@ -211,21 +180,17 @@ class TestPluginVersionRegistryEdgeCases:
             version="1.0.0",
             released="2024-01-01",
             manifest_file="manifest.json",
-            min_max_framework_version="0.1.0,0.2.0"
+            min_max_framework_version="0.1.0,0.2.0",
         )
         v2 = PluginVersionInfo(
             version="1.1.0-beta",
             released="2024-02-01",
             manifest_file="manifest.json",
-            min_max_framework_version="0.1.0,0.2.0"
+            min_max_framework_version="0.1.0,0.2.0",
         )
-        
-        registry = PluginVersionRegistry(
-            latest=v1,
-            latest_prerelease=v2,
-            versions=[v1, v2]
-        )
-        
+
+        registry = PluginVersionRegistry(latest=v1, latest_prerelease=v2, versions=[v1, v2])
+
         assert registry.get_version() == v1
         assert registry.latest_prerelease == v2
 
@@ -235,14 +200,11 @@ class TestPluginVersionRegistryEdgeCases:
             version="1.0.0",
             released="2024-01-01",
             manifest_file="manifest.json",
-            min_max_framework_version="0.1.0,0.2.0"
+            min_max_framework_version="0.1.0,0.2.0",
         )
-        
-        registry = PluginVersionRegistry(
-            latest=v1,
-            versions=[v1]
-        )
-        
+
+        registry = PluginVersionRegistry(latest=v1, versions=[v1])
+
         result = registry.get_latest_compatible("0.1.5")
         assert result == v1
 
@@ -252,26 +214,23 @@ class TestPluginVersionRegistryEdgeCases:
             version="1.0.0",
             released="2024-01-01",
             manifest_file="manifest.json",
-            min_max_framework_version="0.1.0,0.3.0"
+            min_max_framework_version="0.1.0,0.3.0",
         )
         v2 = PluginVersionInfo(
             version="1.5.0",
             released="2024-02-01",
             manifest_file="manifest.json",
-            min_max_framework_version="0.2.0,0.4.0"
+            min_max_framework_version="0.2.0,0.4.0",
         )
         v3 = PluginVersionInfo(
             version="2.0.0",
             released="2024-03-01",
             manifest_file="manifest.json",
-            min_max_framework_version="0.2.5,0.5.0"
+            min_max_framework_version="0.2.5,0.5.0",
         )
-        
-        registry = PluginVersionRegistry(
-            latest=v3,
-            versions=[v1, v2, v3]
-        )
-        
+
+        registry = PluginVersionRegistry(latest=v3, versions=[v1, v2, v3])
+
         # Framework 0.2.7 matches v1, v2, and v3 - should return v3 (latest)
         result = registry.get_latest_compatible("0.2.7")
         assert result == v3
@@ -283,28 +242,25 @@ class TestPluginVersionRegistryEdgeCases:
             version="1.0.0",
             released="2024-01-01",
             manifest_file="manifest.json",
-            min_max_framework_version="0.1.0,0.2.0"
+            min_max_framework_version="0.1.0,0.2.0",
         )
         v2 = PluginVersionInfo(
             version="2.0.0",
             released="2024-02-01",
             manifest_file="manifest.json",
-            min_max_framework_version="0.3.0,0.4.0"
+            min_max_framework_version="0.3.0,0.4.0",
         )
-        
-        registry = PluginVersionRegistry(
-            latest=v2,
-            versions=[v1, v2]
-        )
-        
+
+        registry = PluginVersionRegistry(latest=v2, versions=[v1, v2])
+
         # Framework 0.1.5 should match v1
         result = registry.get_latest_compatible("0.1.5")
         assert result == v1
-        
+
         # Framework 0.3.5 should match v2
         result = registry.get_latest_compatible("0.3.5")
         assert result == v2
-        
+
         # Framework 0.2.5 should match neither
         result = registry.get_latest_compatible("0.2.5")
         assert result is None
@@ -315,20 +271,17 @@ class TestPluginVersionRegistryEdgeCases:
             version="not-a-version",
             released="2024-01-01",
             manifest_file="manifest.json",
-            min_max_framework_version="0.1.0,0.2.0"
+            min_max_framework_version="0.1.0,0.2.0",
         )
         v2 = PluginVersionInfo(
             version="1.0.0",
             released="2024-02-01",
             manifest_file="manifest.json",
-            min_max_framework_version="0.1.0,0.2.0"
+            min_max_framework_version="0.1.0,0.2.0",
         )
-        
-        registry = PluginVersionRegistry(
-            latest=v2,
-            versions=[v1, v2]
-        )
-        
+
+        registry = PluginVersionRegistry(latest=v2, versions=[v1, v2])
+
         # Should still find v2 even though v1 has invalid version
         result = registry.get_latest_compatible("0.1.5")
         # If sorting fails, it returns the first compatible version
@@ -340,14 +293,11 @@ class TestPluginVersionRegistryEdgeCases:
             version="1.0.0",
             released="2024-01-01",
             manifest_file="manifest.json",
-            min_max_framework_version="  0.1.0  ,  0.2.0  "
+            min_max_framework_version="  0.1.0  ,  0.2.0  ",
         )
-        
-        registry = PluginVersionRegistry(
-            latest=v1,
-            versions=[v1]
-        )
-        
+
+        registry = PluginVersionRegistry(latest=v1, versions=[v1])
+
         result = registry.get_latest_compatible("0.1.5")
         assert result == v1
 
@@ -357,14 +307,11 @@ class TestPluginVersionRegistryEdgeCases:
             version="1.0.0",
             released="2024-01-01",
             manifest_file="manifest.json",
-            min_max_framework_version="0.1.0,0.2.0,0.3.0"  # Invalid: 3 parts
+            min_max_framework_version="0.1.0,0.2.0,0.3.0",  # Invalid: 3 parts
         )
-        
-        registry = PluginVersionRegistry(
-            latest=v1,
-            versions=[v1]
-        )
-        
+
+        registry = PluginVersionRegistry(latest=v1, versions=[v1])
+
         result = registry.get_latest_compatible("0.1.5")
         assert result is None
 
@@ -374,14 +321,11 @@ class TestPluginVersionRegistryEdgeCases:
             version="1.0.0",
             released="2024-01-01",
             manifest_file="manifest.json",
-            min_max_framework_version="0.2.0,0.1.0"  # Reversed
+            min_max_framework_version="0.2.0,0.1.0",  # Reversed
         )
-        
-        registry = PluginVersionRegistry(
-            latest=v1,
-            versions=[v1]
-        )
-        
+
+        registry = PluginVersionRegistry(latest=v1, versions=[v1])
+
         # No version should match since max < min
         result = registry.get_latest_compatible("0.1.5")
         assert result is None
@@ -392,44 +336,36 @@ class TestPluginVersionRegistryEdgeCases:
             version="1.0.0",
             released="2024-01-01",
             manifest_file="manifest.json",
-            min_max_framework_version="0.1.0,0.2.0"
+            min_max_framework_version="0.1.0,0.2.0",
         )
         v2 = PluginVersionInfo(
             version="2.0.0",
             released="2024-02-01",
             manifest_file="manifest.json",
-            min_max_framework_version="0.1.0,0.2.0"
+            min_max_framework_version="0.1.0,0.2.0",
         )
         v3 = PluginVersionInfo(
             version="1.5.0",
             released="2024-01-15",
             manifest_file="manifest.json",
-            min_max_framework_version="0.1.0,0.2.0"
+            min_max_framework_version="0.1.0,0.2.0",
         )
-        
+
         # Test with different orderings
-        registry1 = PluginVersionRegistry(
-            latest=v2,
-            versions=[v1, v2, v3]
-        )
-        
-        registry2 = PluginVersionRegistry(
-            latest=v2,
-            versions=[v3, v1, v2]
-        )
-        
-        registry3 = PluginVersionRegistry(
-            latest=v2,
-            versions=[v2, v3, v1]
-        )
-        
+        registry1 = PluginVersionRegistry(latest=v2, versions=[v1, v2, v3])
+
+        registry2 = PluginVersionRegistry(latest=v2, versions=[v3, v1, v2])
+
+        registry3 = PluginVersionRegistry(latest=v2, versions=[v2, v3, v1])
+
         # All should return v2 as the latest compatible
         result1 = registry1.get_latest_compatible("0.1.5")
         result2 = registry2.get_latest_compatible("0.1.5")
         result3 = registry3.get_latest_compatible("0.1.5")
-        
+
         assert result1 == v2
         assert result2 == v2
         assert result3 == v2
+
 
 # Made with Bob

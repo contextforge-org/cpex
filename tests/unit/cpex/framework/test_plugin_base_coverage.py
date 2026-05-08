@@ -64,6 +64,13 @@ class BadSigPlugin(Plugin):
         return PluginResult(continue_processing=True)
 
 
+class ThreeParamPlugin(Plugin):
+    """Plugin with 3 parameters (accepts extensions)."""
+
+    async def tool_pre_invoke(self, payload: PluginPayload, context: PluginContext, extensions) -> PluginResult:
+        return PluginResult(continue_processing=True)
+
+
 class NoHookPlugin(Plugin):
     """Plugin with no method matching the hook."""
 
@@ -154,6 +161,19 @@ class TestHookRef:
         ref = PluginRef(plugin)
         with pytest.raises(PluginError, match="invalid signature"):
             HookRef("tool_pre_invoke", ref)
+
+    def test_three_param_plugin_accepted(self):
+        plugin = ThreeParamPlugin(_make_config())
+        ref = PluginRef(plugin)
+        hook_ref = HookRef("tool_pre_invoke", ref)
+        assert hook_ref.hook is not None
+        assert hook_ref.accepts_extensions is True
+
+    def test_two_param_plugin_no_extensions(self):
+        plugin = ConcretePlugin(_make_config())
+        ref = PluginRef(plugin)
+        hook_ref = HookRef("tool_pre_invoke", ref)
+        assert hook_ref.accepts_extensions is False
 
     def test_sync_method_raises(self):
         plugin = SyncPlugin(_make_config())

@@ -558,6 +558,8 @@ def _wrap_value(value: Any) -> Any:
         return value
     if isinstance(value, _PRIMITIVE_TYPES):
         return value
+    if isinstance(value, BaseException):
+        return value
     if isinstance(value, RootModel):
         root = value.root
         if isinstance(root, dict):

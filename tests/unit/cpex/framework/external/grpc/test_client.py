@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 # Third-Party
 import pytest
+from pydantic import ValidationError
 
 # First-Party
 from cpex.framework import PluginError, ToolPreInvokePayload
@@ -84,20 +85,14 @@ class TestGrpcExternalPluginInit:
 class TestGrpcExternalPluginInitialize:
     """Tests for GrpcExternalPlugin.initialize()."""
 
-    @pytest.mark.asyncio
-    async def test_initialize_missing_grpc_config(self):
-        """Test initialize raises PluginError when grpc config is missing."""
-        config = PluginConfig(
-            name="TestPlugin",
-            kind="external",
-            hooks=["tool_pre_invoke"],
-            grpc=GRPCClientConfig(target="localhost:50051"),
-        )
-        plugin = GrpcExternalPlugin(config)
-        plugin._config.grpc = None  # Remove grpc config
-
-        with pytest.raises(PluginError, match="grpc section must be defined"):
-            await plugin.initialize()
+    def test_initialize_missing_grpc_config(self):
+        """Test PluginConfig validation rejects external plugin without transport config."""
+        with pytest.raises(ValidationError, match="External plugin.*must have"):
+            PluginConfig(
+                name="TestPlugin",
+                kind="external",
+                hooks=["tool_pre_invoke"],
+            )
 
     @pytest.mark.asyncio
     async def test_initialize_creates_channel(self, mock_plugin_config):

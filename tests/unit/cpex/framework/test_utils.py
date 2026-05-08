@@ -518,7 +518,7 @@ def test_matches_edge_cases():
     # Test context without user
     context_no_user = GlobalContext(request_id="req1", server_id="srv1")
     condition_user_required = PluginCondition(user_patterns=["admin"])
-    assert matches(condition_user_required, context_no_user) is True  # No user means condition is ignored
+    assert matches(condition_user_required, context_no_user) is False  # Fail-closed: no user means condition fails
 
     # Test all conditions together
     complex_condition = PluginCondition(server_ids={"srv1", "srv2"}, tenant_ids={"tenant1"}, user_patterns=["admin"])

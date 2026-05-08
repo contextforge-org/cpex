@@ -1,0 +1,46 @@
+# ===============================================================
+# Docs Build - Verify documentation builds without errors
+# ===============================================================
+
+name: Docs Build
+
+on:
+  workflow_call:
+  push:
+    branches: ["main"]
+    paths:
+      - "docs/**"
+      - ".github/workflows/docs-build.yaml"
+  pull_request:
+    types: [opened, synchronize, ready_for_review]
+    branches: ["main"]
+    paths:
+      - "docs/**"
+      - ".github/workflows/docs-build.yaml"
+
+permissions:
+  contents: read
+
+jobs:
+  docs-build:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    name: Hugo Build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v5
+        with:
+          submodules: recursive
+          fetch-depth: 1
+
+      - name: Setup Hugo
+        uses: peaceiris/actions-hugo@v3
+        with:
+          hugo-version: "latest"
+          extended: true
+
+      - name: Build docs
+        working-directory: docs
+        run: hugo --minify

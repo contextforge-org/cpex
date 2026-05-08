@@ -10,6 +10,7 @@ the base plugin layer including configurations, and contexts.
 """
 
 # Standard
+import warnings
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
@@ -74,6 +75,20 @@ class AgentPreInvokePayload(PluginPayload):
     model: Optional[str] = None
     system_prompt: Optional[str] = None
     parameters: Optional[Dict[str, Any]] = Field(default_factory=dict)
+
+    @field_validator("headers", mode="before")
+    @classmethod
+    def _warn_headers_deprecated(cls, v: object) -> object:
+        """Emit deprecation warning for headers field."""
+        if v is not None:
+            warnings.warn(
+                "AgentPreInvokePayload.headers is deprecated; "
+                "use extensions.http.headers instead. "
+                "This field will be removed in a future release.",
+                DeprecationWarning,
+                stacklevel=4,
+            )
+        return v
 
     @field_validator("messages", mode="before")
     @classmethod

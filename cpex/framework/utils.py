@@ -189,15 +189,46 @@ def parse_class_name(name: str) -> tuple[str, str]:
     return ("", name)
 
 
+def normalize_content_type(content_type: str) -> str:
+    """Extract base content type without parameters.
+
+    Args:
+        content_type: Raw content type string (e.g., 'application/json; charset=utf-8')
+
+    Returns:
+        Normalized content type (e.g., 'application/json')
+
+    Examples:
+        >>> normalize_content_type('application/json; charset=utf-8')
+        'application/json'
+        >>> normalize_content_type('text/html')
+        'text/html'
+        >>> normalize_content_type('TEXT/PLAIN')
+        'text/plain'
+        >>> normalize_content_type('application/json;charset=utf-8')
+        'application/json'
+        >>> normalize_content_type('')
+        ''
+        >>> normalize_content_type('   ')
+        ''
+    """
+    if not isinstance(content_type, str):
+        return ""
+    return content_type.split(";", maxsplit=1)[0].strip().lower()
+
+
 def matches(condition: PluginCondition, context: GlobalContext) -> bool:
-    """Check if conditions match the current context.
+    """Check if GlobalContext conditions match (AND logic).
+
+    All specified fields in the condition must match for this function to return True.
+    This function uses AND logic - if any field doesn't match, it returns False.
 
     Args:
         condition: the conditions on the plugin that are required for execution.
         context: the global context.
 
     Returns:
-        True if the plugin matches criteria.
+        True if all specified fields match, False otherwise.
 
     Examples:
         >>> from cpex.framework import GlobalContext, PluginCondition
@@ -212,19 +243,55 @@ def matches(condition: PluginCondition, context: GlobalContext) -> bool:
         >>> ctx3 = GlobalContext(request_id="req3", user="admin_user")
         >>> matches(cond2, ctx3)
         True
+        >>> cond3 = PluginCondition(content_types=["application/json"])
+        >>> ctx4 = GlobalContext(request_id="req4", content_type="application/json")
+        >>> matches(cond3, ctx4)
+        True
+        >>> ctx5 = GlobalContext(request_id="req5", content_type="application/json; charset=utf-8")
+        >>> matches(cond3, ctx5)
+        True
+        >>> ctx6 = GlobalContext(request_id="req6", content_type="text/plain")
+        >>> matches(cond3, ctx6)
+        False
     """
     # Check server ID
-    if condition.server_ids and context.server_id not in condition.server_ids:
-        return False
+    if condition.server_ids:
+        if context.server_id not in condition.server_ids:
+            logger.debug("Server ID mismatch: %s not in %s", context.server_id, condition.server_ids)
+            return False
+        logger.debug("Server ID matched: %s", context.server_id)
 
     # Check tenant ID
-    if condition.tenant_ids and context.tenant_id not in condition.tenant_ids:
-        return False
+    if condition.tenant_ids:
+        if context.tenant_id not in condition.tenant_ids:
+            logger.debug("Tenant ID mismatch: %s not in %s", context.tenant_id, condition.tenant_ids)
+            return False
+        logger.debug("Tenant ID matched: %s", context.tenant_id)
+
+    # Check content types (strict AND logic - fail if content_type is None/empty but condition requires it)
+    if condition.content_types:
+        if not context.content_type or not context.content_type.strip():
+            logger.debug(
+                "Content-type mismatch: content_type is None/empty but condition requires: %s", condition.content_types
+            )
+            return False
+        normalized_request = normalize_content_type(context.content_type)
+        if normalized_request not in condition.content_types:
+            return False
+        logger.debug("Content-type matched: %s", context.content_type)
 
     # Check user patterns (simple contains check, could be regex)
-    if condition.user_patterns and context.user:
-        if not any(pattern in context.user for pattern in condition.user_patterns):
+    if condition.user_patterns:
+        if not context.user:
+            logger.debug("User pattern mismatch: user is None but patterns required: %s", condition.user_patterns)
             return False
+
+        if not any(pattern in context.user for pattern in condition.user_patterns):
+            logger.debug("User pattern mismatch: %s does not match any of %s", context.user, condition.user_patterns)
+            return False
+        logger.debug("User pattern matched: %s", context.user)
+
+    logger.debug("All GlobalContext conditions matched")
     return True
 
 
@@ -294,6 +361,8 @@ def get_matchable_value(payload: Any, hook_type: str) -> Optional[str]:
         "resource_post_fetch": "uri",
         "agent_pre_invoke": "agent_id",
         "agent_post_invoke": "agent_id",
+        "token_delegate": "target_name",
+        "identity_resolve": "raw_token",
     }
 
     field_name = field_map.get(hook_type)
@@ -347,6 +416,8 @@ def payload_matches(
         "resource_post_fetch": "resources",
         "agent_pre_invoke": "agents",
         "agent_post_invoke": "agents",
+        "token_delegate": "tools",
+        "identity_resolve": "tools",
     }
 
     # If no conditions, match everything

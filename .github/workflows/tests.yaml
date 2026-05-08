@@ -1,0 +1,61 @@
+# ===============================================================
+# Tests - Run the test suite
+# ===============================================================
+
+name: Tests
+
+on:
+  workflow_call:
+  push:
+    branches: ["main"]
+    paths:
+      - "cpex/**"
+      - "tests/**"
+      - "pyproject.toml"
+      - ".github/workflows/tests.yaml"
+  pull_request:
+    types: [opened, synchronize, ready_for_review]
+    branches: ["main"]
+    paths:
+      - "cpex/**"
+      - "tests/**"
+      - "pyproject.toml"
+      - ".github/workflows/tests.yaml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+        os: [ubuntu-latest]
+
+    name: "Python ${{ matrix.python-version }}"
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 1
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python3 -m pip install --upgrade pip
+          pip install -e ".[dev,all]"
+
+      - name: Run tests
+        run: |
+          PYTHONPATH=cpex pytest -n auto tests

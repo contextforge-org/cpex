@@ -1,0 +1,23 @@
+plugins:
+  - name: "ExtensionsLabelPlugin"
+    kind: "plugins.extensions_aware.ExtensionsLabelPlugin"
+    description: "Test plugin that adds labels to extensions"
+    author: "Test"
+    version: "0.1"
+    hooks:
+      - "tool_pre_invoke"
+    mode: "sequential"
+    priority: 10
+    capabilities:
+      - "read_labels"
+      - "append_labels"
+
+plugin_dirs:
+  - "./tests/unit/cpex/fixtures"
+
+plugin_settings:
+  parallel_execution_within_band: true
+  plugin_timeout: 30
+  fail_on_plugin_error: false
+  enable_plugin_api: true
+  plugin_health_check_interval: 60

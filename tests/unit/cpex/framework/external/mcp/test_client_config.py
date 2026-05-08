@@ -54,9 +54,9 @@ async def test_initialize_missing_mcp_config():
     config = ConfigLoader.load_config("tests/unit/cpex/fixtures/configs/valid_stdio_external_plugin.yaml")
     plugin_config = config.plugins[0]
 
-    # Create plugin and temporarily set mcp to None
-    plugin = ExternalPlugin(plugin_config)
-    plugin._config.mcp = None
+    # Create plugin with mcp removed via frozen-safe copy
+    no_mcp_config = plugin_config.model_copy(update={"mcp": None})
+    plugin = ExternalPlugin(no_mcp_config)
 
     with pytest.raises(PluginError, match="The mcp section must be defined for external plugin"):
         await plugin.initialize()
@@ -67,10 +67,11 @@ async def test_initialize_stdio_missing_script():
     """Test initialize raises ValueError for missing stdio script."""
     config = ConfigLoader.load_config("tests/unit/cpex/fixtures/configs/valid_stdio_external_plugin.yaml")
     plugin_config = config.plugins[0]
-    plugin = ExternalPlugin(plugin_config)
 
-    # Mock the script path to be missing
-    plugin._config.mcp.script = "/path/to/missing.sh"
+    # Create plugin with missing script via frozen-safe copy
+    bad_mcp = plugin_config.mcp.model_copy(update={"script": "/path/to/missing.sh"})
+    bad_config = plugin_config.model_copy(update={"mcp": bad_mcp})
+    plugin = ExternalPlugin(bad_config)
 
     # Cross-platform: Windows uses backslashes, Unix uses forward slashes
     with pytest.raises(PluginError, match=r"Server script .+[/\\]missing\.sh does not exist\."):

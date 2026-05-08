@@ -38,7 +38,7 @@ Examples:
 """
 
 # Standard
-from typing import Callable, Optional, Type, TypeVar
+from typing import Callable, Optional, Sequence, Type, TypeVar, Union
 
 # Third-Party
 from pydantic import BaseModel
@@ -58,31 +58,40 @@ class HookMetadata:
     """Metadata stored on decorated hook methods.
 
     Attributes:
-        hook_type: The hook type identifier (e.g., 'tool_pre_invoke')
-        payload_type: Optional payload class for hook registration
-        result_type: Optional result class for hook registration
+        hook_types: The hook type identifiers this method handles.
+        payload_type: Optional payload class for hook registration.
+        result_type: Optional result class for hook registration.
     """
 
     def __init__(
         self,
-        hook_type: str,
+        hook_types: list[str],
         payload_type: Optional[Type[BaseModel]] = None,
         result_type: Optional[Type[BaseModel]] = None,
     ):
         """Initialize hook metadata.
 
         Args:
-            hook_type: The hook type identifier
-            payload_type: Optional payload class for registering new hooks
-            result_type: Optional result class for registering new hooks
+            hook_types: List of hook type identifiers this method handles.
+            payload_type: Optional payload class for registering new hooks.
+            result_type: Optional result class for registering new hooks.
         """
-        self.hook_type = hook_type
+        self.hook_types = hook_types
         self.payload_type = payload_type
         self.result_type = result_type
 
+    @property
+    def hook_type(self) -> str:
+        """Primary hook type (first in list). For backward compatibility."""
+        return self.hook_types[0] if self.hook_types else ""
+
+    def matches(self, hook_type: str) -> bool:
+        """Check if this metadata handles the given hook type."""
+        return hook_type in self.hook_types
+
 
 def hook(
-    hook_type: str,
+    hook_type: Union[str, Sequence[str]],
     payload_type: Optional[Type[P]] = None,
     result_type: Optional[Type[R]] = None,
 ) -> Callable[[Callable], Callable]:
@@ -90,22 +99,30 @@ def hook(
 
     This decorator attaches metadata to a method so the Plugin class can
     discover it during initialization and register it with the appropriate
-    hook type.
+    hook type(s).
 
     Args:
-        hook_type: The hook type identifier (e.g., 'tool_pre_invoke')
-        payload_type: Optional payload class for registering new hook types
-        result_type: Optional result class for registering new hook types
+        hook_type: One or more hook type identifiers. Pass a string for
+            a single hook, or a list/tuple to register the same method
+            for multiple hook points.
+        payload_type: Optional payload class for registering new hook types.
+        result_type: Optional result class for registering new hook types.
 
     Returns:
-        Decorator function that marks the method with hook metadata
+        Decorator function that marks the method with hook metadata.
 
     Examples:
-        Override method name::
+        Single hook::
 
             @hook(ToolHookType.TOOL_PRE_INVOKE)
             def my_custom_method_name(self, payload, context):
                 return ToolPreInvokeResult(continue_processing=True)
+
+        Multiple hooks (same method handles both)::
+
+            @hook([CmfHookType.TOOL_PRE_INVOKE, CmfHookType.TOOL_POST_INVOKE])
+            def evaluate(self, payload, context):
+                return MessageResult()
 
         Register new hook type::
 
@@ -123,8 +140,13 @@ def hook(
         Returns:
             The same function with metadata attached
         """
-        # Store metadata on the function object
-        metadata = HookMetadata(hook_type, payload_type, result_type)
+        # Normalize to list
+        if isinstance(hook_type, str):
+            types = [hook_type]
+        else:
+            types = list(hook_type)
+
+        metadata = HookMetadata(types, payload_type, result_type)
         setattr(func, _HOOK_METADATA_ATTR, metadata)
         return func
 
@@ -147,6 +169,8 @@ def get_hook_metadata(func: Callable) -> Optional[HookMetadata]:
         >>> metadata = get_hook_metadata(test_func)
         >>> metadata.hook_type
         'test_hook'
+        >>> metadata.matches("test_hook")
+        True
         >>> get_hook_metadata(lambda: None) is None
         True
     """

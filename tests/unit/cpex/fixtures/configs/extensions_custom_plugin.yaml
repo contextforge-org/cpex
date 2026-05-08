@@ -1,0 +1,22 @@
+plugins:
+  - name: "ExtensionsCustomPlugin"
+    kind: "plugins.extensions_aware.ExtensionsCustomPlugin"
+    description: "Test plugin that reads labels and writes custom extensions"
+    author: "Test"
+    version: "0.1"
+    hooks:
+      - "tool_pre_invoke"
+    mode: "sequential"
+    priority: 10
+    capabilities:
+      - "read_labels"
+
+plugin_dirs:
+  - "./tests/unit/cpex/fixtures"
+
+plugin_settings:
+  parallel_execution_within_band: true
+  plugin_timeout: 30
+  fail_on_plugin_error: false
+  enable_plugin_api: true
+  plugin_health_check_interval: 60

@@ -116,10 +116,10 @@ async def test_manager_timeout_handling():
         # assert "timeout" in result.violation.description.lower()
 
     # Test with audit mode + on_error=IGNORE (errors are logged and ignored)
-    plugin_config.mode = PluginMode.AUDIT
-    plugin_config.on_error = OnError.IGNORE
+    audit_config = plugin_config.model_copy(update={"mode": PluginMode.AUDIT, "on_error": OnError.IGNORE})
+    audit_plugin = TimeoutPlugin(audit_config)
     with patch.object(manager._registry, "get_hook_refs_for_hook") as mock_get:
-        hook_ref = HookRef(PromptHookType.PROMPT_PRE_FETCH, PluginRef(timeout_plugin))
+        hook_ref = HookRef(PromptHookType.PROMPT_PRE_FETCH, PluginRef(audit_plugin))
         mock_get.return_value = [hook_ref]
 
         result, _ = await manager.invoke_hook(PromptHookType.PROMPT_PRE_FETCH, prompt, global_context=global_context)
@@ -177,10 +177,10 @@ async def test_manager_exception_handling():
         # assert "error" in result.violation.description.lower()
 
     # Test with audit mode + on_error=IGNORE (errors are logged and ignored)
-    plugin_config.mode = PluginMode.AUDIT
-    plugin_config.on_error = OnError.IGNORE
+    audit_config = plugin_config.model_copy(update={"mode": PluginMode.AUDIT, "on_error": OnError.IGNORE})
+    audit_plugin = ErrorPlugin(audit_config)
     with patch.object(manager._registry, "get_hook_refs_for_hook") as mock_get:
-        hook_ref = HookRef(PromptHookType.PROMPT_PRE_FETCH, PluginRef(error_plugin))
+        hook_ref = HookRef(PromptHookType.PROMPT_PRE_FETCH, PluginRef(audit_plugin))
         mock_get.return_value = [hook_ref]
 
         result, _ = await manager.invoke_hook(PromptHookType.PROMPT_PRE_FETCH, prompt, global_context=global_context)
@@ -189,41 +189,21 @@ async def test_manager_exception_handling():
         assert result.continue_processing
         assert result.violation is None
 
-    plugin_config.mode = PluginMode.CONCURRENT
-    plugin_config.on_error = OnError.IGNORE
-    with patch.object(manager._registry, "get_hook_refs_for_hook") as mock_get:
-        hook_ref = HookRef(PromptHookType.PROMPT_PRE_FETCH, PluginRef(error_plugin))
-        mock_get.return_value = [hook_ref]
+    # Test with concurrent mode + on_error=IGNORE (repeated to verify consistency)
+    ignore_config = plugin_config.model_copy(update={"mode": PluginMode.CONCURRENT, "on_error": OnError.IGNORE})
+    ignore_plugin = ErrorPlugin(ignore_config)
+    for _ in range(3):
+        with patch.object(manager._registry, "get_hook_refs_for_hook") as mock_get:
+            hook_ref = HookRef(PromptHookType.PROMPT_PRE_FETCH, PluginRef(ignore_plugin))
+            mock_get.return_value = [hook_ref]
 
-        result, _ = await manager.invoke_hook(PromptHookType.PROMPT_PRE_FETCH, prompt, global_context=global_context)
+            result, _ = await manager.invoke_hook(
+                PromptHookType.PROMPT_PRE_FETCH, prompt, global_context=global_context
+            )
 
-        # Should continue with on_error=ignore
-        assert result.continue_processing
-        assert result.violation is None
-
-    plugin_config.mode = PluginMode.CONCURRENT
-    plugin_config.on_error = OnError.IGNORE
-    with patch.object(manager._registry, "get_hook_refs_for_hook") as mock_get:
-        hook_ref = HookRef(PromptHookType.PROMPT_PRE_FETCH, PluginRef(error_plugin))
-        mock_get.return_value = [hook_ref]
-
-        result, _ = await manager.invoke_hook(PromptHookType.PROMPT_PRE_FETCH, prompt, global_context=global_context)
-
-        # Should continue with on_error=ignore
-        assert result.continue_processing
-        assert result.violation is None
-
-    plugin_config.mode = PluginMode.CONCURRENT
-    plugin_config.on_error = OnError.IGNORE
-    with patch.object(manager._registry, "get_hook_refs_for_hook") as mock_get:
-        hook_ref = HookRef(PromptHookType.PROMPT_PRE_FETCH, PluginRef(error_plugin))
-        mock_get.return_value = [hook_ref]
-
-        result, _ = await manager.invoke_hook(PromptHookType.PROMPT_PRE_FETCH, prompt, global_context=global_context)
-
-        # Should continue with on_error=ignore
-        assert result.continue_processing
-        assert result.violation is None
+            # Should continue with on_error=ignore
+            assert result.continue_processing
+            assert result.violation is None
 
     await manager.shutdown()
 
@@ -833,7 +813,12 @@ async def test_manager_initialization_edge_cases():
     )
 
     # Mock the loader to return None (covers lines 495-496)
-    with patch.object(manager2._loader, "load_and_instantiate_plugin", return_value=None):
+    # Explicitly enable fail_on_plugin_error so the RuntimeError is raised
+    with (
+        patch.object(manager2._loader, "load_and_instantiate_plugin", return_value=None),
+        patch("cpex.framework.manager.settings") as mock_settings,
+    ):
+        mock_settings.fail_on_plugin_error = True
         with pytest.raises(RuntimeError, match="Plugin initialization failed: FailingPlugin"):
             await manager2.initialize()
 
@@ -1102,5 +1087,98 @@ async def test_manager_tool_post_invoke_coverage():
         assert result.modified_payload is not None
         assert result.modified_payload.result["modified"] is True
         assert result.modified_payload.result["original"] == "data"
+
+    await manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_manager_initialize_skips_plugin_load_errors_when_configured():
+    """Startup should continue when plugin init fails and fail_on_plugin_error is false."""
+    PluginManager.reset()
+    manager = PluginManager("./tests/unit/cpex/fixtures/configs/valid_single_plugin.yaml")
+
+    with (
+        patch.object(manager._loader, "load_and_instantiate_plugin", side_effect=RuntimeError("plugin offline")),
+        patch("cpex.framework.manager.logger") as mock_logger,
+    ):
+        await manager.initialize()
+
+    mock_logger.warning.assert_called_with(
+        "Skipping plugin %s because fail_on_plugin_error is disabled", "ReplaceBadWordsPlugin"
+    )
+
+    assert manager.initialized is True
+    assert manager.plugin_count == 0
+
+    await manager.shutdown()
+    PluginManager.reset()
+
+
+@pytest.mark.asyncio
+async def test_plugin_result_retry_delay_ms():
+    """PluginResult should accept and default retry_delay_ms."""
+    result = PluginResult()
+    assert result.retry_delay_ms == 0
+
+    result2 = PluginResult(retry_delay_ms=500)
+    assert result2.retry_delay_ms == 500
+
+    # Serialization roundtrip
+    data = result2.model_dump()
+    assert data["retry_delay_ms"] == 500
+
+
+@pytest.mark.asyncio
+async def test_executor_propagates_retry_delay_ms():
+    """Executor should propagate the maximum retry_delay_ms across plugins."""
+
+    class RetryPlugin(Plugin):
+        async def prompt_pre_fetch(self, payload, context):
+            return PluginResult(retry_delay_ms=200)
+
+    class RetryPlugin2(Plugin):
+        async def prompt_pre_fetch(self, payload, context):
+            return PluginResult(retry_delay_ms=500)
+
+    manager = PluginManager("./tests/unit/cpex/fixtures/configs/valid_no_plugin.yaml")
+    await manager.initialize()
+
+    config1 = PluginConfig(
+        name="RetryPlugin1",
+        description="Test",
+        author="Test",
+        version="1.0",
+        tags=["test"],
+        kind="RetryPlugin",
+        mode=PluginMode.SEQUENTIAL,
+        hooks=["prompt_pre_fetch"],
+        config={},
+    )
+    config2 = PluginConfig(
+        name="RetryPlugin2",
+        description="Test",
+        author="Test",
+        version="1.0",
+        tags=["test"],
+        kind="RetryPlugin2",
+        mode=PluginMode.SEQUENTIAL,
+        hooks=["prompt_pre_fetch"],
+        config={},
+    )
+    plugin1 = RetryPlugin(config1)
+    plugin2 = RetryPlugin2(config2)
+
+    prompt = PromptPrehookPayload(prompt_id="123", name="test", args={})
+    global_context = GlobalContext(request_id="1")
+
+    with patch.object(manager._registry, "get_hook_refs_for_hook") as mock_get:
+        hook_ref1 = HookRef(PromptHookType.PROMPT_PRE_FETCH, PluginRef(plugin1))
+        hook_ref2 = HookRef(PromptHookType.PROMPT_PRE_FETCH, PluginRef(plugin2))
+        mock_get.return_value = [hook_ref1, hook_ref2]
+
+        result, _ = await manager.invoke_hook(PromptHookType.PROMPT_PRE_FETCH, prompt, global_context=global_context)
+
+        # Should propagate the maximum retry delay (500)
+        assert result.retry_delay_ms == 500
 
     await manager.shutdown()

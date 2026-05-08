@@ -8,10 +8,11 @@ Pydantic models for http hooks and payloads.
 """
 
 # Standard
+import warnings
 from enum import Enum
 
 # Third-Party
-from pydantic import RootModel
+from pydantic import RootModel, field_validator
 
 # First-Party
 from cpex.framework.models import PluginPayload, PluginResult
@@ -103,6 +104,20 @@ class HttpPreRequestPayload(PluginPayload):
     client_port: int | None = None
     headers: HttpHeaderPayload
 
+    @field_validator("headers", mode="before")
+    @classmethod
+    def _warn_headers_deprecated(cls, v: object) -> object:
+        """Emit deprecation warning for headers field."""
+        if v is not None:
+            warnings.warn(
+                "HttpPreRequestPayload.headers is deprecated; "
+                "use extensions.http.headers instead. "
+                "This field will be removed in a future release.",
+                DeprecationWarning,
+                stacklevel=4,
+            )
+        return v
+
 
 class HttpPostRequestPayload(HttpPreRequestPayload):
     """Payload for HTTP post-request hook (middleware layer).
@@ -138,6 +153,20 @@ class HttpAuthResolveUserPayload(PluginPayload):
     headers: HttpHeaderPayload
     client_host: str | None = None
     client_port: int | None = None
+
+    @field_validator("headers", mode="before")
+    @classmethod
+    def _warn_headers_deprecated(cls, v: object) -> object:
+        """Emit deprecation warning for headers field."""
+        if v is not None:
+            warnings.warn(
+                "HttpAuthResolveUserPayload.headers is deprecated; "
+                "use extensions.http.headers instead. "
+                "This field will be removed in a future release.",
+                DeprecationWarning,
+                stacklevel=4,
+            )
+        return v
 
 
 class HttpAuthCheckPermissionPayload(PluginPayload):

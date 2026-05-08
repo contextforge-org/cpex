@@ -93,6 +93,9 @@ class PluginLoader:
     async def load_and_instantiate_plugin(self, config: PluginConfig) -> Plugin | None:
         """Load and instantiate a plugin, given a configuration.
 
+        The plugin receives a defensive copy of the config so it cannot
+        modify the authoritative config retained by the Manager/PluginRef.
+
         For external plugins, the transport type is determined by the presence
         of 'mcp', 'grpc', or 'unix_socket' configuration:
         - If 'grpc' is set, uses GrpcExternalPlugin for gRPC transport
@@ -108,6 +111,9 @@ class PluginLoader:
         Raises:
             ValueError: If an external plugin has no transport configured.
         """
+        # Defensive copy — the plugin never sees the authoritative config
+        plugin_config = config.model_copy()
+
         # Handle external plugins with transport selection
         if config.kind == EXTERNAL_PLUGIN_TYPE:
             plugin: Plugin
@@ -119,7 +125,7 @@ class PluginLoader:
                     GrpcExternalPlugin,
                 )  # pylint: disable=import-outside-toplevel
 
-                plugin = GrpcExternalPlugin(config)
+                plugin = GrpcExternalPlugin(plugin_config)
                 logger.info("Loading external plugin '%s' with gRPC transport", config.name)
             elif config.unix_socket:
                 # Use raw Unix socket transport (high-performance local IPC)
@@ -128,11 +134,11 @@ class PluginLoader:
                     UnixSocketExternalPlugin,
                 )  # pylint: disable=import-outside-toplevel
 
-                plugin = UnixSocketExternalPlugin(config)
+                plugin = UnixSocketExternalPlugin(plugin_config)
                 logger.info("Loading external plugin '%s' with Unix socket transport", config.name)
             elif config.mcp:
                 # Use MCP transport
-                plugin = ExternalPlugin(config)
+                plugin = ExternalPlugin(plugin_config)
                 logger.info("Loading external plugin '%s' with MCP transport", config.name)
             else:
                 # Defensive fallback: PluginConfig validation should prevent this path.
@@ -155,7 +161,7 @@ class PluginLoader:
             self.__register_plugin_type(config.kind)
         plugin_type = self._plugin_types[config.kind]
         if plugin_type:
-            plugin = plugin_type(config)
+            plugin = plugin_type(plugin_config)
             await plugin.initialize()
             return plugin
         return None

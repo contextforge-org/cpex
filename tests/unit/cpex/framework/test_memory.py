@@ -1396,3 +1396,99 @@ class TestSafeDeepCopy:
 
         assert result is lock
         assert "Cannot deep-copy" in caplog.text or "sharing reference" in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# Tests: BaseException isolation (no deepcopy)
+# ---------------------------------------------------------------------------
+
+
+class _NonCopyableError(Exception):
+    """Exception whose __init__ uses keyword-only args, breaking deepcopy."""
+
+    def __init__(self, *, message: str = "error", request: object = None):
+        super().__init__(message)
+        self.request = request
+
+
+class _PayloadWithException(BaseModel):
+    """Payload carrying an exception field (like GenerationErrorPayload)."""
+
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
+
+    name: str = "test"
+    exception: BaseException
+
+
+class _PayloadWithExceptionAndDict(BaseModel):
+    """Payload with both an exception and a mutable dict field."""
+
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
+
+    name: str = "test"
+    exception: BaseException
+    args: dict = Field(default_factory=dict)
+
+
+class TestExceptionIsolation:
+    """Tests for BaseException handling in payload isolation."""
+
+    def test_wrap_value_returns_exception_as_is(self):
+        """_wrap_value returns a BaseException instance without copying."""
+        exc = ValueError("something went wrong")
+        result = _wrap_value(exc)
+        assert result is exc
+
+    def test_wrap_value_returns_non_copyable_exception_as_is(self):
+        """_wrap_value returns exceptions with keyword-only __init__ as-is."""
+        exc = _NonCopyableError(message="conn error", request=None)
+        result = _wrap_value(exc)
+        assert result is exc
+
+    def test_wrap_payload_exception_field_shared(self):
+        """Exception field in a payload is shared by reference after isolation."""
+        exc = _NonCopyableError(message="conn error", request=None)
+        p = _PayloadWithException(name="x", exception=exc)
+
+        wrapped = wrap_payload_for_isolation(p)
+
+        assert wrapped.exception is exc
+
+    def test_wrap_payload_exception_no_warning(self, caplog):
+        """Isolating a payload with an exception field produces no deepcopy warning."""
+        import logging
+
+        exc = _NonCopyableError(message="conn error", request=None)
+        p = _PayloadWithException(name="x", exception=exc)
+
+        with caplog.at_level(logging.WARNING):
+            wrap_payload_for_isolation(p)
+
+        assert "Cannot deep-copy" not in caplog.text
+
+    def test_wrap_payload_exception_alongside_dict(self):
+        """Exception is shared while dict field is CoW-wrapped."""
+        exc = _NonCopyableError(message="conn error", request=None)
+        original_args = {"key": "val"}
+        p = _PayloadWithExceptionAndDict(
+            name="x", exception=exc, args=original_args
+        )
+
+        wrapped = wrap_payload_for_isolation(p)
+
+        assert wrapped.exception is exc
+        assert isinstance(wrapped.args, CopyOnWriteDict)
+        wrapped.args["key"] = "changed"
+        assert original_args["key"] == "val"
+
+    def test_wrap_value_base_exception_subclass(self):
+        """_wrap_value handles BaseException subclasses (not just Exception)."""
+        exc = KeyboardInterrupt()
+        result = _wrap_value(exc)
+        assert result is exc
+
+    def test_wrap_value_standard_exception(self):
+        """_wrap_value handles standard copyable exceptions as-is too."""
+        exc = RuntimeError("boom")
+        result = _wrap_value(exc)
+        assert result is exc

@@ -66,7 +66,7 @@ from cpex.framework.hooks.tools import (
 )
 from cpex.framework.loader.config import ConfigLoader
 from cpex.framework.loader.plugin import PluginLoader
-from cpex.framework.manager import PluginManager
+from cpex.framework.manager import PluginManager, TenantPluginManager
 from cpex.framework.models import (
     GlobalContext,
     MCPClientConfig,
@@ -82,6 +82,7 @@ from cpex.framework.models import (
     PluginResult,
     PluginViolation,
     TransportType,
+    UserContext,
 )
 from cpex.framework.observability import ObservabilityProvider
 from cpex.framework.utils import get_attr
@@ -184,6 +185,8 @@ __all__ = [
     "ToolPostInvokePayload",
     "ToolPostInvokeResult",
     "ToolPreInvokeResult",
+    "TenantPluginManager",
     "ToolPreInvokePayload",
     "TransportType",
+    "UserContext",
 ]

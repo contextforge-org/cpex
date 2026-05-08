@@ -10,9 +10,11 @@ the base plugin layer including configurations, and contexts.
 """
 
 # Standard
+import asyncio
 import logging
 import os
 import re
+from datetime import datetime
 from enum import Enum, StrEnum
 from pathlib import Path
 from typing import Any, Generic, List, Optional, Self, TypeVar, Union
@@ -44,6 +46,7 @@ from cpex.framework.constants import (
     UDS,
     URL,
 )
+from cpex.framework.extensions.extensions import Extensions
 from cpex.framework.settings import (
     get_client_mtls_settings,
     get_grpc_client_mtls_settings,
@@ -296,6 +299,25 @@ class PluginCondition(BaseModel):
     agents: Optional[set[str]] = None
     user_patterns: Optional[list[str]] = None
     content_types: Optional[list[str]] = None
+
+    @field_validator("content_types")
+    @classmethod
+    def normalize_content_types(cls, value: list[str] | None) -> list[str] | None:
+        """Pre-normalize content types during initialization.
+
+        Uses the same normalization as utils.normalize_content_type() — strip
+        parameters after ';', trim whitespace, lowercase.  Kept inline here to
+        avoid a circular import (utils imports models).
+
+        Args:
+            value: List of content types to normalize.
+
+        Returns:
+            Normalized list of content types (base type without parameters).
+        """
+        if value:
+            return [ct.split(";", maxsplit=1)[0].strip().lower() for ct in value]
+        return value
 
     @field_serializer("server_ids", "tenant_ids", "tools", "prompts", "resources", "agents")
     def serialize_set(self, value: set[str] | None) -> list[str] | None:
@@ -571,6 +593,8 @@ class MCPClientConfig(BaseModel):
         cwd (Optional[str]): Working directory for STDIO server process.
         uds (Optional[str]): Unix domain socket path for streamable HTTP.
         tls (Optional[MCPClientTLSConfig]): Client-side TLS configuration for mTLS.
+        reconnect_attempts (int): Number of reconnection attempts on session failure.
+        reconnect_delay (float): Base delay between reconnection attempts (seconds, linear backoff).
     """
 
     proto: TransportType
@@ -581,6 +605,8 @@ class MCPClientConfig(BaseModel):
     cwd: Optional[str] = None
     uds: Optional[str] = None
     tls: Optional[MCPClientTLSConfig] = None
+    reconnect_attempts: int = Field(default=3, description="Number of reconnection attempts on session failure")
+    reconnect_delay: float = Field(default=0.1, description="Base delay between reconnection attempts (seconds)")
 
     @field_validator(URL, mode="after")
     @classmethod
@@ -1197,6 +1223,8 @@ class PluginConfig(BaseModel):
         max_content_size (Optional(int)): The maximum size of payload, context,
     """
 
+    model_config = ConfigDict(frozen=True)
+
     name: str
     description: Optional[str] = None
     author: Optional[str] = None
@@ -1233,10 +1261,44 @@ class PluginConfig(BaseModel):
 
     conditions: list[PluginCondition] = Field(default_factory=list)  # When to apply
     applied_to: Optional[AppliedTo] = None  # Fields to apply to.
+    capabilities: frozenset[str] = Field(
+        default_factory=frozenset,
+        description="Declared capabilities (e.g., 'read_headers', 'append_labels').",
+    )
     config: Optional[dict[str, Any]] = None
     mcp: Optional[MCPClientConfig] = None
     grpc: Optional[GRPCClientConfig] = None
     unix_socket: Optional[UnixSocketClientConfig] = None
+
+    @field_validator("capabilities", mode="before")
+    @classmethod
+    def _validate_capabilities(cls, v: Any) -> frozenset[str]:
+        """Validate that all declared capabilities are known.
+
+        Args:
+            v: Raw capabilities value from the config.
+
+        Returns:
+            A validated frozenset of capability strings.
+
+        Raises:
+            ValueError: If an unknown capability is declared.
+        """
+        # First-Party
+        from cpex.framework.extensions.tiers import Capability  # pylint: disable=import-outside-toplevel
+
+        if isinstance(v, (list, set, frozenset)):
+            known = {c.value for c in Capability}
+            for cap in v:
+                if cap not in known:
+                    raise ValueError(f"Unknown capability: {cap!r}. Known: {sorted(known)}")
+            return frozenset(v)
+        return frozenset()
+
+    @field_serializer("capabilities")
+    def serialize_capabilities(self, value: frozenset[str]) -> list[str]:
+        """Serialize frozenset for JSON compatibility."""
+        return sorted(value)
 
     @model_validator(mode="after")
     def check_url_or_script_filled(self) -> Self:  # pylint: disable=bad-classmethod-argument
@@ -1382,6 +1444,8 @@ class PluginViolation(BaseModel):
         details: (dict[str, Any]): additional violation details.
         _plugin_name (str): the plugin name, private attribute set by the plugin manager.
         mcp_error_code(Optional[int]): A valid mcp error code which will be sent back to the client if plugin enabled.
+        http_status_code (Optional[int]): HTTP status code to return (e.g., 429 for rate limiting).
+        http_headers (Optional[dict[str, str]]): HTTP headers to include in the response.
 
     Examples:
         >>> violation = PluginViolation(
@@ -1405,6 +1469,8 @@ class PluginViolation(BaseModel):
     details: Optional[dict[str, Any]] = Field(default_factory=dict)
     _plugin_name: str = PrivateAttr(default="")
     mcp_error_code: Optional[int] = None
+    http_status_code: Optional[int] = None
+    http_headers: Optional[dict[str, str]] = None
 
     @property
     def plugin_name(self) -> str:
@@ -1428,6 +1494,56 @@ class PluginViolation(BaseModel):
         if not isinstance(name, str) or not name.strip():
             raise ValueError("Name must be a non-empty string.")
         self._plugin_name = name
+
+
+class UserContext(BaseModel):
+    """Authenticated user identity context for propagation to upstream servers and plugins.
+
+    Attributes:
+        user_id: Primary user identifier (typically email).
+        email: User email address.
+        full_name: User's display name.
+        is_admin: Whether the user has admin privileges.
+        groups: User's group memberships.
+        roles: User's RBAC roles.
+        team_id: Current team context (for single-team API tokens).
+        teams: All teams the user belongs to.
+        department: User's department.
+        attributes: Additional user attributes (extensible).
+        auth_method: How the user authenticated (bearer, api_key, basic, sso, proxy).
+        authenticated_at: When the authentication occurred.
+        service_account: Set when a service account is acting on behalf of this user.
+        delegation_chain: Chain of delegated identities for audit trail.
+
+    Examples:
+        >>> uc = UserContext(user_id="alice@example.com")
+        >>> uc.user_id
+        'alice@example.com'
+        >>> uc.is_admin
+        False
+        >>> uc.groups
+        []
+        >>> uc2 = UserContext(user_id="bob@example.com", email="bob@example.com", is_admin=True, auth_method="bearer")
+        >>> uc2.is_admin
+        True
+        >>> uc2.auth_method
+        'bearer'
+    """
+
+    user_id: str
+    email: Optional[str] = None
+    full_name: Optional[str] = None
+    is_admin: bool = False
+    groups: list[str] = Field(default_factory=list)
+    roles: list[str] = Field(default_factory=list)
+    team_id: Optional[str] = None
+    teams: Optional[list[str]] = None
+    department: Optional[str] = None
+    attributes: dict[str, Any] = Field(default_factory=dict)
+    auth_method: Optional[str] = None
+    authenticated_at: Optional[datetime] = None
+    service_account: Optional[str] = None
+    delegation_chain: list[str] = Field(default_factory=list)
 
 
 class Config(BaseModel):
@@ -1457,8 +1573,15 @@ class PluginResult(BaseModel, Generic[T]):
     Attributes:
             continue_processing (bool): Whether to stop processing.
             modified_payload (Optional[Any]): The modified payload if the plugin is a transformer.
+            modified_extensions (Optional[Extensions]): Modified extensions returned by the plugin
+                (e.g., updated HTTP headers from token delegation, appended security labels).
             violation (Optional[PluginViolation]): violation object.
             metadata (Optional[dict[str, Any]]): additional metadata.
+            background_tasks (list[asyncio.Task]): asyncio.Task handles for any FIRE_AND_FORGET
+                plugins scheduled during this invocation. Use ``wait_for_background_tasks()``
+                to await them and collect any errors. This field is excluded from model serialization.
+            http_headers (Optional[dict[str, str]]): HTTP headers to include in successful responses.
+            retry_delay_ms (int): Milliseconds the gateway should wait before retrying the tool call.
 
      Examples:
         >>> result = PluginResult()
@@ -1481,12 +1604,35 @@ class PluginResult(BaseModel, Generic[T]):
         >>> r2 = PluginResult(continue_processing=False)
         >>> r2.continue_processing
         False
+        >>> r3 = PluginResult(retry_delay_ms=500)
+        >>> r3.retry_delay_ms
+        500
     """
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
     continue_processing: bool = True
     modified_payload: Optional[T] = None
+    modified_extensions: Optional[Extensions] = None
     violation: Optional[PluginViolation] = None
     metadata: Optional[dict[str, Any]] = Field(default_factory=dict)
+    background_tasks: list[asyncio.Task] = Field(default_factory=list, exclude=True)
+    http_headers: Optional[dict[str, str]] = None
+    retry_delay_ms: int = 0
+
+    async def wait_for_background_tasks(self) -> "list[PluginErrorModel]":
+        """Await all FIRE_AND_FORGET background tasks and return any errors.
+
+        Returns an empty list if all tasks completed without error.
+
+        Examples:
+            >>> result = PluginResult()
+            >>> # errors = await result.wait_for_background_tasks()
+        """
+        if not self.background_tasks:
+            return []
+        results = await asyncio.gather(*self.background_tasks, return_exceptions=True)
+        return [r for r in results if isinstance(r, PluginErrorModel)]
 
 
 class GlobalContext(BaseModel):
@@ -1495,8 +1641,10 @@ class GlobalContext(BaseModel):
     Attributes:
             request_id (str): ID of the HTTP request.
             user (str): user ID associated with the request.
+            user_context (Optional[UserContext]): structured user identity context.
             tenant_id (str): tenant ID.
             server_id (str): server ID.
+            content_type (Optional[str]): Content-Type header from the request.
             metadata (Optional[dict[str,Any]]): a global shared metadata across plugins (Read-only from plugin's perspective).
             state (Optional[dict[str,Any]]): a global shared state across plugins.
 
@@ -1516,14 +1664,41 @@ class GlobalContext(BaseModel):
         '123'
         >>> c.server_id
         'srv1'
+        >>> ctx3 = GlobalContext(request_id="req-789", content_type="application/json")
+        >>> ctx3.content_type
+        'application/json'
     """
 
     request_id: str
     user: Optional[Union[str, dict[str, Any]]] = None
+    user_context: Optional[UserContext] = None
     tenant_id: Optional[str] = None
     server_id: Optional[str] = None
+    content_type: Optional[str] = None
     state: dict[str, Any] = Field(default_factory=dict)
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("content_type")
+    @classmethod
+    def validate_content_type(cls, value: str | None) -> str | None:
+        """Validate content type length and character safety.
+
+        Args:
+            value: str of content type.
+
+        Raises:
+            ValueError: if value is length > 200 or contains non-printable characters.
+
+        Returns:
+            validated content type.
+        """
+        if value is None:
+            return value
+        if len(value) > 200:
+            raise ValueError("Content-Type header too long")
+        if not value.isprintable():
+            raise ValueError("Content-Type contains invalid characters")
+        return value
 
 
 class PluginContext(BaseModel):
@@ -1549,6 +1724,63 @@ class PluginContext(BaseModel):
     state: dict[str, Any] = Field(default_factory=dict)
     global_context: GlobalContext
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @property
+    def user_context(self) -> Optional[UserContext]:
+        """Get the authenticated user context.
+
+        Returns:
+            The UserContext if available, None otherwise.
+
+        Examples:
+            >>> gctx = GlobalContext(request_id="req-1")
+            >>> ctx = PluginContext(global_context=gctx)
+            >>> ctx.user_context is None
+            True
+        """
+        return self.global_context.user_context
+
+    @property
+    def user_email(self) -> Optional[str]:
+        """Get the authenticated user's email.
+
+        Falls back to the legacy ``global_context.user`` field when no
+        structured UserContext is available.
+
+        Returns:
+            User email string or None.
+
+        Examples:
+            >>> gctx = GlobalContext(request_id="req-1", user="alice@example.com")
+            >>> ctx = PluginContext(global_context=gctx)
+            >>> ctx.user_email
+            'alice@example.com'
+        """
+        uc = self.global_context.user_context
+        if uc:
+            return uc.email
+        user = self.global_context.user
+        if isinstance(user, str):
+            return user
+        if isinstance(user, dict):
+            return user.get("email")
+        return None
+
+    @property
+    def user_groups(self) -> list[str]:
+        """Get the authenticated user's groups.
+
+        Returns:
+            List of group names. Empty if no user context.
+
+        Examples:
+            >>> gctx = GlobalContext(request_id="req-1")
+            >>> ctx = PluginContext(global_context=gctx)
+            >>> ctx.user_groups
+            []
+        """
+        uc = self.global_context.user_context
+        return uc.groups if uc else []
 
     def get_state(self, key: str, default: Any = None) -> Any:
         """Get value from shared state.
@@ -1618,8 +1850,8 @@ class PluginPackageInfo(BaseModel):
 
     Examples:
         >>> pkg = PluginPackageInfo(git_repository="https://github.com/user/repo.git",
-            git_branch_tag_commit="v1.0.0",
-            version_constraint=">=1.0.0")
+        ...     git_branch_tag_commit="v1.0.0",
+        ...     version_constraint=">=1.0.0")
         >>> pkg2 = PluginPackageInfo(pypi_package="my-package", version_constraint=">=1.0.0")
     """
 

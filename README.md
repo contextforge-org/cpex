@@ -4,12 +4,14 @@
 
 # CPEX — ContextForge Plugin Extensibility Framework
 
-<i>A lightweight, composable plugin framework for building extensible AI systems.</i>
+<i>A composable enforcement framework for AI agents and toolchains.</i>
 
 [![CI](https://github.com/contextforge-org/contextforge-plugins-framework/actions/workflows/ci.yml/badge.svg)](https://github.com/contextforge-org/contextforge-plugins-framework/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
 [![PyPI](https://img.shields.io/pypi/v/cpex.svg?color=blue)](https://pypi.org/project/cpex)
+
+> [**Read the project vision**](https://contextforge-org.github.io/contextforge-plugins-framework/docs/vision/) to learn why hooks, plugins, and policy are the path to agent security.
 
 ## What's CPEX?
 
@@ -41,7 +43,7 @@ pip install cpex
 
 ## Why CPEX?
 
-AI systems interact with tools, APIs, data sources, and other agents. Adding guardrails, observability, or policy checks typically means embedding that logic directly into application code, leading to duplication, tight coupling, and drift.
+AI agents execute across trust domains, calling tools, accessing data, and delegating to other agents. Adding security, governance, or policy enforcement typically means embedding that logic directly into application code, leading to duplication, tight coupling, and drift.
 
 CPEX introduces **standardized interception hooks** between your application and its operations. Plugins attach to these hooks and run automatically, keeping enforcement logic separate from business logic.
 

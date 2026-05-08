@@ -28,6 +28,7 @@ token.txt
 *.backup
 cpex.sbom.xml
 docs/docs/test/
+docs/resources/
 tmp
 *.tgz
 *.gz
@@ -53,6 +54,7 @@ FIXMEs
 *.old
 logs/
 *.log
+.sketchpad
 
 # Fuzzing artifacts and reports
 reports/
@@ -248,3 +250,4 @@ db_path/
 tmp/
 
 .continue
+

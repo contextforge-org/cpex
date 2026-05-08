@@ -1,6 +1,6 @@
 [project]
 name = "cpex"
-version = "0.1.0.dev10"
+version = "0.1.0"
 description = "CPEX - ContextForge Plugin Extensibility Framework"
 classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
@@ -64,17 +64,9 @@ dev = [
 ]
 
 # documentation support
-docs = [
-    "griffe-pydantic",
-    "griffe_inherited_docstrings",
-    "mkdocs-awesome-nav",
-    "mkdocs-click",
-    "mkdocs-enumerate-headings-plugin",
-    "mkdocs-include-markdown-plugin>=7.1.8",
-    "mkdocs-jupyter",
-    "mkdocs-material",
-    "mkdocstrings[python]",
-]
+# The doc site uses Hugo (brew install hugo) — no Python deps required.
+# This group is reserved for future API reference generation (e.g., pdoc, sphinx).
+docs = []
 
 # gRPC transport support (higher performance than MCP/HTTP)
 grpc = [

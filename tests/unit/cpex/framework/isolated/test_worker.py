@@ -12,7 +12,7 @@ import os
 import shutil
 import sys
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, Mock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -49,7 +49,6 @@ class TestWorkerFunctions:
         assert isinstance(info["installed_packages"], list)
         assert len(info["installed_packages"]) <= 10  # Limited to first 10
 
-
     @pytest.mark.asyncio
     async def test_process_task_info(self):
         """Test processing info task."""
@@ -67,7 +66,9 @@ class TestWorkerFunctions:
     @patch("cpex.framework.isolated.worker.get_proper_config")
     @patch("cpex.framework.isolated.worker.importlib.import_module")
     @patch("cpex.framework.isolated.worker.PluginExecutor")
-    async def test_process_task_load_and_run_hook_success(self, mock_executor_class, mock_import, mock_get_config, mock_plugin_dirs):
+    async def test_process_task_load_and_run_hook_success(
+        self, mock_executor_class, mock_import, mock_get_config, mock_plugin_dirs
+    ):
         """Test processing load_and_run_hook task successfully."""
         # Setup mock config
         mock_config = MagicMock()
@@ -141,7 +142,9 @@ class TestWorkerFunctions:
     @patch("cpex.framework.isolated.worker.get_proper_config")
     @patch("cpex.framework.isolated.worker.importlib.import_module")
     @patch("cpex.framework.isolated.worker.PluginExecutor")
-    async def test_process_task_with_different_hook_types(self, mock_executor_class, mock_import, mock_get_config, mock_plugin_dirs):
+    async def test_process_task_with_different_hook_types(
+        self, mock_executor_class, mock_import, mock_get_config, mock_plugin_dirs
+    ):
         """Test processing tasks with different hook types."""
         # Setup mocks
         mock_config = MagicMock()
@@ -191,13 +194,15 @@ class TestWorkerFunctions:
         tp = TaskProcessor()
         # Should return None or handle gracefully
         result = await process_task(task_data, tp)
-        assert result == {'message': 'task type not supported.', 'request_id': 'unknown', 'status': 'error'}
+        assert result == {"message": "task type not supported.", "request_id": "unknown", "status": "error"}
 
     @pytest.mark.asyncio
     @patch("cpex.framework.isolated.worker.get_proper_config")
     @patch("cpex.framework.isolated.worker.importlib.import_module")
     @patch("cpex.framework.isolated.worker.PluginExecutor")
-    async def test_process_task_with_metadata(self, mock_executor_class, mock_import, mock_get_config, mock_plugin_dirs):
+    async def test_process_task_with_metadata(
+        self, mock_executor_class, mock_import, mock_get_config, mock_plugin_dirs
+    ):
         """Test processing task with metadata in context."""
         mock_config = MagicMock()
         mock_get_config.return_value = mock_config
@@ -446,7 +451,7 @@ class TestMainFunction:
         mock_stdin.readline.side_effect = [
             json.dumps(task1) + "\n",
             json.dumps(task2) + "\n",
-            ""  # EOF
+            "",  # EOF
         ]
 
         mock_result = MagicMock()

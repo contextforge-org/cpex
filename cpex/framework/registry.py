@@ -16,6 +16,7 @@ from typing import Optional
 # First-Party
 from cpex.framework.base import HookRef, Plugin, PluginRef
 from cpex.framework.external.mcp.client import ExternalHookRef
+from cpex.framework.models import PluginConfig
 
 # Use standard logging to avoid circular imports (plugins -> services -> plugins)
 logger = logging.getLogger(__name__)
@@ -67,11 +68,18 @@ class PluginInstanceRegistry:
         self._hooks_by_name: dict[str, dict[str, HookRef]] = {}
         self._priority_cache: dict[str, list[HookRef]] = {}
 
-    def register(self, plugin: Plugin) -> None:
+    def register(
+        self,
+        plugin: Plugin,
+        trusted_config: PluginConfig | None = None,
+    ) -> None:
         """Register a plugin instance.
 
         Args:
             plugin: plugin to be registered.
+            trusted_config: The authoritative config retained by the
+                Manager. If provided, PluginRef reads policy fields
+                from this copy rather than from the plugin.
 
         Raises:
             ValueError: if plugin is already registered.
@@ -79,7 +87,7 @@ class PluginInstanceRegistry:
         if plugin.name in self._plugins:
             raise ValueError(f"Plugin {plugin.name} already registered")
 
-        plugin_ref = PluginRef(plugin)
+        plugin_ref = PluginRef(plugin, trusted_config=trusted_config)
 
         self._plugins[plugin.name] = plugin_ref
 

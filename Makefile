@@ -47,8 +47,10 @@ help:
 	@echo "  test-verbose      Run tests in verbose mode"
 	@echo "  test-file FILE=path/to/test.py  Run specific test file"
 	@echo ""
-	@echo "Documentation:"
-	@echo "  docs              Build docs"
+	@echo "Documentation (requires Hugo: brew install hugo):"
+	@echo "  docs              Build the documentation site"
+	@echo "  docs-serve        Start local Hugo dev server with live reload"
+	@echo "  docs-clean        Remove generated documentation artifacts"
 	@echo ""
 	@echo "Building & Distribution:"
 	@echo "  dist              Build wheel + sdist into ./dist"
@@ -239,15 +241,34 @@ test-file:
 
 doctest:
 	@echo "🧪 Running doctest on all modules..."
-	@PYTHONPATH="$(SRC_DIR)" $(VENV_BIN)/pytest --doctest-modules cpex/ --tb=short --no-cov --disable-warnings
+	@PYTHONPATH="$(SRC_DIR)" $(VENV_BIN)/pytest --doctest-modules cpex/ --ignore=cpex/templates --tb=short --no-cov --disable-warnings
 
 # =============================================================================
-# Documentation
+# Documentation (Hugo Book theme — no Python deps required)
 # =============================================================================
 
-.PHONY: docs # Generate documentation site
+HUGO ?= hugo
+DOCS_DIR = docs
+DOCS_PORT ?= 1313
+
+.PHONY: docs
 docs:
-	uv run mkdocs build --strict
+	@command -v $(HUGO) >/dev/null 2>&1 || { echo "❌ Hugo not found. Install with: brew install hugo"; exit 1; }
+	@echo "📖 Building documentation site..."
+	@cd $(DOCS_DIR) && $(HUGO)
+	@echo "✅  Site built in $(DOCS_DIR)/public/"
+
+.PHONY: docs-serve
+docs-serve:
+	@command -v $(HUGO) >/dev/null 2>&1 || { echo "❌ Hugo not found. Install with: brew install hugo"; exit 1; }
+	@echo "📖 Starting Hugo dev server on http://localhost:$(DOCS_PORT)/ ..."
+	@cd $(DOCS_DIR) && $(HUGO) server --buildDrafts --port $(DOCS_PORT)
+
+.PHONY: docs-clean
+docs-clean:
+	@echo "🧹 Cleaning documentation build artifacts..."
+	@rm -rf $(DOCS_DIR)/public $(DOCS_DIR)/resources
+	@echo "✅  Documentation artifacts cleaned"
 
 # =============================================================================
 # Building & Distribution
@@ -312,7 +333,7 @@ clean:
 	@echo "🧹 Cleaning build artifacts..."
 	@find . -type f -name '*.py[co]' -delete
 	@find . -type d -name __pycache__ -delete
-	@rm -rf *.egg-info .pytest_cache tests/.pytest_cache build dist .ruff_cache .coverage htmlcov .mypy_cache
+	@rm -rf *.egg-info .pytest_cache tests/.pytest_cache build dist .ruff_cache .coverage htmlcov .mypy_cache docs/public docs/resources
 	@echo "✅  Build artifacts cleaned"
 
 .PHONY: clean-all

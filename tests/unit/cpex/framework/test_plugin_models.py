@@ -365,35 +365,25 @@ class TestPluginPackageInfoValidators:
         from cpex.framework.models import PluginPackageInfo
 
         # Branch names
-        pkg = PluginPackageInfo(
-            git_repository="https://github.com/user/repo.git",
-            git_branch_tag_commit="main"
-        )
+        pkg = PluginPackageInfo(git_repository="https://github.com/user/repo.git", git_branch_tag_commit="main")
         assert pkg.git_branch_tag_commit == "main"
 
         pkg = PluginPackageInfo(
-            git_repository="https://github.com/user/repo.git",
-            git_branch_tag_commit="feature/new-feature"
+            git_repository="https://github.com/user/repo.git", git_branch_tag_commit="feature/new-feature"
         )
         assert pkg.git_branch_tag_commit == "feature/new-feature"
 
         # Tag names
-        pkg = PluginPackageInfo(
-            git_repository="https://github.com/user/repo.git",
-            git_branch_tag_commit="v1.0.0"
-        )
+        pkg = PluginPackageInfo(git_repository="https://github.com/user/repo.git", git_branch_tag_commit="v1.0.0")
         assert pkg.git_branch_tag_commit == "v1.0.0"
 
         # Commit hashes
-        pkg = PluginPackageInfo(
-            git_repository="https://github.com/user/repo.git",
-            git_branch_tag_commit="abc123def456"
-        )
+        pkg = PluginPackageInfo(git_repository="https://github.com/user/repo.git", git_branch_tag_commit="abc123def456")
         assert pkg.git_branch_tag_commit == "abc123def456"
 
         pkg = PluginPackageInfo(
             git_repository="https://github.com/user/repo.git",
-            git_branch_tag_commit="a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6q7r8s9t0"
+            git_branch_tag_commit="a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6q7r8s9t0",
         )
         assert pkg.git_branch_tag_commit == "a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6q7r8s9t0"
 
@@ -402,17 +392,11 @@ class TestPluginPackageInfoValidators:
         from cpex.framework.models import PluginPackageInfo
 
         # Empty string is treated as None, which is valid
-        pkg = PluginPackageInfo(
-            git_repository="https://github.com/user/repo.git",
-            git_branch_tag_commit=""
-        )
+        pkg = PluginPackageInfo(git_repository="https://github.com/user/repo.git", git_branch_tag_commit="")
         assert pkg.git_branch_tag_commit is None
 
         with pytest.raises(ValueError, match="cannot be empty or whitespace"):
-            PluginPackageInfo(
-                git_repository="https://github.com/user/repo.git",
-                git_branch_tag_commit="   "
-            )
+            PluginPackageInfo(git_repository="https://github.com/user/repo.git", git_branch_tag_commit="   ")
 
     def test_git_branch_tag_commit_invalid_characters(self):
         """Git references with invalid characters should be rejected."""
@@ -420,49 +404,30 @@ class TestPluginPackageInfoValidators:
 
         with pytest.raises(ValueError, match="Invalid Git branch/tag/commit"):
             PluginPackageInfo(
-                git_repository="https://github.com/user/repo.git",
-                git_branch_tag_commit="branch with spaces"
+                git_repository="https://github.com/user/repo.git", git_branch_tag_commit="branch with spaces"
             )
 
         with pytest.raises(ValueError, match="Invalid Git branch/tag/commit"):
-            PluginPackageInfo(
-                git_repository="https://github.com/user/repo.git",
-                git_branch_tag_commit="branch@invalid"
-            )
+            PluginPackageInfo(git_repository="https://github.com/user/repo.git", git_branch_tag_commit="branch@invalid")
 
     def test_git_branch_tag_commit_invalid_start_end(self):
         """Git references with invalid start/end characters should be rejected."""
         from cpex.framework.models import PluginPackageInfo
 
         with pytest.raises(ValueError, match="Cannot start with"):
-            PluginPackageInfo(
-                git_repository="https://github.com/user/repo.git",
-                git_branch_tag_commit="/invalid"
-            )
+            PluginPackageInfo(git_repository="https://github.com/user/repo.git", git_branch_tag_commit="/invalid")
 
         with pytest.raises(ValueError, match="Cannot start with"):
-            PluginPackageInfo(
-                git_repository="https://github.com/user/repo.git",
-                git_branch_tag_commit=".invalid"
-            )
+            PluginPackageInfo(git_repository="https://github.com/user/repo.git", git_branch_tag_commit=".invalid")
 
         with pytest.raises(ValueError, match="Cannot start with"):
-            PluginPackageInfo(
-                git_repository="https://github.com/user/repo.git",
-                git_branch_tag_commit="-invalid"
-            )
+            PluginPackageInfo(git_repository="https://github.com/user/repo.git", git_branch_tag_commit="-invalid")
 
         with pytest.raises(ValueError, match="end with"):
-            PluginPackageInfo(
-                git_repository="https://github.com/user/repo.git",
-                git_branch_tag_commit="invalid/"
-            )
+            PluginPackageInfo(git_repository="https://github.com/user/repo.git", git_branch_tag_commit="invalid/")
 
         with pytest.raises(ValueError, match="end with"):
-            PluginPackageInfo(
-                git_repository="https://github.com/user/repo.git",
-                git_branch_tag_commit="invalid."
-            )
+            PluginPackageInfo(git_repository="https://github.com/user/repo.git", git_branch_tag_commit="invalid.")
 
     def test_git_branch_tag_commit_too_long(self):
         """Git references exceeding 255 characters should be rejected."""
@@ -470,10 +435,7 @@ class TestPluginPackageInfoValidators:
 
         long_ref = "a" * 256
         with pytest.raises(ValueError, match="exceeds maximum length of 255 characters"):
-            PluginPackageInfo(
-                git_repository="https://github.com/user/repo.git",
-                git_branch_tag_commit=long_ref
-            )
+            PluginPackageInfo(git_repository="https://github.com/user/repo.git", git_branch_tag_commit=long_ref)
 
     def test_git_branch_tag_commit_none_allowed(self):
         """None should be allowed for git_branch_tag_commit."""
@@ -506,32 +468,20 @@ class TestPluginPackageInfoValidators:
         """Valid multiple version constraints should be accepted."""
         from cpex.framework.models import PluginPackageInfo
 
-        pkg = PluginPackageInfo(
-            pypi_package="my-package",
-            version_constraint=">=1.0.0,<2.0.0"
-        )
+        pkg = PluginPackageInfo(pypi_package="my-package", version_constraint=">=1.0.0,<2.0.0")
         assert pkg.version_constraint == ">=1.0.0,<2.0.0"
 
-        pkg = PluginPackageInfo(
-            pypi_package="my-package",
-            version_constraint=">=1.0.0, <2.0.0, !=1.5.0"
-        )
+        pkg = PluginPackageInfo(pypi_package="my-package", version_constraint=">=1.0.0, <2.0.0, !=1.5.0")
         assert pkg.version_constraint == ">=1.0.0, <2.0.0, !=1.5.0"
 
     def test_version_constraint_valid_with_prerelease(self):
         """Version constraints with pre-release identifiers should be accepted."""
         from cpex.framework.models import PluginPackageInfo
 
-        pkg = PluginPackageInfo(
-            pypi_package="my-package",
-            version_constraint=">=1.0.0-alpha"
-        )
+        pkg = PluginPackageInfo(pypi_package="my-package", version_constraint=">=1.0.0-alpha")
         assert pkg.version_constraint == ">=1.0.0-alpha"
 
-        pkg = PluginPackageInfo(
-            pypi_package="my-package",
-            version_constraint="==1.0.0rc1"
-        )
+        pkg = PluginPackageInfo(pypi_package="my-package", version_constraint="==1.0.0rc1")
         assert pkg.version_constraint == "==1.0.0rc1"
 
     def test_version_constraint_invalid_empty(self):
@@ -560,10 +510,7 @@ class TestPluginPackageInfoValidators:
         from cpex.framework.models import PluginPackageInfo
 
         with pytest.raises(ValueError, match="cannot contain empty parts"):
-            PluginPackageInfo(
-                pypi_package="my-package",
-                version_constraint=">=1.0.0,,"
-            )
+            PluginPackageInfo(pypi_package="my-package", version_constraint=">=1.0.0,,")
 
     def test_version_constraint_too_long(self):
         """Version constraints exceeding 255 characters should be rejected."""
@@ -611,10 +558,7 @@ class TestPluginPackageInfoValidators:
         """Both PyPI package and Git repository can be specified."""
         from cpex.framework.models import PluginPackageInfo
 
-        pkg = PluginPackageInfo(
-            pypi_package="my-package",
-            git_repository="https://github.com/user/repo.git"
-        )
+        pkg = PluginPackageInfo(pypi_package="my-package", git_repository="https://github.com/user/repo.git")
         assert pkg.pypi_package == "my-package"
         assert pkg.git_repository == "https://github.com/user/repo.git"
 
@@ -623,10 +567,7 @@ class TestPluginPackageInfoValidators:
         from cpex.framework.models import PluginPackageInfo
 
         with pytest.raises(ValueError, match="can only be specified when 'git_repository' is provided"):
-            PluginPackageInfo(
-                pypi_package="my-package",
-                git_branch_tag_commit="main"
-            )
+            PluginPackageInfo(pypi_package="my-package", git_branch_tag_commit="main")
 
     def test_complete_git_installation(self):
         """Complete Git installation with all fields should be valid."""
@@ -635,7 +576,7 @@ class TestPluginPackageInfoValidators:
         pkg = PluginPackageInfo(
             git_repository="https://github.com/user/repo.git",
             git_branch_tag_commit="v1.0.0",
-            version_constraint=">=1.0.0"
+            version_constraint=">=1.0.0",
         )
         assert pkg.git_repository == "https://github.com/user/repo.git"
         assert pkg.git_branch_tag_commit == "v1.0.0"
@@ -645,10 +586,7 @@ class TestPluginPackageInfoValidators:
         """Complete PyPI installation with version constraint should be valid."""
         from cpex.framework.models import PluginPackageInfo
 
-        pkg = PluginPackageInfo(
-            pypi_package="my-package",
-            version_constraint=">=1.0.0,<2.0.0"
-        )
+        pkg = PluginPackageInfo(pypi_package="my-package", version_constraint=">=1.0.0,<2.0.0")
         assert pkg.pypi_package == "my-package"
         assert pkg.version_constraint == ">=1.0.0,<2.0.0"
 
@@ -669,31 +607,21 @@ class TestPluginVersionRegistry:
             version="2.0.0",
             released="2024-01-01",
             manifest_file="manifest.json",
-            min_max_framework_version="0.1.0,0.2.0"
+            min_max_framework_version="0.1.0,0.2.0",
         )
-        
-        registry = PluginVersionRegistry(
-            latest=latest_version,
-            versions=[latest_version]
-        )
-        
+
+        registry = PluginVersionRegistry(latest=latest_version, versions=[latest_version])
+
         assert registry.get_version() == latest_version
 
     def test_get_version_returns_none_when_no_latest(self):
         """get_version should return None when latest is not set."""
         from cpex.framework.models import PluginVersionInfo, PluginVersionRegistry
 
-        version = PluginVersionInfo(
-            version="1.0.0",
-            released="2024-01-01",
-            manifest_file="manifest.json"
-        )
-        
-        registry = PluginVersionRegistry(
-            latest=None,
-            versions=[version]
-        )
-        
+        version = PluginVersionInfo(version="1.0.0", released="2024-01-01", manifest_file="manifest.json")
+
+        registry = PluginVersionRegistry(latest=None, versions=[version])
+
         assert registry.get_version() is None
 
     def test_get_latest_compatible_finds_compatible_version(self):
@@ -704,24 +632,21 @@ class TestPluginVersionRegistry:
             version="1.0.0",
             released="2024-01-01",
             manifest_file="manifest.json",
-            min_max_framework_version="0.1.0,0.1.5"
+            min_max_framework_version="0.1.0,0.1.5",
         )
         v2 = PluginVersionInfo(
             version="2.0.0",
             released="2024-02-01",
             manifest_file="manifest.json",
-            min_max_framework_version="0.1.5,0.2.0"
+            min_max_framework_version="0.1.5,0.2.0",
         )
-        
-        registry = PluginVersionRegistry(
-            latest=v2,
-            versions=[v1, v2]
-        )
-        
+
+        registry = PluginVersionRegistry(latest=v2, versions=[v1, v2])
+
         # Framework version 0.1.3 should match v1
         result = registry.get_latest_compatible("0.1.3")
         assert result == v1
-        
+
         # Framework version 0.1.8 should match v2
         result = registry.get_latest_compatible("0.1.8")
         assert result == v2
@@ -734,26 +659,23 @@ class TestPluginVersionRegistry:
             version="1.0.0",
             released="2024-01-01",
             manifest_file="manifest.json",
-            min_max_framework_version="0.1.0,0.2.0"
+            min_max_framework_version="0.1.0,0.2.0",
         )
         v2 = PluginVersionInfo(
             version="1.5.0",
             released="2024-02-01",
             manifest_file="manifest.json",
-            min_max_framework_version="0.1.0,0.2.0"
+            min_max_framework_version="0.1.0,0.2.0",
         )
         v3 = PluginVersionInfo(
             version="2.0.0",
             released="2024-03-01",
             manifest_file="manifest.json",
-            min_max_framework_version="0.1.0,0.2.0"
+            min_max_framework_version="0.1.0,0.2.0",
         )
-        
-        registry = PluginVersionRegistry(
-            latest=v3,
-            versions=[v1, v2, v3]
-        )
-        
+
+        registry = PluginVersionRegistry(latest=v3, versions=[v1, v2, v3])
+
         # All versions support 0.1.5, should return the latest (v3)
         result = registry.get_latest_compatible("0.1.5")
         assert result == v3
@@ -767,14 +689,11 @@ class TestPluginVersionRegistry:
             version="1.0.0",
             released="2024-01-01",
             manifest_file="manifest.json",
-            min_max_framework_version="0.1.0,0.1.5"
+            min_max_framework_version="0.1.0,0.1.5",
         )
-        
-        registry = PluginVersionRegistry(
-            latest=v1,
-            versions=[v1]
-        )
-        
+
+        registry = PluginVersionRegistry(latest=v1, versions=[v1])
+
         # Framework version 0.2.0 is outside the range
         result = registry.get_latest_compatible("0.2.0")
         assert result is None
@@ -787,14 +706,11 @@ class TestPluginVersionRegistry:
             version="1.0.0",
             released="2024-01-01",
             manifest_file="manifest.json",
-            min_max_framework_version="0.1.0,0.2.0"
+            min_max_framework_version="0.1.0,0.2.0",
         )
-        
-        registry = PluginVersionRegistry(
-            latest=v1,
-            versions=[v1]
-        )
-        
+
+        registry = PluginVersionRegistry(latest=v1, versions=[v1])
+
         # Invalid version format
         result = registry.get_latest_compatible("not-a-version")
         assert result is None
@@ -804,23 +720,17 @@ class TestPluginVersionRegistry:
         from cpex.framework.models import PluginVersionInfo, PluginVersionRegistry
 
         v1 = PluginVersionInfo(
-            version="1.0.0",
-            released="2024-01-01",
-            manifest_file="manifest.json",
-            min_max_framework_version=None
+            version="1.0.0", released="2024-01-01", manifest_file="manifest.json", min_max_framework_version=None
         )
         v2 = PluginVersionInfo(
             version="2.0.0",
             released="2024-02-01",
             manifest_file="manifest.json",
-            min_max_framework_version="0.1.0,0.2.0"
+            min_max_framework_version="0.1.0,0.2.0",
         )
-        
-        registry = PluginVersionRegistry(
-            latest=v2,
-            versions=[v1, v2]
-        )
-        
+
+        registry = PluginVersionRegistry(latest=v2, versions=[v1, v2])
+
         # Should only find v2 since v1 has no min_max_framework_version
         result = registry.get_latest_compatible("0.1.5")
         assert result == v2
@@ -833,26 +743,23 @@ class TestPluginVersionRegistry:
             version="1.0.0",
             released="2024-01-01",
             manifest_file="manifest.json",
-            min_max_framework_version="0.1.0"  # Missing max version
+            min_max_framework_version="0.1.0",  # Missing max version
         )
         v2 = PluginVersionInfo(
             version="2.0.0",
             released="2024-02-01",
             manifest_file="manifest.json",
-            min_max_framework_version="invalid,version"  # Invalid versions
+            min_max_framework_version="invalid,version",  # Invalid versions
         )
         v3 = PluginVersionInfo(
             version="3.0.0",
             released="2024-03-01",
             manifest_file="manifest.json",
-            min_max_framework_version="0.1.0,0.2.0"  # Valid
+            min_max_framework_version="0.1.0,0.2.0",  # Valid
         )
-        
-        registry = PluginVersionRegistry(
-            latest=v3,
-            versions=[v1, v2, v3]
-        )
-        
+
+        registry = PluginVersionRegistry(latest=v3, versions=[v1, v2, v3])
+
         # Should only find v3
         result = registry.get_latest_compatible("0.1.5")
         assert result == v3
@@ -865,24 +772,21 @@ class TestPluginVersionRegistry:
             version="1.0.0rc1",
             released="2024-01-01",
             manifest_file="manifest.json",
-            min_max_framework_version="0.1.0.dev1,0.1.0.dev5"
+            min_max_framework_version="0.1.0.dev1,0.1.0.dev5",
         )
         v2 = PluginVersionInfo(
             version="1.0.0",
             released="2024-02-01",
             manifest_file="manifest.json",
-            min_max_framework_version="0.1.0,0.2.0"
+            min_max_framework_version="0.1.0,0.2.0",
         )
-        
-        registry = PluginVersionRegistry(
-            latest=v2,
-            versions=[v1, v2]
-        )
-        
+
+        registry = PluginVersionRegistry(latest=v2, versions=[v1, v2])
+
         # Dev version should match v1
         result = registry.get_latest_compatible("0.1.0.dev3")
         assert result == v1
-        
+
         # Stable version should match v2
         result = registry.get_latest_compatible("0.1.5")
         assert result == v2
@@ -895,26 +799,23 @@ class TestPluginVersionRegistry:
             version="1.0.0",
             released="2024-01-01",
             manifest_file="manifest.json",
-            min_max_framework_version="0.1.0,0.2.0"
+            min_max_framework_version="0.1.0,0.2.0",
         )
-        
-        registry = PluginVersionRegistry(
-            latest=v1,
-            versions=[v1]
-        )
-        
+
+        registry = PluginVersionRegistry(latest=v1, versions=[v1])
+
         # Exact min boundary
         result = registry.get_latest_compatible("0.1.0")
         assert result == v1
-        
+
         # Exact max boundary
         result = registry.get_latest_compatible("0.2.0")
         assert result == v1
-        
+
         # Just below min
         result = registry.get_latest_compatible("0.0.9")
         assert result is None
-        
+
         # Just above max
         result = registry.get_latest_compatible("0.2.1")
         assert result is None
@@ -923,10 +824,7 @@ class TestPluginVersionRegistry:
         """get_latest_compatible should return None when versions list is empty."""
         from cpex.framework.models import PluginVersionRegistry
 
-        registry = PluginVersionRegistry(
-            latest=None,
-            versions=[]
-        )
-        
+        registry = PluginVersionRegistry(latest=None, versions=[])
+
         result = registry.get_latest_compatible("0.1.0")
         assert result is None

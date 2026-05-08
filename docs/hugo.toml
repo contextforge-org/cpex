@@ -1,0 +1,21 @@
+baseURL = "https://contextforge-org.github.io/contextforge-plugins-framework/"
+languageCode = "en-us"
+title = "CPEX Documentation"
+theme = "hugo-book"
+
+[params]
+  BookTheme = "auto"
+  BookToC = true
+  BookSection = "docs"
+  BookRepo = "https://github.com/contextforge-org/contextforge-plugins-framework"
+  BookSearch = true
+  BookComments = false
+  BookEditLink = '{{ .Site.Params.BookRepo }}/edit/main/docs/{{ .Path }}'
+  BookLogo = "images/cpex_v1.png"
+
+[markup.goldmark.renderer]
+  unsafe = true
+
+[markup.highlight]
+  # style = "bw"
+  lineNos = false

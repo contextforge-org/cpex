@@ -81,6 +81,18 @@ class SimplePlugin(Plugin):
         return PluginResult(continue_processing=True, modified_payload=payload)
 
 
+class BlockingPlugin(Plugin):
+    """A plugin that blocks the pipeline with a violation."""
+
+    async def prompt_pre_fetch(self, payload, context):
+        from cpex.framework.models import PluginViolation
+
+        return PluginResult(
+            continue_processing=False,
+            violation=PluginViolation(code="BLOCKED", reason="test block", description="blocked for testing"),
+        )
+
+
 @pytest.mark.asyncio
 async def test_observability_injection_via_plugin_manager():
     """Test that an ObservabilityProvider injected into PluginManager is invoked during hook execution."""
@@ -124,23 +136,43 @@ async def test_observability_injection_via_plugin_manager():
         assert result.modified_payload is not None
         assert result.modified_payload.args["traced"] == "yes"
 
-        # Verify start_span was called
-        assert len(recorder.spans) == 1
-        span_id, span_info = recorder.spans[0]
-        assert span_info["trace_id"] == trace_id
-        assert "TracedPlugin" in span_info["name"]
-        assert span_info["kind"] == "internal"
-        assert span_info["resource_type"] == "plugin"
-        assert span_info["resource_name"] == "TracedPlugin"
-        assert span_info["attributes"]["plugin.name"] == "TracedPlugin"
+        # Verify start_span was called: hook-chain span + per-plugin span
+        assert len(recorder.spans) == 2
 
-        # Verify end_span was called with matching span_id
-        assert len(recorder.ended_spans) == 1
-        ended_span_id, status, end_attrs = recorder.ended_spans[0]
-        assert ended_span_id == span_id
-        assert status == "ok"
-        assert end_attrs["plugin.had_violation"] is False
-        assert end_attrs["plugin.modified_payload"] is True
+        # First span: hook-chain span
+        chain_span_id, chain_info = recorder.spans[0]
+        assert chain_info["trace_id"] == trace_id
+        assert chain_info["name"] == "plugin.hook.invoke"
+        assert chain_info["kind"] == "internal"
+        assert chain_info["attributes"]["plugin.hook.type"] == PromptHookType.PROMPT_PRE_FETCH
+        assert chain_info["attributes"]["plugin.chain.length"] == 1
+
+        # Second span: per-plugin execution span
+        plugin_span_id, plugin_info = recorder.spans[1]
+        assert plugin_info["trace_id"] == trace_id
+        assert "TracedPlugin" in plugin_info["name"]
+        assert plugin_info["kind"] == "internal"
+        assert plugin_info["resource_type"] == "plugin"
+        assert plugin_info["resource_name"] == "TracedPlugin"
+        assert plugin_info["attributes"]["plugin.name"] == "TracedPlugin"
+
+        # Verify end_span was called for both spans
+        assert len(recorder.ended_spans) == 2
+
+        # Per-plugin span ended first
+        ended_plugin_id, plugin_status, plugin_end_attrs = recorder.ended_spans[0]
+        assert ended_plugin_id == plugin_span_id
+        assert plugin_status == "ok"
+        assert plugin_end_attrs["plugin.had_violation"] is False
+        assert plugin_end_attrs["plugin.modified_payload"] is True
+
+        # Hook-chain span ended second
+        ended_chain_id, chain_status, chain_end_attrs = recorder.ended_spans[1]
+        assert ended_chain_id == chain_span_id
+        assert chain_status == "ok"
+        assert chain_end_attrs["plugin.executed_count"] == 1
+        assert chain_end_attrs["plugin.skipped_count"] == 0
+        assert chain_end_attrs["plugin.chain.stopped"] is False
     finally:
         current_trace_id.reset(token)
         await manager.shutdown()
@@ -297,3 +329,60 @@ def test_get_plugin_manager_creates_manager_when_enabled():
     finally:
         fw._plugin_manager = original
         PluginManager.reset()
+
+
+@pytest.mark.asyncio
+async def test_hook_chain_span_records_stopped_by_on_halt():
+    """Test that hook-chain span records stopped_by when pipeline is halted."""
+    recorder = RecordingObservability()
+    trace_id = "test-trace-halt"
+
+    manager = PluginManager(
+        "./tests/unit/cpex/fixtures/configs/valid_no_plugin.yaml",
+        observability=recorder,
+    )
+    await manager.initialize()
+
+    config = PluginConfig(
+        name="BlockingPlugin",
+        description="Blocks the pipeline",
+        author="Test",
+        version="1.0",
+        tags=["test"],
+        kind="BlockingPlugin",
+        hooks=["prompt_pre_fetch"],
+        config={},
+    )
+    plugin = BlockingPlugin(config)
+
+    token = current_trace_id.set(trace_id)
+    try:
+        with patch.object(manager._registry, "get_hook_refs_for_hook") as mock_get:
+            hook_ref = HookRef(PromptHookType.PROMPT_PRE_FETCH, PluginRef(plugin))
+            mock_get.return_value = [hook_ref]
+
+            payload = PromptPrehookPayload(prompt_id="test", args={})
+            global_context = GlobalContext(request_id="req-halt")
+
+            result, _ = await manager.invoke_hook(
+                PromptHookType.PROMPT_PRE_FETCH,
+                payload,
+                global_context=global_context,
+            )
+
+        assert not result.continue_processing
+        assert result.violation is not None
+
+        # Verify hook-chain span records the halt
+        assert len(recorder.ended_spans) == 2  # per-plugin + hook-chain
+
+        # Hook-chain span is the last ended span
+        ended_chain_id, chain_status, chain_end_attrs = recorder.ended_spans[-1]
+        assert chain_status == "ok"
+        assert chain_end_attrs["plugin.chain.stopped"] is True
+        assert chain_end_attrs["plugin.chain.stopped_by"] == "BlockingPlugin"
+        assert chain_end_attrs["plugin.executed_count"] == 1
+        assert chain_end_attrs["plugin.skipped_count"] == 0
+    finally:
+        current_trace_id.reset(token)
+        await manager.shutdown()

@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 # Third-Party
 import pytest
+from pydantic import ValidationError
 
 # First-Party
 from cpex.framework import ToolPreInvokePayload
@@ -79,19 +80,13 @@ class TestUnixSocketExternalPluginInit:
         assert plugin._reconnect_delay == 0.1
 
     def test_init_missing_unix_socket_config(self):
-        """Test init raises PluginError when unix_socket config is missing."""
-        config = PluginConfig(
-            name="TestPlugin",
-            kind="external",
-            hooks=["tool_pre_invoke"],
-            unix_socket=UnixSocketClientConfig(path="/tmp/test.sock"),
-        )
-        plugin = UnixSocketExternalPlugin(config)
-        plugin._config.unix_socket = None
-
-        with pytest.raises(PluginError, match="unix_socket section must be defined"):
-            # Re-initialize to trigger the check
-            UnixSocketExternalPlugin.__init__(plugin, config)
+        """Test PluginConfig validation rejects external plugin without transport config."""
+        with pytest.raises(ValidationError, match="External plugin.*must have"):
+            PluginConfig(
+                name="TestPlugin",
+                kind="external",
+                hooks=["tool_pre_invoke"],
+            )
 
 
 class TestUnixSocketExternalPluginConnected:

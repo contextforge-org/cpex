@@ -12,6 +12,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 # We use typer's CliRunner for testing typer apps
+import click
 from typer.testing import CliRunner
 
 # Third-Party
@@ -124,12 +125,13 @@ class TestBootstrapHelp:
 
     def test_help_contains_options(self):
         result = runner.invoke(app, ["bootstrap", "--help"])
-        assert "--destination" in result.output
-        assert "--template_type" in result.output
-        assert "--template_url" in result.output
-        assert "--vcs_ref" in result.output
-        assert "--no_input" in result.output
-        assert "--dry_run" in result.output
+        output = click.unstyle(result.output)
+        assert "--destination" in output
+        assert "--template_type" in output
+        assert "--template_url" in output
+        assert "--vcs_ref" in output
+        assert "--no_input" in output
+        assert "--dry_run" in output
 
 
 class TestBootstrapDryRun:
