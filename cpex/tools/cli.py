@@ -314,6 +314,9 @@ def update_plugins_config_yaml(manifest: PluginManifest):
     )
     if plugin_configs.plugins is None:
         plugin_configs.plugins = []
+    if plugin_configs.plugin_dirs is None or len(plugin_configs.plugin_dirs)==0:
+        catalog_settings = get_catalog_settings()
+        plugin_configs.plugin_dirs = [f"{catalog_settings.FOLDER}"]
     plugin_configs.plugins.append(plugin_config)
     # now serialize the config
     ConfigSaver.save_config(plugin_configs, settings.config_file)
