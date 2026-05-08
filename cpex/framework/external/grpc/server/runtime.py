@@ -290,8 +290,9 @@ Examples:
     args = parser.parse_args()
 
     # Configure logging - respect PLUGINS_LOG_LEVEL environment variable
-    log_level_str = os.getenv("PLUGINS_LOG_LEVEL", args.log_level).upper()
-    log_level = getattr(logging, log_level_str, logging.INFO)
+    settings = get_settings()
+    log_level_str = settings.log_level or args.log_level
+    log_level = getattr(logging, log_level_str.upper(), logging.INFO)
     logging.basicConfig(
         level=log_level,
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
