@@ -15,6 +15,10 @@ global:
     # "pii" group — activated when a route has the "pii" tag
     pii:
       plugins: [pii-guard]
+    # "external_authz" group — activated when a route has the
+    # "needs_remote_authz" tag. Fires the async RemoteAuthz plugin.
+    external_authz:
+      plugins: [remote-authz]
 
 plugins:
   - name: identity-resolver
@@ -33,6 +37,17 @@ plugins:
     config:
       clearance_level: confidential
 
+  # Awaiting plugin — its `handle` body uses `.await` for a
+  # (simulated) remote authz call on cache miss. Wired in exactly
+  # the same way as plugins whose `handle` body has no `.await`;
+  # registration is identical either way.
+  - name: remote-authz
+    kind: builtin/remote_authz
+    hooks: [tool_pre_invoke]
+    mode: sequential
+    priority: 30
+    on_error: fail
+
   - name: audit-logger
     kind: builtin/audit
     hooks: [tool_pre_invoke, tool_post_invoke]
@@ -50,6 +65,16 @@ routes:
 
   # Public department listing — standard security only
   - tool: list_departments
+    plugins:
+      - audit-logger
+
+  # Tool that requires remote authz — triggers the async plugin
+  # on top of the standard "all" policy stack. The "external_authz"
+  # tag matches the policy group of the same name, which fires
+  # remote-authz.
+  - tool: query_external_data
+    meta:
+      tags: [external_authz]
     plugins:
       - audit-logger
 

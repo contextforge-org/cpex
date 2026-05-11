@@ -1032,7 +1032,7 @@ mod tests {
     }
 
     impl cpex_core::hooks::HookHandler<TestHook> for PanickingPlugin {
-        fn handle(
+        async fn handle(
             &self,
             _payload: &GenericPayload,
             _extensions: &Extensions,
