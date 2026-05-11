@@ -42,7 +42,7 @@ impl Plugin for IdentityChecker {
 }
 
 impl HookHandler<CmfHook> for IdentityChecker {
-    fn handle(
+    async fn handle(
         &self,
         payload: &MessagePayload,
         extensions: &Extensions,
@@ -136,7 +136,7 @@ impl Plugin for HeaderInjector {
 }
 
 impl HookHandler<CmfHook> for HeaderInjector {
-    fn handle(
+    async fn handle(
         &self,
         _payload: &MessagePayload,
         extensions: &Extensions,
@@ -201,7 +201,7 @@ impl Plugin for AuditLogger {
 }
 
 impl HookHandler<CmfHook> for AuditLogger {
-    fn handle(
+    async fn handle(
         &self,
         payload: &MessagePayload,
         extensions: &Extensions,

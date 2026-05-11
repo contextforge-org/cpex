@@ -68,7 +68,7 @@ impl Plugin for ToolPolicyPlugin {
 }
 
 impl HookHandler<CmfHook> for ToolPolicyPlugin {
-    fn handle(
+    async fn handle(
         &self,
         payload: &MessagePayload,
         extensions: &Extensions,
@@ -197,7 +197,7 @@ impl Plugin for HeaderInjectorPlugin {
 }
 
 impl HookHandler<CmfHook> for HeaderInjectorPlugin {
-    fn handle(
+    async fn handle(
         &self,
         payload: &MessagePayload,
         extensions: &Extensions,

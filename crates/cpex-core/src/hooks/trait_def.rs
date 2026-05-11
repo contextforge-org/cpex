@@ -78,28 +78,70 @@ pub trait HookTypeDef: Send + Sync + 'static {
 /// Plugin authors implement this trait (alongside [`Plugin`]) to handle
 /// a specific hook. The type parameter `H` ties the handler to a
 /// `HookTypeDef`, ensuring the correct payload and result types at
-/// compile time.
+/// compile time. The framework creates a type-erased adapter internally
+/// when you register — you never touch `AnyHookHandler` directly.
 ///
-/// The framework creates a type-erased adapter internally when you
-/// register — you never touch `AnyHookHandler` directly.
+/// # Async by design
+///
+/// `handle` is an `async fn`. Plugins that don't need to `.await`
+/// anything still write `async fn handle(...)` and return synchronously
+/// — the compiler emits a trivially-ready future and LLVM inlines it
+/// at the adapter site, so there's no observable runtime cost over a
+/// plain function. Plugins that *do* need to `.await` (fresh JWKS
+/// fetch, RPC to an authz service, dynamic policy lookup) just use
+/// `.await` inside the body.
+///
+/// **Best practice:** even when async is available, prefer pre-loading
+/// state in [`Plugin::initialize`] and reading from cache in `handle`.
+/// Hot-path I/O is the most common source of latency regressions.
+///
+/// # Native AFIT, not `#[async_trait]`
+///
+/// The trait uses native `async fn` (return-position `impl Future`)
+/// rather than `#[async_trait]`. This avoids a per-call heap
+/// allocation: the returned future is monomorphized into the
+/// [`TypedHandlerAdapter`] rather than boxed. The trait is therefore
+/// **not object-safe** — you cannot have `Box<dyn HookHandler<H>>`.
+/// We don't need that; type erasure happens one layer up at
+/// [`AnyHookHandler`].
 ///
 /// # Examples
 ///
 /// ```rust,ignore
-/// impl HookHandler<CmfHook> for MyPlugin {
-///     fn handle(
+/// // Synchronous plugin — no .await, no extra cost
+/// impl HookHandler<CmfHook> for AllowPlugin {
+///     async fn handle(
 ///         &self,
-///         payload: MessagePayload,
-///         extensions: &Extensions,
-///         ctx: &PluginContext,
+///         _payload: &MessagePayload,
+///         _extensions: &Extensions,
+///         _ctx: &mut PluginContext,
 ///     ) -> PluginResult<MessagePayload> {
 ///         PluginResult::allow()
 ///     }
 /// }
 ///
-/// // Registration — no AnyHookHandler needed:
-/// manager.register_handler::<CmfHook, _>(plugin, config)?;
+/// // Async plugin — calls .await inside the body
+/// impl HookHandler<MyHook> for AuthzPlugin {
+///     async fn handle(
+///         &self,
+///         payload: &MyPayload,
+///         _extensions: &Extensions,
+///         _ctx: &mut PluginContext,
+///     ) -> PluginResult<MyPayload> {
+///         match self.client.check(&payload.user).await {
+///             Ok(true) => PluginResult::allow(),
+///             _ => PluginResult::deny(/* ... */),
+///         }
+///     }
+/// }
+///
+/// // Registration is the same for both:
+/// manager.register_handler::<MyHook, _>(plugin, config)?;
 /// ```
+///
+/// [`PluginManager::register_handler`]: crate::manager::PluginManager::register_handler
+/// [`AnyHookHandler`]: crate::registry::AnyHookHandler
+/// [`TypedHandlerAdapter`]: crate::hooks::adapter::TypedHandlerAdapter
 pub trait HookHandler<H: HookTypeDef>: Plugin + Send + Sync {
     /// Handle the hook invocation.
     ///
@@ -112,12 +154,18 @@ pub trait HookHandler<H: HookTypeDef>: Plugin + Send + Sync {
     /// the modified copy in `PluginResult::modify_payload()`. This
     /// pushes the clone cost to the plugin that actually needs it —
     /// read-only plugins (validators, auditors) never pay for a copy.
+    ///
+    /// Returns a `Send`-able future so the executor can drive it from
+    /// any worker thread (including the concurrent-phase `JoinSet`).
+    /// `H::Result` is already `Send + Sync` per the `HookTypeDef`
+    /// bound, so the `Send` constraint comes for free for typical
+    /// handlers.
     fn handle(
         &self,
         payload: &H::Payload,
         extensions: &Extensions,
         ctx: &mut PluginContext,
-    ) -> H::Result;
+    ) -> impl std::future::Future<Output = H::Result> + Send;
 }
 
 // ---------------------------------------------------------------------------

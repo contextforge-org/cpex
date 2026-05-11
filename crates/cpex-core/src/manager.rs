@@ -1280,7 +1280,7 @@ mod tests {
     }
 
     impl HookHandler<TestHook> for AllowPlugin {
-        fn handle(
+        async fn handle(
             &self,
             _payload: &TestPayload,
             _extensions: &Extensions,
@@ -1309,7 +1309,7 @@ mod tests {
     }
 
     impl HookHandler<TestHook> for DenyPlugin {
-        fn handle(
+        async fn handle(
             &self,
             _payload: &TestPayload,
             _extensions: &Extensions,
@@ -2068,7 +2068,7 @@ mod tests {
     }
 
     impl HookHandler<TestHook> for TransformPlugin {
-        fn handle(
+        async fn handle(
             &self,
             payload: &TestPayload,
             _extensions: &Extensions,
@@ -3348,7 +3348,7 @@ routes:
             }
         }
         impl HookHandler<TestHook> for LifecyclePlugin {
-            fn handle(
+            async fn handle(
                 &self,
                 _payload: &TestPayload,
                 _extensions: &Extensions,
@@ -4089,7 +4089,7 @@ routes:
         }
 
         impl HookHandler<TestHook> for InitTrackingPlugin {
-            fn handle(
+            async fn handle(
                 &self,
                 _payload: &TestPayload,
                 _extensions: &Extensions,
@@ -4841,5 +4841,118 @@ routes:
         // The saw_security flag checks if the security Option itself was Some
         // With filter_extensions, security IS Some but with empty labels and no subject
         // So saw_security will be true, but the content is filtered
+    }
+
+    // -----------------------------------------------------------------------
+    // Awaiting handler tests
+    //
+    // `HookHandler<H>` is async by design. These tests cover handlers
+    // that genuinely `.await` inside the body — sleeps, yields, and
+    // co-registration with handlers whose body has no `.await` at all.
+    // -----------------------------------------------------------------------
+
+    /// Plugin that genuinely awaits inside its handler. Increments a
+    /// shared counter after the await resolves so the test can verify
+    /// the handler ran end-to-end and observed its async point.
+    struct AsyncCounterPlugin {
+        cfg: PluginConfig,
+        counter: Arc<std::sync::atomic::AtomicU64>,
+    }
+
+    #[async_trait]
+    impl Plugin for AsyncCounterPlugin {
+        fn config(&self) -> &PluginConfig {
+            &self.cfg
+        }
+    }
+
+    impl HookHandler<TestHook> for AsyncCounterPlugin {
+        async fn handle(
+            &self,
+            _payload: &TestPayload,
+            _extensions: &Extensions,
+            _ctx: &mut PluginContext,
+        ) -> PluginResult<TestPayload> {
+            tokio::task::yield_now().await;
+            tokio::time::sleep(std::time::Duration::from_micros(1)).await;
+            self.counter
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            PluginResult::allow()
+        }
+    }
+
+    /// Verifies that a handler that genuinely `.await`s gets driven
+    /// to completion before its result is observed.
+    #[tokio::test]
+    async fn test_async_handler_registers_and_invokes() {
+        let mgr = PluginManager::default();
+        let counter = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let cfg = make_config("async-counter", 10, PluginMode::Sequential);
+        let plugin = Arc::new(AsyncCounterPlugin {
+            cfg: cfg.clone(),
+            counter: counter.clone(),
+        });
+
+        // Same call path as sync plugins — no `register_async_handler`.
+        mgr.register_handler::<TestHook, _>(plugin, cfg).unwrap();
+        mgr.initialize().await.unwrap();
+
+        let payload: Box<dyn PluginPayload> = Box::new(TestPayload {
+            value: "test".into(),
+        });
+        let (result, _) = mgr
+            .invoke_by_name("test_hook", payload, Extensions::default(), None)
+            .await;
+
+        assert!(result.continue_processing);
+        assert!(result.violation.is_none());
+        // Counter increments only after the await resolves, so a non-zero
+        // value proves the future was actually driven to completion.
+        assert_eq!(
+            counter.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "async handler should have run once",
+        );
+    }
+
+    /// A handler with no `.await` (AllowPlugin) and a handler that
+    /// genuinely awaits (AsyncCounterPlugin) co-register on the same
+    /// hook via the same `register_handler` call. Both run in priority
+    /// order.
+    #[tokio::test]
+    async fn test_mixed_sync_and_async_handlers_in_same_hook() {
+        let mgr = PluginManager::default();
+        let counter = Arc::new(std::sync::atomic::AtomicU64::new(0));
+
+        let sync_cfg = make_config("sync-allow", 10, PluginMode::Sequential);
+        let sync_plugin = Arc::new(AllowPlugin {
+            cfg: sync_cfg.clone(),
+        });
+        mgr.register_handler::<TestHook, _>(sync_plugin, sync_cfg)
+            .unwrap();
+
+        let async_cfg = make_config("async-counter", 20, PluginMode::Sequential);
+        let async_plugin = Arc::new(AsyncCounterPlugin {
+            cfg: async_cfg.clone(),
+            counter: counter.clone(),
+        });
+        mgr.register_handler::<TestHook, _>(async_plugin, async_cfg)
+            .unwrap();
+
+        mgr.initialize().await.unwrap();
+
+        let payload: Box<dyn PluginPayload> = Box::new(TestPayload {
+            value: "test".into(),
+        });
+        let (result, _) = mgr
+            .invoke_by_name("test_hook", payload, Extensions::default(), None)
+            .await;
+
+        assert!(result.continue_processing);
+        assert_eq!(
+            counter.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "awaiting plugin should have run alongside the non-awaiting plugin",
+        );
     }
 }

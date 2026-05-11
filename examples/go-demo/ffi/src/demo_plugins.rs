@@ -61,7 +61,7 @@ impl Plugin for IdentityChecker {
 }
 
 impl HookHandler<GenericHook> for IdentityChecker {
-    fn handle(
+    async fn handle(
         &self,
         payload: &GenericPayload,
         extensions: &Extensions,
@@ -130,7 +130,7 @@ impl Plugin for PiiGuard {
 }
 
 impl HookHandler<GenericHook> for PiiGuard {
-    fn handle(
+    async fn handle(
         &self,
         payload: &GenericPayload,
         extensions: &Extensions,
@@ -212,7 +212,7 @@ impl Plugin for AuditLogger {
 }
 
 impl HookHandler<GenericHook> for AuditLogger {
-    fn handle(
+    async fn handle(
         &self,
         payload: &GenericPayload,
         extensions: &Extensions,
