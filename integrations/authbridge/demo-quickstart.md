@@ -489,41 +489,89 @@ kubectl logs -n team1 $POD -c envoy-proxy | grep -E "cpex|cpex-runtime"
 #   cpex-authbridge-envoy starting   mode=envoy-sidecar
 ```
 
-**Quick-test from terminal** (no UI required — useful for a sanity check
-before the audience is watching). Port-forward 9094 first (same as
-Phase 6):
+### 7.7. Fire the demo events
+
+Two scripts ship next to this guide for repeatable demo traffic. They
+both `kubectl exec` into the weather-service agent container and POST a
+single request — no UI, no Keycloak token needed. Useful for the
+sanity-check dry-run before the audience is watching, and as the
+fallback if the live Kagenti UI flow gets flaky.
 
 ```bash
+# Make sure the port-forward is up (same as Phase 6)
 POD=$(kubectl get pod -n team1 -l app.kubernetes.io/name=weather-service -o jsonpath='{.items[0].metadata.name}')
-kubectl port-forward -n team1 $POD 9094:9094 &
+kubectl port-forward -n team1 "$POD" 9094:9094 &
+
+# Then, from this directory:
+./redaction.sh   # LLM call with PII — expect 200 + body rewrite
+./deny.sh        # MCP tools/call for get_weather — expect 403
 ```
 
-Fire an LLM call **with PII** — expects redaction:
+#### What you should see in abctl
 
-```bash
-kubectl exec -n team1 $POD -c agent -- python3 -c "
-import urllib.request, json
-data = json.dumps({'messages':[{'role':'user','content':'please email alice@corp.com the weather'}],'model':'llama3.2:3b-instruct-fp16','max_tokens':10}).encode()
-req = urllib.request.Request('http://host.docker.internal:11434/v1/chat/completions', data=data, headers={'Content-Type':'application/json'})
-print(urllib.request.urlopen(req, timeout=20).read()[:200].decode())
-"
-```
+Have abctl open (built and run in Phase 6) before firing. Each script
+adds events to the `default` session.
 
-Fire an MCP `tools/call` for `get_weather` (caller has no `weather:read`
-scope) — expects deny:
+**After `./redaction.sh`** — two new events in Sessions:
 
-```bash
-kubectl exec -n team1 $POD -c agent -- python3 -c "
-import urllib.request, json, urllib.error
-body = json.dumps({'jsonrpc':'2.0','id':1,'method':'tools/call','params':{'name':'get_weather','arguments':{'city':'NYC'}}}).encode()
-req = urllib.request.Request('http://weather-tool-mcp.team1.svc.cluster.local:8000/mcp', data=body, headers={'Content-Type':'application/json','Accept':'application/json, text/event-stream'})
-try: print(urllib.request.urlopen(req, timeout=10).read()[:200].decode())
-except urllib.error.HTTPError as e: print('HTTP', e.code, e.read()[:200].decode())
-"
-# Expected: HTTP 403 {"error":"policy.forbidden","plugin":"cpex-runtime"}
-```
+1. **Outbound `request`** event, host `host.docker.internal:11434`.
+   - Pipeline pane rows:
+     ```
+     token-exchange     skip      no_matching_route
+     inference-parser   observe   matched_llama3.2:3b-instruct-fp16
+     cpex-runtime       modify    body_rewritten          ← redaction fired
+     ```
+   - Drill into the `cpex-runtime / modify` row. Detail pane shows:
+     - `plugins.body-mutation`: `length_before`, `length_after`, and
+       `sha256_before` / `sha256_after` — wire-level proof the bytes
+       changed.
+     - `plugins.cpex-runtime`: a `rewrites` array with the actual
+       before/after text:
+       ```
+       before: "please email alice@corp.com the weather forecast"
+       after:  "please email [REDACTED:email] the weather forecast"
+       ```
+     This is the projector moment — audience reads
+     `alice@corp.com → [REDACTED:email]` directly.
 
-Inspect the session API to confirm each path's Invocation chain:
+2. **Outbound `response`** event, status `200`, from Ollama. Confirms
+   the redacted body was accepted upstream.
+
+**After `./deny.sh`** — one new event, phase `denied`:
+
+   - Host: `weather-tool-mcp.team1.svc.cluster.local:8000`
+   - Status: `403`
+   - Pipeline pane rows:
+     ```
+     token-exchange     skip      no_matching_route
+     mcp-parser         observe   matched_tools/call
+     cpex-runtime       deny      missing required scope  ← scope-gate fired
+     ```
+   - Drill into the `cpex-runtime / deny` row. Detail pane shows the
+     violation: code `policy.forbidden`, `tool: get_weather`,
+     `required_scope: weather:read`.
+   - HTTP response back to the caller:
+     `{"error":"policy.forbidden","plugin":"cpex-runtime"}`.
+
+#### About the inference field
+
+A subtle thing the audience may ask: the `inference.messages[0].content`
+on the modify event still shows the **original** prompt (with the email)
+— not the redacted version. That's because `inference-parser` runs
+**before** `cpex-runtime` in the chain; it snapshots the parsed prompt
+at parse time, and `cpex-runtime` doesn't re-run the parser after
+mutation. The `plugins.cpex-runtime.rewrites` and the body-mutation
+sha256s are the authoritative records of what actually went out on the
+wire.
+
+Framing for the audience: *"We capture user intent in `inference`. We
+prove the data egressing the trust boundary differs from intent via
+`body-mutation` (hashes) and `cpex-runtime.rewrites` (the diff). Full
+audit trail of both sides."*
+
+#### Quick verify without abctl
+
+If abctl isn't running and you just want to confirm the chain fired:
 
 ```bash
 curl -s http://localhost:9094/v1/sessions/default \
@@ -535,37 +583,19 @@ for e in out[-4:]:
         print(' ', inv['plugin'], inv['action'], inv.get('reason',''))"
 ```
 
-**Through the Kagenti UI** (the demo path): type a chat message
-containing PII like `What's the weather in NYC? My email is alice@corp.com` —
-the LangGraph agent will make both an LLM call (redactor fires) and an
-MCP `tools/call` (scope-gate fires). Both surface in abctl's Pipeline
-pane in real-time.
+#### Through the Kagenti UI (the actual demo path)
 
-Expected on an LLM call with no PII (e.g. "hi"):
-```
-token-exchange     skip       no_matching_route
-inference-parser   observe    matched_<model>
-cpex-runtime       allow      ok
-```
+Type a chat message containing PII into the agent at
+`http://kagenti-ui.localtest.me:8080/agents/team1/weather-service`. Something
+like `What's the weather in NYC? My email is alice@corp.com`.
 
-Expected on an LLM call containing PII (e.g. `email alice@corp.com`):
-```
-token-exchange     skip       no_matching_route
-inference-parser   observe    matched_<model>
-cpex-runtime       modify     body_rewritten          ← redaction fired
-```
+The LangGraph agent will:
+1. Call the LLM to plan a reply → `cpex-runtime modify` fires on the LLM
+   hook (PII redacted).
+2. Call `get_weather` via MCP → `cpex-runtime deny` fires on the tool
+   hook (scope-gate denies; agent reports tool failure back to the user).
 
-The session event will also carry a `plugins.body-mutation` entry with
-`length_before` / `length_after` / sha256 fingerprints — abctl's Detail
-pane on the modify row shows the diff (`alice@corp.com → [REDACTED:email]`).
-
-Expected on an MCP `tools/call` when scope is missing:
-```
-token-exchange     skip       no_matching_route
-mcp-parser         observe    matched_tools/call
-cpex-runtime       deny       missing required scope  ← scope-gate fired
-```
-HTTP 403 with body `{"error":"policy.forbidden","plugin":"cpex-runtime"}`.
+Both Acts in one chat message. Watch abctl in real time alongside.
 
 ### Plugin behavior (as of 2026-05-16)
 

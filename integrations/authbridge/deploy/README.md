@@ -6,7 +6,7 @@ container image — a drop-in replacement for upstream's
 `cpex-runtime` plugin (and the Rust CPEX sub-plugins it loads).
 
 Prerequisites:
-- Kagenti baseline cluster already up (see `../../demo-quickstart.md`,
+- Kagenti baseline cluster already up (see `../demo-quickstart.md`,
   Phases 1–6). Weather agent must already be working with the upstream
   AuthBridge image.
 - Docker / Podman / Rancher Desktop able to build images.

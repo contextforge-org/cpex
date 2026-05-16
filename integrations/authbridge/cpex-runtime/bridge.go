@@ -235,8 +235,13 @@ func (r *CPEXRuntime) dispatchOnRequest(pctx *pipeline.Context) pipeline.Action 
 			pctx.Observe("modify_failed:" + err.Error())
 			return pipeline.Action{Type: pipeline.Continue}
 		}
-		// pctx.SetBody already recorded a modify Invocation; no need
-		// to record another.
+		// pctx.SetBody already recorded a modify Invocation and the
+		// body-mutation/event with sha256s. Add a plugin-public event
+		// carrying the before/after text so abctl's Detail pane shows
+		// the actual diff (alice@corp.com → [REDACTED:email]), not
+		// just a hash. Adds no privacy exposure over inference.messages
+		// already carried in the same session event.
+		emitRewriteEvent(pctx, payload, result.ModifiedPayload)
 		return pipeline.Action{Type: pipeline.Continue}
 	}
 
@@ -269,6 +274,50 @@ func messageTextChanged(before, after *cpex.MessagePayload) bool {
 		}
 	}
 	return false
+}
+
+// emitRewriteEvent surfaces the before/after Text content of every part
+// the plugin rewrote, in the session event under `plugins.cpex-runtime`.
+// abctl's Detail pane renders whatever JSON we put there — so the
+// audience sees the actual redacted strings (e.g. `alice@corp.com` →
+// `[REDACTED:email]`) instead of just the body-mutation sha256s.
+//
+// Only Text/Thinking parts are diffable; structured parts (tool_call,
+// resource, …) are passed through by the redactor unchanged and skipped
+// here. Empty rewrite list — meaning the plugin returned a modified
+// payload but no Text fields actually changed — emits no event so the
+// session timeline stays clean.
+func emitRewriteEvent(pctx *pipeline.Context, before, after *cpex.MessagePayload) {
+	if before == nil || after == nil {
+		return
+	}
+	bs, as := before.Message.Content, after.Message.Content
+	rewrites := make([]map[string]string, 0)
+	for i := range as {
+		if i >= len(bs) {
+			break
+		}
+		ct := as[i].ContentType
+		if ct != cpex.ContentTypeText && ct != cpex.ContentTypeThinking {
+			continue
+		}
+		if bs[i].Text == as[i].Text {
+			continue
+		}
+		rewrites = append(rewrites, map[string]string{
+			"before": bs[i].Text,
+			"after":  as[i].Text,
+		})
+	}
+	if len(rewrites) == 0 {
+		return
+	}
+	if pctx.Extensions.Custom == nil {
+		pctx.Extensions.Custom = map[string]any{}
+	}
+	pctx.Extensions.Custom[pluginName+pipeline.PluginEventSuffix] = map[string]any{
+		"rewrites": rewrites,
+	}
 }
 
 // dispatchOnResponse is the response-path entry point. For v0 the
