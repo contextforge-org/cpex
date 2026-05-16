@@ -12,6 +12,7 @@ members = [
     "crates/cpex-sdk",
     "crates/cpex-ffi",
     "examples/go-demo/ffi",
+    "integrations/authbridge/ffi",
 ]
 
 [workspace.package]
@@ -37,3 +38,4 @@ arc-swap = "1.7"
 wildmatch = "2"
 rmp-serde = "1"
 serde_bytes = "0.11"
+regex = "1"

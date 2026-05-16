@@ -1,0 +1,35 @@
+# Location: ./integrations/authbridge/ffi/Cargo.toml
+# Copyright 2025
+# SPDX-License-Identifier: Apache-2.0
+# Authors: Teryl Taylor
+#
+# kagenti-cpex-ffi — CPEX plugins shipped to AuthBridge.
+#
+# Builds a staticlib that includes cpex-ffi symbols transitively plus two
+# CPEX plugins designed for AuthBridge's MessagePayload contract:
+#   - scope-tool-gate     — denies tool calls when caller lacks required scope
+#   - llm-pii-redactor    — redacts emails/SSNs/etc. from LLM prompt bodies
+#
+# The Go-side cpex-runtime plugin (under integrations/authbridge/cpex-runtime/)
+# loads this library via cgo and registers the factories before LoadConfig.
+
+[package]
+name = "kagenti-cpex-ffi"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+authors = ["Teryl Taylor"]
+publish = false
+
+[lib]
+crate-type = ["staticlib", "cdylib"]
+
+[dependencies]
+cpex-core = { path = "../../../crates/cpex-core" }
+cpex-ffi = { path = "../../../crates/cpex-ffi" }
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+regex = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = "0.3"

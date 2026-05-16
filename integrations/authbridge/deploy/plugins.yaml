@@ -1,0 +1,55 @@
+# Sample AuthBridge `config.yaml` with cpex-runtime wired into the outbound
+# chain. Paste the contents of this file into the `data.config.yaml` field of
+# the `authbridge-runtime-config` ConfigMap in the agent's namespace (team1),
+# or merge the cpex-runtime entry into your existing pipeline config.
+#
+# This is a v0 demo config — the CPEX sub-plugins (scope-tool-gate and
+# llm-pii-redactor) are currently stubs that always allow; once the real
+# implementations land they will gate / redact based on their config below.
+
+mode: envoy-sidecar
+
+pipeline:
+  inbound:
+    plugins:
+      - name: jwt-validation
+        config:
+          issuer: "http://keycloak.localtest.me:8080/realms/kagenti"
+          keycloak_url: "http://keycloak-service.keycloak.svc:8080"
+          keycloak_realm: "kagenti"
+      - name: a2a-parser
+
+  outbound:
+    plugins:
+      - name: token-exchange
+        config:
+          keycloak_url: "http://keycloak-service.keycloak.svc:8080"
+          keycloak_realm: "kagenti"
+          default_policy: "passthrough"
+          identity:
+            type: "client-secret"
+      - name: mcp-parser
+      - name: inference-parser
+
+      # CPEX runtime — runs the configured CPEX plugin chain inside one
+      # AuthBridge plugin. Each chain entry surfaces in abctl as its own
+      # row in the Pipeline pane, attributed to the CPEX plugin name.
+      - name: cpex-runtime
+        config:
+          chain:
+            # PII redactor — scans the outbound LLM body for configured
+            # patterns and replaces matches with [REDACTED]. Stub in v0
+            # (always allows without modification).
+            - name: llm-pii-redactor
+              config:
+                patterns:
+                  email: '\b[\w.+-]+@[\w-]+\.[\w.-]+\b'
+                  ssn: '\b\d{3}-\d{2}-\d{4}\b'
+
+            # Scope-based tool gate — denies a tool call when the caller's
+            # JWT scopes don't include the scope configured for the tool.
+            # Stub in v0 (always allows).
+            - name: scope-tool-gate
+              config:
+                tool_scopes:
+                  get_weather: weather:read
