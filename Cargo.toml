@@ -11,6 +11,8 @@ members = [
     "crates/cpex-core",
     "crates/cpex-sdk",
     "crates/cpex-ffi",
+    "crates/apl-core",
+    "crates/apl-cmf",
     "examples/go-demo/ffi",
 ]
 
@@ -37,3 +39,5 @@ arc-swap = "1.7"
 wildmatch = "2"
 rmp-serde = "1"
 serde_bytes = "0.11"
+chrono = { version = "0.4", features = ["serde"] }
+regex = "1"
