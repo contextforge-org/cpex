@@ -35,7 +35,7 @@ use apl_core::{
     PdpError, PdpResolver, RoutePayload,
 };
 
-use apl_cpex::CmfPluginInvoker;
+use apl_cpex::{CmfPluginInvoker, DispatchCache};
 
 // ---------------------------------------------------------------------
 // Stub PDP — apl-core requires `&dyn PdpResolver`, but no scenario in
@@ -201,13 +201,10 @@ routes:
     let mgr = manager_with("scope-gate", Box::new(AllowPluginFactory)).await;
     let cfg = compile_config(YAML).expect("compile_config");
     let route = cfg.routes.get("get_weather").expect("route present");
-    let invoker = CmfPluginInvoker::for_request(
-        mgr,
-        Extensions::default(),
-        cmf_payload(),
-        Arc::new(cfg.plugins.clone()),
-    )
-    .with_route_overrides(route.plugin_overrides.clone());
+    let cache = DispatchCache::new();
+    let plan = cache.get_or_build(route, &cfg.plugins, &mgr);
+    let invoker =
+        CmfPluginInvoker::for_request(mgr, Extensions::default(), cmf_payload(), plan);
 
     let bag = AttributeBag::new();
     let mut payload = empty_payload();
@@ -239,13 +236,10 @@ routes:
     let mgr = manager_with("scope-gate", Box::new(DenyPluginFactory)).await;
     let cfg = compile_config(YAML).expect("compile_config");
     let route = cfg.routes.get("get_weather").expect("route present");
-    let invoker = CmfPluginInvoker::for_request(
-        mgr,
-        Extensions::default(),
-        cmf_payload(),
-        Arc::new(cfg.plugins.clone()),
-    )
-    .with_route_overrides(route.plugin_overrides.clone());
+    let cache = DispatchCache::new();
+    let plan = cache.get_or_build(route, &cfg.plugins, &mgr);
+    let invoker =
+        CmfPluginInvoker::for_request(mgr, Extensions::default(), cmf_payload(), plan);
 
     let bag = AttributeBag::new();
     let mut payload = empty_payload();

@@ -32,5 +32,7 @@
 // "list-with-matchers" deferred item.
 
 pub mod cmf_invoker;
+pub mod dispatch_plan;
 
 pub use cmf_invoker::CmfPluginInvoker;
+pub use dispatch_plan::{DispatchCache, RouteDispatchPlan, RoutePluginEntry};

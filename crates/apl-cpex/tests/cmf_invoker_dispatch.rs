@@ -21,38 +21,31 @@ use cpex_core::cmf::{CmfHook, ContentPart, Message, MessagePayload};
 use cpex_core::cmf::enums::Role;
 use cpex_core::context::PluginContext;
 use cpex_core::error::{PluginError as CoreError, PluginViolation};
+use cpex_core::extensions::{SecurityExtension, SubjectExtension};
 use cpex_core::factory::{PluginFactory, PluginInstance};
 use cpex_core::hooks::adapter::TypedHandlerAdapter;
 use cpex_core::hooks::payload::Extensions;
 use cpex_core::hooks::trait_def::{HookHandler, PluginResult};
 use cpex_core::manager::PluginManager;
 use cpex_core::plugin::{Plugin, PluginConfig};
+use cpex_core::registry::{HookEntry, PluginRef};
 
 use apl_core::attributes::AttributeBag;
 use apl_core::evaluator::Decision;
-use apl_core::plugin_decl::{PluginDeclaration, PluginRegistry};
 use apl_core::step::{PluginInvocation, PluginInvoker};
 
-use apl_cpex::CmfPluginInvoker;
+use apl_cpex::{CmfPluginInvoker, RouteDispatchPlan};
 
-/// Build a one-plugin APL registry — declares which CPEX hook the plugin
-/// implements. The invoker reads this on dispatch instead of using the
-/// pre-registry hardcoded defaults.
-fn registry_with(plugin_name: &str, kind: &str, hook: &str) -> Arc<PluginRegistry> {
-    let mut reg = PluginRegistry::new();
-    reg.insert(
-        plugin_name.to_string(),
-        PluginDeclaration {
-            name: plugin_name.to_string(),
-            kind: kind.to_string(),
-            hooks: vec![hook.to_string()],
-            capabilities: Vec::new(),
-            config: None,
-            on_error: None,
-            extra: std::collections::HashMap::new(),
-        },
-    );
-    Arc::new(reg)
+/// Build a single-plugin RouteDispatchPlan straight off the cpex-core
+/// registry — no APL CompiledRoute involved. Used by the invoker-primitive
+/// tests below to exercise the plan-based dispatch path without standing
+/// up a full route.
+fn plan_for(manager: &cpex_core::manager::PluginManager, plugin_name: &str) -> Arc<RouteDispatchPlan> {
+    let entry = RouteDispatchPlan::resolve_plugin(manager, plugin_name)
+        .expect("plugin must be registered with the manager");
+    let mut plugins = std::collections::HashMap::new();
+    plugins.insert(plugin_name.to_string(), entry);
+    Arc::new(RouteDispatchPlan { plugins })
 }
 
 // ---------------------------------------------------------------------
@@ -231,11 +224,12 @@ async fn build_manager(
 #[tokio::test]
 async fn step_invocation_allow_returns_decision_allow() {
     let mgr = build_manager("allow-plugin", Box::new(AllowPluginFactory)).await;
+    let plan = plan_for(&mgr, "allow-plugin");
     let invoker = CmfPluginInvoker::for_request(
         mgr,
         Extensions::default(),
         payload_with_text("hello"),
-        registry_with("allow-plugin", "allow-plugin", "cmf.tool_pre_invoke"),
+        plan,
     );
 
     let outcome = invoker
@@ -250,11 +244,12 @@ async fn step_invocation_allow_returns_decision_allow() {
 #[tokio::test]
 async fn step_invocation_deny_surfaces_violation_reason_and_code() {
     let mgr = build_manager("deny-plugin", Box::new(DenyPluginFactory)).await;
+    let plan = plan_for(&mgr, "deny-plugin");
     let invoker = CmfPluginInvoker::for_request(
         mgr,
         Extensions::default(),
         payload_with_text("hello"),
-        registry_with("deny-plugin", "deny-plugin", "cmf.tool_pre_invoke"),
+        plan,
     );
 
     let outcome = invoker
@@ -274,11 +269,12 @@ async fn step_invocation_deny_surfaces_violation_reason_and_code() {
 #[tokio::test]
 async fn field_invocation_modify_surfaces_modified_value_and_persists_payload() {
     let mgr = build_manager("modify-plugin", Box::new(ModifyPluginFactory)).await;
+    let plan = plan_for(&mgr, "modify-plugin");
     let invoker = CmfPluginInvoker::for_request(
         mgr,
         Extensions::default(),
         payload_with_text("hello"),
-        registry_with("modify-plugin", "modify-plugin", "cmf.field_redact"),
+        plan,
     );
 
     let bag = empty_bag();
@@ -325,11 +321,12 @@ async fn field_invocation_modify_surfaces_modified_value_and_persists_payload() 
 #[tokio::test]
 async fn current_payload_reflects_accumulated_mutations() {
     let mgr = build_manager("modify-plugin", Box::new(ModifyPluginFactory)).await;
+    let plan = plan_for(&mgr, "modify-plugin");
     let invoker = CmfPluginInvoker::for_request(
         mgr,
         Extensions::default(),
         payload_with_text("hello"),
-        registry_with("modify-plugin", "modify-plugin", "cmf.field_redact"),
+        plan,
     );
 
     let bag = empty_bag();
@@ -350,5 +347,190 @@ async fn current_payload_reflects_accumulated_mutations() {
     assert_eq!(
         final_payload.message.get_text_content(),
         "hello [MODIFIED]"
+    );
+}
+
+// ---------------------------------------------------------------------
+// Capability gating — APL route override of `capabilities:` materializes
+// a derived PluginRef wrapping the same plugin Arc with a merged
+// TrustedConfig. cpex-core's executor then enforces the narrower caps
+// in its single per-entry `filter_extensions` pass — no double filter,
+// no second clone of security. The base plugin's circuit breaker stays
+// isolated per `feedback_override_isolation.md`.
+// ---------------------------------------------------------------------
+
+/// Capture-plugin fixture — records the Extensions it actually receives
+/// from the executor so the test can assert what survived filtering.
+struct CapturePlugin {
+    cfg: PluginConfig,
+    captured: Arc<tokio::sync::Mutex<Option<Extensions>>>,
+}
+
+#[async_trait]
+impl Plugin for CapturePlugin {
+    fn config(&self) -> &PluginConfig {
+        &self.cfg
+    }
+}
+
+impl HookHandler<CmfHook> for CapturePlugin {
+    async fn handle(
+        &self,
+        _payload: &MessagePayload,
+        extensions: &Extensions,
+        _ctx: &mut PluginContext,
+    ) -> PluginResult<MessagePayload> {
+        *self.captured.lock().await = Some(extensions.clone());
+        PluginResult::allow()
+    }
+}
+
+struct CapturePluginFactory {
+    slot: Arc<tokio::sync::Mutex<Option<Extensions>>>,
+}
+
+impl PluginFactory for CapturePluginFactory {
+    fn create(&self, config: &PluginConfig) -> Result<PluginInstance, Box<CoreError>> {
+        let plugin = Arc::new(CapturePlugin {
+            cfg: config.clone(),
+            captured: self.slot.clone(),
+        });
+        Ok(PluginInstance {
+            plugin: plugin.clone(),
+            handlers: vec![(
+                "cmf.tool_pre_invoke",
+                Arc::new(TypedHandlerAdapter::<CmfHook, _>::new(plugin)),
+            )],
+        })
+    }
+}
+
+/// Build a manager whose registered plugin holds the given capability
+/// set (wide caps in this test — the override is supposed to narrow
+/// what these caps would have allowed).
+async fn build_manager_with_caps(
+    factory_kind: &str,
+    factory: Box<dyn PluginFactory>,
+    cpex_caps: &[&str],
+) -> Arc<PluginManager> {
+    let mgr = PluginManager::default();
+    mgr.register_factory(factory_kind, factory);
+    let caps_yaml = if cpex_caps.is_empty() {
+        String::new()
+    } else {
+        format!("    capabilities: [{}]\n", cpex_caps.join(", "))
+    };
+    let yaml = format!(
+        "plugins:\n  - name: {0}\n    kind: {0}\n{1}",
+        factory_kind, caps_yaml,
+    );
+    let cfg = cpex_core::config::parse_config(&yaml).expect("parse_config");
+    mgr.load_config(cfg).expect("load_config");
+    mgr.initialize().await.expect("initialize");
+    Arc::new(mgr)
+}
+
+fn extensions_with_subject_and_labels() -> Extensions {
+    let mut security = SecurityExtension::default();
+    security.add_label("PII");
+    security.subject = Some(SubjectExtension {
+        id: Some("alice".into()),
+        ..Default::default()
+    });
+    Extensions {
+        security: Some(Arc::new(security)),
+        ..Default::default()
+    }
+}
+
+/// Build a RoutePluginEntry that wraps the base plugin's handler with a
+/// derived PluginRef carrying narrower caps — same plugin Arc, fresh
+/// circuit breaker, smaller cap set. Mirrors what
+/// `RouteDispatchPlan::build` does when APL declares a route-level
+/// `plugins.<name>.capabilities:` override.
+fn plan_with_narrowed_caps(
+    manager: &PluginManager,
+    plugin_name: &str,
+    narrowed_caps: &[&str],
+) -> Arc<apl_cpex::RouteDispatchPlan> {
+    let base = manager
+        .find_plugin_entries(plugin_name)
+        .into_iter()
+        .next()
+        .expect("plugin registered");
+    let (_hook_name, base_entry) = base;
+    let mut merged = base_entry.plugin_ref.trusted_config().clone();
+    merged.capabilities = narrowed_caps.iter().map(|s| s.to_string()).collect();
+    let override_ref = Arc::new(PluginRef::new(
+        Arc::clone(base_entry.plugin_ref.plugin()),
+        merged,
+    ));
+    let entry = HookEntry {
+        plugin_ref: override_ref,
+        handler: Arc::clone(&base_entry.handler),
+    };
+    let mut plugins = std::collections::HashMap::new();
+    plugins.insert(
+        plugin_name.to_string(),
+        apl_cpex::RoutePluginEntry {
+            plugin_name: plugin_name.to_string(),
+            step_entry: Some(entry),
+            field_entry: None,
+        },
+    );
+    Arc::new(apl_cpex::RouteDispatchPlan { plugins })
+}
+
+#[tokio::test]
+async fn route_override_caps_narrow_what_plugin_sees() {
+    // cpex-core registers the plugin with WIDE caps: read_subject AND
+    // read_labels. Without an override, the plugin would see both.
+    let captured = Arc::new(tokio::sync::Mutex::new(None));
+    let factory = CapturePluginFactory {
+        slot: captured.clone(),
+    };
+    let mgr = build_manager_with_caps(
+        "capture-plugin",
+        Box::new(factory),
+        &["read_subject", "read_labels"],
+    )
+    .await;
+
+    // APL route override narrows to ONLY read_subject — labels should
+    // be stripped despite cpex-core having registered them.
+    let plan = plan_with_narrowed_caps(&mgr, "capture-plugin", &["read_subject"]);
+
+    let invoker = CmfPluginInvoker::for_request(
+        mgr,
+        extensions_with_subject_and_labels(),
+        payload_with_text("hello"),
+        plan,
+    );
+
+    let outcome = invoker
+        .invoke("capture-plugin", &empty_bag(), PluginInvocation::Step)
+        .await
+        .expect("invoke");
+    assert_eq!(outcome.decision, Decision::Allow);
+
+    let captured = captured.lock().await.clone().expect("handler ran");
+    let security = captured.security.expect("security extension present");
+
+    // read_subject is in the narrowed set → subject still visible.
+    assert!(
+        security.subject.is_some(),
+        "route override declared read_subject; plugin should see subject"
+    );
+    assert_eq!(
+        security.subject.as_ref().unwrap().id.as_deref(),
+        Some("alice")
+    );
+
+    // read_labels is NOT in the narrowed set → labels stripped, even
+    // though cpex-core's registration would have allowed them through.
+    assert!(
+        security.labels.is_empty(),
+        "route override dropped read_labels; labels should be empty (got {:?})",
+        security.labels,
     );
 }

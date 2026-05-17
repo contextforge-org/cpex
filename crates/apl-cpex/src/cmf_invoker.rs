@@ -4,48 +4,40 @@
 // Authors: Teryl Taylor
 //
 // `CmfPluginInvoker` — `apl-core::PluginInvoker` impl bound to the CMF
-// hook family. Every internal dispatch goes through
-// `PluginManager::invoke_named::<CmfHook>(...)`, which compiler-enforces
-// that the payload is `MessagePayload` and the result is
-// `PluginResult<MessagePayload>`. A future PR that changes the CMF
-// payload contract won't compile until this file is updated — that's
-// the whole point.
+// hook family. Drives dispatch off a pre-resolved [`RouteDispatchPlan`]
+// (from [`DispatchCache`]) and forwards entries to
+// `PluginManager::invoke_entries::<CmfHook>(...)`, which runs the full
+// executor pipeline (sequential / transform / audit / concurrent /
+// fire-and-forget; on_error / timeouts / mode / write tokens all
+// honored). Compile-time payload type safety is provided by the
+// `CmfHook: HookTypeDef` bound on `invoke_entries`.
 //
-// # Hook resolution
+// # Why pre-resolved entries instead of `invoke_named`?
 //
-// The hook name to dispatch is no longer hardcoded — it's looked up
-// per-plugin from the APL `PluginRegistry` that was parsed out of the
-// config's root `plugins:` block. For each `invoke(name, ...)`:
-//   1. `EffectivePlugin::resolve(name, registry, route_overrides)`
-//      merges the global plugin declaration with any per-route override
-//      block. Hooks are NOT route-overridable per spec, so this step
-//      mostly matters for `config` / `capabilities` / `on_error` (those
-//      aren't yet propagated to dispatch — deferred items).
-//   2. The first entry in the plugin's `hooks:` list is used as the
-//      CPEX hook name. v0 plugins are expected to declare one hook;
-//      multi-hook plugins will need an invocation-context-based picker
-//      (Step vs Field vs pipe-chain), tracked separately.
-//   3. If the plugin isn't in the registry, or has no hooks declared,
-//      the invoker returns `PluginError` — strict by design so config
-//      drift fails fast rather than silently dispatching to the wrong
-//      hook.
+// `invoke_named(hook_name, ...)` resolves a fresh lineup per call via
+// hook lookup + cpex-core's condition/entity routing. APL's `routes:`
+// is already the authoritative plugin lineup, so re-resolving wastes
+// work and lets cpex-core's parallel routing model overrule APL. The
+// plan-based path caches the resolution per `(route_key, generation)`
+// — first invocation builds, subsequent invocations reuse — and
+// surfaces hook context (step vs field) via pre-classified entries.
 //
 // # Lifetime model
 //
-// One invoker instance per request. The host (e.g. AuthBridge's
-// `cpex-runtime`, or a Rust analogue) pre-builds the `MessagePayload`
-// once from its raw inputs, hands it in via [`for_request`], and the
-// invoker carries it through every plugin dispatch on the request.
-// Mutations from plugins (e.g. PII redaction) are persisted in the
-// shared payload so the next plugin in the chain sees the rewritten
-// version. After route evaluation, the host calls [`current_payload`]
-// to extract the final bytes for body re-serialization.
+// One invoker instance per request. The host pre-builds the
+// `MessagePayload` once from raw inputs, hands it in via
+// [`for_request`], and the invoker carries it through every plugin
+// dispatch on the request. Mutations from plugins (e.g. PII redaction)
+// are persisted in the shared payload so the next plugin in the chain
+// sees the rewritten version. After route evaluation, the host calls
+// [`current_payload`] to extract the final bytes for body
+// re-serialization.
 //
-// Background tasks returned by `invoke_named` are dropped for v0; when
-// we add audit/fire-and-forget plugin support we'll thread a
-// `BackgroundTasks` aggregator into the invoker.
+// Background tasks returned by `invoke_entries` are dropped for v0;
+// when audit/fire-and-forget plugin support is wired into APL's
+// lifecycle, we'll thread a `BackgroundTasks` aggregator through the
+// invoker.
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -57,8 +49,9 @@ use cpex_core::manager::PluginManager;
 
 use apl_core::attributes::AttributeBag;
 use apl_core::evaluator::Decision;
-use apl_core::plugin_decl::{EffectivePlugin, PluginOverride, PluginRegistry};
 use apl_core::step::{PluginError, PluginInvocation, PluginInvoker, PluginOutcome};
+
+use crate::dispatch_plan::RouteDispatchPlan;
 
 /// Bridges APL plugin dispatch to CMF-family CPEX hooks.
 ///
@@ -69,46 +62,31 @@ pub struct CmfPluginInvoker {
     manager: Arc<PluginManager>,
     extensions: Extensions,
     /// `tokio::sync::Mutex` (not `std::sync::Mutex`) because the lock is
-    /// held across await points (the manager's invoke is async, and we
-    /// want to prevent two concurrent invocations from racing to update
-    /// the same payload).
+    /// held across `await` points — the manager's invoke is async, and
+    /// we don't want two concurrent invocations racing on the payload.
     payload: Arc<Mutex<MessagePayload>>,
-    /// Global plugin declarations from the APL config's root `plugins:`
-    /// block. Shared across requests via `Arc` — registry is immutable
-    /// after `compile_config`.
-    plugins: Arc<PluginRegistry>,
-    /// Per-route override block. Cloned in from `CompiledRoute.plugin_overrides`
-    /// at request start. Empty in tests that exercise the invoker directly
-    /// (no route involved).
-    plugin_overrides: HashMap<String, PluginOverride>,
+    /// Pre-resolved per-route plugin lineup. Built (or fetched from a
+    /// shared `DispatchCache`) at request start by the host; the
+    /// invoker just reads from it. Shared via `Arc` because the same
+    /// plan can serve many requests targeting the same route.
+    plan: Arc<RouteDispatchPlan>,
 }
 
 impl CmfPluginInvoker {
     /// Construct an invoker bound to one request's payload + extensions
-    /// and the parsed plugin registry.
+    /// and the pre-resolved dispatch plan for the request's route.
     pub fn for_request(
         manager: Arc<PluginManager>,
         extensions: Extensions,
         payload: MessagePayload,
-        plugins: Arc<PluginRegistry>,
+        plan: Arc<RouteDispatchPlan>,
     ) -> Self {
         Self {
             manager,
             extensions,
             payload: Arc::new(Mutex::new(payload)),
-            plugins,
-            plugin_overrides: HashMap::new(),
+            plan,
         }
-    }
-
-    /// Attach the per-route plugin override block. Called by the host
-    /// after picking the route but before driving `evaluate_route`.
-    pub fn with_route_overrides(
-        mut self,
-        overrides: HashMap<String, PluginOverride>,
-    ) -> Self {
-        self.plugin_overrides = overrides;
-        self
     }
 
     /// Snapshot the current payload. Call after route evaluation to
@@ -116,20 +94,6 @@ impl CmfPluginInvoker {
     /// re-serialization.
     pub async fn current_payload(&self) -> MessagePayload {
         self.payload.lock().await.clone()
-    }
-
-    /// Resolve a plugin name to its CPEX hook name via the registry +
-    /// per-route overrides. v0 picks the first hook in the plugin's
-    /// declaration; future iterations will select per invocation context.
-    fn resolve_hook(&self, plugin_name: &str) -> Result<String, PluginError> {
-        let eff = EffectivePlugin::resolve(plugin_name, &self.plugins, &self.plugin_overrides)
-            .ok_or_else(|| PluginError::NotFound(plugin_name.to_string()))?;
-        let hook = eff.hooks.first().ok_or_else(|| {
-            PluginError::Dispatch(format!(
-                "plugin '{plugin_name}' declares no `hooks:` — apl-cpex needs at least one"
-            ))
-        })?;
-        Ok(hook.clone())
     }
 }
 
@@ -141,16 +105,43 @@ impl PluginInvoker for CmfPluginInvoker {
         _bag: &AttributeBag,
         invocation: PluginInvocation<'_>,
     ) -> Result<PluginOutcome, PluginError> {
-        let hook_name = self.resolve_hook(plugin_name)?;
+        let resolved = self
+            .plan
+            .get(plugin_name)
+            .ok_or_else(|| PluginError::NotFound(plugin_name.to_string()))?;
 
-        // Snapshot the current payload — `invoke_named` consumes its
+        // Pick the entry for this invocation context. None means the
+        // plugin doesn't declare any hook of the appropriate kind for
+        // this route — surface as Dispatch error so config drift fails
+        // fast rather than silently no-op'ing.
+        let entry = match invocation {
+            PluginInvocation::Step => resolved.step_entry.as_ref().ok_or_else(|| {
+                PluginError::Dispatch(format!(
+                    "plugin '{plugin_name}' has no step-context hook \
+                     (policy / post_policy invocation)"
+                ))
+            })?,
+            PluginInvocation::Field { .. } => resolved.field_entry.as_ref().ok_or_else(|| {
+                PluginError::Dispatch(format!(
+                    "plugin '{plugin_name}' has no field-context hook \
+                     (args / result pipeline invocation)"
+                ))
+            })?,
+        };
+
+        // Snapshot the current payload — `invoke_entries` consumes its
         // argument, so we hand it a clone and keep the canonical copy
         // in shared state for the next dispatch.
         let current = self.payload.lock().await.clone();
 
         let (result, _bg) = self
             .manager
-            .invoke_named::<CmfHook>(&hook_name, current, self.extensions.clone(), None)
+            .invoke_entries::<CmfHook>(
+                std::slice::from_ref(entry),
+                current,
+                self.extensions.clone(),
+                None,
+            )
             .await;
 
         // Map deny: violation reason → APL deny reason; plugin code →
@@ -194,7 +185,6 @@ impl PluginInvoker for CmfPluginInvoker {
                 None => {
                     tracing::warn!(
                         plugin = %plugin_name,
-                        hook = %hook_name,
                         "CmfPluginInvoker: modified_payload was not MessagePayload \
                          (downcast failed) — dropping the mutation"
                     );

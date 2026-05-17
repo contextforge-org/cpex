@@ -26,7 +26,7 @@
 
 use std::hash::{Hash, Hasher};
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 
 use hashbrown::HashMap;
@@ -204,6 +204,15 @@ pub struct PluginManager {
     /// can be `&self` and the manager itself can sit behind `Arc`.
     initialized: AtomicBool,
 
+    /// Monotonic config-generation counter. Bumped every time the runtime
+    /// snapshot is swapped (factory mutation, config (re)load, plugin
+    /// register/unregister). External orchestrators (apl-cpex's dispatch
+    /// plan cache) pair their cached values with the generation seen at
+    /// build time; a generation mismatch on lookup signals "evict + rebuild."
+    /// Starts at 0; first snapshot publish (empty registry) leaves it at 0,
+    /// so callers can use 0 as a "never observed" sentinel.
+    generation: AtomicU64,
+
     /// Tracks in-flight fire-and-forget background tasks across all
     /// invocations so `shutdown()` can wait for them to drain before
     /// returning. Without this, audit/telemetry tasks spawned by recent
@@ -320,6 +329,7 @@ impl PluginManager {
             cache_hasher,
             route_cache_full_warned: AtomicBool::new(false),
             initialized: AtomicBool::new(false),
+            generation: AtomicU64::new(0),
             task_tracker: tokio_util::task::TaskTracker::new(),
         }
     }
@@ -341,6 +351,10 @@ impl PluginManager {
         let mut next = (*current).clone();
         let result = f(&mut next);
         self.runtime.store(Arc::new(next));
+        // Release ordering pairs with the Acquire load in
+        // config_generation() — external cache consumers that observe a
+        // higher generation are guaranteed to see the new snapshot.
+        self.generation.fetch_add(1, Ordering::Release);
         result
     }
 
@@ -355,7 +369,21 @@ impl PluginManager {
         let mut next = (*current).clone();
         let result = f(&mut next)?;
         self.runtime.store(Arc::new(next));
+        // Same Release-ordered bump as mutate_runtime — only on Ok, since
+        // Err leaves the snapshot untouched.
+        self.generation.fetch_add(1, Ordering::Release);
         Ok(result)
+    }
+
+    /// Monotonic counter that increments on every runtime snapshot swap
+    /// (registry mutation, config (re)load). External orchestrators
+    /// (e.g. apl-cpex's dispatch-plan cache) pair their cached values
+    /// with the generation seen at build time; a mismatch on lookup
+    /// signals "evict + rebuild." `Acquire` pairs with the `Release`
+    /// fetch_add in `mutate_runtime` / `try_mutate_runtime` so observing
+    /// a higher generation guarantees visibility of the new snapshot.
+    pub fn config_generation(&self) -> u64 {
+        self.generation.load(Ordering::Acquire)
     }
 
     // -----------------------------------------------------------------------
@@ -435,6 +463,10 @@ impl PluginManager {
 
         self.runtime
             .store(Arc::new(snapshot_from_config(new_registry, cpex_config)));
+        // Same generation bump as mutate_runtime — load_config doesn't
+        // go through that helper because it has to swap registry + executor
+        // + cache-cap atomically as one snapshot.
+        self.generation.fetch_add(1, Ordering::Release);
 
         // Clear routing cache — config changed.
         self.clear_routing_cache();
@@ -887,6 +919,72 @@ impl PluginManager {
             .executor
             .execute(
                 &entries,
+                boxed,
+                extensions,
+                context_table,
+                &self.task_tracker,
+            )
+            .await
+    }
+
+    /// Find every (hook_name, HookEntry) pair belonging to the named
+    /// plugin. Returns an empty `Vec` if the plugin isn't registered.
+    ///
+    /// Used by external orchestrators (notably apl-cpex) that decide
+    /// the per-route plugin lineup themselves and need handler refs +
+    /// trusted_config to build pre-resolved dispatch plans. Cheaper than
+    /// going through `invoke_named` per request because the caller can
+    /// cache the resulting entries — pair the result with
+    /// [`config_generation`](Self::config_generation) to invalidate the
+    /// cache on snapshot swaps.
+    ///
+    /// Bypasses route/entity filtering — caller has already decided this
+    /// plugin should run. APL's `routes:` is itself the authoritative
+    /// lineup; cpex-core's condition-based routing is a parallel model
+    /// for non-APL hosts.
+    pub fn find_plugin_entries(
+        &self,
+        plugin_name: &str,
+    ) -> Vec<(String, crate::registry::HookEntry)> {
+        let snapshot = self.load_runtime();
+        snapshot.registry.entries_for_plugin(plugin_name)
+    }
+
+    /// Dispatch a caller-supplied slice of HookEntries through the
+    /// executor's full 5-phase pipeline (sequential, transform, audit,
+    /// concurrent, fire-and-forget). All on_error / timeout / mode /
+    /// write-token machinery applies.
+    ///
+    /// Bypasses hook-name lookup and route/entity filtering — caller has
+    /// already resolved the lineup (typically via
+    /// [`find_plugin_entries`](Self::find_plugin_entries) + a per-route
+    /// dispatch plan). The `H: HookTypeDef` parameter enforces payload
+    /// type at compile time; mismatched payloads fail to compile, same
+    /// as [`invoke_named`](Self::invoke_named).
+    ///
+    /// Returns `(PipelineResult, BackgroundTasks)` identical in shape to
+    /// `invoke_named` so callers can swap between the two paths without
+    /// rewriting downstream result handling.
+    pub async fn invoke_entries<H: HookTypeDef>(
+        &self,
+        entries: &[crate::registry::HookEntry],
+        payload: H::Payload,
+        extensions: Extensions,
+        context_table: Option<PluginContextTable>,
+    ) -> (PipelineResult, BackgroundTasks) {
+        if entries.is_empty() {
+            let boxed: Box<dyn PluginPayload> = Box::new(payload);
+            return (
+                PipelineResult::allowed_with(boxed, extensions, context_table.unwrap_or_default()),
+                BackgroundTasks::empty(),
+            );
+        }
+        let snapshot = self.load_runtime();
+        let boxed: Box<dyn PluginPayload> = Box::new(payload);
+        snapshot
+            .executor
+            .execute(
+                entries,
                 boxed,
                 extensions,
                 context_table,
