@@ -57,6 +57,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "apl-cpex"
+version = "0.1.0"
+dependencies = [
+ "apl-cmf",
+ "apl-core",
+ "async-trait",
+ "cpex-core",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "arc-swap"
 version = "1.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

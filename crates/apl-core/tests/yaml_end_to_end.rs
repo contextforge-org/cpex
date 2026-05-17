@@ -73,7 +73,7 @@ async fn alice_full_access_sees_unredacted_result_with_masked_id() {
     bag.set("perm.view_ssn", true);
     bag.set("delegation.depth", 1_i64);
 
-    let routes = compile_config(HR_ROUTE_YAML).expect("YAML compiles");
+    let routes = compile_config(HR_ROUTE_YAML).expect("YAML compiles").routes;
     let route = routes.get("get_employee").expect("route present");
 
     let mut payload = RoutePayload::with_result(
@@ -107,7 +107,7 @@ async fn mallory_no_perm_no_role_gets_both_fields_redacted() {
     bag.set("delegation.depth", 1_i64);
     // role.hr and perm.view_ssn are absent → IsTrue=false → !IsTrue=true → redact fires.
 
-    let routes = compile_config(HR_ROUTE_YAML).unwrap();
+    let routes = compile_config(HR_ROUTE_YAML).unwrap().routes;
     let route = routes.get("get_employee").unwrap();
 
     let mut payload = RoutePayload::with_result(
@@ -137,7 +137,7 @@ async fn deep_delegation_denies_at_policy() {
     bag.set("perm.view_ssn", true);
     bag.set("delegation.depth", 3_i64);
 
-    let routes = compile_config(HR_ROUTE_YAML).unwrap();
+    let routes = compile_config(HR_ROUTE_YAML).unwrap().routes;
     let route = routes.get("get_employee").unwrap();
 
     let mut payload = RoutePayload::with_result(
@@ -164,7 +164,7 @@ async fn unauthenticated_user_is_denied_before_args_mutate_result() {
     let bag = AttributeBag::new();
     bag.contains("authenticated"); // sanity: confirm we built an empty bag.
 
-    let routes = compile_config(HR_ROUTE_YAML).unwrap();
+    let routes = compile_config(HR_ROUTE_YAML).unwrap().routes;
     let route = routes.get("get_employee").unwrap();
 
     let mut payload = RoutePayload::with_result(
@@ -185,7 +185,7 @@ async fn args_validator_rejects_wrong_type() {
     bag.set("authenticated", true);
     bag.set("delegation.depth", 1_i64);
 
-    let routes = compile_config(HR_ROUTE_YAML).unwrap();
+    let routes = compile_config(HR_ROUTE_YAML).unwrap().routes;
     let route = routes.get("get_employee").unwrap();
 
     let mut payload = RoutePayload::with_result(
@@ -216,7 +216,7 @@ async fn inbound_only_evaluation_skips_result_phase() {
     bag.set("authenticated", true);
     bag.set("delegation.depth", 1_i64);
 
-    let routes = compile_config(HR_ROUTE_YAML).unwrap();
+    let routes = compile_config(HR_ROUTE_YAML).unwrap().routes;
     let route = routes.get("get_employee").unwrap();
 
     let mut payload = RoutePayload::new(json!({ "employee_id": "123-45-6789" }));
@@ -233,7 +233,7 @@ async fn inbound_only_evaluation_skips_result_phase() {
 #[test]
 fn compiled_route_phase_set_reflects_yaml_blocks() {
     use apl_core::Phase;
-    let routes = compile_config(HR_ROUTE_YAML).unwrap();
+    let routes = compile_config(HR_ROUTE_YAML).unwrap().routes;
     let route = routes.get("get_employee").unwrap();
     let phases = route.declared_phases();
     assert!(phases.contains(Phase::Args));

@@ -27,6 +27,7 @@ use serde::Deserialize;
 use thiserror::Error;
 
 use crate::pipeline::{FieldRule, Pipeline, ScanKind, Stage, TaintScope, TypeCheck};
+use crate::plugin_decl::{PluginDeclaration, PluginOverride, PluginRegistry};
 use crate::rules::{Action, CompareOp, CompiledRoute, Condition, Expression, Literal, Rule};
 use crate::step::{PdpCall, PdpDialect, Step};
 
@@ -1102,13 +1103,21 @@ fn parse_taint_scope(s: &str, src: &str) -> Result<TaintScope, ParseError> {
 
 /// Top-level config — only the bits step 5a understands.
 ///
-/// `policy_evaluator:`, `plugins:`, `imports:`, `global:`, `defaults:`,
-/// `tags:`, `plugin_dirs:`, `plugin_settings:`, `version:` are all
-/// accepted and stored opaquely; this struct deserializes leniently.
+/// `policy_evaluator:`, `imports:`, `global:`, `defaults:`, `tags:`,
+/// `plugin_dirs:`, `plugin_settings:`, `version:` are all accepted and
+/// stored opaquely; this struct deserializes leniently.
+///
+/// `plugins:` (the root block) is parsed into [`PluginDeclaration`]s so
+/// the runtime can look up hook names + capabilities per plugin without
+/// going back to the raw YAML.
 #[derive(Debug, Default, Deserialize)]
 pub struct ConfigYaml {
     #[serde(default)]
     pub routes: HashMap<String, RouteYaml>,
+
+    /// Root `plugins:` block — full declarations.
+    #[serde(default)]
+    pub plugins: Vec<PluginDeclaration>,
 
     /// Anything else top-level goes here — picked up by later steps.
     #[serde(flatten)]
@@ -1133,25 +1142,53 @@ pub struct RouteYaml {
     #[serde(default)]
     pub result: HashMap<String, String>,
 
-    /// Anything else on the route (meta, taint, plugins, when) — stashed.
+    /// Per-route plugin overrides — only the spec-overridable keys
+    /// (config / capabilities / on_error). Merged on top of the root
+    /// `plugins:` declaration at dispatch time.
+    #[serde(default)]
+    pub plugins: HashMap<String, PluginOverride>,
+
+    /// Anything else on the route (meta, taint, when) — stashed.
     #[serde(flatten)]
     pub other: HashMap<String, serde_yaml::Value>,
 }
 
-/// Compile a YAML config into a map of `route_key → CompiledRoute`.
+/// Output of [`compile_config`] — the routes that have APL blocks plus
+/// the registry of plugin declarations from the root `plugins:` block.
+///
+/// The two travel together because the evaluator needs both: the route
+/// gives it the steps to run, and the registry gives the dispatcher the
+/// hook name / kind for each plugin name referenced by those steps.
+#[derive(Debug, Default)]
+pub struct CompiledConfig {
+    pub routes: HashMap<String, CompiledRoute>,
+    pub plugins: PluginRegistry,
+}
+
+/// Compile a YAML config into a [`CompiledConfig`] (routes + plugin
+/// registry).
 ///
 /// Routes with no APL fields populated (no `policy:` / `post_policy:` /
-/// `args:` / `result:`) are **omitted from the output**, per apl-design §5
+/// `args:` / `result:`) are **omitted from `routes`**, per apl-design §5
 /// "Routes without APL blocks fall back to legacy plugin-chain execution."
-pub fn compile_config(yaml: &str) -> Result<HashMap<String, CompiledRoute>, ParseError> {
+/// A route-level `plugins:` override block alone is not enough — overrides
+/// only have meaning when the route actually dispatches plugins via APL
+/// steps, so an override-only route is treated as legacy.
+pub fn compile_config(yaml: &str) -> Result<CompiledConfig, ParseError> {
     let cfg: ConfigYaml = serde_yaml::from_str(yaml)?;
-    let mut out = HashMap::with_capacity(cfg.routes.len());
+    let mut routes = HashMap::with_capacity(cfg.routes.len());
     for (route_key, raw) in cfg.routes {
         if let Some(route) = compile_route(&route_key, raw)? {
-            out.insert(route_key, route);
+            routes.insert(route_key, route);
         }
     }
-    Ok(out)
+    let mut plugins = PluginRegistry::with_capacity(cfg.plugins.len());
+    for decl in cfg.plugins {
+        // Duplicate plugin names: last-one-wins for v0. The spec doesn't
+        // currently prescribe an error here; flag if real configs hit it.
+        plugins.insert(decl.name.clone(), decl);
+    }
+    Ok(CompiledConfig { routes, plugins })
 }
 
 fn compile_route(route_key: &str, raw: RouteYaml) -> Result<Option<CompiledRoute>, ParseError> {
@@ -1192,6 +1229,7 @@ fn compile_route(route_key: &str, raw: RouteYaml) -> Result<Option<CompiledRoute
             source: format!("{}.result.{}", route_key, field),
         });
     }
+    route.plugin_overrides = raw.plugins;
     Ok(Some(route))
 }
 
@@ -1521,7 +1559,7 @@ routes:
       - "require(role.hr | role.finance)"
       - "delegation.depth > 2 & include_ssn: deny"
 "#;
-        let routes = compile_config(yaml).unwrap();
+        let routes = compile_config(yaml).unwrap().routes;
         let route = routes.get("get_compensation").expect("route missing");
         assert_eq!(route.policy.len(), 3);
         assert!(route.declared_phases().contains(crate::rules::Phase::Policy));
@@ -1529,15 +1567,19 @@ routes:
 
     #[test]
     fn compile_omits_routes_without_apl_blocks() {
+        // A route with no APL blocks (no policy / post_policy / args /
+        // result) is a "legacy" route per apl-design §5 and must be
+        // omitted from the compiled output. Unknown route keys (e.g.
+        // legacy CPEX `priority`) are stashed in `other`, not errored.
         let yaml = r#"
 routes:
   legacy:
-    plugins: [rate_limiter, audit_logger]
+    priority: 50
   apl_route:
     policy:
       - "require(authenticated)"
 "#;
-        let routes = compile_config(yaml).unwrap();
+        let routes = compile_config(yaml).unwrap().routes;
         assert!(routes.contains_key("apl_route"));
         assert!(!routes.contains_key("legacy"), "legacy route should be omitted, not compiled");
     }
@@ -1550,6 +1592,7 @@ policy_evaluator:
   kind: apl
 plugins:
   - name: rate_limiter
+    kind: native
 imports:
   - "./shared.yaml"
 routes:
@@ -1557,7 +1600,7 @@ routes:
     policy:
       - "require(authenticated)"
 "#;
-        let routes = compile_config(yaml).unwrap();
+        let routes = compile_config(yaml).unwrap().routes;
         assert!(routes.contains_key("ping"));
     }
 
@@ -1586,7 +1629,7 @@ routes:
     policy:
       - "plugin(rate_limiter)"
 "#;
-        let routes = compile_config(yaml).unwrap();
+        let routes = compile_config(yaml).unwrap().routes;
         let route = routes.get("rate_limited").unwrap();
         assert_eq!(route.policy.len(), 1);
         match &route.policy[0] {
@@ -1603,7 +1646,7 @@ routes:
     policy:
       - "taint(audit, session)"
 "#;
-        let routes = compile_config(yaml).unwrap();
+        let routes = compile_config(yaml).unwrap().routes;
         let route = routes.get("audit_marked").unwrap();
         match &route.policy[0] {
             Step::Taint { label, scopes } => {
@@ -1629,7 +1672,7 @@ routes:
           on_allow:
             - "plugin(audit_logger)"
 "#;
-        let routes = compile_config(yaml).unwrap();
+        let routes = compile_config(yaml).unwrap().routes;
         let route = routes.get("authz_check").unwrap();
         match &route.policy[0] {
             Step::Pdp { call, on_deny, on_allow } => {
@@ -1658,7 +1701,7 @@ routes:
           on_deny:
             - deny
 "#;
-        let routes = compile_config(yaml).unwrap();
+        let routes = compile_config(yaml).unwrap().routes;
         let route = routes.get("opa_check").unwrap();
         match &route.policy[0] {
             Step::Pdp { call, on_deny, .. } => {
@@ -1680,7 +1723,7 @@ routes:
       - my_engine:
           on_deny: [deny]
 "#;
-        let routes = compile_config(yaml).unwrap();
+        let routes = compile_config(yaml).unwrap().routes;
         match &routes.get("custom_pdp").unwrap().policy[0] {
             Step::Pdp { call, .. } => {
                 assert_eq!(call.dialect, PdpDialect::Custom("my_engine".into()));
@@ -1701,7 +1744,7 @@ routes:
       - "require(role.hr | role.finance)"
       - "delegation.depth > 2: deny"
 "#;
-        let routes = compile_config(yaml).unwrap();
+        let routes = compile_config(yaml).unwrap().routes;
         let route = routes.get("get_compensation").unwrap();
 
         let pdp = NullPdpResolver;
@@ -1903,7 +1946,7 @@ routes:
       employee_id: "str | mask(4)"
       internal_notes: "omit"
 "#;
-        let routes = compile_config(yaml).unwrap();
+        let routes = compile_config(yaml).unwrap().routes;
         let route = routes.get("get_compensation").expect("missing route");
         assert_eq!(route.args.len(), 2);
         assert_eq!(route.result.len(), 3);
@@ -1930,7 +1973,7 @@ routes:
     args:
       employee_id: "uuid"
 "#;
-        let routes = compile_config(yaml).unwrap();
+        let routes = compile_config(yaml).unwrap().routes;
         assert!(routes.contains_key("validate_only"));
     }
 
@@ -1944,5 +1987,73 @@ routes:
 "#;
         let err = compile_config(yaml).unwrap_err();
         assert!(format!("{}", err).contains("unknown stage"));
+    }
+
+    // ----- plugins: block + route-level overrides -----
+
+    #[test]
+    fn compile_captures_root_plugins_block_into_registry() {
+        let yaml = r#"
+plugins:
+  - name: rate_limiter
+    kind: native
+    hooks: [tool_pre_invoke]
+    capabilities: [read_subject]
+    config:
+      max_requests: 100
+  - name: audit
+    kind: native
+    hooks: [tool_post_invoke]
+routes:
+  get_compensation:
+    policy:
+      - "plugin(rate_limiter)"
+"#;
+        let cfg = compile_config(yaml).unwrap();
+        assert_eq!(cfg.plugins.len(), 2);
+        let rl = cfg.plugins.get("rate_limiter").unwrap();
+        assert_eq!(rl.kind, "native");
+        assert_eq!(rl.hooks, vec!["tool_pre_invoke".to_string()]);
+        assert_eq!(rl.capabilities, vec!["read_subject".to_string()]);
+        // The route should still compile (uses plugin(rate_limiter)).
+        assert!(cfg.routes.contains_key("get_compensation"));
+    }
+
+    #[test]
+    fn compile_captures_route_level_plugin_overrides() {
+        let yaml = r#"
+plugins:
+  - name: rate_limiter
+    kind: native
+    hooks: [tool_pre_invoke]
+    config:
+      max_requests: 100
+routes:
+  hot_path:
+    policy:
+      - "plugin(rate_limiter)"
+    plugins:
+      rate_limiter:
+        config:
+          max_requests: 10
+        on_error: ignore
+"#;
+        let cfg = compile_config(yaml).unwrap();
+        let route = cfg.routes.get("hot_path").unwrap();
+        let ovr = route.plugin_overrides.get("rate_limiter").unwrap();
+        assert_eq!(ovr.on_error.as_deref(), Some("ignore"));
+        let cfg_yaml = ovr.config.as_ref().unwrap();
+        assert_eq!(cfg_yaml["max_requests"], serde_yaml::from_str::<serde_yaml::Value>("10").unwrap());
+
+        // Verify EffectivePlugin::resolve sees the override.
+        let eff = crate::plugin_decl::EffectivePlugin::resolve(
+            "rate_limiter",
+            &cfg.plugins,
+            &route.plugin_overrides,
+        )
+        .unwrap();
+        assert_eq!(eff.on_error, Some("ignore"));
+        // Hooks NOT overridable — still from the global declaration.
+        assert_eq!(eff.hooks, &["tool_pre_invoke".to_string()]);
     }
 }

@@ -1,0 +1,36 @@
+# Location: ./crates/apl-cpex/Cargo.toml
+# Copyright 2025
+# SPDX-License-Identifier: Apache-2.0
+# Authors: Teryl Taylor
+#
+# apl-cpex — the bridge between APL's evaluator (`apl-core`) and CPEX's
+# runtime (`cpex-core`). Provides per-hook-type implementations of
+# `apl-core::PluginInvoker` that translate APL plugin dispatch into typed
+# `cpex-core::PluginManager::invoke_named::<H>` calls.
+#
+# Design constraints inherited from `apl-core`:
+#   - `apl-core` has zero CPEX deps; cross-crate boundary lives here.
+#   - The PluginInvoker trait is string-typed; the typed boundary lives
+#     INSIDE each impl (one impl per HookTypeDef, e.g. CmfPluginInvoker
+#     for CMF, future DelegationPluginInvoker for delegation hooks).
+#   - Payload is built ONCE by the host and threaded through the invoker
+#     for the full request lifetime — never reconstructed from the bag.
+
+[package]
+name = "apl-cpex"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+apl-core = { path = "../apl-core" }
+apl-cmf = { path = "../apl-cmf" }
+cpex-core = { path = "../cpex-core" }
+async-trait = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+serde = { workspace = true }

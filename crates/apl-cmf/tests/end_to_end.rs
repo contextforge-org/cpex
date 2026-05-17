@@ -136,7 +136,7 @@ async fn alice_full_route_through_cmf_bridge() {
     assert_eq!(bag.get_bool("perm.view_ssn"), Some(true));
     assert_eq!(bag.get_int("delegation.depth"), Some(1));
 
-    let routes = compile_config(HR_ROUTE_YAML).unwrap();
+    let routes = compile_config(HR_ROUTE_YAML).unwrap().routes;
     let route = routes.get("get_employee").unwrap();
 
     let mut payload = RoutePayload::with_result(
@@ -164,7 +164,7 @@ async fn mallory_gets_both_fields_redacted_through_cmf_bridge() {
         .with_delegation(&shallow_delegation())
         .build();
 
-    let routes = compile_config(HR_ROUTE_YAML).unwrap();
+    let routes = compile_config(HR_ROUTE_YAML).unwrap().routes;
     let route = routes.get("get_employee").unwrap();
 
     let mut payload = RoutePayload::with_result(
@@ -194,7 +194,7 @@ async fn deep_delegation_denies_through_cmf_bridge() {
 
     assert_eq!(bag.get_int("delegation.depth"), Some(3));
 
-    let routes = compile_config(HR_ROUTE_YAML).unwrap();
+    let routes = compile_config(HR_ROUTE_YAML).unwrap().routes;
     let route = routes.get("get_employee").unwrap();
 
     let mut payload = RoutePayload::with_result(
@@ -219,7 +219,7 @@ routes:
     policy:
       - "args.include_ssn == true: deny"
 "#;
-    let routes = compile_config(yaml).unwrap();
+    let routes = compile_config(yaml).unwrap().routes;
     let route = routes.get("guarded_route").unwrap();
 
     let args = json!({ "include_ssn": true, "id": "abc" });
@@ -248,7 +248,7 @@ async fn anonymous_user_denied_at_authenticated_check() {
         .build();
     assert!(!bag.contains("authenticated"));
 
-    let routes = compile_config(HR_ROUTE_YAML).unwrap();
+    let routes = compile_config(HR_ROUTE_YAML).unwrap().routes;
     let route = routes.get("get_employee").unwrap();
 
     let mut payload = RoutePayload::with_result(

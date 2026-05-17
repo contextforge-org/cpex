@@ -17,6 +17,7 @@ pub mod attributes;
 pub mod evaluator;
 pub mod parser;
 pub mod pipeline;
+pub mod plugin_decl;
 pub mod route;
 pub mod rules;
 pub mod step;
@@ -26,9 +27,13 @@ pub use evaluator::{
     evaluate_pipeline, evaluate_rules, evaluate_steps, Decision, FieldOutcome, PipelineEvaluation,
 };
 pub use parser::{
-    compile_config, parse_pipeline, parse_predicate, parse_rule, ConfigYaml, ParseError, RouteYaml,
+    compile_config, parse_pipeline, parse_predicate, parse_rule, CompiledConfig, ConfigYaml,
+    ParseError, RouteYaml,
 };
 pub use pipeline::{FieldRule, Pipeline, ScanKind, Stage, TaintEvent, TaintScope, TypeCheck};
+pub use plugin_decl::{
+    CapsView, EffectivePlugin, PluginDeclaration, PluginOverride, PluginRegistry,
+};
 pub use route::{evaluate_route, RouteDecision, RoutePayload};
 pub use rules::{
     Action, CompareOp, CompiledRoute, Condition, Expression, Literal, Phase, PhaseSet, Rule,

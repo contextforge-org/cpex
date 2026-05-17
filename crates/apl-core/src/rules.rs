@@ -184,6 +184,13 @@ pub struct CompiledRoute {
     pub result: Vec<crate::pipeline::FieldRule>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub post_policy: Vec<crate::step::Step>,
+    /// Per-plugin overrides declared on this route's `plugins:` block.
+    /// Keyed by plugin name; merged at dispatch time via
+    /// `EffectivePlugin::resolve(name, registry, &this.plugin_overrides)`.
+    /// Per spec only `config`, `capabilities`, `on_error` are overridable;
+    /// hooks/kind/source always come from the global declaration.
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub plugin_overrides: std::collections::HashMap<String, crate::plugin_decl::PluginOverride>,
 }
 
 impl CompiledRoute {
