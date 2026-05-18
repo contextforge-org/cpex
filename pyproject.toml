@@ -40,7 +40,7 @@ dependencies = [
 cpex = "cpex.tools.cli:main"
 
 [project.urls]
-Repository = "https://github.com/contextforge-org/contextforge-plugins-framework"
+Repository = "https://github.com/contextforge-org/cpex"
 
 [project.optional-dependencies]
 

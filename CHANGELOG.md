@@ -51,5 +51,5 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/).
 
 - Initial release
 
-[Unreleased]: https://github.com/contextforge-org/contextforge-plugins-framework/compare/0.1.0...HEAD
-[0.1.0]: https://github.com/contextforge-org/contextforge-plugins-framework/releases/tag/0.1.0
+[Unreleased]: https://github.com/contextforge-org/cpex/compare/0.1.0...HEAD
+[0.1.0]: https://github.com/contextforge-org/cpex/releases/tag/0.1.0

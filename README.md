@@ -1,17 +1,17 @@
 <div>
-  <img alt="ContextForge Plugin Extensibility Framework (CPEX) logo" src="https://github.com/contextforge-org/contextforge-plugins-framework/blob/main/docs/images/cpex_v1.png?raw=true" height=100">
+  <img alt="ContextForge Plugin Extensibility Framework (CPEX) logo" src="https://github.com/contextforge-org/cpex/blob/main/docs/images/cpex_v1.png?raw=true" height=100">
 </div>
 
 # CPEX — ContextForge Plugin Extensibility Framework
 
 <i>A composable enforcement framework for AI agents and toolchains.</i>
 
-[![CI](https://github.com/contextforge-org/contextforge-plugins-framework/actions/workflows/ci.yml/badge.svg)](https://github.com/contextforge-org/contextforge-plugins-framework/actions/workflows/ci.yml)
+[![CI](https://github.com/contextforge-org/cpex/actions/workflows/ci.yml/badge.svg)](https://github.com/contextforge-org/cpex/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
 [![PyPI](https://img.shields.io/pypi/v/cpex.svg?color=blue)](https://pypi.org/project/cpex)
 
-> [**Read the project vision**](https://contextforge-org.github.io/contextforge-plugins-framework/docs/vision/) to learn why hooks, plugins, and policy are the path to agent security.
+> [**Read the project vision**](https://contextforge-org.github.io/cpex/docs/vision/) to learn why hooks, plugins, and policy are the path to agent security.
 
 ## What's CPEX?
 

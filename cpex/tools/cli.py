@@ -44,7 +44,7 @@ logger = logging.getLogger(__name__)
 # Configuration defaults
 # ---------------------------------------------------------------------------
 LOCAL_TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
-DEFAULT_TEMPLATE_URL = "https://github.com/contextforge-org/contextforge-plugins-framework.git"
+DEFAULT_TEMPLATE_URL = "https://github.com/contextforge-org/cpex.git"
 DEFAULT_AUTHOR_NAME = "<changeme>"
 DEFAULT_AUTHOR_EMAIL = "<changeme>"
 DEFAULT_PROJECT_DIR = Path("./.")
