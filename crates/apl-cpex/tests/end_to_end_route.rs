@@ -30,12 +30,13 @@ use cpex_core::hooks::trait_def::{HookHandler, PluginResult};
 use cpex_core::manager::PluginManager;
 use cpex_core::plugin::{Plugin, PluginConfig};
 
+use apl_core::pipeline::TaintScope;
 use apl_core::{
     compile_config, evaluate_route, AttributeBag, Decision, PdpCall, PdpDecision, PdpDialect,
     PdpError, PdpResolver, RoutePayload,
 };
 
-use apl_cpex::{CmfPluginInvoker, DispatchCache};
+use apl_cpex::{CmfPluginInvoker, DispatchCache, MemorySessionStore, SessionStore};
 
 // ---------------------------------------------------------------------
 // Stub PDP — apl-core requires `&dyn PdpResolver`, but no scenario in
@@ -202,9 +203,15 @@ routes:
     let cfg = compile_config(YAML).expect("compile_config");
     let route = cfg.routes.get("get_weather").expect("route present");
     let cache = DispatchCache::new();
-    let plan = cache.get_or_build(route, &cfg.plugins, &mgr);
-    let invoker =
-        CmfPluginInvoker::for_request(mgr, Extensions::default(), cmf_payload(), plan);
+    let plan = cache.get_or_build(route, &cfg.plugins, &mgr).await;
+    let invoker = CmfPluginInvoker::for_request(
+        mgr,
+        Extensions::default(),
+        cmf_payload(),
+        plan,
+        Arc::new(MemorySessionStore::new()),
+    )
+    .await;
 
     let bag = AttributeBag::new();
     let mut payload = empty_payload();
@@ -237,9 +244,15 @@ routes:
     let cfg = compile_config(YAML).expect("compile_config");
     let route = cfg.routes.get("get_weather").expect("route present");
     let cache = DispatchCache::new();
-    let plan = cache.get_or_build(route, &cfg.plugins, &mgr);
-    let invoker =
-        CmfPluginInvoker::for_request(mgr, Extensions::default(), cmf_payload(), plan);
+    let plan = cache.get_or_build(route, &cfg.plugins, &mgr).await;
+    let invoker = CmfPluginInvoker::for_request(
+        mgr,
+        Extensions::default(),
+        cmf_payload(),
+        plan,
+        Arc::new(MemorySessionStore::new()),
+    )
+    .await;
 
     let bag = AttributeBag::new();
     let mut payload = empty_payload();
@@ -261,4 +274,201 @@ routes:
         }
         other => panic!("expected Decision::Deny, got {:?}", other),
     }
+}
+
+// ---------------------------------------------------------------------
+// Taint extraction — plugin adds a security label via cow_copy +
+// modify_extensions; invoker diffs labels, surfaces the new ones as
+// TaintEvent in PluginOutcome.taints. evaluate_steps accumulates them
+// into RouteDecision.taints. SessionStore receives the new label via
+// persist_session.
+// ---------------------------------------------------------------------
+
+struct TaintingPlugin {
+    cfg: PluginConfig,
+}
+
+#[async_trait]
+impl Plugin for TaintingPlugin {
+    fn config(&self) -> &PluginConfig {
+        &self.cfg
+    }
+}
+
+impl HookHandler<CmfHook> for TaintingPlugin {
+    async fn handle(
+        &self,
+        _payload: &MessagePayload,
+        extensions: &Extensions,
+        _ctx: &mut PluginContext,
+    ) -> PluginResult<MessagePayload> {
+        // cow_copy gives an OwnedExtensions handle inheriting any write
+        // tokens the executor set up (append_labels grants the
+        // labels_write_token automatically because the registration
+        // declares the capability).
+        let mut owned = extensions.cow_copy();
+        let security = owned
+            .security
+            .get_or_insert_with(Default::default);
+        security.add_label("PII");
+        PluginResult::modify_extensions(owned)
+    }
+}
+
+struct TaintingPluginFactory;
+impl PluginFactory for TaintingPluginFactory {
+    fn create(&self, config: &PluginConfig) -> Result<PluginInstance, Box<CoreError>> {
+        let plugin = Arc::new(TaintingPlugin {
+            cfg: config.clone(),
+        });
+        Ok(PluginInstance {
+            plugin: plugin.clone(),
+            handlers: vec![(
+                "cmf.tool_pre_invoke",
+                Arc::new(TypedHandlerAdapter::<CmfHook, _>::new(plugin)),
+            )],
+        })
+    }
+}
+
+/// Build a manager whose registered plugin has `append_labels` capability,
+/// without which the executor would refuse the modified labels on the way
+/// out (label monotonicity is enforced under the write-token system).
+async fn tainting_manager() -> Arc<PluginManager> {
+    let mgr = PluginManager::default();
+    mgr.register_factory("tagger", Box::new(TaintingPluginFactory));
+    let yaml = "plugins:\n  - name: tagger\n    kind: tagger\n    capabilities: [append_labels, read_labels]\n";
+    let cfg = cpex_core::config::parse_config(yaml).expect("parse_config");
+    mgr.load_config(cfg).expect("load_config");
+    mgr.initialize().await.expect("initialize");
+    Arc::new(mgr)
+}
+
+#[tokio::test]
+async fn route_plugin_emitting_label_surfaces_taint_and_persists_to_session() {
+    const YAML: &str = r#"
+plugins:
+  - name: tagger
+    kind: tagger
+    hooks: [cmf.tool_pre_invoke]
+    capabilities: [append_labels, read_labels]
+routes:
+  classify:
+    policy:
+      - "plugin(tagger)"
+"#;
+
+    let mgr = tainting_manager().await;
+    let cfg = compile_config(YAML).expect("compile_config");
+    let route = cfg.routes.get("classify").expect("route present");
+    let cache = DispatchCache::new();
+    let plan = cache.get_or_build(route, &cfg.plugins, &mgr).await;
+
+    // Session ID comes from extensions.agent.session_id.
+    let mut agent = cpex_core::extensions::AgentExtension::default();
+    agent.session_id = Some("sess-taint-test".into());
+    let extensions = Extensions {
+        agent: Some(Arc::new(agent)),
+        ..Default::default()
+    };
+
+    let session_store = Arc::new(MemorySessionStore::new());
+    let invoker = CmfPluginInvoker::for_request(
+        mgr,
+        extensions,
+        cmf_payload(),
+        plan,
+        session_store.clone(),
+    )
+    .await;
+
+    let bag = AttributeBag::new();
+    let mut payload = empty_payload();
+    let decision =
+        evaluate_route(route, &bag, &mut payload, &AllowPdp, &invoker).await;
+
+    // Decision flows through allow (plugin's modify_extensions doesn't
+    // halt the pipeline).
+    assert_eq!(decision.decision, Decision::Allow);
+
+    // The label-emit traveled the full path:
+    //   plugin.handle → modify_extensions →
+    //   PipelineResult.modified_extensions →
+    //   CmfPluginInvoker.invoke (label diff) →
+    //   PluginOutcome.taints →
+    //   evaluate_steps_inner accumulator →
+    //   StepsEvaluation.taints →
+    //   evaluate_route → RouteDecision.taints
+    assert_eq!(decision.taints.len(), 1, "expected one taint event from tagger plugin");
+    let event = &decision.taints[0];
+    assert_eq!(event.label, "PII");
+    assert_eq!(event.scopes, vec![TaintScope::Session]);
+
+    // SessionStore persistence — host calls persist_session after route
+    // evaluation; new labels (vs the post-hydration snapshot) land in
+    // the store under the request's session_id.
+    invoker.persist_session().await;
+    let stored = session_store.load_labels("sess-taint-test").await;
+    assert_eq!(stored, vec!["PII".to_string()]);
+}
+
+#[tokio::test]
+async fn session_store_hydrates_labels_at_request_start() {
+    // Pre-seed the session store with a label, then verify the invoker
+    // hydrates it into extensions.security.labels at for_request time
+    // (so the first plugin call sees the accumulated session state).
+    let session_store = Arc::new(MemorySessionStore::new());
+    session_store
+        .append_labels("sess-existing", &["PRIOR".to_string()])
+        .await;
+
+    let mgr = tainting_manager().await;
+    let yaml = r#"
+plugins:
+  - name: tagger
+    kind: tagger
+    hooks: [cmf.tool_pre_invoke]
+    capabilities: [append_labels, read_labels]
+routes:
+  classify:
+    policy:
+      - "plugin(tagger)"
+"#;
+    let cfg = compile_config(yaml).expect("compile_config");
+    let route = cfg.routes.get("classify").unwrap();
+    let plan = DispatchCache::new().get_or_build(route, &cfg.plugins, &mgr).await;
+
+    let mut agent = cpex_core::extensions::AgentExtension::default();
+    agent.session_id = Some("sess-existing".into());
+    let extensions = Extensions {
+        agent: Some(Arc::new(agent)),
+        ..Default::default()
+    };
+
+    let invoker =
+        CmfPluginInvoker::for_request(mgr, extensions, cmf_payload(), plan, session_store.clone())
+            .await;
+
+    // Hydrated labels should be observable on the invoker's extensions.
+    let snapshot = invoker.current_extensions().await;
+    let security = snapshot.security.expect("hydration creates security extension");
+    assert!(security.has_label("PRIOR"), "hydration should pull PRIOR from session store");
+
+    // Now drive a route — tagger adds PII. After persist, the store has
+    // both PRIOR (from hydration) and PII (newly emitted).
+    let bag = AttributeBag::new();
+    let mut payload = empty_payload();
+    let decision =
+        evaluate_route(route, &bag, &mut payload, &AllowPdp, &invoker).await;
+    assert_eq!(decision.decision, Decision::Allow);
+
+    // Only the NEW label (PII) shows up as a taint — PRIOR was already
+    // present before the plugin ran, so it's not a fresh emission.
+    assert_eq!(decision.taints.len(), 1);
+    assert_eq!(decision.taints[0].label, "PII");
+
+    invoker.persist_session().await;
+    let mut stored = session_store.load_labels("sess-existing").await;
+    stored.sort();
+    assert_eq!(stored, vec!["PII".to_string(), "PRIOR".to_string()]);
 }

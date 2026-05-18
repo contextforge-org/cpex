@@ -12,32 +12,43 @@
 // honored). Compile-time payload type safety is provided by the
 // `CmfHook: HookTypeDef` bound on `invoke_entries`.
 //
-// # Why pre-resolved entries instead of `invoke_named`?
+// # Request-scoped vs session-scoped state
 //
-// `invoke_named(hook_name, ...)` resolves a fresh lineup per call via
-// hook lookup + cpex-core's condition/entity routing. APL's `routes:`
-// is already the authoritative plugin lineup, so re-resolving wastes
-// work and lets cpex-core's parallel routing model overrule APL. The
-// plan-based path caches the resolution per `(route_key, generation)`
-// — first invocation builds, subsequent invocations reuse — and
-// surfaces hook context (step vs field) via pre-classified entries.
+// The invoker carries **request-scoped** state — payload + extensions
+// — under interior mutability (`Arc<tokio::sync::Mutex<_>>`) so mutations
+// from one plugin call accumulate for the next call in the same
+// request. **Session-scoped** state (labels that survive across requests
+// in the same session) goes through the pluggable [`SessionStore`]
+// trait: hydrated at `for_request` start, persisted via
+// [`persist_session`] after route evaluation. Session ID is pulled from
+// `extensions.agent.session_id`; absent → both ops are no-ops.
+//
+// # Per-call taint extraction
+//
+// Each plugin invocation diffs `result.modified_extensions.security.labels`
+// against the labels visible to *that call*. New labels become
+// `PluginOutcome.taints` as `TaintEvent { scopes: vec![Session] }` —
+// CMF's monotonic label channel is session-semantic by design, so
+// Session is the natural default. Multi-scope plugin emissions (or
+// `Message` scope) require either a future second label channel in
+// Extensions or explicit config-side `Step::Taint { scopes: [...] }` /
+// `Stage::Taint`.
 //
 // # Lifetime model
 //
-// One invoker instance per request. The host pre-builds the
-// `MessagePayload` once from raw inputs, hands it in via
-// [`for_request`], and the invoker carries it through every plugin
-// dispatch on the request. Mutations from plugins (e.g. PII redaction)
-// are persisted in the shared payload so the next plugin in the chain
-// sees the rewritten version. After route evaluation, the host calls
-// [`current_payload`] to extract the final bytes for body
-// re-serialization.
+// One invoker instance per request. Host pre-builds the
+// `MessagePayload`, hydrates session-scoped state via `for_request`
+// (which is async because it awaits `SessionStore::load_labels`), then
+// drives `evaluate_route`. After evaluation, host calls
+// [`current_payload`] for body re-serialization and
+// [`persist_session`] to commit accumulated session state.
 //
 // Background tasks returned by `invoke_entries` are dropped for v0;
 // when audit/fire-and-forget plugin support is wired into APL's
 // lifecycle, we'll thread a `BackgroundTasks` aggregator through the
 // invoker.
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -49,43 +60,88 @@ use cpex_core::manager::PluginManager;
 
 use apl_core::attributes::AttributeBag;
 use apl_core::evaluator::Decision;
+use apl_core::pipeline::{TaintEvent, TaintScope};
 use apl_core::step::{PluginError, PluginInvocation, PluginInvoker, PluginOutcome};
 
 use crate::dispatch_plan::RouteDispatchPlan;
+use crate::session_store::SessionStore;
 
 /// Bridges APL plugin dispatch to CMF-family CPEX hooks.
 ///
-/// Carries the request's `MessagePayload` for its entire lifetime so
-/// plugin mutations accumulate (one plugin's `[REDACTED]` output is
-/// visible to the next plugin in the same route).
+/// Carries the request's `MessagePayload` and `Extensions` for its
+/// entire lifetime so plugin mutations accumulate (one plugin's
+/// `[REDACTED]` output is visible to the next plugin in the same
+/// route; one plugin's added label seeds the next plugin's filter view).
 pub struct CmfPluginInvoker {
     manager: Arc<PluginManager>,
-    extensions: Extensions,
-    /// `tokio::sync::Mutex` (not `std::sync::Mutex`) because the lock is
-    /// held across `await` points — the manager's invoke is async, and
-    /// we don't want two concurrent invocations racing on the payload.
+    /// Per-request extensions under interior mutability. Locked across
+    /// awaits — `tokio::sync::Mutex` is required because the executor's
+    /// `invoke_entries` is async.
+    extensions: Arc<Mutex<Extensions>>,
+    /// Per-request payload under interior mutability. Same reasoning as
+    /// `extensions` — accumulated text rewrites have to be visible to
+    /// the next dispatch in the same request.
     payload: Arc<Mutex<MessagePayload>>,
     /// Pre-resolved per-route plugin lineup. Built (or fetched from a
-    /// shared `DispatchCache`) at request start by the host; the
-    /// invoker just reads from it. Shared via `Arc` because the same
-    /// plan can serve many requests targeting the same route.
+    /// shared `DispatchCache`) at request start by the host.
     plan: Arc<RouteDispatchPlan>,
+    /// Session ID pulled from `extensions.agent.session_id` at construction.
+    /// `None` for non-session traffic — hydration + persistence become
+    /// no-ops in that case.
+    session_id: Option<String>,
+    /// Pluggable session-scoped state backend. `Arc<dyn SessionStore>`
+    /// rather than a generic so a single invoker type works for memory /
+    /// Redis / future-distributed stores without monomorphization churn.
+    session_store: Arc<dyn SessionStore>,
+    /// Labels present in `extensions.security.labels` immediately after
+    /// `SessionStore` hydration but before any plugins have run. Used
+    /// by `persist_session` to diff against final labels and append only
+    /// the additions to the session store. Empty when there was no
+    /// session_id (so no hydration happened).
+    initial_labels: HashSet<String>,
 }
 
 impl CmfPluginInvoker {
     /// Construct an invoker bound to one request's payload + extensions
     /// and the pre-resolved dispatch plan for the request's route.
-    pub fn for_request(
+    /// Hydrates accumulated session-scoped labels into
+    /// `extensions.security.labels` before returning, so the first
+    /// plugin sees the full session-monotonic view.
+    pub async fn for_request(
         manager: Arc<PluginManager>,
-        extensions: Extensions,
+        mut extensions: Extensions,
         payload: MessagePayload,
         plan: Arc<RouteDispatchPlan>,
+        session_store: Arc<dyn SessionStore>,
     ) -> Self {
+        // session_id is part of the agent extension. Cloned out before
+        // we touch `extensions` so the borrow isn't held across the
+        // hydration mutation.
+        let session_id: Option<String> = extensions
+            .agent
+            .as_ref()
+            .and_then(|a| a.session_id.clone());
+
+        // Hydration: union the session's accumulated labels into the
+        // request's security labels. Skipped when there's no session_id
+        // OR no stored labels (avoid the COW clone for nothing).
+        if let Some(sid) = &session_id {
+            let stored = session_store.load_labels(sid).await;
+            if !stored.is_empty() {
+                extensions = hydrate_labels(extensions, &stored);
+            }
+        }
+
+        let initial_labels = snapshot_labels(&extensions);
+
         Self {
             manager,
-            extensions,
+            extensions: Arc::new(Mutex::new(extensions)),
             payload: Arc::new(Mutex::new(payload)),
             plan,
+            session_id,
+            session_store,
+            initial_labels,
         }
     }
 
@@ -94,6 +150,33 @@ impl CmfPluginInvoker {
     /// re-serialization.
     pub async fn current_payload(&self) -> MessagePayload {
         self.payload.lock().await.clone()
+    }
+
+    /// Snapshot the current extensions. Useful for hosts that need to
+    /// inspect the post-evaluation extension state (audit, telemetry).
+    pub async fn current_extensions(&self) -> Extensions {
+        self.extensions.lock().await.clone()
+    }
+
+    /// Persist session-scoped state added during this request. Diffs
+    /// current `security.labels` against the post-hydration snapshot
+    /// and appends new labels to the session store. No-op when there
+    /// was no session ID. Host calls this exactly once after route
+    /// evaluation completes.
+    pub async fn persist_session(&self) {
+        let Some(sid) = &self.session_id else { return };
+        let current = self.extensions.lock().await;
+        let Some(security) = current.security.as_ref() else { return };
+        let new_labels: Vec<String> = security
+            .labels
+            .iter()
+            .filter(|l| !self.initial_labels.contains(l.as_str()))
+            .cloned()
+            .collect();
+        drop(current); // release the lock before the await
+        if !new_labels.is_empty() {
+            self.session_store.append_labels(sid, &new_labels).await;
+        }
     }
 }
 
@@ -110,10 +193,6 @@ impl PluginInvoker for CmfPluginInvoker {
             .get(plugin_name)
             .ok_or_else(|| PluginError::NotFound(plugin_name.to_string()))?;
 
-        // Pick the entry for this invocation context. None means the
-        // plugin doesn't declare any hook of the appropriate kind for
-        // this route — surface as Dispatch error so config drift fails
-        // fast rather than silently no-op'ing.
         let entry = match invocation {
             PluginInvocation::Step => resolved.step_entry.as_ref().ok_or_else(|| {
                 PluginError::Dispatch(format!(
@@ -129,17 +208,22 @@ impl PluginInvoker for CmfPluginInvoker {
             })?,
         };
 
-        // Snapshot the current payload — `invoke_entries` consumes its
-        // argument, so we hand it a clone and keep the canonical copy
-        // in shared state for the next dispatch.
-        let current = self.payload.lock().await.clone();
+        // Snapshot the current payload + extensions — `invoke_entries`
+        // consumes by-value, so we clone for the call and keep the
+        // canonical copies in shared state for the next dispatch.
+        let current_payload = self.payload.lock().await.clone();
+        let current_extensions = self.extensions.lock().await.clone();
+
+        // Per-call taint diff baseline. New labels in `result` minus
+        // these become `PluginOutcome.taints`.
+        let before_labels = snapshot_labels(&current_extensions);
 
         let (result, _bg) = self
             .manager
             .invoke_entries::<CmfHook>(
                 std::slice::from_ref(entry),
-                current,
-                self.extensions.clone(),
+                current_payload,
+                current_extensions,
                 None,
             )
             .await;
@@ -151,28 +235,19 @@ impl PluginInvoker for CmfPluginInvoker {
                 Some(v) => (Some(v.reason), v.code),
                 None => (None, "policy.forbidden".to_string()),
             };
-            Decision::Deny {
-                reason,
-                rule_source,
-            }
+            Decision::Deny { reason, rule_source }
         } else {
             Decision::Allow
         };
 
-        // Promote any plugin-side payload mutation back into the shared
-        // request payload so the next plugin in the chain sees it.
-        // `PluginPayload` only exposes `as_any` (no owning downcast), so
-        // we downcast-ref and clone. `MessagePayload: Clone` makes this
+        // Persist any plugin-side payload mutation back into the shared
+        // request payload. `PluginPayload` only exposes `as_any`, so we
+        // downcast-ref and clone. `MessagePayload: Clone` makes this
         // cheap relative to the FFI/invoke cost.
         let modified_value = if let Some(mp_boxed) = result.modified_payload.as_ref() {
             match mp_boxed.as_any().downcast_ref::<MessagePayload>() {
                 Some(modified) => {
                     *self.payload.lock().await = modified.clone();
-                    // For pipe-chain (`Field`) calls, surface the new text
-                    // content as `modified_value` so APL's evaluator can
-                    // feed it into the next field-pipeline stage. For
-                    // Step calls, the modification is internal to the
-                    // shared payload and `modified_value` stays None.
                     match invocation {
                         PluginInvocation::Field { .. } => {
                             Some(serde_json::Value::String(
@@ -195,14 +270,71 @@ impl PluginInvoker for CmfPluginInvoker {
             None
         };
 
-        // v0: taint extraction not wired. When plugins start emitting
-        // labels via `result.modified_extensions.security.labels`, we'll
-        // diff against `self.extensions.security.labels` and feed the
-        // additions into `PluginOutcome.taints`.
+        // Promote modified extensions back into shared state + extract
+        // newly-added labels as taints. The executor returns
+        // `Option<Extensions>` for the modified view — `Some` only when
+        // a plugin actually changed extensions. The executor has
+        // already validated label monotonicity on the way out.
+        let taints = if let Some(modified_ext) = result.modified_extensions {
+            let after_labels = snapshot_labels(&modified_ext);
+            let new_labels: Vec<String> = after_labels
+                .difference(&before_labels)
+                .cloned()
+                .collect();
+            *self.extensions.lock().await = modified_ext;
+            new_labels
+                .into_iter()
+                .map(|label| TaintEvent {
+                    label,
+                    // v0: CMF's `security.labels` is session-semantic by
+                    // design (monotonic accumulation). Plugins that need
+                    // Message-scoped taints emit them via config-side
+                    // `Step::Taint`/`Stage::Taint` for now.
+                    scopes: vec![TaintScope::Session],
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+
         Ok(PluginOutcome {
             decision,
-            taints: Vec::new(),
+            taints,
             modified_value,
         })
     }
 }
+
+// =====================================================================
+// Helpers
+// =====================================================================
+
+/// Snapshot `extensions.security.labels` as an owned `HashSet<String>`.
+/// Empty when security is absent.
+fn snapshot_labels(extensions: &Extensions) -> HashSet<String> {
+    extensions
+        .security
+        .as_ref()
+        .map(|s| s.labels.iter().cloned().collect())
+        .unwrap_or_default()
+}
+
+/// Add `labels` to `extensions.security.labels` (monotonic union).
+/// Creates a security extension if absent. Used at hydration time —
+/// merges the SessionStore's accumulated labels into the request view
+/// so the first plugin sees the full picture.
+fn hydrate_labels(mut extensions: Extensions, labels: &[String]) -> Extensions {
+    // Clone the Arc'd security into an owned struct so we can mutate.
+    // Most slots stay refcount-shared; only security is materialized.
+    let mut security = extensions
+        .security
+        .as_ref()
+        .map(|s| (**s).clone())
+        .unwrap_or_default();
+    for l in labels {
+        security.add_label(l.clone());
+    }
+    extensions.security = Some(Arc::new(security));
+    extensions
+}
+

@@ -1199,13 +1199,21 @@ fn compile_route(route_key: &str, raw: RouteYaml) -> Result<Option<CompiledRoute
     if !has_apl {
         return Ok(None);
     }
+    Ok(Some(compile_apl_blocks(route_key, raw)?))
+}
 
-    let mut route = CompiledRoute::new(route_key);
+/// Compile the APL bodies (policy/post_policy/args/result/plugins) of a
+/// single block into a `CompiledRoute`. Doesn't gate on "has any APL
+/// fields" — callers that need the gate (compile_config) check first.
+/// `source` is the path prefix baked into rule/pipeline diagnostics
+/// (e.g. `"global.policy.all"`, `"route.get_compensation"`).
+fn compile_apl_blocks(source: &str, raw: RouteYaml) -> Result<CompiledRoute, ParseError> {
+    let mut route = CompiledRoute::new(source);
     for (i, entry) in raw.policy.iter().enumerate() {
-        route.policy.push(parse_step(entry, &format!("{}.policy[{}]", route_key, i))?);
+        route.policy.push(parse_step(entry, &format!("{}.policy[{}]", source, i))?);
     }
     for (i, entry) in raw.post_policy.iter().enumerate() {
-        route.post_policy.push(parse_step(entry, &format!("{}.post_policy[{}]", route_key, i))?);
+        route.post_policy.push(parse_step(entry, &format!("{}.post_policy[{}]", source, i))?);
     }
     for (field, chain) in &raw.args {
         let pipeline = parse_pipeline(chain).map_err(|e| ParseError::Rule {
@@ -1215,7 +1223,7 @@ fn compile_route(route_key: &str, raw: RouteYaml) -> Result<Option<CompiledRoute
         route.args.push(FieldRule {
             field: field.clone(),
             pipeline,
-            source: format!("{}.args.{}", route_key, field),
+            source: format!("{}.args.{}", source, field),
         });
     }
     for (field, chain) in &raw.result {
@@ -1226,11 +1234,42 @@ fn compile_route(route_key: &str, raw: RouteYaml) -> Result<Option<CompiledRoute
         route.result.push(FieldRule {
             field: field.clone(),
             pipeline,
-            source: format!("{}.result.{}", route_key, field),
+            source: format!("{}.result.{}", source, field),
         });
     }
     route.plugin_overrides = raw.plugins;
-    Ok(Some(route))
+    Ok(route)
+}
+
+/// Compile a single APL policy block from a `serde_yaml::Value` whose
+/// shape is the body of a route's `apl:` block:
+///
+/// ```yaml
+/// args:
+///   employee_id: "str"
+/// policy:
+///   - "require(authenticated)"
+/// result:
+///   ssn: "redact(!perm.view_ssn)"
+/// post_policy:
+///   - "taint(forward)"
+/// ```
+///
+/// Used by external orchestrators (apl-cpex's `AplConfigVisitor`) that
+/// have already located an APL block inside a larger unified-config
+/// YAML. `source` is woven into per-rule / per-pipeline diagnostic paths.
+/// Returns an empty `CompiledRoute` when the value is null or contains
+/// no APL fields — callers that want a "is this empty?" gate can check
+/// `declared_phases().is_empty()` on the result.
+pub fn compile_policy_block_value(
+    source: &str,
+    block: &serde_yaml::Value,
+) -> Result<CompiledRoute, ParseError> {
+    if block.is_null() {
+        return Ok(CompiledRoute::new(source));
+    }
+    let raw: RouteYaml = serde_yaml::from_value(block.clone())?;
+    compile_apl_blocks(source, raw)
 }
 
 // =====================================================================
@@ -1756,13 +1795,13 @@ routes:
         bag.set("role.hr", true);
         bag.set("delegation.depth", 1_i64);
         assert_eq!(
-            crate::evaluate_steps(&route.policy, &bag, &pdp, &plugins).await,
+            crate::evaluate_steps(&route.policy, &bag, &pdp, &plugins).await.decision,
             Decision::Allow,
         );
 
         // Same Alice but depth=3 → deny (third rule fires).
         bag.set("delegation.depth", 3_i64);
-        match crate::evaluate_steps(&route.policy, &bag, &pdp, &plugins).await {
+        match crate::evaluate_steps(&route.policy, &bag, &pdp, &plugins).await.decision {
             Decision::Deny { rule_source, .. } => {
                 assert!(rule_source.contains("policy[2]"), "expected policy[2], got {}", rule_source);
             }
@@ -1773,7 +1812,7 @@ routes:
         let mut bag = AttributeBag::new();
         bag.set("authenticated", true);
         bag.set("delegation.depth", 1_i64);
-        match crate::evaluate_steps(&route.policy, &bag, &pdp, &plugins).await {
+        match crate::evaluate_steps(&route.policy, &bag, &pdp, &plugins).await.decision {
             Decision::Deny { rule_source, .. } => {
                 assert!(rule_source.contains("policy[1]"), "expected policy[1], got {}", rule_source);
             }
@@ -2055,5 +2094,50 @@ routes:
         assert_eq!(eff.on_error, Some("ignore"));
         // Hooks NOT overridable — still from the global declaration.
         assert_eq!(eff.hooks, &["tool_pre_invoke".to_string()]);
+    }
+
+    // ----- compile_policy_block_value (single-block compiler for visitors) -----
+
+    #[test]
+    fn compile_policy_block_value_parses_apl_body() {
+        let yaml = r#"
+policy:
+  - "require(authenticated)"
+result:
+  ssn: "redact(!perm.view_ssn)"
+"#;
+        let value: serde_yaml::Value = serde_yaml::from_str(yaml).unwrap();
+        let compiled =
+            compile_policy_block_value("global.policy.all", &value).expect("compile block");
+        assert_eq!(compiled.route_key, "global.policy.all");
+        assert_eq!(compiled.policy.len(), 1);
+        assert_eq!(compiled.result.len(), 1);
+        assert_eq!(compiled.result[0].field, "ssn");
+    }
+
+    #[test]
+    fn compile_policy_block_value_null_is_empty_route() {
+        let value = serde_yaml::Value::Null;
+        let compiled =
+            compile_policy_block_value("global.defaults.tool", &value).expect("compile null");
+        assert!(compiled.declared_phases().is_empty());
+        assert_eq!(compiled.route_key, "global.defaults.tool");
+    }
+
+    #[test]
+    fn compile_policy_block_value_threads_source_into_rule_paths() {
+        let yaml = r#"
+policy:
+  - "require(authenticated)"
+"#;
+        let value: serde_yaml::Value = serde_yaml::from_str(yaml).unwrap();
+        let compiled =
+            compile_policy_block_value("global.policies.hr", &value).expect("compile");
+        match &compiled.policy[0] {
+            crate::step::Step::Rule(rule) => {
+                assert_eq!(rule.source, "global.policies.hr.policy[0]");
+            }
+            other => panic!("expected Rule, got {:?}", other),
+        }
     }
 }

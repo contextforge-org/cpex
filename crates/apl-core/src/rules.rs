@@ -207,6 +207,58 @@ impl CompiledRoute {
         if !self.post_policy.is_empty() { set.insert(Phase::PostPolicy); }
         set
     }
+
+    /// Apply a more-specific policy layer on top of this one. Used by
+    /// orchestrators (apl-cpex's visitor) to stack the unified-config
+    /// hierarchy least-to-most-specific:
+    ///
+    /// ```text
+    /// effective = CompiledRoute::default()
+    /// effective.apply_layer(global_block)
+    /// effective.apply_layer(default_block)
+    /// effective.apply_layer(tag_block)
+    /// effective.apply_layer(route_block)
+    /// ```
+    ///
+    /// Each call adds the parameter on top of what's already there;
+    /// `more_specific` wins on collisions because it represents a
+    /// later/narrower layer in the inheritance chain.
+    ///
+    /// Merge semantics:
+    /// - **`policy` / `post_policy`**: `more_specific`'s steps append
+    ///   *after* self's. Earlier layers run first — globals deny before
+    ///   route-specific rules get a chance.
+    /// - **`args` / `result`**: per-field; if both layers declare the
+    ///   same field, `more_specific`'s rule replaces self's. Fields
+    ///   only in self stay; fields only in `more_specific` are added.
+    /// - **`plugin_overrides`**: HashMap merge; `more_specific` wins
+    ///   on key collisions, otherwise prefix's entries fill gaps.
+    ///
+    /// `self.route_key` is preserved — apply_layer doesn't overwrite
+    /// identity, just policy content.
+    pub fn apply_layer(&mut self, more_specific: CompiledRoute) {
+        // policy / post_policy: more_specific's steps append AFTER self.
+        // Order of accumulated calls = order of evaluation.
+        self.policy.extend(more_specific.policy);
+        self.post_policy.extend(more_specific.post_policy);
+
+        // args: more_specific wins on field collision — drop any self.args
+        // entries the new layer redefines, then push the new layer's.
+        let ms_fields: std::collections::HashSet<String> =
+            more_specific.args.iter().map(|f| f.field.clone()).collect();
+        self.args.retain(|f| !ms_fields.contains(&f.field));
+        self.args.extend(more_specific.args);
+
+        // result: same shape as args.
+        let ms_result_fields: std::collections::HashSet<String> =
+            more_specific.result.iter().map(|f| f.field.clone()).collect();
+        self.result.retain(|f| !ms_result_fields.contains(&f.field));
+        self.result.extend(more_specific.result);
+
+        // plugin_overrides: HashMap::extend overwrites on key collision,
+        // which is exactly the more_specific-wins semantic.
+        self.plugin_overrides.extend(more_specific.plugin_overrides);
+    }
 }
 
 #[cfg(test)]
@@ -290,5 +342,189 @@ mod tests {
         let json = serde_json::to_string(&route).unwrap();
         // Empty phase vecs should not serialize — keeps audit logs clean.
         assert_eq!(json, r#"{"route_key":"ping"}"#);
+    }
+
+    #[test]
+    fn apply_layer_appends_policy_and_post_policy_in_evaluation_order() {
+        // Start with global (least specific), then layer route on top.
+        // After: global.policy[0] runs first, route.policy[0] runs second.
+        let mut effective = CompiledRoute::new("route.get_compensation");
+        // Seed effective with global content (simulating having already
+        // applied the global layer once).
+        effective.policy.push(crate::step::Step::Rule(Rule {
+            condition: Expression::Always,
+            action: Action::Allow,
+            source: "global.policy[0]".into(),
+        }));
+        effective.post_policy.push(crate::step::Step::Rule(Rule {
+            condition: Expression::Always,
+            action: Action::Allow,
+            source: "global.post_policy[0]".into(),
+        }));
+
+        // Now apply the route-specific layer on top.
+        let mut route_layer = CompiledRoute::new("ignored");
+        route_layer.policy.push(crate::step::Step::Rule(Rule {
+            condition: Expression::Always,
+            action: Action::Allow,
+            source: "route.policy[0]".into(),
+        }));
+        route_layer.post_policy.push(crate::step::Step::Rule(Rule {
+            condition: Expression::Always,
+            action: Action::Allow,
+            source: "route.post_policy[0]".into(),
+        }));
+
+        effective.apply_layer(route_layer);
+
+        // global ran first, route ran second — first-deny-wins respects
+        // the hierarchy.
+        assert_eq!(effective.policy.len(), 2);
+        match &effective.policy[0] {
+            crate::step::Step::Rule(r) => assert_eq!(r.source, "global.policy[0]"),
+            _ => panic!(),
+        }
+        match &effective.policy[1] {
+            crate::step::Step::Rule(r) => assert_eq!(r.source, "route.policy[0]"),
+            _ => panic!(),
+        }
+        assert_eq!(effective.post_policy.len(), 2);
+
+        // route_key preserved (apply_layer doesn't touch identity).
+        assert_eq!(effective.route_key, "route.get_compensation");
+    }
+
+    #[test]
+    fn apply_layer_args_more_specific_wins_on_field_collision() {
+        use crate::pipeline::{FieldRule, Pipeline, Stage, TypeCheck};
+
+        // Start with the default (less specific) layer.
+        let mut effective = CompiledRoute::new("route.X");
+        effective.args.push(FieldRule {
+            field: "id".into(),
+            pipeline: Pipeline { stages: vec![Stage::Type(TypeCheck::Str)] },
+            source: "default.args.id".into(),
+        });
+        effective.args.push(FieldRule {
+            field: "trace_id".into(),
+            pipeline: Pipeline { stages: vec![Stage::Type(TypeCheck::Str)] },
+            source: "default.args.trace_id".into(),
+        });
+
+        // Layer route (more specific) on top — it redefines `id`.
+        let mut route_layer = CompiledRoute::new("ignored");
+        route_layer.args.push(FieldRule {
+            field: "id".into(),
+            pipeline: Pipeline { stages: vec![Stage::Type(TypeCheck::Uuid)] },
+            source: "route.args.id".into(),
+        });
+
+        effective.apply_layer(route_layer);
+
+        assert_eq!(effective.args.len(), 2);
+        // `id` is now the route's (Uuid), not the default's (Str).
+        let id_rule = effective.args.iter().find(|f| f.field == "id").unwrap();
+        assert!(matches!(id_rule.pipeline.stages[0], Stage::Type(TypeCheck::Uuid)));
+        assert_eq!(id_rule.source, "route.args.id");
+        // `trace_id` survives from the default — route didn't touch it.
+        let trace = effective.args.iter().find(|f| f.field == "trace_id").unwrap();
+        assert_eq!(trace.source, "default.args.trace_id");
+    }
+
+    #[test]
+    fn apply_layer_plugin_overrides_more_specific_wins() {
+        use crate::plugin_decl::PluginOverride;
+
+        // Default (less specific) layer.
+        let mut effective = CompiledRoute::new("route.X");
+        effective.plugin_overrides.insert(
+            "rate_limiter".into(),
+            PluginOverride { on_error: Some("ignore".into()), ..Default::default() },
+        );
+        effective.plugin_overrides.insert(
+            "audit_logger".into(),
+            PluginOverride { on_error: Some("ignore".into()), ..Default::default() },
+        );
+
+        // Route (more specific) layer overrides rate_limiter.
+        let mut route_layer = CompiledRoute::new("ignored");
+        route_layer.plugin_overrides.insert(
+            "rate_limiter".into(),
+            PluginOverride { on_error: Some("fail".into()), ..Default::default() },
+        );
+
+        effective.apply_layer(route_layer);
+
+        assert_eq!(effective.plugin_overrides.len(), 2);
+        assert_eq!(
+            effective.plugin_overrides["rate_limiter"].on_error.as_deref(),
+            Some("fail"),
+            "route's override wins on collision",
+        );
+        // audit_logger untouched — route didn't redefine it.
+        assert_eq!(
+            effective.plugin_overrides["audit_logger"].on_error.as_deref(),
+            Some("ignore"),
+        );
+    }
+
+    #[test]
+    fn apply_layer_chained_walks_hierarchy_in_specificity_order() {
+        // Build effective policy by applying layers least-to-most-specific.
+        // Mirrors how AplConfigVisitor will compose global/default/tag/route.
+        let mut effective = CompiledRoute::new("route.get_compensation");
+
+        let mut global = CompiledRoute::default();
+        global.policy.push(crate::step::Step::Rule(Rule {
+            condition: Expression::Always,
+            action: Action::Allow,
+            source: "global.policy[0]".into(),
+        }));
+
+        let mut default = CompiledRoute::default();
+        default.policy.push(crate::step::Step::Rule(Rule {
+            condition: Expression::Always,
+            action: Action::Allow,
+            source: "default.policy[0]".into(),
+        }));
+
+        let mut tag = CompiledRoute::default();
+        tag.policy.push(crate::step::Step::Rule(Rule {
+            condition: Expression::Always,
+            action: Action::Allow,
+            source: "tag.hr.policy[0]".into(),
+        }));
+
+        let mut route = CompiledRoute::default();
+        route.policy.push(crate::step::Step::Rule(Rule {
+            condition: Expression::Always,
+            action: Action::Allow,
+            source: "route.policy[0]".into(),
+        }));
+
+        effective.apply_layer(global);
+        effective.apply_layer(default);
+        effective.apply_layer(tag);
+        effective.apply_layer(route);
+
+        // Order of calls = order of evaluation. global runs first,
+        // route runs last (first-deny-wins lets globals deny early).
+        let sources: Vec<&str> = effective
+            .policy
+            .iter()
+            .map(|s| match s {
+                crate::step::Step::Rule(r) => r.source.as_str(),
+                _ => "<not-rule>",
+            })
+            .collect();
+        assert_eq!(
+            sources,
+            vec![
+                "global.policy[0]",
+                "default.policy[0]",
+                "tag.hr.policy[0]",
+                "route.policy[0]",
+            ]
+        );
     }
 }

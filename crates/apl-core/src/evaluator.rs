@@ -157,9 +157,26 @@ pub async fn evaluate_steps(
     bag: &AttributeBag,
     pdp: &dyn PdpResolver,
     plugins: &dyn PluginInvoker,
-) -> Decision {
+) -> StepsEvaluation {
     // Box-pin recursion for async fn (reactions run nested `evaluate_steps`).
     Box::pin(evaluate_steps_inner(steps, bag, pdp, plugins)).await
+}
+
+/// Outcome of `evaluate_steps`: the phase's decision plus taints emitted
+/// by any plugin steps that ran. Taints are accumulated even when the
+/// phase ultimately denies — audit needs to see what the plugins
+/// reported before the deny landed. Empty `taints` is the common case
+/// (most steps are predicates / PDP calls, not label emitters).
+#[derive(Debug, Clone)]
+pub struct StepsEvaluation {
+    pub decision: Decision,
+    pub taints: Vec<crate::pipeline::TaintEvent>,
+}
+
+impl StepsEvaluation {
+    fn deny(d: Decision, taints: Vec<crate::pipeline::TaintEvent>) -> Self {
+        Self { decision: d, taints }
+    }
 }
 
 async fn evaluate_steps_inner(
@@ -167,7 +184,8 @@ async fn evaluate_steps_inner(
     bag: &AttributeBag,
     pdp: &dyn PdpResolver,
     plugins: &dyn PluginInvoker,
-) -> Decision {
+) -> StepsEvaluation {
+    let mut taints: Vec<crate::pipeline::TaintEvent> = Vec::new();
     for step in steps {
         match step {
             Step::Rule(rule) => {
@@ -177,10 +195,13 @@ async fn evaluate_steps_inner(
                 match &rule.action {
                     Action::Allow => continue,
                     Action::Deny { reason } => {
-                        return Decision::Deny {
-                            reason: reason.clone(),
-                            rule_source: rule.source.clone(),
-                        }
+                        return StepsEvaluation::deny(
+                            Decision::Deny {
+                                reason: reason.clone(),
+                                rule_source: rule.source.clone(),
+                            },
+                            taints,
+                        );
                     }
                 }
             }
@@ -192,8 +213,9 @@ async fn evaluate_steps_inner(
                             let reaction = Box::pin(evaluate_steps_inner(
                                 on_allow, bag, pdp, plugins,
                             )).await;
-                            if let Decision::Deny { .. } = reaction {
-                                return reaction;
+                            taints.extend(reaction.taints);
+                            if let Decision::Deny { .. } = reaction.decision {
+                                return StepsEvaluation::deny(reaction.decision, taints);
                             }
                             // Allow + on_allow didn't deny → continue.
                         }
@@ -201,48 +223,70 @@ async fn evaluate_steps_inner(
                             let reaction = Box::pin(evaluate_steps_inner(
                                 on_deny, bag, pdp, plugins,
                             )).await;
+                            taints.extend(reaction.taints);
                             // Reactions can override the PDP's deny reason
                             // (e.g., on_deny: [deny "..."]) but cannot turn
                             // deny into allow — if reactions returned Allow,
                             // the PDP's original deny still stands.
-                            return match reaction {
-                                Decision::Deny { .. } => reaction,
+                            let final_decision = match reaction.decision {
+                                Decision::Deny { .. } => reaction.decision,
                                 Decision::Allow => deny,
                             };
+                            return StepsEvaluation::deny(final_decision, taints);
                         }
                     },
                     Err(e) => {
-                        return Decision::Deny {
-                            reason: Some(format!("PDP error: {}", e)),
-                            rule_source: format!("pdp:{:?}", call.dialect),
-                        }
+                        return StepsEvaluation::deny(
+                            Decision::Deny {
+                                reason: Some(format!("PDP error: {}", e)),
+                                rule_source: format!("pdp:{:?}", call.dialect),
+                            },
+                            taints,
+                        );
                     }
                 }
             }
 
             Step::Plugin { name } => {
                 match plugins.invoke(name, bag, PluginInvocation::Step).await {
-                    Ok(outcome) => match outcome.decision {
-                        Decision::Allow => continue,
-                        deny @ Decision::Deny { .. } => return deny,
-                    },
-                    Err(e) => {
-                        return Decision::Deny {
-                            reason: Some(format!("plugin `{}` error: {}", name, e)),
-                            rule_source: format!("plugin:{}", name),
+                    Ok(outcome) => {
+                        // Plugins can emit taints regardless of decision —
+                        // collect first, then act on the decision.
+                        taints.extend(outcome.taints);
+                        match outcome.decision {
+                            Decision::Allow => continue,
+                            deny @ Decision::Deny { .. } => {
+                                return StepsEvaluation::deny(deny, taints);
+                            }
                         }
+                    }
+                    Err(e) => {
+                        return StepsEvaluation::deny(
+                            Decision::Deny {
+                                reason: Some(format!("plugin `{}` error: {}", name, e)),
+                                rule_source: format!("plugin:{}", name),
+                            },
+                            taints,
+                        );
                     }
                 }
             }
 
-            Step::Taint { .. } => {
-                // Recognized but not applied at this layer — apl-cpex bridges
-                // to the actual SessionStore. Step::Taint always continues.
+            Step::Taint { label, scopes } => {
+                // Emit the taint into the phase's accumulator so it flows
+                // into `RouteDecision.taints`. Apl-cpex's invoker handles
+                // the session-store persistence side at request end —
+                // here we only record the event. Scopes come straight from
+                // the parser (`taint(label, session, message)` syntax).
+                taints.push(crate::pipeline::TaintEvent {
+                    label: label.clone(),
+                    scopes: scopes.clone(),
+                });
                 continue;
             }
         }
     }
-    Decision::Allow
+    StepsEvaluation { decision: Decision::Allow, taints }
 }
 
 // =====================================================================
@@ -469,9 +513,7 @@ pub async fn evaluate_pipeline(
                 match plugins.invoke(name, bag, invocation).await {
                     Ok(outcome) => {
                         // Plugins can emit taints regardless of decision.
-                        for (label, scope) in outcome.taints {
-                            taints.push(TaintEvent { label, scopes: vec![scope] });
-                        }
+                        taints.extend(outcome.taints);
                         match outcome.decision {
                             Decision::Allow => {
                                 if let Some(new_value) = outcome.modified_value {
@@ -1249,7 +1291,10 @@ mod tests {
             outcomes: std::collections::HashMap::from([
                 ("scrubber".to_string(), PluginOutcome {
                     decision: Decision::Allow,
-                    taints: vec![("PII".to_string(), TaintScope::Session)],
+                    taints: vec![TaintEvent {
+                        label: "PII".to_string(),
+                        scopes: vec![TaintScope::Session],
+                    }],
                     modified_value: Some(json!("***scrubbed***")),
                 }),
             ]),
@@ -1496,7 +1541,7 @@ mod tests {
             source: "test".into(),
         })];
         let r = evaluate_steps(&steps, &bag, &FakePdp { decision: Decision::Allow }, &NullPlugins).await;
-        assert_eq!(r, Decision::Allow);
+        assert_eq!(r.decision, Decision::Allow);
     }
 
     #[tokio::test]
@@ -1505,7 +1550,7 @@ mod tests {
         let steps = vec![pdp_step("dummy")];
         let pdp = FakePdp { decision: Decision::Allow };
         assert_eq!(
-            evaluate_steps(&steps, &bag, &pdp, &NullPlugins).await,
+            evaluate_steps(&steps, &bag, &pdp, &NullPlugins).await.decision,
             Decision::Allow,
         );
     }
@@ -1517,7 +1562,7 @@ mod tests {
         let pdp = FakePdp {
             decision: Decision::Deny { reason: Some("forbidden".into()), rule_source: "pdp".into() },
         };
-        match evaluate_steps(&steps, &bag, &pdp, &NullPlugins).await {
+        match evaluate_steps(&steps, &bag, &pdp, &NullPlugins).await.decision {
             Decision::Deny { reason, .. } => assert_eq!(reason.as_deref(), Some("forbidden")),
             d => panic!("expected Deny, got {:?}", d),
         }
@@ -1540,7 +1585,7 @@ mod tests {
         let pdp = FakePdp {
             decision: Decision::Deny { reason: Some("pdp original".into()), rule_source: "p".into() },
         };
-        match evaluate_steps(&steps, &bag, &pdp, &NullPlugins).await {
+        match evaluate_steps(&steps, &bag, &pdp, &NullPlugins).await.decision {
             Decision::Deny { reason, rule_source } => {
                 assert_eq!(reason.as_deref(), Some("reaction took over"));
                 assert_eq!(rule_source, "on_deny[0]");
@@ -1564,7 +1609,7 @@ mod tests {
             })],
         }];
         let pdp = FakePdp { decision: Decision::Allow };
-        match evaluate_steps(&steps, &bag, &pdp, &NullPlugins).await {
+        match evaluate_steps(&steps, &bag, &pdp, &NullPlugins).await.decision {
             Decision::Deny { reason, .. } => assert_eq!(reason.as_deref(), Some("reaction veto")),
             d => panic!("expected Deny, got {:?}", d),
         }
@@ -1574,7 +1619,7 @@ mod tests {
     async fn pdp_error_is_fail_closed() {
         let bag = AttributeBag::new();
         let steps = vec![pdp_step("dummy")];
-        match evaluate_steps(&steps, &bag, &ErroringPdp, &NullPlugins).await {
+        match evaluate_steps(&steps, &bag, &ErroringPdp, &NullPlugins).await.decision {
             Decision::Deny { reason, .. } => {
                 assert!(reason.unwrap().contains("PDP error"));
             }
@@ -1597,7 +1642,7 @@ mod tests {
 
         let allow_only = vec![Step::Plugin { name: "ok_plugin".into() }];
         assert_eq!(
-            evaluate_steps(&allow_only, &bag, &FakePdp { decision: Decision::Allow }, &plugins).await,
+            evaluate_steps(&allow_only, &bag, &FakePdp { decision: Decision::Allow }, &plugins).await.decision,
             Decision::Allow,
         );
 
@@ -1605,7 +1650,7 @@ mod tests {
             Step::Plugin { name: "ok_plugin".into() },
             Step::Plugin { name: "blocking_plugin".into() },
         ];
-        match evaluate_steps(&with_deny, &bag, &FakePdp { decision: Decision::Allow }, &plugins).await {
+        match evaluate_steps(&with_deny, &bag, &FakePdp { decision: Decision::Allow }, &plugins).await.decision {
             Decision::Deny { reason, .. } => assert_eq!(reason.as_deref(), Some("rate limit hit")),
             d => panic!("expected Deny from blocking_plugin, got {:?}", d),
         }
@@ -1616,7 +1661,7 @@ mod tests {
         let bag = AttributeBag::new();
         let plugins = FakePlugin { decisions: Default::default() };
         let steps = vec![Step::Plugin { name: "missing".into() }];
-        match evaluate_steps(&steps, &bag, &FakePdp { decision: Decision::Allow }, &plugins).await {
+        match evaluate_steps(&steps, &bag, &FakePdp { decision: Decision::Allow }, &plugins).await.decision {
             Decision::Deny { reason, rule_source } => {
                 assert!(reason.unwrap().contains("missing"));
                 assert!(rule_source.contains("missing"));
@@ -1626,7 +1671,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn taint_step_always_continues() {
+    async fn taint_step_always_continues_and_accumulates() {
         let bag = AttributeBag::new();
         let steps = vec![
             Step::Taint {
@@ -1640,9 +1685,16 @@ mod tests {
                 source: "p[1]".into(),
             }),
         ];
-        match evaluate_steps(&steps, &bag, &FakePdp { decision: Decision::Allow }, &NullPlugins).await {
+        let eval = evaluate_steps(&steps, &bag, &FakePdp { decision: Decision::Allow }, &NullPlugins).await;
+        match eval.decision {
             Decision::Deny { reason, .. } => assert_eq!(reason.as_deref(), Some("after taint")),
             d => panic!("expected Deny from rule after Taint, got {:?}", d),
         }
+        // Step::Taint should have been accumulated into the phase's taints
+        // before the deny landed — audit needs to see what tainted before
+        // the policy halted.
+        assert_eq!(eval.taints.len(), 1);
+        assert_eq!(eval.taints[0].label, "PII");
+        assert_eq!(eval.taints[0].scopes, vec![crate::pipeline::TaintScope::Session]);
     }
 }

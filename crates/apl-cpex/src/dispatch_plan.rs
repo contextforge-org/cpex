@@ -45,10 +45,10 @@ use std::sync::{Arc, RwLock};
 
 use cpex_core::manager::PluginManager;
 use cpex_core::plugin::OnError;
-use cpex_core::registry::{HookEntry, PluginRef};
+use cpex_core::registry::HookEntry;
 
 use apl_core::pipeline::Stage;
-use apl_core::plugin_decl::{EffectivePlugin, PluginOverride, PluginRegistry};
+use apl_core::plugin_decl::{EffectivePlugin, PluginRegistry};
 use apl_core::rules::CompiledRoute;
 use apl_core::step::Step;
 
@@ -84,7 +84,7 @@ impl RouteDispatchPlan {
     /// and excluded — dispatch then fails with `PluginError::NotFound`
     /// when those plugins are invoked, which is the right behavior for
     /// surfacing config drift.
-    pub fn build(
+    pub async fn build(
         route: &CompiledRoute,
         registry: &PluginRegistry,
         manager: &PluginManager,
@@ -102,33 +102,52 @@ impl RouteDispatchPlan {
                     continue;
                 }
             };
-            let base_entries = manager.find_plugin_entries(&name);
-            if base_entries.is_empty() {
+
+            // Pull the three overrideable values off the effective view.
+            // `EffectivePlugin` borrows from the registry / route overrides,
+            // so the captures here are slice / Option<&Value> refs.
+            let override_block = route.plugin_overrides.get(&name);
+            let config_override = override_block.and_then(|o| o.config.as_ref());
+            let caps_override: Option<std::collections::HashSet<String>> =
+                if matches!(eff.capabilities, apl_core::plugin_decl::CapsView::Override(_)) {
+                    Some(eff.capabilities.as_slice().iter().cloned().collect())
+                } else {
+                    None
+                };
+            let on_error_override = override_block
+                .and_then(|o| o.on_error.as_deref())
+                .and_then(parse_on_error);
+
+            // Hand the override decision to cpex-core. When no overrides
+            // are declared, this returns the base entries unchanged
+            // (no allocation, no factory call). When only caps/on_error
+            // differ, it wraps the shared base plugin in a fresh
+            // `PluginRef` with merged trusted config. When config
+            // differs, it invokes the factory + initializes a brand-new
+            // instance with its own circuit breaker.
+            let entries = manager
+                .build_override_entries(
+                    &name,
+                    config_override,
+                    caps_override.as_ref(),
+                    on_error_override,
+                )
+                .await;
+            if entries.is_empty() {
                 tracing::warn!(
                     plugin = %name,
                     route = %route.route_key,
-                    "APL plugin not registered with cpex-core — skipping",
+                    "APL plugin not resolvable (not registered, factory missing, \
+                     or override construction failed) — skipping",
                 );
                 continue;
             }
 
-            // Materialize an override PluginRef if APL declared route-level
-            // caps/on_error overrides. Shares the base `Arc<dyn Plugin>`
-            // (no re-instantiation); fresh `AtomicBool` circuit breaker.
-            let override_ref =
-                build_override_ref(&base_entries, &eff, &route.plugin_overrides);
-
+            // Classify each hook as step or field via naming heuristic.
             let mut step_entry: Option<HookEntry> = None;
             let mut field_entry: Option<HookEntry> = None;
-            for (hook_name, base_entry) in &base_entries {
-                let entry = match &override_ref {
-                    Some(ovr) => HookEntry {
-                        plugin_ref: Arc::clone(ovr),
-                        handler: Arc::clone(&base_entry.handler),
-                    },
-                    None => base_entry.clone(),
-                };
-                if is_field_hook(hook_name) {
+            for (hook_name, entry) in entries {
+                if is_field_hook(&hook_name) {
                     if field_entry.is_none() {
                         field_entry = Some(entry);
                     }
@@ -200,35 +219,6 @@ fn is_field_hook(hook_name: &str) -> bool {
         .any(|token| lc.contains(token))
 }
 
-/// Build a `PluginRef` with the APL route-level override merged on top
-/// of cpex-core's registered config. Returns `None` when there's no
-/// override block at all, or when the block declares nothing observable
-/// (no caps, no on_error).
-fn build_override_ref(
-    base_entries: &[(String, HookEntry)],
-    eff: &EffectivePlugin<'_>,
-    overrides: &HashMap<String, PluginOverride>,
-) -> Option<Arc<PluginRef>> {
-    let ovr = overrides.get(eff.name)?;
-    if ovr.capabilities.is_none() && ovr.on_error.is_none() {
-        return None;
-    }
-    let base_ref = &base_entries.first()?.1.plugin_ref;
-    let mut merged = base_ref.trusted_config().clone();
-    if let Some(caps) = ovr.capabilities.as_ref() {
-        merged.capabilities = caps.iter().cloned().collect();
-    }
-    if let Some(on_err_s) = ovr.on_error.as_deref() {
-        if let Some(on_err) = parse_on_error(on_err_s) {
-            merged.on_error = on_err;
-        }
-    }
-    Some(Arc::new(PluginRef::new(
-        Arc::clone(base_ref.plugin()),
-        merged,
-    )))
-}
-
 fn parse_on_error(s: &str) -> Option<OnError> {
     match s.to_ascii_lowercase().as_str() {
         "fail" => Some(OnError::Fail),
@@ -242,7 +232,7 @@ fn parse_on_error(s: &str) -> Option<OnError> {
 /// by any `Step::Plugin` (in `policy` / `post_policy`) or `Stage::Plugin`
 /// (in `args` / `result` pipelines). Insertion-ordered for build
 /// determinism.
-fn collect_plugin_names(route: &CompiledRoute) -> Vec<String> {
+pub(crate) fn collect_plugin_names(route: &CompiledRoute) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
     let push = |out: &mut Vec<String>, seen: &mut HashSet<String>, name: &str| {
@@ -263,6 +253,35 @@ fn collect_plugin_names(route: &CompiledRoute) -> Vec<String> {
         }
     }
     out
+}
+
+/// Compute the union of capabilities declared by every plugin a
+/// `CompiledRoute` can dispatch to (with per-route overrides applied).
+///
+/// This is what the synthetic `AplRouteHandler`'s `PluginConfig.capabilities`
+/// must be set to: cpex-core's executor filters the `Extensions` view
+/// before invoking every plugin (including the synthetic one), so if
+/// the handler has fewer capabilities than its inner plugins need,
+/// downstream views get doubly-filtered and label/delegation mutations
+/// fail monotonicity checks on the way back out.
+///
+/// Plugins missing from the registry are silently skipped — the
+/// dispatch plan will log a `warn!` and surface a `NotFound` at
+/// invocation time, so config drift surfaces in the right place
+/// rather than as a confusing capability gap.
+pub(crate) fn route_capability_union(
+    route: &CompiledRoute,
+    registry: &PluginRegistry,
+) -> std::collections::HashSet<String> {
+    let mut caps: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for name in collect_plugin_names(route) {
+        if let Some(eff) = EffectivePlugin::resolve(&name, registry, &route.plugin_overrides) {
+            for cap in eff.capabilities.as_slice() {
+                caps.insert(cap.clone());
+            }
+        }
+    }
+    caps
 }
 
 /// Host-owned dispatch cache. Construct once, share via `Arc<DispatchCache>`
@@ -292,7 +311,14 @@ impl DispatchCache {
     /// insert just overwrites the first. Cheap relative to the cost of
     /// the build itself, and avoids holding a write lock across the
     /// build call.
-    pub fn get_or_build(
+    ///
+    /// Async because `RouteDispatchPlan::build` may invoke
+    /// `PluginManager::build_override_entries`, which calls plugin
+    /// factories and `initialize()` for routes that declare `config:`
+    /// overrides. Routes with no overrides take a synchronous path
+    /// inside the manager (no `.await` does any real work), so the
+    /// async cost is zero for the common case.
+    pub async fn get_or_build(
         &self,
         route: &CompiledRoute,
         registry: &PluginRegistry,
@@ -307,7 +333,7 @@ impl DispatchCache {
                 }
             }
         }
-        let plan = Arc::new(RouteDispatchPlan::build(route, registry, manager));
+        let plan = Arc::new(RouteDispatchPlan::build(route, registry, manager).await);
         let mut w = self.inner.write().unwrap_or_else(|p| p.into_inner());
         w.insert(route.route_key.clone(), (current_gen, Arc::clone(&plan)));
         plan

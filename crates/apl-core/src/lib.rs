@@ -27,14 +27,14 @@ pub use evaluator::{
     evaluate_pipeline, evaluate_rules, evaluate_steps, Decision, FieldOutcome, PipelineEvaluation,
 };
 pub use parser::{
-    compile_config, parse_pipeline, parse_predicate, parse_rule, CompiledConfig, ConfigYaml,
-    ParseError, RouteYaml,
+    compile_config, compile_policy_block_value, parse_pipeline, parse_predicate, parse_rule,
+    CompiledConfig, ConfigYaml, ParseError, RouteYaml,
 };
 pub use pipeline::{FieldRule, Pipeline, ScanKind, Stage, TaintEvent, TaintScope, TypeCheck};
 pub use plugin_decl::{
     CapsView, EffectivePlugin, PluginDeclaration, PluginOverride, PluginRegistry,
 };
-pub use route::{evaluate_route, RouteDecision, RoutePayload};
+pub use route::{evaluate_post, evaluate_pre, evaluate_route, RouteDecision, RoutePayload};
 pub use rules::{
     Action, CompareOp, CompiledRoute, Condition, Expression, Literal, Phase, PhaseSet, Rule,
 };

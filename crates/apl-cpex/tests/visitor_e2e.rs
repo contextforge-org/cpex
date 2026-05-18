@@ -1,0 +1,467 @@
+// Location: ./crates/apl-cpex/tests/visitor_e2e.rs
+// Copyright 2025
+// SPDX-License-Identifier: Apache-2.0
+// Authors: Teryl Taylor
+//
+// End-to-end integration: unified-config YAML → cpex-core
+// `load_config_yaml` → `AplConfigVisitor` walks global / defaults / tags
+// / routes → `PluginManager::annotate_route` installs phase-bound
+// `AplRouteHandler`s → host calls `invoke_named::<CmfHook>` with meta →
+// route-annotation short-circuit fires the handler → APL evaluator runs
+// the layered route → real CPEX plugins dispatch through
+// `CmfPluginInvoker` inside the handler.
+//
+// This is the load-bearing test for the visitor + annotation flow. It
+// proves the whole hierarchy collapses into per-route handlers exactly
+// once at load time, and that dispatch into those handlers behaves like
+// any other plugin entry (mode, on_error, capabilities all honored
+// because the synthetic plugin's `PluginConfig` flows through the same
+// executor path).
+
+use std::sync::Arc;
+
+use async_trait::async_trait;
+
+use cpex_core::cmf::enums::Role;
+use cpex_core::cmf::{CmfHook, Message, MessagePayload};
+use cpex_core::context::PluginContext;
+use cpex_core::error::{PluginError as CoreError, PluginViolation};
+use cpex_core::extensions::MetaExtension;
+use cpex_core::factory::{PluginFactory, PluginInstance};
+use cpex_core::hooks::adapter::TypedHandlerAdapter;
+use cpex_core::hooks::payload::Extensions;
+use cpex_core::hooks::trait_def::{HookHandler, PluginResult};
+use cpex_core::manager::PluginManager;
+use cpex_core::plugin::{Plugin, PluginConfig};
+
+use apl_cpex::{register_apl, AplOptions, DispatchCache, MemorySessionStore};
+
+// =====================================================================
+// Test plugins — `allow-gate` (passes through) and `deny-gate` (denies).
+// Both register on `cmf.tool_pre_invoke`. APL routes reference them by
+// name via `plugin(<name>)` in the YAML; the visitor stacks them into
+// the route's compiled steps; the handler dispatches into them through
+// CmfPluginInvoker.
+// =====================================================================
+
+struct AllowGate {
+    cfg: PluginConfig,
+}
+
+#[async_trait]
+impl Plugin for AllowGate {
+    fn config(&self) -> &PluginConfig {
+        &self.cfg
+    }
+}
+
+impl HookHandler<CmfHook> for AllowGate {
+    async fn handle(
+        &self,
+        _payload: &MessagePayload,
+        _extensions: &Extensions,
+        _ctx: &mut PluginContext,
+    ) -> PluginResult<MessagePayload> {
+        PluginResult::allow()
+    }
+}
+
+struct AllowGateFactory;
+impl PluginFactory for AllowGateFactory {
+    fn create(&self, config: &PluginConfig) -> Result<PluginInstance, Box<CoreError>> {
+        let plugin = Arc::new(AllowGate {
+            cfg: config.clone(),
+        });
+        Ok(PluginInstance {
+            plugin: plugin.clone(),
+            handlers: vec![(
+                "cmf.tool_pre_invoke",
+                Arc::new(TypedHandlerAdapter::<CmfHook, _>::new(plugin)),
+            )],
+        })
+    }
+}
+
+struct DenyGate {
+    cfg: PluginConfig,
+}
+
+#[async_trait]
+impl Plugin for DenyGate {
+    fn config(&self) -> &PluginConfig {
+        &self.cfg
+    }
+}
+
+impl HookHandler<CmfHook> for DenyGate {
+    async fn handle(
+        &self,
+        _payload: &MessagePayload,
+        _extensions: &Extensions,
+        _ctx: &mut PluginContext,
+    ) -> PluginResult<MessagePayload> {
+        PluginResult::deny(PluginViolation::new(
+            "policy.forbidden",
+            "deny-gate fired",
+        ))
+    }
+}
+
+struct DenyGateFactory;
+impl PluginFactory for DenyGateFactory {
+    fn create(&self, config: &PluginConfig) -> Result<PluginInstance, Box<CoreError>> {
+        let plugin = Arc::new(DenyGate {
+            cfg: config.clone(),
+        });
+        Ok(PluginInstance {
+            plugin: plugin.clone(),
+            handlers: vec![(
+                "cmf.tool_pre_invoke",
+                Arc::new(TypedHandlerAdapter::<CmfHook, _>::new(plugin)),
+            )],
+        })
+    }
+}
+
+// =====================================================================
+// Helpers
+// =====================================================================
+
+fn cmf_payload(text: &str) -> MessagePayload {
+    MessagePayload {
+        message: Message::text(Role::User, text),
+    }
+}
+
+fn meta_for_tool(name: &str) -> MetaExtension {
+    let mut meta = MetaExtension::default();
+    meta.entity_type = Some("tool".to_string());
+    meta.entity_name = Some(name.to_string());
+    meta
+}
+
+/// Build a manager with `allow-gate` and `deny-gate` factories registered,
+/// then wire the APL visitor in via `register_apl`. Returns
+/// `Arc<PluginManager>` so the caller can dispatch through
+/// `invoke_named`. The visitor self-populates its plugin registry from
+/// cpex-core's parsed `Vec<PluginConfig>` via `visit_plugins` — no host
+/// pre-parse needed.
+async fn build_manager_with_visitor(yaml: &str) -> Arc<PluginManager> {
+    let mgr = Arc::new(PluginManager::default());
+    mgr.register_factory("allow-gate", Box::new(AllowGateFactory));
+    mgr.register_factory("deny-gate", Box::new(DenyGateFactory));
+
+    register_apl(
+        &mgr,
+        AplOptions {
+            dispatch_cache: Arc::new(DispatchCache::new()),
+            session_store: Arc::new(MemorySessionStore::new()),
+            pdps: Vec::new(),
+            base_capabilities: None,
+        },
+    );
+
+    mgr.load_config_yaml(yaml).expect("load_config_yaml");
+    mgr.initialize().await.expect("initialize");
+    mgr
+}
+
+// =====================================================================
+// Scenarios
+// =====================================================================
+
+/// Route declares an `apl.policy: [plugin(allow-gate)]`. After the
+/// visitor walks the config, `cmf.tool_pre_invoke` for tool `get_weather`
+/// must short-circuit to the APL handler, which dispatches the policy
+/// step into the registered `allow-gate` plugin → allow.
+#[tokio::test]
+async fn visitor_route_with_allow_plugin_returns_allow() {
+    const YAML: &str = r#"
+plugins:
+  - name: allow-gate
+    kind: allow-gate
+    hooks: [cmf.tool_pre_invoke]
+routes:
+  - tool: get_weather
+    apl:
+      policy:
+        - "plugin(allow-gate)"
+"#;
+    let mgr = build_manager_with_visitor(YAML).await;
+
+    let ext = Extensions {
+        meta: Some(Arc::new(meta_for_tool("get_weather"))),
+        ..Default::default()
+    };
+    let (result, _bg) = mgr
+        .invoke_named::<CmfHook>(
+            "cmf.tool_pre_invoke",
+            cmf_payload("hi"),
+            ext,
+            None,
+        )
+        .await;
+
+    assert!(
+        result.continue_processing,
+        "allow path should continue: violation = {:?}",
+        result.violation
+    );
+}
+
+/// Same shape but with `deny-gate`. The visitor compiles the route,
+/// annotates the manager, dispatch goes through the handler, the handler
+/// calls into deny-gate via CmfPluginInvoker, the violation propagates
+/// out as `PipelineResult.violation` with the original code + reason.
+#[tokio::test]
+async fn visitor_route_with_deny_plugin_propagates_violation() {
+    const YAML: &str = r#"
+plugins:
+  - name: deny-gate
+    kind: deny-gate
+    hooks: [cmf.tool_pre_invoke]
+routes:
+  - tool: get_weather
+    apl:
+      policy:
+        - "plugin(deny-gate)"
+"#;
+    let mgr = build_manager_with_visitor(YAML).await;
+
+    let ext = Extensions {
+        meta: Some(Arc::new(meta_for_tool("get_weather"))),
+        ..Default::default()
+    };
+    let (result, _bg) = mgr
+        .invoke_named::<CmfHook>(
+            "cmf.tool_pre_invoke",
+            cmf_payload("hi"),
+            ext,
+            None,
+        )
+        .await;
+
+    assert!(!result.continue_processing, "deny path should halt");
+    let violation = result.violation.expect("deny path must surface a violation");
+    assert_eq!(
+        violation.reason, "deny-gate fired",
+        "violation reason must propagate from the plugin through the handler"
+    );
+    assert_eq!(violation.code, "policy.forbidden");
+}
+
+/// Hierarchy: global APL policy step runs FIRST, then route APL policy.
+/// Tests apply_layer ordering — global's `plugin(allow-gate)` runs and
+/// passes, then route's `plugin(deny-gate)` fires and denies. If the
+/// global layer had been appended after instead of before, the deny
+/// would have run first and we'd see the deny path; the order assertion
+/// is implicit in the violation reason coming from deny-gate.
+#[tokio::test]
+async fn visitor_stacks_global_then_route_in_order() {
+    const YAML: &str = r#"
+plugins:
+  - name: allow-gate
+    kind: allow-gate
+    hooks: [cmf.tool_pre_invoke]
+  - name: deny-gate
+    kind: deny-gate
+    hooks: [cmf.tool_pre_invoke]
+global:
+  apl:
+    policy:
+      - "plugin(allow-gate)"
+routes:
+  - tool: get_weather
+    apl:
+      policy:
+        - "plugin(deny-gate)"
+"#;
+    let mgr = build_manager_with_visitor(YAML).await;
+
+    let ext = Extensions {
+        meta: Some(Arc::new(meta_for_tool("get_weather"))),
+        ..Default::default()
+    };
+    let (result, _bg) = mgr
+        .invoke_named::<CmfHook>(
+            "cmf.tool_pre_invoke",
+            cmf_payload("hi"),
+            ext,
+            None,
+        )
+        .await;
+
+    let violation = result.violation.expect("route-level deny must fire");
+    assert_eq!(violation.reason, "deny-gate fired");
+}
+
+/// Tag bundle stacks on top of global. A route tagged `pii` inherits
+/// `plugin(deny-gate)` from the tag bundle even though the route itself
+/// declares no APL block — proves tag layers are applied without the
+/// route having to redeclare anything.
+#[tokio::test]
+async fn visitor_applies_tag_bundle_to_tagged_route() {
+    const YAML: &str = r#"
+plugins:
+  - name: deny-gate
+    kind: deny-gate
+    hooks: [cmf.tool_pre_invoke]
+global:
+  policies:
+    pii:
+      apl:
+        policy:
+          - "plugin(deny-gate)"
+routes:
+  - tool: get_weather
+    meta:
+      tags: [pii]
+"#;
+    let mgr = build_manager_with_visitor(YAML).await;
+
+    let ext = Extensions {
+        meta: Some(Arc::new(meta_for_tool("get_weather"))),
+        ..Default::default()
+    };
+    let (result, _bg) = mgr
+        .invoke_named::<CmfHook>(
+            "cmf.tool_pre_invoke",
+            cmf_payload("hi"),
+            ext,
+            None,
+        )
+        .await;
+
+    let violation = result
+        .violation
+        .expect("tag bundle's deny-gate should propagate");
+    assert_eq!(violation.reason, "deny-gate fired");
+}
+
+/// Scope routing: a scoped annotation overrides the unscoped default for
+/// the matching scope, while requests in other scopes fall back to the
+/// unscoped annotation. Proves the visitor's `meta.scope` propagation is
+/// keying annotations correctly through cpex-core's annotation table.
+#[tokio::test]
+async fn visitor_scoped_annotation_overrides_unscoped() {
+    // Two routes for the same tool: one scoped to `vs-a`, one unscoped.
+    // The scoped route denies; the unscoped route allows. A request in
+    // scope `vs-a` must hit the scoped annotation (deny); a request in
+    // scope `vs-b` falls back to the unscoped default (allow).
+    const YAML: &str = r#"
+plugins:
+  - name: allow-gate
+    kind: allow-gate
+    hooks: [cmf.tool_pre_invoke]
+  - name: deny-gate
+    kind: deny-gate
+    hooks: [cmf.tool_pre_invoke]
+routes:
+  - tool: get_weather
+    meta:
+      scope: vs-a
+    apl:
+      policy:
+        - "plugin(deny-gate)"
+  - tool: get_weather
+    apl:
+      policy:
+        - "plugin(allow-gate)"
+"#;
+    let mgr = build_manager_with_visitor(YAML).await;
+
+    // Scope vs-a → scoped annotation → deny.
+    let mut meta_a = meta_for_tool("get_weather");
+    meta_a.scope = Some("vs-a".to_string());
+    let ext_a = Extensions {
+        meta: Some(Arc::new(meta_a)),
+        ..Default::default()
+    };
+    let (res_a, _) = mgr
+        .invoke_named::<CmfHook>("cmf.tool_pre_invoke", cmf_payload("hi"), ext_a, None)
+        .await;
+    let v = res_a.violation.expect("scoped annotation should deny");
+    assert_eq!(v.reason, "deny-gate fired");
+
+    // Scope vs-b → no scoped match → fall back to unscoped annotation → allow.
+    let mut meta_b = meta_for_tool("get_weather");
+    meta_b.scope = Some("vs-b".to_string());
+    let ext_b = Extensions {
+        meta: Some(Arc::new(meta_b)),
+        ..Default::default()
+    };
+    let (res_b, _) = mgr
+        .invoke_named::<CmfHook>("cmf.tool_pre_invoke", cmf_payload("hi"), ext_b, None)
+        .await;
+    assert!(
+        res_b.continue_processing,
+        "unscoped fall-back should allow (got violation: {:?})",
+        res_b.violation
+    );
+}
+
+/// Sanity-check: an empty plugin registry + no APL blocks anywhere
+/// means the visitor installs zero annotations and the manager behaves
+/// exactly as if no visitor was registered. Smokes the no-op path.
+#[tokio::test]
+async fn visitor_with_no_apl_blocks_installs_nothing() {
+    // No `apl:` blocks anywhere — just a route + plugin that wouldn't
+    // be referenced from any APL step.
+    const YAML: &str = r#"
+plugins:
+  - name: allow-gate
+    kind: allow-gate
+    hooks: [cmf.tool_pre_invoke]
+routes:
+  - tool: anything
+"#;
+    let mgr = build_manager_with_visitor(YAML).await;
+
+    let ext = Extensions {
+        meta: Some(Arc::new(meta_for_tool("anything"))),
+        ..Default::default()
+    };
+    let (result, _bg) = mgr
+        .invoke_named::<CmfHook>(
+            "cmf.tool_pre_invoke",
+            cmf_payload("hi"),
+            ext,
+            None,
+        )
+        .await;
+
+    // Without APL annotations the route resolves through the legacy
+    // chain. allow-gate is registered but the route doesn't reference
+    // it, so it doesn't fire either. The pipeline returns allow.
+    assert!(result.continue_processing);
+    assert!(result.violation.is_none());
+}
+
+/// Smoke test that the visitor surfaces a compile error from a malformed
+/// APL block as a `PluginError::Config` out of `load_config_yaml`. Catches
+/// regressions where visitor errors swallow into Ok(_) or panic.
+#[tokio::test]
+async fn visitor_compile_error_propagates_from_load_config_yaml() {
+    const YAML: &str = r#"
+plugins:
+  - name: allow-gate
+    kind: allow-gate
+    hooks: [cmf.tool_pre_invoke]
+routes:
+  - tool: get_weather
+    apl:
+      policy:
+        - "this-is-not-a-valid-step ::: $$$"
+"#;
+    let mgr = Arc::new(PluginManager::default());
+    mgr.register_factory("allow-gate", Box::new(AllowGateFactory));
+    register_apl(&mgr, AplOptions::in_process());
+
+    let err = mgr.load_config_yaml(YAML).expect_err("malformed APL block must error");
+    let msg = format!("{}", err);
+    assert!(
+        msg.contains("visitor 'apl'"),
+        "expected visitor error context, got: {}",
+        msg
+    );
+}

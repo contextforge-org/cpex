@@ -27,7 +27,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::evaluator::Decision;
-use crate::pipeline::TaintScope;
+use crate::pipeline::{TaintEvent, TaintScope};
 use crate::rules::Rule;
 
 /// One entry in a `policy:` or `post_policy:` list.
@@ -168,9 +168,14 @@ pub struct PdpDecision {
 #[derive(Debug, Clone)]
 pub struct PluginOutcome {
     pub decision: Decision,
-    /// Plugins may apply taint labels as a side effect. Recorded here for
-    /// the host (apl-cpex) to apply to the actual SessionStore.
-    pub taints: Vec<(String, TaintScope)>,
+    /// Plugins may apply taint labels as a side effect. Same shape as
+    /// config-emitted taints (`Step::Taint` / `Stage::Taint`) so the
+    /// downstream evaluator can append both into a single
+    /// `Vec<TaintEvent>` without converting. Each event may carry
+    /// multiple scopes — `CmfPluginInvoker` uses single-scope
+    /// (`Session`) for v0 but future invokers and plugins that emit
+    /// directly are free to span scopes.
+    pub taints: Vec<TaintEvent>,
     /// Pipe-context return: when a plugin runs as a stage inside an
     /// args/result chain, it may rewrite the field value (e.g., a PII
     /// scrubber producing a redacted string). `None` means "leave value

@@ -34,7 +34,7 @@ use apl_core::attributes::AttributeBag;
 use apl_core::evaluator::Decision;
 use apl_core::step::{PluginInvocation, PluginInvoker};
 
-use apl_cpex::{CmfPluginInvoker, RouteDispatchPlan};
+use apl_cpex::{CmfPluginInvoker, MemorySessionStore, RouteDispatchPlan};
 
 /// Build a single-plugin RouteDispatchPlan straight off the cpex-core
 /// registry — no APL CompiledRoute involved. Used by the invoker-primitive
@@ -230,7 +230,9 @@ async fn step_invocation_allow_returns_decision_allow() {
         Extensions::default(),
         payload_with_text("hello"),
         plan,
-    );
+        Arc::new(MemorySessionStore::new()),
+    )
+    .await;
 
     let outcome = invoker
         .invoke("allow-plugin", &empty_bag(), PluginInvocation::Step)
@@ -250,7 +252,9 @@ async fn step_invocation_deny_surfaces_violation_reason_and_code() {
         Extensions::default(),
         payload_with_text("hello"),
         plan,
-    );
+        Arc::new(MemorySessionStore::new()),
+    )
+    .await;
 
     let outcome = invoker
         .invoke("deny-plugin", &empty_bag(), PluginInvocation::Step)
@@ -275,7 +279,9 @@ async fn field_invocation_modify_surfaces_modified_value_and_persists_payload() 
         Extensions::default(),
         payload_with_text("hello"),
         plan,
-    );
+        Arc::new(MemorySessionStore::new()),
+    )
+    .await;
 
     let bag = empty_bag();
     let value = serde_json::Value::String("hello".to_string());
@@ -327,7 +333,9 @@ async fn current_payload_reflects_accumulated_mutations() {
         Extensions::default(),
         payload_with_text("hello"),
         plan,
-    );
+        Arc::new(MemorySessionStore::new()),
+    )
+    .await;
 
     let bag = empty_bag();
     let value = serde_json::Value::String("ignored".to_string());
@@ -505,7 +513,9 @@ async fn route_override_caps_narrow_what_plugin_sees() {
         extensions_with_subject_and_labels(),
         payload_with_text("hello"),
         plan,
-    );
+        Arc::new(MemorySessionStore::new()),
+    )
+    .await;
 
     let outcome = invoker
         .invoke("capture-plugin", &empty_bag(), PluginInvocation::Step)

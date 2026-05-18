@@ -33,8 +33,16 @@ pub enum TypeCheck {
     Uuid,
 }
 
+/// Scope at which a taint applies. Marked `#[non_exhaustive]` so new
+/// variants (e.g. `Request`, `Pipeline`, conversation-level) can be
+/// added without breaking downstream exhaustive matches. v0 emits only
+/// `Session` and `Message`; plugin-extracted taints (from
+/// `extensions.security.labels` diffs in `CmfPluginInvoker`) default to
+/// `Session` because cpex-core's label monotonicity is session-semantic.
+/// Config-side `Step::Taint`/`Stage::Taint` declares scopes explicitly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum TaintScope {
     Session,
     Message,

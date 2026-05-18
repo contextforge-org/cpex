@@ -33,3 +33,4 @@ pub mod hooks;
 pub mod manager;
 pub mod plugin;
 pub mod registry;
+pub mod visitor;

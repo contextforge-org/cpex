@@ -33,6 +33,16 @@
 
 pub mod cmf_invoker;
 pub mod dispatch_plan;
+pub mod pdp_router;
+pub mod register;
+pub mod route_handler;
+pub mod session_store;
+pub mod visitor;
 
 pub use cmf_invoker::CmfPluginInvoker;
 pub use dispatch_plan::{DispatchCache, RouteDispatchPlan, RoutePluginEntry};
+pub use pdp_router::PdpRouter;
+pub use register::{register_apl, AplOptions};
+pub use route_handler::{AplRouteHandler, Phase};
+pub use session_store::{MemorySessionStore, SessionStore};
+pub use visitor::AplConfigVisitor;
