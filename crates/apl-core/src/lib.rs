@@ -39,6 +39,7 @@ pub use rules::{
     Action, CompareOp, CompiledRoute, Condition, Expression, Literal, Phase, PhaseSet, Rule,
 };
 pub use step::{
-    PdpCall, PdpDecision, PdpDialect, PdpError, PdpResolver, PluginError, PluginInvocation,
+    PdpCall, PdpDecision, PdpDialect, PdpError, PdpFactory, PdpResolver, PluginError,
+    PluginInvocation,
     PluginInvoker, PluginOutcome, Step,
 };

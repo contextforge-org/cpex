@@ -48,11 +48,12 @@ use cpex_core::visitor::{ConfigVisitor, VisitorError};
 use apl_core::parser::compile_policy_block_value;
 use apl_core::plugin_decl::{PluginDeclaration, PluginRegistry};
 use apl_core::rules::CompiledRoute;
+use apl_core::step::{PdpFactory, PdpResolver};
 
 use crate::dispatch_plan::DispatchCache;
+use crate::pdp_router::PdpRouter;
 use crate::route_handler::{AplRouteHandler, Phase};
 use crate::session_store::SessionStore;
-use apl_core::step::PdpResolver;
 
 /// CMF hook name driven by the Pre handler. v0 maps the unified-config
 /// `args` + `policy` phases here.
@@ -64,32 +65,41 @@ pub const HOOK_POST: &str = "cmf.tool_post_invoke";
 /// Interior state accumulated as the manager walks the visitor.
 /// `plugin_registry` is populated by `visit_plugins` (called once per
 /// load); the layer fields are populated as the visitor walks
-/// `global` / `defaults` / `policies` / `routes`.
+/// `global` / `defaults` / `policies` / `routes`; `pdp_router` is
+/// populated by both code-supplied resolvers (`register_pdp`) and
+/// unified-config-driven entries under `global.apl.pdp[]` (built
+/// during `visit_global`).
 #[derive(Default)]
 struct VisitorState {
     plugin_registry: PluginRegistry,
     global_layer: Option<CompiledRoute>,
     default_layers: HashMap<String, CompiledRoute>,
     tag_layers: HashMap<String, CompiledRoute>,
+    pdp_router: PdpRouter,
 }
 
 /// APL implementation of [`cpex_core::visitor::ConfigVisitor`]. Construct
 /// once per host with the shared infrastructure (dispatch cache, session
-/// store, manager handle, optional PDP) and register with
-/// `PluginManager::register_visitor` before calling `load_config_yaml`.
+/// store, manager handle) and register with `PluginManager::register_visitor`
+/// before calling `load_config_yaml`.
 ///
-/// The plugin registry is populated automatically from cpex-core's
-/// already-parsed `Vec<PluginConfig>` via the `visit_plugins` hook —
-/// hosts don't need to pre-parse the root `plugins:` block.
+/// PDPs come from two sources, both feeding the same internal
+/// [`PdpRouter`]:
+///
+/// 1. **Code-supplied** via `register_pdp` (or `AplOptions.pdps`) —
+///    the host built the resolver in code and hands it in.
+/// 2. **Config-supplied** via `global.apl.pdp[]` blocks in the unified
+///    config — the visitor sees the block, looks up a factory by
+///    `kind`, and constructs the resolver during `visit_global`.
+///
+/// Factories are registered up front by `kind` name (`"cedar-direct"`,
+/// `"cedarling"`, …). The visitor knows nothing about specific PDP
+/// backends; everything dispatches through `PdpFactory`.
 pub struct AplConfigVisitor {
     state: RwLock<VisitorState>,
     dispatch_cache: Arc<DispatchCache>,
     session_store: Arc<dyn SessionStore>,
     manager: Weak<PluginManager>,
-    /// Shared PDP resolver — typically a `PdpRouter` registered with all
-    /// the dialects the host supports (Cedar, OPA, NeMo). Each route
-    /// handler holds an `Arc` clone.
-    pdp: Option<Arc<dyn PdpResolver>>,
     /// Baseline capabilities granted to every synthetic `AplRouteHandler`
     /// the visitor installs. Unioned with the per-route plugin
     /// capability set so APL predicates that touch extensions
@@ -97,6 +107,10 @@ pub struct AplConfigVisitor {
     /// when no plugins are referenced. Hosts that want strict gating
     /// can set this to an empty set.
     base_capabilities: std::collections::HashSet<String>,
+    /// Factories the visitor consults when it encounters a
+    /// `global.apl.pdp[]` entry. Keyed by the factory's `kind()` —
+    /// matches the `kind:` field in the YAML block.
+    pdp_factories: HashMap<String, Arc<dyn PdpFactory>>,
 }
 
 impl AplConfigVisitor {
@@ -110,19 +124,26 @@ impl AplConfigVisitor {
             dispatch_cache,
             session_store,
             manager,
-            pdp: None,
             base_capabilities: default_base_capabilities(),
+            pdp_factories: HashMap::new(),
         }
     }
 
-    /// Install a shared PDP resolver — `PdpRouter` is the typical
-    /// choice when the host needs Cedar **and** OPA **and** NeMo at the
-    /// same time. Routes that don't declare `pdp(...)` steps never
-    /// touch this; routes that do without a resolver installed will
-    /// surface `PdpError::NoResolver` at evaluation time.
-    pub fn with_pdp(mut self, pdp: Arc<dyn PdpResolver>) -> Self {
-        self.pdp = Some(pdp);
-        self
+    /// Register a code-supplied PDP resolver. Equivalent to declaring a
+    /// PDP in the unified config but for hosts that prefer wiring
+    /// resolvers in Rust. Resolvers are pushed into the internal
+    /// `PdpRouter`; the first registration per dialect wins (matches
+    /// `PdpRouter::register` semantics).
+    pub fn register_pdp(&self, resolver: Arc<dyn PdpResolver>) {
+        let mut state = self.state.write().unwrap_or_else(|p| p.into_inner());
+        state.pdp_router.register(resolver);
+    }
+
+    /// Register a PDP factory by its `kind()`. Called during
+    /// `register_apl` setup; the visitor uses these to instantiate
+    /// resolvers from `global.apl.pdp[]` config blocks.
+    pub fn register_pdp_factory(&mut self, factory: Arc<dyn PdpFactory>) {
+        self.pdp_factories.insert(factory.kind().to_string(), factory);
     }
 
     /// Replace the baseline capability set granted to every installed
@@ -138,17 +159,76 @@ impl AplConfigVisitor {
         self.base_capabilities = caps;
         self
     }
+
+    /// Parse one entry from `global.apl.pdp[]`. Reads `kind`, dispatches
+    /// to the matching factory, installs the resulting resolver into
+    /// the internal `PdpRouter`. Called per entry during `visit_global`.
+    ///
+    /// `index` is used only for diagnostics — operators see "the third
+    /// pdp entry failed" rather than a generic "a pdp entry failed."
+    fn build_pdp_from_config(
+        &self,
+        entry: &serde_yaml::Value,
+        index: usize,
+    ) -> Result<(), VisitorError> {
+        let map = entry.as_mapping().ok_or_else(|| {
+            format!(
+                "global.apl.pdp[{}] must be a mapping with a `kind:` field",
+                index
+            )
+        })?;
+        let kind = map
+            .get(serde_yaml::Value::String("kind".to_string()))
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| {
+                format!(
+                    "global.apl.pdp[{}] missing required `kind:` field",
+                    index
+                )
+            })?;
+        let factory = self.pdp_factories.get(kind).ok_or_else(|| {
+            format!(
+                "global.apl.pdp[{}] declared kind='{}' but no factory is registered for that kind — \
+                 host must call register_pdp_factory(...) before load_config_yaml",
+                index, kind
+            )
+        })?;
+        let resolver = factory.build(entry).map_err(|e| {
+            format!(
+                "global.apl.pdp[{}] (kind='{}') failed to build: {}",
+                index, kind, e
+            )
+        })?;
+        let mut state = self.state.write().unwrap_or_else(|p| p.into_inner());
+        state.pdp_router.register(resolver);
+        Ok(())
+    }
 }
 
 /// Read-only baseline for APL predicates: enough to make
-/// `authenticated`, `role.*`, `subject.*`, `security.labels`,
-/// `delegated`, `delegation.*`, and `agent.*` evaluate correctly.
-/// Excludes all *write* capabilities — those are granted on demand by
-/// the per-route plugin union when a plugin declares
-/// `append_labels` / `append_delegation` / `write_headers`.
+/// `authenticated`, `role.*`, `perm.*`, `subject.*`, `claim.*`,
+/// `subject.teams`, `security.labels`, `delegated`, `delegation.*`,
+/// and `agent.*` evaluate correctly. Excludes all *write* capabilities
+/// — those are granted on demand by the per-route plugin union when a
+/// plugin declares `append_labels` / `append_delegation` /
+/// `write_headers`.
+///
+/// `read_subject` alone unlocks only `subject.id` / `subject.type`;
+/// roles, permissions, teams, and claims are each gated by their own
+/// capability (`read_roles` / `read_permissions` / `read_teams` /
+/// `read_claims`). PDP-driven policies routinely read principal.roles /
+/// principal.claims, so the baseline grants all four — tightening
+/// further would surprise APL authors whose `cedar:` policies suddenly
+/// see empty role sets in deployments with no plugin-declared caps.
+/// Hosts that want strict subject access override this via
+/// `AplOptions.base_capabilities`.
 fn default_base_capabilities() -> std::collections::HashSet<String> {
     [
         "read_subject",
+        "read_roles",
+        "read_permissions",
+        "read_teams",
+        "read_claims",
         "read_labels",
         "read_delegation",
         "read_agent",
@@ -200,7 +280,24 @@ impl ConfigVisitor for AplConfigVisitor {
         let Some(apl_block) = apl_subblock(yaml) else {
             return Ok(());
         };
-        let compiled = compile_policy_block_value("global.apl", apl_block)
+
+        // Process `apl.pdp[]` before stacking the policy/post_policy
+        // layer — route handlers that reference PDPs need them
+        // resolvable by the time `visit_route` runs.
+        if let Some(pdp_entries) = apl_block.get("pdp").and_then(|v| v.as_sequence()) {
+            for (i, entry) in pdp_entries.iter().enumerate() {
+                self.build_pdp_from_config(entry, i)?;
+            }
+        }
+
+        // The `pdp:` sub-key isn't an APL DSL field; strip it before
+        // handing the block to `compile_policy_block_value` so the
+        // compiler doesn't see an unknown key. `compile_policy_block_value`
+        // accepts maps with `policy:` / `post_policy:` / `args:` /
+        // `result:` / `plugins:` (and inert fields it ignores), so a
+        // shallow strip on a clone is enough.
+        let policy_only = strip_pdp_key(apl_block);
+        let compiled = compile_policy_block_value("global.apl", &policy_only)
             .map_err(|e| Box::new(e) as VisitorError)?;
         self.state
             .write()
@@ -275,14 +372,20 @@ impl ConfigVisitor for AplConfigVisitor {
             .map(|m| m.tags.clone())
             .unwrap_or_default();
 
-        // Snapshot the plugin registry once outside the per-entity loop.
-        // `visit_plugins` populated this before any `visit_route` call;
-        // routes share the same registry, so cloning into an `Arc` once
-        // and handing clones to each handler is cheaper than re-reading
-        // the RwLock per entity.
-        let plugin_registry = {
+        // Snapshot the plugin registry + PDP router once outside the
+        // per-entity loop. `visit_plugins` populated the registry
+        // before any `visit_route` call; the router has been populated
+        // by code-supplied `register_pdp` calls + `visit_global`
+        // factory dispatch. Routes share both, so cloning each into an
+        // `Arc` once and handing clones to each handler is cheaper than
+        // re-reading the RwLock per entity. Cloning `PdpRouter` is
+        // refcount bumps on each inner resolver — cheap.
+        let (plugin_registry, pdp_router_arc) = {
             let state = self.state.read().unwrap_or_else(|p| p.into_inner());
-            Arc::new(state.plugin_registry.clone())
+            (
+                Arc::new(state.plugin_registry.clone()),
+                Arc::new(state.pdp_router.clone()) as Arc<dyn PdpResolver>,
+            )
         };
 
         for entity_name in &entity_names {
@@ -344,7 +447,7 @@ impl ConfigVisitor for AplConfigVisitor {
                 &self.dispatch_cache,
                 &self.session_store,
                 &self.manager,
-                self.pdp.clone(),
+                Some(Arc::clone(&pdp_router_arc)),
                 &self.base_capabilities,
             );
             install_handler(
@@ -359,7 +462,7 @@ impl ConfigVisitor for AplConfigVisitor {
                 &self.dispatch_cache,
                 &self.session_store,
                 &self.manager,
-                self.pdp.clone(),
+                Some(Arc::clone(&pdp_router_arc)),
                 &self.base_capabilities,
             );
         }
@@ -465,6 +568,19 @@ fn names_of(sol: &cpex_core::config::StringOrList) -> Vec<String> {
         cpex_core::config::StringOrList::Single(p) => vec![p.as_str().to_string()],
         cpex_core::config::StringOrList::List(v) => v.clone(),
     }
+}
+
+/// Strip the `pdp` sub-key from an `apl:` mapping so the remainder can
+/// be handed to `compile_policy_block_value` (which doesn't model PDP
+/// declarations — those are CPEX wiring concerns). Returns a clone of
+/// the mapping with `pdp` removed; the original is left intact.
+fn strip_pdp_key(apl_block: &serde_yaml::Value) -> serde_yaml::Value {
+    let Some(map) = apl_block.as_mapping() else {
+        return apl_block.clone();
+    };
+    let mut cloned = map.clone();
+    cloned.remove(&serde_yaml::Value::String("pdp".to_string()));
+    serde_yaml::Value::Mapping(cloned)
 }
 
 /// Bridge cpex-core's JSON-based `Option<serde_json::Value>` config slot

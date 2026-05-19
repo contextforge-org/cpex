@@ -118,6 +118,35 @@ pub trait PdpResolver: Send + Sync {
     ) -> Result<PdpDecision, PdpError>;
 }
 
+/// Build a [`PdpResolver`] from a unified-config block. Implemented per
+/// PDP backend (cedar-direct, cedarling, opa, …) and registered with
+/// the apl-cpex visitor so unified-config YAML can declare PDPs
+/// without the host pre-constructing them in code.
+///
+/// Hosts register a factory by handing it to apl-cpex's
+/// `AplOptions.pdp_factories`. When the visitor walks the unified
+/// config and finds a `global.apl.pdp[].kind` matching the factory's
+/// reported `kind()`, it calls `build` with the rest of that block.
+///
+/// The error type is `Box<dyn Error + Send + Sync>` to keep this trait
+/// in apl-core (which has no cpex deps). apl-cpex's visitor wraps
+/// the boxed error into `VisitorError` → `PluginError::Config` at the
+/// manager boundary.
+pub trait PdpFactory: Send + Sync {
+    /// Identifies which `kind:` in a config block this factory handles.
+    /// Convention: kebab-case matching the published PDP product name
+    /// (`"cedar-direct"`, `"cedarling"`, `"opa"`, …).
+    fn kind(&self) -> &str;
+
+    /// Build a resolver from the rest of the PDP config block (everything
+    /// under the same map level as `kind`). Implementations parse their
+    /// own config shape; missing or malformed fields surface here.
+    fn build(
+        &self,
+        config: &serde_yaml::Value,
+    ) -> Result<std::sync::Arc<dyn PdpResolver>, Box<dyn std::error::Error + Send + Sync>>;
+}
+
 /// Context for one plugin invocation: tells the invoker the *intent* of
 /// the call so it can dispatch to the right CPEX hook contract.
 ///

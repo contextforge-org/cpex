@@ -28,7 +28,13 @@ use apl_core::step::{PdpCall, PdpDecision, PdpDialect, PdpError, PdpResolver};
 
 /// Dispatches PDP calls to the right resolver based on
 /// `Step::Pdp.call.dialect`. Construct with `new()`, add resolvers via
-/// `register`, then hand the router to `AplRouteHandler::with_pdp`.
+/// `register`, then hand the router to a route handler.
+///
+/// Cloning is cheap (refcount bumps on each resolver `Arc`) — the
+/// `AplConfigVisitor` snapshots its accumulated router into an `Arc`
+/// for every installed route handler so a config reload that mutates
+/// the visitor state doesn't tear in-flight handlers.
+#[derive(Clone)]
 pub struct PdpRouter {
     resolvers: HashMap<PdpDialect, Arc<dyn PdpResolver>>,
 }

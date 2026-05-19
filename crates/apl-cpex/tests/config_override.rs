@@ -157,6 +157,7 @@ async fn build_manager(yaml: &str) -> (Arc<PluginManager>, Arc<std::sync::atomic
             dispatch_cache: Arc::new(DispatchCache::new()),
             session_store: Arc::new(MemorySessionStore::new()),
             pdps: Vec::new(),
+            pdp_factories: Vec::new(),
             base_capabilities: None,
         },
     );

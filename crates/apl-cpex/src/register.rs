@@ -12,15 +12,23 @@
 // orchestrators (future Rego, Cedar-direct, hand-rolled audit visitors)
 // that don't fit the APL setup.
 //
-// # Why one PDP slot but a `Vec` of resolvers
+// # Two ways to supply PDPs
 //
-// `AplConfigVisitor` carries a single `Arc<dyn PdpResolver>` so that
-// any resolver (direct Cedar, direct OPA, or a `PdpRouter` carrying
-// many) plugs in uniformly. When the caller passes more than one
-// resolver via `AplOptions.pdps`, this function wraps them in a
-// `PdpRouter` so each `pdp(...)` step dispatches by dialect. Passing
-// zero resolvers is fine — APL routes that don't use `pdp(...)` steps
-// won't notice.
+// PDP resolvers can reach the visitor's internal `PdpRouter` via two
+// channels, and `AplOptions` exposes both:
+//
+//   * `pdps`           — code-supplied resolvers. The host built them
+//                        in Rust (e.g. a hand-rolled audit resolver,
+//                        a test fake) and hands them in directly.
+//   * `pdp_factories`  — factories the visitor consults when it sees a
+//                        `global.apl.pdp[]` entry in the unified
+//                        config. Each factory advertises a `kind()`
+//                        string that matches the YAML block's `kind:`
+//                        field.
+//
+// Both channels feed the same `PdpRouter` inside the visitor, so a
+// host can mix the two freely — code-supplied Cedar for tests plus a
+// config-declared OPA in prod, say.
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -28,12 +36,12 @@ use std::sync::Arc;
 use cpex_core::manager::PluginManager;
 use cpex_core::visitor::ConfigVisitor;
 
-use apl_core::step::PdpResolver;
+use apl_core::step::{PdpFactory, PdpResolver};
 
 use crate::dispatch_plan::DispatchCache;
-use crate::pdp_router::PdpRouter;
 use crate::session_store::SessionStore;
 use crate::visitor::AplConfigVisitor;
+
 
 /// Configuration for [`register_apl`]. All runtime collaborators APL
 /// needs to do its work are funneled through here so the call site
@@ -49,13 +57,23 @@ pub struct AplOptions {
     /// DynamoDB-backed impls.
     pub session_store: Arc<dyn SessionStore>,
 
-    /// Zero or more PDP resolvers. Wrapped in a [`PdpRouter`] under
-    /// the hood so `pdp(...)` steps dispatch by dialect. An empty
-    /// list means no PDP is wired — routes that call `pdp(...)`
-    /// surface `PdpError::NoResolver` at evaluation time, which is the
-    /// correct behavior for "you forgot to configure your policy
-    /// decision point."
+    /// Zero or more code-supplied PDP resolvers. Each is registered
+    /// into the visitor's internal `PdpRouter`, so `pdp(...)` steps
+    /// dispatch by dialect across this list **and** any resolvers the
+    /// visitor builds from `global.apl.pdp[]` config entries. An empty
+    /// list combined with empty `pdp_factories` means no PDP is wired
+    /// — routes that call `pdp(...)` surface `PdpError::NoResolver` at
+    /// evaluation time, which is the correct behavior for "you forgot
+    /// to configure your policy decision point."
     pub pdps: Vec<Arc<dyn PdpResolver>>,
+
+    /// PDP factories the visitor consults when it encounters a
+    /// `global.apl.pdp[]` entry. Each factory advertises a `kind()`
+    /// string that matches the YAML block's `kind:` field — e.g.
+    /// `cedar-direct`, `cedarling`, `opa`. An empty list disables
+    /// config-driven PDP wiring; hosts can still supply resolvers via
+    /// `pdps`.
+    pub pdp_factories: Vec<Arc<dyn PdpFactory>>,
 
     /// Override the visitor's baseline capabilities for installed
     /// `AplRouteHandler`s. `None` uses the visitor's default
@@ -77,6 +95,7 @@ impl AplOptions {
             dispatch_cache: Arc::new(DispatchCache::new()),
             session_store: Arc::new(crate::session_store::MemorySessionStore::new()),
             pdps: Vec::new(),
+            pdp_factories: Vec::new(),
             base_capabilities: None,
         }
     }
@@ -84,17 +103,19 @@ impl AplOptions {
 
 /// Build an [`AplConfigVisitor`] from the supplied options and register
 /// it on the manager. Returns the `Arc<AplConfigVisitor>` so the caller
-/// can stash it for later inspection (e.g. for a custom `with_pdp`
-/// extension) — but in the typical case the return value is dropped
-/// and the visitor lives inside the manager's visitor list.
+/// can stash it for later inspection (or call `register_pdp` on it
+/// after the fact for late-bound resolvers) — but in the typical case
+/// the return value is dropped and the visitor lives inside the
+/// manager's visitor list.
 ///
 /// After this call, the next `mgr.load_config_yaml(yaml)` invocation
 /// will walk the visitor: cpex-core's [`visit_plugins`][vp] populates
-/// the APL plugin registry from `&[PluginConfig]`; the hierarchy walk
-/// stacks `global.apl` / `defaults.<entity>.apl` / `policies.<tag>.apl`
-/// / route-level `apl:` into compiled routes; one `AplRouteHandler` is
-/// installed per route per phase via
-/// [`PluginManager::annotate_route`][ar].
+/// the APL plugin registry from `&[PluginConfig]`; `visit_global`
+/// processes any `global.apl.pdp[]` entries by dispatching to the
+/// registered `pdp_factories`; the hierarchy walk stacks `global.apl`
+/// / `defaults.<entity>.apl` / `policies.<tag>.apl` / route-level
+/// `apl:` into compiled routes; one `AplRouteHandler` is installed
+/// per route per phase via [`PluginManager::annotate_route`][ar].
 ///
 /// [vp]: cpex_core::visitor::ConfigVisitor::visit_plugins
 /// [ar]: cpex_core::manager::PluginManager::annotate_route
@@ -105,6 +126,7 @@ impl AplOptions {
 /// use std::sync::Arc;
 /// use cpex_core::manager::PluginManager;
 /// use apl_cpex::{register_apl, AplOptions};
+/// use apl_pdp_cedar_direct::CedarDirectPdpFactory;
 ///
 /// let mgr = Arc::new(PluginManager::default());
 /// mgr.register_factory("scope-gate", Box::new(ScopeGateFactory));
@@ -112,7 +134,9 @@ impl AplOptions {
 /// apl_cpex::register_apl(&mgr, AplOptions {
 ///     dispatch_cache: dispatch_cache.clone(),
 ///     session_store: session_store.clone(),
-///     pdps: vec![cedar, opa],   // wrapped in PdpRouter internally
+///     pdps: vec![],                                       // none code-supplied
+///     pdp_factories: vec![Arc::new(CedarDirectPdpFactory::new())],
+///     base_capabilities: None,
 /// });
 ///
 /// mgr.load_config_yaml(&yaml_string)?;
@@ -126,31 +150,36 @@ pub fn register_apl(
         dispatch_cache,
         session_store,
         pdps,
+        pdp_factories,
         base_capabilities,
     } = opts;
 
+    // Build the visitor and apply consuming builders first (these take
+    // `self` by value), then mutating registrations (`&mut self` for
+    // factories), and finally wrap in `Arc` so we can hand the shared
+    // handle to the manager. Code-supplied PDPs go through
+    // `register_pdp(&self, ...)` which uses interior mutability, so
+    // they're registered after the `Arc` wrap.
     let mut visitor = AplConfigVisitor::new(
         dispatch_cache,
         session_store,
         Arc::downgrade(mgr),
     );
 
-    // Compose 0 / 1 / N PDP resolvers under a single `Arc<dyn PdpResolver>`.
-    // The router itself is a `PdpResolver` whose `evaluate` dispatches by
-    // dialect, so any number of resolvers folds into the same shape.
-    if !pdps.is_empty() {
-        let mut router = PdpRouter::new();
-        for pdp in pdps {
-            router.register(pdp);
-        }
-        visitor = visitor.with_pdp(Arc::new(router));
-    }
-
     if let Some(caps) = base_capabilities {
         visitor = visitor.with_base_capabilities(caps);
     }
 
+    for factory in pdp_factories {
+        visitor.register_pdp_factory(factory);
+    }
+
     let arc = Arc::new(visitor);
+
+    for pdp in pdps {
+        arc.register_pdp(pdp);
+    }
+
     mgr.register_visitor(Arc::clone(&arc) as Arc<dyn ConfigVisitor>);
     arc
 }
