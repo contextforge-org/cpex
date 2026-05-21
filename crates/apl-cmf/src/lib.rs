@@ -19,9 +19,12 @@
 // async, no I/O. Composition is via the convenience `BagBuilder`.
 //
 // Attribute namespace contract (each module owns the detail comment):
-//   SecurityExtension.subject     → subject.*, role.*, perm.*, claim.*, authenticated
-//   SecurityExtension.agent       → workload.*    (not `agent.*` — that's AgentExtension)
-//   SecurityExtension              → security.labels, security.classification, auth_method
+//   SecurityExtension.subject         → subject.*, role.*, perm.*, claim.*, authenticated
+//   SecurityExtension.client          → client.*, client.role.*, client.perm.*, client.claim.*
+//   SecurityExtension.caller_workload → caller_workload.*   (inbound attested peer)
+//   SecurityExtension.this_workload   → this_workload.*     (our own attested identity —
+//                                         not `agent.*`, which is `AgentExtension`)
+//   SecurityExtension                  → security.labels, security.classification, auth_method
 //   DelegationExtension           → delegation.*, delegated
 //   AgentExtension                 → agent.*       (session, conversation, lineage)
 //   MetaExtension                  → meta.*
@@ -64,7 +67,7 @@ pub use meta::extract_meta;
 pub use payload::{extract_args, extract_result};
 pub use provenance::extract_provenance;
 pub use request::extract_request;
-pub use security::extract_security;
+pub use security::{extract_client, extract_security, extract_workload};
 
 use apl_core::AttributeBag;
 use cpex_core::extensions::{DelegationExtension, Extensions, SecurityExtension};

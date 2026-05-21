@@ -25,6 +25,7 @@ use super::llm::LLMExtension;
 use super::mcp::MCPExtension;
 use super::meta::MetaExtension;
 use super::provenance::ProvenanceExtension;
+use super::raw_credentials::RawCredentialsExtension;
 use super::request::RequestExtension;
 use super::security::SecurityExtension;
 
@@ -65,6 +66,19 @@ pub struct Extensions {
     /// Delegation chain (frozen as Arc).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delegation: Option<Arc<DelegationExtension>>,
+
+    /// Raw credential material — Layer 3 of the credential storage
+    /// model (see `RawCredentialsExtension` docs). Capability-gated;
+    /// `filter_extensions` strips this slot for plugins without
+    /// `read_inbound_credentials` / `read_delegated_tokens`. Token
+    /// fields inside this extension are `#[serde(skip)]`, so any
+    /// serialization (logs, audit dumps, hot-reload snapshots) drops
+    /// secret material even when the slot itself survives. The
+    /// out-of-process consequence — remote / WASM plugins can't see
+    /// raw tokens at all — is intentional and documented on
+    /// `RawCredentialsExtension`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw_credentials: Option<Arc<RawCredentialsExtension>>,
 
     /// MCP entity metadata (immutable).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -113,6 +127,7 @@ impl Clone for Extensions {
             http: self.http.clone(),
             security: self.security.clone(),
             delegation: self.delegation.clone(),
+            raw_credentials: self.raw_credentials.clone(),
             mcp: self.mcp.clone(),
             completion: self.completion.clone(),
             provenance: self.provenance.clone(),
@@ -158,6 +173,7 @@ impl Extensions {
             llm: self.llm.clone(),
             framework: self.framework.clone(),
             meta: self.meta.clone(),
+            raw_credentials: self.raw_credentials.clone(),
 
             // Mutable/monotonic/guarded — cloned out of Arc into owned
             http: self.http.as_ref().map(|arc| Guarded::new((**arc).clone())),
@@ -209,6 +225,7 @@ impl Extensions {
             && ptr_eq_opt(&self.llm, &modified.llm)
             && ptr_eq_opt(&self.framework, &modified.framework)
             && ptr_eq_opt(&self.meta, &modified.meta)
+            && ptr_eq_opt(&self.raw_credentials, &modified.raw_credentials)
     }
 
     /// Merge an OwnedExtensions back into this Extensions.
@@ -248,6 +265,11 @@ pub struct OwnedExtensions {
     pub llm: Option<Arc<LLMExtension>>,
     pub framework: Option<Arc<FrameworkExtension>>,
     pub meta: Option<Arc<MetaExtension>>,
+    /// Raw credentials are shared by Arc here too — write tokens for
+    /// `inbound_tokens` and `delegated_tokens` mutation paths land in
+    /// slice 2 (IdentityResolve) and slice 3 (TokenDelegate). Until
+    /// then, no plugin writes through `OwnedExtensions.raw_credentials`.
+    pub raw_credentials: Option<Arc<RawCredentialsExtension>>,
 
     // Mutable/monotonic/guarded — owned, modifiable
     pub http: Option<Guarded<HttpExtension>>,

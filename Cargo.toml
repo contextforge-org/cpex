@@ -14,6 +14,7 @@ members = [
     "crates/apl-core",
     "crates/apl-cmf",
     "crates/apl-cpex",
+    "crates/apl-pdp-cedar-direct",
     "examples/go-demo/ffi",
 ]
 

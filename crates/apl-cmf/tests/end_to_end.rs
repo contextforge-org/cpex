@@ -15,8 +15,8 @@ use apl_core::{
 };
 use async_trait::async_trait;
 use cpex_core::extensions::{
-    AgentIdentity, DelegationExtension, DelegationHop, SecurityExtension, SubjectExtension,
-    SubjectType,
+    DelegationExtension, DelegationHop, SecurityExtension, SubjectExtension, SubjectType,
+    WorkloadIdentity,
 };
 use serde_json::json;
 use std::collections::{HashMap, HashSet};
@@ -76,7 +76,7 @@ fn alice_hr() -> SecurityExtension {
             teams: HashSet::from(["compliance".to_string()]),
             claims: HashMap::from([("iss".to_string(), "auth.corp".to_string())]),
         }),
-        agent: Some(AgentIdentity {
+        this_workload: Some(WorkloadIdentity {
             client_id: Some("hr-tool".into()),
             ..Default::default()
         }),

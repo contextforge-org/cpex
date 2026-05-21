@@ -30,3 +30,8 @@ hashbrown = { workspace = true }
 arc-swap = { workspace = true }
 wildmatch = { workspace = true }
 chrono = { workspace = true }
+# Zeroizing wrapper for raw credential material in RawCredentialsExtension.
+# `derive` feature pulls the proc-macro so we can `#[derive(Zeroize)]` on
+# token-bearing structs in a future slice; for now only the
+# `Zeroizing<String>` wrapper is used directly.
+zeroize = { version = "1.8", features = ["zeroize_derive"] }
