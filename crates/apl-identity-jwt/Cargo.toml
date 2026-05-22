@@ -1,0 +1,71 @@
+# Location: ./crates/apl-identity-jwt/Cargo.toml
+# Copyright 2025
+# SPDX-License-Identifier: Apache-2.0
+# Authors: Teryl Taylor
+#
+# apl-identity-jwt — JWT-based `IdentityResolveHandler`.
+#
+# Validates inbound JWTs against configured trusted issuers
+# (signature + exp + aud + iss claims) and maps the validated claims
+# into `SubjectExtension` / `ClientExtension` via a configurable
+# claim-mapper. The raw token is stashed in
+# `RawCredentialsExtension.inbound_tokens` for forwarding plugins
+# downstream.
+#
+# # Why this exists alongside `apl-cedarling`
+#
+# Cedarling's JWT validation is bundled with Cedar policy
+# evaluation — it doesn't expose validated identity as a separate
+# data product. For deployments that want JWT validation without
+# (or before) the Cedar policy step, this crate fills the gap.
+# Lightweight (~5-15 transitive deps) vs Cedarling (~200).
+#
+# # Default-members
+#
+# This crate IS in the workspace's default-members — the dep tree
+# is small enough that it doesn't slow down default builds. Compare
+# to `apl-cedarling`, which is excluded.
+
+[package]
+name = "apl-identity-jwt"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+apl-core = { path = "../apl-core" }
+cpex-core = { path = "../cpex-core" }
+
+# `jsonwebtoken` is the de facto JWT library for Rust. ~5 transitive
+# deps (ring, base64, serde, pem). Supports RS256/RS384/RS512,
+# ES256/ES384, EdDSA, HS256/HS384/HS512. Default features include
+# `use_pem` (load DecodingKey from PEM strings) which we want.
+jsonwebtoken = "9"
+
+# `base64` for the peek-at-iss helper (split + URL_SAFE_NO_PAD decode
+# of the middle JWT segment). Pinned to 0.22 to match what
+# jsonwebtoken 9 pulls — Cargo dedups to a single version.
+base64 = "0.22"
+
+# `chrono` for the `resolved_at` timestamp on IdentityPayload. Comes
+# in transitively via cpex-core already; redeclaring keeps the
+# direct-dep relationship visible.
+chrono = { workspace = true }
+
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }
+# RSA keypair + JWK fixtures for tests. `rsa` generates keypairs;
+# `pkcs8` encodes them in the PEM format jsonwebtoken accepts.
+rsa = { version = "0.9", features = ["pem"] }
+# rsa 0.9's `RsaPrivateKey::new(&mut rng, bits)` takes an rng
+# implementing `rand_core::CryptoRngCore` — `rand::thread_rng()`
+# satisfies that. Test-only dep.
+rand = "0.8"

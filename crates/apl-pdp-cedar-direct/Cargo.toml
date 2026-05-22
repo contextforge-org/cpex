@@ -30,9 +30,20 @@ authors.workspace = true
 
 [dependencies]
 apl-core = { path = "../apl-core" }
-# Pinned to match the Cedar version Cedarling depends on, so swapping
-# resolvers doesn't change decision semantics on identical inputs.
-cedar-policy = "4.10"
+# Permissive caret spec — `"4"` means "any 4.x that Cargo can find."
+# We rely on Cargo's standard version resolution to dedup with
+# cedarling's `cedar-policy = "4.9.0"` (also caret), so both crates
+# end up compiling against the same `cedar-policy` version (currently
+# 4.11 — bumps automatically when either side allows a newer 4.x).
+# This matters because mixing `cedar_policy@4.9::Decision` and
+# `cedar_policy@4.11::Decision` in the same workspace would produce
+# distinct types Rust treats as incompatible.
+#
+# Code-side note: we use `Request::new(...)` (added in 4.11 alongside
+# the deprecated builder; still available in older 4.x via the
+# constructor form). Tracked separately if we ever need to support
+# pre-4.x or post-5.x.
+cedar-policy = "4"
 async-trait = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

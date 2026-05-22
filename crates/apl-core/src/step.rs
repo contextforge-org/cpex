@@ -73,7 +73,15 @@ pub struct PdpCall {
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum PdpDialect {
+    /// Bare Cedar policy evaluation (`apl-pdp-cedar-direct`).
     Cedar,
+    /// Cedarling-mediated Cedar evaluation — same language but
+    /// adds signed policy stores, multi-issuer JWT validation, and
+    /// (with Lock Server) centralized policy management. Distinct
+    /// from `Cedar` so both can coexist in a single `PdpRouter`;
+    /// route YAML can target either with `cedar:(...)` or
+    /// `cedarling:(...)` keys.
+    Cedarling,
     Opa,
     AuthZen,
     NeMo,
@@ -82,11 +90,13 @@ pub enum PdpDialect {
 }
 
 impl PdpDialect {
-    /// Parse a YAML key prefix like `cedar`, `opa`, `authzen`, `nemo`
-    /// into the matching `PdpDialect`. Unknown dialects become `Custom`.
+    /// Parse a YAML key prefix like `cedar`, `cedarling`, `opa`,
+    /// `authzen`, `nemo` into the matching `PdpDialect`. Unknown
+    /// dialects become `Custom`.
     pub fn from_key(key: &str) -> Self {
         match key {
             "cedar" => Self::Cedar,
+            "cedarling" => Self::Cedarling,
             "opa" => Self::Opa,
             "authzen" => Self::AuthZen,
             "nemo" => Self::NeMo,

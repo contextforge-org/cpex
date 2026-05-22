@@ -565,10 +565,10 @@ fn parse_require_rule(line: &str) -> Result<Expression, ParseError> {
     })
 }
 
-/// Detect `taint(...)` / `plugin(...)` / `cedar:` / `opa(` / `authzen(` / `nemo(`.
+/// Detect `taint(...)` / `plugin(...)` / `cedar:` / `cedarling:` / `opa(` / `authzen(` / `nemo(`.
 fn detect_step_kind(s: &str) -> Option<&'static str> {
     let s = s.trim_start();
-    for prefix in ["taint(", "plugin(", "cedar:", "opa(", "authzen(", "nemo(", "sequential:", "parallel:"] {
+    for prefix in ["taint(", "plugin(", "cedar:", "cedarling:", "opa(", "authzen(", "nemo(", "sequential:", "parallel:"] {
         if s.starts_with(prefix) {
             return Some(prefix.trim_end_matches('(').trim_end_matches(':'));
         }
@@ -1724,6 +1724,36 @@ routes:
                 assert!(!args_map.contains_key(serde_yaml::Value::String("on_deny".into())));
                 assert_eq!(on_deny.len(), 1);
                 assert_eq!(on_allow.len(), 1);
+            }
+            other => panic!("expected Step::Pdp, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn compile_pdp_call_cedarling_map_form() {
+        // `cedarling:` is its own dialect — same map shape as `cedar:`
+        // but routes to the Cedarling-backed resolver in the
+        // PdpRouter, letting cedar-direct and cedarling coexist.
+        let yaml = r#"
+routes:
+  authz_check:
+    policy:
+      - cedarling:
+          action: read
+          resource: employee
+          on_deny:
+            - deny
+"#;
+        let routes = compile_config(yaml).unwrap().routes;
+        let route = routes.get("authz_check").unwrap();
+        match &route.policy[0] {
+            Step::Pdp { call, on_deny, .. } => {
+                assert_eq!(call.dialect, PdpDialect::Cedarling);
+                let args_map = call.args.as_mapping().expect("cedarling args should be a map");
+                assert!(args_map.contains_key(serde_yaml::Value::String("action".into())));
+                assert!(args_map.contains_key(serde_yaml::Value::String("resource".into())));
+                assert!(!args_map.contains_key(serde_yaml::Value::String("on_deny".into())));
+                assert_eq!(on_deny.len(), 1);
             }
             other => panic!("expected Step::Pdp, got {:?}", other),
         }
