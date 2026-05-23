@@ -386,6 +386,44 @@ impl PluginManager {
             .register(kind, factory);
     }
 
+    /// Register a factory that handles all plugin `kind`s starting
+    /// with `<scheme>:`. Used by dynamic loaders (cdylib, WASM,
+    /// gRPC) where the kind string carries a resource locator
+    /// alongside the plugin name — e.g.
+    /// `kind: "lib:/opt/plugins/foo.so#bar"`.
+    ///
+    /// The factory's `create()` receives the full kind string
+    /// (including the scheme prefix) and is responsible for
+    /// parsing the scheme-specific format.
+    ///
+    /// Exact-match `register_factory` registrations win over
+    /// scheme matches when both could apply.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// // Once at host startup:
+    /// manager.register_factory_scheme(
+    ///     "lib",
+    ///     Box::new(DynamicPluginFactory::new()),
+    /// );
+    ///
+    /// // Operators then write in unified-config YAML:
+    /// // plugins:
+    /// //   - name: rate-limit
+    /// //     kind: "lib:/opt/plugins/rate_limit.so#default"
+    /// ```
+    pub fn register_factory_scheme(
+        &self,
+        scheme: impl Into<String>,
+        factory: Box<dyn crate::factory::PluginFactory>,
+    ) {
+        self.factories
+            .write()
+            .unwrap_or_else(|p| p.into_inner())
+            .register_scheme(scheme, factory);
+    }
+
     // -----------------------------------------------------------------------
     // Config Loading
     // -----------------------------------------------------------------------

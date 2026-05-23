@@ -1,0 +1,70 @@
+# Location: ./crates/cpex-dynamic-plugin/Cargo.toml
+# Copyright 2025
+# SPDX-License-Identifier: Apache-2.0
+# Authors: Teryl Taylor
+#
+# cpex-dynamic-plugin — load Rust cdylib plugins at runtime via
+# libloading.
+#
+# # Design notes
+#
+# See `docs/specs/cpex-rust-spec.md` §17 (Dynamic Plugin Loading).
+# Plugin and host compile against the same `cpex-core` version
+# (same-version-only Rust ABI). `Arc<dyn AnyHookHandler>` crosses
+# the dlopen boundary as the stable vtable type; no serialization
+# of payloads, extensions, or results.
+#
+# # Two roles, one crate, feature-gated
+#
+# This crate has two audiences:
+#
+#   * **Plugin authors** — depend on this crate to get the entry-
+#     point types + helper macros. The default feature set is what
+#     they need; libloading is NOT pulled.
+#   * **Hosts** — depend on this crate with the `host` feature to
+#     pull in libloading + `DynamicPluginFactory`. Hosts register
+#     the factory under a kind (default `"dynamic"`) and operators
+#     reference dynamic plugins via that kind in unified config.
+#
+# Keeping it one crate avoids two-crate version-skew issues
+# (plugin and host always see the same ABI types because they're
+# in the same package).
+
+[package]
+name = "cpex-dynamic-plugin"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[features]
+# Plugin-side default — no libloading, no extra deps. Plugin
+# authors get just the ABI types + helper macros.
+default = []
+# Host-side opt-in — pulls libloading + the DynamicPluginFactory.
+host = ["dep:libloading"]
+
+[dependencies]
+cpex-core = { path = "../cpex-core" }
+
+# libloading is the de-facto Rust crate for dlopen / LoadLibraryW.
+# Optional: only pulled when the `host` feature is enabled, so
+# plugin-side builds stay light.
+libloading = { version = "0.8", optional = true }
+
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }
+# Depending on the example plugin crate triggers cargo to build
+# its cdylib artifact alongside this crate's tests. We don't
+# actually USE anything from the rlib at the Rust level — the
+# integration test loads the built `.so` / `.dylib` / `.dll`
+# directly via libloading. The dep edge is purely a build-order
+# trigger.
+cpex-dynamic-plugin-example = { path = "../../examples/cpex-dynamic-plugin-example" }
+cpex-dynamic-plugin-multi-handler-example = { path = "../../examples/cpex-dynamic-plugin-multi-handler-example" }
