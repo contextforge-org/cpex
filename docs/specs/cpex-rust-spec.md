@@ -1349,9 +1349,9 @@ cargo run --example cmf_capabilities_demo -p cpex-core
 cargo test --workspace
 ```
 
-## 17. Dynamic Plugin Loading (Design Note)
+## 17. Dynamic Plugin Loading
 
-> **Status:** the C ABI path described below is shipped today (cpex-ffi, the Go integration). The Rust `cdylib` path is design-only — see §18 row "Native (`dlopen`) plugin loader."
+> **Status:** both transports are shipped. The C ABI path lives in `cpex-ffi` (used by the Go integration). The Rust `cdylib` path lives in `cpex-dynamic-plugin` — the architecture below applies to both; §17.5–17.8 cover the cdylib-specific surface that shipped.
 
 The framework is built so dynamic plugins (loaded at runtime from a `.so` / `.dylib` / `.dll`) work without changing the typed plugin-author API. The architecture deliberately separates two layers:
 
@@ -1370,7 +1370,7 @@ The typed `HookHandler<H>` is non-object-safe (because of `impl Future` return-p
 | Strategy | Status | What crosses the boundary |
 |---|---|---|
 | **C ABI via cpex-ffi** | Shipped (Go integration) | `extern "C"` functions, opaque manager handles, MessagePack-encoded payloads. Plugins never touch `HookHandler<H>` directly — they implement whatever the FFI shim exposes. See [cpex-go-spec.md](./cpex-go-spec.md). |
-| **Rust `cdylib` via `dlopen`** | Not implemented | A `cdylib` exports a registration entry point that returns `Arc<dyn AnyHookHandler>` (or a vec of named handlers). Host loads via `libloading` and registers via `PluginManager::register_raw`. |
+| **Rust `cdylib` via `dlopen`** | Shipped in `cpex-dynamic-plugin` | A `cdylib` exports a registration entry point that returns a `PluginRegistration` containing an `Arc<dyn Plugin>` plus a `Vec<(hook_name, Arc<dyn AnyHookHandler>)>`. Host loads via `libloading`, registers via `DynamicPluginFactory` (scheme: `lib`). See §17.5–17.8. |
 
 ### 17.2 Async stays end-to-end
 
@@ -1394,15 +1394,120 @@ Independent of which transport you pick:
 - **No nested `block_on`.** A dynamic plugin must never `block_on` inside `handle` — the future is already running on a tokio task and nested blocking will panic. Same rule as in-tree plugins, but easier to forget when the plugin lives in someone else's repo.
 - **Panic isolation.** The host wraps every `AnyHookHandler::invoke` call in `catch_unwind`. cpex-ffi already does this at the C boundary; a Rust `cdylib` host would do the same at the registration shim.
 
-Specific to the Rust `cdylib` path:
+Specific to the Rust `cdylib` path (`cpex-dynamic-plugin`):
 
-- **Rust ABI instability.** Plugin and host must be compiled with the same compiler version *and* same dependency versions. Different versions = UB. Mitigations: pin both, ship the host crate as a `=` version requirement, or use the `abi_stable` crate (gives a C-compatible vtable at the cost of an extra layer).
-- **Allocator boundaries.** A `Box`/`Arc` allocated by the plugin must be dropped by the same allocator. The simplest path is for both sides to use the system allocator; otherwise the plugin must expose a free function the host calls on drop.
-- **Symbol visibility.** The plugin's registration entry point must be `#[no_mangle] pub extern "C"` so `dlsym` can find it. Everything else can stay regular Rust.
+- **Same-version-only Rust ABI.** Plugin and host must be compiled with the same compiler version *and* same dependency versions. Different versions = UB. The shipped mitigation is a runtime `ABI_VERSION: u32` handshake at the entry point: the host passes its version, the plugin compares against its own compiled-against constant, mismatches return `EntryPointResult::AbiMismatch` before any unsafe access. Possible future extensions:
+  - A per-version plugin build container that ships with each CPEX release, so plugin authors get a guaranteed-matching toolchain via `cargo cpex plugin build` without thinking about versions.
+  - The `abi_stable` crate, which gives structurally-validated stable vtables at the cost of `R*`-wrapped types everywhere on the boundary and per-call wrapper overhead. Reserved for a future where third-party plugin authors distribute binaries independently of host releases.
+- **Allocator boundaries.** A `Box`/`Arc` allocated by the plugin must be dropped by the same allocator. Both sides use `std::alloc::System` by default; plugin authors must not override `#[global_allocator]`.
+- **Symbol visibility.** Entry points are emitted by the `cpex_dynamic_plugin!` / `cpex_dynamic_plugins!` macros as `#[no_mangle] pub unsafe extern "C"` so `dlsym` can find them. Authors never write the unsafe FFI by hand.
+- **Library lifetime.** `Arc<dyn Plugin>` vtables point into the cdylib's text section; unloading the library while any Arc is live would SIGSEGV. The host `Box::leak`s the `libloading::Library` handle so loaded plugins stay mapped for the rest of the process. Hot reload would require refcounting the library alongside all derived `Arc`s — explicitly out of scope.
+- **Panic across `extern "C"`.** Unwinding a panic across `extern "C"` is UB. The macros wrap the user's `create` closure in `catch_unwind` and return `EntryPointResult::Panic` on catch. Handler invocations rely on the same panic-isolation pattern as in-tree plugins.
 
 ### 17.4 Why this works without changing the typed API
 
-The handler-collapse work in §6.2 (single async `HookHandler<H>` trait) is orthogonal to dynamic loading. AFIT lives at the typed layer (inside the plugin's own binary); the module boundary lives at the type-erased layer. They don't collide. Plugin authors writing native, FFI, or hypothetical-cdylib plugins all write the same `async fn handle(...)` against the same `HookHandler<H>` trait — only the registration shim changes between transports.
+The handler-collapse work in §6.2 (single async `HookHandler<H>` trait) is orthogonal to dynamic loading. AFIT lives at the typed layer (inside the plugin's own binary); the module boundary lives at the type-erased layer. They don't collide. Plugin authors writing native, FFI, or cdylib plugins all write the same `async fn handle(...)` against the same `HookHandler<H>` trait — only the registration shim changes between transports.
+
+### 17.5 URL-shaped `kind` and factory scheme dispatch
+
+Operators reference dynamic plugins via a URL-shaped `kind:` string:
+
+```
+<scheme>:<path>[?entry=<name>][#handler]
+```
+
+Components:
+
+- **`scheme`** — selects which factory loads the plugin. Default for `cpex-dynamic-plugin` is `lib`; other future schemes (e.g., `wasm:`) can register independently.
+- **`path`** — filesystem path to the cdylib (absolute or relative; Windows drive letters supported via "first colon only" splitting).
+- **`?entry=<name>`** — optional. Names a specific entry point inside a multi-plugin cdylib (§17.6). Validated as a C identifier (`[a-zA-Z_][a-zA-Z0-9_]*`) before any symbol lookup.
+- **`#handler`** — optional. Filters a multi-handler registration down to a single named handler.
+
+Worked examples:
+
+```yaml
+plugins:
+  - name: my-plugin
+    kind: "lib:/opt/plugins/foo.so"                            # single plugin
+
+  - name: identity
+    kind: "lib:/opt/plugins/auth.so#identity.resolve"          # multi-handler, pick one
+
+  - name: rate-limit
+    kind: "lib:/opt/plugins/multi.so?entry=rate_limiter"       # multi-plugin
+
+  - name: audit-post
+    kind: "lib:/opt/plugins/multi.so?entry=audit#cmf.tool_post_invoke"
+```
+
+The factory dispatch lives in `cpex_core::factory::PluginFactoryRegistry`: exact-`kind` matches win first, then `split_once(':')` falls back to a scheme registry. Hosts wire a dynamic-plugin factory via:
+
+```rust
+mgr.register_factory_scheme("lib", Box::new(DynamicPluginFactory::new()));
+```
+
+Loader concerns (path, entry, handler filter) live in the kind URL by design — the plugin's `config:` block stays purely the plugin's own settings.
+
+### 17.6 Single-plugin vs multi-plugin cdylibs
+
+Two plugin-author macros, chosen per cdylib based on what you're shipping:
+
+| Macro | Symbol(s) | Manifest | When |
+|---|---|---|---|
+| `cpex_dynamic_plugin!` | `cpex_plugin_create` | None | One plugin per cdylib. `?entry=` not used. |
+| `cpex_dynamic_plugins!` | `cpex_plugin_create_<entry>` per entry | `cpex_plugin_list` discovery symbol | Several distinct plugins packaged in one cdylib. Operator selects via `?entry=<name>`. |
+
+Both macros generate the unsafe FFI glue: ABI-version handshake, config deserialization, `catch_unwind`, ownership transfer of the `PluginRegistration` via `Box::into_raw` / `Box::from_raw` (system allocator both sides).
+
+A `PluginRegistration` carries:
+
+```rust
+pub struct PluginRegistration {
+    pub abi_version: u32,
+    pub name: String,                                          // plugin author-set; for diagnostics
+    pub version: String,
+    pub plugin: Arc<dyn Plugin>,                               // primary plugin handle
+    pub handlers: Vec<(String, Arc<dyn AnyHookHandler>)>,      // hook_name → handler
+}
+```
+
+Multi-handler is orthogonal to multi-plugin: each entry of a multi-plugin cdylib can itself register multiple handlers, addressable via the `#handler` URL fragment.
+
+### 17.7 Discovery: the optional `cpex_plugin_list` symbol
+
+Multi-plugin cdylibs export an optional discovery symbol so the host can validate `?entry=<name>` up-front and produce friendly diagnostics:
+
+```rust
+pub const LIST_SYMBOL: &[u8] = b"cpex_plugin_list";
+pub type ListFn = unsafe extern "C" fn() -> *const PluginManifest;
+
+pub struct PluginManifest {
+    pub abi_version: u32,
+    pub entries: &'static [PluginManifestEntry],
+}
+
+pub struct PluginManifestEntry {
+    pub entry: &'static str,        // the ?entry= value; matches cpex_plugin_create_<entry>
+    pub name: &'static str,         // human-readable display name
+    pub version: &'static str,
+    pub description: &'static str,
+}
+```
+
+All manifest data is `&'static` — baked into the cdylib's read-only memory at compile time. Nothing for the host to free, nothing for the plugin to reallocate. The macro emits the manifest as a `static` const.
+
+When the host sees `?entry=foo` and the manifest is present, it validates `foo` against `entries[].entry`. Unknown entries get `"no entry 'foo'. Available: [bar, baz]"`. When the manifest is absent (legacy single-plugin layout or operator opted out), the host falls through to plain `dlsym` and surfaces the raw "symbol not found" error.
+
+For hard-breaking changes to the manifest layout itself, the convention is to bump the symbol name (e.g., `cpex_plugin_list_v2`) rather than relying on `abi_version` alone — same idea as `dlsym` symbol versioning.
+
+### 17.8 Feature gating: plugin vs host roles
+
+`cpex-dynamic-plugin` serves two audiences from one crate:
+
+- **Plugin authors** depend with default features. They get `abi`, `plugin` (the macros), but NOT `libloading`. Plugin-side builds stay light.
+- **Hosts** depend with `--features host`. That pulls `libloading` and exposes `DynamicPluginFactory`.
+
+Keeping both roles in one crate eliminates the two-crate version-skew class of bugs (plugin and host always see the same ABI types because they're in the same package).
 
 ## 18. Gaps and Unimplemented Features
 
@@ -1418,7 +1523,7 @@ The handler-collapse work in §6.2 (single async `HookHandler<H>` trait) is orth
 | Isolated (subprocess) plugins | `framework/isolated/` | Not yet implemented |
 | PDP (AuthZen/OPA) integration | `framework/pdp/` | Not yet implemented |
 | WASM plugin loader | `cpex-hosts::wasm` (planned) | Not yet implemented |
-| Native (`dlopen`) plugin loader | `cpex-hosts::native` (planned) | Not yet implemented |
+| Native (`dlopen`) plugin loader | `cpex-hosts::native` (planned) | Shipped in `cpex-dynamic-plugin` (see §17.5–17.8) |
 | `retry_delay_ms` in `PipelineResult` | `models.py` | Not implemented |
 
 The `cpex_core::plugin::Plugin` trait doc-comment mentions `cpex-hosts::{wasm,python,native}` host crates that would bridge to non-Rust plugin runtimes. None exist yet — this is a design intent placeholder, not shipped functionality.
