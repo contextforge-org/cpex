@@ -57,6 +57,11 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+# `paste` is used by the `cpex_dynamic_plugins!` macro to build
+# `cpex_plugin_create_<entry>` identifiers from the user-supplied
+# entry name. Plugin authors don't reference paste directly; the
+# macro re-exports it under `$crate::paste`.
+paste = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }
@@ -66,5 +71,6 @@ tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }
 # integration test loads the built `.so` / `.dylib` / `.dll`
 # directly via libloading. The dep edge is purely a build-order
 # trigger.
-cpex-dynamic-plugin-example = { path = "../../examples/cpex-dynamic-plugin-example" }
-cpex-dynamic-plugin-multi-handler-example = { path = "../../examples/cpex-dynamic-plugin-multi-handler-example" }
+cpex-dynamic-plugin-example = { path = "examples/single-plugin" }
+cpex-dynamic-plugin-multi-handler-example = { path = "examples/multi-handler" }
+cpex-dynamic-plugin-multi-plugin-example = { path = "examples/multi-plugin" }

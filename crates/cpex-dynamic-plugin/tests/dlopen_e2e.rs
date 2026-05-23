@@ -44,6 +44,10 @@ const EXAMPLE_CRATE: &str = "cpex_dynamic_plugin_example";
 /// handlers: pre-invoke allow + post-invoke deny.
 const MULTI_HANDLER_CRATE: &str = "cpex_dynamic_plugin_multi_handler_example";
 
+/// Name of the multi-plugin example crate. Packages TWO distinct
+/// plugins (allow + deny) under `?entry=allow` and `?entry=deny`.
+const MULTI_PLUGIN_CRATE: &str = "cpex_dynamic_plugin_multi_plugin_example";
+
 /// Locate a cdylib in the workspace target directory by crate
 /// name. Uses `CARGO_MANIFEST_DIR` (the cpex-dynamic-plugin
 /// crate's dir, set by cargo at test build time) and walks up to
@@ -519,4 +523,302 @@ plugins:
         .violation
         .expect("deny should carry a violation");
     assert_eq!(violation.code, "test.multi_handler.post_deny");
+}
+
+// --------------------------------------------------------------------
+// Multi-plugin-per-cdylib tests (slice DL-3).
+//
+// These exercise the `?entry=<name>` URL parameter and the optional
+// `cpex_plugin_list` discovery symbol. The multi-plugin example
+// cdylib packages TWO distinct plugins:
+//
+//   * `?entry=allow` → allow-gate plugin → continue_processing=true
+//   * `?entry=deny`  → deny-gate plugin  → continue_processing=false,
+//                                          violation.code="test.multi_plugin.deny"
+//
+// Crucially, the multi-plugin cdylib does NOT export the default
+// `cpex_plugin_create` symbol — operators MUST select an entry. That
+// gives the tests a way to confirm the host's symbol resolution is
+// keyed off `?entry=` rather than always falling back to the default.
+// --------------------------------------------------------------------
+
+/// `?entry=allow` selects the allow-gate plugin from the multi-
+/// plugin cdylib. Verdict is "allow," and the plugin instance
+/// reports its plugin-author-set name `allow-gate`.
+#[tokio::test]
+async fn multi_plugin_entry_allow_loads_allow_gate() {
+    let mgr = Arc::new(PluginManager::default());
+    mgr.register_factory_scheme("lib", Box::new(DynamicPluginFactory::new()));
+
+    let kind = format!("{}?entry=allow", cdylib_kind(MULTI_PLUGIN_CRATE));
+    let yaml = format!(
+        r#"
+plugins:
+  - name: multi-allow
+    kind: "{kind}"
+    hooks: [cmf.tool_pre_invoke]
+    mode: sequential
+    priority: 10
+    on_error: fail
+    config: {{}}
+"#,
+    );
+    let parsed = cpex_core::config::parse_config(&yaml)
+        .expect("YAML parses into CpexConfig");
+    mgr.load_config(parsed)
+        .expect("multi-plugin cdylib loads with ?entry=allow");
+    mgr.initialize().await.unwrap();
+
+    let payload = MessagePayload {
+        message: Message::text(Role::User, "allow test"),
+    };
+    let (result, _bg) = mgr
+        .invoke_named::<CmfHook>(
+            "cmf.tool_pre_invoke",
+            payload,
+            Extensions::default(),
+            None,
+        )
+        .await;
+    assert!(
+        result.continue_processing,
+        "?entry=allow should select the allow-gate plugin",
+    );
+}
+
+/// `?entry=deny` selects the deny-gate plugin from the SAME cdylib.
+/// Verdict is "deny" with the distinctive violation code, proving
+/// the host routed to a different entry-point function than the
+/// previous test (not just running the same plugin twice).
+#[tokio::test]
+async fn multi_plugin_entry_deny_loads_deny_gate() {
+    let mgr = Arc::new(PluginManager::default());
+    mgr.register_factory_scheme("lib", Box::new(DynamicPluginFactory::new()));
+
+    let kind = format!("{}?entry=deny", cdylib_kind(MULTI_PLUGIN_CRATE));
+    let yaml = format!(
+        r#"
+plugins:
+  - name: multi-deny
+    kind: "{kind}"
+    hooks: [cmf.tool_pre_invoke]
+    mode: sequential
+    priority: 10
+    on_error: fail
+    config: {{}}
+"#,
+    );
+    let parsed = cpex_core::config::parse_config(&yaml)
+        .expect("YAML parses into CpexConfig");
+    mgr.load_config(parsed)
+        .expect("multi-plugin cdylib loads with ?entry=deny");
+    mgr.initialize().await.unwrap();
+
+    let payload = MessagePayload {
+        message: Message::text(Role::User, "deny test"),
+    };
+    let (result, _bg) = mgr
+        .invoke_named::<CmfHook>(
+            "cmf.tool_pre_invoke",
+            payload,
+            Extensions::default(),
+            None,
+        )
+        .await;
+    assert!(
+        !result.continue_processing,
+        "?entry=deny should select the deny-gate plugin",
+    );
+    let violation = result.violation.expect("deny should carry a violation");
+    assert_eq!(
+        violation.code, "test.multi_plugin.deny",
+        "violation code identifies the deny entry as the one that ran",
+    );
+}
+
+/// BOTH entries of the SAME cdylib loaded into one PluginManager
+/// under different operator-facing names. The cdylib is dlopen'd
+/// twice (or once with refcount 2; the OS dedupes) but the host's
+/// PluginInstance map has two distinct entries. Pipeline aggregates
+/// to a deny because the deny-gate fires.
+#[tokio::test]
+async fn multi_plugin_both_entries_coexist() {
+    let mgr = Arc::new(PluginManager::default());
+    mgr.register_factory_scheme("lib", Box::new(DynamicPluginFactory::new()));
+
+    let allow_kind = format!("{}?entry=allow", cdylib_kind(MULTI_PLUGIN_CRATE));
+    let deny_kind = format!("{}?entry=deny", cdylib_kind(MULTI_PLUGIN_CRATE));
+    let yaml = format!(
+        r#"
+plugins:
+  - name: gate-allow
+    kind: "{allow_kind}"
+    hooks: [cmf.tool_pre_invoke]
+    mode: sequential
+    priority: 10
+    on_error: fail
+    config: {{}}
+  - name: gate-deny
+    kind: "{deny_kind}"
+    hooks: [cmf.tool_pre_invoke]
+    mode: sequential
+    priority: 20
+    on_error: fail
+    config: {{}}
+"#,
+    );
+    let parsed = cpex_core::config::parse_config(&yaml)
+        .expect("YAML parses into CpexConfig");
+    mgr.load_config(parsed)
+        .expect("both entries of the multi-plugin cdylib load");
+    mgr.initialize().await.unwrap();
+
+    let payload = MessagePayload {
+        message: Message::text(Role::User, "two-entry test"),
+    };
+    let (result, _bg) = mgr
+        .invoke_named::<CmfHook>(
+            "cmf.tool_pre_invoke",
+            payload,
+            Extensions::default(),
+            None,
+        )
+        .await;
+    // Pipeline: allow-gate runs (priority 10) → allows → deny-gate
+    // runs (priority 20) → denies → pipeline result is the deny.
+    // The fact that the deny VIOLATION CODE shows up proves that
+    // the second plugin instance is the deny entry, not a second
+    // copy of the allow entry.
+    assert!(
+        !result.continue_processing,
+        "deny-gate (priority 20) should produce a deny verdict",
+    );
+    let violation = result.violation.expect("deny should carry a violation");
+    assert_eq!(violation.code, "test.multi_plugin.deny");
+}
+
+/// `?entry=nonexistent` should be rejected at load time with a
+/// friendly diagnostic listing the available entries from the
+/// cdylib's manifest. This is the load-bearing test for the
+/// `cpex_plugin_list` discovery symbol — if it weren't being read,
+/// the error would just be a raw dlsym "symbol not found."
+#[tokio::test]
+async fn multi_plugin_unknown_entry_lists_available_entries() {
+    let mgr = Arc::new(PluginManager::default());
+    mgr.register_factory_scheme("lib", Box::new(DynamicPluginFactory::new()));
+
+    let kind = format!("{}?entry=nonexistent", cdylib_kind(MULTI_PLUGIN_CRATE));
+    let yaml = format!(
+        r#"
+plugins:
+  - name: bogus
+    kind: "{kind}"
+    hooks: [cmf.tool_pre_invoke]
+    mode: sequential
+    priority: 10
+    on_error: fail
+    config: {{}}
+"#,
+    );
+    let parsed = cpex_core::config::parse_config(&yaml)
+        .expect("YAML parses into CpexConfig");
+    let err = mgr
+        .load_config(parsed)
+        .expect_err("unknown entry should fail config load");
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("no entry 'nonexistent'"),
+        "expected diagnostic to mention the requested entry; got: {msg}",
+    );
+    assert!(
+        msg.contains("allow") && msg.contains("deny"),
+        "expected diagnostic to list available entries [allow, deny]; got: {msg}",
+    );
+}
+
+/// A multi-plugin cdylib without `?entry=` should fail because it
+/// doesn't export the default `cpex_plugin_create` symbol. The
+/// error message tells the operator what's missing — and since the
+/// manifest IS available, the "no symbol" path can pivot to "did
+/// you mean ?entry=allow or ?entry=deny?" via the hint.
+///
+/// We assert the error mentions the missing default symbol; the
+/// "did you use the macro?" hint applies here since `parsed.entry`
+/// is None, which the host treats as the single-plugin case.
+#[tokio::test]
+async fn multi_plugin_without_entry_fails_with_helpful_error() {
+    let mgr = Arc::new(PluginManager::default());
+    mgr.register_factory_scheme("lib", Box::new(DynamicPluginFactory::new()));
+
+    // Note: no `?entry=` in the kind URL.
+    let kind = cdylib_kind(MULTI_PLUGIN_CRATE);
+    let yaml = format!(
+        r#"
+plugins:
+  - name: no-entry
+    kind: "{kind}"
+    hooks: [cmf.tool_pre_invoke]
+    mode: sequential
+    priority: 10
+    on_error: fail
+    config: {{}}
+"#,
+    );
+    let parsed = cpex_core::config::parse_config(&yaml)
+        .expect("YAML parses into CpexConfig");
+    let err = mgr
+        .load_config(parsed)
+        .expect_err("multi-plugin cdylib without ?entry= should fail");
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("cpex_plugin_create"),
+        "expected diagnostic to mention the missing default symbol; got: {msg}",
+    );
+}
+
+/// Sanity check that the single-plugin cdylib still works after the
+/// host gained `?entry=` support. Same code as the original happy-
+/// path test but kept distinct so a regression in single-plugin
+/// behavior is easy to identify.
+#[tokio::test]
+async fn single_plugin_path_still_works_with_no_entry() {
+    let mgr = Arc::new(PluginManager::default());
+    mgr.register_factory_scheme("lib", Box::new(DynamicPluginFactory::new()));
+
+    let cfg = example_plugin_config();
+    let yaml = format!(
+        r#"
+plugins:
+  - name: {name}
+    kind: "{kind}"
+    hooks: [cmf.tool_pre_invoke]
+    mode: sequential
+    priority: 10
+    on_error: fail
+    config: {{}}
+"#,
+        name = cfg.name,
+        kind = cfg.kind,
+    );
+    let parsed = cpex_core::config::parse_config(&yaml)
+        .expect("YAML parses into CpexConfig");
+    mgr.load_config(parsed)
+        .expect("single-plugin cdylib still loads with no ?entry=");
+    mgr.initialize().await.unwrap();
+
+    let payload = MessagePayload {
+        message: Message::text(Role::User, "single-plugin compat"),
+    };
+    let (result, _bg) = mgr
+        .invoke_named::<CmfHook>(
+            "cmf.tool_pre_invoke",
+            payload,
+            Extensions::default(),
+            None,
+        )
+        .await;
+    assert!(
+        result.continue_processing,
+        "single-plugin allow-gate still wired correctly",
+    );
 }

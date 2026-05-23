@@ -377,6 +377,117 @@ fragment, every registered handler is wired.
 
 ---
 
+## Multiple plugins per cdylib
+
+The `cpex_dynamic_plugin!` macro (singular) emits one plugin per
+shared library. If you want to ship several unrelated plugins in
+one binary — different code, different identities, different
+versions — use the `cpex_dynamic_plugins!` macro (plural) instead.
+
+### Why pick this over multi-handler?
+
+The two shapes solve different problems:
+
+| Shape | Macro | One PluginRegistration per | When |
+|-------|-------|---------------------------|------|
+| **Multi-handler** | `cpex_dynamic_plugin!` | cdylib (with many `(hook, handler)` pairs inside) | One plugin that participates in several lifecycle hooks. |
+| **Multi-plugin** | `cpex_dynamic_plugins!` | `?entry=<name>` selector | Several genuinely distinct plugins packaged together for deployment convenience. |
+
+Use multi-handler unless you specifically need multiple
+*independent* plugins. The two shapes are not mutually exclusive —
+each entry in a multi-plugin cdylib can itself register multiple
+handlers.
+
+### Plugin author side
+
+```rust
+use cpex_core::plugin::{Plugin, PluginConfig};
+use cpex_dynamic_plugin::{cpex_dynamic_plugins, PluginRegistration};
+
+fn build_rate_limiter(cfg: PluginConfig) -> Result<PluginRegistration, String> {
+    // ... build and return PluginRegistration ...
+#   unimplemented!()
+}
+
+fn build_audit(cfg: PluginConfig) -> Result<PluginRegistration, String> {
+    // ... build and return PluginRegistration ...
+#   unimplemented!()
+}
+
+cpex_dynamic_plugins! {
+    rate_limiter => {
+        name: "Rate Limiter",
+        version: "1.0.0",
+        description: "Token-bucket rate limiter",
+        create: build_rate_limiter,
+    },
+    audit => {
+        name: "Audit Logger",
+        version: "0.5.0",
+        description: "Writes hook events to disk",
+        create: build_audit,
+    },
+}
+```
+
+The macro generates:
+
+* One `cpex_plugin_create_<entry>` symbol per entry (the ident
+  before `=>`). The host resolves these by composing the entry
+  name from the operator's `?entry=<name>` URL.
+* A `cpex_plugin_list` discovery symbol. Hosts read it to validate
+  the operator's `?entry=` against the available entries up-front,
+  so unknown entries get a friendly "available: [rate_limiter,
+  audit]" error instead of a raw "symbol not found" from dlsym.
+
+The entry name (`rate_limiter`, `audit`) MUST be a valid Rust
+identifier — the macro requires that. It also has to be a valid C
+identifier so the generated symbol name is well-formed; the host
+validates the operator's `?entry=<value>` against
+`[a-zA-Z_][a-zA-Z0-9_]*` before any symbol lookup.
+
+### Operator side
+
+Each entry is addressable from YAML via `?entry=<name>`:
+
+```yaml
+plugins:
+  - name: edge-rate-limit
+    kind: "lib:/opt/plugins/libmulti.so?entry=rate_limiter"
+    hooks: [cmf.tool_pre_invoke]
+    config:
+      max_per_second: 100
+  - name: audit-trail
+    kind: "lib:/opt/plugins/libmulti.so?entry=audit"
+    hooks: [cmf.tool_post_invoke]
+    config:
+      log_path: /var/log/cpex-audit.log
+```
+
+The shared library is `dlopen`'d once (the OS dedupes), but each
+entry produces an independent `PluginInstance` with its own
+config, name, and handler set.
+
+URL component order is `<scheme>:<path>[?entry=<name>][#handler]`,
+so `?entry=` and `#handler` can be combined for a multi-plugin
+cdylib whose entries themselves register multiple handlers:
+
+```yaml
+kind: "lib:/opt/plugins/libmulti.so?entry=audit#cmf.tool_post_invoke"
+```
+
+### Single-plugin migration is opt-in
+
+Cdylibs built with the singular `cpex_dynamic_plugin!` keep
+working exactly as before — they export `cpex_plugin_create` with
+no entry suffix, no manifest, and YAML keeps using
+`kind: "lib:/path/foo.so"` with no `?entry=`. Nothing changes
+unless you migrate to `cpex_dynamic_plugins!`. The two macros are
+independent; pick one per cdylib based on whether you're shipping
+one plugin or several.
+
+---
+
 ## Plugin configuration
 
 Plugins read their settings from `cfg.config` — the
@@ -516,11 +627,22 @@ absolute library path for ops debugging.
 
 ---
 
-## Reference example
+## Reference examples
 
-Working reference plugin: [`examples/cpex-dynamic-plugin-example`](../../examples/cpex-dynamic-plugin-example).
-A minimal allow-everything plugin used by this crate's
-integration tests; the simplest possible shape, ~50 lines.
+All under [`examples/`](./examples), each a standalone cdylib
+crate built alongside this crate's integration tests:
+
+* **[`single-plugin/`](./examples/single-plugin)** — minimal
+  allow-everything plugin. The simplest possible `cpex_dynamic_plugin!`
+  (singular) shape; ~50 lines. Start here.
+* **[`multi-handler/`](./examples/multi-handler)** — one plugin
+  with two handlers wired to different hooks (pre-invoke allow,
+  post-invoke deny). Demonstrates Pattern A from the multi-handler
+  section above.
+* **[`multi-plugin/`](./examples/multi-plugin)** — two distinct
+  plugins (allow + deny) packaged in one cdylib via
+  `cpex_dynamic_plugins!` (plural). Operator selects via
+  `?entry=allow` or `?entry=deny`.
 
 ## Tests
 
@@ -528,5 +650,5 @@ integration tests; the simplest possible shape, ~50 lines.
   plugin-side ABI helpers and the kind-string parser (no
   dlopen involved).
 * `cargo test -p cpex-dynamic-plugin --features host` — full
-  suite including the dlopen integration test that loads the
-  reference example at runtime.
+  suite including the dlopen integration tests that load every
+  reference example above at runtime.

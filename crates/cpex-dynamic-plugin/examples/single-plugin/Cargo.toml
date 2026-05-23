@@ -1,0 +1,49 @@
+# Location: ./crates/cpex-dynamic-plugin/examples/single-plugin/Cargo.toml
+# Copyright 2025
+# SPDX-License-Identifier: Apache-2.0
+# Authors: Teryl Taylor
+#
+# Reference dynamic plugin — compiles as a cdylib loaded at runtime
+# by `cpex-dynamic-plugin`'s `DynamicPluginFactory`. Used by
+# `cpex-dynamic-plugin`'s integration tests as the load-bearing
+# "everything actually works" check.
+#
+# # Crate types
+#
+#   * `cdylib` — what the host actually loads via `libloading`.
+#                Produces `libcpex_dynamic_plugin_example.{so,dylib,dll}`
+#                in the workspace target dir.
+#   * `rlib`   — lets other workspace crates (specifically
+#                `cpex-dynamic-plugin`'s dev-dep on this) trigger
+#                cargo to build the cdylib as a side effect of
+#                running tests. Without the rlib, cargo can't
+#                depend on the cdylib in the Rust sense.
+#
+# # What this plugin does
+#
+# Trivial CMF plugin that always allows. Confirms end-to-end:
+#   1. `cpex_dynamic_plugin!` macro generates the entry point.
+#   2. Host's `DynamicPluginFactory` dlopens + binds + calls it.
+#   3. The returned `Arc<dyn Plugin>` + handler survive across the
+#      FFI boundary intact and the executor can invoke them.
+#
+# Doesn't try to test the full surface (config-driven behavior,
+# violations, payload mutation) — that's what later, deployment-
+# specific plugins would exercise.
+
+[package]
+name = "cpex-dynamic-plugin-example"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[lib]
+# `cdylib` is what dlopens; `rlib` is the rustc-level handle other
+# workspace crates can depend on to trigger building both.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+cpex-core = { path = "../../../cpex-core" }
+cpex-dynamic-plugin = { path = "../.." }
+async-trait = { workspace = true }

@@ -1,0 +1,41 @@
+# Location: ./crates/cpex-dynamic-plugin/examples/multi-plugin/Cargo.toml
+# Copyright 2025
+# SPDX-License-Identifier: Apache-2.0
+# Authors: Teryl Taylor
+#
+# Reference cdylib that packages MULTIPLE distinct plugins in one
+# shared library. Uses the `cpex_dynamic_plugins!` (plural) macro
+# to emit:
+#
+#   * cpex_plugin_create_allow   — always-allow gate.
+#   * cpex_plugin_create_deny    — always-deny gate with a
+#                                  recognizable violation code.
+#   * cpex_plugin_list           — manifest discovery symbol.
+#
+# Operator selects which one to load via `?entry=<name>` in the
+# kind URL:
+#
+#   kind: "lib:/path/multi_plugin.so?entry=allow"
+#   kind: "lib:/path/multi_plugin.so?entry=deny"
+#
+# Used by `cpex-dynamic-plugin`'s integration tests to verify:
+#   * Multiple plugins coexist in one cdylib.
+#   * The host's symbol resolution + manifest validation works.
+#   * Friendly errors for unknown entries.
+#   * Default `cpex_plugin_create` symbol absence doesn't break
+#     anything (operator MUST specify `?entry=` for this cdylib).
+
+[package]
+name = "cpex-dynamic-plugin-multi-plugin-example"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+cpex-core = { path = "../../../cpex-core" }
+cpex-dynamic-plugin = { path = "../.." }
+async-trait = { workspace = true }

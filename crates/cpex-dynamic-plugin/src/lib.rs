@@ -37,9 +37,19 @@ pub mod plugin;
 pub mod host;
 
 pub use abi::{
-    EntryPointFn, EntryPointResult, PluginRegistration, ABI_VERSION, ENTRY_POINT_SYMBOL,
+    EntryPointFn, EntryPointResult, ListFn, PluginManifest, PluginManifestEntry,
+    PluginRegistration, ABI_VERSION, ENTRY_POINT_SYMBOL, LIST_SYMBOL,
 };
 pub use plugin::{dispatch_create, CreateFn};
 
 #[cfg(feature = "host")]
 pub use host::DynamicPluginFactory;
+
+// `paste` is re-exported under a hidden module so the
+// `cpex_dynamic_plugins!` macro can reference it as
+// `$crate::__macro_support::paste::paste!`. Plugin authors don't
+// touch this directly — they just use the macro.
+#[doc(hidden)]
+pub mod __macro_support {
+    pub use paste;
+}
