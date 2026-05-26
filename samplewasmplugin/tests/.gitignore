@@ -1,0 +1,8 @@
+/target
+/build/*.wasm
+/build/*.sig
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+Cargo.lock

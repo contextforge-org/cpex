@@ -63,6 +63,11 @@ dev = [
     "vulture>=2.14",
 ]
 
+wasm = [
+    "wasmtime>=20.0",   # Component Model support; track Wasmtime majors
+    "pyyaml>=6.0",      # already a transitive dep, listed for clarity
+]
+
 # documentation support
 # The doc site uses Hugo (brew install hugo) — no Python deps required.
 # This group is reserved for future API reference generation (e.g., pdoc, sphinx).
@@ -158,3 +163,13 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["cpex"]
+
+
+# WASM support is OPTIONAL: pip install cpex                   — no wasmtime
+#                            pip install 'cpex[wasm]'           — adds wasmtime
+#
+# The framework imports wasmtime lazily inside WasmCapabilityLinker.instantiate(),
+# so installing cpex alone still works; only attempting to USE a wasm plugin
+# without the extra will raise a clear "install cpex[wasm]" error.
+
+ 

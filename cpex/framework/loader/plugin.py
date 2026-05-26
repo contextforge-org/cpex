@@ -17,7 +17,7 @@ from typing import Type, cast
 
 # First-Party
 from cpex.framework.base import Plugin
-from cpex.framework.constants import EXTERNAL_PLUGIN_TYPE, ISOLATED_VENV_PLUGIN_TYPE
+from cpex.framework.constants import EXTERNAL_PLUGIN_TYPE, ISOLATED_VENV_PLUGIN_TYPE, WASM_PLUGIN_TYPE
 from cpex.framework.external.mcp.client import ExternalPlugin
 from cpex.framework.models import PluginConfig
 from cpex.framework.utils import import_module, parse_class_name
@@ -154,6 +154,19 @@ class PluginLoader:
 
             plugin: Plugin = IsolatedVenvPlugin(config, plugin_dirs=self.plugin_dirs.copy())
             await plugin.initialize()
+            return plugin
+        
+        if config.kind == WASM_PLUGIN_TYPE:
+            # Imported lazily so cpex still works on systems without
+            # wasmtime installed; the import only fails at the point of
+            # actually using a WASM plugin.
+            from cpex.framework.wasm.client import (
+                WasmPlugin,
+            )  # pylint: disable=import-outside-toplevel
+ 
+            plugin = WasmPlugin(plugin_config)
+            await plugin.initialize()
+            logger.info("Loaded WASM plugin '%s'", config.name)
             return plugin
 
         # Handle other plugin types

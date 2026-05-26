@@ -1,0 +1,170 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contextforge.org/schemas/cpex/wasm-plugin-manifest/v1.json",
+  "title": "CPEX WASM Plugin Manifest",
+  "description": "Manifest describing a WebAssembly component plugin for the CPEX framework. The host loads this file and the referenced .wasm artifact, verifies integrity, links only the capabilities declared here, and registers the plugin with the PluginManager.",
+  "type": "object",
+  "required": ["api_version", "name", "version", "artifact", "hooks"],
+  "additionalProperties": false,
+  "properties": {
+    "api_version": {
+      "description": "CPEX plugin manifest API version. Host refuses load on major mismatch.",
+      "type": "string",
+      "const": "cpex.plugin/v1"
+    },
+    "name": {
+      "description": "Plugin name. MUST match the value returned by the component's manifest() export.",
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{1,63}$"
+    },
+    "version": {
+      "description": "Plugin semantic version. MUST match the component's manifest().version.",
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+(?:[-+][0-9A-Za-z.-]+)?$"
+    },
+    "description": {
+      "type": "string",
+      "maxLength": 1024
+    },
+    "author": {
+      "type": "string"
+    },
+    "license": {
+      "description": "SPDX license identifier (e.g. Apache-2.0, MIT).",
+      "type": "string"
+    },
+    "homepage": {
+      "type": "string",
+      "format": "uri"
+    },
+
+    "artifact": {
+      "description": "The .wasm Component-Model binary that implements the contextforge:cpex@0.1.0 'plugin' world.",
+      "type": "object",
+      "required": ["path", "sha256"],
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "description": "Path to the .wasm file, relative to this manifest. MUST NOT escape the manifest directory.",
+          "type": "string",
+          "pattern": "^(?!.*\\.\\.).*\\.wasm$"
+        },
+        "sha256": {
+          "description": "Hex-encoded SHA-256 of the .wasm file. Host refuses load on mismatch — this is the integrity pin.",
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "signature": {
+          "description": "Optional path to a detached cosign/minisign signature over the .wasm file. If present, the host MUST verify it before instantiation.",
+          "type": "string"
+        },
+        "signature_format": {
+          "description": "Signature scheme. Required if 'signature' is set.",
+          "type": "string",
+          "enum": ["cosign", "minisign", "ssh"]
+        },
+        "public_key": {
+          "description": "Path to the public key used to verify the signature. Required if 'signature' is set.",
+          "type": "string"
+        }
+      },
+      "dependencies": {
+        "signature": ["signature_format", "public_key"]
+      }
+    },
+
+    "hooks": {
+      "description": "Hook names this plugin handles. MUST be a non-empty subset of the value returned by the component's manifest().hooks. Hook names match those registered in the host HookRegistry (e.g. tool_pre_invoke).",
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9_]{1,63}$"
+      }
+    },
+
+    "capabilities": {
+      "description": "Host imports the plugin is allowed to use. Anything not listed here is NOT linked into the wasm instance, so the plugin physically cannot call it. Capabilities may be parameterized with ':' (e.g. 'http:fetch:api.example.com:443').",
+      "type": "array",
+      "uniqueItems": true,
+      "default": [],
+      "items": {
+        "type": "string",
+        "oneOf": [
+          { "const": "log", "description": "Always granted by default; listed for self-documentation." },
+          { "const": "clock", "description": "Wall-clock and monotonic time reads." },
+          { "const": "random", "description": "Cryptographic randomness via the host." },
+          { "const": "kv:read", "description": "Read from the plugin's private KV namespace." },
+          { "const": "kv:write", "description": "Write to the plugin's private KV namespace." },
+          { "pattern": "^http:fetch(:[^:]+(:\\d+)?)?$", "description": "Outbound HTTP. Optionally scoped to host[:port]." },
+          { "pattern": "^filesystem:(read|write):/.+$", "description": "Path-scoped filesystem access. Path MUST be absolute. Pre-opened by the host via WASI." }
+        ]
+      }
+    },
+
+    "limits": {
+      "description": "Resource bounds enforced by the wasm runtime. The host MAY tighten these further but MUST NOT loosen them.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "max_memory_mb": {
+          "description": "Hard cap on linear memory. Allocations beyond this trap the instance.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4096,
+          "default": 64
+        },
+        "max_fuel": {
+          "description": "Wasmtime fuel units per invoke-hook call. ~Proportional to CPU cycles. Exceeding traps the instance.",
+          "type": "integer",
+          "minimum": 1000,
+          "default": 100000000
+        },
+        "max_table_elements": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 10000
+        },
+        "call_timeout_ms": {
+          "description": "Wall-clock deadline per invoke-hook call. Independent of fuel; protects against blocked host imports.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 60000,
+          "default": 5000
+        },
+        "max_payload_bytes": {
+          "description": "Maximum JSON payload size accepted from a single hook call.",
+          "type": "integer",
+          "minimum": 1024,
+          "default": 1048576
+        }
+      }
+    },
+
+    "config_schema": {
+      "description": "JSON Schema for the 'config' dict passed to the plugin's init(). Validated by the host BEFORE the wasm component sees it, so plugins receive only well-formed config.",
+      "type": "object"
+    },
+
+    "metadata": {
+      "description": "Free-form tags for discovery, registry indexing, etc. Ignored by the runtime.",
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "tags": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "source_language": {
+          "type": "string",
+          "enum": ["rust", "go", "javascript", "typescript", "python", "c", "cpp", "other"]
+        },
+        "build_command": {
+          "description": "Documented (not executed) command used to produce the artifact, e.g. 'cargo component build --release'.",
+          "type": "string"
+        }
+      }
+    }
+  }
+}

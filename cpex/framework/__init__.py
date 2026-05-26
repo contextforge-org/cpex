@@ -189,4 +189,7 @@ __all__ = [
     "ToolPreInvokePayload",
     "TransportType",
     "UserContext",
+    "WasmPlugin",
+    "WasmManifest",
+    "WASM_API_VERSION",
 ]

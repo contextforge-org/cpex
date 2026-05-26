@@ -14,6 +14,7 @@ This module stores a collection of plugin constants used throughout the framewor
 # Specialized plugin types.
 EXTERNAL_PLUGIN_TYPE = "external"
 ISOLATED_VENV_PLUGIN_TYPE = "isolated_venv"
+WASM_PLUGIN_TYPE = "wasm"
 
 
 # MCP related constants.

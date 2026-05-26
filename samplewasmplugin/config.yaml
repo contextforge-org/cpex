@@ -1,0 +1,56 @@
+# =====================================================================
+# CPEX plugin configuration — references the WASM manifest
+# =====================================================================
+# Drop this entry into your application's plugins/config.yaml (or merge
+# the `plugins:` list with existing entries). The framework's
+# PluginManager treats this as a peer of native/external/isolated_venv
+# plugins; the wasm-specific machinery lives entirely in the manifest.
+# =====================================================================
+
+plugins:
+  - name: "samplewasmplugin"
+    kind: "wasm"
+    version: "0.1.0"
+    description: "A WebAssembly Component Model plugin for CPEX"
+    author: "Shriti"
+
+    # Hooks the manager will route to this plugin. Must be a subset of
+    # those declared in plugin-manifest.yaml.
+    hooks:
+      - tool_pre_invoke
+      - tool_post_invoke
+
+    tags: ["wasm", "example"]
+
+    # Execution mode — same semantics as every other plugin kind.
+    # sequential | transform | audit | concurrent | fire_and_forget | disabled
+    mode: sequential
+    priority: 150
+    on_error: fail   # fail | ignore | disable
+
+    # Optional conditional dispatch (tenant/server filters).
+    conditions:
+      - server_ids: []
+        tenant_ids: []
+
+    # The wasm-specific config: locate the manifest. Everything else
+    # about the wasm runtime lives inside the manifest itself.
+    config:
+      manifest_path: "./plugin-manifest.yaml"
+      # Plugin-specific config, validated against config_schema in the
+      # manifest before being passed to the component's init().
+      blocked_tools:
+        - "rm"
+        - "sudo"
+
+# Plugin directories to scan for plugin-manifest.yaml files (optional;
+# this entry already gives an explicit path).
+plugin_dirs:
+  - "samplewasmplugin"
+
+plugin_settings:
+  parallel_execution_within_band: true
+  plugin_timeout: 30
+  fail_on_plugin_error: false
+  enable_plugin_api: true
+  plugin_health_check_interval: 60

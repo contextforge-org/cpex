@@ -1,0 +1,223 @@
+// =========================================================================
+// CPEX WASM Plugin Contract — WIT World v0.1.0
+// =========================================================================
+//
+// This file defines the single, frozen contract that every CPEX WebAssembly
+// plugin component MUST implement, regardless of source language (Rust, Go,
+// JS, Python via componentize-py, C/C++, etc.).
+//
+// Wire format
+// -----------
+// Hook payloads and results cross the host/guest boundary as JSON strings.
+// The schema of those JSON strings matches the Pydantic models registered in
+// the host's HookRegistry (e.g. ToolPreInvokePayload, PluginResult). JSON is
+// reused — rather than per-hook WIT records — because:
+//
+//   1. It matches what isolated_venv and external plugins already use, so the
+//      host serializer is shared across all plugin kinds.
+//   2. New hooks can be added on the host without rebuilding wasm modules.
+//   3. A single .wasm artifact remains portable across host language
+//      reimplementations (the planned Rust core, future Go bindings, etc.).
+//
+// Capability model
+// ----------------
+// Host functions live under `host` interfaces grouped by capability. The host
+// only LINKS the interfaces a plugin's manifest declares; unlinked imports
+// cause instantiation to fail fast. This is a structural sandbox: a plugin
+// without the `network` capability *cannot call* the network — it physically
+// has no function to call. This is zero-trust by construction, not by check.
+//
+// Versioning
+// ----------
+// This package is versioned. Breaking changes bump the major version and
+// produce a new WIT package (e.g. contextforge:cpex@1.0.0). Plugin manifests
+// declare which api-version they target; the host refuses to load mismatches.
+//
+// =========================================================================
+
+package contextforge:cpex@0.1.0;
+
+// -------------------------------------------------------------------------
+// Shared types
+// -------------------------------------------------------------------------
+
+interface types {
+    /// A non-recoverable error returned by a plugin function.
+    /// Maps to PluginErrorModel on the host.
+    record plugin-error {
+        /// Stable, machine-readable code (e.g. "PARSE_ERROR", "TIMEOUT").
+        code: string,
+        /// Human-readable description.
+        message: string,
+        /// If true, host may retry; if false, host should fail fast.
+        retryable: bool,
+    }
+
+    /// A non-recoverable error returned by a host import.
+    /// The plugin should treat unknown error codes as fatal.
+    record host-error {
+        code: string,
+        message: string,
+    }
+
+    /// Plugin self-description returned by `manifest()`.
+    /// The host cross-checks this against the YAML manifest at load time;
+    /// any mismatch is a hard failure.
+    record manifest-info {
+        name: string,
+        version: string,
+        /// The CPEX plugin API version this plugin was built against,
+        /// e.g. "cpex.plugin/v1". Host refuses load on major mismatch.
+        api-version: string,
+        /// Hook names this plugin will handle when `invoke-hook` is called.
+        hooks: list<string>,
+        /// Capabilities this plugin declares it needs. MUST be a subset of
+        /// what the YAML manifest grants, otherwise instantiation fails.
+        required-capabilities: list<string>,
+    }
+
+    enum log-level {
+        trace,
+        debug,
+        info,
+        warn,
+        error,
+    }
+}
+
+// -------------------------------------------------------------------------
+// Host imports — capability-gated
+// -------------------------------------------------------------------------
+//
+// Each interface below is a separate capability. The host links an interface
+// into the instance ONLY IF the plugin manifest declares it under
+// `capabilities:`. Unlinked imports cause Wasmtime to fail instantiation,
+// which is exactly what we want: a plugin without `network` literally cannot
+// open a socket.
+//
+// Adding a new capability = adding a new interface here.
+// -------------------------------------------------------------------------
+
+/// Capability: `log` — always granted, low-risk.
+/// Plugins emit structured log lines via the host's logger.
+interface logging {
+    use types.{log-level};
+    log: func(level: log-level, message: string);
+}
+
+/// Capability: `clock` — always granted, deterministic time read.
+/// No wall-clock writes, no sleep (would block the host).
+interface clock {
+    /// Milliseconds since Unix epoch. Host MAY freeze this for
+    /// reproducible plugin tests.
+    now-millis: func() -> u64;
+
+    /// Monotonic nanoseconds for measuring durations. Origin is unspecified.
+    monotonic-nanos: func() -> u64;
+}
+
+/// Capability: `http:fetch` — outbound HTTP only.
+/// The manifest may further restrict to specific hosts/ports:
+///   capabilities: ["http:fetch:api.example.com:443"]
+/// The host enforces the allowlist before each call.
+interface http {
+    use types.{host-error};
+
+    record http-header {
+        name: string,
+        value: string,
+    }
+
+    record http-request {
+        method: string,          // "GET", "POST", ...
+        url: string,
+        headers: list<http-header>,
+        body: option<list<u8>>,
+        /// Per-request timeout in milliseconds. Capped by plugin limits.
+        timeout-ms: u32,
+    }
+
+    record http-response {
+        status: u16,
+        headers: list<http-header>,
+        body: list<u8>,
+    }
+
+    fetch: func(req: http-request) -> result<http-response, host-error>;
+}
+
+/// Capability: `kv:read` / `kv:write` — scoped key-value store.
+/// Each plugin sees a private namespace; keys never collide across plugins.
+/// The host implementation can be in-memory, Redis-backed, etc.
+interface kv {
+    use types.{host-error};
+
+    get: func(key: string) -> result<option<list<u8>>, host-error>;
+    put: func(key: string, value: list<u8>) -> result<_, host-error>;
+    delete: func(key: string) -> result<_, host-error>;
+    /// Cheap existence probe without transferring the value.
+    exists: func(key: string) -> result<bool, host-error>;
+}
+
+/// Capability: `random` — cryptographic randomness only.
+/// Plugins MUST NOT seed their own PRNG from this; ask the host each time.
+interface random {
+    get-random-bytes: func(len: u32) -> list<u8>;
+}
+
+// -------------------------------------------------------------------------
+// The plugin world
+// -------------------------------------------------------------------------
+//
+// Every CPEX wasm plugin MUST export this world, called `plugin`.
+// The host instantiates the component, links the imports the manifest
+// allows, then calls `init`, then `invoke-hook` per request, then
+// `shutdown` on unload.
+// -------------------------------------------------------------------------
+
+world plugin {
+    use types.{plugin-error, manifest-info};
+
+    // --- exports the plugin provides ----------------------------------
+
+    /// Called exactly once after instantiation. The plugin may parse and
+    /// validate `config-json` (whose schema is the plugin's own concern,
+    /// declared via `config_schema` in the manifest). On Err, the host
+    /// refuses to register the plugin.
+    export init: func(config-json: string) -> result<_, plugin-error>;
+
+    /// Self-description. The host calls this once at load time and
+    /// cross-checks against the YAML manifest. Any mismatch (name,
+    /// version, hooks, capabilities) is a hard load-time failure.
+    export manifest: func() -> manifest-info;
+
+    /// The single hook entry point. The host dispatches by `hook-name`;
+    /// the plugin's internal handler decides what to do.
+    ///
+    /// - `payload-json`: JSON of the hook's registered Payload type
+    ///   (e.g. ToolPreInvokePayload).
+    /// - `context-json`: JSON of PluginContext.
+    /// - Returns: JSON of the hook's registered Result type
+    ///   (e.g. PluginResult[ToolPreInvokePayload]).
+    ///
+    /// The host imposes a fuel/timeout budget on this call; the plugin
+    /// MUST be prepared to be cancelled.
+    export invoke-hook: func(
+        hook-name: string,
+        payload-json: string,
+        context-json: string,
+    ) -> result<string, plugin-error>;
+
+    /// Called once before the host drops the instance. Plugins should
+    /// flush buffers and release host-held resources (e.g. close kv
+    /// transactions). The plugin is destroyed regardless of return value.
+    export shutdown: func();
+
+    // --- imports the host MAY provide (capability-gated) --------------
+
+    import logging;
+    import clock;
+    import http;
+    import kv;
+    import random;
+}
