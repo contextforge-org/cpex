@@ -1,0 +1,11 @@
+[package]
+name = "cpex-wasm-host"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { version = "1", features = ["sync", "macros", "io-util", "rt", "time"] }
+wasmtime = { version = "45.0", features = ["component-model", "async"] }
+wasmtime-wasi = "45.0"
+anyhow = "1.0"
+serde_json = { workspace = true }

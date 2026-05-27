@@ -11,6 +11,8 @@ members = [
     "crates/cpex-core",
     "crates/cpex-sdk",
     "crates/cpex-ffi",
+    "crates/cpex-wasm-plugin",
+    "crates/cpex-wasm-host",
     "examples/go-demo/ffi",
 ]
 

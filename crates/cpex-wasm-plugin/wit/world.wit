@@ -1,0 +1,32 @@
+package cpex:plugin;
+
+interface types {
+  record plugin-config {
+    name: string,
+    version: string,
+  }
+  
+  record message-payload {
+    data: string,
+  }
+  
+  record extensions {
+    security: option<string>,
+    http: option<string>,
+  }
+  
+  variant plugin-result {
+    allow,
+    deny(string),
+  }
+}
+
+world plugin {
+  use types.{message-payload, extensions, plugin-result};
+  
+  export handle-hook: func(
+    payload: message-payload,
+    extensions: extensions
+  ) -> plugin-result;
+}
+

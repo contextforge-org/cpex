@@ -1,0 +1,29 @@
+# CMF Capabilities Demo Configuration
+#
+# Three plugins with different capabilities see different views
+# of the same extensions. Demonstrates capability-gated access
+# across pre-invoke and post-invoke hooks.
+
+plugin_settings:
+  routing_enabled: true
+
+global:
+  policies:
+    all:
+      plugins: [identity-checker, header-injector, audit-logger]
+
+plugins:
+  - name: identity-checker
+    kind: builtin/identity-checker
+    hooks: [cmf.tool_pre_invoke, cmf.tool_post_invoke]
+    mode: sequential
+    priority: 10
+    on_error: fail
+    capabilities:
+      - read_labels
+      - read_subject
+      - read_roles
+
+routes:
+  - tool: "*"
+    plugins: []
