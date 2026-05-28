@@ -195,6 +195,10 @@ class CopyOnWriteDict(dict):
         if not isinstance(other, Mapping):
             return NotImplemented
         
+        # Fast-path: if lengths differ, mappings cannot be equal
+        if len(self) != len(other):
+            return False
+        
         # Compare materialized items
         return dict(self.items()) == dict(other.items())
 
