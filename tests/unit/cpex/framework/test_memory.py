@@ -817,6 +817,7 @@ class TestCopyOnWriteDict:
         keys = list(cow)
         # Should only have b (from original) and c (from modifications, not deleted)
         assert set(keys) == {"b", "c"}
+        assert "a" not in keys
 
     def test_equality_with_empty_dict(self):
         """CopyOnWriteDict with data should not equal empty dict."""
