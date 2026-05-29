@@ -172,6 +172,65 @@ class TestApplyPolicy:
         assert result is not None
         assert result.nested.x == 99  # type: ignore[union-attr]
 
+    def test_copyonwritedict_args_empty_modification_preserved(self):
+        """Regression test for bug where CopyOnWriteDict equality caused
+        apply_policy to drop valid empty args modification.
+        
+        When a plugin receives args as CopyOnWriteDict with data and returns
+        an empty dict, apply_policy should treat this as a valid modification.
+        Previously, CopyOnWriteDict.__eq__ was not implemented, causing the
+        comparison to use dict's default equality which compared the empty
+        base storage, incorrectly returning True for CopyOnWriteDict({...}) == {}.
+        """
+        from cpex.framework.memory import CopyOnWriteDict
+
+        policy = HookPayloadPolicy(writable_fields=frozenset({"args"}))
+        
+        # Simulate plugin receiving payload with CopyOnWriteDict args
+        original = SamplePayload(
+            name="test",
+            args=CopyOnWriteDict({
+                "wxo_connection_id": "",
+                "wxo_auth": "fake-token",
+                "wxo_environment_id": "draft",
+            }),
+            secret="s",
+        )
+        
+        # Plugin strips all args, returning empty dict
+        modified = SamplePayload(name="test", args={}, secret="s")
+        
+        result = apply_policy(original, modified, policy)
+        
+        # The modification should be preserved, not dropped
+        assert result is not None, "apply_policy should not return None when args changed from {...} to {}"
+        assert result.args == {}  # type: ignore[union-attr]
+        assert result.name == "test"  # type: ignore[union-attr]
+        assert result.secret == "s"  # type: ignore[union-attr]
+
+    def test_copyonwritedict_args_partial_modification_preserved(self):
+        """Test that partial arg removal is also preserved correctly."""
+        from cpex.framework.memory import CopyOnWriteDict
+
+        policy = HookPayloadPolicy(writable_fields=frozenset({"args"}))
+        
+        original = SamplePayload(
+            name="test",
+            args=CopyOnWriteDict({
+                "wxo_auth": "token",
+                "real_arg": "value",
+            }),
+            secret="s",
+        )
+        
+        # Plugin removes only wxo_auth, keeping real_arg
+        modified = SamplePayload(name="test", args={"real_arg": "value"}, secret="s")
+        
+        result = apply_policy(original, modified, policy)
+        
+        assert result is not None
+        assert result.args == {"real_arg": "value"}  # type: ignore[union-attr]
+
 
 class TestPluginPayloadFrozen:
     """Tests for frozen PluginPayload base class."""
@@ -751,6 +810,61 @@ class TestBorgPolicyBackfill:
         assert result.modified_payload.args == {"injected": "true"}
         assert result.modified_payload.secret == "safe"  # Policy filtered this out
 
+
+    @pytest.mark.asyncio
+    async def test_tool_pre_invoke_empty_args_modification_preserved_through_executor(self):
+        """Regression test for the tool_pre_invoke executor path.
+
+        A plugin receives CoW-wrapped args containing only specific fields,
+        strips them all, and returns a payload with args={}. The executor should
+        preserve that empty args modification instead of dropping it as
+        "unchanged".
+        """
+        from cpex.framework.base import HookRef, Plugin, PluginRef
+        from cpex.framework.hooks.policies import HookPayloadPolicy
+        from cpex.framework.hooks.tools import ToolPreInvokePayload
+        from cpex.framework.manager import PluginExecutor
+        from cpex.framework.memory import CopyOnWriteDict
+        from cpex.framework.models import GlobalContext, PluginConfig, PluginResult
+
+        seen_arg_types = []
+
+        class StripWxoArgsPlugin(Plugin):
+            async def tool_pre_invoke(self, payload, context):
+                seen_arg_types.append(type(payload.args))
+                cleaned_args = {k: v for k, v in payload.args.items() if not k.startswith("wxo_")}
+                modified = payload.model_copy(update={"args": cleaned_args})
+                return PluginResult(continue_processing=True, modified_payload=modified)
+
+        policies = {
+            "tool_pre_invoke": HookPayloadPolicy(writable_fields=frozenset({"args"})),
+        }
+        executor = PluginExecutor(hook_policies=policies)
+
+        config = PluginConfig(name="stripper", kind="test.Plugin", version="1.0", hooks=["tool_pre_invoke"])
+        plugin = StripWxoArgsPlugin(config)
+        hook_ref = HookRef("tool_pre_invoke", PluginRef(plugin))
+
+        payload = ToolPreInvokePayload(
+            name="list_all_secrets",
+            args={
+                "wxo_connection_id": "",
+                "wxo_auth": "fake-token",
+                "wxo_environment_id": "draft",
+            },
+        )
+        global_ctx = GlobalContext(request_id="tool-pre-empty-args")
+
+        result, _ = await executor.execute([hook_ref], payload, global_ctx, hook_type="tool_pre_invoke")
+
+        assert seen_arg_types == [CopyOnWriteDict]
+        assert result.modified_payload is not None
+        assert result.modified_payload == ToolPreInvokePayload(name="list_all_secrets", args={})
+        assert payload.args == {
+            "wxo_connection_id": "",
+            "wxo_auth": "fake-token",
+            "wxo_environment_id": "draft",
+        }
 
 class TestMultiPluginDictChain:
     """Tests for multi-plugin chains where an earlier plugin returns a dict payload."""
