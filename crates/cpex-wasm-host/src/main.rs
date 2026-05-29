@@ -1,21 +1,24 @@
+use std::sync::Arc;
+
 use anyhow::Result;
 use cpex_wasm_host::policy_loader::{self, build_wasi_context, load_plugin_sandbox_config, PolicyHttpHooks};
 use wasmtime::{Config, Engine, Store};
-use wasmtime::component::{Component, Linker, ResourceTable};
+use wasmtime::component::{Component, Linker};
 use wasmtime::*;
-use wasmtime_wasi::p2::bindings::Command;
 use wasmtime_wasi::{WasiCtx, WasiCtxView, WasiView};
+use wasmtime_wasi_http::WasiHttpCtx;
+use wasmtime_wasi_http::p2::{WasiHttpView, WasiHttpCtxView};
 
-// Generate bindings from WIT
 wasmtime::component::bindgen!({
-    path: "wit/world.wit",
+    path: "wit",
     world: "plugin",
     exports: { default: async },
 });
 
-// Host state that implements WasiView
 struct HostState {
     wasi: WasiCtx,
+    http: WasiHttpCtx,
+    hooks: PolicyHttpHooks,
     table: wasmtime::component::ResourceTable,
 }
 
@@ -24,6 +27,16 @@ impl WasiView for HostState {
         WasiCtxView {
             ctx: &mut self.wasi,
             table: &mut self.table,
+        }
+    }
+}
+
+impl WasiHttpView for HostState {
+    fn http(&mut self) -> WasiHttpCtxView<'_> {
+        WasiHttpCtxView {
+            ctx: &mut self.http,
+            table: &mut self.table,
+            hooks: &mut self.hooks,
         }
     }
 }
@@ -59,7 +72,6 @@ async fn main() -> Result<()> {
     // 1. Configure Wasmtime engine with component model support
     let mut config = Config::new();
     config.wasm_component_model(true);
-    config.async_support(true);
 
     let engine = Engine::new(&config)?;
     println!("\n✓ Wasmtime engine initialized");
@@ -69,15 +81,20 @@ async fn main() -> Result<()> {
         &engine,
         HostState {
             wasi: plugin_ctx.wasi_ctx,
+            http: plugin_ctx.http_ctx,
+            hooks: PolicyHttpHooks {
+                allowed_hosts: plugin_ctx.allowed_hosts.clone(),
+            },
             table: wasmtime::component::ResourceTable::new(),
         }
     );
     println!("✓ WASI sandboxed context created (only PLUGIN_API_KEY exposed)");
 
-    // 3. Set up linker with WASI
+    // 3. Set up linker with WASI + WASI HTTP
     let mut linker = Linker::new(&engine);
     wasmtime_wasi::p2::add_to_linker_async(&mut linker)?;
-    println!("✓ Linker configured with WASI");
+    wasmtime_wasi_http::p2::add_only_http_to_linker_async(&mut linker)?;
+    println!("✓ Linker configured with WASI + HTTP");
 
     // 4. Load the WASM component
     let wasm_path = "plugin.wasm";

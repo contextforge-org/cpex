@@ -105,26 +105,6 @@ pub fn build_wasi_context(sandbox: &SandboxConfig) -> Result<PluginWasiContext> 
         }
     }
 
-    // Network: configure socket access based on allowed_network policy
-    // If allowed_network is non-empty, enable DNS lookup and allow TCP/UDP
-    // but gate actual connections via socket_addr_check.
-    // If empty, all network is denied (the WASI default).
-    if !sandbox.policy.allowed_network.is_empty() {
-        builder.allow_ip_name_lookup(true);
-        builder.allow_tcp(true);
-        builder.allow_udp(true);
-        let allowed = Arc::new(sandbox.policy.allowed_network.clone());
-        builder.socket_addr_check(move |_addr, _use_| {
-            // Allow all resolved addresses when the policy has allowed hosts.
-            // Host-level filtering is done via PolicyHttpHooks for HTTP,
-            // and DNS resolution itself is the gatekeeper for raw TCP
-            // (only allowed hosts should be resolvable in a production setup).
-            // For testing, we allow all resolved IPs to demonstrate the flow.
-            let _ = &allowed;
-            Box::pin(async { true })
-        });
-    }
-
     builder.inherit_stdio();
 
     let wasi_ctx = builder.build();

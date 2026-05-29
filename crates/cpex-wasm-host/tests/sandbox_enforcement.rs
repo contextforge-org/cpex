@@ -6,17 +6,20 @@ use std::sync::Arc;
 use wasmtime::component::{Component, Linker};
 use wasmtime::{Config, Engine, Store};
 use wasmtime_wasi::{WasiCtx, WasiCtxView, WasiView};
-use wasmtime_wasi_http::p2::WasiHttpHooks;
+use wasmtime_wasi_http::WasiHttpCtx;
+use wasmtime_wasi_http::p2::{WasiHttpView, WasiHttpCtxView, WasiHttpHooks};
 use wasmtime_wasi_http::p2::types::OutgoingRequestConfig;
 
 wasmtime::component::bindgen!({
-    path: "wit/world.wit",
+    path: "wit",
     world: "plugin",
     exports: { default: async },
 });
 
 struct TestHostState {
     wasi: WasiCtx,
+    http: WasiHttpCtx,
+    hooks: PolicyHttpHooks,
     table: wasmtime::component::ResourceTable,
 }
 
@@ -25,6 +28,16 @@ impl WasiView for TestHostState {
         WasiCtxView {
             ctx: &mut self.wasi,
             table: &mut self.table,
+        }
+    }
+}
+
+impl WasiHttpView for TestHostState {
+    fn http(&mut self) -> WasiHttpCtxView<'_> {
+        WasiHttpCtxView {
+            ctx: &mut self.http,
+            table: &mut self.table,
+            hooks: &mut self.hooks,
         }
     }
 }
@@ -87,11 +100,14 @@ async fn test_allowed_env_var_is_visible() -> Result<()> {
 
     let mut store = Store::new(&engine, TestHostState {
         wasi: ctx.wasi_ctx,
+        http: ctx.http_ctx,
+        hooks: PolicyHttpHooks { allowed_hosts: ctx.allowed_hosts },
         table: wasmtime::component::ResourceTable::new(),
     });
 
     let mut linker = Linker::new(&engine);
     wasmtime_wasi::p2::add_to_linker_async(&mut linker)?;
+    wasmtime_wasi_http::p2::add_only_http_to_linker_async(&mut linker)?;
 
     let component = Component::from_file(&engine, "plugin.wasm")?;
     let plugin = Plugin::instantiate_async(&mut store, &component, &linker).await?;
@@ -127,11 +143,14 @@ async fn test_disallowed_env_var_is_denied() -> Result<()> {
 
     let mut store = Store::new(&engine, TestHostState {
         wasi: ctx.wasi_ctx,
+        http: ctx.http_ctx,
+        hooks: PolicyHttpHooks { allowed_hosts: ctx.allowed_hosts },
         table: wasmtime::component::ResourceTable::new(),
     });
 
     let mut linker = Linker::new(&engine);
     wasmtime_wasi::p2::add_to_linker_async(&mut linker)?;
+    wasmtime_wasi_http::p2::add_only_http_to_linker_async(&mut linker)?;
 
     let component = Component::from_file(&engine, "plugin.wasm")?;
     let plugin = Plugin::instantiate_async(&mut store, &component, &linker).await?;
@@ -179,11 +198,14 @@ async fn test_allowed_filesystem_read_succeeds() -> Result<()> {
 
     let mut store = Store::new(&engine, TestHostState {
         wasi: ctx.wasi_ctx,
+        http: ctx.http_ctx,
+        hooks: PolicyHttpHooks { allowed_hosts: ctx.allowed_hosts },
         table: wasmtime::component::ResourceTable::new(),
     });
 
     let mut linker = Linker::new(&engine);
     wasmtime_wasi::p2::add_to_linker_async(&mut linker)?;
+    wasmtime_wasi_http::p2::add_only_http_to_linker_async(&mut linker)?;
 
     let component = Component::from_file(&engine, "plugin.wasm")?;
     let plugin = Plugin::instantiate_async(&mut store, &component, &linker).await?;
@@ -232,11 +254,14 @@ async fn test_disallowed_filesystem_read_is_denied() -> Result<()> {
 
     let mut store = Store::new(&engine, TestHostState {
         wasi: ctx.wasi_ctx,
+        http: ctx.http_ctx,
+        hooks: PolicyHttpHooks { allowed_hosts: ctx.allowed_hosts },
         table: wasmtime::component::ResourceTable::new(),
     });
 
     let mut linker = Linker::new(&engine);
     wasmtime_wasi::p2::add_to_linker_async(&mut linker)?;
+    wasmtime_wasi_http::p2::add_only_http_to_linker_async(&mut linker)?;
 
     let component = Component::from_file(&engine, "plugin.wasm")?;
     let plugin = Plugin::instantiate_async(&mut store, &component, &linker).await?;
@@ -282,11 +307,14 @@ async fn test_write_to_readonly_dir_is_denied() -> Result<()> {
 
     let mut store = Store::new(&engine, TestHostState {
         wasi: ctx.wasi_ctx,
+        http: ctx.http_ctx,
+        hooks: PolicyHttpHooks { allowed_hosts: ctx.allowed_hosts },
         table: wasmtime::component::ResourceTable::new(),
     });
 
     let mut linker = Linker::new(&engine);
     wasmtime_wasi::p2::add_to_linker_async(&mut linker)?;
+    wasmtime_wasi_http::p2::add_only_http_to_linker_async(&mut linker)?;
 
     let component = Component::from_file(&engine, "plugin.wasm")?;
     let plugin = Plugin::instantiate_async(&mut store, &component, &linker).await?;
@@ -328,24 +356,27 @@ async fn test_network_denied_when_no_allowed_hosts() -> Result<()> {
 
     let mut store = Store::new(&engine, TestHostState {
         wasi: ctx.wasi_ctx,
+        http: ctx.http_ctx,
+        hooks: PolicyHttpHooks { allowed_hosts: ctx.allowed_hosts },
         table: wasmtime::component::ResourceTable::new(),
     });
 
     let mut linker = Linker::new(&engine);
     wasmtime_wasi::p2::add_to_linker_async(&mut linker)?;
+    wasmtime_wasi_http::p2::add_only_http_to_linker_async(&mut linker)?;
 
     let component = Component::from_file(&engine, "plugin.wasm")?;
     let plugin = Plugin::instantiate_async(&mut store, &component, &linker).await?;
 
     let payload = make_probe_payload(serde_json::json!({
-        "tcp_connect": ["httpbin.org:80"]
+        "http_requests": ["http://httpbin.org/get"]
     }));
     let extensions = cpex::plugin::types::Extensions { security: None, http: None };
 
     let result = plugin.call_handle_hook(&mut store, &payload, &extensions).await?;
     let report = parse_probe_result(&result);
 
-    assert_eq!(report["net"]["httpbin.org:80"]["accessible"], false);
+    assert_eq!(report["net"]["http://httpbin.org/get"]["accessible"], false);
     Ok(())
 }
 
@@ -365,25 +396,27 @@ async fn test_network_allowed_when_host_in_policy() -> Result<()> {
 
     let mut store = Store::new(&engine, TestHostState {
         wasi: ctx.wasi_ctx,
+        http: ctx.http_ctx,
+        hooks: PolicyHttpHooks { allowed_hosts: ctx.allowed_hosts },
         table: wasmtime::component::ResourceTable::new(),
     });
 
     let mut linker = Linker::new(&engine);
     wasmtime_wasi::p2::add_to_linker_async(&mut linker)?;
+    wasmtime_wasi_http::p2::add_only_http_to_linker_async(&mut linker)?;
 
     let component = Component::from_file(&engine, "plugin.wasm")?;
     let plugin = Plugin::instantiate_async(&mut store, &component, &linker).await?;
 
     let payload = make_probe_payload(serde_json::json!({
-        "tcp_connect": ["httpbin.org:80"]
+        "http_requests": ["http://httpbin.org/get"]
     }));
     let extensions = cpex::plugin::types::Extensions { security: None, http: None };
 
     let result = plugin.call_handle_hook(&mut store, &payload, &extensions).await?;
     let report = parse_probe_result(&result);
 
-    // Should succeed — httpbin.org is in allowed_network and socket access is enabled
-    assert_eq!(report["net"]["httpbin.org:80"]["accessible"], true);
+    assert_eq!(report["net"]["http://httpbin.org/get"]["accessible"], true);
     Ok(())
 }
 

@@ -22,8 +22,15 @@ interface types {
 }
 
 world plugin {
+  import wasi:io/poll@0.2.6;
+  import wasi:io/error@0.2.6;
+  import wasi:io/streams@0.2.6;
+  import wasi:clocks/monotonic-clock@0.2.6;
+  import wasi:http/types@0.2.6;
+  import wasi:http/outgoing-handler@0.2.6;
+
   use types.{message-payload, extensions, plugin-result};
-  
+
   export handle-hook: func(
     payload: message-payload,
     extensions: extensions
