@@ -840,6 +840,8 @@ class TestCopyOnWriteDict:
         assert cow != {"a": 1, "b": 3}
         assert cow != {"a": 1}
         assert cow != {"a": 1, "b": 2, "c": 3}
+        # Same length, different keys
+        assert cow != {"a": 1, "c": 2}
 
     def test_equality_after_modifications(self):
         """Equality should reflect modifications."""

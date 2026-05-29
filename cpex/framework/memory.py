@@ -14,6 +14,7 @@ in plugin contexts.
 import copy
 import logging
 import weakref
+from collections.abc import Mapping
 from typing import Any, Iterator, Optional, TypeVar
 
 # Third-Party
@@ -189,16 +190,13 @@ class CopyOnWriteDict(dict):
             True if other is a Mapping with the same key-value pairs, False otherwise.
             Returns NotImplemented for non-Mapping types to allow other.__eq__ to handle it.
         """
-        # Import here to avoid circular dependency
-        from collections.abc import Mapping
-
         if not isinstance(other, Mapping):
             return NotImplemented
-        
+
         # Fast-path: if lengths differ, mappings cannot be equal
         if len(self) != len(other):
             return False
-        
+
         # Compare materialized items
         return dict(self.items()) == dict(other.items())
 
