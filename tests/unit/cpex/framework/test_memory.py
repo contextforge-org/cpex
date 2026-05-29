@@ -819,6 +819,104 @@ class TestCopyOnWriteDict:
         assert set(keys) == {"b", "c"}
         assert "a" not in keys
 
+    def test_equality_with_empty_dict(self):
+        """CopyOnWriteDict with data should not equal empty dict."""
+        cow = CopyOnWriteDict({"a": 1, "b": 2})
+        assert cow != {}
+        assert {} != cow
+        assert not (cow == {})
+        assert not ({} == cow)
+
+    def test_equality_with_matching_dict(self):
+        """CopyOnWriteDict should equal dict with same key-value pairs."""
+        original = {"a": 1, "b": 2, "c": 3}
+        cow = CopyOnWriteDict(original)
+        assert cow == {"a": 1, "b": 2, "c": 3}
+        assert {"a": 1, "b": 2, "c": 3} == cow
+
+    def test_equality_with_different_dict(self):
+        """CopyOnWriteDict should not equal dict with different content."""
+        cow = CopyOnWriteDict({"a": 1, "b": 2})
+        assert cow != {"a": 1, "b": 3}
+        assert cow != {"a": 1}
+        assert cow != {"a": 1, "b": 2, "c": 3}
+        # Same length, different keys
+        assert cow != {"a": 1, "c": 2}
+
+    def test_equality_after_modifications(self):
+        """Equality should reflect modifications."""
+        cow = CopyOnWriteDict({"a": 1, "b": 2})
+        cow["c"] = 3
+        assert cow == {"a": 1, "b": 2, "c": 3}
+        assert cow != {"a": 1, "b": 2}
+
+    def test_equality_after_deletions(self):
+        """Equality should reflect deletions."""
+        cow = CopyOnWriteDict({"a": 1, "b": 2, "c": 3})
+        del cow["b"]
+        assert cow == {"a": 1, "c": 3}
+        assert cow != {"a": 1, "b": 2, "c": 3}
+
+    def test_equality_after_override(self):
+        """Equality should reflect overridden values."""
+        cow = CopyOnWriteDict({"a": 1, "b": 2})
+        cow["a"] = 10
+        assert cow == {"a": 10, "b": 2}
+        assert cow != {"a": 1, "b": 2}
+
+    def test_equality_with_another_copyonwritedict(self):
+        """Two CopyOnWriteDict instances with same content should be equal."""
+        cow1 = CopyOnWriteDict({"a": 1, "b": 2})
+        cow2 = CopyOnWriteDict({"a": 1, "b": 2})
+        assert cow1 == cow2
+        assert cow2 == cow1
+
+    def test_equality_empty_copyonwritedict(self):
+        """Empty CopyOnWriteDict should equal empty dict."""
+        cow = CopyOnWriteDict({})
+        assert cow == {}
+        assert {} == cow
+
+    def test_equality_with_non_mapping_returns_notimplemented(self):
+        """Equality with non-Mapping types should return NotImplemented."""
+        cow = CopyOnWriteDict({"a": 1})
+        # These should not raise, Python will handle NotImplemented
+        assert cow != "not a dict"
+        assert cow != 123
+        assert cow != ["a", "list"]
+        assert cow != None
+
+    def test_inequality_operator(self):
+        """Test __ne__ operator works correctly."""
+        cow = CopyOnWriteDict({"a": 1, "b": 2})
+        assert cow != {}
+        assert cow != {"a": 1}
+        assert not (cow != {"a": 1, "b": 2})
+
+    def test_copyonwritedict_is_unhashable(self):
+        """CopyOnWriteDict should remain unhashable like dict."""
+        cow = CopyOnWriteDict({"a": 1})
+        with pytest.raises(TypeError):
+            hash(cow)
+
+    def test_equality_wxo_args_scenario(self):
+        """Regression test for the WXO args bug scenario."""
+        # This is the exact scenario from the bug report
+        cow = CopyOnWriteDict({
+            "wxo_connection_id": "",
+            "wxo_auth": "fake-token",
+            "wxo_environment_id": "draft",
+        })
+        
+        # These were the failing assertions in the bug
+        assert cow != {}
+        assert {} != cow
+        assert cow == {
+            "wxo_connection_id": "",
+            "wxo_auth": "fake-token",
+            "wxo_environment_id": "draft",
+        }
+
 
 class TestCopyOnWriteFunction:
     """Test suite for copyonwrite() factory function."""

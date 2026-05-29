@@ -146,6 +146,10 @@ preview = true
 fixable = ["ALL"]
 unfixable = []
 
+[tool.ruff.lint.pylint]
+# Relaxed from the default of 5; existing code has wider try clauses (max observed 38).
+max-statements-in-try = 50
+
 # Ignore D1 (docstring checks) and Pylint checks in tests and other non-production code
 [tool.ruff.lint.per-file-ignores]
 "tests/**/*.py" = ["D1", "PL"]
