@@ -1,10 +1,46 @@
-// Import the generated bindings
-mod bindings;
+pub mod errors;
 
-use bindings::Guest;
-use bindings::cpex::plugin::types::{MessagePayload, Extensions, PluginResult};
+wit_bindgen::generate!({
+    path: "wit",
+    world: "plugin",
+    generate_all,
+});
 
-// Simple struct to implement the Guest trait
+
+fn attempt_http_request(url: &str) -> serde_json::Value {
+    use wasi::http::types::{Fields, OutgoingRequest, Scheme};
+    use wasi::http::outgoing_handler;
+
+    // Parse URL components (simple parsing for scheme://authority/path)
+    let (scheme, rest) = if url.starts_with("https://") {
+        (Scheme::Https, &url[8..])
+    } else if url.starts_with("http://") {
+        (Scheme::Http, &url[7..])
+    } else {
+        return serde_json::json!({"accessible": false, "error": "unsupported scheme"});
+    };
+
+    let (authority, path) = match rest.find('/') {
+        Some(idx) => (&rest[..idx], &rest[idx..]),
+        None => (rest, "/"),
+    };
+
+    let headers = Fields::new();
+    let request = OutgoingRequest::new(headers);
+    let _ = request.set_scheme(Some(&scheme));
+    let _ = request.set_authority(Some(authority));
+    let _ = request.set_path_with_query(Some(path));
+
+    match outgoing_handler::handle(request, None) {
+        Ok(_future_response) => {
+            serde_json::json!({"accessible": true})
+        }
+        Err(e) => {
+            serde_json::json!({"accessible": false, "error": format!("{:?}", e)})
+        }
+    }
+}
+
 struct IdentityCheckerPlugin;
 
 impl Guest for IdentityCheckerPlugin {
@@ -22,6 +58,72 @@ impl Guest for IdentityCheckerPlugin {
             .get("message")
             .and_then(|m| m.get("tool_results"))
             .is_some();
+
+        // Sandbox probe: when tool_name is "sandbox_probe", test env/fs access and report results
+        let tool_name_for_probe = message_data
+            .get("message")
+            .and_then(|m| m.get("tool_calls"))
+            .and_then(|tc| tc.get(0))
+            .and_then(|t| t.get("name"))
+            .and_then(|n| n.as_str())
+            .unwrap_or("");
+
+        if tool_name_for_probe == "sandbox_probe" {
+            let mut results = serde_json::Map::new();
+
+            // Test env var access
+            let mut env_results = serde_json::Map::new();
+            if let Some(env_keys) = message_data.get("probe").and_then(|p| p.get("env_vars")).and_then(|e| e.as_array()) {
+                for key_val in env_keys {
+                    if let Some(key) = key_val.as_str() {
+                        match std::env::var(key) {
+                            Ok(val) => { env_results.insert(key.to_string(), serde_json::json!({"found": true, "value": val})); }
+                            Err(_) => { env_results.insert(key.to_string(), serde_json::json!({"found": false})); }
+                        }
+                    }
+                }
+            }
+            results.insert("env".to_string(), serde_json::Value::Object(env_results));
+
+            // Test filesystem access
+            let mut fs_results = serde_json::Map::new();
+            if let Some(paths) = message_data.get("probe").and_then(|p| p.get("read_files")).and_then(|f| f.as_array()) {
+                for path_val in paths {
+                    if let Some(path) = path_val.as_str() {
+                        match std::fs::read_to_string(path) {
+                            Ok(content) => { fs_results.insert(path.to_string(), serde_json::json!({"accessible": true, "size": content.len()})); }
+                            Err(e) => { fs_results.insert(path.to_string(), serde_json::json!({"accessible": false, "error": e.to_string()})); }
+                        }
+                    }
+                }
+            }
+            if let Some(paths) = message_data.get("probe").and_then(|p| p.get("write_files")).and_then(|f| f.as_array()) {
+                for path_val in paths {
+                    if let Some(path) = path_val.as_str() {
+                        match std::fs::write(path, "probe-write-test") {
+                            Ok(_) => { fs_results.insert(format!("write:{}", path), serde_json::json!({"accessible": true})); }
+                            Err(e) => { fs_results.insert(format!("write:{}", path), serde_json::json!({"accessible": false, "error": e.to_string()})); }
+                        }
+                    }
+                }
+            }
+            results.insert("fs".to_string(), serde_json::Value::Object(fs_results));
+
+            // Test network access via wasi:http/outgoing-handler
+            let mut net_results = serde_json::Map::new();
+            if let Some(urls) = message_data.get("probe").and_then(|p| p.get("http_requests")).and_then(|n| n.as_array()) {
+                for url_val in urls {
+                    if let Some(url) = url_val.as_str() {
+                        let result = attempt_http_request(url);
+                        net_results.insert(url.to_string(), result);
+                    }
+                }
+            }
+            results.insert("net".to_string(), serde_json::Value::Object(net_results));
+
+            let report = serde_json::to_string(&results).unwrap_or_default();
+            return PluginResult::Deny(format!("SANDBOX_PROBE_RESULT:{}", report));
+        }
 
         if is_tool_result {
             // POST-INVOKE: verify the tool result
@@ -118,7 +220,6 @@ impl Guest for IdentityCheckerPlugin {
     }
 }
 
-// Export the implementation
-bindings::export!(IdentityCheckerPlugin with_types_in bindings);
+export!(IdentityCheckerPlugin with_types_in self);
 
 
