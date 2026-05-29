@@ -1,188 +1,95 @@
+use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::Result;
-use cpex_wasm_host::policy_loader::{self, build_wasi_context, load_plugin_sandbox_config, PolicyHttpHooks};
-use wasmtime::{Config, Engine, Store};
-use wasmtime::component::{Component, Linker};
-use wasmtime::*;
-use wasmtime_wasi::{WasiCtx, WasiCtxView, WasiView};
-use wasmtime_wasi_http::WasiHttpCtx;
-use wasmtime_wasi_http::p2::{WasiHttpView, WasiHttpCtxView};
+use tokio::sync::Mutex;
 
-wasmtime::component::bindgen!({
-    path: "wit",
-    world: "plugin",
-    exports: { default: async },
-});
+use cpex_wasm_host::dashboard::spawn_dashboard;
+use cpex_wasm_host::policy_loader::load_plugin_sandbox_config;
+use cpex_wasm_host::sandbox_manager::{SandboxManager, types::PluginResult};
 
-struct HostState {
-    wasi: WasiCtx,
-    http: WasiHttpCtx,
-    hooks: PolicyHttpHooks,
-    table: wasmtime::component::ResourceTable,
-}
-
-impl WasiView for HostState {
-    fn ctx(&mut self) -> WasiCtxView<'_> {
-        WasiCtxView {
-            ctx: &mut self.wasi,
-            table: &mut self.table,
-        }
-    }
-}
-
-impl WasiHttpView for HostState {
-    fn http(&mut self) -> WasiHttpCtxView<'_> {
-        WasiHttpCtxView {
-            ctx: &mut self.http,
-            table: &mut self.table,
-            hooks: &mut self.hooks,
-        }
-    }
-}
 #[tokio::main]
 async fn main() -> Result<()> {
-    println!("=== CPEX WASM Plugin Host ===\n");
+    println!("=== CPEX WASM Plugin Host (SandboxManager) ===\n");
 
-    let sandbox = print_plugin_sandbox_policy("config/config.yaml", "identity-checker")?;
-
-    let plugin_ctx = build_wasi_context(&sandbox)?;
-    println!("\n--- WASI Context from Policy ---");
-    println!("  Allowed hosts: {:?}", plugin_ctx.allowed_hosts);
-    println!("  WasiCtx: created successfully");
-    println!("  WasiHttpCtx: created successfully");
-
-    // Demonstrate PolicyHttpHooks enforcement
-    let mut hooks = PolicyHttpHooks {
-        allowed_hosts: plugin_ctx.allowed_hosts.clone(),
-    };
-    println!("\n--- Testing PolicyHttpHooks ---");
-    test_http_hooks(&mut hooks, "http://httpbin.org/get");
-    test_http_hooks(&mut hooks, "http://evil.com/steal");
-
-    // Set test env vars BEFORE building the sandboxed context
-    // PLUGIN_API_KEY is in the allowed list, SECRET_DB_PASSWORD is NOT
+    // Set test env vars
     std::env::set_var("PLUGIN_API_KEY", "test-secret-123");
     std::env::set_var("SECRET_DB_PASSWORD", "super-secret-do-not-leak");
 
-    // Rebuild context now that env vars are set
+    // Create the sandbox manager
+    let mut manager = SandboxManager::new()?;
+    println!("✓ SandboxManager initialized");
+
+    // Load plugin from config
     let sandbox = load_plugin_sandbox_config("config/config.yaml", "identity-checker")?;
-    let plugin_ctx = build_wasi_context(&sandbox)?;
+    println!("✓ Loaded sandbox policy:\n{}\n", serde_json::to_string_pretty(&sandbox)?);
 
-    // 1. Configure Wasmtime engine with component model support
-    let mut config = Config::new();
-    config.wasm_component_model(true);
+    manager
+        .load_plugin("identity-checker", Path::new("plugin.wasm"), sandbox)
+        .await?;
+    println!("✓ Plugin 'identity-checker' loaded");
+    println!("  Loaded plugins: {:?}", manager.list_plugins());
 
-    let engine = Engine::new(&config)?;
-    println!("\n✓ Wasmtime engine initialized");
+    // Wrap manager in Arc<Mutex> and start the dashboard
+    let shared = Arc::new(Mutex::new(manager));
+    spawn_dashboard(shared.clone(), 3000);
 
-    // 2. Use the SANDBOXED WasiCtx (only allowed env vars, only allowed dirs)
-    let mut store = Store::new(
-        &engine,
-        HostState {
-            wasi: plugin_ctx.wasi_ctx,
-            http: plugin_ctx.http_ctx,
-            hooks: PolicyHttpHooks {
-                allowed_hosts: plugin_ctx.allowed_hosts.clone(),
-            },
-            table: wasmtime::component::ResourceTable::new(),
-        }
-    );
-    println!("✓ WASI sandboxed context created (only PLUGIN_API_KEY exposed)");
+    // Invoke the plugin a few times to generate metrics visible on the dashboard
+    println!("\n=== Invoking Plugin (metrics visible at http://localhost:3000) ===");
 
-    // 3. Set up linker with WASI + WASI HTTP
-    let mut linker = Linker::new(&engine);
-    wasmtime_wasi::p2::add_to_linker_async(&mut linker)?;
-    wasmtime_wasi_http::p2::add_only_http_to_linker_async(&mut linker)?;
-    println!("✓ Linker configured with WASI + HTTP");
-
-    // 4. Load the WASM component
-    let wasm_path = "plugin.wasm";
-    println!("\n--- Loading WASM plugin from: {} ---", wasm_path);
-
-    let component = Component::from_file(&engine, wasm_path)?;
-    println!("✓ WASM component loaded successfully");
-
-    // 5. Instantiate the plugin
-    println!("\n--- Instantiating plugin ---");
-    let plugin = Plugin::instantiate_async(&mut store, &component, &linker).await?;
-    println!("✓ Plugin instantiated");
-
-    // 6. Call the plugin — it will try to read env vars internally
-    println!("\n=== Env Var Sandbox Test ===");
-    println!("Host env has: PLUGIN_API_KEY=test-secret-123, SECRET_DB_PASSWORD=super-secret-do-not-leak");
-    println!("Policy allows: [PLUGIN_API_KEY] only\n");
-
-    let payload = cpex::plugin::types::MessagePayload {
+    let payload = cpex_wasm_host::sandbox_manager::types::MessagePayload {
         data: serde_json::json!({
             "message": {
                 "role": "user",
-                "content": [{"type": "text", "text": "test env access"}],
+                "content": [{"type": "text", "text": "sandbox manager test"}],
                 "tool_calls": [{
-                    "id": "call_env_test",
-                    "name": "env_test",
+                    "id": "call_1",
+                    "name": "sandbox_probe",
                     "arguments": "{}"
                 }]
+            },
+            "probe": {
+                "env_vars": ["PLUGIN_API_KEY", "SECRET_DB_PASSWORD"],
+                "http_requests": ["http://httpbin.org/get", "http://evil.com/steal"]
             }
         }).to_string(),
     };
 
-    let extensions = cpex::plugin::types::Extensions {
+    let extensions = cpex_wasm_host::sandbox_manager::types::Extensions {
         security: None,
         http: None,
     };
 
-    println!("Calling plugin.handle_hook()...");
-    let result = plugin
-        .call_handle_hook(&mut store, &payload, &extensions).await?;
+    {
+        let mut mgr = shared.lock().await;
+        let result = mgr.invoke("identity-checker", payload, extensions).await?;
 
-    print_result("Env Sandbox", &result);
-    
-    println!("\n=== WASM Plugin Invocation Complete ===");
+        match &result {
+            PluginResult::Allow => println!("Result: ALLOW"),
+            PluginResult::Deny(msg) => {
+                if let Some(json_str) = msg.strip_prefix("SANDBOX_PROBE_RESULT:") {
+                    let report: serde_json::Value = serde_json::from_str(json_str)?;
+                    println!("Sandbox Probe Results:\n{}", serde_json::to_string_pretty(&report)?);
+                } else {
+                    println!("Result: DENY - {}", msg);
+                }
+            }
+        }
+
+        // Print metrics
+        if let Some(m) = mgr.metrics("identity-checker") {
+            println!("\nPlugin Metrics:");
+            println!("  Invocations: {}", m.total_invocations);
+            println!("  Fuel consumed: {}", m.total_fuel_consumed);
+            println!("  Network denials: {}", m.network_denials);
+            println!("  Network allowed: {}", m.network_allowed);
+        }
+    }
+
+    // Keep the process alive so the dashboard stays up
+    println!("\nDashboard is running. Press Ctrl+C to exit.");
+    tokio::signal::ctrl_c().await?;
+    println!("\nShutting down.");
+
     Ok(())
 }
-
-fn test_http_hooks(hooks: &mut PolicyHttpHooks, uri: &str) {
-    use wasmtime_wasi_http::p2::WasiHttpHooks;
-    use wasmtime_wasi_http::p2::types::OutgoingRequestConfig;
-
-    let request = hyper::Request::builder()
-        .uri(uri)
-        .body(wasmtime_wasi_http::p2::body::HyperOutgoingBody::default())
-        .unwrap();
-
-    let config = OutgoingRequestConfig {
-        use_tls: false,
-        connect_timeout: std::time::Duration::from_secs(30),
-        first_byte_timeout: std::time::Duration::from_secs(30),
-        between_bytes_timeout: std::time::Duration::from_secs(30),
-    };
-
-    match hooks.send_request(request, config) {
-        Ok(_) => println!("  {} -> ALLOWED", uri),
-        Err(e) => println!("  {} -> DENIED ({:?})", uri, e),
-    }
-}
-
-fn print_plugin_sandbox_policy(config_path: &str, plugin_name: &str) -> Result<policy_loader::SandboxConfig> {
-    let sandbox = load_plugin_sandbox_config(config_path, plugin_name)?;
-    println!(
-        "✓ Loaded sandbox policy for {}:\n{}",
-        plugin_name,
-        serde_json::to_string_pretty(&sandbox)?
-    );
-    Ok(sandbox)
-}
-
-fn print_result(scenario: &str, result: &cpex::plugin::types::PluginResult) {
-    match result {
-        cpex::plugin::types::PluginResult::Allow => {
-            println!("✓ {}: ALLOW", scenario);
-        }
-        cpex::plugin::types::PluginResult::Deny(reason) => {
-            println!("✗ {}: DENY - {}", scenario, reason);
-        }
-    }
-}
-
-

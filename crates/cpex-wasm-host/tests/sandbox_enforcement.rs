@@ -1,6 +1,6 @@
 use anyhow::Result;
 use cpex_wasm_host::policy_loader::{
-    build_wasi_context, PolicyHttpHooks, SandboxConfig, PolicyConfig, FilesystemRule,
+    build_wasi_context, PolicyHttpHooks, SandboxConfig, PolicyConfig, FilesystemRule, ResourceLimits,
 };
 use std::sync::Arc;
 use wasmtime::component::{Component, Linker};
@@ -93,6 +93,7 @@ async fn test_allowed_env_var_is_visible() -> Result<()> {
             allowed_filesystem: vec![],
             allowed_network: vec![],
         },
+        resources: ResourceLimits::default(),
     };
 
     let ctx = build_wasi_context(&sandbox)?;
@@ -136,6 +137,7 @@ async fn test_disallowed_env_var_is_denied() -> Result<()> {
             allowed_filesystem: vec![],
             allowed_network: vec![],
         },
+        resources: ResourceLimits::default(),
     };
 
     let ctx = build_wasi_context(&sandbox)?;
@@ -191,6 +193,7 @@ async fn test_allowed_filesystem_read_succeeds() -> Result<()> {
             }],
             allowed_network: vec![],
         },
+        resources: ResourceLimits::default(),
     };
 
     let ctx = build_wasi_context(&sandbox)?;
@@ -247,6 +250,7 @@ async fn test_disallowed_filesystem_read_is_denied() -> Result<()> {
             }],
             allowed_network: vec![],
         },
+        resources: ResourceLimits::default(),
     };
 
     let ctx = build_wasi_context(&sandbox)?;
@@ -300,6 +304,7 @@ async fn test_write_to_readonly_dir_is_denied() -> Result<()> {
             }],
             allowed_network: vec![],
         },
+        resources: ResourceLimits::default(),
     };
 
     let ctx = build_wasi_context(&sandbox)?;
@@ -347,8 +352,9 @@ async fn test_network_denied_when_no_allowed_hosts() -> Result<()> {
         policy: PolicyConfig {
             allowed_env: vec![],
             allowed_filesystem: vec![],
-            allowed_network: vec![], // empty = no network access
+            allowed_network: vec![],
         },
+        resources: ResourceLimits::default(),
     };
 
     let ctx = build_wasi_context(&sandbox)?;
@@ -389,6 +395,7 @@ async fn test_network_allowed_when_host_in_policy() -> Result<()> {
             allowed_filesystem: vec![],
             allowed_network: vec!["httpbin.org".to_string()],
         },
+        resources: ResourceLimits::default(),
     };
 
     let ctx = build_wasi_context(&sandbox)?;

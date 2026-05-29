@@ -28,6 +28,8 @@ pub struct SandboxConfig {
     pub version: String,
     #[serde(default)]
     pub policy: PolicyConfig,
+    #[serde(default)]
+    pub resources: ResourceLimits,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, serde::Serialize)]
@@ -38,6 +40,32 @@ pub struct PolicyConfig {
     pub allowed_network: Vec<String>,
     #[serde(default)]
     pub allowed_env: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, serde::Serialize)]
+pub struct ResourceLimits {
+    #[serde(default)]
+    pub max_memory_bytes: Option<usize>,
+    #[serde(default)]
+    pub max_fuel: Option<u64>,
+    #[serde(default)]
+    pub max_execution_time_ms: Option<u64>,
+    #[serde(default)]
+    pub max_instances: Option<usize>,
+    #[serde(default)]
+    pub max_tables: Option<usize>,
+}
+
+impl Default for ResourceLimits {
+    fn default() -> Self {
+        Self {
+            max_memory_bytes: None,
+            max_fuel: None,
+            max_execution_time_ms: None,
+            max_instances: None,
+            max_tables: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, serde::Serialize)]
