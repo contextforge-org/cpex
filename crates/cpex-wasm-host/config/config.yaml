@@ -10,7 +10,7 @@ plugin_settings:
 global:
   policies:
     all:
-      plugins: [identity-checker, header-injector, audit-logger]
+      plugins: [identity-checker]
 
 plugins:
   - name: identity-checker
@@ -23,6 +23,18 @@ plugins:
       - read_labels
       - read_subject
       - read_roles
+    sandbox:
+      version: wasm-p2
+      policy:
+        allowed_filesystem:
+          - dir: /tmp/cpex-sandbox/data
+            permission: "read" # or mutate
+          - file: /tmp/cpex-sandbox/data/config.json
+            permission: "read" # or write
+        allowed_network:
+          - "httpbin.org"
+        allowed_env:
+          - "PLUGIN_API_KEY"
 
 routes:
   - tool: "*"
