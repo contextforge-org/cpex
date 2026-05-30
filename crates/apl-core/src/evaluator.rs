@@ -154,12 +154,14 @@ fn numeric_compare(attr: &AttributeValue, lit: &Literal, op: CompareOp) -> bool 
 /// the design's fail-closed default (DSL §8.9).
 pub async fn evaluate_steps(
     steps: &[Step],
-    bag: &AttributeBag,
+    bag: &mut AttributeBag,
     pdp: &dyn PdpResolver,
     plugins: &dyn PluginInvoker,
+    delegations: &dyn crate::step::DelegationInvoker,
+    phase: crate::step::DispatchPhase,
 ) -> StepsEvaluation {
     // Box-pin recursion for async fn (reactions run nested `evaluate_steps`).
-    Box::pin(evaluate_steps_inner(steps, bag, pdp, plugins)).await
+    Box::pin(evaluate_steps_inner(steps, bag, pdp, plugins, delegations, phase)).await
 }
 
 /// Outcome of `evaluate_steps`: the phase's decision plus taints emitted
@@ -181,9 +183,11 @@ impl StepsEvaluation {
 
 async fn evaluate_steps_inner(
     steps: &[Step],
-    bag: &AttributeBag,
+    bag: &mut AttributeBag,
     pdp: &dyn PdpResolver,
     plugins: &dyn PluginInvoker,
+    delegations: &dyn crate::step::DelegationInvoker,
+    phase: crate::step::DispatchPhase,
 ) -> StepsEvaluation {
     let mut taints: Vec<crate::pipeline::TaintEvent> = Vec::new();
     for step in steps {
@@ -211,7 +215,7 @@ async fn evaluate_steps_inner(
                     Ok(pdp_result) => match pdp_result.decision {
                         Decision::Allow => {
                             let reaction = Box::pin(evaluate_steps_inner(
-                                on_allow, bag, pdp, plugins,
+                                on_allow, bag, pdp, plugins, delegations, phase,
                             )).await;
                             taints.extend(reaction.taints);
                             if let Decision::Deny { .. } = reaction.decision {
@@ -221,7 +225,7 @@ async fn evaluate_steps_inner(
                         }
                         deny @ Decision::Deny { .. } => {
                             let reaction = Box::pin(evaluate_steps_inner(
-                                on_deny, bag, pdp, plugins,
+                                on_deny, bag, pdp, plugins, delegations, phase,
                             )).await;
                             taints.extend(reaction.taints);
                             // Reactions can override the PDP's deny reason
@@ -248,7 +252,7 @@ async fn evaluate_steps_inner(
             }
 
             Step::Plugin { name } => {
-                match plugins.invoke(name, bag, PluginInvocation::Step).await {
+                match plugins.invoke(name, bag, PluginInvocation::Step { phase }).await {
                     Ok(outcome) => {
                         // Plugins can emit taints regardless of decision —
                         // collect first, then act on the decision.
@@ -265,6 +269,77 @@ async fn evaluate_steps_inner(
                             Decision::Deny {
                                 reason: Some(format!("plugin `{}` error: {}", name, e)),
                                 rule_source: format!("plugin:{}", name),
+                            },
+                            taints,
+                        );
+                    }
+                }
+            }
+
+            Step::Delegate(delegate_step) => {
+                match delegations.delegate(delegate_step).await {
+                    Ok(outcome) => {
+                        // On success, surface granted_* keys into the
+                        // bag so downstream rules in this same step list
+                        // can read them (`require(delegation.granted.permissions
+                        // contains "X")`, etc.). On Deny, leave the bag
+                        // alone — the `delegation.granted` flag stays
+                        // absent / falsy.
+                        match &outcome.decision {
+                            Decision::Allow => {
+                                use crate::attributes::AttributeValue;
+                                use crate::step::delegation_bag_keys as bk;
+
+                                bag.set(bk::GRANTED, AttributeValue::Bool(true));
+                                if !outcome.granted_permissions.is_empty() {
+                                    let set: std::collections::HashSet<String> =
+                                        outcome.granted_permissions.iter().cloned().collect();
+                                    bag.set(bk::GRANTED_PERMISSIONS, AttributeValue::StringSet(set));
+                                }
+                                if let Some(aud) = &outcome.granted_audience {
+                                    bag.set(bk::GRANTED_AUDIENCE, aud.clone());
+                                }
+                                if let Some(exp) = &outcome.granted_expires_at {
+                                    bag.set(bk::GRANTED_EXPIRES_AT, exp.clone());
+                                }
+                                continue;
+                            }
+                            Decision::Deny { .. } => {
+                                // Apply the step's on_error policy. Default
+                                // ("deny") halts; "continue" lets the
+                                // pipeline keep going so subsequent rules
+                                // can branch on the absent
+                                // `delegation.granted` flag.
+                                let on_error = delegate_step
+                                    .on_error
+                                    .as_deref()
+                                    .unwrap_or("deny")
+                                    .to_ascii_lowercase();
+                                if on_error == "continue" {
+                                    continue;
+                                }
+                                return StepsEvaluation::deny(outcome.decision, taints);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        // Transport / lookup failure. on_error treats this
+                        // the same way as a plugin-side deny.
+                        let on_error = delegate_step
+                            .on_error
+                            .as_deref()
+                            .unwrap_or("deny")
+                            .to_ascii_lowercase();
+                        if on_error == "continue" {
+                            continue;
+                        }
+                        return StepsEvaluation::deny(
+                            Decision::Deny {
+                                reason: Some(format!(
+                                    "delegate `{}` error: {}",
+                                    delegate_step.plugin_name, e
+                                )),
+                                rule_source: delegate_step.source.clone(),
                             },
                             taints,
                         );
@@ -340,6 +415,7 @@ pub async fn evaluate_pipeline(
     bag: &AttributeBag,
     plugins: &dyn PluginInvoker,
     field_name: &str,
+    phase: crate::step::DispatchPhase,
 ) -> PipelineEvaluation {
     let mut current = value.clone();
     let mut replaced = false;
@@ -454,11 +530,24 @@ pub async fn evaluate_pipeline(
                     };
                 }
             }
-            Stage::Validate { name: _ } => {
-                // TODO: named-validator dispatch. Needs a ValidatorRegistry
-                // (similar to PluginInvoker, but synchronous) — out of scope
-                // for this step. For now, validate(name) is a no-op so
-                // upstream parsing still works.
+            Stage::Validate { name } => {
+                // Named-validator dispatch is not implemented in this
+                // build. The parser rejects `validate(...)` at compile
+                // time (parser.rs); this branch covers IR built
+                // programmatically bypassing the parser. Same shape
+                // as the parser's diagnostic — operators reach for
+                // `regex(...)` or `plugin(...)` instead.
+                return PipelineEvaluation {
+                    outcome: FieldOutcome::Deny {
+                        reason: format!(
+                            "`validate({})` is not implemented; use `regex(...)` \
+                             or `plugin({})` instead",
+                            name, name,
+                        ),
+                        stage_index: idx,
+                    },
+                    taints,
+                };
             }
 
             // ----- Transforms -----
@@ -509,7 +598,11 @@ pub async fn evaluate_pipeline(
                 taints.push(TaintEvent { label: label.clone(), scopes: scopes.clone() });
             }
             Stage::Plugin { name } => {
-                let invocation = PluginInvocation::Field { name: field_name, value: &current };
+                let invocation = PluginInvocation::Field {
+                    name: field_name,
+                    value: &current,
+                    phase,
+                };
                 match plugins.invoke(name, bag, invocation).await {
                     Ok(outcome) => {
                         // Plugins can emit taints regardless of decision.
@@ -643,7 +736,7 @@ mod tests {
 
     #[test]
     fn empty_rules_allow() {
-        let bag = AttributeBag::new();
+        let mut bag = AttributeBag::new();
         assert_eq!(evaluate_rules(&[], &bag), Decision::Allow);
     }
 
@@ -687,7 +780,7 @@ mod tests {
 
     #[test]
     fn unmatched_rules_dont_fire() {
-        let bag = AttributeBag::new(); // "denied" missing → false
+        let mut bag = AttributeBag::new(); // "denied" missing → false
         let rules = vec![rule(
             cond(Condition::IsTrue { key: "denied".into() }),
             deny("shouldn't fire"),
@@ -700,7 +793,7 @@ mod tests {
 
     #[test]
     fn missing_key_is_false() {
-        let bag = AttributeBag::new();
+        let mut bag = AttributeBag::new();
         assert!(!eval_condition(&Condition::IsTrue { key: "missing".into() }, &bag));
         assert!(eval_condition(&Condition::IsFalse { key: "missing".into() }, &bag));
         // Comparison on missing → false (spec §2.6).
@@ -915,7 +1008,7 @@ mod tests {
         v: &serde_json::Value,
         bag: &AttributeBag,
     ) -> FieldOutcome {
-        evaluate_pipeline(p, v, bag, &NullPipelinePlugins, "test_field").await.outcome
+        evaluate_pipeline(p, v, bag, &NullPipelinePlugins, "test_field", crate::step::DispatchPhase::Pre).await.outcome
     }
 
     /// Pipeline-test null invoker — distinct from the step-test `NullPlugins`
@@ -936,14 +1029,14 @@ mod tests {
 
     #[tokio::test]
     async fn pipeline_empty_is_pass() {
-        let bag = AttributeBag::new();
+        let mut bag = AttributeBag::new();
         let p = make_pipeline(vec![]);
         assert_eq!(run_pipeline(&p, &json!("anything"), &bag).await, FieldOutcome::Pass);
     }
 
     #[tokio::test]
     async fn pipeline_type_check_passes_and_denies() {
-        let bag = AttributeBag::new();
+        let mut bag = AttributeBag::new();
         let p = make_pipeline(vec![Stage::Type(TypeCheck::Str)]);
         assert_eq!(run_pipeline(&p, &json!("hello"), &bag).await, FieldOutcome::Pass);
         match run_pipeline(&p, &json!(42), &bag).await {
@@ -957,7 +1050,7 @@ mod tests {
 
     #[tokio::test]
     async fn pipeline_mask_preserves_last_n() {
-        let bag = AttributeBag::new();
+        let mut bag = AttributeBag::new();
         let p = make_pipeline(vec![Stage::Mask { keep_last: 4 }]);
         match run_pipeline(&p, &json!("123-45-6789"), &bag).await {
             FieldOutcome::Replace(v) => assert_eq!(v, json!("*******6789")),
@@ -967,7 +1060,7 @@ mod tests {
 
     #[tokio::test]
     async fn pipeline_mask_handles_short_strings() {
-        let bag = AttributeBag::new();
+        let mut bag = AttributeBag::new();
         let p = make_pipeline(vec![Stage::Mask { keep_last: 4 }]);
         // keep_last >= length → no mask chars; full string preserved.
         match run_pipeline(&p, &json!("ab"), &bag).await {
@@ -978,7 +1071,7 @@ mod tests {
 
     #[tokio::test]
     async fn pipeline_unconditional_redact() {
-        let bag = AttributeBag::new();
+        let mut bag = AttributeBag::new();
         let p = make_pipeline(vec![Stage::Redact { condition: None }]);
         match run_pipeline(&p, &json!("secret"), &bag).await {
             FieldOutcome::Replace(v) => assert_eq!(v, json!("[REDACTED]")),
@@ -990,7 +1083,7 @@ mod tests {
     async fn pipeline_conditional_redact_fires_when_condition_true() {
         // redact(!perm.view_ssn): condition is `!perm.view_ssn`. Missing key
         // → IsTrue is false → `!IsTrue` is true → redact fires.
-        let bag = AttributeBag::new();
+        let mut bag = AttributeBag::new();
         let cond = Expression::Not(Box::new(Expression::Condition(Condition::IsTrue {
             key: "perm.view_ssn".into(),
         })));
@@ -1018,7 +1111,7 @@ mod tests {
 
     #[tokio::test]
     async fn pipeline_omit_short_circuits() {
-        let bag = AttributeBag::new();
+        let mut bag = AttributeBag::new();
         let p = make_pipeline(vec![
             Stage::Omit,
             // This stage should never run.
@@ -1029,7 +1122,7 @@ mod tests {
 
     #[tokio::test]
     async fn pipeline_range_validator() {
-        let bag = AttributeBag::new();
+        let mut bag = AttributeBag::new();
         let p = make_pipeline(vec![
             Stage::Type(TypeCheck::Int),
             Stage::Range { min: Some(0), max: Some(1_000_000) },
@@ -1047,7 +1140,7 @@ mod tests {
 
     #[tokio::test]
     async fn pipeline_length_validator() {
-        let bag = AttributeBag::new();
+        let mut bag = AttributeBag::new();
         let p = make_pipeline(vec![Stage::Length { min: None, max: Some(5) }]);
         assert_eq!(run_pipeline(&p, &json!("hi"), &bag).await, FieldOutcome::Pass);
         assert!(matches!(
@@ -1058,7 +1151,7 @@ mod tests {
 
     #[tokio::test]
     async fn pipeline_enum_validator() {
-        let bag = AttributeBag::new();
+        let mut bag = AttributeBag::new();
         let p = make_pipeline(vec![Stage::Enum {
             values: vec!["low".into(), "medium".into(), "high".into()],
         }]);
@@ -1071,7 +1164,7 @@ mod tests {
 
     #[tokio::test]
     async fn pipeline_uuid_validator() {
-        let bag = AttributeBag::new();
+        let mut bag = AttributeBag::new();
         let p = make_pipeline(vec![Stage::Type(TypeCheck::Uuid)]);
         assert_eq!(
             run_pipeline(&p, &json!("550e8400-e29b-41d4-a716-446655440000"), &bag).await,
@@ -1085,7 +1178,7 @@ mod tests {
 
     #[tokio::test]
     async fn pipeline_hash_replaces_value() {
-        let bag = AttributeBag::new();
+        let mut bag = AttributeBag::new();
         let p = make_pipeline(vec![Stage::Hash]);
         match run_pipeline(&p, &json!("secret"), &bag).await {
             FieldOutcome::Replace(v) => {
@@ -1098,25 +1191,38 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn pipeline_validate_named_is_stub() {
-        // `validate(name)` is a no-op until the ValidatorRegistry lands.
-        // It should not deny, and should not interrupt subsequent stages.
-        let bag = AttributeBag::new();
+    async fn pipeline_validate_named_denies_at_runtime() {
+        // `validate(name)` is unimplemented in this build. The parser
+        // rejects it at compile time; this test exercises the runtime
+        // defense-in-depth path for IR built programmatically. The
+        // deny message points operators at the working alternatives
+        // (`regex(...)` / `plugin(...)`).
+        let mut bag = AttributeBag::new();
         let p = make_pipeline(vec![
             Stage::Type(TypeCheck::Str),
             Stage::Validate { name: "ssn_format".into() },
             Stage::Mask { keep_last: 4 },
         ]);
         match run_pipeline(&p, &json!("123-45-6789"), &bag).await {
-            FieldOutcome::Replace(v) => assert_eq!(v, json!("*******6789")),
-            other => panic!("expected Replace, got {:?}", other),
+            FieldOutcome::Deny { reason, stage_index } => {
+                assert_eq!(stage_index, 1, "validate stage is at index 1");
+                assert!(
+                    reason.contains("not implemented"),
+                    "deny reason should explain that validate is unimplemented: {reason}",
+                );
+                assert!(
+                    reason.contains("regex") || reason.contains("plugin"),
+                    "deny reason should point at alternatives: {reason}",
+                );
+            }
+            other => panic!("expected Deny on validate(...) stage, got {:?}", other),
         }
     }
 
     #[tokio::test]
     async fn pipeline_validator_short_circuits_before_transform() {
         // If the validator fails, the transform never runs.
-        let bag = AttributeBag::new();
+        let mut bag = AttributeBag::new();
         let p = make_pipeline(vec![
             Stage::Type(TypeCheck::Int),  // will fail on a string
             Stage::Mask { keep_last: 4 },
@@ -1131,7 +1237,7 @@ mod tests {
 
     #[tokio::test]
     async fn pipeline_regex_match_passes() {
-        let bag = AttributeBag::new();
+        let mut bag = AttributeBag::new();
         let p = make_pipeline(vec![Stage::Regex {
             pattern: r"^\d{3}-\d{2}-\d{4}$".into(),
         }]);
@@ -1140,7 +1246,7 @@ mod tests {
 
     #[tokio::test]
     async fn pipeline_regex_no_match_denies() {
-        let bag = AttributeBag::new();
+        let mut bag = AttributeBag::new();
         let p = make_pipeline(vec![Stage::Regex {
             pattern: r"^\d{3}-\d{2}-\d{4}$".into(),
         }]);
@@ -1155,7 +1261,7 @@ mod tests {
 
     #[tokio::test]
     async fn pipeline_regex_invalid_pattern_denies() {
-        let bag = AttributeBag::new();
+        let mut bag = AttributeBag::new();
         let p = make_pipeline(vec![Stage::Regex { pattern: "(unclosed".into() }]);
         match run_pipeline(&p, &json!("anything"), &bag).await {
             FieldOutcome::Deny { reason, .. } => {
@@ -1167,7 +1273,7 @@ mod tests {
 
     #[tokio::test]
     async fn pipeline_regex_non_string_denies() {
-        let bag = AttributeBag::new();
+        let mut bag = AttributeBag::new();
         let p = make_pipeline(vec![Stage::Regex { pattern: r"^\d+$".into() }]);
         match run_pipeline(&p, &json!(42), &bag).await {
             FieldOutcome::Deny { reason, .. } => {
@@ -1181,13 +1287,13 @@ mod tests {
 
     #[tokio::test]
     async fn pipeline_taint_records_event() {
-        let bag = AttributeBag::new();
+        let mut bag = AttributeBag::new();
         let p = make_pipeline(vec![
             Stage::Type(TypeCheck::Str),
             Stage::Taint { label: "PII".into(), scopes: vec![TaintScope::Session] },
             Stage::Mask { keep_last: 4 },
         ]);
-        let result = evaluate_pipeline(&p, &json!("123-45-6789"), &bag, &NullPipelinePlugins, "test_field").await;
+        let result = evaluate_pipeline(&p, &json!("123-45-6789"), &bag, &NullPipelinePlugins, "test_field", crate::step::DispatchPhase::Pre).await;
         assert_eq!(result.outcome, FieldOutcome::Replace(json!("*******6789")));
         assert_eq!(result.taints, vec![TaintEvent {
             label: "PII".into(),
@@ -1197,9 +1303,9 @@ mod tests {
 
     #[tokio::test]
     async fn pipeline_scan_pii_detect_emits_taint() {
-        let bag = AttributeBag::new();
+        let mut bag = AttributeBag::new();
         let p = make_pipeline(vec![Stage::Scan { kind: ScanKind::PiiDetect }]);
-        let result = evaluate_pipeline(&p, &json!("some text"), &bag, &NullPipelinePlugins, "test_field").await;
+        let result = evaluate_pipeline(&p, &json!("some text"), &bag, &NullPipelinePlugins, "test_field", crate::step::DispatchPhase::Pre).await;
         // PII detect: value unchanged, one taint event emitted.
         assert_eq!(result.outcome, FieldOutcome::Pass);
         assert_eq!(result.taints, vec![TaintEvent {
@@ -1210,9 +1316,9 @@ mod tests {
 
     #[tokio::test]
     async fn pipeline_scan_pii_redact_replaces_and_taints() {
-        let bag = AttributeBag::new();
+        let mut bag = AttributeBag::new();
         let p = make_pipeline(vec![Stage::Scan { kind: ScanKind::PiiRedact }]);
-        let result = evaluate_pipeline(&p, &json!("123-45-6789"), &bag, &NullPipelinePlugins, "test_field").await;
+        let result = evaluate_pipeline(&p, &json!("123-45-6789"), &bag, &NullPipelinePlugins, "test_field", crate::step::DispatchPhase::Pre).await;
         assert_eq!(result.outcome, FieldOutcome::Replace(json!("[REDACTED]")));
         assert_eq!(result.taints.len(), 1);
         assert_eq!(result.taints[0].label, "PII");
@@ -1220,9 +1326,9 @@ mod tests {
 
     #[tokio::test]
     async fn pipeline_scan_injection_emits_injection_taint() {
-        let bag = AttributeBag::new();
+        let mut bag = AttributeBag::new();
         let p = make_pipeline(vec![Stage::Scan { kind: ScanKind::InjectionScan }]);
-        let result = evaluate_pipeline(&p, &json!("user input"), &bag, &NullPipelinePlugins, "test_field").await;
+        let result = evaluate_pipeline(&p, &json!("user input"), &bag, &NullPipelinePlugins, "test_field", crate::step::DispatchPhase::Pre).await;
         assert_eq!(result.outcome, FieldOutcome::Pass);
         assert_eq!(result.taints[0].label, "injection");
     }
@@ -1231,13 +1337,13 @@ mod tests {
     async fn pipeline_deny_does_not_accumulate_later_taints() {
         // Pipeline halts at the first failing validator; taints emitted
         // before the failure stick, taints after do not.
-        let bag = AttributeBag::new();
+        let mut bag = AttributeBag::new();
         let p = make_pipeline(vec![
             Stage::Taint { label: "before".into(), scopes: vec![TaintScope::Session] },
             Stage::Type(TypeCheck::Int),  // fails on string input
             Stage::Taint { label: "after".into(), scopes: vec![TaintScope::Session] },
         ]);
-        let result = evaluate_pipeline(&p, &json!("hello"), &bag, &NullPipelinePlugins, "test_field").await;
+        let result = evaluate_pipeline(&p, &json!("hello"), &bag, &NullPipelinePlugins, "test_field", crate::step::DispatchPhase::Pre).await;
         assert!(matches!(result.outcome, FieldOutcome::Deny { .. }));
         assert_eq!(result.taints, vec![TaintEvent {
             label: "before".into(),
@@ -1268,7 +1374,7 @@ mod tests {
 
     #[tokio::test]
     async fn pipeline_plugin_allow_continues() {
-        let bag = AttributeBag::new();
+        let mut bag = AttributeBag::new();
         let plugins = PipePlugin {
             outcomes: std::collections::HashMap::from([
                 ("noop".to_string(), PluginOutcome::allow()),
@@ -1279,14 +1385,14 @@ mod tests {
             Stage::Plugin { name: "noop".into() },
             Stage::Mask { keep_last: 4 },
         ]);
-        let result = evaluate_pipeline(&p, &json!("123-45-6789"), &bag, &plugins, "compensation").await;
+        let result = evaluate_pipeline(&p, &json!("123-45-6789"), &bag, &plugins, "compensation", crate::step::DispatchPhase::Pre).await;
         assert_eq!(result.outcome, FieldOutcome::Replace(json!("*******6789")));
         assert!(result.taints.is_empty());
     }
 
     #[tokio::test]
     async fn pipeline_plugin_can_replace_value() {
-        let bag = AttributeBag::new();
+        let mut bag = AttributeBag::new();
         let plugins = PipePlugin {
             outcomes: std::collections::HashMap::from([
                 ("scrubber".to_string(), PluginOutcome {
@@ -1300,7 +1406,7 @@ mod tests {
             ]),
         };
         let p = make_pipeline(vec![Stage::Plugin { name: "scrubber".into() }]);
-        let result = evaluate_pipeline(&p, &json!("sensitive data"), &bag, &plugins, "notes").await;
+        let result = evaluate_pipeline(&p, &json!("sensitive data"), &bag, &plugins, "notes", crate::step::DispatchPhase::Pre).await;
         assert_eq!(result.outcome, FieldOutcome::Replace(json!("***scrubbed***")));
         assert_eq!(result.taints, vec![TaintEvent {
             label: "PII".into(),
@@ -1310,7 +1416,7 @@ mod tests {
 
     #[tokio::test]
     async fn pipeline_plugin_deny_halts() {
-        let bag = AttributeBag::new();
+        let mut bag = AttributeBag::new();
         let plugins = PipePlugin {
             outcomes: std::collections::HashMap::from([
                 ("guard".to_string(), PluginOutcome {
@@ -1328,7 +1434,7 @@ mod tests {
             // Should never run.
             Stage::Mask { keep_last: 4 },
         ]);
-        let result = evaluate_pipeline(&p, &json!("data"), &bag, &plugins, "payload").await;
+        let result = evaluate_pipeline(&p, &json!("data"), &bag, &plugins, "payload", crate::step::DispatchPhase::Pre).await;
         match result.outcome {
             FieldOutcome::Deny { reason, stage_index } => {
                 assert_eq!(reason, "policy violation");
@@ -1340,10 +1446,10 @@ mod tests {
 
     #[tokio::test]
     async fn pipeline_plugin_missing_fails_closed() {
-        let bag = AttributeBag::new();
+        let mut bag = AttributeBag::new();
         let plugins = PipePlugin { outcomes: Default::default() };
         let p = make_pipeline(vec![Stage::Plugin { name: "missing".into() }]);
-        let result = evaluate_pipeline(&p, &json!("data"), &bag, &plugins, "payload").await;
+        let result = evaluate_pipeline(&p, &json!("data"), &bag, &plugins, "payload", crate::step::DispatchPhase::Pre).await;
         match result.outcome {
             FieldOutcome::Deny { reason, .. } => assert!(reason.contains("missing")),
             other => panic!("expected Deny on missing plugin, got {:?}", other),
@@ -1407,7 +1513,7 @@ mod tests {
 
     #[test]
     fn in_set_missing_keys_resolve_to_false() {
-        let bag = AttributeBag::new();
+        let mut bag = AttributeBag::new();
         // Both missing → in = false → not in = true (spec §2.6 missing→false
         // applies to the underlying `in` lookup; negate flips it).
         assert!(!eval_condition(&Condition::InSet {
@@ -1424,13 +1530,13 @@ mod tests {
 
     #[test]
     fn always_evaluates_true() {
-        let bag = AttributeBag::new();
+        let mut bag = AttributeBag::new();
         assert!(eval_expression(&Expression::Always, &bag));
     }
 
     #[test]
     fn always_rule_unconditional_deny() {
-        let bag = AttributeBag::new();
+        let mut bag = AttributeBag::new();
         let r = Rule {
             condition: Expression::Always,
             action: Action::Deny { reason: Some("unconditional".into()) },
@@ -1447,8 +1553,8 @@ mod tests {
     // ===================================================================
 
     use crate::step::{
-        PdpCall, PdpDecision, PdpDialect, PdpError, PdpResolver, PluginError, PluginInvocation,
-        PluginInvoker, PluginOutcome, Step,
+        NoopDelegationInvoker, PdpCall, PdpDecision, PdpDialect, PdpError, PdpResolver,
+        PluginError, PluginInvocation, PluginInvoker, PluginOutcome, Step,
     };
     use async_trait::async_trait;
 
@@ -1534,35 +1640,35 @@ mod tests {
 
     #[tokio::test]
     async fn steps_rule_only_path() {
-        let bag = AttributeBag::new();
+        let mut bag = AttributeBag::new();
         let steps = vec![Step::Rule(Rule {
             condition: Expression::Always,
             action: Action::Allow,
             source: "test".into(),
         })];
-        let r = evaluate_steps(&steps, &bag, &FakePdp { decision: Decision::Allow }, &NullPlugins).await;
+        let r = evaluate_steps(&steps, &mut bag, &FakePdp { decision: Decision::Allow }, &NullPlugins, &NoopDelegationInvoker, crate::step::DispatchPhase::Pre).await;
         assert_eq!(r.decision, Decision::Allow);
     }
 
     #[tokio::test]
     async fn pdp_allow_continues() {
-        let bag = AttributeBag::new();
+        let mut bag = AttributeBag::new();
         let steps = vec![pdp_step("dummy")];
         let pdp = FakePdp { decision: Decision::Allow };
         assert_eq!(
-            evaluate_steps(&steps, &bag, &pdp, &NullPlugins).await.decision,
+            evaluate_steps(&steps, &mut bag, &pdp, &NullPlugins, &NoopDelegationInvoker, crate::step::DispatchPhase::Pre).await.decision,
             Decision::Allow,
         );
     }
 
     #[tokio::test]
     async fn pdp_deny_returns_deny() {
-        let bag = AttributeBag::new();
+        let mut bag = AttributeBag::new();
         let steps = vec![pdp_step("dummy")];
         let pdp = FakePdp {
             decision: Decision::Deny { reason: Some("forbidden".into()), rule_source: "pdp".into() },
         };
-        match evaluate_steps(&steps, &bag, &pdp, &NullPlugins).await.decision {
+        match evaluate_steps(&steps, &mut bag, &pdp, &NullPlugins, &NoopDelegationInvoker, crate::step::DispatchPhase::Pre).await.decision {
             Decision::Deny { reason, .. } => assert_eq!(reason.as_deref(), Some("forbidden")),
             d => panic!("expected Deny, got {:?}", d),
         }
@@ -1572,7 +1678,7 @@ mod tests {
     async fn pdp_on_deny_reaction_can_override_reason() {
         // PDP denies, on_deny reaction includes a more specific deny rule that
         // fires before the PDP's deny is returned.
-        let bag = AttributeBag::new();
+        let mut bag = AttributeBag::new();
         let steps = vec![Step::Pdp {
             call: PdpCall { dialect: PdpDialect::Cedar, args: serde_yaml::Value::Null },
             on_deny: vec![Step::Rule(Rule {
@@ -1585,7 +1691,7 @@ mod tests {
         let pdp = FakePdp {
             decision: Decision::Deny { reason: Some("pdp original".into()), rule_source: "p".into() },
         };
-        match evaluate_steps(&steps, &bag, &pdp, &NullPlugins).await.decision {
+        match evaluate_steps(&steps, &mut bag, &pdp, &NullPlugins, &NoopDelegationInvoker, crate::step::DispatchPhase::Pre).await.decision {
             Decision::Deny { reason, rule_source } => {
                 assert_eq!(reason.as_deref(), Some("reaction took over"));
                 assert_eq!(rule_source, "on_deny[0]");
@@ -1598,7 +1704,7 @@ mod tests {
     async fn pdp_on_allow_can_deny() {
         // PDP allows, but an on_allow reaction can still deny (e.g., a
         // taint check that fails). Outcome: deny.
-        let bag = AttributeBag::new();
+        let mut bag = AttributeBag::new();
         let steps = vec![Step::Pdp {
             call: PdpCall { dialect: PdpDialect::Cedar, args: serde_yaml::Value::Null },
             on_deny: vec![],
@@ -1609,7 +1715,7 @@ mod tests {
             })],
         }];
         let pdp = FakePdp { decision: Decision::Allow };
-        match evaluate_steps(&steps, &bag, &pdp, &NullPlugins).await.decision {
+        match evaluate_steps(&steps, &mut bag, &pdp, &NullPlugins, &NoopDelegationInvoker, crate::step::DispatchPhase::Pre).await.decision {
             Decision::Deny { reason, .. } => assert_eq!(reason.as_deref(), Some("reaction veto")),
             d => panic!("expected Deny, got {:?}", d),
         }
@@ -1617,9 +1723,9 @@ mod tests {
 
     #[tokio::test]
     async fn pdp_error_is_fail_closed() {
-        let bag = AttributeBag::new();
+        let mut bag = AttributeBag::new();
         let steps = vec![pdp_step("dummy")];
-        match evaluate_steps(&steps, &bag, &ErroringPdp, &NullPlugins).await.decision {
+        match evaluate_steps(&steps, &mut bag, &ErroringPdp, &NullPlugins, &NoopDelegationInvoker, crate::step::DispatchPhase::Pre).await.decision {
             Decision::Deny { reason, .. } => {
                 assert!(reason.unwrap().contains("PDP error"));
             }
@@ -1629,7 +1735,7 @@ mod tests {
 
     #[tokio::test]
     async fn plugin_allow_continues_deny_halts() {
-        let bag = AttributeBag::new();
+        let mut bag = AttributeBag::new();
         let plugins = FakePlugin {
             decisions: std::collections::HashMap::from([
                 ("ok_plugin".to_string(), Decision::Allow),
@@ -1642,7 +1748,7 @@ mod tests {
 
         let allow_only = vec![Step::Plugin { name: "ok_plugin".into() }];
         assert_eq!(
-            evaluate_steps(&allow_only, &bag, &FakePdp { decision: Decision::Allow }, &plugins).await.decision,
+            evaluate_steps(&allow_only, &mut bag, &FakePdp { decision: Decision::Allow }, &plugins, &NoopDelegationInvoker, crate::step::DispatchPhase::Pre).await.decision,
             Decision::Allow,
         );
 
@@ -1650,7 +1756,7 @@ mod tests {
             Step::Plugin { name: "ok_plugin".into() },
             Step::Plugin { name: "blocking_plugin".into() },
         ];
-        match evaluate_steps(&with_deny, &bag, &FakePdp { decision: Decision::Allow }, &plugins).await.decision {
+        match evaluate_steps(&with_deny, &mut bag, &FakePdp { decision: Decision::Allow }, &plugins, &NoopDelegationInvoker, crate::step::DispatchPhase::Pre).await.decision {
             Decision::Deny { reason, .. } => assert_eq!(reason.as_deref(), Some("rate limit hit")),
             d => panic!("expected Deny from blocking_plugin, got {:?}", d),
         }
@@ -1658,10 +1764,10 @@ mod tests {
 
     #[tokio::test]
     async fn plugin_error_is_fail_closed() {
-        let bag = AttributeBag::new();
+        let mut bag = AttributeBag::new();
         let plugins = FakePlugin { decisions: Default::default() };
         let steps = vec![Step::Plugin { name: "missing".into() }];
-        match evaluate_steps(&steps, &bag, &FakePdp { decision: Decision::Allow }, &plugins).await.decision {
+        match evaluate_steps(&steps, &mut bag, &FakePdp { decision: Decision::Allow }, &plugins, &NoopDelegationInvoker, crate::step::DispatchPhase::Pre).await.decision {
             Decision::Deny { reason, rule_source } => {
                 assert!(reason.unwrap().contains("missing"));
                 assert!(rule_source.contains("missing"));
@@ -1672,7 +1778,7 @@ mod tests {
 
     #[tokio::test]
     async fn taint_step_always_continues_and_accumulates() {
-        let bag = AttributeBag::new();
+        let mut bag = AttributeBag::new();
         let steps = vec![
             Step::Taint {
                 label: "PII".into(),
@@ -1685,7 +1791,7 @@ mod tests {
                 source: "p[1]".into(),
             }),
         ];
-        let eval = evaluate_steps(&steps, &bag, &FakePdp { decision: Decision::Allow }, &NullPlugins).await;
+        let eval = evaluate_steps(&steps, &mut bag, &FakePdp { decision: Decision::Allow }, &NullPlugins, &NoopDelegationInvoker, crate::step::DispatchPhase::Pre).await;
         match eval.decision {
             Decision::Deny { reason, .. } => assert_eq!(reason.as_deref(), Some("after taint")),
             d => panic!("expected Deny from rule after Taint, got {:?}", d),

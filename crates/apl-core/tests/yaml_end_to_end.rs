@@ -13,9 +13,9 @@
 // list-with-matchers form is a deferred shape).
 
 use apl_core::{
-    compile_config, evaluate_route, AttributeBag, Decision, FieldOutcome, PdpCall, PdpDecision,
-    PdpDialect, PdpError, PdpResolver, PluginError, PluginInvocation, PluginInvoker,
-    PluginOutcome, RoutePayload,
+    compile_config, evaluate_route, AttributeBag, Decision, FieldOutcome, NoopDelegationInvoker,
+    PdpCall, PdpDecision, PdpDialect, PdpError, PdpResolver, PluginError, PluginInvocation,
+    PluginInvoker, PluginOutcome, RoutePayload,
 };
 use async_trait::async_trait;
 use serde_json::json;
@@ -85,7 +85,7 @@ async fn alice_full_access_sees_unredacted_result_with_masked_id() {
         }),
     );
 
-    let r = evaluate_route(route, &bag, &mut payload, &AllowPdp, &NoPlugins).await;
+    let r = evaluate_route(route, &mut bag, &mut payload, &AllowPdp, &NoPlugins, &NoopDelegationInvoker).await;
     assert_eq!(r.decision, Decision::Allow);
     assert!(r.args_modified == false, "args has only a `str` validator, no mutation");
     assert!(r.result_modified, "result has mask + redact stages");
@@ -119,7 +119,7 @@ async fn mallory_no_perm_no_role_gets_both_fields_redacted() {
         }),
     );
 
-    let r = evaluate_route(route, &bag, &mut payload, &AllowPdp, &NoPlugins).await;
+    let r = evaluate_route(route, &mut bag, &mut payload, &AllowPdp, &NoPlugins, &NoopDelegationInvoker).await;
     assert_eq!(r.decision, Decision::Allow);
 
     let result = payload.result.as_ref().unwrap();
@@ -145,7 +145,7 @@ async fn deep_delegation_denies_at_policy() {
         json!({ "ssn": "x", "salary": 1, "employee_id": "123-45-6789" }),
     );
 
-    let r = evaluate_route(route, &bag, &mut payload, &AllowPdp, &NoPlugins).await;
+    let r = evaluate_route(route, &mut bag, &mut payload, &AllowPdp, &NoPlugins, &NoopDelegationInvoker).await;
     match r.decision {
         Decision::Deny { rule_source, .. } => {
             assert!(rule_source.contains("policy"), "got source: {}", rule_source);
@@ -161,7 +161,7 @@ async fn deep_delegation_denies_at_policy() {
 #[tokio::test]
 async fn unauthenticated_user_is_denied_before_args_mutate_result() {
     // No `authenticated` key → require(authenticated) fails → deny.
-    let bag = AttributeBag::new();
+    let mut bag = AttributeBag::new();
     bag.contains("authenticated"); // sanity: confirm we built an empty bag.
 
     let routes = compile_config(HR_ROUTE_YAML).unwrap().routes;
@@ -172,7 +172,7 @@ async fn unauthenticated_user_is_denied_before_args_mutate_result() {
         json!({ "ssn": "999-99-9999", "salary": 50000, "employee_id": "123-45-6789" }),
     );
 
-    let r = evaluate_route(route, &bag, &mut payload, &AllowPdp, &NoPlugins).await;
+    let r = evaluate_route(route, &mut bag, &mut payload, &AllowPdp, &NoPlugins, &NoopDelegationInvoker).await;
     assert!(matches!(r.decision, Decision::Deny { .. }));
     assert!(!r.result_modified);
 }
@@ -193,7 +193,7 @@ async fn args_validator_rejects_wrong_type() {
         json!({ "ssn": "x", "salary": 1, "employee_id": "x" }),
     );
 
-    let r = evaluate_route(route, &bag, &mut payload, &AllowPdp, &NoPlugins).await;
+    let r = evaluate_route(route, &mut bag, &mut payload, &AllowPdp, &NoPlugins, &NoopDelegationInvoker).await;
     match r.decision {
         Decision::Deny { rule_source, .. } => {
             assert!(
@@ -220,7 +220,7 @@ async fn inbound_only_evaluation_skips_result_phase() {
     let route = routes.get("get_employee").unwrap();
 
     let mut payload = RoutePayload::new(json!({ "employee_id": "123-45-6789" }));
-    let r = evaluate_route(route, &bag, &mut payload, &AllowPdp, &NoPlugins).await;
+    let r = evaluate_route(route, &mut bag, &mut payload, &AllowPdp, &NoPlugins, &NoopDelegationInvoker).await;
     assert_eq!(r.decision, Decision::Allow);
     assert!(!r.result_modified);
     assert!(payload.result.is_none());

@@ -29,7 +29,7 @@ use thiserror::Error;
 use crate::pipeline::{FieldRule, Pipeline, ScanKind, Stage, TaintScope, TypeCheck};
 use crate::plugin_decl::{PluginDeclaration, PluginOverride, PluginRegistry};
 use crate::rules::{Action, CompareOp, CompiledRoute, Condition, Expression, Literal, Rule};
-use crate::step::{PdpCall, PdpDialect, Step};
+use crate::step::{DelegateStep, PdpCall, PdpDialect, Step};
 
 // =====================================================================
 // Errors
@@ -686,9 +686,282 @@ fn parse_step_string(line: &str, source: &str) -> Result<Step, ParseError> {
         return Ok(Step::Plugin { name: name.to_string() });
     }
 
+    // delegate(name, key: value, key: [a, b], ...) — emit as Step::Delegate.
+    // Compact alternative to the map form (`- delegate: { plugin: ..., ... }`).
+    // First positional arg is the plugin name; subsequent `key: value`
+    // pairs become per-call config overrides (or `on_error` if the key
+    // is reserved). Use the map form for nested configs the kwarg
+    // parser doesn't handle.
+    if trimmed.starts_with("delegate(") {
+        let inside = extract_call_args(trimmed, "delegate")
+            .ok_or_else(|| ParseError::Rule {
+                rule: trimmed.to_string(),
+                msg: "malformed `delegate(...)`".into(),
+            })?;
+        let parsed = parse_delegate_call_args(&inside, source)?;
+        return Ok(Step::Delegate(DelegateStep {
+            plugin_name: parsed.plugin_name,
+            config_override: parsed.config_override,
+            on_error: parsed.on_error,
+            source: source.to_string(),
+        }));
+    }
+
     // Otherwise fall through to the rule parser — predicate-and-action.
     let rule = parse_rule(trimmed, source)?;
     Ok(Step::Rule(rule))
+}
+
+/// Intermediate shape produced by [`parse_delegate_call_args`]. The
+/// string-form parser fills this; the caller wraps into `Step::Delegate`
+/// with the source path it has in scope.
+struct ParsedDelegateCall {
+    plugin_name: String,
+    config_override: Option<serde_yaml::Value>,
+    on_error: Option<String>,
+}
+
+/// Parse the inside-parens of `delegate(name, key: value, key: [a, b], ...)`.
+///
+/// Grammar (informal):
+/// ```text
+/// delegate_args := plugin_name [, kwarg [, kwarg]*]
+/// plugin_name   := bare_ident_or_string
+/// kwarg         := key ":" value
+/// value         := scalar | "[" value (, value)* "]"
+/// scalar        := bare_word | number | "true" | "false" | quoted_string
+/// ```
+///
+/// Reserved keys consumed before going into `config_override`:
+///   - `on_error` — pulled out as `DelegateStep.on_error`
+///
+/// Everything else lands in `config_override` as a yaml mapping. Use
+/// the map form (`- delegate: { plugin: ..., config: { ... }, ... }`)
+/// for nested config shapes the flat kwarg parser doesn't handle.
+fn parse_delegate_call_args(
+    inside: &str,
+    source: &str,
+) -> Result<ParsedDelegateCall, ParseError> {
+    let parts = split_top_level_commas(inside).map_err(|msg| ParseError::Rule {
+        rule: format!("delegate({inside})"),
+        msg: format!("{source}: {msg}"),
+    })?;
+    let mut parts_iter = parts.into_iter();
+
+    let plugin_name = parts_iter
+        .next()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| ParseError::Rule {
+            rule: format!("delegate({inside})"),
+            msg: format!(
+                "{source}: `delegate(...)` requires a plugin name as the first \
+                 positional argument"
+            ),
+        })?;
+    // Strip wrapping quotes if the operator wrote `delegate("workday-oauth", ...)`.
+    let plugin_name = strip_wrapping_quotes(&plugin_name).to_string();
+    if plugin_name.is_empty() {
+        return Err(ParseError::Rule {
+            rule: format!("delegate({inside})"),
+            msg: format!("{source}: `delegate(...)` plugin name cannot be empty"),
+        });
+    }
+
+    let mut on_error: Option<String> = None;
+    let mut config_map = serde_yaml::Mapping::new();
+
+    for raw_kwarg in parts_iter {
+        let kwarg = raw_kwarg.trim();
+        if kwarg.is_empty() {
+            continue;
+        }
+        let (key, value_str) = kwarg
+            .split_once(':')
+            .ok_or_else(|| ParseError::Rule {
+                rule: kwarg.to_string(),
+                msg: format!(
+                    "{source}: `delegate(...)` kwarg `{kwarg}` must be `key: value` \
+                     (use the map form for richer config)"
+                ),
+            })?;
+        let key = key.trim();
+        let value_str = value_str.trim();
+        if key.is_empty() {
+            return Err(ParseError::Rule {
+                rule: kwarg.to_string(),
+                msg: format!("{source}: `delegate(...)` kwarg has empty key"),
+            });
+        }
+        if key == "on_error" {
+            let val = parse_delegate_value(value_str).map_err(|msg| ParseError::Rule {
+                rule: kwarg.to_string(),
+                msg: format!("{source}: on_error: {msg}"),
+            })?;
+            on_error = Some(
+                val.as_str()
+                    .ok_or_else(|| ParseError::Rule {
+                        rule: kwarg.to_string(),
+                        msg: format!("{source}: `on_error` must be a string"),
+                    })?
+                    .to_string(),
+            );
+            continue;
+        }
+        // Reject `plugin:` as a kwarg — the plugin name is the positional
+        // first argument; allowing both would be ambiguous.
+        if key == "plugin" {
+            return Err(ParseError::Rule {
+                rule: kwarg.to_string(),
+                msg: format!(
+                    "{source}: `plugin` is set as the first positional argument \
+                     of `delegate(...)`; don't pass it as a kwarg too"
+                ),
+            });
+        }
+        let value =
+            parse_delegate_value(value_str).map_err(|msg| ParseError::Rule {
+                rule: kwarg.to_string(),
+                msg: format!("{source}: `{key}`: {msg}"),
+            })?;
+        config_map.insert(serde_yaml::Value::String(key.to_string()), value);
+    }
+
+    let config_override = if config_map.is_empty() {
+        None
+    } else {
+        Some(serde_yaml::Value::Mapping(config_map))
+    };
+
+    Ok(ParsedDelegateCall {
+        plugin_name,
+        config_override,
+        on_error,
+    })
+}
+
+/// Split a `key: value, key: value` string on TOP-LEVEL commas only —
+/// commas inside `[...]` or quoted strings are preserved as part of
+/// the surrounding value. Returns the comma-separated pieces (trimmed
+/// at boundaries; whitespace inside values preserved).
+///
+/// Errors on unmatched brackets / unterminated quotes — those produce
+/// confusing downstream errors otherwise.
+fn split_top_level_commas(input: &str) -> Result<Vec<String>, String> {
+    let mut parts = Vec::new();
+    let mut current = String::new();
+    let mut bracket_depth: usize = 0;
+    let mut quote: Option<char> = None;
+    let mut escape = false;
+
+    for ch in input.chars() {
+        if escape {
+            current.push(ch);
+            escape = false;
+            continue;
+        }
+        if let Some(q) = quote {
+            current.push(ch);
+            if ch == '\\' {
+                escape = true;
+            } else if ch == q {
+                quote = None;
+            }
+            continue;
+        }
+        match ch {
+            '"' | '\'' => {
+                quote = Some(ch);
+                current.push(ch);
+            }
+            '[' | '(' | '{' => {
+                bracket_depth += 1;
+                current.push(ch);
+            }
+            ']' | ')' | '}' => {
+                bracket_depth = bracket_depth.checked_sub(1).ok_or_else(|| {
+                    format!("unmatched `{ch}` in delegate(...) args")
+                })?;
+                current.push(ch);
+            }
+            ',' if bracket_depth == 0 => {
+                parts.push(std::mem::take(&mut current));
+            }
+            _ => current.push(ch),
+        }
+    }
+    if quote.is_some() {
+        return Err("unterminated quoted string in delegate(...) args".to_string());
+    }
+    if bracket_depth != 0 {
+        return Err("unbalanced brackets in delegate(...) args".to_string());
+    }
+    parts.push(current);
+    Ok(parts)
+}
+
+/// Parse a single value from the function-call form: a scalar
+/// (string / number / bool) or a list literal `[a, b, c]`. Use the
+/// map form for anything more complex.
+fn parse_delegate_value(s: &str) -> Result<serde_yaml::Value, String> {
+    let trimmed = s.trim();
+    if trimmed.is_empty() {
+        return Err("empty value".to_string());
+    }
+    // List literal — recursive scalar parse on each element.
+    if let Some(stripped) = trimmed.strip_prefix('[').and_then(|s| s.strip_suffix(']'))
+    {
+        let items = split_top_level_commas(stripped)?;
+        let mut out = Vec::with_capacity(items.len());
+        for item in items {
+            let item = item.trim();
+            if item.is_empty() {
+                continue;
+            }
+            out.push(parse_delegate_value(item)?);
+        }
+        return Ok(serde_yaml::Value::Sequence(out));
+    }
+    // Quoted string — strip the surrounding quotes.
+    if (trimmed.starts_with('"') && trimmed.ends_with('"') && trimmed.len() >= 2)
+        || (trimmed.starts_with('\'') && trimmed.ends_with('\'') && trimmed.len() >= 2)
+    {
+        return Ok(serde_yaml::Value::String(
+            trimmed[1..trimmed.len() - 1].to_string(),
+        ));
+    }
+    // Bool literals.
+    if trimmed == "true" {
+        return Ok(serde_yaml::Value::Bool(true));
+    }
+    if trimmed == "false" {
+        return Ok(serde_yaml::Value::Bool(false));
+    }
+    // Numeric literals — integer first, then float.
+    if let Ok(n) = trimmed.parse::<i64>() {
+        return Ok(serde_yaml::Value::Number(serde_yaml::Number::from(n)));
+    }
+    if let Ok(f) = trimmed.parse::<f64>() {
+        return Ok(serde_yaml::Value::Number(serde_yaml::Number::from(f)));
+    }
+    // Fallback: treat as bare string (e.g. `target: workday-api` →
+    // value is `workday-api`). Same convention as YAML scalars.
+    Ok(serde_yaml::Value::String(trimmed.to_string()))
+}
+
+/// Strip a single pair of wrapping `"`/`'` if present. No-op on
+/// unquoted input. Used for the positional plugin name where the
+/// operator may have quoted to escape a hyphen or similar (`delegate("workday-oauth")`).
+fn strip_wrapping_quotes(s: &str) -> &str {
+    let bytes = s.as_bytes();
+    if bytes.len() >= 2 {
+        let first = bytes[0];
+        let last = bytes[bytes.len() - 1];
+        if (first == b'"' && last == b'"') || (first == b'\'' && last == b'\'') {
+            return &s[1..s.len() - 1];
+        }
+    }
+    s
 }
 
 fn parse_step_map(
@@ -706,6 +979,12 @@ fn parse_step_map(
         rule: format!("{:?}", key_val),
         msg: "PDP step key must be a string".into(),
     })?;
+
+    // `delegate:` is a special non-PDP step shape — branch before the
+    // dialect logic. See `parse_delegate_step` for the expected body.
+    if key.trim() == "delegate" {
+        return parse_delegate_step(body_val, source);
+    }
 
     // Split the key into "dialect" + optional "(args)" portion.
     let (dialect_str, paren_args) = if let Some(open) = key.find('(') {
@@ -736,6 +1015,81 @@ fn parse_step_map(
         on_deny,
         on_allow,
     })
+}
+
+/// Parse a `delegate:` step body into a `Step::Delegate`. Accepted
+/// YAML shape:
+///
+/// ```yaml
+/// - delegate:
+///     plugin: workday-oauth          # required — TokenDelegateHook plugin name
+///     config:                         # optional — per-call config override
+///       target: workday-api
+///       permissions: [read_compensation]
+///     on_error: deny                  # optional — deny | continue (default deny)
+/// ```
+///
+/// `config:` is opaque — the framework hands it to the named plugin
+/// via the existing per-call config-override pathway. The plugin
+/// owns the typed schema (target / audience / permissions / mode /
+/// attenuation are conventions, not parser-enforced).
+fn parse_delegate_step(
+    body_val: &serde_yaml::Value,
+    source: &str,
+) -> Result<Step, ParseError> {
+    let body = body_val.as_mapping().ok_or_else(|| ParseError::Rule {
+        rule: source.to_string(),
+        msg: "`delegate:` body must be a map with `plugin:` and optional \
+              `config:` / `on_error:`"
+            .to_string(),
+    })?;
+
+    let plugin = body
+        .get(serde_yaml::Value::String("plugin".to_string()))
+        .ok_or_else(|| ParseError::Rule {
+            rule: source.to_string(),
+            msg: "`delegate:` requires `plugin: <name>` referencing a \
+                  top-level plugin registered under `token.delegate`"
+                .to_string(),
+        })?;
+    let plugin_name = plugin
+        .as_str()
+        .ok_or_else(|| ParseError::Rule {
+            rule: source.to_string(),
+            msg: "`delegate.plugin` must be a string".to_string(),
+        })?
+        .to_string();
+    if plugin_name.is_empty() {
+        return Err(ParseError::Rule {
+            rule: source.to_string(),
+            msg: "`delegate.plugin` cannot be empty".to_string(),
+        });
+    }
+
+    let config_override = body
+        .get(serde_yaml::Value::String("config".to_string()))
+        .cloned();
+
+    let on_error = match body.get(serde_yaml::Value::String("on_error".to_string())) {
+        Some(v) => Some(
+            v.as_str()
+                .ok_or_else(|| ParseError::Rule {
+                    rule: source.to_string(),
+                    msg: "`delegate.on_error` must be a string (e.g. `deny`, \
+                          `continue`)"
+                        .to_string(),
+                })?
+                .to_string(),
+        ),
+        None => None,
+    };
+
+    Ok(Step::Delegate(DelegateStep {
+        plugin_name,
+        config_override,
+        on_error,
+        source: source.to_string(),
+    }))
 }
 
 /// Split a PDP body into (args, on_deny, on_allow).
@@ -966,7 +1320,28 @@ fn parse_stage(src: &str) -> Result<Stage, ParseError> {
             };
             Ok(Stage::Regex { pattern: pat })
         }
-        ("validate", Some(a)) => Ok(Stage::Validate { name: a.trim().to_string() }),
+        ("validate", Some(a)) => {
+            // Named-validator dispatch (`validate(name)`) is in the
+            // spec (DSL §4.2) but not implemented in this build —
+            // the evaluator's no-op stub would silently let invalid
+            // values through. Reject at compile time so operators
+            // notice immediately and reach for one of the working
+            // alternatives:
+            //
+            //   * `regex("pattern")` — inline named-regex equivalent
+            //   * `plugin(name)` — full plugin dispatch for rich
+            //     validation (Luhn, format-with-context, etc.)
+            //
+            // When the ValidatorRegistry slice lands, this arm flips
+            // back to returning `Stage::Validate { name }`.
+            Err(bad(&format!(
+                "`validate({})` — named-validator dispatch is not implemented \
+                 in this build. Use `regex(\"pattern\")` for a named-regex \
+                 equivalent, or `plugin({})` for richer validation logic.",
+                a.trim(),
+                a.trim(),
+            )))
+        }
         ("plugin", Some(a)) => Ok(Stage::Plugin { name: a.trim().to_string() }),
         ("taint", Some(a)) => parse_taint(a, src),
 
@@ -1825,13 +2200,13 @@ routes:
         bag.set("role.hr", true);
         bag.set("delegation.depth", 1_i64);
         assert_eq!(
-            crate::evaluate_steps(&route.policy, &bag, &pdp, &plugins).await.decision,
+            crate::evaluate_steps(&route.policy, &mut bag, &pdp, &plugins, &crate::NoopDelegationInvoker, crate::DispatchPhase::Pre).await.decision,
             Decision::Allow,
         );
 
         // Same Alice but depth=3 → deny (third rule fires).
         bag.set("delegation.depth", 3_i64);
-        match crate::evaluate_steps(&route.policy, &bag, &pdp, &plugins).await.decision {
+        match crate::evaluate_steps(&route.policy, &mut bag, &pdp, &plugins, &crate::NoopDelegationInvoker, crate::DispatchPhase::Pre).await.decision {
             Decision::Deny { rule_source, .. } => {
                 assert!(rule_source.contains("policy[2]"), "expected policy[2], got {}", rule_source);
             }
@@ -1842,7 +2217,7 @@ routes:
         let mut bag = AttributeBag::new();
         bag.set("authenticated", true);
         bag.set("delegation.depth", 1_i64);
-        match crate::evaluate_steps(&route.policy, &bag, &pdp, &plugins).await.decision {
+        match crate::evaluate_steps(&route.policy, &mut bag, &pdp, &plugins, &crate::NoopDelegationInvoker, crate::DispatchPhase::Pre).await.decision {
             Decision::Deny { rule_source, .. } => {
                 assert!(rule_source.contains("policy[1]"), "expected policy[1], got {}", rule_source);
             }
@@ -2169,5 +2544,363 @@ policy:
             }
             other => panic!("expected Rule, got {:?}", other),
         }
+    }
+
+    // ----- delegate: step parsing -----
+
+    #[test]
+    fn parse_delegate_step_with_only_plugin() {
+        let yaml = r#"
+- delegate:
+    plugin: workday-oauth
+"#;
+        let value: serde_yaml::Value = serde_yaml::from_str(yaml).unwrap();
+        let entry = &value.as_sequence().unwrap()[0];
+        let step = parse_step(entry, "test.policy[0]").expect("parse");
+        let crate::step::Step::Delegate(ds) = step else {
+            panic!("expected Delegate, got {step:?}");
+        };
+        assert_eq!(ds.plugin_name, "workday-oauth");
+        assert!(ds.config_override.is_none());
+        assert!(ds.on_error.is_none());
+        assert_eq!(ds.source, "test.policy[0]");
+    }
+
+    #[test]
+    fn parse_delegate_step_with_config_and_on_error() {
+        let yaml = r#"
+- delegate:
+    plugin: workday-oauth
+    config:
+      target: workday-api
+      permissions: [read_compensation]
+    on_error: deny
+"#;
+        let value: serde_yaml::Value = serde_yaml::from_str(yaml).unwrap();
+        let entry = &value.as_sequence().unwrap()[0];
+        let step = parse_step(entry, "test.policy[1]").expect("parse");
+        let crate::step::Step::Delegate(ds) = step else {
+            panic!("expected Delegate, got {step:?}");
+        };
+        assert_eq!(ds.plugin_name, "workday-oauth");
+        assert_eq!(ds.on_error.as_deref(), Some("deny"));
+        let cfg = ds.config_override.as_ref().expect("config_override set");
+        let target = cfg
+            .as_mapping()
+            .and_then(|m| m.get(serde_yaml::Value::String("target".into())))
+            .and_then(|v| v.as_str());
+        assert_eq!(target, Some("workday-api"));
+    }
+
+    #[test]
+    fn parse_delegate_step_missing_plugin_errors() {
+        let yaml = r#"
+- delegate:
+    config: { target: workday-api }
+"#;
+        let value: serde_yaml::Value = serde_yaml::from_str(yaml).unwrap();
+        let entry = &value.as_sequence().unwrap()[0];
+        let err = parse_step(entry, "test.policy[0]").expect_err("missing plugin");
+        let msg = format!("{err}");
+        assert!(msg.contains("requires `plugin:"), "got: {msg}");
+    }
+
+    #[test]
+    fn parse_delegate_step_empty_plugin_errors() {
+        let yaml = r#"
+- delegate:
+    plugin: ""
+"#;
+        let value: serde_yaml::Value = serde_yaml::from_str(yaml).unwrap();
+        let entry = &value.as_sequence().unwrap()[0];
+        let err = parse_step(entry, "test.policy[0]").expect_err("empty plugin");
+        let msg = format!("{err}");
+        assert!(msg.contains("cannot be empty"), "got: {msg}");
+    }
+
+    #[test]
+    fn parse_delegate_step_non_string_on_error_errors() {
+        let yaml = r#"
+- delegate:
+    plugin: workday-oauth
+    on_error: 42
+"#;
+        let value: serde_yaml::Value = serde_yaml::from_str(yaml).unwrap();
+        let entry = &value.as_sequence().unwrap()[0];
+        let err = parse_step(entry, "test.policy[0]").expect_err("non-string on_error");
+        let msg = format!("{err}");
+        assert!(msg.contains("on_error"), "got: {msg}");
+    }
+
+    #[test]
+    fn parse_delegate_step_non_map_body_errors() {
+        let yaml = r#"
+- delegate: workday-oauth
+"#;
+        let value: serde_yaml::Value = serde_yaml::from_str(yaml).unwrap();
+        let entry = &value.as_sequence().unwrap()[0];
+        let err = parse_step(entry, "test.policy[0]").expect_err("non-map delegate body");
+        let msg = format!("{err}");
+        assert!(msg.contains("must be a map"), "got: {msg}");
+    }
+
+    // ----- delegate(...) function-call string form -----
+
+    #[test]
+    fn parse_delegate_string_bare_plugin_name() {
+        let yaml = r#"- "delegate(workday-oauth)""#;
+        let value: serde_yaml::Value = serde_yaml::from_str(yaml).unwrap();
+        let entry = &value.as_sequence().unwrap()[0];
+        let step = parse_step(entry, "test.policy[0]").expect("parse");
+        let crate::step::Step::Delegate(ds) = step else {
+            panic!("expected Delegate, got {step:?}");
+        };
+        assert_eq!(ds.plugin_name, "workday-oauth");
+        assert!(ds.config_override.is_none());
+        assert!(ds.on_error.is_none());
+        assert_eq!(ds.source, "test.policy[0]");
+    }
+
+    #[test]
+    fn parse_delegate_string_with_string_kwargs() {
+        let yaml = r#"- "delegate(workday-oauth, target: workday-api, audience: https://workday.com)""#;
+        let value: serde_yaml::Value = serde_yaml::from_str(yaml).unwrap();
+        let entry = &value.as_sequence().unwrap()[0];
+        let step = parse_step(entry, "test.policy[0]").expect("parse");
+        let crate::step::Step::Delegate(ds) = step else {
+            panic!("expected Delegate, got {step:?}");
+        };
+        assert_eq!(ds.plugin_name, "workday-oauth");
+        let cfg = ds.config_override.as_ref().unwrap().as_mapping().unwrap();
+        assert_eq!(
+            cfg.get(serde_yaml::Value::String("target".into()))
+                .and_then(|v| v.as_str()),
+            Some("workday-api"),
+        );
+        assert_eq!(
+            cfg.get(serde_yaml::Value::String("audience".into()))
+                .and_then(|v| v.as_str()),
+            Some("https://workday.com"),
+        );
+    }
+
+    #[test]
+    fn parse_delegate_string_with_list_kwarg() {
+        let yaml = r#"- "delegate(workday-oauth, permissions: [read_compensation, write_notes])""#;
+        let value: serde_yaml::Value = serde_yaml::from_str(yaml).unwrap();
+        let entry = &value.as_sequence().unwrap()[0];
+        let step = parse_step(entry, "test.policy[0]").expect("parse");
+        let crate::step::Step::Delegate(ds) = step else {
+            panic!("expected Delegate");
+        };
+        let cfg = ds.config_override.as_ref().unwrap().as_mapping().unwrap();
+        let perms = cfg
+            .get(serde_yaml::Value::String("permissions".into()))
+            .and_then(|v| v.as_sequence())
+            .expect("permissions sequence");
+        let names: Vec<&str> = perms.iter().filter_map(|v| v.as_str()).collect();
+        assert_eq!(names, vec!["read_compensation", "write_notes"]);
+    }
+
+    #[test]
+    fn parse_delegate_string_on_error_pulled_out() {
+        let yaml = r#"- "delegate(workday-oauth, target: workday-api, on_error: continue)""#;
+        let value: serde_yaml::Value = serde_yaml::from_str(yaml).unwrap();
+        let entry = &value.as_sequence().unwrap()[0];
+        let step = parse_step(entry, "test.policy[0]").expect("parse");
+        let crate::step::Step::Delegate(ds) = step else {
+            panic!("expected Delegate");
+        };
+        assert_eq!(ds.on_error.as_deref(), Some("continue"));
+        // on_error must NOT also leak into config_override.
+        let cfg = ds.config_override.as_ref().unwrap().as_mapping().unwrap();
+        assert!(
+            cfg.get(serde_yaml::Value::String("on_error".into())).is_none(),
+            "on_error must not appear in config_override"
+        );
+    }
+
+    #[test]
+    fn parse_delegate_string_quoted_plugin_name() {
+        // Quoting the plugin name is harmless — the parser strips
+        // the wrapping quotes. Useful when the name contains
+        // characters the bare-ident reader doesn't like.
+        let yaml = r#"- 'delegate("workday-oauth")'"#;
+        let value: serde_yaml::Value = serde_yaml::from_str(yaml).unwrap();
+        let entry = &value.as_sequence().unwrap()[0];
+        let step = parse_step(entry, "test.policy[0]").expect("parse");
+        let crate::step::Step::Delegate(ds) = step else {
+            panic!("expected Delegate");
+        };
+        assert_eq!(ds.plugin_name, "workday-oauth");
+    }
+
+    #[test]
+    fn parse_delegate_string_quoted_value_preserves_internal_commas() {
+        let yaml = r#"- 'delegate(workday-oauth, audience: "https://workday.com,backup.workday.com")'"#;
+        let value: serde_yaml::Value = serde_yaml::from_str(yaml).unwrap();
+        let entry = &value.as_sequence().unwrap()[0];
+        let step = parse_step(entry, "test.policy[0]").expect("parse");
+        let crate::step::Step::Delegate(ds) = step else {
+            panic!("expected Delegate");
+        };
+        let cfg = ds.config_override.as_ref().unwrap().as_mapping().unwrap();
+        assert_eq!(
+            cfg.get(serde_yaml::Value::String("audience".into()))
+                .and_then(|v| v.as_str()),
+            Some("https://workday.com,backup.workday.com"),
+        );
+    }
+
+    #[test]
+    fn parse_delegate_string_empty_args_errors() {
+        let yaml = r#"- "delegate()""#;
+        let value: serde_yaml::Value = serde_yaml::from_str(yaml).unwrap();
+        let entry = &value.as_sequence().unwrap()[0];
+        let err = parse_step(entry, "test.policy[0]").expect_err("empty args");
+        let msg = format!("{err}");
+        assert!(msg.contains("plugin name"), "got: {msg}");
+    }
+
+    #[test]
+    fn parse_delegate_string_plugin_kwarg_rejected() {
+        // `plugin:` as a kwarg is ambiguous when the plugin name is
+        // also the positional first arg — reject loudly.
+        let yaml = r#"- "delegate(workday-oauth, plugin: other-thing)""#;
+        let value: serde_yaml::Value = serde_yaml::from_str(yaml).unwrap();
+        let entry = &value.as_sequence().unwrap()[0];
+        let err = parse_step(entry, "test.policy[0]").expect_err("plugin kwarg");
+        let msg = format!("{err}");
+        assert!(msg.contains("positional"), "got: {msg}");
+    }
+
+    #[test]
+    fn parse_delegate_string_kwarg_missing_colon_errors() {
+        let yaml = r#"- "delegate(workday-oauth, target workday-api)""#;
+        let value: serde_yaml::Value = serde_yaml::from_str(yaml).unwrap();
+        let entry = &value.as_sequence().unwrap()[0];
+        let err = parse_step(entry, "test.policy[0]").expect_err("missing colon");
+        let msg = format!("{err}");
+        assert!(msg.contains("key: value"), "got: {msg}");
+    }
+
+    #[test]
+    fn parse_delegate_string_unbalanced_brackets_errors() {
+        let yaml = r#"- "delegate(workday-oauth, permissions: [read_compensation)""#;
+        let value: serde_yaml::Value = serde_yaml::from_str(yaml).unwrap();
+        let entry = &value.as_sequence().unwrap()[0];
+        let err = parse_step(entry, "test.policy[0]").expect_err("unbalanced");
+        let msg = format!("{err}");
+        assert!(msg.contains("unmatched") || msg.contains("unbalanced"), "got: {msg}");
+    }
+
+    #[test]
+    fn compile_route_mixed_string_and_map_delegate_forms() {
+        // Both forms coexist in the same policy block — string form
+        // for the compact case, map form for richer config.
+        let yaml = r#"
+routes:
+  get_compensation:
+    policy:
+      - "require(role.hr)"
+      - "delegate(workday-oauth, target: workday-api, permissions: [read_compensation])"
+      - delegate:
+          plugin: audit-receipt
+          on_error: continue
+          config:
+            mode: trace
+"#;
+        let cfg = compile_config(yaml).expect("compile");
+        let route = cfg.routes.get("get_compensation").expect("route");
+        assert_eq!(route.policy.len(), 3);
+
+        // Step [1] is the string-form delegate.
+        let crate::step::Step::Delegate(s1) = &route.policy[1] else {
+            panic!("expected Delegate at policy[1]");
+        };
+        assert_eq!(s1.plugin_name, "workday-oauth");
+        assert!(s1.on_error.is_none());
+
+        // Step [2] is the map-form delegate.
+        let crate::step::Step::Delegate(s2) = &route.policy[2] else {
+            panic!("expected Delegate at policy[2]");
+        };
+        assert_eq!(s2.plugin_name, "audit-receipt");
+        assert_eq!(s2.on_error.as_deref(), Some("continue"));
+    }
+
+    #[test]
+    fn compile_route_with_delegate_in_policy_and_post_policy() {
+        // End-to-end: delegate() lands in the right phase with the
+        // right source path for diagnostics. Mixed with normal rules
+        // to prove it doesn't perturb existing step parsing.
+        let yaml = r#"
+routes:
+  get_compensation:
+    policy:
+      - "require(role.hr)"
+      - delegate:
+          plugin: workday-oauth
+          config:
+            target: workday-api
+            permissions: [read_compensation]
+      - "require(authenticated)"
+    post_policy:
+      - delegate:
+          plugin: audit-biscuit
+          on_error: continue
+"#;
+        let cfg = compile_config(yaml).expect("compile");
+        let route = cfg.routes.get("get_compensation").expect("route present");
+        assert_eq!(route.policy.len(), 3);
+
+        // Policy step [1] is the delegate.
+        let crate::step::Step::Delegate(ds) = &route.policy[1] else {
+            panic!("expected Delegate at policy[1], got {:?}", route.policy[1]);
+        };
+        assert_eq!(ds.plugin_name, "workday-oauth");
+        assert_eq!(ds.source, "get_compensation.policy[1]");
+
+        // post_policy[0] is the audit-biscuit delegate.
+        let crate::step::Step::Delegate(post_ds) = &route.post_policy[0] else {
+            panic!("expected Delegate at post_policy[0]");
+        };
+        assert_eq!(post_ds.plugin_name, "audit-biscuit");
+        assert_eq!(post_ds.on_error.as_deref(), Some("continue"));
+        assert_eq!(post_ds.source, "get_compensation.post_policy[0]");
+    }
+
+    // ----- validate(name) compile-time rejection (DSL spec §4.2) -----
+
+    #[test]
+    fn parse_pipeline_rejects_validate_stage_at_compile_time() {
+        // Named-validator dispatch isn't implemented; the parser
+        // rejects `validate(...)` rather than letting it through to
+        // a runtime stub that silently passes. Diagnostic points the
+        // operator at the working alternatives.
+        let err = parse_pipeline("str | validate(ssn_format) | mask(4)")
+            .expect_err("validate(name) should fail to parse");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("not implemented"),
+            "diagnostic should explain that validate is unimplemented: {msg}",
+        );
+        assert!(
+            msg.contains("regex") && msg.contains("plugin"),
+            "diagnostic should suggest regex(...) and plugin(...): {msg}",
+        );
+        assert!(
+            msg.contains("ssn_format"),
+            "diagnostic should echo the rejected validator name: {msg}",
+        );
+    }
+
+    #[test]
+    fn parse_pipeline_does_not_reject_other_stages() {
+        // Sanity: the validate rejection doesn't catch unrelated
+        // stages. A pipeline with no validate stage parses cleanly.
+        let p = parse_pipeline("str | len(..100) | regex(\"^[A-Z]+$\") | mask(4)")
+            .expect("non-validate pipeline parses");
+        assert_eq!(p.stages.len(), 4);
     }
 }

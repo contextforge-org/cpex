@@ -29,17 +29,33 @@
 // then construct one `AplRouteHandler` per phase (Pre, Post) and call
 // `annotate_route` for each `(entity_type, entity_name, scope, hook)`.
 //
-// # Hook names
+// # Hook names per entity type
 //
-// v0 binds the `cmf.tool_pre_invoke` hook to the Pre handler and
-// `cmf.tool_post_invoke` to the Post handler — see [`HOOK_PRE`] / [`HOOK_POST`].
-// Routes that match `prompt:` / `resource:` / `llm:` reuse the same hook
-// names (cpex-core annotation keying is on entity-name; the hook is the
-// phase channel).
+// Each entity type binds to its own CMF hook pair:
+//
+//   * `tool:`     → `cmf.tool_pre_invoke`     / `cmf.tool_post_invoke`
+//   * `llm:`      → `cmf.llm_input`           / `cmf.llm_output`
+//   * `prompt:`   → `cmf.prompt_pre_invoke`   / `cmf.prompt_post_invoke`
+//   * `resource:` → `cmf.resource_pre_fetch`  / `cmf.resource_post_fetch`
+//
+// The mapping lives in [`hook_pair_for_entity`]. Hosts fire
+// `mgr.invoke_named::<CmfHook>("cmf.llm_input", ...)` for LLM
+// invocations; the visitor's annotation on `cmf.llm_input` for the
+// matching route's entity_name is what AplRouteHandler intercepts.
+//
+// `tool_pre_invoke` / `tool_post_invoke` are exposed as legacy
+// re-exports for callers that wired against the v0 constants — the
+// per-entity dispatch is the load-bearing path now.
 
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock, Weak};
 
+use cpex_core::cmf::constants::{
+    ENTITY_LLM, ENTITY_PROMPT, ENTITY_RESOURCE, ENTITY_TOOL, HOOK_CMF_LLM_INPUT,
+    HOOK_CMF_LLM_OUTPUT, HOOK_CMF_PROMPT_POST_INVOKE, HOOK_CMF_PROMPT_PRE_INVOKE,
+    HOOK_CMF_RESOURCE_POST_FETCH, HOOK_CMF_RESOURCE_PRE_FETCH, HOOK_CMF_TOOL_POST_INVOKE,
+    HOOK_CMF_TOOL_PRE_INVOKE,
+};
 use cpex_core::config::RouteEntry;
 use cpex_core::manager::PluginManager;
 use cpex_core::plugin::PluginConfig;
@@ -55,12 +71,28 @@ use crate::pdp_router::PdpRouter;
 use crate::route_handler::{AplRouteHandler, Phase};
 use crate::session_store::SessionStore;
 
-/// CMF hook name driven by the Pre handler. v0 maps the unified-config
-/// `args` + `policy` phases here.
-pub const HOOK_PRE: &str = "cmf.tool_pre_invoke";
-/// CMF hook name driven by the Post handler. v0 maps the unified-config
-/// `result` + `post_policy` phases here.
-pub const HOOK_POST: &str = "cmf.tool_post_invoke";
+/// Legacy alias for the tool-family pre hook. Kept exported for
+/// callers that wired against the v0 visitor constants — the
+/// per-entity-type dispatch via `hook_pair_for_entity` is the
+/// load-bearing path now.
+pub const HOOK_PRE: &str = HOOK_CMF_TOOL_PRE_INVOKE;
+/// Legacy alias for the tool-family post hook. See `HOOK_PRE`.
+pub const HOOK_POST: &str = HOOK_CMF_TOOL_POST_INVOKE;
+
+/// Resolve the (pre, post) CMF hook pair for an entity_type. Drives
+/// per-entity `annotate_route` calls so an `llm:` route annotates on
+/// `cmf.llm_input` / `cmf.llm_output` rather than the tool-family
+/// hooks. Returns `None` for unknown entity types — the visitor logs
+/// + skips those routes.
+fn hook_pair_for_entity(entity_type: &str) -> Option<(&'static str, &'static str)> {
+    match entity_type {
+        ENTITY_TOOL => Some((HOOK_CMF_TOOL_PRE_INVOKE, HOOK_CMF_TOOL_POST_INVOKE)),
+        ENTITY_LLM => Some((HOOK_CMF_LLM_INPUT, HOOK_CMF_LLM_OUTPUT)),
+        ENTITY_PROMPT => Some((HOOK_CMF_PROMPT_PRE_INVOKE, HOOK_CMF_PROMPT_POST_INVOKE)),
+        ENTITY_RESOURCE => Some((HOOK_CMF_RESOURCE_PRE_FETCH, HOOK_CMF_RESOURCE_POST_FETCH)),
+        _ => None,
+    }
+}
 
 /// Interior state accumulated as the manager walks the visitor.
 /// `plugin_registry` is populated by `visit_plugins` (called once per
@@ -432,6 +464,22 @@ impl ConfigVisitor for AplConfigVisitor {
 
             let route_arc = Arc::new(effective);
 
+            // Resolve the entity-specific CMF hook pair. The visitor's
+            // entity_identity() already filtered out unknown types, but
+            // hook_pair_for_entity returning None would just skip the
+            // annotation rather than crash — defense in depth.
+            let (hook_pre, hook_post) = match hook_pair_for_entity(entity_type) {
+                Some(pair) => pair,
+                None => {
+                    tracing::warn!(
+                        entity_type,
+                        entity_name,
+                        "APL visitor: no CMF hook pair for entity_type — skipping route",
+                    );
+                    continue;
+                }
+            };
+
             // Install Pre + Post handlers. Each handler instance is bound to
             // ONE phase so the executor can pick the right entry-point off
             // the (entity_type, entity_name, scope, hook_name) key.
@@ -440,7 +488,7 @@ impl ConfigVisitor for AplConfigVisitor {
                 entity_type,
                 entity_name,
                 scope.clone(),
-                HOOK_PRE,
+                hook_pre,
                 Phase::Pre,
                 Arc::clone(&route_arc),
                 &plugin_registry,
@@ -455,7 +503,7 @@ impl ConfigVisitor for AplConfigVisitor {
                 entity_type,
                 entity_name,
                 scope.clone(),
-                HOOK_POST,
+                hook_post,
                 Phase::Post,
                 route_arc,
                 &plugin_registry,

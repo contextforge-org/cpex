@@ -9,9 +9,9 @@
 
 use apl_cmf::BagBuilder;
 use apl_core::{
-    compile_config, evaluate_route, AttributeBag, Decision, PdpCall, PdpDecision, PdpDialect,
-    PdpError, PdpResolver, PluginError, PluginInvocation, PluginInvoker, PluginOutcome,
-    RoutePayload,
+    compile_config, evaluate_route, AttributeBag, Decision, NoopDelegationInvoker, PdpCall,
+    PdpDecision, PdpDialect, PdpError, PdpResolver, PluginError, PluginInvocation, PluginInvoker,
+    PluginOutcome, RoutePayload,
 };
 use async_trait::async_trait;
 use cpex_core::extensions::{
@@ -124,7 +124,7 @@ fn deep_delegation() -> DelegationExtension {
 
 #[tokio::test]
 async fn alice_full_route_through_cmf_bridge() {
-    let bag = BagBuilder::new()
+    let mut bag = BagBuilder::new()
         .with_security(&alice_hr())
         .with_delegation(&shallow_delegation())
         .with_route_key("get_employee")
@@ -148,7 +148,7 @@ async fn alice_full_route_through_cmf_bridge() {
         }),
     );
 
-    let r = evaluate_route(route, &bag, &mut payload, &AllowPdp, &NoPlugins).await;
+    let r = evaluate_route(route, &mut bag, &mut payload, &AllowPdp, &NoPlugins, &NoopDelegationInvoker).await;
     assert_eq!(r.decision, Decision::Allow);
     let result = payload.result.as_ref().unwrap();
     // view_ssn=true and role.hr=true → both fields kept; employee_id masked.
@@ -159,7 +159,7 @@ async fn alice_full_route_through_cmf_bridge() {
 
 #[tokio::test]
 async fn mallory_gets_both_fields_redacted_through_cmf_bridge() {
-    let bag = BagBuilder::new()
+    let mut bag = BagBuilder::new()
         .with_security(&mallory_no_perm())
         .with_delegation(&shallow_delegation())
         .build();
@@ -176,7 +176,7 @@ async fn mallory_gets_both_fields_redacted_through_cmf_bridge() {
         }),
     );
 
-    let r = evaluate_route(route, &bag, &mut payload, &AllowPdp, &NoPlugins).await;
+    let r = evaluate_route(route, &mut bag, &mut payload, &AllowPdp, &NoPlugins, &NoopDelegationInvoker).await;
     assert_eq!(r.decision, Decision::Allow);
     let result = payload.result.as_ref().unwrap();
     // Neither role.hr nor perm.view_ssn populated → both redact()s fire.
@@ -187,7 +187,7 @@ async fn mallory_gets_both_fields_redacted_through_cmf_bridge() {
 
 #[tokio::test]
 async fn deep_delegation_denies_through_cmf_bridge() {
-    let bag = BagBuilder::new()
+    let mut bag = BagBuilder::new()
         .with_security(&alice_hr())
         .with_delegation(&deep_delegation()) // depth = 3
         .build();
@@ -201,7 +201,7 @@ async fn deep_delegation_denies_through_cmf_bridge() {
         json!({ "employee_id": "123-45-6789" }),
         json!({ "ssn": "x", "salary": 1, "employee_id": "123-45-6789" }),
     );
-    let r = evaluate_route(route, &bag, &mut payload, &AllowPdp, &NoPlugins).await;
+    let r = evaluate_route(route, &mut bag, &mut payload, &AllowPdp, &NoPlugins, &NoopDelegationInvoker).await;
     assert!(matches!(r.decision, Decision::Deny { .. }));
     // Result fields untouched — the result phase never ran.
     assert_eq!(payload.result.as_ref().unwrap()["ssn"], json!("x"));
@@ -223,14 +223,14 @@ routes:
     let route = routes.get("guarded_route").unwrap();
 
     let args = json!({ "include_ssn": true, "id": "abc" });
-    let bag = BagBuilder::new()
+    let mut bag = BagBuilder::new()
         .with_security(&alice_hr())
         .with_args(&args)
         .build();
     assert_eq!(bag.get_bool("args.include_ssn"), Some(true));
 
     let mut payload = RoutePayload::new(args);
-    let r = evaluate_route(route, &bag, &mut payload, &AllowPdp, &NoPlugins).await;
+    let r = evaluate_route(route, &mut bag, &mut payload, &AllowPdp, &NoPlugins, &NoopDelegationInvoker).await;
     match r.decision {
         Decision::Deny { rule_source, .. } => {
             assert!(rule_source.contains("policy"), "got source {}", rule_source);
@@ -243,7 +243,7 @@ routes:
 async fn anonymous_user_denied_at_authenticated_check() {
     // No security extension at all → no `authenticated` key in bag →
     // `require(authenticated)` denies.
-    let bag = BagBuilder::new()
+    let mut bag = BagBuilder::new()
         .with_delegation(&shallow_delegation())
         .build();
     assert!(!bag.contains("authenticated"));
@@ -255,6 +255,6 @@ async fn anonymous_user_denied_at_authenticated_check() {
         json!({ "employee_id": "123-45-6789" }),
         json!({ "ssn": "x", "salary": 1, "employee_id": "123-45-6789" }),
     );
-    let r = evaluate_route(route, &bag, &mut payload, &AllowPdp, &NoPlugins).await;
+    let r = evaluate_route(route, &mut bag, &mut payload, &AllowPdp, &NoPlugins, &NoopDelegationInvoker).await;
     assert!(matches!(r.decision, Decision::Deny { .. }));
 }

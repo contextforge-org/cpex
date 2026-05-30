@@ -43,6 +43,8 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 
+use cpex_core::delegation::HOOK_TOKEN_DELEGATE;
+use cpex_core::hooks::{lookup_hook_metadata, HookPhase};
 use cpex_core::manager::PluginManager;
 use cpex_core::plugin::OnError;
 use cpex_core::registry::HookEntry;
@@ -52,26 +54,73 @@ use apl_core::plugin_decl::{EffectivePlugin, PluginRegistry};
 use apl_core::rules::CompiledRoute;
 use apl_core::step::Step;
 
-/// Per-plugin pre-resolved entries for one route. `step_entry` and
-/// `field_entry` are populated independently — a plugin may handle one,
-/// the other, or both. Dispatch picks the appropriate slot based on the
-/// `PluginInvocation` variant.
+/// Per-plugin pre-resolved entries for one route. Stores ALL hook
+/// entries the plugin registered (keyed by hook name) so the
+/// dispatcher can pick the right one for the current context via the
+/// cpex-core hook routing table (`hooks::metadata::lookup`).
+///
+/// Replaces the prior `step_entry` / `field_entry` slot model, which
+/// used a brittle naming heuristic to classify hooks and silently
+/// collapsed plugins with multiple step-context hooks (e.g. both
+/// `tool_pre_invoke` and `tool_post_invoke`) to a single entry.
 #[derive(Clone)]
 pub struct RoutePluginEntry {
     pub plugin_name: String,
-    /// Entry dispatched when called from `policy:` / `post_policy:`
-    /// (`PluginInvocation::Step`).
-    pub step_entry: Option<HookEntry>,
-    /// Entry dispatched when called from `args:` / `result:` pipelines
-    /// (`PluginInvocation::Field`).
-    pub field_entry: Option<HookEntry>,
+    /// All hook entries the plugin registered, keyed by hook name.
+    /// Per-call overrides (route-level config / caps / on_error) are
+    /// already applied via `build_override_entries` before being
+    /// stored here.
+    pub entries_by_hook: HashMap<String, HookEntry>,
+}
+
+impl RoutePluginEntry {
+    /// Pick the entry whose registered hook matches the current
+    /// dispatch context. Walks `entries_by_hook`, consults the
+    /// cpex-core hook metadata table for each, returns the first
+    /// matching entry.
+    ///
+    /// `requested_entity_type` comes from the request's
+    /// `MetaExtension.entity_type` (or `None` if the dispatcher
+    /// doesn't have one — in which case any hook's entity_type
+    /// matches). `requested_phase` comes from the APL invocation
+    /// context — `Pre` for `args:` / `policy:`, `Post` for
+    /// `result:` / `post_policy:`, `Unphased` for unphased
+    /// dispatchers (rare in APL).
+    ///
+    /// Returns `None` when the plugin has no hook matching the
+    /// context — caller surfaces this as `PluginError::Dispatch`
+    /// with the requested context in the message.
+    pub fn pick_entry(
+        &self,
+        requested_entity_type: Option<&str>,
+        requested_phase: HookPhase,
+    ) -> Option<&HookEntry> {
+        self.entries_by_hook
+            .iter()
+            .find(|(hook_name, _)| {
+                lookup_hook_metadata(hook_name)
+                    .matches(requested_entity_type, requested_phase)
+            })
+            .map(|(_, entry)| entry)
+    }
 }
 
 /// A route's resolved plugin lineup. One per `(route_key, generation)`
 /// in the cache.
+///
+/// `plugins` holds entries for CMF-family dispatch (policy steps,
+/// pipe-chain stages). `delegation_entries` holds entries for the
+/// `token.delegate` hook used by `Step::Delegate` — kept separate
+/// because the hook family is different and the dispatch is
+/// per-call rather than per-route-chain.
 #[derive(Clone, Default)]
 pub struct RouteDispatchPlan {
     pub plugins: HashMap<String, RoutePluginEntry>,
+    /// Plugin name → resolved `token.delegate` hook entry for routes
+    /// that declared `delegate(...)` steps. Empty when the route has
+    /// no delegation. Built at plan time to avoid per-request
+    /// `find_plugin_entries` lookups in the hot path.
+    pub delegation_entries: HashMap<String, HookEntry>,
 }
 
 impl RouteDispatchPlan {
@@ -143,28 +192,56 @@ impl RouteDispatchPlan {
                 continue;
             }
 
-            // Classify each hook as step or field via naming heuristic.
-            let mut step_entry: Option<HookEntry> = None;
-            let mut field_entry: Option<HookEntry> = None;
+            // Store every (hook_name, HookEntry) pair the plugin
+            // registered. Dispatch-time entry selection (pick_entry)
+            // consults cpex-core's hook routing table per hook name.
+            // Replaces the prior naming heuristic.
+            let mut entries_by_hook: HashMap<String, HookEntry> = HashMap::new();
             for (hook_name, entry) in entries {
-                if is_field_hook(&hook_name) {
-                    if field_entry.is_none() {
-                        field_entry = Some(entry);
-                    }
-                } else if step_entry.is_none() {
-                    step_entry = Some(entry);
-                }
+                entries_by_hook.insert(hook_name, entry);
             }
 
             plan.plugins.insert(
                 name.clone(),
                 RoutePluginEntry {
                     plugin_name: name,
-                    step_entry,
-                    field_entry,
+                    entries_by_hook,
                 },
             );
         }
+
+        // Resolve token.delegate entries for any plugins the route
+        // calls via `Step::Delegate`. These don't go through the
+        // step/field classification — they're a separate hook family.
+        // We still apply per-call config overrides via the existing
+        // `build_override_entries` pathway, threading the step's
+        // `config_override` as the only override surface (Slice B
+        // doesn't expose per-step caps or on_error overrides on
+        // delegation entries — the on_error lives in the IR step
+        // itself and is honored by the evaluator).
+        for name in collect_delegate_plugin_names(route) {
+            let entries = manager
+                .build_override_entries(&name, None, None, None)
+                .await;
+            // Pick the first token.delegate entry. Per delegation-hooks
+            // spec, plugins typically register one handler under the
+            // single `token.delegate` hook name; multiple handlers
+            // would be unusual.
+            let delegate_entry = entries
+                .into_iter()
+                .find(|(hook_name, _)| hook_name == HOOK_TOKEN_DELEGATE);
+            if let Some((_, entry)) = delegate_entry {
+                plan.delegation_entries.insert(name, entry);
+            } else {
+                tracing::warn!(
+                    plugin = %name,
+                    route = %route.route_key,
+                    "APL route references delegate plugin not registered under \
+                     token.delegate hook — `delegate(...)` step will fail at dispatch",
+                );
+            }
+        }
+
         plan
     }
 
@@ -188,35 +265,15 @@ impl RouteDispatchPlan {
         if base_entries.is_empty() {
             return None;
         }
-        let mut step_entry: Option<HookEntry> = None;
-        let mut field_entry: Option<HookEntry> = None;
+        let mut entries_by_hook: HashMap<String, HookEntry> = HashMap::new();
         for (hook_name, entry) in base_entries {
-            if is_field_hook(&hook_name) {
-                if field_entry.is_none() {
-                    field_entry = Some(entry);
-                }
-            } else if step_entry.is_none() {
-                step_entry = Some(entry);
-            }
+            entries_by_hook.insert(hook_name, entry);
         }
         Some(RoutePluginEntry {
             plugin_name: plugin_name.to_string(),
-            step_entry,
-            field_entry,
+            entries_by_hook,
         })
     }
-}
-
-/// v0 naming-heuristic for hook context classification. Hook names
-/// containing any of `field`, `redact`, `scan`, `validate` are treated
-/// as field handlers; everything else is a step handler. Token list
-/// (not regex) is deliberate — config readers can tell at a glance how
-/// a hook name will be classified.
-fn is_field_hook(hook_name: &str) -> bool {
-    let lc = hook_name.to_ascii_lowercase();
-    ["field", "redact", "scan", "validate"]
-        .iter()
-        .any(|token| lc.contains(token))
 }
 
 fn parse_on_error(s: &str) -> Option<OnError> {
@@ -226,6 +283,25 @@ fn parse_on_error(s: &str) -> Option<OnError> {
         "disable" => Some(OnError::Disable),
         _ => None,
     }
+}
+
+/// Walk a `CompiledRoute` and return the unique delegate-plugin names
+/// referenced by any `Step::Delegate` in `policy` / `post_policy`.
+/// Insertion-ordered for build determinism. Separate from
+/// [`collect_plugin_names`] because delegate plugins resolve under
+/// a different hook family (`token.delegate`) and the dispatch plan
+/// keeps them in a separate map.
+pub(crate) fn collect_delegate_plugin_names(route: &CompiledRoute) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    for step in route.policy.iter().chain(route.post_policy.iter()) {
+        if let Step::Delegate(ds) = step {
+            if seen.insert(ds.plugin_name.clone()) {
+                out.push(ds.plugin_name.clone());
+            }
+        }
+    }
+    out
 }
 
 /// Walk a `CompiledRoute` and return the unique plugin names referenced
@@ -274,7 +350,26 @@ pub(crate) fn route_capability_union(
     registry: &PluginRegistry,
 ) -> std::collections::HashSet<String> {
     let mut caps: std::collections::HashSet<String> = std::collections::HashSet::new();
+    // Plugin steps (`plugin(name)` in policy / `plugin: name` in
+    // args / result pipelines).
     for name in collect_plugin_names(route) {
+        if let Some(eff) = EffectivePlugin::resolve(&name, registry, &route.plugin_overrides) {
+            for cap in eff.capabilities.as_slice() {
+                caps.insert(cap.clone());
+            }
+        }
+    }
+    // Delegate steps (`delegate(name, ...)`). Without this, a
+    // delegator plugin that declares `capabilities:
+    // [read_inbound_credentials, write_delegated_tokens]` in YAML
+    // gets those stripped at the AplRouteHandler boundary — the
+    // synthetic handler doesn't union its caps in, so the executor
+    // filters out the inbound bearer before DelegationPluginInvoker
+    // dispatches, and the delegator handler sees an empty token.
+    // Hosts WANT to express per-plugin caps in YAML rather than
+    // widening the AplRouteHandler's baseline (which would leak
+    // those creds to every other step in the route).
+    for name in collect_delegate_plugin_names(route) {
         if let Some(eff) = EffectivePlugin::resolve(&name, registry, &route.plugin_overrides) {
             for cap in eff.capabilities.as_slice() {
                 caps.insert(cap.clone());

@@ -60,8 +60,21 @@ serde_yaml = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 
+# Async HTTP — used by `DecodingKeySource::build_async()` to fetch
+# IdP JWKS during `Plugin::initialize()`. We default the rustls-tls
+# backend (no OpenSSL system dep) and turn off any features we don't
+# use to keep the dep tree lean. apl-delegator-oauth pulls reqwest
+# too, so cargo dedups to one copy.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+# `futures::join_all` so multiple resolvers' JWKS endpoints fetch
+# concurrently at initialize time rather than one-at-a-time.
+futures = { workspace = true }
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }
+# Mock JWKS endpoint for the async `JwksUrl` resolution tests.
+mockito = "1"
 # RSA keypair + JWK fixtures for tests. `rsa` generates keypairs;
 # `pkcs8` encodes them in the PEM format jsonwebtoken accepts.
 rsa = { version = "0.9", features = ["pem"] }

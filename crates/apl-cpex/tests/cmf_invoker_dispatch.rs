@@ -45,7 +45,7 @@ fn plan_for(manager: &cpex_core::manager::PluginManager, plugin_name: &str) -> A
         .expect("plugin must be registered with the manager");
     let mut plugins = std::collections::HashMap::new();
     plugins.insert(plugin_name.to_string(), entry);
-    Arc::new(RouteDispatchPlan { plugins })
+    Arc::new(RouteDispatchPlan { plugins, delegation_entries: Default::default() })
 }
 
 // ---------------------------------------------------------------------
@@ -235,7 +235,7 @@ async fn step_invocation_allow_returns_decision_allow() {
     .await;
 
     let outcome = invoker
-        .invoke("allow-plugin", &empty_bag(), PluginInvocation::Step)
+        .invoke("allow-plugin", &empty_bag(), PluginInvocation::Step { phase: apl_core::step::DispatchPhase::Pre })
         .await
         .expect("invoke");
 
@@ -257,7 +257,7 @@ async fn step_invocation_deny_surfaces_violation_reason_and_code() {
     .await;
 
     let outcome = invoker
-        .invoke("deny-plugin", &empty_bag(), PluginInvocation::Step)
+        .invoke("deny-plugin", &empty_bag(), PluginInvocation::Step { phase: apl_core::step::DispatchPhase::Pre })
         .await
         .expect("invoke");
 
@@ -292,6 +292,7 @@ async fn field_invocation_modify_surfaces_modified_value_and_persists_payload() 
             PluginInvocation::Field {
                 name: "content",
                 value: &value,
+                phase: apl_core::step::DispatchPhase::Pre,
             },
         )
         .await
@@ -312,6 +313,7 @@ async fn field_invocation_modify_surfaces_modified_value_and_persists_payload() 
             PluginInvocation::Field {
                 name: "content",
                 value: &value,
+                phase: apl_core::step::DispatchPhase::Pre,
             },
         )
         .await
@@ -346,6 +348,7 @@ async fn current_payload_reflects_accumulated_mutations() {
             PluginInvocation::Field {
                 name: "content",
                 value: &value,
+                phase: apl_core::step::DispatchPhase::Pre,
             },
         )
         .await
@@ -478,15 +481,16 @@ fn plan_with_narrowed_caps(
         handler: Arc::clone(&base_entry.handler),
     };
     let mut plugins = std::collections::HashMap::new();
+    let mut entries_by_hook = std::collections::HashMap::new();
+    entries_by_hook.insert("cmf.tool_pre_invoke".to_string(), entry);
     plugins.insert(
         plugin_name.to_string(),
         apl_cpex::RoutePluginEntry {
             plugin_name: plugin_name.to_string(),
-            step_entry: Some(entry),
-            field_entry: None,
+            entries_by_hook,
         },
     );
-    Arc::new(apl_cpex::RouteDispatchPlan { plugins })
+    Arc::new(apl_cpex::RouteDispatchPlan { plugins, delegation_entries: Default::default() })
 }
 
 #[tokio::test]
@@ -518,7 +522,7 @@ async fn route_override_caps_narrow_what_plugin_sees() {
     .await;
 
     let outcome = invoker
-        .invoke("capture-plugin", &empty_bag(), PluginInvocation::Step)
+        .invoke("capture-plugin", &empty_bag(), PluginInvocation::Step { phase: apl_core::step::DispatchPhase::Pre })
         .await
         .expect("invoke");
     assert_eq!(outcome.decision, Decision::Allow);
@@ -543,4 +547,153 @@ async fn route_override_caps_narrow_what_plugin_sees() {
         "route override dropped read_labels; labels should be empty (got {:?})",
         security.labels,
     );
+}
+
+// ---------------------------------------------------------------------
+// Slice 101 — hook routing table regression
+// ---------------------------------------------------------------------
+//
+// Multi-hook plugin selection bug regression: a plugin registered
+// under BOTH `cmf.tool_pre_invoke` and `cmf.tool_post_invoke` must
+// dispatch to the right entry per phase. Before Slice 101 the
+// dispatch plan classified both as "step" and arbitrary "first
+// non-field wins" picked one for every dispatch — silent wrong
+// routing when policy and post_policy needed different handlers.
+
+/// Pre-side handler — returns Allow with no modification.
+struct PreSideHandler {
+    cfg: PluginConfig,
+}
+#[async_trait]
+impl Plugin for PreSideHandler {
+    fn config(&self) -> &PluginConfig {
+        &self.cfg
+    }
+}
+impl HookHandler<CmfHook> for PreSideHandler {
+    async fn handle(
+        &self,
+        _payload: &MessagePayload,
+        _extensions: &Extensions,
+        _ctx: &mut PluginContext,
+    ) -> PluginResult<MessagePayload> {
+        PluginResult::allow()
+    }
+}
+
+/// Post-side handler — returns Deny with a distinctive violation
+/// code so the test can assert "which handler fired" from the
+/// outcome alone.
+struct PostSideHandler {
+    cfg: PluginConfig,
+}
+#[async_trait]
+impl Plugin for PostSideHandler {
+    fn config(&self) -> &PluginConfig {
+        &self.cfg
+    }
+}
+impl HookHandler<CmfHook> for PostSideHandler {
+    async fn handle(
+        &self,
+        _payload: &MessagePayload,
+        _extensions: &Extensions,
+        _ctx: &mut PluginContext,
+    ) -> PluginResult<MessagePayload> {
+        PluginResult::deny(cpex_core::error::PluginViolation::new(
+            "test.multi_hook.post_fired",
+            "post handler fired",
+        ))
+    }
+}
+
+/// Marker plugin held by the PluginInstance (handlers are
+/// independent structs — the marker satisfies the
+/// `PluginInstance.plugin` field).
+struct MultiHookMarker {
+    cfg: PluginConfig,
+}
+#[async_trait]
+impl Plugin for MultiHookMarker {
+    fn config(&self) -> &PluginConfig {
+        &self.cfg
+    }
+}
+
+struct MultiHookPluginFactory;
+impl PluginFactory for MultiHookPluginFactory {
+    fn create(&self, config: &PluginConfig) -> Result<PluginInstance, Box<CoreError>> {
+        let marker = Arc::new(MultiHookMarker { cfg: config.clone() });
+        let pre = Arc::new(PreSideHandler { cfg: config.clone() });
+        let post = Arc::new(PostSideHandler { cfg: config.clone() });
+        Ok(PluginInstance {
+            plugin: marker as Arc<dyn Plugin>,
+            handlers: vec![
+                (
+                    "cmf.tool_pre_invoke",
+                    Arc::new(TypedHandlerAdapter::<CmfHook, _>::new(pre)),
+                ),
+                (
+                    "cmf.tool_post_invoke",
+                    Arc::new(TypedHandlerAdapter::<CmfHook, _>::new(post)),
+                ),
+            ],
+        })
+    }
+}
+
+/// Plugin registered under both `cmf.tool_pre_invoke` and
+/// `cmf.tool_post_invoke`. `PluginInvocation::Step { phase: Pre }`
+/// must pick the pre-side handler; `Step { phase: Post }` must pick
+/// the post-side handler. The post handler emits a distinctive
+/// violation code so we can prove WHICH handler fired from the
+/// outcome alone — not just that "a handler" fired.
+#[tokio::test]
+async fn multi_hook_plugin_dispatches_per_phase_via_routing_table() {
+    let mgr = build_manager("multi-hook-plugin", Box::new(MultiHookPluginFactory)).await;
+    let plan = plan_for(&mgr, "multi-hook-plugin");
+    let invoker = CmfPluginInvoker::for_request(
+        mgr,
+        Extensions::default(),
+        payload_with_text("hello"),
+        plan,
+        Arc::new(MemorySessionStore::new()),
+    )
+    .await;
+
+    // Pre phase — should hit pre handler → Allow.
+    let pre_outcome = invoker
+        .invoke(
+            "multi-hook-plugin",
+            &empty_bag(),
+            PluginInvocation::Step {
+                phase: apl_core::step::DispatchPhase::Pre,
+            },
+        )
+        .await
+        .expect("pre invoke");
+    assert_eq!(pre_outcome.decision, Decision::Allow);
+
+    // Post phase — should hit post handler → Deny with the
+    // distinctive code. Proves the post handler ran, not the pre
+    // handler (which would have returned Allow).
+    let post_outcome = invoker
+        .invoke(
+            "multi-hook-plugin",
+            &empty_bag(),
+            PluginInvocation::Step {
+                phase: apl_core::step::DispatchPhase::Post,
+            },
+        )
+        .await
+        .expect("post invoke");
+    match post_outcome.decision {
+        Decision::Deny { rule_source, .. } => {
+            assert_eq!(
+                rule_source, "test.multi_hook.post_fired",
+                "Post phase should dispatch to the post-side handler",
+            );
+        }
+        d => panic!("expected Deny from post handler, got {d:?}"),
+    }
 }

@@ -63,7 +63,7 @@ use cpex_core::identity::{IdentityHook, IdentityPayload};
 use cpex_core::plugin::{Plugin, PluginConfig};
 
 use super::claim_map::{ClaimMap, ClaimMapper, StandardClaimMap};
-use super::config::JwtIdentityResolverConfig;
+use super::config::{JwtIdentityResolverConfig, TrustedIssuerConfig};
 use super::trusted_issuer::TrustedIssuer;
 
 /// Default clock-skew tolerance, in seconds. Matches what most OIDC
@@ -71,11 +71,44 @@ use super::trusted_issuer::TrustedIssuer;
 const DEFAULT_LEEWAY_SECONDS: u64 = 60;
 
 /// JWT-based identity resolver. See module docs.
+///
+/// # Async key resolution
+///
+/// Trusted-issuer keys come in two flavors:
+///
+/// * **Inline / on-disk** (`Pem`, `PemFile`, `Jwk`, `Secret`) — built
+///   eagerly during `new()`. They appear in `trusted_issuers`
+///   immediately after construction.
+/// * **`JwksUrl`** — deferred to `Plugin::initialize()`. The configs
+///   sit in `pending_jwks` until `initialize()` runs; that hook
+///   fetches all pending JWKS endpoints **concurrently** via
+///   `futures::join_all` and merges the resolved issuers into the
+///   `trusted_issuers` vec under the `RwLock`.
+///
+/// The split keeps construction synchronous (matches the existing
+/// `PluginFactory::create` trait surface across the workspace) while
+/// putting the network I/O on the natural async hook the host
+/// already drives via `PluginManager::initialize().await`.
 #[derive(Debug)]
 pub struct JwtIdentityResolver {
     cfg: PluginConfig,
-    trusted_issuers: Vec<TrustedIssuer>,
+    trusted_issuers: std::sync::RwLock<Vec<TrustedIssuer>>,
+    /// Issuer configs whose `decoding_key` is a `JwksUrl` —
+    /// resolved during `initialize()`. Empty in deployments with
+    /// only inline sources.
+    pending_jwks: Vec<TrustedIssuerConfig>,
     claim_mapper: Arc<dyn ClaimMapper>,
+    /// Which identity slot this resolver fills. Drives
+    /// `IdentityPayload` slot selection and the `TokenRole` key under
+    /// which the raw token gets stashed in
+    /// `RawCredentialsExtension.inbound_tokens`.
+    role: TokenRole,
+    /// HTTP header this resolver reads its token from
+    /// (e.g. `X-User-Token`). Plugins that share a request extract
+    /// from different headers; the value lands on
+    /// `RawInboundToken.source_header` so forwarding plugins know
+    /// where to put it (or strip it) on the upstream call.
+    header: String,
 }
 
 impl JwtIdentityResolver {
@@ -119,23 +152,33 @@ impl JwtIdentityResolver {
             }));
         }
 
-        // Turn each TrustedIssuerConfig into a runtime TrustedIssuer.
-        // This is where PEM files get read and DecodingKey instances
-        // get built.
-        let trusted_issuers = typed
-            .trusted_issuers
-            .into_iter()
-            .map(|raw| {
-                raw.build().map_err(|e| {
-                    Box::new(PluginError::Config {
-                        message: format!(
-                            "plugin '{}' (apl-identity-jwt): {e}",
-                            cfg.name
-                        ),
-                    })
+        // Partition issuer configs:
+        //   * Inline / on-disk decoding keys (Pem, PemFile, Jwk,
+        //     Secret) → eagerly built into TrustedIssuers here.
+        //   * JwksUrl decoding keys → deferred to initialize() so
+        //     the host's PluginManager can drive the HTTP fetches
+        //     concurrently across all resolvers.
+        let mut trusted_issuers: Vec<TrustedIssuer> = Vec::new();
+        let mut pending_jwks: Vec<TrustedIssuerConfig> = Vec::new();
+        for raw in typed.trusted_issuers {
+            // Validate shape eagerly so bad YAML fails at load_config
+            // rather than at the async initialize() boundary.
+            raw.validate().map_err(|e| {
+                Box::new(PluginError::Config {
+                    message: format!("plugin '{}' (apl-identity-jwt): {e}", cfg.name),
                 })
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+            })?;
+            if raw.decoding_key.needs_async() {
+                pending_jwks.push(raw);
+            } else {
+                let built = raw.build().map_err(|e| {
+                    Box::new(PluginError::Config {
+                        message: format!("plugin '{}' (apl-identity-jwt): {e}", cfg.name),
+                    })
+                })?;
+                trusted_issuers.push(built);
+            }
+        }
 
         // Resolve the claim mapper by name. Unknown names are a
         // config error rather than a silent fallback — fail fast
@@ -153,10 +196,38 @@ impl JwtIdentityResolver {
             }
         };
 
+        // Reject `role: Custom(...)` at construction — the framework
+        // has slots for User / Client / Workload (the three named
+        // entries on SecurityExtension). Custom roles would write to
+        // `inbound_tokens` only, with no SecurityExtension home, so
+        // downstream `subject.*` / `client.*` predicates wouldn't see
+        // them. If we ever want custom slots, that's its own slice.
+        if matches!(typed.role, TokenRole::Custom(_)) {
+            return Err(Box::new(PluginError::Config {
+                message: format!(
+                    "plugin '{}' (apl-identity-jwt): role: Custom(...) is not \
+                     yet supported — pick one of `user`, `client`, `workload`",
+                    cfg.name
+                ),
+            }));
+        }
+        if typed.header.trim().is_empty() {
+            return Err(Box::new(PluginError::Config {
+                message: format!(
+                    "plugin '{}' (apl-identity-jwt): `header:` must be a \
+                     non-empty HTTP header name",
+                    cfg.name
+                ),
+            }));
+        }
+
         Ok(Self {
             cfg,
-            trusted_issuers,
+            trusted_issuers: std::sync::RwLock::new(trusted_issuers),
+            pending_jwks,
             claim_mapper,
+            role: typed.role,
+            header: typed.header,
         })
     }
 }
@@ -165,6 +236,42 @@ impl JwtIdentityResolver {
 impl Plugin for JwtIdentityResolver {
     fn config(&self) -> &PluginConfig {
         &self.cfg
+    }
+
+    /// Resolve any `JwksUrl` decoding keys deferred at construction.
+    /// Fetches happen concurrently — N pending issuers → one
+    /// `join_all`, not N sequential round-trips — so the time-to-
+    /// ready scales with the slowest IdP, not the sum.
+    ///
+    /// The `PluginManager` drives this once per plugin lifetime
+    /// (before any hooks fire). Idempotent: if `pending_jwks` is
+    /// empty (no JwksUrl sources) this is a free no-op.
+    async fn initialize(&self) -> Result<(), Box<PluginError>> {
+        if self.pending_jwks.is_empty() {
+            return Ok(());
+        }
+
+        let fetches = self
+            .pending_jwks
+            .iter()
+            .cloned()
+            .map(|cfg| async move { cfg.build_async().await });
+        let resolved: Vec<Result<TrustedIssuer, String>> =
+            futures::future::join_all(fetches).await;
+
+        let mut issuers = self
+            .trusted_issuers
+            .write()
+            .unwrap_or_else(|p| p.into_inner());
+        for r in resolved {
+            let issuer = r.map_err(|e| {
+                Box::new(PluginError::Config {
+                    message: format!("plugin '{}' (apl-identity-jwt): {e}", self.cfg.name),
+                })
+            })?;
+            issuers.push(issuer);
+        }
+        Ok(())
     }
 }
 
@@ -175,17 +282,37 @@ impl HookHandler<IdentityHook> for JwtIdentityResolver {
         _ext: &Extensions,
         _ctx: &mut PluginContext,
     ) -> PluginResult<IdentityPayload> {
-        let raw_token = payload.raw_token();
+        // Read OUR configured header from the request's full header
+        // map. HTTP headers are case-insensitive (RFC 7230 §3.2);
+        // we lowercase the configured name to match the canonical
+        // form hosts use when populating the map. Fall back to
+        // `payload.raw_token()` only when no header map is populated
+        // — covers single-resolver back-compat for hosts that still
+        // pre-extract one token.
+        let header_lc = self.header.to_ascii_lowercase();
+        let header_value = payload.headers().get(header_lc.as_str());
+        let raw_token: String = match header_value {
+            Some(v) => v.strip_prefix("Bearer ").unwrap_or(v).to_string(),
+            None if !payload.raw_token().is_empty() => payload.raw_token().to_string(),
+            None => {
+                return PluginResult::deny(PluginViolation::new(
+                    "auth.malformed_header",
+                    format!(
+                        "header '{}' missing from request (resolver '{}' / role '{:?}')",
+                        self.header, self.cfg.name, self.role
+                    ),
+                ));
+            }
+        };
         if raw_token.is_empty() {
             return PluginResult::deny(PluginViolation::new(
                 "auth.malformed_header",
-                "IdentityPayload carried an empty raw_token — host didn't \
-                 populate the credential before invoking the hook",
+                format!("header '{}' is present but empty", self.header),
             ));
         }
 
         // 1. Peek at `iss` to find the matching TrustedIssuer config.
-        let iss = match peek_issuer(raw_token) {
+        let iss = match peek_issuer(&raw_token) {
             Some(iss) => iss,
             None => {
                 return PluginResult::deny(PluginViolation::new(
@@ -194,7 +321,15 @@ impl HookHandler<IdentityHook> for JwtIdentityResolver {
                 ));
             }
         };
-        let issuer = match self.trusted_issuers.iter().find(|i| i.issuer == iss) {
+        // Read-lock the issuer list. After `initialize()` it's
+        // immutable for the resolver's lifetime; reads are cheap.
+        // Recover from a poisoned lock (a panic somewhere else
+        // while holding the write lock) — the data is still valid.
+        let issuers = self
+            .trusted_issuers
+            .read()
+            .unwrap_or_else(|p| p.into_inner());
+        let issuer = match issuers.iter().find(|i| i.issuer == iss) {
             Some(i) => i,
             None => {
                 return PluginResult::deny(PluginViolation::new(
@@ -205,7 +340,7 @@ impl HookHandler<IdentityHook> for JwtIdentityResolver {
         };
 
         // 2. Validate signature + standard claims.
-        let token_data = match validate_token(raw_token, issuer) {
+        let token_data = match validate_token(&raw_token, issuer) {
             Ok(td) => td,
             Err(e) => {
                 let (code, reason) = classify_jwt_error(&e);
@@ -213,36 +348,78 @@ impl HookHandler<IdentityHook> for JwtIdentityResolver {
             }
         };
 
-        // 3. Map claims via the configured claim mapper.
-        let subject = match self.claim_mapper.map_subject(&token_data.claims) {
-            Some(s) => s,
-            None => {
+        // 3. Build the updated payload by mapping claims into the
+        //    typed slot for our configured role.
+        let mut updated = payload.clone();
+        match &self.role {
+            TokenRole::User => match self.claim_mapper.map_subject(&token_data.claims) {
+                Some(s) => updated.subject = Some(s),
+                None => {
+                    return PluginResult::deny(PluginViolation::new(
+                        "auth.mapping_failed",
+                        "claim mapper produced no subject — required `sub` \
+                         claim missing or wrong shape",
+                    ));
+                }
+            },
+            TokenRole::Client => match self.claim_mapper.map_client(&token_data.claims) {
+                Some(c) => updated.client = Some(c),
+                None => {
+                    return PluginResult::deny(PluginViolation::new(
+                        "auth.mapping_failed",
+                        "claim mapper produced no client — required `client_id` \
+                         / `azp` claim missing",
+                    ));
+                }
+            },
+            TokenRole::Workload => match self.claim_mapper.map_workload(&token_data.claims) {
+                Some(w) => updated.caller_workload = Some(w),
+                None => {
+                    return PluginResult::deny(PluginViolation::new(
+                        "auth.mapping_failed",
+                        "claim mapper produced no workload — token doesn't look \
+                         like a SPIFFE-JWT-SVID (sub doesn't start with `spiffe://`)",
+                    ));
+                }
+            },
+            TokenRole::Custom(_) => {
+                // Filtered out at construction; defense in depth.
                 return PluginResult::deny(PluginViolation::new(
-                    "auth.mapping_failed",
-                    "claim mapper produced no subject — required claim missing \
-                     or has wrong shape",
+                    "auth.misconfigured",
+                    "role: Custom(...) is not supported",
                 ));
             }
-        };
+            // TokenRole is #[non_exhaustive]; future variants must be
+            // explicitly handled. Until then, treat unknown roles the
+            // same as Custom — surface as misconfigured rather than
+            // silently dropping the token.
+            _ => {
+                return PluginResult::deny(PluginViolation::new(
+                    "auth.misconfigured",
+                    "unsupported TokenRole variant",
+                ));
+            }
+        }
 
-        // 4. Stash the raw token for forwarding plugins.
-        let source_header = payload
-            .source_header()
-            .unwrap_or("Authorization")
-            .to_string();
-        let mut raw_creds = RawCredentialsExtension::default();
+        // 4. Stash the raw token for forwarding plugins. Key the
+        //    stash by the resolver's configured role so multi-token
+        //    deployments (user + client + workload) keep each
+        //    credential addressable.
+        let mut raw_creds = updated
+            .raw_credentials
+            .clone()
+            .unwrap_or_else(RawCredentialsExtension::default);
         raw_creds.inbound_tokens.insert(
-            TokenRole::User,
-            RawInboundToken::new(raw_token, source_header, TokenKind::Jwt),
+            self.role.clone(),
+            RawInboundToken::new(raw_token, self.header.clone(), TokenKind::Jwt),
         );
-
-        // 5. Build the updated payload and return.
-        let mut updated = payload.clone();
-        updated.subject = Some(subject);
         updated.raw_credentials = Some(raw_creds);
         updated.resolved_at = Some(chrono::Utc::now());
         // Pass the full claim map through `raw_claims` so audit /
         // downstream policy that wants uncategorized claims has them.
+        // For multi-resolver chains, the last resolver wins; if
+        // operators need per-role raw claims they should read from
+        // the typed slots (subject.claims / client.claims) instead.
         updated.raw_claims = token_data.claims;
 
         PluginResult::modify_payload(updated)
@@ -389,8 +566,11 @@ mod tests {
             }),
         );
         let resolver = JwtIdentityResolver::new(cfg).expect("should construct");
-        assert_eq!(resolver.trusted_issuers.len(), 1);
-        assert_eq!(resolver.trusted_issuers[0].issuer, "https://idp.example.com");
+        let issuers = resolver.trusted_issuers.read().unwrap();
+        assert_eq!(issuers.len(), 1);
+        assert_eq!(issuers[0].issuer, "https://idp.example.com");
+        // Secret source resolves eagerly — no pending JWKS work.
+        assert!(resolver.pending_jwks.is_empty());
     }
 
     #[test]

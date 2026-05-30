@@ -18,6 +18,8 @@
 
 pub mod hook;
 pub mod payload;
+pub mod route_config;
 
 pub use hook::{IdentityHook, HOOK_IDENTITY_RESOLVE};
 pub use payload::{IdentityPayload, TokenSource};
+pub use route_config::{RouteIdentityConfig, RouteIdentityStep};

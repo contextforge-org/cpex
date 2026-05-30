@@ -48,6 +48,7 @@ use apl_core::rules::CompiledRoute;
 use apl_core::step::PdpResolver;
 
 use crate::cmf_invoker::CmfPluginInvoker;
+use crate::delegation_invoker::DelegationPluginInvoker;
 use crate::dispatch_plan::DispatchCache;
 use crate::pdp_router::PdpRouter;
 use crate::session_store::SessionStore;
@@ -204,41 +205,60 @@ impl AnyHookHandler for AplRouteHandler {
         // `route.key` lets default/policy-bundle predicates branch on
         // which route they're attached to.
         let post_extensions = invoker.current_extensions().await;
-        let bag = BagBuilder::new()
+        let mut bag = BagBuilder::new()
             .with_extensions(&post_extensions)
             .with_route_key(&self.route.route_key)
             .build();
 
-        // v0 RoutePayload: args = the message's text content as a JSON
-        // string. Field pipelines operate on `args.<name>` paths; for
-        // single-text messages the typical pattern is to declare
-        // `args.text:` rules against the whole payload. Result is
-        // populated only on the post-invoke path — the host hasn't seen
-        // a tool response yet at pre-invoke time.
-        let args_value = Value::String(msg_payload.message.get_text_content());
+        // Build `RoutePayload.args` from the message. Per-content shape:
+        //   * ToolCall      → arguments map (JSON Object)
+        //   * PromptRequest → arguments map (JSON Object)
+        //   * Text-only     → JSON String of concatenated text content
+        //
+        // Field pipelines operate on `args.<name>` paths. Result starts
+        // as Null on Pre (no upstream response yet); the Post phase
+        // would extract from a ToolResult / PromptResult — deferred
+        // until result-side handling lands.
+        let args_value = extract_args_from_message(&msg_payload.message);
         let mut route_payload = match self.phase {
             Phase::Pre => RoutePayload::new(args_value),
             Phase::Post => RoutePayload::with_result(args_value, Value::Null),
         };
 
+        // Slice B: real delegation invoker, sharing the CMF invoker's
+        // extensions Mutex so a `delegate(...)` step's writes to
+        // raw_credentials / delegation are visible to downstream CMF
+        // plugins and to the post phase. Routes that don't declare
+        // any `Step::Delegate` won't have entries in the plan's
+        // `delegation_entries` map; if such a route accidentally hits
+        // `delegate(...)`, the invoker returns `NotFound` and the
+        // evaluator translates it via the step's `on_error`.
+        let delegations = DelegationPluginInvoker::new(
+            Arc::clone(&manager),
+            invoker.extensions_arc(),
+            invoker.plan_arc(),
+        );
+
         let decision = match self.phase {
             Phase::Pre => {
                 evaluate_pre(
                     &self.route,
-                    &bag,
+                    &mut bag,
                     &mut route_payload,
                     self.pdp.as_ref(),
                     &invoker,
+                    &delegations,
                 )
                 .await
             }
             Phase::Post => {
                 evaluate_post(
                     &self.route,
-                    &bag,
+                    &mut bag,
                     &mut route_payload,
                     self.pdp.as_ref(),
                     &invoker,
+                    &delegations,
                 )
                 .await
             }
@@ -255,15 +275,20 @@ impl AnyHookHandler for AplRouteHandler {
         let final_payload = invoker.current_payload().await;
         let final_extensions = invoker.current_extensions().await;
 
+        // Detect whether the args pipeline mutated the payload by
+        // re-extracting from the pre-eval message (msg_payload is
+        // still borrowed) and comparing against the post-eval
+        // route_payload.args. Re-extraction allocates but mirrors the
+        // surrounding pattern and avoids holding a pre-eval clone.
+        let pre_args = extract_args_from_message(&msg_payload.message);
         let modified_payload: Option<Box<dyn PluginPayload>> =
-            if route_payload.args != Value::String(final_payload.message.get_text_content()) {
-                // An args pipeline (Pre) or result pipeline (Post) rewrote
-                // the text — fold it back into a fresh MessagePayload so
-                // downstream readers see the change.
+            if route_payload.args != pre_args {
+                // An args pipeline (Pre) or result pipeline (Post)
+                // rewrote a field. Fold the new args back into a
+                // fresh MessagePayload so downstream readers (the
+                // host's body re-serializer) see the change.
                 let mut updated = final_payload.clone();
-                if let Some(text) = route_payload.args.as_str() {
-                    rewrite_message_text(&mut updated.message, text);
-                }
+                write_args_back_to_message(&mut updated.message, &route_payload.args);
                 Some(Box::new(updated) as Box<dyn PluginPayload>)
             } else if msg_payload.message.get_text_content()
                 != final_payload.message.get_text_content()
@@ -329,6 +354,76 @@ fn rewrite_message_text(msg: &mut cpex_core::cmf::Message, new_text: &str) {
     });
 }
 
+/// Extract `RoutePayload.args` from a CMF message. v0 maps:
+///   * First `ContentPart::ToolCall`      → `arguments` map (Object)
+///   * First `ContentPart::PromptRequest` → `arguments` map (Object)
+///   * Else (text / no entity parts)      → JSON String of text content
+///
+/// `args.<field>` APL paths target tool / prompt arguments directly.
+/// For text-only messages we fall back to the v0 "args = whole text"
+/// shape so `args.text` predicates keep working.
+fn extract_args_from_message(msg: &cpex_core::cmf::Message) -> Value {
+    use cpex_core::cmf::ContentPart;
+    for part in &msg.content {
+        match part {
+            ContentPart::ToolCall { content } => {
+                return Value::Object(
+                    content
+                        .arguments
+                        .iter()
+                        .map(|(k, v)| (k.clone(), v.clone()))
+                        .collect(),
+                );
+            }
+            ContentPart::PromptRequest { content } => {
+                return Value::Object(
+                    content
+                        .arguments
+                        .iter()
+                        .map(|(k, v)| (k.clone(), v.clone()))
+                        .collect(),
+                );
+            }
+            _ => {}
+        }
+    }
+    Value::String(msg.get_text_content())
+}
+
+/// Inverse of [`extract_args_from_message`]: write `args` back into
+/// `msg`'s first ToolCall / PromptRequest argument map, or — for
+/// text payloads — into the first text part.
+///
+/// Silently no-ops when the args shape doesn't match the message
+/// content shape (e.g. operator pipeline produced a String for what
+/// was originally a ToolCall). The mismatch path is recoverable —
+/// the upstream just sees the original unmodified content rather
+/// than a malformed rewrite.
+fn write_args_back_to_message(msg: &mut cpex_core::cmf::Message, args: &Value) {
+    use cpex_core::cmf::ContentPart;
+    for part in msg.content.iter_mut() {
+        match part {
+            ContentPart::ToolCall { content } => {
+                if let Some(obj) = args.as_object() {
+                    content.arguments = obj.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+                }
+                return;
+            }
+            ContentPart::PromptRequest { content } => {
+                if let Some(obj) = args.as_object() {
+                    content.arguments = obj.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+                }
+                return;
+            }
+            _ => {}
+        }
+    }
+    // Fall through: no structured entity part — treat as text.
+    if let Some(text) = args.as_str() {
+        rewrite_message_text(msg, text);
+    }
+}
+
 /// Cheap pointer-equality check across the few mutable extension slots
 /// the executor would care about. False positives (claiming a change
 /// when there isn't one) are cheap — the executor re-validates anyway.
@@ -343,6 +438,21 @@ fn extensions_changed(before: &Extensions, after: &Extensions) -> bool {
         (None, None) => false,
         _ => true,
     };
-    security_changed || delegation_changed
+    // `delegate(...)` steps write minted tokens into
+    // `raw_credentials.delegated_tokens` via the shared Mutex —
+    // without this check, a route whose only Extensions mutation is
+    // a delegate (no security / delegation chain edit) looks
+    // unchanged, so the executor never merges the minted token back
+    // and downstream readers (our HttpFilter attaching the token to
+    // the upstream request) see nothing.
+    let raw_creds_changed = match (
+        before.raw_credentials.as_ref(),
+        after.raw_credentials.as_ref(),
+    ) {
+        (Some(a), Some(b)) => !Arc::ptr_eq(a, b),
+        (None, None) => false,
+        _ => true,
+    };
+    security_changed || delegation_changed || raw_creds_changed
 }
 

@@ -66,6 +66,20 @@ impl Message {
         }
     }
 
+    /// Create a message from an arbitrary list of typed content
+    /// parts. The schema version is set from `SCHEMA_VERSION` —
+    /// callers never hardcode it. Use this when the content isn't a
+    /// single text blob (tool calls, prompt requests, resource refs,
+    /// multimodal mixes).
+    pub fn with_content(role: Role, content: Vec<ContentPart>) -> Self {
+        Self {
+            schema_version: super::constants::SCHEMA_VERSION.to_string(),
+            role,
+            content,
+            channel: None,
+        }
+    }
+
     /// Extract all text content from the message.
     ///
     /// Concatenates text from all `Text` content parts.

@@ -40,7 +40,9 @@
 //   Response result object         → result.*
 
 pub mod agent;
+pub mod capability_namespaces;
 pub mod completion;
+pub mod constants;
 pub mod custom;
 pub mod delegation;
 pub mod extensions_bridge;
@@ -55,6 +57,9 @@ pub mod request;
 pub mod security;
 
 pub use agent::extract_agent;
+pub use capability_namespaces::{
+    capability_namespaces, known_read_capabilities, unlocked_bag_prefixes,
+};
 pub use completion::extract_completion;
 pub use custom::extract_custom;
 pub use delegation::extract_delegation;

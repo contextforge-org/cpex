@@ -32,6 +32,7 @@
 // "list-with-matchers" deferred item.
 
 pub mod cmf_invoker;
+pub mod delegation_invoker;
 pub mod dispatch_plan;
 pub mod pdp_router;
 pub mod register;
@@ -40,6 +41,7 @@ pub mod session_store;
 pub mod visitor;
 
 pub use cmf_invoker::CmfPluginInvoker;
+pub use delegation_invoker::DelegationPluginInvoker;
 pub use dispatch_plan::{DispatchCache, RouteDispatchPlan, RoutePluginEntry};
 pub use pdp_router::PdpRouter;
 pub use register::{register_apl, AplOptions};

@@ -225,7 +225,16 @@ impl Extensions {
             && ptr_eq_opt(&self.llm, &modified.llm)
             && ptr_eq_opt(&self.framework, &modified.framework)
             && ptr_eq_opt(&self.meta, &modified.meta)
-            && ptr_eq_opt(&self.raw_credentials, &modified.raw_credentials)
+        // NOTE: `raw_credentials` is INTENTIONALLY excluded from the
+        // immutable check. Framework orchestrators (apl-cpex's
+        // DelegationPluginInvoker) legitimately write
+        // `delegated_tokens.*` via the shared Mutex during route
+        // evaluation, producing a new Arc by the time the synthetic
+        // handler returns. Per-plugin write authority is enforced at
+        // the capability layer (`write_delegated_tokens` /
+        // `write_inbound_credentials`), not at this pointer-equality
+        // gate. Until cap-tier-aware merge lands, treat raw_credentials
+        // as merge-able like `security` and `delegation`.
     }
 
     /// Merge an OwnedExtensions back into this Extensions.
@@ -234,6 +243,18 @@ impl Extensions {
         self.security = owned.security.map(Arc::new);
         self.delegation = owned.delegation.map(Arc::new);
         self.custom = owned.custom.map(Arc::new);
+        // `raw_credentials` is shared by Arc in `OwnedExtensions` —
+        // plugins don't mutate it directly. But framework orchestrators
+        // (apl-cpex's DelegationPluginInvoker) DO write delegated_tokens
+        // / inbound_tokens through the shared `Arc<Mutex<Extensions>>`
+        // before the synthetic handler returns. We must propagate
+        // those writes back so callers of `invoke_named` see the
+        // minted tokens in `PipelineResult.modified_extensions`.
+        // Without this, `delegate(...)` steps silently lose their
+        // results at the executor merge boundary.
+        if owned.raw_credentials.is_some() {
+            self.raw_credentials = owned.raw_credentials;
+        }
     }
 }
 

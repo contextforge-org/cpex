@@ -51,9 +51,78 @@ pub enum Step {
     /// `PluginResult` decision becomes the step's outcome.
     Plugin { name: String },
 
+    /// `delegate: { plugin: ..., ... }` — mint a downstream delegation
+    /// token via a TokenDelegateHook plugin. Populates
+    /// `delegation.granted_*` attributes in the bag so subsequent
+    /// rules in the same step list can read them. See
+    /// `docs/apl-identity-delegation-design.md`.
+    Delegate(DelegateStep),
+
     /// `taint(label[, scope])` — apply a taint label. Always succeeds;
     /// never produces a Deny. SessionStore dispatch happens in apl-cpex.
     Taint { label: String, scopes: Vec<TaintScope> },
+}
+
+/// One delegation invocation inside `policy:` or `post_policy:`.
+///
+/// At runtime the apl-cpex `DelegationInvoker` constructs a
+/// `cpex_core::delegation::DelegationPayload` from
+///   * the inbound bearer token (pulled from
+///     `Extensions.raw_credentials.inbound_tokens`),
+///   * this step's `args` (target / audience / permissions / mode /
+///     attenuation, layered over the plugin's configured defaults),
+///   * extensions-derived context (subject, prior delegation chain),
+///
+/// then calls `manager.invoke_entries::<TokenDelegateHook>(...)`. On
+/// success the resulting `delegated_token` is written into
+/// `Extensions.raw_credentials.delegated_tokens.*` and the granted
+/// scopes / audience surface as `delegation.granted.*` attributes
+/// in the policy bag for downstream rules to inspect.
+///
+/// `args` is a free-form map because each delegation backend has its
+/// own typed config shape; apl-core treats it as opaque and hands it
+/// to the plugin via the existing per-call config-override pathway.
+///
+/// # Multiple `delegate(...)` in one phase (most-recent-wins)
+///
+/// Multiple `delegate(...)` steps in the same phase are supported —
+/// each fires independently, each contributes to `Extensions`
+/// (`raw_credentials.delegated_tokens` is a HashMap keyed on
+/// audience+scope+mode so tokens accumulate; `delegation.chain`
+/// grows with each hop). But the `delegation.granted.*` bag keys
+/// are **overwritten** on each call — only the most recent
+/// delegate's grants are queryable from downstream `require(...)`
+/// rules.
+///
+/// For fan-out flows that need multiple independently-queryable
+/// grants, split into `policy:` + `post_policy:` or reach for a
+/// future per-step `as:` alias (not in v0; see the design doc's
+/// "Open design questions" section).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DelegateStep {
+    /// Plugin name — must reference an entry in the top-level
+    /// `plugins:` block that registers under the `token.delegate`
+    /// hook.
+    pub plugin_name: String,
+
+    /// Per-call config overrides applied for this delegation only.
+    /// Layered on top of the plugin's default config; the framework's
+    /// `build_override_entries` plumbing handles the merge.
+    /// Common keys: `target`, `audience`, `permissions`, `mode`,
+    /// `attenuation`. Schema is plugin-defined.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_override: Option<serde_yaml::Value>,
+
+    /// `deny | continue` — what to do when the plugin returns a
+    /// deny (e.g. IdP refusal, network error). `None` defaults to
+    /// `"deny"` (fail-closed; matches PDP step semantics).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_error: Option<String>,
+
+    /// Human-readable source path (e.g.
+    /// `"route.get_compensation.policy[2]"`) — used in audit and
+    /// `Decision::Deny.rule_source` when the step denies.
+    pub source: String,
 }
 
 /// A PDP invocation, opaque-args style. Resolvers parse `args` based on
@@ -157,6 +226,27 @@ pub trait PdpFactory: Send + Sync {
     ) -> Result<std::sync::Arc<dyn PdpResolver>, Box<dyn std::error::Error + Send + Sync>>;
 }
 
+/// Where in the request lifecycle a plugin dispatch is happening.
+/// Threads through `PluginInvocation` so the invoker can select the
+/// right hook entry from a plugin that registered for both pre and
+/// post phases (e.g. `cmf.tool_pre_invoke` AND `cmf.tool_post_invoke`).
+///
+/// APL's four phases map to two dispatch phases:
+///   * `args:` field stages    → `Pre`
+///   * `policy:` steps         → `Pre`
+///   * `result:` field stages  → `Post`
+///   * `post_policy:` steps    → `Post`
+///
+/// Plugins that need to discriminate `args` vs `policy` (same `Pre`
+/// from the dispatcher's perspective) inspect `PluginContext::hook_name()`
+/// inside their handler — the hook-routing layer doesn't slice phase
+/// finer than Pre/Post.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DispatchPhase {
+    Pre,
+    Post,
+}
+
 /// Context for one plugin invocation: tells the invoker the *intent* of
 /// the call so it can dispatch to the right CPEX hook contract.
 ///
@@ -166,13 +256,31 @@ pub trait PdpFactory: Send + Sync {
 /// `Field` is the pipe-chain case — APL is focused on a specific field
 /// value mid-transform and the plugin may rewrite that value via
 /// `PluginOutcome.modified_value`.
+///
+/// Both variants carry a `DispatchPhase` so the invoker can resolve the
+/// right hook entry against the cpex-core hook routing table when the
+/// plugin registered for multiple hooks.
 #[derive(Debug, Clone, Copy)]
 pub enum PluginInvocation<'a> {
     /// Called from a `policy:` or `post_policy:` step. The plugin operates
     /// on whatever typed payload the invoker was bound to.
-    Step,
+    Step { phase: DispatchPhase },
     /// Called inside an `args:` / `result:` pipe chain on one field.
-    Field { name: &'a str, value: &'a serde_json::Value },
+    Field {
+        name: &'a str,
+        value: &'a serde_json::Value,
+        phase: DispatchPhase,
+    },
+}
+
+impl<'a> PluginInvocation<'a> {
+    /// Convenience: the dispatch phase carried by this invocation.
+    pub fn phase(&self) -> DispatchPhase {
+        match self {
+            PluginInvocation::Step { phase } => *phase,
+            PluginInvocation::Field { phase, .. } => *phase,
+        }
+    }
 }
 
 /// Plugin invocation dispatch. apl-cpex wraps the CPEX `PluginManager`
@@ -188,6 +296,96 @@ pub trait PluginInvoker: Send + Sync {
         bag: &crate::attributes::AttributeBag,
         invocation: PluginInvocation<'_>,
     ) -> Result<PluginOutcome, PluginError>;
+}
+
+/// Delegation dispatch — invokes a `TokenDelegateHook` plugin to mint
+/// a downstream credential. apl-cpex implements this against
+/// `cpex_core::PluginManager::invoke_entries::<TokenDelegateHook>`.
+///
+/// The invoker holds the request-scoped `Extensions` internally
+/// (same pattern as `CmfPluginInvoker`), so the trait method doesn't
+/// need to pass them — the invoker uses its own snapshot to construct
+/// the `DelegationPayload` (inbound bearer token, subject, prior
+/// delegation chain).
+#[async_trait]
+pub trait DelegationInvoker: Send + Sync {
+    /// Run one delegation step. Returns a `DelegationOutcome` carrying
+    /// the granted permissions / audience / expiry the IdP issued; the
+    /// evaluator writes those into the bag as `delegation.granted_*`
+    /// attributes so subsequent rules in the same step list can
+    /// inspect them via `require(delegation.granted_permissions
+    /// contains "X")` etc.
+    ///
+    /// `step.config_override` is layered on top of the plugin's
+    /// default config and threaded through the standard per-call
+    /// override pathway.
+    async fn delegate(
+        &self,
+        step: &DelegateStep,
+    ) -> Result<DelegationOutcome, DelegationError>;
+}
+
+/// What a delegation invocation returned.
+///
+/// On success, `decision` is `Allow` and the granted_* fields reflect
+/// what the IdP actually issued (which may be narrower than what the
+/// route asked for — `granted_permissions` is the source of truth for
+/// what the downstream tool will accept). The evaluator surfaces these
+/// into the bag under the `delegation.granted.*` sub-namespace plus a
+/// `delegation.granted = true` flag.
+///
+/// On `Deny`, granted_* fields are empty / `None` and the
+/// `delegation.granted` flag is not set (absent → falsy).
+#[derive(Debug, Clone)]
+pub struct DelegationOutcome {
+    pub decision: Decision,
+    /// Permissions the IdP actually granted on the minted token. Empty
+    /// when the call failed or the plugin returned no token.
+    pub granted_permissions: Vec<String>,
+    /// Audience the minted token is valid for. `None` when no token
+    /// was produced.
+    pub granted_audience: Option<String>,
+    /// Token expiry (RFC 3339 string for bag-friendly representation).
+    /// `None` when no token was produced.
+    pub granted_expires_at: Option<String>,
+}
+
+impl DelegationOutcome {
+    /// Convenience for the "deny, nothing granted" case.
+    pub fn deny(decision: Decision) -> Self {
+        Self {
+            decision,
+            granted_permissions: Vec::new(),
+            granted_audience: None,
+            granted_expires_at: None,
+        }
+    }
+}
+
+#[derive(Debug, Error)]
+pub enum DelegationError {
+    #[error("no delegation invoker available for plugin `{0}`")]
+    NotFound(String),
+
+    #[error("delegation dispatch failed: {0}")]
+    Dispatch(String),
+}
+
+/// `DelegationInvoker` impl that returns `NotFound` for every call.
+/// Useful as the default for evaluator callers that don't run any
+/// `delegate(...)` steps — they need to pass *something* implementing
+/// the trait, but the noop never actually gets invoked. Tests and
+/// hosts that haven't wired a real delegation backend pass this.
+pub struct NoopDelegationInvoker;
+
+#[async_trait]
+impl DelegationInvoker for NoopDelegationInvoker {
+    async fn delegate(
+        &self,
+        step: &DelegateStep,
+    ) -> Result<DelegationOutcome, DelegationError> {
+        Err(DelegationError::NotFound(step.plugin_name.clone()))
+    }
 }
 
 // =====================================================================
@@ -261,4 +459,39 @@ impl Step {
 
     /// Returns true if this step is a plain rule (no async dispatch needed).
     pub fn is_rule(&self) -> bool { matches!(self, Step::Rule(_)) }
+}
+
+/// Bag keys the delegation step writes after a successful dispatch.
+/// Centralized here so the evaluator (writer) and policy authors
+/// (readers, via `require(delegation.granted.*)`) agree on the
+/// canonical names — typos in either place silently break the
+/// IdP-as-PDP pattern.
+///
+/// # Namespace
+///
+/// The `delegation.*` namespace at the top level carries INBOUND
+/// chain attributes (`delegation.depth`, `delegation.origin`,
+/// `delegation.chain`, ...) populated by identity resolver plugins
+/// via `IdentityPayload.delegation` + apply-to-extensions, then
+/// surfaced through apl-cmf's BagBuilder. See
+/// `docs/specs/delegation-hooks-rust-spec.md` §6.3 for that mapping.
+///
+/// The `delegation.granted.*` sub-namespace defined here is for
+/// OUTBOUND results — what came back from a `delegate(...)` step
+/// the framework just ran. Two writers (identity plugin for inbound,
+/// `delegate(...)` for outbound), distinct sub-trees, no collision.
+pub mod delegation_bag_keys {
+    /// `StringSet` — permissions actually granted by the IdP on the
+    /// minted token. May be narrower than `required_permissions`.
+    pub const GRANTED_PERMISSIONS: &str = "delegation.granted.permissions";
+    /// `String` — audience the minted token is valid for.
+    pub const GRANTED_AUDIENCE: &str = "delegation.granted.audience";
+    /// `String` — token expiry as RFC 3339.
+    pub const GRANTED_EXPIRES_AT: &str = "delegation.granted.expires_at";
+    /// `Bool` — set to `true` after a successful `delegate(...)`
+    /// step. Lets policy branch on success without inspecting the
+    /// granted_permissions set: `require(delegation.granted)`. Absent
+    /// (i.e. evaluates to false) when no delegate step has run OR
+    /// when the most recent one denied.
+    pub const GRANTED: &str = "delegation.granted";
 }

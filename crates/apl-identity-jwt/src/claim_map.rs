@@ -24,25 +24,52 @@ use std::collections::HashMap;
 
 use serde_json::Value;
 
-use cpex_core::extensions::SubjectExtension;
+use cpex_core::extensions::{ClientExtension, SubjectExtension, WorkloadIdentity};
 
-/// Convert a validated JWT's claim map into a `SubjectExtension`.
+/// Convert a validated JWT's claim map into the typed identity slot
+/// for the resolver's configured role.
 ///
-/// Implementations are responsible for pulling out `sub` (the
-/// subject identifier) and any additional structured fields the
-/// deployment cares about (roles, teams, permissions, custom
-/// claims).
+/// Implementations supply one method per role they understand:
 ///
-/// Returning `None` signals "this mapper can't produce a usable
-/// subject from these claims" — the resolver maps `None` to an
-/// `auth.mapping_failed` `PluginViolation`. `Some(subject)` carries
-/// the populated identity.
+///   * [`map_subject`] — `sub` plus subject-shaped fields, for
+///     `TokenRole::User`.
+///   * [`map_client`]  — `client_id` plus client-shaped fields, for
+///     `TokenRole::Client`.
+///   * [`map_workload`] — SPIFFE-style identity, for `TokenRole::Workload`.
+///
+/// Each defaults to `None` so existing custom mappers stay valid —
+/// they get implicit "this mapper doesn't know how to do that role,"
+/// which the resolver surfaces as `auth.mapping_failed` when an
+/// operator wires a role the mapper can't fill.
 ///
 /// `Debug` is a supertrait so structs holding `Arc<dyn ClaimMapper>`
 /// (notably `JwtIdentityResolver`) can themselves derive `Debug`.
+///
+/// [`map_subject`]: ClaimMapper::map_subject
+/// [`map_client`]: ClaimMapper::map_client
+/// [`map_workload`]: ClaimMapper::map_workload
 pub trait ClaimMapper: std::fmt::Debug + Send + Sync {
-    /// Map the JWT claim map into a `SubjectExtension`.
-    fn map_subject(&self, claims: &HashMap<String, Value>) -> Option<SubjectExtension>;
+    /// Map JWT claims into a `SubjectExtension` (for `role: user`).
+    fn map_subject(&self, claims: &HashMap<String, Value>) -> Option<SubjectExtension> {
+        let _ = claims;
+        None
+    }
+
+    /// Map JWT claims into a `ClientExtension` (for `role: client`).
+    /// Default returns `None` — implementations that handle client
+    /// tokens override this.
+    fn map_client(&self, claims: &HashMap<String, Value>) -> Option<ClientExtension> {
+        let _ = claims;
+        None
+    }
+
+    /// Map JWT claims into a `WorkloadIdentity` (for `role: workload`).
+    /// Default returns `None` — implementations that handle SPIFFE /
+    /// SPIFFE-JWT-SVID tokens override this.
+    fn map_workload(&self, claims: &HashMap<String, Value>) -> Option<WorkloadIdentity> {
+        let _ = claims;
+        None
+    }
 }
 
 /// Type alias matching what `jsonwebtoken::decode::<ClaimMap>(...)`
@@ -66,6 +93,119 @@ pub type ClaimMap = HashMap<String, Value>;
 pub struct StandardClaimMap;
 
 impl ClaimMapper for StandardClaimMap {
+    fn map_client(&self, claims: &ClaimMap) -> Option<ClientExtension> {
+        // `client_id` is required for ClientExtension — it's the anchor
+        // identifier policy authors gate on. Falls back to `azp`
+        // (authorized party, OIDC §2 for the "client_id of the party
+        // to which the token was issued") which Keycloak and several
+        // OPs send in place of `client_id`.
+        let client_id = claims
+            .get("client_id")
+            .or_else(|| claims.get("azp"))
+            .and_then(Value::as_str)?
+            .to_string();
+
+        let mut client = ClientExtension {
+            client_id,
+            ..Default::default()
+        };
+
+        if let Some(name) = claims.get("client_name").and_then(Value::as_str) {
+            client.client_name = Some(name.to_string());
+        }
+
+        // Scopes — array OR space-separated string.
+        if let Some(arr) = claims.get("authorized_scopes").and_then(Value::as_array) {
+            for v in arr {
+                if let Some(s) = v.as_str() {
+                    client.authorized_scopes.push(s.to_string());
+                }
+            }
+        } else if let Some(s) = claims.get("scope").and_then(Value::as_str) {
+            for scope in s.split_whitespace() {
+                if !scope.is_empty() {
+                    client.authorized_scopes.push(scope.to_string());
+                }
+            }
+        }
+
+        // Audiences — single string or array (RFC 7519 §4.1.3).
+        match claims.get("aud") {
+            Some(Value::String(s)) => client.authorized_audiences.push(s.clone()),
+            Some(Value::Array(arr)) => {
+                for v in arr {
+                    if let Some(s) = v.as_str() {
+                        client.authorized_audiences.push(s.to_string());
+                    }
+                }
+            }
+            _ => {}
+        }
+
+        // Platform-native roles.
+        if let Some(arr) = claims.get("roles").and_then(Value::as_array) {
+            for v in arr {
+                if let Some(s) = v.as_str() {
+                    client.roles.push(s.to_string());
+                }
+            }
+        }
+
+        // Remaining claims — keyed by name with full Value preserved
+        // (ClientExtension.claims is HashMap<String, serde_json::Value>,
+        // unlike SubjectExtension.claims which stringifies).
+        const RESERVED: &[&str] = &[
+            "client_id",
+            "azp",
+            "client_name",
+            "authorized_scopes",
+            "scope",
+            "aud",
+            "roles",
+            "iss",
+            "exp",
+            "nbf",
+            "iat",
+            "jti",
+            "sub",
+        ];
+        for (k, v) in claims {
+            if RESERVED.contains(&k.as_str()) {
+                continue;
+            }
+            client.claims.insert(k.clone(), v.clone());
+        }
+
+        Some(client)
+    }
+
+    fn map_workload(&self, claims: &ClaimMap) -> Option<WorkloadIdentity> {
+        // SPIFFE JWT-SVID convention: the SPIFFE ID lives in `sub`
+        // (per the SPIFFE JWT-SVID spec). We look there first, then
+        // fall back to an explicit `spiffe_id` claim for IdPs that
+        // surface it separately.
+        let spiffe_id = claims
+            .get("sub")
+            .and_then(Value::as_str)
+            .filter(|s| s.starts_with("spiffe://"))
+            .or_else(|| claims.get("spiffe_id").and_then(Value::as_str))
+            .map(str::to_string)?;
+
+        // Trust domain — pull from the SPIFFE-ID host part.
+        let trust_domain = spiffe_id
+            .strip_prefix("spiffe://")
+            .and_then(|rest| rest.split('/').next())
+            .map(str::to_string);
+
+        Some(WorkloadIdentity {
+            spiffe_id: Some(spiffe_id),
+            trust_domain,
+            attested_at: None,
+            attestor: Some("jwt".to_string()),
+            ..Default::default()
+        })
+    }
+
     fn map_subject(&self, claims: &ClaimMap) -> Option<SubjectExtension> {
         // `sub` is required — RFC 7519 §4.1.2 makes it optional in
         // the spec but it's effectively mandatory for identity flows.

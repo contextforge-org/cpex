@@ -56,12 +56,15 @@ use tokio::sync::Mutex;
 
 use cpex_core::cmf::{CmfHook, MessagePayload};
 use cpex_core::hooks::payload::Extensions;
+use cpex_core::hooks::HookPhase;
 use cpex_core::manager::PluginManager;
 
 use apl_core::attributes::AttributeBag;
 use apl_core::evaluator::Decision;
 use apl_core::pipeline::{TaintEvent, TaintScope};
-use apl_core::step::{PluginError, PluginInvocation, PluginInvoker, PluginOutcome};
+use apl_core::step::{
+    DispatchPhase, PluginError, PluginInvocation, PluginInvoker, PluginOutcome,
+};
 
 use crate::dispatch_plan::RouteDispatchPlan;
 use crate::session_store::SessionStore;
@@ -158,6 +161,23 @@ impl CmfPluginInvoker {
         self.extensions.lock().await.clone()
     }
 
+    /// Shared `Arc<Mutex<Extensions>>` handle. Used by collaborators
+    /// (notably `DelegationPluginInvoker`) that need to mutate the
+    /// same request-scoped extensions this invoker sees — e.g. a
+    /// `delegate(...)` step minting a token needs to write
+    /// `raw_credentials.delegated_tokens.*` into the same Extensions
+    /// the next CMF plugin will read.
+    pub fn extensions_arc(&self) -> Arc<Mutex<Extensions>> {
+        Arc::clone(&self.extensions)
+    }
+
+    /// Shared `Arc<RouteDispatchPlan>` handle. Collaborators (e.g.
+    /// `DelegationPluginInvoker`) need this to look up their own
+    /// entries in the same per-route plan the CMF invoker uses.
+    pub fn plan_arc(&self) -> Arc<RouteDispatchPlan> {
+        Arc::clone(&self.plan)
+    }
+
     /// Persist session-scoped state added during this request. Diffs
     /// current `security.labels` against the post-hydration snapshot
     /// and appends new labels to the session store. No-op when there
@@ -193,20 +213,32 @@ impl PluginInvoker for CmfPluginInvoker {
             .get(plugin_name)
             .ok_or_else(|| PluginError::NotFound(plugin_name.to_string()))?;
 
-        let entry = match invocation {
-            PluginInvocation::Step => resolved.step_entry.as_ref().ok_or_else(|| {
-                PluginError::Dispatch(format!(
-                    "plugin '{plugin_name}' has no step-context hook \
-                     (policy / post_policy invocation)"
-                ))
-            })?,
-            PluginInvocation::Field { .. } => resolved.field_entry.as_ref().ok_or_else(|| {
-                PluginError::Dispatch(format!(
-                    "plugin '{plugin_name}' has no field-context hook \
-                     (args / result pipeline invocation)"
-                ))
-            })?,
+        // Snapshot extensions to read entity_type — the dispatcher
+        // needs it for hook routing. Dropped immediately so we don't
+        // hold the lock across the per-entry payload clone.
+        let request_entity_type: Option<String> = {
+            let ext = self.extensions.lock().await;
+            ext.meta.as_ref().and_then(|m| m.entity_type.clone())
         };
+
+        // Pick the entry whose registered hook matches the current
+        // dispatch context via cpex-core's hook metadata table.
+        // Replaces the prior naming heuristic.
+        let dispatch_phase = match invocation.phase() {
+            DispatchPhase::Pre => HookPhase::Pre,
+            DispatchPhase::Post => HookPhase::Post,
+        };
+        let entry = resolved
+            .pick_entry(request_entity_type.as_deref(), dispatch_phase)
+            .ok_or_else(|| {
+                PluginError::Dispatch(format!(
+                    "plugin '{plugin_name}' has no hook matching dispatch \
+                     context (entity_type={:?}, phase={:?}); declared hooks: {:?}",
+                    request_entity_type,
+                    dispatch_phase,
+                    resolved.entries_by_hook.keys().collect::<Vec<_>>(),
+                ))
+            })?;
 
         // Snapshot the current payload + extensions — `invoke_entries`
         // consumes by-value, so we clone for the call and keep the
@@ -254,7 +286,7 @@ impl PluginInvoker for CmfPluginInvoker {
                                 modified.message.get_text_content(),
                             ))
                         }
-                        PluginInvocation::Step => None,
+                        PluginInvocation::Step { .. } => None,
                     }
                 }
                 None => {

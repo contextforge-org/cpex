@@ -22,6 +22,8 @@
 
 pub mod config;
 pub mod delegator;
+pub mod factory;
 
 pub use config::{ClientSecretSource, OAuthDelegatorConfig};
 pub use delegator::OAuthDelegator;
+pub use factory::{OAuthDelegatorFactory, KIND};

@@ -1403,14 +1403,29 @@ impl PluginManager {
             }
         }
 
-        // Slow path: resolve, filter, and cache (allocations only here)
-        let resolved = config::resolve_plugins_for_entity(
-            cpex_config,
-            entity_type,
-            entity_name,
-            request_scope,
-            &meta.tags,
-        );
+        // Slow path: resolve, filter, and cache (allocations only here).
+        //
+        // Hook-specific resolution for identity.resolve: the route's
+        // `identity:` block is the authoritative dispatch list (NOT
+        // the `plugins:` block, which in APL-driven routes means
+        // "per-route overrides" rather than "binding"). For every
+        // other hook, the generic plugins-block resolution applies.
+        let resolved = if hook_name == crate::identity::HOOK_IDENTITY_RESOLVE {
+            config::resolve_identity_plugins_for_route(
+                cpex_config,
+                entity_type,
+                entity_name,
+                request_scope,
+            )
+        } else {
+            config::resolve_plugins_for_entity(
+                cpex_config,
+                entity_type,
+                entity_name,
+                request_scope,
+                &meta.tags,
+            )
+        };
 
         // Filter entries to resolved plugins, preserving resolution order.
         // If a plugin has config overrides and we have a factory for its kind,

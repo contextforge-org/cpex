@@ -336,3 +336,185 @@ routes:
          doing so would burn resources for a trivial config diff"
     );
 }
+
+// ---------------------------------------------------------------------
+// Extended coverage — two routes with distinct config overrides for
+// the same plugin, and on_error-override plumbing verification.
+// ---------------------------------------------------------------------
+
+/// Two routes (`tool_a`, `tool_b`) reference the same plugin (`gate`)
+/// with DIFFERENT config overrides. The dispatch cache must produce
+/// two independent instances, one per route, each carrying its own
+/// override config — proves the cache key (`route_key`) keeps the
+/// instances separate. Verified by the per-route runtime behavior
+/// AND by the factory-call count: base + override_a + override_b = 3.
+#[tokio::test]
+async fn two_routes_with_distinct_overrides_produce_distinct_instances() {
+    const YAML: &str = r#"
+plugins:
+  - name: gate
+    kind: allowlist-gate
+    hooks: [cmf.tool_pre_invoke]
+    config:
+      allowlist: ["closed"]
+routes:
+  - tool: tool_a
+    apl:
+      plugins:
+        gate:
+          config:
+            allowlist: ["alpha"]
+      policy:
+        - "plugin(gate)"
+  - tool: tool_b
+    apl:
+      plugins:
+        gate:
+          config:
+            allowlist: ["open"]
+      policy:
+        - "plugin(gate)"
+"#;
+    let (mgr, instance_count) = build_manager(YAML).await;
+
+    // tool_a override: allowlist=["alpha"] — gate denies (no "open").
+    let ext_a = Extensions {
+        meta: Some(Arc::new(meta_for_tool("tool_a"))),
+        ..Default::default()
+    };
+    let (res_a, _) = mgr
+        .invoke_named::<CmfHook>("cmf.tool_pre_invoke", cmf_payload(), ext_a, None)
+        .await;
+    let v_a = res_a
+        .violation
+        .expect("tool_a override has no 'open' — should deny");
+    assert!(
+        v_a.reason.contains("\"alpha\""),
+        "tool_a violation should report its own override allowlist (alpha), got: {}",
+        v_a.reason,
+    );
+
+    // tool_b override: allowlist=["open"] — gate allows.
+    let ext_b = Extensions {
+        meta: Some(Arc::new(meta_for_tool("tool_b"))),
+        ..Default::default()
+    };
+    let (res_b, _) = mgr
+        .invoke_named::<CmfHook>("cmf.tool_pre_invoke", cmf_payload(), ext_b, None)
+        .await;
+    assert!(
+        res_b.continue_processing,
+        "tool_b override has 'open' — should allow: {:?}",
+        res_b.violation,
+    );
+
+    // Factory invocation count: base (at load_config) + tool_a
+    // override (at first tool_a dispatch) + tool_b override (at first
+    // tool_b dispatch). Three total — proves the cache holds two
+    // distinct instances rather than collapsing them.
+    assert_eq!(
+        instance_count.load(std::sync::atomic::Ordering::SeqCst),
+        3,
+        "expected 3 factory calls (base + tool_a override + tool_b override); \
+         a smaller count means overrides collapsed across routes",
+    );
+}
+
+/// Override changes `on_error` only — sanity-check that the override
+/// VALUE actually lands on the per-route plugin entry's trusted_config,
+/// not just that the factory wasn't re-invoked.
+///
+/// Counterpart to `caps_only_override_does_not_reinstantiate` (which
+/// only checks the perf optimization). This test verifies the
+/// PLUMBING: build the plan with and without an on_error override,
+/// then read the resolved entry's trusted_config to confirm the
+/// override actually flowed through (`Ignore`) vs the base default
+/// (`Fail`).
+#[tokio::test]
+async fn on_error_override_plumbs_through_to_trusted_config() {
+    use std::collections::HashMap;
+
+    use apl_cpex::{DispatchCache, RouteDispatchPlan};
+    use apl_core::plugin_decl::{PluginDeclaration, PluginOverride, PluginRegistry};
+    use apl_core::rules::CompiledRoute;
+    use apl_core::step::Step;
+    use cpex_core::plugin::OnError;
+
+    // Single-plugin cpex-core config — load it via the manager so the
+    // plugin is registered. No APL visitor / routes wiring needed —
+    // we'll build the routes manually below to focus on what the
+    // dispatch plan does with overrides.
+    const YAML: &str = r#"
+plugins:
+  - name: gate
+    kind: allowlist-gate
+    hooks: [cmf.tool_pre_invoke]
+    config:
+      allowlist: ["open"]
+"#;
+    let (mgr, _) = build_manager(YAML).await;
+
+    // Construct the APL plugin registry by hand to match what
+    // `compile_config` would have produced for the YAML's `plugins:`
+    // block. `RouteDispatchPlan::build` consults this to know which
+    // plugins to resolve through cpex-core.
+    let mut registry = PluginRegistry::new();
+    registry.insert(
+        "gate".to_string(),
+        PluginDeclaration {
+            name: "gate".to_string(),
+            kind: "allowlist-gate".to_string(),
+            hooks: vec!["cmf.tool_pre_invoke".to_string()],
+            capabilities: Vec::new(),
+            config: None,
+            on_error: None,
+            extra: HashMap::new(),
+        },
+    );
+
+    let cache = DispatchCache::new();
+
+    // Override route — sets `on_error: ignore` only.
+    let mut route_override = CompiledRoute::default();
+    route_override.route_key = "override-route".into();
+    route_override.policy.push(Step::Plugin { name: "gate".into() });
+    let mut override_block = PluginOverride::default();
+    override_block.on_error = Some("ignore".into());
+    route_override
+        .plugin_overrides
+        .insert("gate".to_string(), override_block);
+    let plan_override: std::sync::Arc<RouteDispatchPlan> =
+        cache.get_or_build(&route_override, &registry, &mgr).await;
+    let entry_override = plan_override
+        .plugins
+        .get("gate")
+        .expect("gate must resolve on override route")
+        .entries_by_hook
+        .values()
+        .next()
+        .expect("override route entry present");
+    assert_eq!(
+        entry_override.plugin_ref.trusted_config().on_error,
+        OnError::Ignore,
+        "override route should carry on_error=Ignore on its entry",
+    );
+
+    // Base-config route — no overrides; should carry default Fail.
+    let mut route_base = CompiledRoute::default();
+    route_base.route_key = "base-route".into();
+    route_base.policy.push(Step::Plugin { name: "gate".into() });
+    let plan_base = cache.get_or_build(&route_base, &registry, &mgr).await;
+    let entry_base = plan_base
+        .plugins
+        .get("gate")
+        .expect("gate must resolve on base route")
+        .entries_by_hook
+        .values()
+        .next()
+        .expect("base route entry present");
+    assert_eq!(
+        entry_base.plugin_ref.trusted_config().on_error,
+        OnError::Fail,
+        "base route should carry the default on_error=Fail",
+    );
+}

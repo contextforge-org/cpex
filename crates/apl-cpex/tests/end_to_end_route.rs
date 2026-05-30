@@ -32,8 +32,8 @@ use cpex_core::plugin::{Plugin, PluginConfig};
 
 use apl_core::pipeline::TaintScope;
 use apl_core::{
-    compile_config, evaluate_route, AttributeBag, Decision, PdpCall, PdpDecision, PdpDialect,
-    PdpError, PdpResolver, RoutePayload,
+    compile_config, evaluate_route, AttributeBag, Decision, NoopDelegationInvoker, PdpCall,
+    PdpDecision, PdpDialect, PdpError, PdpResolver, RoutePayload,
 };
 
 use apl_cpex::{CmfPluginInvoker, DispatchCache, MemorySessionStore, SessionStore};
@@ -213,10 +213,10 @@ routes:
     )
     .await;
 
-    let bag = AttributeBag::new();
+    let mut bag = AttributeBag::new();
     let mut payload = empty_payload();
     let decision =
-        evaluate_route(route, &bag, &mut payload, &AllowPdp, &invoker).await;
+        evaluate_route(route, &mut bag, &mut payload, &AllowPdp, &invoker, &NoopDelegationInvoker).await;
 
     assert_eq!(decision.decision, Decision::Allow);
     assert!(decision.taints.is_empty());
@@ -254,10 +254,10 @@ routes:
     )
     .await;
 
-    let bag = AttributeBag::new();
+    let mut bag = AttributeBag::new();
     let mut payload = empty_payload();
     let decision =
-        evaluate_route(route, &bag, &mut payload, &AllowPdp, &invoker).await;
+        evaluate_route(route, &mut bag, &mut payload, &AllowPdp, &invoker, &NoopDelegationInvoker).await;
 
     match decision.decision {
         Decision::Deny {
@@ -382,10 +382,10 @@ routes:
     )
     .await;
 
-    let bag = AttributeBag::new();
+    let mut bag = AttributeBag::new();
     let mut payload = empty_payload();
     let decision =
-        evaluate_route(route, &bag, &mut payload, &AllowPdp, &invoker).await;
+        evaluate_route(route, &mut bag, &mut payload, &AllowPdp, &invoker, &NoopDelegationInvoker).await;
 
     // Decision flows through allow (plugin's modify_extensions doesn't
     // halt the pipeline).
@@ -456,10 +456,10 @@ routes:
 
     // Now drive a route — tagger adds PII. After persist, the store has
     // both PRIOR (from hydration) and PII (newly emitted).
-    let bag = AttributeBag::new();
+    let mut bag = AttributeBag::new();
     let mut payload = empty_payload();
     let decision =
-        evaluate_route(route, &bag, &mut payload, &AllowPdp, &invoker).await;
+        evaluate_route(route, &mut bag, &mut payload, &AllowPdp, &invoker, &NoopDelegationInvoker).await;
     assert_eq!(decision.decision, Decision::Allow);
 
     // Only the NEW label (PII) shows up as a taint — PRIOR was already

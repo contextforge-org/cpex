@@ -72,14 +72,48 @@ impl PluginFactory for AllowGateFactory {
         let plugin = Arc::new(AllowGate {
             cfg: config.clone(),
         });
+        // Register the handler under every hook the operator declared
+        // in `hooks: [...]`. Lets tests pin the plugin to llm / prompt
+        // / resource hooks via YAML without per-entity factory copies.
+        let handlers = hooks_for(config, plugin.clone());
         Ok(PluginInstance {
-            plugin: plugin.clone(),
-            handlers: vec![(
-                "cmf.tool_pre_invoke",
-                Arc::new(TypedHandlerAdapter::<CmfHook, _>::new(plugin)),
-            )],
+            plugin,
+            handlers,
         })
     }
+}
+
+/// Build the adapter list for a plugin from the operator-declared
+/// `hooks:` config. Falls back to `cmf.tool_pre_invoke` when nothing
+/// is declared (matches v0 default for routes that don't specify).
+fn hooks_for<H>(
+    config: &PluginConfig,
+    plugin: Arc<H>,
+) -> Vec<(
+    &'static str,
+    Arc<dyn cpex_core::registry::AnyHookHandler>,
+)>
+where
+    H: HookHandler<CmfHook> + Plugin + 'static,
+{
+    let hook_names: Vec<&'static str> = if config.hooks.is_empty() {
+        vec!["cmf.tool_pre_invoke"]
+    } else {
+        config
+            .hooks
+            .iter()
+            .map(|s| Box::leak(s.clone().into_boxed_str()) as &'static str)
+            .collect()
+    };
+    hook_names
+        .into_iter()
+        .map(|name| {
+            let adapter: Arc<dyn cpex_core::registry::AnyHookHandler> = Arc::new(
+                TypedHandlerAdapter::<CmfHook, _>::new(Arc::clone(&plugin)),
+            );
+            (name, adapter)
+        })
+        .collect()
 }
 
 struct DenyGate {
@@ -113,12 +147,10 @@ impl PluginFactory for DenyGateFactory {
         let plugin = Arc::new(DenyGate {
             cfg: config.clone(),
         });
+        let handlers = hooks_for(config, plugin.clone());
         Ok(PluginInstance {
-            plugin: plugin.clone(),
-            handlers: vec![(
-                "cmf.tool_pre_invoke",
-                Arc::new(TypedHandlerAdapter::<CmfHook, _>::new(plugin)),
-            )],
+            plugin,
+            handlers,
         })
     }
 }
@@ -441,6 +473,211 @@ routes:
 /// Smoke test that the visitor surfaces a compile error from a malformed
 /// APL block as a `PluginError::Config` out of `load_config_yaml`. Catches
 /// regressions where visitor errors swallow into Ok(_) or panic.
+// ---------------------------------------------------------------------
+// Slice 102 — multi-entity-type route support (llm / prompt / resource)
+// ---------------------------------------------------------------------
+//
+// Pre-Slice-102, the visitor hardcoded annotation on
+// `cmf.tool_pre_invoke` / `cmf.tool_post_invoke` regardless of route
+// entity_type — so an `llm:` route would silently bind to the tool
+// hooks and never fire when the host called `invoke_named::<CmfHook>("cmf.llm_input", ...)`.
+// These tests pin per-entity routing.
+
+fn meta_for_entity(entity_type: &str, entity_name: &str) -> MetaExtension {
+    let mut meta = MetaExtension::default();
+    meta.entity_type = Some(entity_type.to_string());
+    meta.entity_name = Some(entity_name.to_string());
+    meta
+}
+
+/// `llm:` route → annotation lands on `cmf.llm_input`. Host calling
+/// `invoke_named::<CmfHook>("cmf.llm_input", ...)` with matching meta
+/// fires the AplRouteHandler.
+#[tokio::test]
+async fn llm_route_annotates_on_llm_input_hook() {
+    const YAML: &str = r#"
+plugins:
+  - name: allow-gate
+    kind: allow-gate
+    hooks: [cmf.llm_input]
+routes:
+  - llm: gpt-4
+    apl:
+      policy:
+        - "plugin(allow-gate)"
+"#;
+    let mgr = build_manager_with_visitor(YAML).await;
+
+    let ext = Extensions {
+        meta: Some(Arc::new(meta_for_entity("llm", "gpt-4"))),
+        ..Default::default()
+    };
+    let (result, _bg) = mgr
+        .invoke_named::<CmfHook>("cmf.llm_input", cmf_payload("hi"), ext, None)
+        .await;
+
+    assert!(
+        result.continue_processing,
+        "llm route should fire on cmf.llm_input: violation = {:?}",
+        result.violation
+    );
+}
+
+/// Same llm route but post — annotation lands on `cmf.llm_output`.
+/// Pre-Slice-102, this would have annotated on `cmf.tool_post_invoke`
+/// and never matched.
+#[tokio::test]
+async fn llm_route_annotates_on_llm_output_hook_for_post_phase() {
+    const YAML: &str = r#"
+plugins:
+  - name: allow-gate
+    kind: allow-gate
+    hooks: [cmf.llm_output]
+routes:
+  - llm: gpt-4
+    apl:
+      post_policy:
+        - "plugin(allow-gate)"
+"#;
+    let mgr = build_manager_with_visitor(YAML).await;
+
+    let ext = Extensions {
+        meta: Some(Arc::new(meta_for_entity("llm", "gpt-4"))),
+        ..Default::default()
+    };
+    let (result, _bg) = mgr
+        .invoke_named::<CmfHook>("cmf.llm_output", cmf_payload("response"), ext, None)
+        .await;
+
+    assert!(
+        result.continue_processing,
+        "llm route post-phase should fire on cmf.llm_output: violation = {:?}",
+        result.violation
+    );
+}
+
+/// `prompt:` route → annotation lands on `cmf.prompt_pre_invoke`.
+#[tokio::test]
+async fn prompt_route_annotates_on_prompt_pre_invoke_hook() {
+    const YAML: &str = r#"
+plugins:
+  - name: allow-gate
+    kind: allow-gate
+    hooks: [cmf.prompt_pre_invoke]
+routes:
+  - prompt: summarize_email
+    apl:
+      policy:
+        - "plugin(allow-gate)"
+"#;
+    let mgr = build_manager_with_visitor(YAML).await;
+
+    let ext = Extensions {
+        meta: Some(Arc::new(meta_for_entity("prompt", "summarize_email"))),
+        ..Default::default()
+    };
+    let (result, _bg) = mgr
+        .invoke_named::<CmfHook>("cmf.prompt_pre_invoke", cmf_payload("hi"), ext, None)
+        .await;
+
+    assert!(
+        result.continue_processing,
+        "prompt route should fire on cmf.prompt_pre_invoke: violation = {:?}",
+        result.violation
+    );
+}
+
+/// `resource:` route → annotation lands on `cmf.resource_pre_fetch`.
+#[tokio::test]
+async fn resource_route_annotates_on_resource_pre_fetch_hook() {
+    const YAML: &str = r#"
+plugins:
+  - name: allow-gate
+    kind: allow-gate
+    hooks: [cmf.resource_pre_fetch]
+routes:
+  - resource: hr://employees/*
+    apl:
+      policy:
+        - "plugin(allow-gate)"
+"#;
+    let mgr = build_manager_with_visitor(YAML).await;
+
+    let ext = Extensions {
+        meta: Some(Arc::new(meta_for_entity("resource", "hr://employees/E001234"))),
+        ..Default::default()
+    };
+    let (result, _bg) = mgr
+        .invoke_named::<CmfHook>("cmf.resource_pre_fetch", cmf_payload("hi"), ext, None)
+        .await;
+
+    assert!(
+        result.continue_processing,
+        "resource route should fire on cmf.resource_pre_fetch: violation = {:?}",
+        result.violation
+    );
+}
+
+/// Cross-check: an llm route's APL annotation MUST NOT install on
+/// `cmf.tool_pre_invoke`. Pre-Slice-102, the visitor would have
+/// annotated llm routes on the tool hook by mistake; this test pins
+/// that the bug is gone.
+///
+/// Setup: plugin registered ONLY under `cmf.llm_input`. The llm
+/// route's APL annotation lands (post-Slice-102) on `cmf.llm_input`.
+/// Calling `invoke_named::<CmfHook>("cmf.tool_pre_invoke", ...)`
+/// finds no APL annotation for that hook AND no plugin chain entry
+/// for it → returns `continue_processing=true` with no violations.
+/// Calling `cmf.llm_input` DOES fire the annotation and the deny.
+#[tokio::test]
+async fn llm_route_does_not_fire_on_tool_hook() {
+    const YAML: &str = r#"
+plugins:
+  - name: deny-gate
+    kind: deny-gate
+    hooks: [cmf.llm_input]
+routes:
+  - llm: gpt-4
+    apl:
+      policy:
+        - "plugin(deny-gate)"
+"#;
+    let mgr = build_manager_with_visitor(YAML).await;
+    let ext = Extensions {
+        meta: Some(Arc::new(meta_for_entity("llm", "gpt-4"))),
+        ..Default::default()
+    };
+
+    // Calling cmf.tool_pre_invoke must NOT trigger the llm route's
+    // APL annotation. With no annotation AND no plugin registered on
+    // cmf.tool_pre_invoke, dispatch returns continue.
+    let (tool_result, _bg) = mgr
+        .invoke_named::<CmfHook>(
+            "cmf.tool_pre_invoke",
+            cmf_payload("hi"),
+            ext.clone(),
+            None,
+        )
+        .await;
+    assert!(
+        tool_result.continue_processing,
+        "llm route MUST NOT bind to cmf.tool_pre_invoke (pre-Slice-102 bug); \
+         violation = {:?}",
+        tool_result.violation,
+    );
+
+    // Sanity: calling the RIGHT hook (cmf.llm_input) DOES fire the
+    // annotation, hits deny-gate, denies — proves the route is wired
+    // correctly on the llm hook side.
+    let (llm_result, _bg) = mgr
+        .invoke_named::<CmfHook>("cmf.llm_input", cmf_payload("hi"), ext, None)
+        .await;
+    assert!(
+        !llm_result.continue_processing,
+        "cmf.llm_input dispatch should hit the deny-gate via the llm route",
+    );
+}
+
 #[tokio::test]
 async fn visitor_compile_error_propagates_from_load_config_yaml() {
     const YAML: &str = r#"
