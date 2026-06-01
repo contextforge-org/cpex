@@ -1,0 +1,22 @@
+# Location: ./integrations/praxis-cpex/bin/Cargo.toml
+# SPDX-License-Identifier: Apache-2.0
+
+[package]
+name        = "praxis-cpex-bin"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Praxis server binary with the cpex HttpFilter registered"
+
+[[bin]]
+name = "praxis-cpex"
+path = "src/main.rs"
+
+[dependencies]
+cpex-praxis-filter = { path = "../filter" }
+praxis             = { workspace = true }
+praxis-filter      = { workspace = true }
+
+serde_yaml = { workspace = true }
+tracing    = { workspace = true }
