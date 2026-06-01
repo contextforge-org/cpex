@@ -11,9 +11,11 @@ the base plugin layer including configurations, and contexts.
 
 # Standard
 import asyncio
+import contextlib
 import logging
 import os
 import re
+import tempfile
 from datetime import datetime
 from enum import Enum, StrEnum
 from pathlib import Path
@@ -1393,27 +1395,265 @@ class PluginConfig(BaseModel):
         """
         # Get the base serialization from Pydantic
         data = self.model_dump(mode="json", exclude_none=False, exclude_unset=False)
+
         return data
+
+
+class Monorepo(BaseModel):
+    """Monorepo model.
+    Attributes:
+        repo_url (str): The URL of the git monorepo. e.g. https://github.ibm.com/habeck/contextforge-plugins-python
+        package_source (str): The URL of a specifc plugin folder in the git monorepo
+        e.g. pii_filter
+      The cpex cli injects the value when it scans the repo.
+    """
+
+    repo_url: str
+    package_source: str
+    package_folder: str
+
+
+class PyPiRepo(BaseModel):
+    """PyPi model.
+    Attributes:
+        name (str): The name of the pypi package.
+    """
+
+    pypi_package: str
+    version_constraint: Optional[str] = None
+
+    @field_validator("pypi_package", mode="after")
+    @classmethod
+    def validate_pypi_package(cls, pypi_package: str | None) -> str | None:
+        """Validate PyPI package name format.
+
+        Args:
+            pypi_package: The PyPI package name to validate.
+
+        Returns:
+            The validated package name or None if none is set.
+
+        Raises:
+            ValueError: If the package name is invalid.
+        """
+        if pypi_package is not None and pypi_package != "":
+            # PyPI package names must contain only ASCII letters, numbers, hyphens, underscores, and periods
+            # They cannot start or end with hyphens or periods
+            if not pypi_package.strip():
+                raise ValueError("PyPI package name cannot be empty or whitespace")
+
+            # Check for valid characters
+            import re
+
+            if not re.match(r"^[a-zA-Z0-9]([a-zA-Z0-9._-]*[a-zA-Z0-9])?$", pypi_package):
+                raise ValueError(
+                    f"Invalid PyPI package name '{pypi_package}'. "
+                    "Package names must start and end with a letter or number, "
+                    "and can only contain ASCII letters, numbers, hyphens, underscores, and periods."
+                )
+
+            # Check length (PyPI has a 214 character limit for package names)
+            if len(pypi_package) > 214:
+                raise ValueError(f"PyPI package name '{pypi_package}' exceeds maximum length of 214 characters")
+
+        return pypi_package if pypi_package != "" else None
+
+    @field_validator("version_constraint", mode="after")
+    @classmethod
+    def validate_version_constraint(cls, version_constraint: str | None) -> str | None:
+        """Validate semantic version constraint format.
+
+        Args:
+            version_constraint: The version constraint to validate.
+
+        Returns:
+            The validated version constraint or None if none is set.
+
+        Raises:
+            ValueError: If the version constraint is invalid.
+        """
+        if version_constraint is not None and version_constraint != "":
+            if not version_constraint.strip():
+                raise ValueError("Version constraint cannot be empty or whitespace")
+
+            # Validate semantic version constraint format (e.g., ">=1.0.0,<2.0.0", "~=1.2.3", "==1.0.0")
+            import re
+
+            # Pattern for version specifiers: operator + optional space + version number
+            version_pattern = re.compile(r"^(==|!=|<=|>=|<|>|~=|===)\s*" r"\d+(\.\d+)*" r"([a-zA-Z0-9._-]*)?$")
+
+            # Split by comma for multiple constraints
+            constraints = [c.strip() for c in version_constraint.split(",")]
+
+            for constraint in constraints:
+                if not constraint:
+                    raise ValueError("Version constraint cannot contain empty parts")
+
+                if not version_pattern.match(constraint):
+                    raise ValueError(
+                        f"Invalid version constraint '{constraint}'. "
+                        "Must follow PEP 440 format (e.g., '>=1.0.0', '~=1.2.3', '==1.0.0,<2.0.0')"
+                    )
+
+            if len(version_constraint) > 255:
+                raise ValueError(f"Version constraint '{version_constraint}' exceeds maximum length of 255 characters")
+
+        return version_constraint if version_constraint != "" else None
+
+
+class GitRepo(BaseModel):
+    """Git repository model.
+    Attributes:
+        git_repository: The URL of the git repository.
+        git_branch_tag_commit: The branch, tag or commit of the git repository.
+    """
+
+    git_repository: str = Field(
+        title="URL",
+        description='The URL of the git repository. (e.g., "https://github.com/example/plugin.git")',
+    )
+    git_branch_tag_commit: Optional[str] = Field(
+        title="Branch, tag or commit",
+        description="The branch, tag or commit of the git repository.",
+    )
+
+    @field_validator("git_repository", mode="after")
+    @classmethod
+    def validate_git_repository(cls, git_repository: str | None) -> str | None:
+        """Validate Git repository URL format.
+
+        Args:
+            git_repository: The Git repository URL to validate.
+
+        Returns:
+            The validated repository URL or None if none is set.
+
+        Raises:
+            ValueError: If the repository URL is invalid.
+        """
+        if git_repository is not None and git_repository != "":
+            if not git_repository.strip():
+                raise ValueError("Git repository URL cannot be empty or whitespace")
+
+            # Support common Git URL formats: https://, git://, ssh://, git@
+            git_url_pattern = re.compile(
+                r"^(https?://|git://|git@)" r"[a-zA-Z0-9._-]+" r"(/|:)" r"[a-zA-Z0-9._/-]+" r"(\.git)?$"
+            )
+
+            if not git_url_pattern.match(git_repository):
+                raise ValueError(
+                    f"Invalid Git repository URL '{git_repository}'. "
+                    "Must be a valid Git URL (e.g., https://github.com/user/repo.git, "
+                    "git@github.com:user/repo.git)"
+                )
+
+            # Additional validation for https/http URLs using existing validator
+            if git_repository.startswith(("http://", "https://")):
+                validate_plugin_url(git_repository, "Git repository URL")
+
+        return git_repository if git_repository != "" else None
+
+    @field_validator("git_branch_tag_commit", mode="after")
+    @classmethod
+    def validate_git_branch_tag_commit(cls, git_branch_tag_commit: str | None) -> str | None:
+        """Validate Git branch, tag, or commit reference.
+
+        Args:
+            git_branch_tag_commit: The Git reference to validate.
+
+        Returns:
+            The validated reference or None if none is set.
+
+        Raises:
+            ValueError: If the reference is invalid.
+        """
+        if git_branch_tag_commit is not None and git_branch_tag_commit != "":
+            if not git_branch_tag_commit.strip():
+                raise ValueError("Git branch/tag/commit cannot be empty or whitespace")
+
+            # Git refs can contain alphanumeric characters, hyphens, underscores, slashes, and periods
+            # Commit hashes are typically 7-40 hex characters
+            if not re.match(r"^[a-zA-Z0-9._/-]+$", git_branch_tag_commit):
+                raise ValueError(
+                    f"Invalid Git branch/tag/commit '{git_branch_tag_commit}'. "
+                    "Must contain only alphanumeric characters, hyphens, underscores, slashes, and periods."
+                )
+
+            # Check for common invalid patterns
+            if git_branch_tag_commit.startswith(("/", ".", "-")) or git_branch_tag_commit.endswith(("/", ".")):
+                raise ValueError(
+                    f"Invalid Git branch/tag/commit '{git_branch_tag_commit}'. "
+                    "Cannot start with /, ., or - or end with / or ."
+                )
+
+            if len(git_branch_tag_commit) > 255:
+                raise ValueError(
+                    f"Git branch/tag/commit '{git_branch_tag_commit}' exceeds maximum length of 255 characters"
+                )
+
+        return git_branch_tag_commit if git_branch_tag_commit != "" else None
 
 
 class PluginManifest(BaseModel):
     """Plugin manifest.
 
     Attributes:
+        name (str): The name of the plugin.
+        kind (str): The class name (for native plugins) | external | isolated_venv
         description (str): A description of the plugin.
         author (str): The author of the plugin.
         version (str): version of the plugin.
         tags (list[str]): a list of tags for making the plugin searchable.
         available_hooks (list[str]): a list of the hook points where the plugin is callable.
         default_config (dict[str, Any]): the default configurations.
+        monorepo (Monorepo): A git monorepo where the plugin originates (Initialized by cepx cli during plugin installation)
+        package_info: (PyPiRepo): The package name and version constraint of the package (Initialized by cepx cli during plugin installation)
+        local: The path to the locally installed plugin (Initialized by cepx cli during plugin installation)
+        git_repo: GitRepo: The git repo where the plugin originates (Initialized by cepx cli during plugin installation)
     """
 
+    name: str
+    kind: str
     description: str
     author: str
     version: str
     tags: list[str]
     available_hooks: list[str]
     default_config: dict[str, Any]
+    monorepo: Optional[Monorepo] = None
+    package_info: Optional[PyPiRepo] = None
+    local: Optional[str] = None
+    git_repo: Optional[GitRepo] = None
+
+    def suggest_instance_name(self) -> str:
+        """Suggest a name for the plugin instance.
+        Returns:
+            str: A suggested name for the plugin instance.
+        """
+        return self.name.lower().replace(" ", "-")
+
+    def create_instance_config(
+        self, instance_name: str, mode: PluginMode, priority: int = 100, config: Optional[dict[str, Any]] = None
+    ) -> PluginConfig:
+        """Create a plugin instance config.
+        Returns:
+            PluginConfig: A plugin instance config.
+        """
+        new_config = self.default_config.copy()
+        if config is not None:
+            new_config.update(config)
+        return PluginConfig(
+            name=instance_name,
+            kind=self.kind,
+            mode=mode,
+            priority=priority,
+            description=self.description,
+            author=self.author,
+            version=self.version,
+            tags=self.tags,
+            hooks=self.available_hooks,
+            config=new_config,
+        )
 
 
 class PluginErrorModel(BaseModel):
@@ -1850,8 +2090,8 @@ class PluginPackageInfo(BaseModel):
 
     Examples:
         >>> pkg = PluginPackageInfo(git_repository="https://github.com/user/repo.git",
-        ...     git_branch_tag_commit="v1.0.0",
-        ...     version_constraint=">=1.0.0")
+            git_branch_tag_commit="v1.0.0",
+            version_constraint=">=1.0.0")
         >>> pkg2 = PluginPackageInfo(pypi_package="my-package", version_constraint=">=1.0.0")
     """
 
@@ -2050,7 +2290,7 @@ class PluginVersionInfo(BaseModel):
     deprecated: bool = False
     manifest_file: str
     changelog: Optional[str] = None
-    min_max_framework_version: Optional[str] = "0.1.0.dev4,0.1.0.dev4"
+    min_max_framework_version: Optional[str] = "0.1.0,0.1.0"
 
 
 class PluginVersionRegistry(BaseModel):
@@ -2126,4 +2366,80 @@ class PluginInstallationType(StrEnum):
     BUNDLED = "bundled"  # Pre-installed with framework
     PYPI = "pypi"  # Installed from PyPI
     GIT = "git"  # Installed from Git repo
+    MONOREPO = "monorepo"  # Installed from git monorepo
     LOCAL = "local"  # Installed from local path
+
+
+class InstalledPluginInfo(BaseModel):
+    """Plugin installation information."""
+
+    name: str
+    kind: str
+    version: Optional[str] = None
+    installation_type: PluginInstallationType
+    installation_path: str
+    installed_at: str
+    installed_by: str
+    package_source: Optional[str] = None
+    editable: bool = False
+
+
+class InstalledPluginRegistry(BaseModel):
+    """Installed plugin registry."""
+
+    plugins: List[InstalledPluginInfo] = []
+
+    def register_plugin(self, plugin: InstalledPluginInfo) -> None:
+        """Register a plugin in the registry.
+
+        If a plugin with the same name is already registered, its entry is
+        replaced so the registry reflects the most-recent install.
+        """
+        self.plugins = [p for p in self.plugins if p.name != plugin.name]
+        self.plugins.append(plugin)
+        self.save()
+
+    def unregister_plugin(self, plugin_name: str) -> bool:
+        """Unregister a plugin from the registry.
+
+        Args:
+            plugin_name: The name of the plugin to unregister.
+
+        Returns:
+            True if the plugin was found and removed, False otherwise.
+        """
+        initial_count = len(self.plugins)
+        self.plugins = [p for p in self.plugins if p.name != plugin_name]
+
+        if len(self.plugins) < initial_count:
+            self.save()
+            return True
+        return False
+
+    def save(self) -> None:
+        """Serialize the registry to disk atomically."""
+        from cpex.tools.settings import get_plugin_registry_path
+
+        target = get_plugin_registry_path()
+        folder = target.parent
+        data = orjson.dumps(self.model_dump(), option=orjson.OPT_INDENT_2)
+
+        tmp = tempfile.NamedTemporaryFile(
+            mode="wb",
+            delete=False,
+            dir=str(folder),
+            prefix="installed-plugins.",
+            suffix=".tmp",
+        )
+        try:
+            try:
+                tmp.write(data)
+                tmp.flush()
+                os.fsync(tmp.fileno())
+            finally:
+                tmp.close()
+            os.replace(tmp.name, target)
+        except Exception:
+            with contextlib.suppress(FileNotFoundError):
+                os.unlink(tmp.name)
+            raise
