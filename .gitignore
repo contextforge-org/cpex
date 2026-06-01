@@ -29,7 +29,6 @@ token.txt
 cpex.sbom.xml
 docs/docs/test/
 docs/resources/
-tmp
 *.tgz
 *.gz
 *.bz
@@ -48,8 +47,10 @@ node_modules/
 mcp.db-journal
 mcp.db-shm
 mcp.db-wal
-certs/
-jwt/
+# Anchored: matches only ./certs/ at the repo root, not nested
+# `certs/` directories under source. Bare `certs/` would silently
+# hide any cert-management module / test fixture at any depth.
+/certs/
 FIXMEs
 *.old
 logs/
@@ -62,19 +63,22 @@ corpus/
 tests/fuzz/fuzzers/results/
 .venv
 mcp.db
-public/
+# Anchored to repo root — bare `public/` would shadow any nested
+# `public/` directory in source (common in web/frontend code).
+/public/
 ica_integrations_host.sbom.json
 .pyre
 dictionary.dic
 pdm.lock
 .pdm-python
 temp/
-public/
 *history.md
 htmlcov
 test_commands.md
 cover.md
-build/
+# Anchored: bare `build/` would shadow any nested build-output dir
+# anywhere in the source tree.
+/build/
 .icaenv
 commands_output.txt
 commands_output.md
@@ -94,7 +98,6 @@ scribeflow.log
 coverage_re
 bin/flagged
 flagged/
-certs/
 # VENV
 .python37/
 .python39/
@@ -111,16 +114,20 @@ __pycache__/
 # C extensions
 *.so
 
-# Distribution / packaging
+# Distribution / packaging — Python build artifacts. `build/` and
+# `lib/` are anchored (root-only) so they don't silently hide
+# nested source dirs of the same name. Other patterns (`dist/`,
+# `downloads/`, `eggs/`, …) stay bare — they're less likely to
+# collide with source-tree directory names.
 .wily/
 .Python
-build/
 develop-eggs/
 dist/
 downloads/
 eggs/
 .eggs/
-lib/
+# Anchored: bare `lib/` would shadow any nested `lib/` source dir.
+/lib/
 lib64/
 parts/
 sdist/
