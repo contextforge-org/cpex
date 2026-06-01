@@ -106,6 +106,7 @@ pub mod error;
 pub mod factory;
 pub mod request;
 pub mod resolver;
+pub mod template;
 
 pub use error::BuildError;
 pub use factory::CedarDirectPdpFactory;

@@ -40,7 +40,7 @@ use cpex_core::manager::PluginManager;
 use cpex_core::plugin::{Plugin, PluginConfig};
 use cpex_core::registry::AnyHookHandler;
 
-use apl_cmf::BagBuilder;
+use apl_cmf::{extract_args, extract_result, BagBuilder};
 use apl_core::evaluator::Decision;
 use apl_core::plugin_decl::PluginRegistry;
 use apl_core::route::{evaluate_post, evaluate_pre, RoutePayload};
@@ -222,8 +222,40 @@ impl AnyHookHandler for AplRouteHandler {
         let args_value = extract_args_from_message(&msg_payload.message);
         let mut route_payload = match self.phase {
             Phase::Pre => RoutePayload::new(args_value),
-            Phase::Post => RoutePayload::with_result(args_value, Value::Null),
+            Phase::Post => {
+                // Pull the upstream result out of the message so APL
+                // `result.<field>` predicates and the `result:`
+                // pipeline have something to operate on. Falls back to
+                // `Value::Null` when the message has no ToolResult /
+                // PromptResult / Resource content (e.g. for hooks that
+                // fire on entities without a structured result).
+                let result_value = extract_result_from_message(&msg_payload.message);
+                RoutePayload::with_result(args_value, result_value)
+            }
         };
+
+        // Flatten the call args into the bag under `args.<path>`. APL's
+        // own args pipelines read from `route_payload.args` directly,
+        // but PDP steps and predicates that reference `${args.X}` /
+        // `args.X` resolve through the bag. Mirroring the args here
+        // makes both consumers see the same vocabulary the
+        // `MessageView` exposes. (Bag-mutation via redact during the
+        // args pipeline isn't reflected back into the bag; that's fine
+        // — args predicates today read from `route_payload.args`, and
+        // the cedar substitution snapshots the pre-args view, which is
+        // what an author writing `cedar:(resource.id: ${args.X})` would
+        // expect.)
+        extract_args(&route_payload.args, &mut bag);
+        // Post phase: also project the upstream result into the bag
+        // under `result.<path>`. This is what enables predicates like
+        // `redact(result.ssn) when !perm.view_ssn` and `require(...)`
+        // gates that branch on the result. Pre phases skip this — the
+        // result is `None` by construction.
+        if matches!(self.phase, Phase::Post) {
+            if let Some(result_value) = route_payload.result.as_ref() {
+                extract_result(result_value, &mut bag);
+            }
+        }
 
         // Slice B: real delegation invoker, sharing the CMF invoker's
         // extensions Mutex so a `delegate(...)` step's writes to
@@ -281,14 +313,36 @@ impl AnyHookHandler for AplRouteHandler {
         // route_payload.args. Re-extraction allocates but mirrors the
         // surrounding pattern and avoids holding a pre-eval clone.
         let pre_args = extract_args_from_message(&msg_payload.message);
+        // For Post phase, also detect result mutations from `result:`
+        // pipelines. Pre routes don't carry a result so this is None.
+        let pre_result = match self.phase {
+            Phase::Pre => None,
+            Phase::Post => Some(extract_result_from_message(&msg_payload.message)),
+        };
         let modified_payload: Option<Box<dyn PluginPayload>> =
             if route_payload.args != pre_args {
-                // An args pipeline (Pre) or result pipeline (Post)
-                // rewrote a field. Fold the new args back into a
-                // fresh MessagePayload so downstream readers (the
-                // host's body re-serializer) see the change.
+                // An args pipeline (Pre) rewrote a field. Fold the new
+                // args back into a fresh MessagePayload so downstream
+                // readers (the host's body re-serializer) see the
+                // change.
                 let mut updated = final_payload.clone();
                 write_args_back_to_message(&mut updated.message, &route_payload.args);
+                Some(Box::new(updated) as Box<dyn PluginPayload>)
+            } else if matches!(self.phase, Phase::Post)
+                && pre_result
+                    .as_ref()
+                    .zip(route_payload.result.as_ref())
+                    .map(|(prev, current)| prev != current)
+                    .unwrap_or(false)
+            {
+                // A `result:` pipeline rewrote a field in the upstream
+                // response. Fold the new result back into the message
+                // so the host's response body re-serializer can write
+                // it out before forwarding downstream.
+                let mut updated = final_payload.clone();
+                if let Some(result_value) = route_payload.result.as_ref() {
+                    write_result_back_to_message(&mut updated.message, result_value);
+                }
                 Some(Box::new(updated) as Box<dyn PluginPayload>)
             } else if msg_payload.message.get_text_content()
                 != final_payload.message.get_text_content()
@@ -420,6 +474,41 @@ fn write_args_back_to_message(msg: &mut cpex_core::cmf::Message, args: &Value) {
     }
     // Fall through: no structured entity part — treat as text.
     if let Some(text) = args.as_str() {
+        rewrite_message_text(msg, text);
+    }
+}
+
+/// Extract `RoutePayload.result` from a CMF message. Mirror of
+/// [`extract_args_from_message`] for the Post phase. v0 maps:
+///   * First `ContentPart::ToolResult` → its `content` JSON value
+///   * Else (text / no structured result part) → JSON String of text
+///
+/// `result.<field>` APL paths target the structured result directly.
+fn extract_result_from_message(msg: &cpex_core::cmf::Message) -> Value {
+    use cpex_core::cmf::ContentPart;
+    for part in &msg.content {
+        if let ContentPart::ToolResult { content } = part {
+            return content.content.clone();
+        }
+    }
+    Value::String(msg.get_text_content())
+}
+
+/// Inverse of [`extract_result_from_message`]: write a mutated
+/// `result` back into the message's first `ContentPart::ToolResult.content`,
+/// or — for text-only messages — into the first text part. The praxis
+/// filter's response-body re-serializer then lifts the new content
+/// out of the ContentPart and folds it back into the JSON-RPC
+/// `result.content[*].text` payload.
+fn write_result_back_to_message(msg: &mut cpex_core::cmf::Message, result: &Value) {
+    use cpex_core::cmf::ContentPart;
+    for part in msg.content.iter_mut() {
+        if let ContentPart::ToolResult { content } = part {
+            content.content = result.clone();
+            return;
+        }
+    }
+    if let Some(text) = result.as_str() {
         rewrite_message_text(msg, text);
     }
 }

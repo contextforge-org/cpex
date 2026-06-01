@@ -72,6 +72,12 @@ pub fn extract_security(sec: &SecurityExtension, bag: &mut AttributeBag) {
             // Clone into a fresh HashSet — AttributeValue::StringSet owns its data.
             let teams: HashSet<String> = subject.teams.iter().cloned().collect();
             bag.set("subject.teams", teams);
+            // Mirror the role.X / perm.X namespace so policies can
+            // gate on team membership with the same DSL shape, e.g.
+            // `require(team.engineering | team.security)`.
+            for team in &subject.teams {
+                bag.set(format!("team.{}", team), true);
+            }
         }
         for (k, v) in &subject.claims {
             bag.set(format!("claim.{}", k), v.clone());

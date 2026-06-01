@@ -19,6 +19,8 @@ members = [
     "crates/apl-identity-jwt",
     "crates/apl-delegator-oauth",
     "crates/apl-delegator-biscuit",
+    "crates/apl-pii-scanner",
+    "crates/apl-audit-logger",
     "examples/go-demo/ffi",
 ]
 
@@ -43,6 +45,8 @@ default-members = [
     "crates/apl-identity-jwt",
     "crates/apl-delegator-oauth",
     "crates/apl-delegator-biscuit",
+    "crates/apl-pii-scanner",
+    "crates/apl-audit-logger",
     "examples/go-demo/ffi",
 ]
 

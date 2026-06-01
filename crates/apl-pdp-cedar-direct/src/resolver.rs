@@ -197,7 +197,17 @@ impl PdpResolver for CedarDirectResolver {
         call: &PdpCall,
         bag: &AttributeBag,
     ) -> Result<PdpDecision, PdpError> {
-        let parsed = parse_call(call, bag, self.schema.as_deref())?;
+        // Resolve `${bag-key}` placeholders in the call's args against
+        // the bag before any parsing. The author writes things like
+        // `id: ${args.repo_name}`; this pass turns them into concrete
+        // values so downstream entity / UID builders can stay literal.
+        let resolved_args = crate::template::resolve_refs(&call.args, bag)?;
+        let resolved_call = PdpCall {
+            dialect: call.dialect.clone(),
+            args: resolved_args,
+        };
+
+        let parsed = parse_call(&resolved_call, bag, self.schema.as_deref())?;
         let entities = build_entities(
             bag,
             parsed.resource_args,
