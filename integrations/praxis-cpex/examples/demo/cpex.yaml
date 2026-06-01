@@ -1,0 +1,300 @@
+# CPEX runtime config for the HR demo.
+#
+# Hot path:
+#   1. jwt-user      validates X-User-Token against Keycloak (cpex-demo realm)
+#                    → security.subject + raw_credentials.inbound_tokens[User]
+#   2. jwt-client    validates Authorization against Keycloak (same realm)
+#                    → security.client
+#   3. APL gate      require(role.hr) on the get_compensation tool
+#   4. APL delegate  workday-oauth exchanges the user's IdP token for an
+#                    audience=workday-api token via Keycloak (RFC 8693)
+#   5. APL args      ssn arg gets redacted unless caller has perm.view_ssn
+#
+# Keycloak runs locally at http://localhost:8081. JWTs are RS256-signed
+# by the realm's automatically-generated signing key. We point at the
+# realm's JWKS URL so the resolver fetches the active public key at
+# init time (no manual PEM paste).
+
+plugin_settings:
+  routing_enabled: true
+
+plugins:
+  # User identity. Carries the human's roles + permissions claims.
+  - name: jwt-user
+    kind: identity/jwt
+    hooks: [identity.resolve]
+    mode: sequential
+    priority: 10
+    on_error: fail
+    config:
+      role: user
+      header: X-User-Token
+      trusted_issuers:
+        - issuer: "http://localhost:8081/realms/cpex-demo"
+          audiences: ["praxis-gateway"]
+          algorithms: ["RS256"]
+          decoding_key:
+            kind: jwks_url
+            url: "http://localhost:8081/realms/cpex-demo/protocol/openid-connect/certs"
+          leeway_seconds: 60
+      claim_mapper: standard
+
+  # Client identity. Carries the agent's client_id / azp.
+  - name: jwt-client
+    kind: identity/jwt
+    hooks: [identity.resolve]
+    mode: sequential
+    priority: 20
+    on_error: fail
+    config:
+      role: client
+      header: Authorization
+      trusted_issuers:
+        - issuer: "http://localhost:8081/realms/cpex-demo"
+          audiences: ["praxis-gateway", "account"]
+          algorithms: ["RS256"]
+          decoding_key:
+            kind: jwks_url
+            url: "http://localhost:8081/realms/cpex-demo/protocol/openid-connect/certs"
+          leeway_seconds: 60
+      claim_mapper: standard
+
+  # RFC 8693 token-exchange delegator. Trades the user's hr-copilot
+  # token for a workday-api-audience-scoped access token.
+  #
+  # Pattern 1 (workday flow): the user already carries view_ssn etc.
+  # as a Keycloak user attribute → claim. The exchange just changes
+  # the audience; the perms come along for the ride.
+  - name: workday-oauth
+    kind: delegator/oauth
+    hooks: [token.delegate]
+    mode: sequential
+    priority: 30
+    on_error: fail
+    capabilities:
+      - read_inbound_credentials
+      - write_delegated_tokens
+    config:
+      token_endpoint: "http://localhost:8081/realms/cpex-demo/protocol/openid-connect/token"
+      client_id: "praxis-gateway"
+      client_secret_source:
+        kind: literal
+        secret: "praxis-gateway-secret"
+      timeout_seconds: 5
+      default_outbound_header: "Authorization"
+
+  # ----------------------------------------------------------------
+  # Field-level validator: PII scanner.
+  # ----------------------------------------------------------------
+  # Walks tool/prompt arguments looking for SSN / credit-card / email
+  # patterns. If found in `deny` mode, refuses the request. Wired on
+  # `cmf.tool_pre_invoke` so it fires before every tool call.
+  - name: pii-scan
+    kind: validator/pii-scan
+    hooks: [cmf.tool_pre_invoke]
+    mode: sequential
+    priority: 25
+    on_error: fail
+    config:
+      detect:
+        - { kind: ssn }
+        - { kind: credit_card }
+      mode: deny
+
+  # ----------------------------------------------------------------
+  # Observation: structured audit logger.
+  # ----------------------------------------------------------------
+  # Emits one JSON line per dispatched request capturing subject,
+  # client, entity, tool args, and any delegation outcomes. Never
+  # blocks — observation only. Wired on every CMF entity hook so
+  # the audit trail covers all tool / prompt / resource traffic.
+  - name: audit-log
+    kind: audit/logger
+    hooks:
+      - cmf.tool_pre_invoke
+      - cmf.prompt_pre_invoke
+      - cmf.resource_pre_fetch
+    mode: sequential
+    priority: 90    # fires AFTER policy / delegate so the record
+                    # reflects the final decision + minted tokens
+    on_error: ignore  # observation failures don't halt traffic
+    capabilities:
+      - read_subject
+      - read_client
+      - read_meta
+      - read_delegated_tokens
+    config:
+      destination: stderr
+      source: cpex-demo-gateway
+
+  # Second delegator — same plugin kind, different audience.
+  #
+  # Pattern 3 (github flow): the user's inbound token does NOT
+  # carry github perms. The github-api client in Keycloak has a
+  # per-audience claim mapper (`gh-permissions-as-scope`) that
+  # injects `gh_permissions` from the user attribute as the
+  # minted token's `permissions` claim. The IdP is the source of
+  # system-specific perm truth; the gateway just asks.
+  - name: github-oauth
+    kind: delegator/oauth
+    hooks: [token.delegate]
+    mode: sequential
+    priority: 31
+    on_error: fail
+    capabilities:
+      - read_inbound_credentials
+      - write_delegated_tokens
+    config:
+      token_endpoint: "http://localhost:8081/realms/cpex-demo/protocol/openid-connect/token"
+      client_id: "praxis-gateway"
+      client_secret_source:
+        kind: literal
+        secret: "praxis-gateway-secret"
+      timeout_seconds: 5
+      default_outbound_header: "Authorization"
+
+global:
+  identity:
+    - jwt-user
+    - jwt-client
+
+  # ----------------------------------------------------------------
+  # Cedar PDP — declarative authorization for relationship-based
+  # decisions. The Cedar policies live inline below. APL routes
+  # call into Cedar via `cedar:` steps and translate decisions
+  # into allow/deny in the broader policy pipeline.
+  #
+  # Why Cedar here: pure APL predicates like `require(role.engineer)`
+  # are great for flat principal attributes. Cedar shines when the
+  # decision needs to relate principal attributes to resource
+  # attributes (e.g. "engineers can read repos when the repo's
+  # visibility is internal"). The two compose naturally — APL handles
+  # the orchestration around Cedar's discrete decisions.
+  # ----------------------------------------------------------------
+  apl:
+    pdp:
+      - kind: cedar-direct
+        dialect: cedar
+        policy_text: |
+          // Engineers can read INTERNAL repos. The relationship
+          // (principal's role × resource's visibility) is the
+          // archetypal Cedar shape.
+          @id("engineering-internal-repos")
+          permit(
+            principal,
+            action == Action::"read",
+            resource is Repo
+          ) when {
+            principal.roles.contains("engineer") &&
+            resource.visibility == "internal"
+          };
+
+          // Security team can read ANY repo regardless of visibility.
+          @id("security-team-any-repo")
+          permit(
+            principal,
+            action == Action::"read",
+            resource is Repo
+          ) when {
+            principal.roles.contains("security")
+          };
+
+          // Default-deny otherwise — Cedar's defaults make this
+          // implicit but spelling it out documents intent.
+
+routes:
+  # ----------------------------------------------------------------
+  # WORKDAY FLOW — Pattern 1 (centralized IdP knows all perms).
+  # User token carries view_ssn directly; APL gates on a flat
+  # role/perm predicate + redacts ssn on the wire if missing.
+  # ----------------------------------------------------------------
+  - tool: get_compensation
+    apl:
+      policy:
+        - "require(role.hr)"
+        - "delegate(workday-oauth, target: workday-api, audience: workday-api, permissions: [read_compensation])"
+        # Emit a structured audit record AFTER the policy + delegate
+        # decisions are in. Records who called what, with which scope.
+        - "plugin(audit-log)"
+      args:
+        # `redact(!perm.view_ssn)` fires when the caller LACKS the
+        # permission. The arg key remains, value becomes "[REDACTED]" —
+        # downstream tool can see "ssn was here but you can't read it."
+        ssn: "str | redact(!perm.view_ssn)"
+      result:
+        # Symmetric guard on the response side. The tool may include
+        # the SSN in its result (it does, when include_ssn=true);
+        # without this rule, a caller with role.hr but NOT
+        # perm.view_ssn (e.g. eve) would receive it. Redacting on the
+        # response closes the loop — the LLM-driven flow doesn't even
+        # require the caller to mention `ssn` in args for the guard
+        # to fire, because the SSN comes back unsolicited in the
+        # upstream tool's response.
+        ssn: "str | redact(!perm.view_ssn)"
+
+  # ----------------------------------------------------------------
+  # GITHUB FLOW — Pattern 3 (IdP per-audience mapping + Cedar PDP).
+  #
+  # Four authorization layers in one route:
+  #
+  #   1. APL gate     — cheap predicate. Short-circuits requests
+  #                     from users who can't ever read repos.
+  #   2. Cedar PDP    — relationship between principal role and
+  #                     resource attributes (repo visibility).
+  #                     This is what pure flat predicates struggle
+  #                     with and what Cedar shines at.
+  #   3. Delegation   — RFC 8693 to github-api audience. Keycloak's
+  #                     per-audience mapper injects gh_permissions
+  #                     into the `permissions` claim.
+  #   4. Post-check   — verify the IdP actually granted enough.
+  #                     If the IdP narrowed the scope, refuse to
+  #                     forward — the token never reaches GitHub.
+  # ----------------------------------------------------------------
+  - tool: search_repos
+    apl:
+      policy:
+        # Layer 1 — coarse APL gate on group membership.
+        - "require(team.engineering | team.security)"
+
+        # Layer 2 — Cedar fine-grained authorization. The resource
+        # type+id come from the tool args; the principal is built
+        # from the user's token automatically (subject + roles).
+        - cedar:
+            action: 'Action::"read"'
+            resource:
+              type: Repo
+              id: ${args.repo_name}
+              attributes:
+                visibility: ${args.visibility}
+
+        # Layer 3 — Token exchange. Keycloak's github-api mapper
+        # injects the user's gh_permissions as the `permissions`
+        # claim on the minted token.
+        - "delegate(github-oauth, target: github-api, audience: github-api, permissions: [repo:read:internal])"
+
+        # Layer 4 — Verify the IdP granted enough. If the user's
+        # gh_permissions attribute didn't include repo:read:internal,
+        # the minted token comes back narrower than asked. Deny here
+        # rather than forwarding an insufficient token.
+        - "!(delegation.granted.permissions contains 'repo:read:internal'): deny"
+
+        # Audit every github call.
+        - "plugin(audit-log)"
+
+  # ----------------------------------------------------------------
+  # SEND_EMAIL — PII scanner gate.
+  #
+  # The interesting flow: when the LLM composes an email body, it
+  # might include raw PII pulled from earlier tool responses ("Bob's
+  # SSN is 555-12-3456"). The PII scanner catches that before the
+  # email goes out. Operators see the deny in real time on stderr
+  # via the audit logger.
+  # ----------------------------------------------------------------
+  - tool: send_email
+    apl:
+      policy:
+        - "require(perm.email_send)"
+        # Walks args.body / args.subject / args.to and denies if any
+        # carries an SSN-like or credit-card-like pattern.
+        - "plugin(pii-scan)"
+        - "plugin(audit-log)"

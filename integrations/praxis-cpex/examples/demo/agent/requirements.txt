@@ -1,0 +1,15 @@
+# LLM provider abstraction — supports OpenAI, Anthropic, Ollama,
+# WatsonX, Azure, Bedrock, and more. Lets the demo run against
+# whatever the operator has access to without code changes.
+#
+# Pinned to v1.83.0+ — earlier versions (1.82.7 / 1.82.8) had a
+# supply-chain compromise (see CVE / GH advisory).
+litellm>=1.83.0,<2.0
+
+# Rich for pretty terminal output (boxed personas, color-coded
+# tool calls, etc.).
+rich>=13.7,<14
+
+# httpx for the gateway POST. Already pulled transitively by litellm
+# but listed explicitly so the dep is visible.
+httpx>=0.27,<1

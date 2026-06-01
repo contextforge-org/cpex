@@ -1,0 +1,61 @@
+# Location: ./integrations/praxis-cpex/Cargo.toml
+# Copyright 2025
+# SPDX-License-Identifier: Apache-2.0
+# Authors: Teryl Taylor
+#
+# Standalone workspace for the Praxis CPEX integration. Kept OUT of
+# the root CPEX workspace so Praxis's dep tree (Pingora, rustls, etc.)
+# doesn't slow down core CPEX iteration. To work on the integration:
+#
+#     cd integrations/praxis-cpex && cargo build
+#
+# Internal CPEX crates are consumed via path deps pointing up to the
+# parent repo's `crates/`. Praxis crates come in via git + pinned rev.
+
+[workspace]
+resolver = "2"
+members = [
+    "filter",
+    "bin",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+authors = ["Teryl Taylor"]
+
+[workspace.dependencies]
+# --- CPEX crates (path deps up to parent workspace) ---
+cpex-core         = { path = "../../crates/cpex-core" }
+apl-core          = { path = "../../crates/apl-core" }
+apl-cpex          = { path = "../../crates/apl-cpex" }
+apl-cmf           = { path = "../../crates/apl-cmf" }
+apl-identity-jwt  = { path = "../../crates/apl-identity-jwt" }
+apl-delegator-oauth = { path = "../../crates/apl-delegator-oauth" }
+apl-pdp-cedar-direct = { path = "../../crates/apl-pdp-cedar-direct" }
+apl-pii-scanner   = { path = "../../crates/apl-pii-scanner" }
+apl-audit-logger  = { path = "../../crates/apl-audit-logger" }
+
+# --- Praxis crates (pinned to a known-good rev on shaneutt/praxis) ---
+#
+# Praxis is pre-1.0 and uses a custom Pingora fork; no crates.io
+# release we can target by version today. Pin to a commit and bump
+# deliberately.
+praxis           = { git = "https://github.com/shaneutt/praxis.git", rev = "3bc864cb97cca76623f6c8368998fc22f5e7eba9" }
+praxis-filter    = { git = "https://github.com/shaneutt/praxis.git", rev = "3bc864cb97cca76623f6c8368998fc22f5e7eba9", package = "praxis-proxy-filter" }
+praxis-core      = { git = "https://github.com/shaneutt/praxis.git", rev = "3bc864cb97cca76623f6c8368998fc22f5e7eba9", package = "praxis-proxy-core" }
+
+# --- shared deps ---
+async-trait = "0.1"
+bytes       = "1"
+http        = "1"
+serde       = { version = "1", features = ["derive"] }
+serde_json  = "1"
+# Match Praxis's yaml_serde alias so `serde_yaml::Value` is the same
+# type Praxis hands us via `register_filters!`. yaml_serde is a
+# drop-in replacement for the deprecated `serde_yaml` crate.
+serde_yaml  = { package = "yaml_serde", version = "0.10" }
+thiserror   = "2"
+tokio       = { version = "1", features = ["full"] }
+tracing     = "0.1"

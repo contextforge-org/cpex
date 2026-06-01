@@ -1,0 +1,132 @@
+# Location: ./integrations/praxis-cpex/examples/cpex.yaml
+#
+# Slice-G example CPEX config. Shows the canonical multi-role
+# identity shape (user + client + workload), gateway → IdP token
+# exchange via RFC 8693, and an APL route that enforces a role
+# guard before delegating credentials downstream.
+#
+# To run the demo: point `token_endpoint` at a real Keycloak (or
+# equivalent) instance, paste in the public key of your IdP, set
+# the gateway's client secret via env, and mint test JWTs.
+
+plugin_settings:
+  routing_enabled: true
+
+plugins:
+  # ----------------------------------------------------------------
+  # Identity resolvers — one per inbound token role.
+  # ----------------------------------------------------------------
+  # User identity (the human / agent caller). Typically carried in a
+  # dedicated `X-User-Token` so it doesn't collide with the gateway-
+  # access token in `Authorization`.
+  - name: jwt-user
+    kind: identity/jwt
+    hooks: [identity.resolve]
+    mode: sequential
+    priority: 10
+    on_error: fail
+    config:
+      role: user
+      header: X-User-Token
+      trusted_issuers:
+        - issuer: "https://idp.example.local/realms/users"
+          audiences: ["my-api"]
+          algorithms: ["RS256"]
+          decoding_key:
+            kind: pem
+            pem: |
+              -----BEGIN PUBLIC KEY-----
+              REPLACE_WITH_USER_IDP_PUBLIC_KEY
+              -----END PUBLIC KEY-----
+          leeway_seconds: 60
+      claim_mapper: standard
+
+  # Client identity (the OAuth app / agent the user authenticated
+  # through). Read from the standard `Authorization` header. Lets
+  # policy distinguish "first-party browser app" from "third-party
+  # agent" even when both speak for the same user.
+  - name: jwt-client
+    kind: identity/jwt
+    hooks: [identity.resolve]
+    mode: sequential
+    priority: 20
+    on_error: fail
+    config:
+      role: client
+      header: Authorization
+      trusted_issuers:
+        - issuer: "https://idp.example.local/realms/main"
+          audiences: ["my-api"]
+          algorithms: ["RS256"]
+          decoding_key:
+            kind: pem
+            pem: |
+              -----BEGIN PUBLIC KEY-----
+              REPLACE_WITH_CLIENT_IDP_PUBLIC_KEY
+              -----END PUBLIC KEY-----
+          leeway_seconds: 60
+      claim_mapper: standard
+
+  # ----------------------------------------------------------------
+  # Outbound delegation — RFC 8693 token exchange.
+  # ----------------------------------------------------------------
+  # Trades the user's inbound JWT for a downstream-audience-scoped
+  # access token issued by the IdP. The minted token replaces the
+  # user's IdP token on the upstream call (see header routing below).
+  - name: workday-oauth
+    kind: delegator/oauth
+    hooks: [token.delegate]
+    mode: sequential
+    priority: 30
+    on_error: fail
+    capabilities:
+      # Scoped credential reads/writes — only this plugin sees the
+      # inbound bearer and writes minted tokens back to
+      # `raw_credentials.delegated_tokens`.
+      - read_inbound_credentials
+      - write_delegated_tokens
+    config:
+      token_endpoint: "https://idp.example.local/realms/main/protocol/openid-connect/token"
+      client_id: "praxis-gateway"
+      client_secret_source:
+        # Production: prefer { kind: env_var, name: OAUTH_CLIENT_SECRET }
+        # or { kind: file, path: /var/run/secrets/oauth/client_secret }
+        kind: literal
+        secret: "REPLACE_WITH_CLIENT_SECRET"
+      timeout_seconds: 5
+      default_outbound_header: "Authorization"
+
+global:
+  # Both user and client resolvers run on every identity.resolve
+  # dispatch. Failure to extract / validate either is a 401.
+  identity:
+    - jwt-user
+    - jwt-client
+
+# Per-route APL policy. For `get_compensation`:
+#   1. Subject must be authenticated (jwt-user populated security.subject)
+#   2. Subject must carry role.hr
+#   3. Delegate to workday-oauth — IdP mints an audience-scoped token
+#      for workday-api, scope=read_compensation
+#
+# `args:` runs field-level transforms on the tool's arguments. With
+# `body_access: read_write` on the Praxis filter, these mutations
+# are re-serialized into the upstream JSON-RPC body — the downstream
+# tool sees the redacted/transformed values instead of the originals.
+#
+# Our HttpFilter then:
+#   - Sets `Authorization: Bearer <minted>` on the upstream request
+#   - Removes the inbound `X-User-Token` so the user's IdP token
+#     does NOT leak to the downstream workday-api service.
+routes:
+  - tool: get_compensation
+    apl:
+      policy:
+        - "require(authenticated)"
+        - "require(role.hr)"
+        - "delegate(workday-oauth, target: workday-api, audience: workday-api, permissions: [read_compensation])"
+      args:
+        # If the caller lacks `perm.view_ssn`, redact the ssn arg
+        # before the request reaches the downstream tool. The arg
+        # is preserved as a key but its value becomes `[REDACTED]`.
+        ssn: "str | redact(!perm.view_ssn)"
