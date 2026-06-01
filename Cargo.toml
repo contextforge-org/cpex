@@ -11,6 +11,10 @@ members = [
     "crates/cpex-core",
     "crates/cpex-sdk",
     "crates/cpex-ffi",
+    "crates/cpex-dynamic-plugin",
+    "crates/cpex-dynamic-plugin/examples/single-plugin",
+    "crates/cpex-dynamic-plugin/examples/multi-handler",
+    "crates/cpex-dynamic-plugin/examples/multi-plugin",
     "examples/go-demo/ffi",
 ]
 

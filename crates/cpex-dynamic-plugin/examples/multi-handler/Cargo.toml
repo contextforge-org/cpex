@@ -1,0 +1,34 @@
+# Location: ./crates/cpex-dynamic-plugin/examples/multi-handler/Cargo.toml
+# Copyright 2025
+# SPDX-License-Identifier: Apache-2.0
+# Authors: Teryl Taylor
+#
+# Reference cdylib plugin that registers TWO handlers with
+# distinguishable behaviors:
+#
+#   * `cmf.tool_pre_invoke`  → returns `PluginResult::allow()`
+#   * `cmf.tool_post_invoke` → returns `PluginResult::deny(...)`
+#
+# Used by `cpex-dynamic-plugin`'s integration tests to verify:
+#   * The `#handler` fragment in the kind string correctly filters
+#     a multi-handler registration to just the named handler.
+#   * Multiple dynamic plugins can coexist in one PluginManager
+#     (paired with the allow-gate `cpex-dynamic-plugin-example`).
+#
+# Pattern A from the README — same plugin struct, multiple
+# adapters wired under different hook names.
+
+[package]
+name = "cpex-dynamic-plugin-multi-handler-example"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+cpex-core = { path = "../../../cpex-core" }
+cpex-dynamic-plugin = { path = "../.." }
+async-trait = { workspace = true }
