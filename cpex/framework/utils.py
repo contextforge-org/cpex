@@ -13,6 +13,7 @@ plugins.
 import importlib
 import logging
 from functools import cache
+from pathlib import Path
 from types import ModuleType
 from typing import Any, Optional
 
@@ -475,3 +476,43 @@ class ORJSONResponse(JSONResponse):
             content,
             option=orjson.OPT_NON_STR_KEYS | orjson.OPT_SERIALIZE_NUMPY,
         )
+
+
+def find_package_path(package_name: str) -> Path:
+    """Locate installed package directory using importlib.metadata.
+
+    Args:
+        package_name: The name of the installed package.
+
+    Returns:
+        Path to the package directory.
+
+    Raises:
+        RuntimeError: If package cannot be found.
+    """
+    try:
+        # Use importlib.metadata for more reliable package discovery
+        for dist in importlib.metadata.distributions():
+            if dist.name == package_name or dist.metadata.get("Name") == package_name:
+                if dist.files:
+                    # Get the package root from the plugin-manifest.yaml file
+                    for afile in dist.files:
+                        if afile.name == "plugin-manifest.yaml":
+                            located_path = dist.locate_file(afile)
+                            package_path = Path(str(located_path)).parent
+                            logger.debug("Found package %s at %s", package_name, package_path)
+                            return package_path
+
+        # Fallback to importlib.util.find_spec if metadata approach fails
+        spec = importlib.util.find_spec(package_name)
+        if spec is not None and spec.origin is not None:
+            package_path = Path(spec.origin).parent
+            logger.debug("Found package %s at %s (via find_spec)", package_name, package_path)
+            return package_path
+
+        raise RuntimeError(f"Could not find installed package: {package_name}")
+
+    except Exception as e:
+        if isinstance(e, RuntimeError):
+            raise
+        raise RuntimeError(f"Error locating package {package_name}: {str(e)}") from e

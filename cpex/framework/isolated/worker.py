@@ -24,7 +24,7 @@ from cpex.framework.constants import HOOK_TYPE
 from cpex.framework.loader.plugin import ALLOWED_PLUGIN_DIRS
 from cpex.framework.manager import PluginExecutor
 from cpex.framework.models import PluginConfig, PluginContext
-from cpex.framework.utils import parse_class_name
+from cpex.framework.utils import import_module, parse_class_name
 
 logger = logging.getLogger(__name__)
 
@@ -115,7 +115,7 @@ async def process_task(task_data, tp: TaskProcessor):
             hook_type = task_data.get(HOOK_TYPE)
             cls_name: str = task_data.get("class_name")
             mod_name, n_cls_name = parse_class_name(cls_name)
-            module: ModuleType = importlib.import_module(mod_name)
+            module: ModuleType = import_module(mod_name)
             # cool, we found the module, and verified it implemented the hook type.
             class_ = getattr(module, n_cls_name)
             plugin_type = cast(Type[Plugin], class_)
@@ -162,7 +162,7 @@ async def main():
         while True:
             try:
                 # Read one line at a time
-                if tp.plugin_config:
+                if tp.plugin_config and "max_content_size" in tp.plugin_config:
                     line = sys.stdin.readline(limit=int(tp.plugin_config.max_content_size))
                 else:
                     # on the first read, the plugin_config has not yet been initialized so just read.
@@ -198,14 +198,17 @@ async def main():
                 serialized_response = json.dumps(serializable_response)
                 # Send response back to parent (one line per response)
                 if tp.plugin_config:
-                    if len(serialized_response) > tp.plugin_config.max_content_size:
-                        logger.error("Serialized response exceeds max content size")
-                        error_response = {
-                            "status": "error",
-                            "message": "Serialized response exceeds max content size",
-                            "request_id": request_id,
-                        }
-                        serialized_response = json.dumps(error_response)
+                    # workaround until cpex is updated beyond dev11
+                    # cpex is a dependency of the plugin and as such it's PluginConfig does not contain the max_content_size yet.
+                    if "max_content_size" in tp.plugin_config:
+                        if len(serialized_response) > tp.plugin_config.max_content_size:
+                            logger.error("Serialized response exceeds max content size")
+                            error_response = {
+                                "status": "error",
+                                "message": "Serialized response exceeds max content size",
+                                "request_id": request_id,
+                            }
+                            serialized_response = json.dumps(error_response)
                 print(serialized_response, flush=True)
 
             except json.JSONDecodeError as e:

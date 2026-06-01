@@ -63,17 +63,12 @@ class TestWorkerFunctions:
         assert result["message"] == "Environment info retrieved successfully"
 
     @pytest.mark.asyncio
-    @patch("cpex.framework.isolated.worker.get_proper_config")
-    @patch("cpex.framework.isolated.worker.importlib.import_module")
+    @patch("cpex.framework.isolated.worker.import_module")
     @patch("cpex.framework.isolated.worker.PluginExecutor")
     async def test_process_task_load_and_run_hook_success(
-        self, mock_executor_class, mock_import, mock_get_config, mock_plugin_dirs
+        self, mock_executor_class, mock_import, mock_plugin_dirs
     ):
         """Test processing load_and_run_hook task successfully."""
-        # Setup mock config
-        mock_config = MagicMock()
-        mock_config.name = "test_plugin"
-        mock_get_config.return_value = mock_config
 
         # Setup mock plugin class
         mock_plugin_instance = AsyncMock()
@@ -115,13 +110,9 @@ class TestWorkerFunctions:
         self.cleanup_mock_plugin_dirs()
 
     @pytest.mark.asyncio
-    @patch("cpex.framework.isolated.worker.get_proper_config")
-    @patch("cpex.framework.isolated.worker.importlib.import_module")
-    async def test_process_task_load_and_run_hook_import_error(self, mock_import, mock_get_config, mock_plugin_dirs):
+    @patch("cpex.framework.isolated.worker.import_module")
+    async def test_process_task_load_and_run_hook_import_error(self, mock_import, mock_plugin_dirs):
         """Test processing load_and_run_hook task with import error."""
-        mock_config = MagicMock()
-        mock_get_config.return_value = mock_config
-
         mock_import.side_effect = ImportError("Module not found")
 
         config_dict = {"name": "test_plugin", "kind": "isolated_venv"}
@@ -139,16 +130,12 @@ class TestWorkerFunctions:
             await process_task(task_data, tp)
 
     @pytest.mark.asyncio
-    @patch("cpex.framework.isolated.worker.get_proper_config")
-    @patch("cpex.framework.isolated.worker.importlib.import_module")
+    @patch("cpex.framework.isolated.worker.import_module")
     @patch("cpex.framework.isolated.worker.PluginExecutor")
     async def test_process_task_with_different_hook_types(
-        self, mock_executor_class, mock_import, mock_get_config, mock_plugin_dirs
+        self, mock_executor_class, mock_import, mock_plugin_dirs
     ):
         """Test processing tasks with different hook types."""
-        # Setup mocks
-        mock_config = MagicMock()
-        mock_get_config.return_value = mock_config
 
         mock_plugin_instance = MagicMock()
         mock_plugin_instance.initialize = AsyncMock()
@@ -197,15 +184,12 @@ class TestWorkerFunctions:
         assert result == {"message": "task type not supported.", "request_id": "unknown", "status": "error"}
 
     @pytest.mark.asyncio
-    @patch("cpex.framework.isolated.worker.get_proper_config")
-    @patch("cpex.framework.isolated.worker.importlib.import_module")
+    @patch("cpex.framework.isolated.worker.import_module")
     @patch("cpex.framework.isolated.worker.PluginExecutor")
     async def test_process_task_with_metadata(
-        self, mock_executor_class, mock_import, mock_get_config, mock_plugin_dirs
+        self, mock_executor_class, mock_import, mock_plugin_dirs
     ):
         """Test processing task with metadata in context."""
-        mock_config = MagicMock()
-        mock_get_config.return_value = mock_config
 
         mock_plugin_instance = AsyncMock()
         mock_plugin_instance.initialize = AsyncMock()
