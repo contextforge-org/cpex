@@ -1,0 +1,320 @@
+{
+  "realm": "cpex-demo",
+  "enabled": true,
+  "displayName": "CPEX Demo Realm",
+  "sslRequired": "none",
+  "registrationAllowed": false,
+  "loginWithEmailAllowed": true,
+  "duplicateEmailsAllowed": false,
+  "resetPasswordAllowed": false,
+  "editUsernameAllowed": false,
+  "bruteForceProtected": false,
+  "accessTokenLifespan": 600,
+  "ssoSessionIdleTimeout": 3600,
+  "ssoSessionMaxLifespan": 36000,
+  "defaultSignatureAlgorithm": "RS256",
+
+  "roles": {
+    "realm": [
+      { "name": "hr",        "description": "HR staff" },
+      { "name": "engineer",  "description": "Engineering staff" },
+      { "name": "auditor",   "description": "Compliance auditors" }
+    ]
+  },
+
+  "groups": [],
+
+  "users": [
+    {
+      "username": "alice",
+      "email": "alice@corp.com",
+      "firstName": "Alice",
+      "lastName": "Engineer",
+      "enabled": true,
+      "emailVerified": true,
+      "credentials": [
+        { "type": "password", "value": "alice", "temporary": false }
+      ],
+      "realmRoles": ["engineer"],
+      "attributes": {
+        "permissions": ["tool_execute"],
+        "teams": ["engineering"],
+        "groups": ["engineering"],
+        "gh_permissions": ["repo:read:internal"]
+      }
+    },
+    {
+      "username": "bob",
+      "email": "bob@corp.com",
+      "firstName": "Bob",
+      "lastName": "HRManager",
+      "enabled": true,
+      "emailVerified": true,
+      "credentials": [
+        { "type": "password", "value": "bob", "temporary": false }
+      ],
+      "realmRoles": ["hr"],
+      "attributes": {
+        "permissions": ["tool_execute", "view_ssn", "pii_access", "email_send"],
+        "teams": ["hr"],
+        "groups": ["hr"],
+        "gh_permissions": []
+      }
+    },
+    {
+      "username": "charlie",
+      "email": "charlie@corp.com",
+      "firstName": "Charlie",
+      "lastName": "Auditor",
+      "enabled": true,
+      "emailVerified": true,
+      "credentials": [
+        { "type": "password", "value": "charlie", "temporary": false }
+      ],
+      "realmRoles": ["auditor"],
+      "attributes": {
+        "permissions": ["tool_execute", "pii_access"],
+        "teams": ["compliance"],
+        "groups": ["compliance"],
+        "gh_permissions": []
+      }
+    },
+    {
+      "username": "eve",
+      "email": "eve@corp.com",
+      "firstName": "Eve",
+      "lastName": "HRWithoutSSN",
+      "enabled": true,
+      "emailVerified": true,
+      "credentials": [
+        { "type": "password", "value": "eve", "temporary": false }
+      ],
+      "realmRoles": ["hr"],
+      "attributes": {
+        "permissions": ["tool_execute"],
+        "teams": ["hr"],
+        "groups": ["hr"],
+        "gh_permissions": []
+      }
+    }
+  ],
+
+  "clientScopes": [
+    {
+      "name": "read_compensation",
+      "description": "Scope requested via token-exchange for the workday-api compensation route.",
+      "protocol": "openid-connect",
+      "attributes": {
+        "display.on.consent.screen": "false",
+        "include.in.token.scope": "true"
+      }
+    },
+    {
+      "name": "repo:read:internal",
+      "description": "Scope requested via token-exchange for the github-api search_repos route.",
+      "protocol": "openid-connect",
+      "attributes": {
+        "display.on.consent.screen": "false",
+        "include.in.token.scope": "true"
+      }
+    }
+  ],
+
+  "clients": [
+    {
+      "clientId": "hr-copilot",
+      "name": "HR Copilot",
+      "description": "First-party AI HR copilot. Users authenticate via password grant.",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "secret": "hr-copilot-secret",
+      "directAccessGrantsEnabled": true,
+      "serviceAccountsEnabled": true,
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "redirectUris": ["*"],
+      "webOrigins": ["*"],
+      "attributes": {
+        "access.token.lifespan": "600"
+      },
+      "protocolMappers": [
+        {
+          "name": "permissions",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-attribute-mapper",
+          "consentRequired": false,
+          "config": {
+            "user.attribute": "permissions",
+            "claim.name": "permissions",
+            "jsonType.label": "String",
+            "multivalued": "true",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true"
+          }
+        },
+        {
+          "name": "teams",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-attribute-mapper",
+          "consentRequired": false,
+          "config": {
+            "user.attribute": "teams",
+            "claim.name": "teams",
+            "jsonType.label": "String",
+            "multivalued": "true",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true"
+          }
+        },
+        {
+          "name": "realm-roles-flat",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-realm-role-mapper",
+          "consentRequired": false,
+          "config": {
+            "multivalued": "true",
+            "claim.name": "roles",
+            "jsonType.label": "String",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true"
+          }
+        },
+        {
+          "name": "groups",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-attribute-mapper",
+          "consentRequired": false,
+          "config": {
+            "user.attribute": "groups",
+            "claim.name": "groups",
+            "jsonType.label": "String",
+            "multivalued": "true",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true"
+          }
+        },
+        {
+          "name": "gh_permissions",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-attribute-mapper",
+          "consentRequired": false,
+          "config": {
+            "user.attribute": "gh_permissions",
+            "claim.name": "gh_permissions",
+            "jsonType.label": "String",
+            "multivalued": "true",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true"
+          }
+        },
+        {
+          "name": "praxis-gateway-as-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "praxis-gateway",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
+      "clientId": "praxis-gateway",
+      "name": "Praxis Gateway",
+      "description": "Praxis-CPEX gateway — RFC 8693 token-exchange client.",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "secret": "praxis-gateway-secret",
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "redirectUris": [],
+      "webOrigins": [],
+      "attributes": {
+        "access.token.lifespan": "600",
+        "standard.token.exchange.enabled": "true",
+        "standard.token.exchange.audiences": "workday-api,github-api"
+      },
+      "optionalClientScopes": ["read_compensation", "repo:read:internal"],
+      "protocolMappers": [
+        {
+          "name": "workday-api-as-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "workday-api",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          }
+        },
+        {
+          "name": "github-api-as-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "github-api",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
+      "clientId": "github-api",
+      "name": "GitHub API (downstream audience)",
+      "description": "Internal GitHub Enterprise — token-exchange audience. Pattern 3 (per-audience mapper).",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "secret": "github-api-not-used-but-required",
+      "bearerOnly": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "protocolMappers": [
+        {
+          "name": "gh-permissions-as-scope",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-attribute-mapper",
+          "consentRequired": false,
+          "config": {
+            "user.attribute": "gh_permissions",
+            "claim.name": "permissions",
+            "jsonType.label": "String",
+            "multivalued": "true",
+            "id.token.claim": "false",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "false"
+          }
+        }
+      ]
+    },
+    {
+      "clientId": "workday-api",
+      "name": "Workday API (downstream audience)",
+      "description": "Workday API — token-exchange audience for the workday flow.",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "secret": "workday-api-not-used-but-required",
+      "bearerOnly": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false
+    }
+  ]
+}

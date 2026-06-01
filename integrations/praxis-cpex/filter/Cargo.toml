@@ -1,0 +1,49 @@
+# Location: ./integrations/praxis-cpex/filter/Cargo.toml
+# SPDX-License-Identifier: Apache-2.0
+
+[package]
+name        = "cpex-praxis-filter"
+version.workspace     = true
+edition.workspace     = true
+license.workspace     = true
+authors.workspace     = true
+description = "Praxis HttpFilter that embeds the CPEX/APL runtime for identity, policy, and delegation"
+
+[dependencies]
+cpex-core             = { workspace = true }
+apl-core              = { workspace = true }
+apl-cpex              = { workspace = true }
+apl-cmf               = { workspace = true }
+apl-identity-jwt      = { workspace = true }
+apl-delegator-oauth   = { workspace = true }
+apl-pdp-cedar-direct  = { workspace = true }
+apl-pii-scanner       = { workspace = true }
+apl-audit-logger      = { workspace = true }
+
+praxis-filter     = { workspace = true }
+praxis-core       = { workspace = true }
+
+async-trait       = { workspace = true }
+bytes             = { workspace = true }
+http              = { workspace = true }
+serde             = { workspace = true }
+serde_json        = { workspace = true }
+serde_yaml        = { workspace = true }
+thiserror         = { workspace = true }
+tokio             = { workspace = true }
+tracing           = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+# RSA keypair fixtures for the integration test.
+rsa   = { version = "0.9", features = ["pem"] }
+rand  = "0.8"
+jsonwebtoken = "9"
+tempfile = "3"
+# The integration test reads serde_json::Value from claims directly;
+# our workspace's `serde_yaml` alias to yaml_serde doesn't affect this.
+serde_json = { workspace = true }
+# Mock OAuth IdP for the delegation integration test. Matches what
+# apl-delegator-oauth's own e2e tests use — keeps the testing surface
+# consistent across the workspace.
+mockito = "1"
