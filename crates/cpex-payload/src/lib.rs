@@ -29,3 +29,4 @@ pub mod error;
 pub mod extensions;
 pub mod hooks;
 pub mod plugin;
+pub mod plugins;
