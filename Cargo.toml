@@ -13,6 +13,7 @@ members = [
     "crates/cpex-ffi",
     "crates/cpex-wasm-plugin",
     "crates/cpex-wasm-host",
+    "crates/cpex-wasm-dashboard",
     "examples/go-demo/ffi",
 ]
 

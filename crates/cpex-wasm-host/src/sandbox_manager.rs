@@ -23,7 +23,7 @@ wasmtime::component::bindgen!({
 });
 
 pub mod types {
-    pub use super::cpex::plugin::types::{Extensions, MessagePayload, PluginResult};
+    pub use super::cpex::plugin::types::*;
 }
 
 #[derive(Debug, Default)]
@@ -238,6 +238,7 @@ impl SandboxManager {
         plugin_name: &str,
         payload: types::MessagePayload,
         extensions: types::Extensions,
+        ctx: types::PluginContext,
     ) -> Result<types::PluginResult> {
         let instance = self
             .plugins
@@ -254,7 +255,7 @@ impl SandboxManager {
 
         let result = instance
             .plugin
-            .call_handle_hook(&mut instance.store, &payload, &extensions)
+            .call_handle_hook(&mut instance.store, &payload, &extensions, &ctx)
             .await;
 
         let fuel_after = instance.store.get_fuel().unwrap_or(0);

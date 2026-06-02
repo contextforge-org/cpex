@@ -6,7 +6,7 @@ use tokio::sync::Mutex;
 
 use cpex_wasm_host::dashboard::spawn_dashboard;
 use cpex_wasm_host::policy_loader::load_plugin_sandbox_config;
-use cpex_wasm_host::sandbox_manager::{SandboxManager, types::PluginResult};
+use cpex_wasm_host::sandbox_manager::{SandboxManager, types::*};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -37,42 +37,55 @@ async fn main() -> Result<()> {
     // Invoke the plugin a few times to generate metrics visible on the dashboard
     println!("\n=== Invoking Plugin (metrics visible at http://localhost:3000) ===");
 
-    let payload = cpex_wasm_host::sandbox_manager::types::MessagePayload {
-        data: serde_json::json!({
-            "message": {
-                "role": "user",
-                "content": [{"type": "text", "text": "sandbox manager test"}],
-                "tool_calls": [{
-                    "id": "call_1",
-                    "name": "sandbox_probe",
-                    "arguments": "{}"
-                }]
-            },
-            "probe": {
-                "env_vars": ["PLUGIN_API_KEY", "SECRET_DB_PASSWORD"],
-                "http_requests": ["http://httpbin.org/get", "http://evil.com/steal"]
-            }
-        }).to_string(),
+    let payload = MessagePayload {
+        message: Message {
+            schema_version: "1.0".to_string(),
+            role: Role::User,
+            content: vec![
+                ContentPart::Text("sandbox manager test".to_string()),
+                ContentPart::ToolCall(ToolCall {
+                    tool_call_id: "call_1".to_string(),
+                    name: "sandbox_probe".to_string(),
+                    arguments: "{}".to_string(),
+                    namespace: None,
+                }),
+            ],
+            channel: None,
+        },
     };
 
-    let extensions = cpex_wasm_host::sandbox_manager::types::Extensions {
-        security: None,
+    let extensions = Extensions {
+        request: None,
+        security: Some(SecurityExtension {
+            labels: vec!["PII".to_string()],
+            classification: Some("confidential".to_string()),
+            subject: Some(SubjectExtension {
+                id: Some("user-42".to_string()),
+                subject_type: Some(SubjectType::User),
+                roles: vec!["analyst".to_string()],
+                permissions: vec!["read".to_string()],
+                teams: vec!["data-team".to_string()],
+                claims: vec![("org".to_string(), "acme".to_string())],
+            }),
+            auth_method: Some("oauth2".to_string()),
+        }),
         http: None,
+        meta: None,
+    };
+
+    let ctx = PluginContext {
+        local_state: "{}".to_string(),
+        global_state: "{}".to_string(),
     };
 
     {
         let mut mgr = shared.lock().await;
-        let result = mgr.invoke("identity-checker", payload, extensions).await?;
+        let result = mgr.invoke("identity-checker", payload, extensions, ctx).await?;
 
         match &result {
             PluginResult::Allow => println!("Result: ALLOW"),
-            PluginResult::Deny(msg) => {
-                if let Some(json_str) = msg.strip_prefix("SANDBOX_PROBE_RESULT:") {
-                    let report: serde_json::Value = serde_json::from_str(json_str)?;
-                    println!("Sandbox Probe Results:\n{}", serde_json::to_string_pretty(&report)?);
-                } else {
-                    println!("Result: DENY - {}", msg);
-                }
+            PluginResult::Deny(violation) => {
+                println!("Result: DENY - [{}] {}", violation.code, violation.reason);
             }
         }
 

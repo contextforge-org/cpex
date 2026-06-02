@@ -1,4 +1,4 @@
-package cpex:plugin;
+package cpex:demo-plugin;
 
 interface types {
   record plugin-config {
@@ -204,7 +204,7 @@ interface types {
   }
 }
 
-world plugin {
+world identity-checker-plugin {
   import wasi:io/poll@0.2.6;
   import wasi:io/error@0.2.6;
   import wasi:io/streams@0.2.6;
@@ -212,7 +212,9 @@ world plugin {
   import wasi:http/types@0.2.6;
   import wasi:http/outgoing-handler@0.2.6;
 
-  use types.{message-payload, extensions, plugin-context, plugin-result};
+  use types.{message-payload, extensions, plugin-context, plugin-result, plugin-config};
+
+  export get-config: func() -> plugin-config;
 
   export handle-hook: func(
     payload: message-payload,
