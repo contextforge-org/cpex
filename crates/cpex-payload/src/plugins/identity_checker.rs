@@ -1,9 +1,10 @@
 use crate::cmf::message::MessagePayload;
+use crate::context::PluginContext;
+use crate::error::PluginViolation;
 use crate::extensions::Extensions;
+use crate::hooks::PluginResult;
 
-use super::SimplePluginResult;
-
-pub fn identity_check(payload: &MessagePayload, extensions: &Extensions) -> SimplePluginResult {
+pub fn identity_check(payload: &MessagePayload, extensions: &Extensions, _ctx: &PluginContext) -> PluginResult<MessagePayload> {
     let is_result = payload.message.is_tool_result();
 
     if is_result {
@@ -51,13 +52,13 @@ pub fn identity_check(payload: &MessagePayload, extensions: &Extensions) -> Simp
                 );
 
                 if security.has_label("PII") && !subject.roles.contains("hr_admin") {
-                    return SimplePluginResult::Deny {
-                        code: "insufficient_role".to_string(),
-                        reason: format!(
+                    return PluginResult::deny(PluginViolation::new(
+                        "insufficient_role",
+                        &format!(
                             "Tool '{}' requires 'hr_admin' role for PII data",
                             tool_name
                         ),
-                    };
+                    ));
                 }
             }
         }
@@ -70,5 +71,5 @@ pub fn identity_check(payload: &MessagePayload, extensions: &Extensions) -> Simp
         println!("  [identity-checker] PRE-INVOKE ALLOWED");
     }
 
-    SimplePluginResult::Allow
+    PluginResult::allow()
 }

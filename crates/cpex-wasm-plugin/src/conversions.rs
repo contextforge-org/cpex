@@ -4,6 +4,7 @@ use std::sync::Arc;
 use cpex_payload::cmf::content as native_content;
 use cpex_payload::cmf::enums as native_enums;
 use cpex_payload::cmf::message as native_msg;
+use cpex_payload::error::PluginViolation as NativePluginViolation;
 use cpex_payload::extensions::container::Extensions as NativeExtensions;
 use cpex_payload::extensions::http::HttpExtension as NativeHttpExtension;
 use cpex_payload::extensions::meta::MetaExtension as NativeMetaExtension;
@@ -13,7 +14,8 @@ use cpex_payload::extensions::security::{
     SecurityExtension as NativeSecurityExtension, SubjectExtension as NativeSubjectExtension,
     SubjectType as NativeSubjectType,
 };
-use cpex_payload::plugins::SimplePluginResult;
+use cpex_payload::context::PluginContext as NativePluginContext;
+use cpex_payload::hooks::PluginResult as NativePluginResult;
 
 use crate::cpex::plugin::types::*;
 
@@ -270,14 +272,274 @@ fn wit_meta_to_native(m: MetaExtension) -> NativeMetaExtension {
 }
 
 // ---------------------------------------------------------------------------
-// Native → WIT: SimplePluginResult → PluginResult
+// WIT → Native: PluginContext
 // ---------------------------------------------------------------------------
 
-pub fn native_result_to_wit(result: SimplePluginResult) -> PluginResult {
-    match result {
-        SimplePluginResult::Allow => PluginResult::Allow,
-        SimplePluginResult::Deny { code, reason } => {
-            PluginResult::Deny(PluginViolation { code, reason })
+pub fn wit_context_to_native(ctx: PluginContext) -> NativePluginContext {
+    let local_state = serde_json::from_str(&ctx.local_state).unwrap_or_default();
+    let global_state = serde_json::from_str(&ctx.global_state).unwrap_or_default();
+    NativePluginContext {
+        local_state,
+        global_state,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Native → WIT: PluginResult<MessagePayload> → PluginResult (record)
+// ---------------------------------------------------------------------------
+
+pub fn native_result_to_wit(result: NativePluginResult<native_msg::MessagePayload>) -> PluginResult {
+    PluginResult {
+        continue_processing: result.continue_processing,
+        modified_payload: result.modified_payload.map(native_payload_to_wit),
+        modified_extensions: result.modified_extensions.map(|ext| native_owned_extensions_to_wit(&ext)),
+        violation: result.violation.map(native_violation_to_wit),
+        metadata: result.metadata.map(|v| serde_json::to_string(&v).unwrap_or_default()),
+    }
+}
+
+fn native_violation_to_wit(v: NativePluginViolation) -> PluginViolation {
+    PluginViolation {
+        code: v.code,
+        reason: v.reason,
+        description: v.description,
+        details: serde_json::to_string(&v.details).unwrap_or_else(|_| "{}".to_string()),
+        proto_error_code: v.proto_error_code,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Native → WIT: MessagePayload
+// ---------------------------------------------------------------------------
+
+fn native_payload_to_wit(payload: native_msg::MessagePayload) -> MessagePayload {
+    MessagePayload {
+        message: native_message_to_wit(payload.message),
+    }
+}
+
+fn native_message_to_wit(msg: native_msg::Message) -> Message {
+    Message {
+        schema_version: msg.schema_version,
+        role: native_role_to_wit(msg.role),
+        content: msg.content.into_iter().map(native_content_part_to_wit).collect(),
+        channel: msg.channel.map(native_channel_to_wit),
+    }
+}
+
+fn native_role_to_wit(role: native_enums::Role) -> Role {
+    match role {
+        native_enums::Role::System => Role::System,
+        native_enums::Role::Developer => Role::Developer,
+        native_enums::Role::User => Role::User,
+        native_enums::Role::Assistant => Role::Assistant,
+        native_enums::Role::Tool => Role::Tool,
+    }
+}
+
+fn native_channel_to_wit(channel: native_enums::Channel) -> Channel {
+    match channel {
+        native_enums::Channel::Analysis => Channel::Analysis,
+        native_enums::Channel::Commentary => Channel::Commentary,
+        native_enums::Channel::Final => Channel::Final,
+    }
+}
+
+fn native_content_part_to_wit(part: native_content::ContentPart) -> ContentPart {
+    match part {
+        native_content::ContentPart::Text { text } => ContentPart::Text(text),
+        native_content::ContentPart::Thinking { text } => ContentPart::Thinking(text),
+        native_content::ContentPart::ToolCall { content } => {
+            ContentPart::ToolCall(native_tool_call_to_wit(content))
         }
+        native_content::ContentPart::ToolResult { content } => {
+            ContentPart::ToolResult(native_tool_result_to_wit(content))
+        }
+        native_content::ContentPart::Resource { content } => {
+            ContentPart::CmfResource(native_resource_to_wit(content))
+        }
+        native_content::ContentPart::ResourceRef { content } => {
+            ContentPart::ResourceRef(native_resource_ref_to_wit(content))
+        }
+        native_content::ContentPart::PromptRequest { content } => {
+            ContentPart::PromptRequest(native_prompt_request_to_wit(content))
+        }
+        native_content::ContentPart::PromptResult { content } => {
+            ContentPart::PromptResult(native_prompt_result_to_wit(content))
+        }
+        native_content::ContentPart::Image { content } => ContentPart::Image(ImageSource {
+            source_type: content.source_type,
+            data: content.data,
+            media_type: content.media_type,
+        }),
+        native_content::ContentPart::Video { content } => ContentPart::Video(VideoSource {
+            source_type: content.source_type,
+            data: content.data,
+            media_type: content.media_type,
+            duration_ms: content.duration_ms,
+        }),
+        native_content::ContentPart::Audio { content } => ContentPart::Audio(AudioSource {
+            source_type: content.source_type,
+            data: content.data,
+            media_type: content.media_type,
+            duration_ms: content.duration_ms,
+        }),
+        native_content::ContentPart::Document { content } => {
+            ContentPart::Document(DocumentSource {
+                source_type: content.source_type,
+                data: content.data,
+                media_type: content.media_type,
+                title: content.title,
+            })
+        }
+    }
+}
+
+fn native_tool_call_to_wit(tc: native_content::ToolCall) -> ToolCall {
+    ToolCall {
+        tool_call_id: tc.tool_call_id,
+        name: tc.name,
+        arguments: serde_json::to_string(&tc.arguments).unwrap_or_else(|_| "{}".to_string()),
+        namespace: tc.namespace,
+    }
+}
+
+fn native_tool_result_to_wit(tr: native_content::ToolResult) -> ToolResult {
+    ToolResult {
+        tool_call_id: tr.tool_call_id,
+        tool_name: tr.tool_name,
+        content: serde_json::to_string(&tr.content).unwrap_or_default(),
+        is_error: tr.is_error,
+    }
+}
+
+fn native_resource_to_wit(r: native_content::Resource) -> CmfResource {
+    CmfResource {
+        resource_request_id: r.resource_request_id,
+        uri: r.uri,
+        name: r.name,
+        description: r.description,
+        resource_type: native_resource_type_to_wit(r.resource_type),
+        content: r.content,
+        blob: r.blob,
+        mime_type: r.mime_type,
+        size_bytes: r.size_bytes,
+        annotations: serde_json::to_string(&r.annotations).unwrap_or_else(|_| "{}".to_string()),
+        version: r.version,
+    }
+}
+
+fn native_resource_type_to_wit(rt: native_enums::ResourceType) -> ResourceType {
+    match rt {
+        native_enums::ResourceType::File => ResourceType::File,
+        native_enums::ResourceType::Blob => ResourceType::Blob,
+        native_enums::ResourceType::Uri => ResourceType::Uri,
+        native_enums::ResourceType::Database => ResourceType::Database,
+        native_enums::ResourceType::Api => ResourceType::Api,
+        native_enums::ResourceType::Memory => ResourceType::Memory,
+        native_enums::ResourceType::Artifact => ResourceType::Artifact,
+    }
+}
+
+fn native_resource_ref_to_wit(rr: native_content::ResourceReference) -> ResourceReference {
+    ResourceReference {
+        resource_request_id: rr.resource_request_id,
+        uri: rr.uri,
+        name: rr.name,
+        resource_type: native_resource_type_to_wit(rr.resource_type),
+        range_start: rr.range_start,
+        range_end: rr.range_end,
+        selector: rr.selector,
+    }
+}
+
+fn native_prompt_request_to_wit(pr: native_content::PromptRequest) -> PromptRequest {
+    PromptRequest {
+        prompt_request_id: pr.prompt_request_id,
+        name: pr.name,
+        arguments: serde_json::to_string(&pr.arguments).unwrap_or_else(|_| "{}".to_string()),
+        server_id: pr.server_id,
+    }
+}
+
+fn native_prompt_result_to_wit(pr: native_content::PromptResult) -> PromptResult {
+    PromptResult {
+        prompt_request_id: pr.prompt_request_id,
+        prompt_name: pr.prompt_name,
+        messages: serde_json::to_string(&pr.messages).unwrap_or_else(|_| "[]".to_string()),
+        content: pr.content,
+        is_error: pr.is_error,
+        error_message: pr.error_message,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Native → WIT: OwnedExtensions → Extensions
+// ---------------------------------------------------------------------------
+
+fn native_owned_extensions_to_wit(
+    ext: &cpex_payload::extensions::container::OwnedExtensions,
+) -> Extensions {
+    Extensions {
+        request: ext.request.as_ref().map(|r| native_request_to_wit(r)),
+        security: ext.security.as_ref().map(|s| native_security_to_wit(s)),
+        http: ext.http.as_ref().map(|h| native_http_to_wit(h.read())),
+        meta: ext.meta.as_ref().map(|m| native_meta_to_wit(m)),
+    }
+}
+
+fn native_request_to_wit(r: &NativeRequestExtension) -> RequestExtension {
+    RequestExtension {
+        environment: r.environment.clone(),
+        request_id: r.request_id.clone(),
+        timestamp: r.timestamp.clone(),
+        trace_id: r.trace_id.clone(),
+        span_id: r.span_id.clone(),
+    }
+}
+
+fn native_security_to_wit(s: &NativeSecurityExtension) -> SecurityExtension {
+    SecurityExtension {
+        labels: s.labels.iter().cloned().collect(),
+        classification: s.classification.clone(),
+        subject: s.subject.as_ref().map(native_subject_to_wit),
+        auth_method: s.auth_method.clone(),
+    }
+}
+
+fn native_subject_to_wit(s: &NativeSubjectExtension) -> SubjectExtension {
+    SubjectExtension {
+        id: s.id.clone(),
+        subject_type: s.subject_type.as_ref().map(native_subject_type_to_wit),
+        roles: s.roles.iter().cloned().collect(),
+        permissions: s.permissions.iter().cloned().collect(),
+        teams: s.teams.iter().cloned().collect(),
+        claims: s.claims.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+    }
+}
+
+fn native_subject_type_to_wit(st: &NativeSubjectType) -> SubjectType {
+    match st {
+        NativeSubjectType::User => SubjectType::User,
+        NativeSubjectType::Agent => SubjectType::Agent,
+        NativeSubjectType::Service => SubjectType::Service,
+        NativeSubjectType::System => SubjectType::System,
+    }
+}
+
+fn native_http_to_wit(h: &NativeHttpExtension) -> HttpExtension {
+    HttpExtension {
+        request_headers: h.request_headers.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+        response_headers: h.response_headers.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+    }
+}
+
+fn native_meta_to_wit(m: &NativeMetaExtension) -> MetaExtension {
+    MetaExtension {
+        entity_type: m.entity_type.clone(),
+        entity_name: m.entity_name.clone(),
+        tags: m.tags.iter().cloned().collect(),
+        scope: m.scope.clone(),
+        properties: m.properties.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
     }
 }

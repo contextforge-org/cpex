@@ -82,11 +82,12 @@ async fn main() -> Result<()> {
         let mut mgr = shared.lock().await;
         let result = mgr.invoke("identity-checker", payload, extensions, ctx).await?;
 
-        match &result {
-            PluginResult::Allow => println!("Result: ALLOW"),
-            PluginResult::Deny(violation) => {
-                println!("Result: DENY - [{}] {}", violation.code, violation.reason);
-            }
+        if result.continue_processing {
+            println!("Result: ALLOW");
+        } else if let Some(violation) = &result.violation {
+            println!("Result: DENY - [{}] {}", violation.code, violation.reason);
+        } else {
+            println!("Result: DENY (no violation details)");
         }
 
         // Print metrics

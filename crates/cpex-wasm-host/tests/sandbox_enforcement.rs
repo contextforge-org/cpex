@@ -161,15 +161,10 @@ async fn test_policy_denies_pii_access_without_admin_role() -> Result<()> {
         .call_handle_hook(&mut store, &payload, &extensions, &plugin_ctx)
         .await?;
 
-    match result {
-        cpex::plugin::types::PluginResult::Deny(v) => {
-            assert_eq!(v.code, "insufficient_role");
-            assert!(v.reason.contains("hr_admin"));
-        }
-        cpex::plugin::types::PluginResult::Allow => {
-            panic!("Expected Deny for PII access without hr_admin role, but got Allow");
-        }
-    }
+    assert!(!result.continue_processing, "Expected Deny for PII access without hr_admin role, but got Allow");
+    let v = result.violation.expect("Expected violation details");
+    assert_eq!(v.code, "insufficient_role");
+    assert!(v.reason.contains("hr_admin"));
     Ok(())
 }
 
@@ -222,12 +217,11 @@ async fn test_allowed_env_var_is_visible() -> Result<()> {
         .await?;
 
     // The identity-checker plugin allows messages without PII+non-admin conditions
-    match result {
-        cpex::plugin::types::PluginResult::Allow => {}
-        cpex::plugin::types::PluginResult::Deny(v) => {
-            panic!("Expected Allow but got Deny: [{}] {}", v.code, v.reason);
-        }
-    }
+    assert!(
+        result.continue_processing,
+        "Expected Allow but got Deny: {:?}",
+        result.violation
+    );
     Ok(())
 }
 
@@ -276,12 +270,11 @@ async fn test_disallowed_env_var_is_denied() -> Result<()> {
         .call_handle_hook(&mut store, &payload, &extensions, &plugin_ctx)
         .await?;
 
-    match result {
-        cpex::plugin::types::PluginResult::Allow => {}
-        cpex::plugin::types::PluginResult::Deny(v) => {
-            panic!("Expected Allow but got Deny: [{}] {}", v.code, v.reason);
-        }
-    }
+    assert!(
+        result.continue_processing,
+        "Expected Allow but got Deny: {:?}",
+        result.violation
+    );
     Ok(())
 }
 
@@ -339,12 +332,11 @@ async fn test_allowed_filesystem_read_succeeds() -> Result<()> {
         .call_handle_hook(&mut store, &payload, &extensions, &plugin_ctx)
         .await?;
 
-    match result {
-        cpex::plugin::types::PluginResult::Allow => {}
-        cpex::plugin::types::PluginResult::Deny(v) => {
-            panic!("Expected Allow but got Deny: [{}] {}", v.code, v.reason);
-        }
-    }
+    assert!(
+        result.continue_processing,
+        "Expected Allow but got Deny: {:?}",
+        result.violation
+    );
 
     std::fs::remove_dir_all(&tmp)?;
     Ok(())
@@ -403,12 +395,11 @@ async fn test_disallowed_filesystem_read_is_denied() -> Result<()> {
         .call_handle_hook(&mut store, &payload, &extensions, &plugin_ctx)
         .await?;
 
-    match result {
-        cpex::plugin::types::PluginResult::Allow => {}
-        cpex::plugin::types::PluginResult::Deny(v) => {
-            panic!("Expected Allow but got Deny: [{}] {}", v.code, v.reason);
-        }
-    }
+    assert!(
+        result.continue_processing,
+        "Expected Allow but got Deny: {:?}",
+        result.violation
+    );
 
     std::fs::remove_dir_all(&allowed_tmp)?;
     std::fs::remove_dir_all(&forbidden_tmp)?;
@@ -464,12 +455,11 @@ async fn test_write_to_readonly_dir_is_denied() -> Result<()> {
         .call_handle_hook(&mut store, &payload, &extensions, &plugin_ctx)
         .await?;
 
-    match result {
-        cpex::plugin::types::PluginResult::Allow => {}
-        cpex::plugin::types::PluginResult::Deny(v) => {
-            panic!("Expected Allow but got Deny: [{}] {}", v.code, v.reason);
-        }
-    }
+    assert!(
+        result.continue_processing,
+        "Expected Allow but got Deny: {:?}",
+        result.violation
+    );
 
     std::fs::remove_dir_all(&tmp)?;
     Ok(())
@@ -522,12 +512,11 @@ async fn test_network_denied_when_no_allowed_hosts() -> Result<()> {
         .await?;
 
     // Plugin itself allows (it's identity-checker with no PII), but network is gated at WASI level
-    match result {
-        cpex::plugin::types::PluginResult::Allow => {}
-        cpex::plugin::types::PluginResult::Deny(v) => {
-            panic!("Expected Allow but got Deny: [{}] {}", v.code, v.reason);
-        }
-    }
+    assert!(
+        result.continue_processing,
+        "Expected Allow but got Deny: {:?}",
+        result.violation
+    );
     Ok(())
 }
 
@@ -573,12 +562,11 @@ async fn test_network_allowed_when_host_in_policy() -> Result<()> {
         .call_handle_hook(&mut store, &payload, &extensions, &plugin_ctx)
         .await?;
 
-    match result {
-        cpex::plugin::types::PluginResult::Allow => {}
-        cpex::plugin::types::PluginResult::Deny(v) => {
-            panic!("Expected Allow but got Deny: [{}] {}", v.code, v.reason);
-        }
-    }
+    assert!(
+        result.continue_processing,
+        "Expected Allow but got Deny: {:?}",
+        result.violation
+    );
     Ok(())
 }
 

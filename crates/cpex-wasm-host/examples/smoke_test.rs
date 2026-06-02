@@ -46,9 +46,12 @@ async fn main() -> Result<()> {
         .invoke("identity-checker", payload, extensions, ctx)
         .await?;
 
-    match &result {
-        PluginResult::Allow => println!("[OK] Result: ALLOW"),
-        PluginResult::Deny(v) => println!("[OK] Result: DENY - [{}] {}", v.code, v.reason),
+    if result.continue_processing {
+        println!("[OK] Result: ALLOW");
+    } else if let Some(v) = &result.violation {
+        println!("[OK] Result: DENY - [{}] {}", v.code, v.reason);
+    } else {
+        println!("[OK] Result: DENY (no violation details)");
     }
 
     println!("\n=== Smoke test passed ===");

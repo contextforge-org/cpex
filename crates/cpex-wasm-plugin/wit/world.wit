@@ -196,11 +196,17 @@ interface types {
   record plugin-violation {
     code: string,
     reason: string,
+    description: option<string>,
+    details: string,
+    proto-error-code: option<s64>,
   }
 
-  variant plugin-result {
-    allow,
-    deny(plugin-violation),
+  record plugin-result {
+    continue-processing: bool,
+    modified-payload: option<message-payload>,
+    modified-extensions: option<extensions>,
+    violation: option<plugin-violation>,
+    metadata: option<string>,
   }
 }
 
