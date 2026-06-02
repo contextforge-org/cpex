@@ -5,7 +5,6 @@ use anyhow::Result;
 use tokio::sync::Mutex;
 
 use cpex_wasm_host::dashboard::spawn_dashboard;
-use cpex_wasm_host::policy_loader::load_plugin_sandbox_config;
 use cpex_wasm_host::sandbox_manager::{SandboxManager, types::*};
 
 #[tokio::main]
@@ -16,27 +15,20 @@ async fn main() -> Result<()> {
     std::env::set_var("PLUGIN_API_KEY", "test-secret-123");
     std::env::set_var("SECRET_DB_PASSWORD", "super-secret-do-not-leak");
 
-    // Create the sandbox manager
+    // Create the sandbox manager and load all plugins from config
     let mut manager = SandboxManager::new()?;
     println!("✓ SandboxManager initialized");
 
-    // Load plugin from config
-    let sandbox = load_plugin_sandbox_config("config/config.yaml", "identity-checker")?;
-    println!("✓ Loaded sandbox policy:\n{}\n", serde_json::to_string_pretty(&sandbox)?);
-
     manager
-        .load_plugin("identity-checker", Path::new("plugin.wasm"), sandbox)
+        .load_from_config(Path::new("config/config.yaml"), Path::new("wasm"))
         .await?;
-    println!("✓ Plugin 'identity-checker' loaded");
-    println!("  Loaded plugins: {:?}", manager.list_plugins());
+    println!("✓ Loaded plugins from config: {:?}\n", manager.list_plugins());
 
     // Wrap manager in Arc<Mutex> and start the dashboard
     let shared = Arc::new(Mutex::new(manager));
     spawn_dashboard(shared.clone(), 3000);
 
-    // Invoke the plugin a few times to generate metrics visible on the dashboard
-    println!("\n=== Invoking Plugin (metrics visible at http://localhost:3000) ===");
-
+    // Build shared test payload and extensions
     let payload = MessagePayload {
         message: Message {
             schema_version: "1.0".to_string(),
@@ -78,30 +70,65 @@ async fn main() -> Result<()> {
         global_state: "{}".to_string(),
     };
 
+    // --- Invoke identity-checker (WITH sandbox policy) ---
+    println!("=== Invoking 'identity-checker' (WITH sandbox policy) ===");
+    println!("  Policy: filesystem=/tmp/cpex-sandbox/data(read), network=httpbin.org, env=PLUGIN_API_KEY");
+    println!("  Resources: memory=10MB, fuel=1B, timeout=5s\n");
+
     {
         let mut mgr = shared.lock().await;
-        let result = mgr.invoke("identity-checker", payload, extensions, ctx).await?;
+        let result = mgr
+            .invoke("identity-checker", payload.clone(), extensions.clone(), ctx.clone())
+            .await?;
 
         if result.continue_processing {
-            println!("Result: ALLOW");
+            println!("  Result: ALLOW");
         } else if let Some(violation) = &result.violation {
-            println!("Result: DENY - [{}] {}", violation.code, violation.reason);
+            println!("  Result: DENY - [{}] {}", violation.code, violation.reason);
         } else {
-            println!("Result: DENY (no violation details)");
+            println!("  Result: DENY (no violation details)");
         }
 
-        // Print metrics
         if let Some(m) = mgr.metrics("identity-checker") {
-            println!("\nPlugin Metrics:");
-            println!("  Invocations: {}", m.total_invocations);
-            println!("  Fuel consumed: {}", m.total_fuel_consumed);
-            println!("  Network denials: {}", m.network_denials);
-            println!("  Network allowed: {}", m.network_allowed);
+            println!("  Metrics: invocations={}, fuel_consumed={}, network_denials={}, network_allowed={}",
+                m.total_invocations, m.total_fuel_consumed, m.network_denials, m.network_allowed);
+        }
+    }
+
+    // --- Invoke audit-logger (WITHOUT sandbox policy — deny-by-default) ---
+    println!("\n=== Invoking 'audit-logger' (WITHOUT sandbox policy — deny-by-default) ===");
+    println!("  Policy: filesystem=NONE, network=NONE, env=NONE");
+    println!("  Resources: defaults (unlimited)\n");
+
+    {
+        let mut mgr = shared.lock().await;
+        let result = mgr
+            .invoke("audit-logger", payload.clone(), extensions.clone(), ctx.clone())
+            .await;
+
+        match result {
+            Ok(r) => {
+                if r.continue_processing {
+                    println!("  Result: ALLOW");
+                } else if let Some(violation) = &r.violation {
+                    println!("  Result: DENY - [{}] {}", violation.code, violation.reason);
+                } else {
+                    println!("  Result: DENY (no violation details)");
+                }
+            }
+            Err(e) => {
+                println!("  Result: ERROR (sandbox restriction likely) - {}", e);
+            }
+        }
+
+        if let Some(m) = mgr.metrics("audit-logger") {
+            println!("  Metrics: invocations={}, fuel_consumed={}, network_denials={}, network_allowed={}",
+                m.total_invocations, m.total_fuel_consumed, m.network_denials, m.network_allowed);
         }
     }
 
     // Keep the process alive so the dashboard stays up
-    println!("\nDashboard is running. Press Ctrl+C to exit.");
+    println!("\n\nDashboard is running at http://localhost:3000. Press Ctrl+C to exit.");
     tokio::signal::ctrl_c().await?;
     println!("\nShutting down.");
 

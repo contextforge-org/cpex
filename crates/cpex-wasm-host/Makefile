@@ -1,19 +1,23 @@
-.PHONY: build run clean
+.PHONY: build build-plugins run clean
 
-PLUGIN_PATH = ../cpex-wasm-plugin/plugin.wasm
+PLUGIN_DIR = ../cpex-wasm-plugin
+WASM_DIR = wasm
+PLUGINS = identity_checker.wasm audit_logger.wasm header_injector.wasm
 
-build:
+build-plugins:
+	$(MAKE) -C $(PLUGIN_DIR) build
+	@mkdir -p $(WASM_DIR)
+	@for f in $(PLUGINS); do \
+		cp $(PLUGIN_DIR)/$$f $(WASM_DIR)/$$f; \
+	done
+	@echo "Copied plugins to $(WASM_DIR)/"
+
+build: build-plugins
 	cargo build --release
 
 run: build
-	@if [ ! -f $(PLUGIN_PATH) ]; then \
-		echo "Error: plugin.wasm not found. Build it first with:"; \
-		echo "  cd ../cpex-wasm-plugin && make build"; \
-		exit 1; \
-	fi
-	cp $(PLUGIN_PATH) plugin.wasm
 	cargo run --release
 
 clean:
 	cargo clean
-	rm -f plugin.wasm
+	rm -f $(WASM_DIR)/*.wasm

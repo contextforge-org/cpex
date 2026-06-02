@@ -19,7 +19,26 @@ pub struct ConfigFile {
 pub struct PluginConfig {
     pub name: String,
     #[serde(default)]
-    pub sandbox: SandboxConfig,
+    pub kind: Option<String>,
+    #[serde(default)]
+    pub sandbox_policy: Option<SandboxPolicy>,
+    #[serde(flatten)]
+    _extra: serde_yaml::Value,
+}
+
+/// Raw sandbox policy as defined in config YAML.
+/// When this is `None` on a plugin, deny-by-default applies:
+/// no filesystem, no network, no env vars are granted.
+#[derive(Debug, Clone, Default, Deserialize, serde::Serialize)]
+pub struct SandboxPolicy {
+    #[serde(default)]
+    pub allowed_filesystem: Vec<FilesystemRule>,
+    #[serde(default)]
+    pub allowed_network: Vec<String>,
+    #[serde(default)]
+    pub allowed_env: Vec<String>,
+    #[serde(default)]
+    pub resources: ResourceLimits,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, serde::Serialize)]
@@ -77,6 +96,41 @@ pub struct FilesystemRule {
     pub permission: String,
 }
 
+impl SandboxConfig {
+    /// Build a `SandboxConfig` from an optional `SandboxPolicy`.
+    /// If the policy is `None`, returns a deny-by-default config
+    /// (no filesystem, no network, no env vars).
+    pub fn from_policy(policy: Option<&SandboxPolicy>) -> Self {
+        match policy {
+            None => Self::default(),
+            Some(sp) => Self {
+                version: "wasm-p2".to_string(),
+                policy: PolicyConfig {
+                    allowed_filesystem: sp.allowed_filesystem.clone(),
+                    allowed_network: sp.allowed_network.clone(),
+                    allowed_env: sp.allowed_env.clone(),
+                },
+                resources: sp.resources.clone(),
+            },
+        }
+    }
+}
+
+impl PluginConfig {
+    /// Returns the resolved `SandboxConfig` for this plugin.
+    /// If `sandbox_policy` is absent, deny-by-default is applied.
+    pub fn sandbox_config(&self) -> SandboxConfig {
+        SandboxConfig::from_policy(self.sandbox_policy.as_ref())
+    }
+
+    /// Extract the wasm filename from the `kind` field.
+    /// Expected format: "wasm/<filename>.wasm"
+    /// Returns `None` if kind is absent or doesn't start with "wasm/".
+    pub fn wasm_filename(&self) -> Option<&str> {
+        self.kind.as_deref().and_then(|k| k.strip_prefix("wasm/"))
+    }
+}
+
 pub fn load_plugin_sandbox_config(
     path: impl AsRef<Path>,
     plugin_name: &str,
@@ -89,10 +143,19 @@ pub fn load_plugin_sandbox_config(
 
     config
         .plugins
-        .into_iter()
+        .iter()
         .find(|plugin| plugin.name == plugin_name)
-        .map(|plugin| plugin.sandbox)
+        .map(|plugin| plugin.sandbox_config())
         .with_context(|| format!("plugin '{}' not found in policy config", plugin_name))
+}
+
+pub fn load_all_plugins_config(path: impl AsRef<Path>) -> Result<Vec<PluginConfig>> {
+    let path = path.as_ref();
+    let raw = fs::read_to_string(path)
+        .with_context(|| format!("failed to read config from {}", path.display()))?;
+    let config: ConfigFile = serde_yaml::from_str(&raw)
+        .with_context(|| format!("failed to parse YAML config from {}", path.display()))?;
+    Ok(config.plugins)
 }
 
 pub struct PluginWasiContext {
@@ -149,6 +212,95 @@ pub fn build_wasi_context(sandbox: &SandboxConfig) -> Result<PluginWasiContext> 
     })
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_config_with_sandbox_policy() {
+        let yaml = r#"
+plugins:
+  - name: identity-checker
+    kind: wasm/identity_checker.wasm
+    hooks: [cmf.tool_pre_invoke]
+    mode: sequential
+    priority: 10
+    on_error: fail
+    capabilities:
+      - read_labels
+    sandbox_policy:
+      allowed_filesystem:
+        - dir: /tmp/data
+          permission: "read"
+      allowed_network:
+        - "httpbin.org"
+      allowed_env:
+        - "API_KEY"
+      resources:
+        max_memory_bytes: 10485760
+        max_fuel: 1000000000
+
+  - name: audit-logger
+    kind: wasm/audit_logger.wasm
+    hooks: [cmf.tool_post_invoke]
+    mode: audit
+    priority: 100
+    on_error: ignore
+    capabilities:
+      - read_headers
+"#;
+        let config: ConfigFile = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.plugins.len(), 2);
+
+        // identity-checker: has sandbox_policy → capabilities granted
+        let ic = &config.plugins[0];
+        assert_eq!(ic.name, "identity-checker");
+        assert_eq!(ic.wasm_filename(), Some("identity_checker.wasm"));
+        let sandbox = ic.sandbox_config();
+        assert_eq!(sandbox.policy.allowed_network, vec!["httpbin.org"]);
+        assert_eq!(sandbox.policy.allowed_env, vec!["API_KEY"]);
+        assert_eq!(sandbox.policy.allowed_filesystem.len(), 1);
+        assert_eq!(sandbox.resources.max_memory_bytes, Some(10485760));
+        assert_eq!(sandbox.resources.max_fuel, Some(1000000000));
+
+        // audit-logger: no sandbox_policy → deny-by-default
+        let al = &config.plugins[1];
+        assert_eq!(al.name, "audit-logger");
+        assert_eq!(al.wasm_filename(), Some("audit_logger.wasm"));
+        let sandbox = al.sandbox_config();
+        assert!(sandbox.policy.allowed_network.is_empty());
+        assert!(sandbox.policy.allowed_env.is_empty());
+        assert!(sandbox.policy.allowed_filesystem.is_empty());
+        assert!(sandbox.resources.max_memory_bytes.is_none());
+        assert!(sandbox.resources.max_fuel.is_none());
+    }
+
+    #[test]
+    fn test_parse_real_config_file() {
+        let sandbox = load_plugin_sandbox_config("config/config.yaml", "identity-checker").unwrap();
+        assert_eq!(sandbox.policy.allowed_network, vec!["httpbin.org"]);
+        assert_eq!(sandbox.policy.allowed_env, vec!["PLUGIN_API_KEY"]);
+        assert_eq!(sandbox.resources.max_memory_bytes, Some(10485760));
+
+        // audit-logger has no sandbox_policy → deny-by-default
+        let sandbox = load_plugin_sandbox_config("config/config.yaml", "audit-logger").unwrap();
+        assert!(sandbox.policy.allowed_network.is_empty());
+        assert!(sandbox.policy.allowed_env.is_empty());
+        assert!(sandbox.policy.allowed_filesystem.is_empty());
+    }
+
+    #[test]
+    fn test_non_wasm_plugin_has_no_wasm_filename() {
+        let yaml = r#"
+plugins:
+  - name: native-plugin
+    kind: builtin/native-thing
+"#;
+        let config: ConfigFile = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.plugins[0].wasm_filename(), None);
+    }
+}
+
 pub struct PolicyHttpHooks {
     pub allowed_hosts: Arc<Vec<String>>,
 }
@@ -176,4 +328,3 @@ impl WasiHttpHooks for PolicyHttpHooks {
         Ok(default_send_request(request, config))
     }
 }
-

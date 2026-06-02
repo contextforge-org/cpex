@@ -14,7 +14,7 @@ use wasmtime_wasi_http::p2::types::{HostFutureIncomingResponse, OutgoingRequestC
 use wasmtime_wasi_http::p2::{HttpResult, WasiHttpHooks, default_send_request};
 use wasmtime_wasi_http::p2::bindings::http::types::ErrorCode;
 
-use crate::policy_loader::{build_wasi_context, SandboxConfig};
+use crate::policy_loader::{build_wasi_context, load_all_plugins_config, SandboxConfig};
 
 wasmtime::component::bindgen!({
     path: "wit",
@@ -298,18 +298,17 @@ impl SandboxManager {
 
     /// Reload all plugins from a config file.
     /// Any plugin whose config differs from current will be restarted.
+    /// Plugins without a `kind` starting with "wasm/" are skipped.
+    /// Plugins without a `sandbox_policy` get deny-by-default (no capabilities).
     pub async fn reload_from_config(
         &mut self,
         config_path: &Path,
         wasm_dir: &Path,
     ) -> Result<()> {
-        let raw = std::fs::read_to_string(config_path)
-            .with_context(|| format!("failed to read config from {}", config_path.display()))?;
-        let config: crate::policy_loader::ConfigFile = serde_yaml::from_str(&raw)
-            .with_context(|| format!("failed to parse config from {}", config_path.display()))?;
+        let plugins = load_all_plugins_config(config_path)?;
 
         let new_plugin_names: Vec<String> =
-            config.plugins.iter().map(|p| p.name.clone()).collect();
+            plugins.iter().map(|p| p.name.clone()).collect();
 
         // Remove plugins that are no longer in config
         let current_names: Vec<String> = self.plugins.keys().cloned().collect();
@@ -320,16 +319,23 @@ impl SandboxManager {
         }
 
         // Load or reload plugins from config
-        for plugin_cfg in config.plugins {
-            let wasm_path = wasm_dir.join(format!("{}.wasm", plugin_cfg.name));
+        for plugin_cfg in &plugins {
+            let wasm_filename = match plugin_cfg.wasm_filename() {
+                Some(f) => f,
+                None => continue, // not a wasm plugin
+            };
+
+            let wasm_path = wasm_dir.join(wasm_filename);
             if !wasm_path.exists() {
                 continue;
             }
 
+            let sandbox = plugin_cfg.sandbox_config();
+
             if self.plugins.contains_key(&plugin_cfg.name) {
-                self.reload_plugin(&plugin_cfg.name, plugin_cfg.sandbox).await?;
+                self.reload_plugin(&plugin_cfg.name, sandbox).await?;
             } else {
-                self.load_plugin(&plugin_cfg.name, &wasm_path, plugin_cfg.sandbox).await?;
+                self.load_plugin(&plugin_cfg.name, &wasm_path, sandbox).await?;
             }
         }
 
@@ -351,20 +357,26 @@ impl SandboxManager {
             .collect()
     }
 
+    /// Load all wasm plugins from config.
+    /// Extracts the wasm filename from the `kind` field (e.g. "wasm/foo.wasm").
+    /// Plugins without a `sandbox_policy` get deny-by-default (no capabilities).
     pub async fn load_from_config(
         &mut self,
         config_path: &Path,
         wasm_dir: &Path,
     ) -> Result<()> {
-        let raw = std::fs::read_to_string(config_path)
-            .with_context(|| format!("failed to read config from {}", config_path.display()))?;
-        let config: crate::policy_loader::ConfigFile = serde_yaml::from_str(&raw)
-            .with_context(|| format!("failed to parse config from {}", config_path.display()))?;
+        let plugins = load_all_plugins_config(config_path)?;
 
-        for plugin_cfg in config.plugins {
-            let wasm_path = wasm_dir.join(format!("{}.wasm", plugin_cfg.name));
+        for plugin_cfg in &plugins {
+            let wasm_filename = match plugin_cfg.wasm_filename() {
+                Some(f) => f,
+                None => continue, // not a wasm plugin
+            };
+
+            let wasm_path = wasm_dir.join(wasm_filename);
             if wasm_path.exists() {
-                self.load_plugin(&plugin_cfg.name, &wasm_path, plugin_cfg.sandbox)
+                let sandbox = plugin_cfg.sandbox_config();
+                self.load_plugin(&plugin_cfg.name, &wasm_path, sandbox)
                     .await
                     .with_context(|| format!("failed to load plugin '{}'", plugin_cfg.name))?;
             }

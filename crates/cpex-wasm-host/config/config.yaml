@@ -14,7 +14,7 @@ global:
 
 plugins:
   - name: identity-checker
-    kind: builtin/identity-checker
+    kind: wasm/identity_checker.wasm
     hooks: [cmf.tool_pre_invoke, cmf.tool_post_invoke]
     mode: sequential
     priority: 10
@@ -23,24 +23,33 @@ plugins:
       - read_labels
       - read_subject
       - read_roles
-    sandbox:
-      version: wasm-p2
-      policy:
-        allowed_filesystem:
-          - dir: /tmp/cpex-sandbox/data
-            permission: "read" # or mutate
-          - file: /tmp/cpex-sandbox/data/config.json
-            permission: "read" # or write
-        allowed_network:
-          - "httpbin.org"
-        allowed_env:
-          - "PLUGIN_API_KEY"
+    
+    sandbox_policy:
+      allowed_filesystem:
+        - dir: /tmp/cpex-sandbox/data
+          permission: "read" # or mutate
+        - file: /tmp/cpex-sandbox/data/config.json
+          permission: "read" # or write
+      allowed_network:
+        - "httpbin.org"
+      allowed_env:
+        - "PLUGIN_API_KEY"
       resources:
         max_memory_bytes: 10485760   # 10 MB
         max_fuel: 1000000000         # ~1 billion instructions
         max_execution_time_ms: 5000  # 5 seconds
         max_instances: 10
         max_tables: 10
+  
+  - name: audit-logger
+    kind: wasm/audit_logger.wasm
+    hooks: [cmf.tool_pre_invoke, cmf.tool_post_invoke]
+    mode: audit
+    priority: 100
+    on_error: ignore
+    capabilities:
+      - read_headers
+      - read_labels
 
 routes:
   - tool: "*"
