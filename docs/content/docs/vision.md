@@ -17,7 +17,7 @@ Hooks are standardized interception points placed at every boundary where an age
 
 This architecture deploys identically across the stack, inside LLM proxies, agent frameworks, and gateways. Each layer runs its own plugins. Prompt injection detection at the proxy. Tool authorization at the gateway. Data loss prevention at the agent.
 
-![CPEX hooks deployed across the agent stack](/contextforge-plugins-framework/images/distributed_hooks_control_plane.png)
+![CPEX hooks deployed across the agent stack](/cpex/images/distributed_hooks_control_plane.png)
 
 ---
 
@@ -31,7 +31,7 @@ Enforcement is a three-layer problem.
 | **CMF** (Common Message Format) | What you evaluate. A protocol-agnostic context envelope carrying identity, security labels, delegation chains, and content. |
 | **APL** (Attribute Policy Language) | How you define policy. Declarative, attribute-based rules with explicit effects. |
 
-![Hooks, CMF, and APL form a unified enforcement stack](/contextforge-plugins-framework/images/overview_vision.png)
+![Hooks, CMF, and APL form a unified enforcement stack](/cpex/images/overview_vision.png)
 
 Hooks make enforcement **possible**. Policy makes it **usable**. Context makes it **correct**.
 
@@ -41,7 +41,7 @@ Hooks make enforcement **possible**. Policy makes it **usable**. Context makes i
 
 Different policy types require different enforcement points. CPEX provides hooks at every layer, from soft stylistic policies enforced at the prompt level to hard compliance requirements enforced at infrastructure boundaries.
 
-![Policy spectrum: each policy type maps to a different enforcement point](/contextforge-plugins-framework/images/policy_spectrum.png)
+![Policy spectrum: each policy type maps to a different enforcement point](/cpex/images/policy_spectrum.png)
 
 ---
 
@@ -49,7 +49,7 @@ Different policy types require different enforcement points. CPEX provides hooks
 
 An application or framework invokes a hook at a critical operation boundary. The plugin manager dispatches registered plugins (sequentially, concurrently, or fire-and-forget) and returns a result. Plugins can **allow** execution to continue, **block** it with a violation, or **modify** the payload using copy-on-write isolation.
 
-![Plugin execution model: agent → middleware → hook → manager → plugins](/contextforge-plugins-framework/images/integration_execution_model.png)
+![Plugin execution model: agent → middleware → hook → manager → plugins](/cpex/images/integration_execution_model.png)
 
 The plugin manager handles registration, ordering, timeouts, error isolation, and payload chaining. You get a deterministic enforcement pipeline with no surprises.
 
@@ -67,7 +67,7 @@ CPEX is under active development. The current Python framework is production-rea
 
 - **Plugin catalog.** Discovery, versioning, and installation of plugins from registries. Multiple instances from a single manifest, managed through the CLI.
 
-See the [GitHub milestones](https://github.com/contextforge-org/contextforge-plugins-framework/milestones) and [open issues](https://github.com/contextforge-org/contextforge-plugins-framework/issues) for details.
+See the [GitHub milestones](https://github.com/contextforge-org/cpex/milestones) and [open issues](https://github.com/contextforge-org/cpex/issues) for details.
 
 ---
 
@@ -84,7 +84,7 @@ See the [GitHub milestones](https://github.com/contextforge-org/contextforge-plu
 
 CPEX is part of the [ContextForge](https://github.com/contextforge-org) ecosystem.
 
-- [CPEX Plugin Framework](https://github.com/contextforge-org/contextforge-plugins-framework) (this project)
-- [Contributing Guide](https://github.com/contextforge-org/contextforge-plugins-framework/blob/main/CONTRIBUTING.md)
+- [CPEX Plugin Framework](https://github.com/contextforge-org/cpex) (this project)
+- [Contributing Guide](https://github.com/contextforge-org/cpex/blob/main/CONTRIBUTING.md)
 
 Contributions, feedback, and plugin ideas are welcome. Open an issue or submit a pull request.

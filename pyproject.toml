@@ -1,6 +1,6 @@
 [project]
 name = "cpex"
-version = "0.1.0"
+version = "0.1.1.dev1"
 description = "CPEX - ContextForge Plugin Extensibility Framework"
 classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
@@ -33,14 +33,17 @@ dependencies = [
     "pydantic-settings>=2.13.1",
     "pydantic>=2.12.5",
     "pyyaml>=6.0.3",
-    "packaging>=26.0"
+    "packaging>=26.0",
+    "inquirer>=3.4.1",
+    "rich>=14.3.3",
+    "pygithub>=2.9.0"
 ]
 
 [project.scripts]
 cpex = "cpex.tools.cli:main"
 
 [project.urls]
-Repository = "https://github.com/contextforge-org/contextforge-plugins-framework"
+Repository = "https://github.com/contextforge-org/cpex"
 
 [project.optional-dependencies]
 
@@ -145,6 +148,10 @@ preview = true
 # Allow fix for all enabled rules (when `--fix`) is provided.
 fixable = ["ALL"]
 unfixable = []
+
+[tool.ruff.lint.pylint]
+# Relaxed from the default of 5; existing code has wider try clauses (max observed 38).
+max-statements-in-try = 50
 
 # Ignore D1 (docstring checks) and Pylint checks in tests and other non-production code
 [tool.ruff.lint.per-file-ignores]
