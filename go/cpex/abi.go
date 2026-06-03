@@ -32,7 +32,7 @@ import "fmt"
 // expectedFFIABIVersion is the FFI_ABI_VERSION integer this binding
 // was generated against. Bump in lockstep with the Rust crate's
 // FFI_ABI_VERSION whenever the C surface changes in a breaking way.
-const expectedFFIABIVersion uint32 = 1
+const expectedFFIABIVersion uint32 = 2
 
 func init() {
 	actual := uint32(C.cpex_ffi_abi_version())

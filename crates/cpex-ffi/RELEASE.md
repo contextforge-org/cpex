@@ -8,6 +8,15 @@ without needing a Rust toolchain.
 This document covers what is published, how to consume and verify
 an artifact, and the FFI ABI policy that makes the contract durable.
 
+> **APL bundled.** The published `.a` includes the APL (Attribute Policy
+> Language) governance layer and its standard plugin/PDP factories
+> (`validator/pii-scan`, `audit/logger`, `identity/jwt`,
+> `delegator/oauth`, `cedar-direct`). Enable it on a manager via
+> `cpex_apl_install` (Go: `PluginManager.EnableAPL()`) after
+> `cpex_manager_new_default` and before `cpex_load_config`. The
+> Cedarling-backed seams are **not** in the default `.a` — build with
+> `cargo build -p cpex-ffi --features cedarling` to include them.
+
 ## What is published
 
 Every CPEX release tagged `vMAJOR.MINOR.PATCH` (or
