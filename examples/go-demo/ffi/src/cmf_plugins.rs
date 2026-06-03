@@ -265,7 +265,7 @@ impl PluginFactory for HeaderInjectorFactory {
 }
 
 /// Register CMF demo plugin factories on a manager.
-pub fn register_cmf_factories(manager: &mut cpex_core::manager::PluginManager) {
+pub fn register_cmf_factories(manager: &cpex_core::manager::PluginManager) {
     manager.register_factory("builtin/cmf-tool-policy", Box::new(ToolPolicyFactory));
     manager.register_factory(
         "builtin/cmf-header-injector",
