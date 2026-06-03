@@ -55,6 +55,9 @@ fn plugin_config(token_endpoint: &str) -> PluginConfig {
             "subject_token_type": "urn:ietf:params:oauth:token-type:access_token",
             "timeout_seconds": 2,
             "default_outbound_header": "Authorization",
+            // wiremock binds to http://127.0.0.1 — opt in to plaintext
+            // for the test. Production deployments must omit this.
+            "insecure_http": true,
         })),
         ..Default::default()
     }
@@ -289,4 +292,91 @@ async fn missing_audience_rejects_without_network() {
     let violation = result.violation.expect("rejection should surface");
     assert_eq!(violation.code, "delegation.bad_request");
     assert!(violation.reason.contains("target_audience"));
+}
+
+/// IdP grants narrower scopes than requested — delegator emits the
+/// documented `delegation.scope_too_broad` code rather than silently
+/// proceeding. Without this check, a route that requested
+/// `read+write` and got back only `read` would mint a token the
+/// downstream call can't actually use, leaving the policy author
+/// with no observable signal about *why* the call failed downstream.
+#[tokio::test]
+async fn idp_narrower_scope_surfaces_scope_too_broad() {
+    let mut server = Server::new_async().await;
+    let mock = server
+        .mock("POST", "/oauth/token")
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body(
+            json!({
+                "access_token": "narrower-token",
+                "issued_token_type": "urn:ietf:params:oauth:token-type:access_token",
+                "expires_in": 300,
+                // Asked for both, got only `read`.
+                "scope": "read",
+            })
+            .to_string(),
+        )
+        .create_async()
+        .await;
+
+    let mgr = build_manager(&format!("{}/oauth/token", server.url())).await;
+    let payload = build_payload(
+        "tool",
+        "https://downstream.example.com",
+        &["read", "write"],
+    );
+
+    let result = invoke(&mgr, payload).await;
+    assert!(
+        !result.continue_processing,
+        "narrower IdP grant must NOT silently succeed",
+    );
+    let violation = result.violation.expect("rejection should surface");
+    assert_eq!(violation.code, "delegation.scope_too_broad");
+    assert!(
+        violation.reason.contains("write"),
+        "reason should name the missing scope: {}",
+        violation.reason,
+    );
+
+    mock.assert_async().await;
+}
+
+/// Sanity check: when the IdP grants exactly the requested set, the
+/// scope check passes. Pins the "no false positive" half of the
+/// scope_too_broad behaviour.
+#[tokio::test]
+async fn idp_exact_scope_match_succeeds() {
+    let mut server = Server::new_async().await;
+    let mock = server
+        .mock("POST", "/oauth/token")
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body(
+            json!({
+                "access_token": "ok-token",
+                "issued_token_type": "urn:ietf:params:oauth:token-type:access_token",
+                "expires_in": 300,
+                "scope": "read write",
+            })
+            .to_string(),
+        )
+        .create_async()
+        .await;
+
+    let mgr = build_manager(&format!("{}/oauth/token", server.url())).await;
+    let payload = build_payload(
+        "tool",
+        "https://downstream.example.com",
+        &["read", "write"],
+    );
+
+    let result = invoke(&mgr, payload).await;
+    assert!(
+        result.continue_processing,
+        "exact scope match should mint a token; violation = {:?}",
+        result.violation,
+    );
+    mock.assert_async().await;
 }

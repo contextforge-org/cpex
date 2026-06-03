@@ -120,6 +120,19 @@ impl OAuthDelegator {
                 ),
             }));
         }
+        // Reject http:// for token_endpoint by default. The exchange
+        // POST sends client_id:client_secret + inbound user JWT;
+        // sending these over plaintext defeats the whole flow.
+        // `insecure_http: true` is the conscious opt-out for
+        // localhost docker-compose demos.
+        if let Err(e) = require_https(&typed.token_endpoint, typed.insecure_http) {
+            return Err(Box::new(PluginError::Config {
+                message: format!(
+                    "plugin '{}' (apl-delegator-oauth): token_endpoint {e}",
+                    cfg.name,
+                ),
+            }));
+        }
         if typed.client_id.trim().is_empty() {
             return Err(Box::new(PluginError::Config {
                 message: format!(
@@ -316,6 +329,39 @@ impl HookHandler<TokenDelegateHook> for OAuthDelegator {
             Vec::new()
         };
 
+        // Enforce requested ⊆ effective. Without this check, a route
+        // that asked for `read write` and got back `read` would
+        // proceed as if the broader grant had succeeded — downstream
+        // calls would fail in policy-author-unobservable ways. We
+        // compare only when the IdP explicitly sent a `scope` field
+        // (otherwise we just used the requested set above, so the
+        // subset relationship is trivially true). The required
+        // permissions come straight off the DelegationPayload; route
+        // attenuation capabilities are advisory extras and not
+        // checked here.
+        if parsed.scope.is_some() {
+            let granted: std::collections::HashSet<&str> =
+                effective_scopes.iter().map(String::as_str).collect();
+            let missing: Vec<&str> = payload
+                .required_permissions()
+                .iter()
+                .filter(|req| !granted.contains(req.as_str()))
+                .map(String::as_str)
+                .collect();
+            if !missing.is_empty() {
+                return PluginResult::deny(PluginViolation::new(
+                    "delegation.scope_too_broad",
+                    format!(
+                        "IdP granted narrower scopes than requested. \
+                         requested=[{}] granted=[{}] missing=[{}]",
+                        payload.required_permissions().join(" "),
+                        effective_scopes.join(" "),
+                        missing.join(" "),
+                    ),
+                ));
+            }
+        }
+
         // Compute expiry. Most IdPs send `expires_in` (seconds);
         // if missing, default to 5 minutes — short enough that a
         // misconfigured-but-no-expiry IdP doesn't mint long-lived
@@ -366,3 +412,63 @@ impl HookHandler<TokenDelegateHook> for OAuthDelegator {
 // crate's surface is visible at a glance.
 #[allow(dead_code)]
 fn _force_link(_: Arc<()>) {}
+
+/// Reject `http://` for endpoints that carry credentials. Allows
+/// `https://` unconditionally and `http://` only when the operator
+/// explicitly set `insecure_http: true`. Empty / un-parseable URLs
+/// are returned as-is to whatever validator already exists upstream
+/// — this helper only owns the scheme check.
+///
+/// Returns a short fragment ("must use https://…") that the caller
+/// prepends with the field name + plugin name for the full error
+/// message.
+fn require_https(url: &str, insecure_http: bool) -> Result<(), String> {
+    let lowered = url.trim_start().to_ascii_lowercase();
+    if lowered.starts_with("https://") {
+        return Ok(());
+    }
+    if lowered.starts_with("http://") {
+        if insecure_http {
+            return Ok(());
+        }
+        return Err(format!(
+            "must use https:// (got '{url}'). Set `insecure_http: true` \
+             to allow plaintext for localhost/dev only — never production."
+        ));
+    }
+    // Anything else (missing scheme, bad scheme): defer to the
+    // upstream URL parser. We're not the URL validator, just the
+    // scheme gate.
+    Ok(())
+}
+
+#[cfg(test)]
+mod scheme_tests {
+    use super::require_https;
+
+    #[test]
+    fn https_always_ok() {
+        assert!(require_https("https://idp.example/oauth/token", false).is_ok());
+        assert!(require_https("HTTPS://IDP.EXAMPLE/", false).is_ok());
+    }
+
+    #[test]
+    fn http_default_rejected() {
+        let err = require_https("http://localhost:8081/oauth/token", false).unwrap_err();
+        assert!(err.contains("must use https"), "{}", err);
+        assert!(err.contains("insecure_http"), "mentions opt-out: {}", err);
+    }
+
+    #[test]
+    fn http_with_explicit_opt_in_allowed() {
+        assert!(require_https("http://localhost:8081/oauth/token", true).is_ok());
+    }
+
+    #[test]
+    fn http_with_leading_whitespace_still_rejected() {
+        // A trailing newline or leading whitespace from sloppy YAML
+        // shouldn't smuggle a plaintext URL past the gate.
+        let err = require_https("  http://idp/", false).unwrap_err();
+        assert!(err.contains("must use https"));
+    }
+}

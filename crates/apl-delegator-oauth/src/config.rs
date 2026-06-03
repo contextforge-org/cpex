@@ -52,6 +52,16 @@ pub struct OAuthDelegatorConfig {
     /// want a different header (`X-Service-Token`, etc.).
     #[serde(default = "default_outbound_header")]
     pub default_outbound_header: String,
+
+    /// Explicitly allow `http://` for `token_endpoint`. By default,
+    /// the constructor rejects non-https URLs because the
+    /// token-exchange POST sends `client_id:client_secret` and the
+    /// inbound user JWT — leaking either over plaintext defeats the
+    /// whole exchange. Set to `true` ONLY for `http://localhost`
+    /// development against a docker-compose IdP. Production
+    /// deployments must leave this at the default (`false`).
+    #[serde(default)]
+    pub insecure_http: bool,
 }
 
 /// Where the gateway's OAuth client secret is loaded from. Three
