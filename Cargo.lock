@@ -811,6 +811,13 @@ dependencies = [
 name = "cpex-ffi"
 version = "0.1.0"
 dependencies = [
+ "apl-audit-logger",
+ "apl-cedarling",
+ "apl-cpex",
+ "apl-delegator-oauth",
+ "apl-identity-jwt",
+ "apl-pdp-cedar-direct",
+ "apl-pii-scanner",
  "async-trait",
  "cpex-core",
  "rmp-serde",

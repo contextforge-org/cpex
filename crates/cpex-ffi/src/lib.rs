@@ -15,7 +15,7 @@
 use std::os::raw::{c_char, c_int};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::ptr;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use cpex_core::context::PluginContextTable;
@@ -23,6 +23,9 @@ use cpex_core::executor::BackgroundTasks;
 use cpex_core::extensions::Extensions;
 use cpex_core::hooks::payload::PluginPayload;
 use cpex_core::manager::PluginManager;
+
+// APL governance wiring — the `cpex_apl_install` extern "C" entry point.
+mod apl;
 
 // ---------------------------------------------------------------------------
 // FFI Result Codes
@@ -90,7 +93,7 @@ pub const RC_PANIC: c_int = -7;
 
 /// FFI ABI version. Bump on breaking C-surface changes; see module
 /// docs above for what counts as breaking.
-pub const FFI_ABI_VERSION: u32 = 1;
+pub const FFI_ABI_VERSION: u32 = 2;
 
 /// Returns the FFI ABI version this `libcpex_ffi` was built with.
 /// Language bindings call this at `init` and panic on mismatch
@@ -376,7 +379,11 @@ fn serialize_payload(payload: &dyn PluginPayload) -> Result<(u8, Vec<u8>), Strin
 /// All managers share the process-singleton runtime returned by
 /// `shared_runtime()` — see the `SHARED_RUNTIME` doc-comment for why.
 pub struct CpexManagerInner {
-    pub manager: PluginManager,
+    /// Held as `Arc` so the APL config visitor — registered via
+    /// `cpex_apl_install` — can keep a `Weak<PluginManager>` that upgrades
+    /// during `load_config_yaml`. See `apl::cpex_apl_install` and
+    /// `apl_cpex::register_apl`.
+    pub manager: Arc<PluginManager>,
 }
 
 /// Opaque handle to a ContextTable (Rust-owned, not serialized).
@@ -475,9 +482,12 @@ pub unsafe extern "C" fn cpex_manager_new(
     // silently no-op.
     let _ = shared_runtime();
 
-    let manager = PluginManager::default();
+    let manager = Arc::new(PluginManager::default());
 
-    // Load config — factories must be registered separately via cpex_register_factory
+    // Load config — factories must be registered separately via cpex_register_factory.
+    // Note: this one-shot path uses `load_config` (no visitor walk), so APL is
+    // NOT wired here. APL requires the cpex_manager_new_default →
+    // cpex_apl_install → cpex_load_config flow.
     if let Err(e) = manager.load_config(cpex_config) {
         tracing::error!("cpex_manager_new: load_config failed: {}", e);
         return ptr::null_mut();
@@ -492,7 +502,7 @@ pub unsafe extern "C" fn cpex_manager_new(
 #[no_mangle]
 pub extern "C" fn cpex_manager_new_default() -> *mut CpexManagerInner {
     let _ = shared_runtime();
-    let manager = PluginManager::default();
+    let manager = Arc::new(PluginManager::default());
     Box::into_raw(Box::new(CpexManagerInner { manager }))
 }
 
@@ -523,17 +533,22 @@ pub unsafe extern "C" fn cpex_load_config(
         None => return RC_INVALID_INPUT,
     };
 
-    let cpex_config = match cpex_core::config::parse_config(yaml) {
-        Ok(c) => c,
-        Err(e) => {
-            tracing::error!("cpex_load_config: config parse failed: {}", e);
-            return RC_PARSE_ERROR;
-        }
-    };
+    // Validate first (duplicate plugin names, route shape) — preserves the
+    // RC_PARSE_ERROR contract. We discard the parsed value and hand the raw
+    // YAML to `load_config_yaml`, which re-parses into both a typed
+    // CpexConfig and a raw serde_yaml::Value so registered config visitors
+    // (e.g. the APL visitor installed by cpex_apl_install) can walk the
+    // `apl:` blocks and install per-route handlers. Plain `load_config`
+    // does NOT run that visitor walk.
+    if let Err(e) = cpex_core::config::parse_config(yaml) {
+        tracing::error!("cpex_load_config: config parse failed: {}", e);
+        return RC_PARSE_ERROR;
+    }
 
-    // load_config is sync (no .await), but we still wrap in catch_unwind
-    // so a panic in serde / config validation doesn't unwind across FFI.
-    let load_result = catch_unwind(AssertUnwindSafe(|| inner.manager.load_config(cpex_config)));
+    // load_config_yaml is sync (no .await), but we still wrap in catch_unwind
+    // so a panic in serde / config validation / a visitor doesn't unwind
+    // across FFI.
+    let load_result = catch_unwind(AssertUnwindSafe(|| inner.manager.load_config_yaml(yaml)));
     match load_result {
         Ok(Ok(())) => RC_OK,
         Ok(Err(e)) => {
@@ -1093,7 +1108,7 @@ mod tests {
         // Touch the shared runtime so it's initialized; tests use it
         // rather than a per-manager runtime.
         let _ = shared_runtime();
-        let manager = cpex_core::manager::PluginManager::default();
+        let manager = Arc::new(cpex_core::manager::PluginManager::default());
         Box::into_raw(Box::new(CpexManagerInner { manager }))
     }
 
@@ -1352,6 +1367,55 @@ mod tests {
 
             assert_eq!(cpex_initialize(ptr::null()), RC_INVALID_HANDLE);
             assert_eq!(cpex_is_initialized(ptr::null()), 0);
+        }
+    }
+
+    #[test]
+    fn cpex_apl_install_rejects_null_handle() {
+        unsafe {
+            assert_eq!(crate::apl::cpex_apl_install(ptr::null()), RC_INVALID_HANDLE);
+        }
+    }
+
+    /// Full APL flow through the FFI surface: default manager →
+    /// cpex_apl_install (registers bundled factories + APL visitor) →
+    /// cpex_load_config over an `apl:`-annotated YAML using a bundled
+    /// plugin kind (`audit/logger`) → cpex_initialize. Proves the visitor
+    /// walk runs (load uses load_config_yaml) and the bundled factory is
+    /// reachable, so the plugin actually instantiates.
+    #[test]
+    fn cpex_apl_install_then_load_apl_config_initializes() {
+        const YAML: &str = r#"
+plugins:
+  - name: auditor
+    kind: audit/logger
+    hooks: [cmf.tool_pre_invoke]
+routes:
+  - tool: get_weather
+    apl:
+      policy:
+        - "plugin(auditor)"
+"#;
+        unsafe {
+            let mgr = build_test_manager();
+
+            assert_eq!(crate::apl::cpex_apl_install(mgr), RC_OK);
+
+            let rc = cpex_load_config(mgr, YAML.as_ptr() as *const c_char, YAML.len() as c_int);
+            assert_eq!(rc, RC_OK, "load of APL config should succeed");
+
+            assert_eq!(cpex_initialize(mgr), RC_OK);
+
+            // The bundled `audit/logger` factory instantiated a plugin on
+            // cmf.tool_pre_invoke — proves cpex_apl_install wired the kind.
+            assert!(cpex_plugin_count(mgr) >= 1);
+            let hook = "cmf.tool_pre_invoke";
+            assert_eq!(
+                cpex_has_hooks_for(mgr, hook.as_ptr() as *const c_char, hook.len() as c_int),
+                1,
+            );
+
+            cpex_shutdown(mgr);
         }
     }
 }
