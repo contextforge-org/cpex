@@ -706,7 +706,29 @@ pub unsafe extern "C" fn cpex_plugin_names(
 /// Returns MessagePack-encoded PipelineResult + opaque handles for
 /// context table and background tasks.
 ///
-/// Returns 0 on success, -1 on failure.
+/// # Ownership contract
+///
+/// **The caller's input `context_table` is unconditionally consumed
+/// by this function** — even on error paths (RC_INVALID_HANDLE,
+/// RC_INVALID_INPUT, RC_PARSE_ERROR, RC_TIMEOUT, RC_PANIC, etc.).
+/// The Box is freed inside `cpex_invoke`; the caller's pointer is
+/// dead once this function returns. This mirrors the pattern used
+/// by `cpex_wait_background` and lets the Go binding nil its handle
+/// unconditionally after the call without leaking the underlying Box.
+///
+/// On `RC_OK`, a **fresh** `CpexContextTableInner` Box is allocated
+/// and its raw pointer is written to `*context_table_out`. On any
+/// non-OK return, `*context_table_out` is left as a null pointer
+/// (initialized at function entry). The other out parameters
+/// (`result_msgpack_out`, `result_len_out`, `bg_handle_out`) follow
+/// the same discipline: null/zero on error, populated on success.
+///
+/// Pre-P0-1 the function consumed the input only after validation
+/// passed but before `run_safely`. On `RC_TIMEOUT` / `RC_PANIC` the
+/// input had been consumed but `*context_table_out` was never written,
+/// so the Go wrapper kept its stale handle and a subsequent
+/// `ContextTable.Close()` ran `cpex_release_context_table` on
+/// already-freed memory.
 ///
 /// # Safety
 /// All pointer parameters must be valid or NULL where documented.
@@ -731,7 +753,43 @@ pub unsafe extern "C" fn cpex_invoke(
     context_table_out: *mut *mut CpexContextTableInner,
     bg_handle_out: *mut *mut CpexBackgroundTasksInner,
 ) -> c_int {
-    // Validate manager handle
+    // Initialize all out params to safe defaults. Any early return
+    // from here on leaves a consistent state for the caller: every
+    // out pointer is null/zero, so a downstream attempt to dereference
+    // produces a clean null-deref crash rather than reading uninit
+    // stack memory. The success path overwrites these at the end.
+    *result_msgpack_out = std::ptr::null_mut();
+    *result_len_out = 0;
+    *context_table_out = std::ptr::null_mut();
+    *bg_handle_out = std::ptr::null_mut();
+
+    // Take ownership of the input context_table *immediately*, before
+    // any validation that could return an error code. From this point
+    // on, the caller's `context_table` pointer is dead — equivalent
+    // to free'd memory from the caller's perspective. This mirrors
+    // how `cpex_wait_background` handles `bg_handle`: ownership
+    // transfers on entry, the caller nils its reference, and Rust
+    // is responsible for the Box's lifetime from then on. Pre-fix,
+    // consumption happened mid-function after some validations, which
+    // meant validation errors left the input alive (one ownership
+    // model) and post-validation errors left it consumed without
+    // writing `*context_table_out` (a *different* ownership model).
+    // Two contracts in one function is exactly what produced the
+    // P0-1 UAF.
+    let input_ctx_table: Option<PluginContextTable> = if context_table.is_null() {
+        None
+    } else {
+        // Box::from_raw consumes the allocation; it'll drop at the
+        // end of this scope if not moved into Some(...). When moved
+        // into Some(...), the table value lives until invoke_by_name
+        // either uses it or it's dropped on a Future-cancellation
+        // path (RC_TIMEOUT). Either way the Box is gone.
+        let ct = Box::from_raw(context_table);
+        Some(ct.table)
+    };
+
+    // Validate manager handle. `input_ctx_table` already owns the
+    // input data — if we return here, it drops cleanly.
     let inner = match mgr.as_ref() {
         Some(m) => m,
         None => return RC_INVALID_HANDLE,
@@ -774,22 +832,17 @@ pub unsafe extern "C" fn cpex_invoke(
         Extensions::default()
     };
 
-    // Get or create context table
-    let ctx_table: Option<PluginContextTable> = if context_table.is_null() {
-        None
-    } else {
-        let ct = Box::from_raw(context_table);
-        Some(ct.table)
-    };
-
     // Invoke the hook with wall-clock timeout + panic catch.
     let (mut result, bg) = match run_safely(
         inner
             .manager
-            .invoke_by_name(name, payload, extensions, ctx_table),
+            .invoke_by_name(name, payload, extensions, input_ctx_table),
         "cpex_invoke",
     ) {
         SafeRun::Ok(r) => r,
+        // *context_table_out is already null (set at function entry);
+        // the input table has been consumed by invoke_by_name's call
+        // frame and dropped. Caller's handle is dead, no replacement.
         other => return other.rc(), // RC_TIMEOUT or RC_PANIC; already logged
     };
 

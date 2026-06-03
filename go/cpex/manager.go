@@ -341,19 +341,18 @@ func (m *PluginManager) InvokeByName(
 	cHookName := C.CString(hookName)
 	defer C.free(unsafe.Pointer(cHookName))
 
-	// Pass the context-table handle to Rust but DO NOT nil our local
-	// reference until we know Rust succeeded. Rust consumes the handle
-	// only at the moment of invoke (after all input validation), so
-	// pre-invoke failures (bad payload, bad extensions, etc.) leave
-	// the handle untouched and the caller's ContextTable remains valid.
-	//
-	// Caveat: on a post-invoke failure (rare — only result-serialization
-	// OOM), Rust has consumed the box but doesn't write ctOut, so the
-	// caller's ContextTable handle becomes dangling. The caller should
-	// not reuse a ContextTable after an InvokeByName error.
+	// Pass the context-table handle to Rust. Per the post-P0-1 FFI
+	// contract, `cpex_invoke` takes ownership of `ctHandle`
+	// UNCONDITIONALLY on entry — same pattern as `cpex_wait_background`
+	// with `bg_handle`. We nil our local reference immediately so the
+	// caller's `ContextTable` can't be accidentally reused after this
+	// call (its underlying Box is gone regardless of the eventual rc).
+	// On RC_OK a fresh handle lands in `ctOut`; on any error path
+	// `ctOut` stays nil and the caller's context-table chain ends here.
 	var ctHandle C.CpexContextTable
 	if contextTable != nil {
 		ctHandle = contextTable.handle
+		contextTable.handle = nil
 	}
 
 	var resultPtr *C.uint8_t
@@ -386,14 +385,11 @@ func (m *PluginManager) InvokeByName(
 	)
 
 	if rc != 0 {
+		// `ctOut` is null on every non-OK return per the post-P0-1
+		// contract. The caller's `contextTable.handle` is already nil
+		// (we cleared it above before the call), so there's no
+		// dangling-handle risk on error paths.
 		return nil, nil, nil, errorFromRC(int(rc), "InvokeByName")
-	}
-
-	// Rust succeeded — it consumed ctHandle and produced ctOut.
-	// NOW it's safe to nil the caller's reference (the original Box
-	// was consumed by Rust; its successor is in ctOut).
-	if contextTable != nil {
-		contextTable.handle = nil
 	}
 
 	// Deserialize result from MessagePack
