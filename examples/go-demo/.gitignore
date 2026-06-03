@@ -1,3 +1,8 @@
-# Built demo binaries
-cpex-demo
-cmf-demo
+# Built demo binaries. Patterns are anchored (leading slash) so they
+# match *files* at their build-output locations, not arbitrary path
+# components — the previous unanchored `cmf-demo` rule was silently
+# ignoring the `cmd/cmf-demo/` source directory and everything under
+# it.
+/cpex-demo
+/cmf-demo
+/cmd/cmf-demo/cmf-demo
