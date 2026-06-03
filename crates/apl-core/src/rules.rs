@@ -1,5 +1,5 @@
 // Location: ./crates/apl-core/src/rules.rs
-// Copyright 2025
+// Copyright 2026
 // SPDX-License-Identifier: Apache-2.0
 // Authors: Teryl Taylor
 //
@@ -92,33 +92,235 @@ pub enum Expression {
     Always,
 }
 
-/// What happens when a rule's condition holds.
+/// One thing a matching rule does. Mirrors DSL spec §3 effect classes:
 ///
-/// Only the two first-class spec actions are represented: `Allow`
-/// (explicit allow, evaluation continues) and `Deny` (terminal, with an
-/// optional reason). The DSL spec §3 has no `Audit` or `DenyActions`
-/// action — audit is `plugin(audit_logger)` (a future `Step` variant),
-/// and downstream-action denial maps to taint labels or reaction blocks.
+///   * Control — `Allow`, `Deny`
+///   * Label — `Taint`
+///   * Host — `Plugin`, `Delegate`
 ///
-/// Field-transform actions (`mask` / `redact` / `omit` / `hash`), PDP
-/// calls (`cedar:(…)`, `opa(…)`, `authzen(…)`, `nemo(…)`), and plugin
-/// invocations (`plugin(name)`) are rule-level *steps* in the spec, not
-/// actions — they land as a separate `Step` enum when the parser arrives.
+/// Content effects (`redact`, `mask`, `omit`, `hash`) and orchestration
+/// (`Sequential`, `Parallel`) land in later slices (E2 / E3).
+///
+/// PDP calls (`cedar:(…)`, `opa(…)`, …) remain top-level [`Step`]
+/// variants for now; folding them into `Effect` is an E4 cleanup.
+///
+/// # Inside a `Vec<Effect>` (a rule's `effects` body)
+///
+///   * `Allow` is a no-op — lets evaluation continue to the next effect
+///     in the list, then to the next step in `policy:`.
+///   * `Deny` short-circuits the rest of the list, the rest of the
+///     `policy:` block, and the route. The `reason` propagates into
+///     the violation message.
+///   * `Plugin` / `Delegate` dispatch identically to their top-level
+///     `Step` counterparts (same invoker traits).
+///   * `Taint` accumulates into the phase's taint events.
+///
+/// [`Step`]: crate::step::Step
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum Action {
+pub enum Effect {
     Allow,
-    Deny { reason: Option<String> },
+    Deny {
+        reason: Option<String>,
+        /// Author-supplied stable violation code. When `Some`, it
+        /// overrides the rule's auto-generated source-position code
+        /// (`routes.tool:X.apl.policy[N]`) downstream. Useful when
+        /// MCP clients want to dispatch on category (`quota.exceeded`,
+        /// `delegation.depth_exceeded`) rather than position, or when
+        /// multiple routes share a deny category that should
+        /// aggregate consistently in audit dashboards. When `None`,
+        /// the evaluator falls back to `rule.source` as the code —
+        /// matches the historical behavior.
+        ///
+        /// Parser shape: `deny('reason', 'code')` (two positional
+        /// arguments) or the structured `deny: { reason: ..., code: ... }`
+        /// map form.
+        code: Option<String>,
+    },
+    Plugin {
+        name: String,
+    },
+    Delegate(crate::step::DelegateStep),
+    Taint {
+        label: String,
+        scopes: Vec<crate::pipeline::TaintScope>,
+    },
+    /// Content effect (DSL §3) — apply a pipe chain (`redact`, `mask`,
+    /// `omit`, `hash`, validators, transforms) to a field in the
+    /// route's args or result. The author writes
+    /// `result.salary | redact` inside a `do:` body; the parser
+    /// splits the dotted path from the pipeline.
+    ///
+    /// `path` must start with `args.` or `result.` — the evaluator
+    /// dispatches the lookup against `RoutePayload.args` or
+    /// `RoutePayload.result`. A FieldOp inside a Pre-phase route's
+    /// `do:` that targets `result.X` is a no-op (the result hasn't
+    /// been produced yet); same goes for a Post-phase rule that
+    /// targets `args.X` (the args are already on the wire). The
+    /// evaluator silently skips out-of-phase ops so the same
+    /// `when:`/`do:` shape can describe both phases without
+    /// branching.
+    FieldOp {
+        path: String,
+        stages: Vec<crate::pipeline::Stage>,
+    },
+    /// Run a list of effects in declaration order, stopping on the
+    /// first Deny. Semantically equivalent to inlining the list into
+    /// the enclosing scope; the variant exists to make grouping
+    /// explicit and to pair with `Parallel`.
+    Sequential(Vec<Effect>),
+    /// Run a list of effects concurrently. Any Deny → overall Deny.
+    /// Taints from all branches accumulate. Bag and payload mutations
+    /// inside parallel branches are **discarded** when the branch
+    /// completes — each branch gets a clone of the state, never the
+    /// shared mutable original. Plugins inside `Parallel` can still
+    /// emit taints (those merge); any other mutation they try to make
+    /// (bag writes, args/result rewrites) vanishes.
+    ///
+    /// Config-load rejects `FieldOp` and `Delegate` directly inside
+    /// `Parallel` (recursively), since both would silently drop their
+    /// effect. The escape valve is `Sequential`.
+    Parallel(Vec<Effect>),
+    /// Predicate-gated body. `body` runs in order when `condition`
+    /// evaluates to true; any Deny in the body halts the surrounding
+    /// phase. Replaces the historical `Step::Rule(Rule)` shape —
+    /// `when:` / `do:` directly desugars to this. A bare `require(X)`
+    /// or `deny(X)` shorthand compiles to `When { condition: X,
+    /// body: vec![Effect::Allow / Deny] }`.
+    ///
+    /// `source` is the human-readable origin (e.g. `"routes.X.policy[2]"`)
+    /// surfaced in `Decision::Deny.rule_source` when the body denies
+    /// without supplying its own code.
+    When {
+        condition: Expression,
+        body: Vec<Effect>,
+        source: String,
+    },
+    /// External PDP call. `on_allow` / `on_deny` are reaction effect
+    /// lists fired against the PDP's decision (DSL §7.5). Replaces
+    /// `Step::Pdp { ... }` — `args`-shape stays identical.
+    Pdp {
+        call: crate::step::PdpCall,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        on_allow: Vec<Effect>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        on_deny: Vec<Effect>,
+    },
 }
 
-/// One compiled rule: a predicate plus the effect when it matches.
+impl Effect {
+    /// Walk this effect (and any nested effects) checking whether any
+    /// node would mutate route state. Used by the config-load
+    /// validator to reject `FieldOp` / `Delegate` inside `Parallel`
+    /// since both would silently drop their effect in a discarded
+    /// branch.
+    pub fn contains_mutation(&self) -> bool {
+        match self {
+            Effect::FieldOp { .. } | Effect::Delegate(_) => true,
+            Effect::Sequential(effects) | Effect::Parallel(effects) => {
+                effects.iter().any(Effect::contains_mutation)
+            }
+            Effect::When { body, .. } => body.iter().any(Effect::contains_mutation),
+            Effect::Pdp { on_allow, on_deny, .. } => {
+                on_allow.iter().any(Effect::contains_mutation)
+                    || on_deny.iter().any(Effect::contains_mutation)
+            }
+            Effect::Allow
+            | Effect::Deny { .. }
+            | Effect::Plugin { .. }
+            | Effect::Taint { .. } => false,
+        }
+    }
+
+    /// Walk the effect tree rejecting any `FieldOp` / `Delegate` that
+    /// lives directly or transitively under a `Parallel` node. Returns
+    /// the path string of the first violation found (or `Ok(())` if
+    /// the tree is clean). Run at config-load.
+    pub fn validate_parallel_purity(&self) -> Result<(), String> {
+        match self {
+            Effect::Parallel(effects) => {
+                for e in effects {
+                    if e.contains_mutation() {
+                        return Err(format!(
+                            "`parallel:` contains a mutation effect ({:?}); \
+                             use `sequential:` for ordered mutations",
+                            e
+                        ));
+                    }
+                    // Still validate nested parallels even if this one
+                    // is "clean at the top" — e.g. parallel → sequential
+                    // → parallel(field_op) is still illegal.
+                    e.validate_parallel_purity()?;
+                }
+                Ok(())
+            }
+            Effect::Sequential(effects) => {
+                for e in effects {
+                    e.validate_parallel_purity()?;
+                }
+                Ok(())
+            }
+            Effect::When { body, .. } => {
+                for e in body {
+                    e.validate_parallel_purity()?;
+                }
+                Ok(())
+            }
+            Effect::Pdp { on_allow, on_deny, .. } => {
+                for e in on_allow.iter().chain(on_deny.iter()) {
+                    e.validate_parallel_purity()?;
+                }
+                Ok(())
+            }
+            _ => Ok(()),
+        }
+    }
+}
+
+/// One compiled rule: a predicate plus the effects to fire when it
+/// matches.
+///
+/// `effects` is always non-empty for parser-produced rules. The
+/// historical "single Allow/Deny" cases are represented by a one-element
+/// `Vec` — slightly more allocation than a flat enum, but keeps one
+/// dispatch path instead of two and eliminates the ambiguity of having
+/// both `Action::Allow` and `Effect::Allow` in the IR.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Rule {
     pub condition: Expression,
-    pub action: Action,
+    pub effects: Vec<Effect>,
     /// Human-readable source (original YAML line, file path, etc.).
     /// Surfaces in audit logs and policy violation diagnostics.
     pub source: String,
+}
+
+impl Rule {
+    /// Construct a single-effect rule. Convenience for the common
+    /// `Allow` / `Deny` shapes that don't need a `vec![]` at the
+    /// call site.
+    pub fn single(condition: Expression, effect: Effect, source: impl Into<String>) -> Self {
+        Self {
+            condition,
+            effects: vec![effect],
+            source: source.into(),
+        }
+    }
+}
+
+/// `Rule` is structurally identical to `Effect::When`. The From impl lets
+/// callers that already hold a `Rule` (notably the parser's inner helpers
+/// and the test fixtures) drop a `.into()` instead of re-spelling all
+/// three fields. Bridges the few remaining producers while the migration
+/// completes; will probably stay long-term because the parser still
+/// builds Rule incrementally before deciding it's an Effect::When.
+impl From<Rule> for Effect {
+    fn from(r: Rule) -> Effect {
+        Effect::When {
+            condition: r.condition,
+            body: r.effects,
+            source: r.source,
+        }
+    }
 }
 
 /// One of the four lifecycle phases the evaluator runs per route.
@@ -179,11 +381,11 @@ pub struct CompiledRoute {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub args: Vec<crate::pipeline::FieldRule>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub policy: Vec<crate::step::Step>,
+    pub policy: Vec<Effect>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub result: Vec<crate::pipeline::FieldRule>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub post_policy: Vec<crate::step::Step>,
+    pub post_policy: Vec<Effect>,
     /// Per-plugin overrides declared on this route's `plugins:` block.
     /// Keyed by plugin name; merged at dispatch time via
     /// `EffectivePlugin::resolve(name, registry, &this.plugin_overrides)`.
@@ -283,13 +485,13 @@ mod tests {
         let mut route = CompiledRoute::new("get_compensation");
         assert!(route.declared_phases().is_empty());
 
-        route.policy.push(crate::step::Step::Rule(Rule {
+        route.policy.push(Effect::When {
             condition: Expression::Condition(Condition::IsTrue {
                 key: "authenticated".into(),
             }),
-            action: Action::Allow,
+            body: vec![Effect::Allow],
             source: "policy[0]".into(),
-        }));
+        });
         let phases = route.declared_phases();
         assert!(phases.contains(Phase::Policy));
         assert!(!phases.contains(Phase::Args));
@@ -304,7 +506,7 @@ mod tests {
                 op: CompareOp::Gt,
                 value: 2_i64.into(),
             }),
-            action: Action::Deny { reason: Some("too deep".into()) },
+            effects: vec![Effect::Deny { reason: Some("too deep".into()), code: None }],
             source: "policy[0]".into(),
         };
         if let Expression::Condition(Condition::Comparison { value, .. }) = r.condition {
@@ -325,14 +527,14 @@ mod tests {
                     value: 3_i64.into(),
                 }),
             ]),
-            action: Action::Allow,
+            effects: vec![Effect::Allow],
             source: "policy[1]".into(),
         };
         let json = serde_json::to_string(&r).unwrap();
         let back: Rule = serde_json::from_str(&json).unwrap();
         // No PartialEq on Rule (would force PartialEq on Action's variants
         // with floats etc.); spot-check the discriminator path instead.
-        assert!(matches!(back.action, Action::Allow));
+        assert!(matches!(back.effects.as_slice(), [Effect::Allow]));
         assert_eq!(back.source, "policy[1]");
     }
 
@@ -351,29 +553,29 @@ mod tests {
         let mut effective = CompiledRoute::new("route.get_compensation");
         // Seed effective with global content (simulating having already
         // applied the global layer once).
-        effective.policy.push(crate::step::Step::Rule(Rule {
+        effective.policy.push(Effect::When {
             condition: Expression::Always,
-            action: Action::Allow,
+            body: vec![Effect::Allow],
             source: "global.policy[0]".into(),
-        }));
-        effective.post_policy.push(crate::step::Step::Rule(Rule {
+        });
+        effective.post_policy.push(Effect::When {
             condition: Expression::Always,
-            action: Action::Allow,
+            body: vec![Effect::Allow],
             source: "global.post_policy[0]".into(),
-        }));
+        });
 
         // Now apply the route-specific layer on top.
         let mut route_layer = CompiledRoute::new("ignored");
-        route_layer.policy.push(crate::step::Step::Rule(Rule {
+        route_layer.policy.push(Effect::When {
             condition: Expression::Always,
-            action: Action::Allow,
+            body: vec![Effect::Allow],
             source: "route.policy[0]".into(),
-        }));
-        route_layer.post_policy.push(crate::step::Step::Rule(Rule {
+        });
+        route_layer.post_policy.push(Effect::When {
             condition: Expression::Always,
-            action: Action::Allow,
+            body: vec![Effect::Allow],
             source: "route.post_policy[0]".into(),
-        }));
+        });
 
         effective.apply_layer(route_layer);
 
@@ -381,11 +583,11 @@ mod tests {
         // the hierarchy.
         assert_eq!(effective.policy.len(), 2);
         match &effective.policy[0] {
-            crate::step::Step::Rule(r) => assert_eq!(r.source, "global.policy[0]"),
+            Effect::When { source, .. } => assert_eq!(source, "global.policy[0]"),
             _ => panic!(),
         }
         match &effective.policy[1] {
-            crate::step::Step::Rule(r) => assert_eq!(r.source, "route.policy[0]"),
+            Effect::When { source, .. } => assert_eq!(source, "route.policy[0]"),
             _ => panic!(),
         }
         assert_eq!(effective.post_policy.len(), 2);
@@ -475,32 +677,32 @@ mod tests {
         let mut effective = CompiledRoute::new("route.get_compensation");
 
         let mut global = CompiledRoute::default();
-        global.policy.push(crate::step::Step::Rule(Rule {
+        global.policy.push(Effect::When {
             condition: Expression::Always,
-            action: Action::Allow,
+            body: vec![Effect::Allow],
             source: "global.policy[0]".into(),
-        }));
+        });
 
         let mut default = CompiledRoute::default();
-        default.policy.push(crate::step::Step::Rule(Rule {
+        default.policy.push(Effect::When {
             condition: Expression::Always,
-            action: Action::Allow,
+            body: vec![Effect::Allow],
             source: "default.policy[0]".into(),
-        }));
+        });
 
         let mut tag = CompiledRoute::default();
-        tag.policy.push(crate::step::Step::Rule(Rule {
+        tag.policy.push(Effect::When {
             condition: Expression::Always,
-            action: Action::Allow,
+            body: vec![Effect::Allow],
             source: "tag.hr.policy[0]".into(),
-        }));
+        });
 
         let mut route = CompiledRoute::default();
-        route.policy.push(crate::step::Step::Rule(Rule {
+        route.policy.push(Effect::When {
             condition: Expression::Always,
-            action: Action::Allow,
+            body: vec![Effect::Allow],
             source: "route.policy[0]".into(),
-        }));
+        });
 
         effective.apply_layer(global);
         effective.apply_layer(default);
@@ -513,7 +715,7 @@ mod tests {
             .policy
             .iter()
             .map(|s| match s {
-                crate::step::Step::Rule(r) => r.source.as_str(),
+                Effect::When { source, .. } => source.as_str(),
                 _ => "<not-rule>",
             })
             .collect();
@@ -526,5 +728,113 @@ mod tests {
                 "route.policy[0]",
             ]
         );
+    }
+
+    // ----- E3: parallel-purity validation -----
+
+    #[test]
+    fn validate_parallel_pure_block_passes() {
+        // A parallel block of read-only effects validates clean.
+        let effect = Effect::Parallel(vec![
+            Effect::Plugin { name: "rate_limiter".into() },
+            Effect::Plugin { name: "audit".into() },
+            Effect::Allow,
+        ]);
+        assert!(effect.validate_parallel_purity().is_ok());
+    }
+
+    #[test]
+    fn validate_parallel_rejects_field_op() {
+        // FieldOp would silently lose its mutation in a discarded
+        // branch — config-load surfaces this loudly.
+        let effect = Effect::Parallel(vec![
+            Effect::Plugin { name: "audit".into() },
+            Effect::FieldOp {
+                path: "args.ssn".into(),
+                stages: vec![],
+            },
+        ]);
+        let err = effect.validate_parallel_purity().unwrap_err();
+        assert!(err.contains("mutation"), "got: {}", err);
+        assert!(err.contains("FieldOp"), "should name the offender: {}", err);
+    }
+
+    #[test]
+    fn validate_parallel_rejects_delegate() {
+        // Same reason as FieldOp — the minted token would land in a
+        // bag that gets discarded.
+        let delegate = Effect::Delegate(crate::step::DelegateStep {
+            plugin_name: "workday".into(),
+            config_override: None,
+            on_error: None,
+            source: "test".into(),
+        });
+        let effect = Effect::Parallel(vec![Effect::Allow, delegate]);
+        let err = effect.validate_parallel_purity().unwrap_err();
+        assert!(err.contains("mutation"));
+    }
+
+    #[test]
+    fn validate_parallel_recurses_into_nested_parallel() {
+        // `parallel → sequential → parallel(field_op)` — the inner
+        // parallel still illegal. Recursion must catch it.
+        let inner_parallel = Effect::Parallel(vec![Effect::FieldOp {
+            path: "args.x".into(),
+            stages: vec![],
+        }]);
+        let outer = Effect::Parallel(vec![
+            Effect::Sequential(vec![Effect::Allow, inner_parallel]),
+        ]);
+        assert!(outer.validate_parallel_purity().is_err());
+    }
+
+    #[test]
+    fn validate_top_level_sequential_allows_mutations() {
+        // FieldOp / Delegate are allowed under Sequential (or at top
+        // level) — only Parallel rejects them.
+        let effect = Effect::Sequential(vec![
+            Effect::FieldOp {
+                path: "args.ssn".into(),
+                stages: vec![],
+            },
+            Effect::Allow,
+        ]);
+        assert!(effect.validate_parallel_purity().is_ok());
+    }
+
+    #[test]
+    fn validate_contains_mutation_classifies_each_variant() {
+        // White-box check on the helper so future Effect additions
+        // get flagged here when they should be classified.
+        assert!(!Effect::Allow.contains_mutation());
+        assert!(!Effect::Deny { reason: None, code: None }.contains_mutation());
+        assert!(!Effect::Plugin { name: "x".into() }.contains_mutation());
+        assert!(!Effect::Taint {
+            label: "x".into(),
+            scopes: vec![],
+        }
+        .contains_mutation());
+
+        assert!(Effect::FieldOp {
+            path: "args.x".into(),
+            stages: vec![],
+        }
+        .contains_mutation());
+        assert!(Effect::Delegate(crate::step::DelegateStep {
+            plugin_name: "x".into(),
+            config_override: None,
+            on_error: None,
+            source: "x".into(),
+        })
+        .contains_mutation());
+
+        // Composite — mutates iff any child mutates.
+        let pure_seq = Effect::Sequential(vec![Effect::Allow]);
+        assert!(!pure_seq.contains_mutation());
+        let dirty_seq = Effect::Sequential(vec![Effect::FieldOp {
+            path: "args.x".into(),
+            stages: vec![],
+        }]);
+        assert!(dirty_seq.contains_mutation());
     }
 }

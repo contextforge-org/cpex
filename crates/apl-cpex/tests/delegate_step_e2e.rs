@@ -319,7 +319,7 @@ routes:
 
     let extensions = ext_with_bearer("eyJ.fake.user-jwt");
     let session_store: Arc<dyn SessionStore> = Arc::new(MemorySessionStore::new());
-    let invoker = CmfPluginInvoker::for_request(
+    let invoker = Arc::new(CmfPluginInvoker::for_request(
         Arc::clone(&mgr),
         extensions,
         cpex_core::cmf::MessagePayload {
@@ -331,12 +331,12 @@ routes:
         Arc::clone(&plan),
         Arc::clone(&session_store),
     )
-    .await;
-    let delegations = DelegationPluginInvoker::new(
+    .await);
+    let delegations = Arc::new(DelegationPluginInvoker::new(
         Arc::clone(&mgr),
         invoker.extensions_arc(),
         invoker.plan_arc(),
-    );
+    ));
 
     let mut bag = apl_cmf::BagBuilder::new()
         .with_extensions(&invoker.current_extensions().await)
@@ -347,9 +347,9 @@ routes:
         route,
         &mut bag,
         &mut payload,
-        &AllowPdp,
-        &invoker,
-        &delegations,
+        &(Arc::new(AllowPdp) as Arc<dyn apl_core::PdpResolver>),
+        &(invoker.clone() as Arc<dyn apl_core::PluginInvoker>),
+        &(delegations.clone() as Arc<dyn apl_core::DelegationInvoker>),
     )
     .await;
 
@@ -440,7 +440,7 @@ routes:
 
     let extensions = ext_with_bearer("eyJ.fake.user-jwt");
     let session_store: Arc<dyn SessionStore> = Arc::new(MemorySessionStore::new());
-    let invoker = CmfPluginInvoker::for_request(
+    let invoker = Arc::new(CmfPluginInvoker::for_request(
         Arc::clone(&mgr),
         extensions,
         cpex_core::cmf::MessagePayload {
@@ -452,12 +452,12 @@ routes:
         Arc::clone(&plan),
         Arc::clone(&session_store),
     )
-    .await;
-    let delegations = DelegationPluginInvoker::new(
+    .await);
+    let delegations = Arc::new(DelegationPluginInvoker::new(
         Arc::clone(&mgr),
         invoker.extensions_arc(),
         invoker.plan_arc(),
-    );
+    ));
 
     let mut bag = apl_cmf::BagBuilder::new()
         .with_extensions(&invoker.current_extensions().await)
@@ -468,9 +468,9 @@ routes:
         route,
         &mut bag,
         &mut payload,
-        &AllowPdp,
-        &invoker,
-        &delegations,
+        &(Arc::new(AllowPdp) as Arc<dyn apl_core::PdpResolver>),
+        &(invoker.clone() as Arc<dyn apl_core::PluginInvoker>),
+        &(delegations.clone() as Arc<dyn apl_core::DelegationInvoker>),
     )
     .await;
 
@@ -532,7 +532,7 @@ routes:
 
     let extensions = ext_with_bearer("eyJ.fake.user-jwt");
     let session_store: Arc<dyn SessionStore> = Arc::new(MemorySessionStore::new());
-    let invoker = CmfPluginInvoker::for_request(
+    let invoker = Arc::new(CmfPluginInvoker::for_request(
         Arc::clone(&mgr),
         extensions,
         cpex_core::cmf::MessagePayload {
@@ -544,12 +544,12 @@ routes:
         Arc::clone(&plan),
         Arc::clone(&session_store),
     )
-    .await;
-    let delegations = DelegationPluginInvoker::new(
+    .await);
+    let delegations = Arc::new(DelegationPluginInvoker::new(
         Arc::clone(&mgr),
         invoker.extensions_arc(),
         invoker.plan_arc(),
-    );
+    ));
 
     let mut bag = apl_cmf::BagBuilder::new()
         .with_extensions(&invoker.current_extensions().await)
@@ -560,9 +560,9 @@ routes:
         route,
         &mut bag,
         &mut payload,
-        &AllowPdp,
-        &invoker,
-        &delegations,
+        &(Arc::new(AllowPdp) as Arc<dyn apl_core::PdpResolver>),
+        &(invoker.clone() as Arc<dyn apl_core::PluginInvoker>),
+        &(delegations.clone() as Arc<dyn apl_core::DelegationInvoker>),
     )
     .await;
 
@@ -643,7 +643,7 @@ routes:
 
     let extensions = ext_with_bearer("eyJ.fake.user-jwt");
     let session_store: Arc<dyn SessionStore> = Arc::new(MemorySessionStore::new());
-    let invoker = CmfPluginInvoker::for_request(
+    let invoker = Arc::new(CmfPluginInvoker::for_request(
         Arc::clone(&mgr),
         extensions,
         cpex_core::cmf::MessagePayload {
@@ -655,12 +655,12 @@ routes:
         Arc::clone(&plan),
         Arc::clone(&session_store),
     )
-    .await;
-    let delegations = DelegationPluginInvoker::new(
+    .await);
+    let delegations = Arc::new(DelegationPluginInvoker::new(
         Arc::clone(&mgr),
         invoker.extensions_arc(),
         invoker.plan_arc(),
-    );
+    ));
 
     let mut bag = apl_cmf::BagBuilder::new()
         .with_extensions(&invoker.current_extensions().await)
@@ -671,9 +671,9 @@ routes:
         route,
         &mut bag,
         &mut payload,
-        &AllowPdp,
-        &invoker,
-        &delegations,
+        &(Arc::new(AllowPdp) as Arc<dyn apl_core::PdpResolver>),
+        &(invoker.clone() as Arc<dyn apl_core::PluginInvoker>),
+        &(delegations.clone() as Arc<dyn apl_core::DelegationInvoker>),
     )
     .await;
 
@@ -757,7 +757,7 @@ routes:
     // proves the cap filter is selective.
     let extensions = ext_with_subject_and_label("eyJ.fake.jwt", "alice", "pii");
     let session_store: Arc<dyn SessionStore> = Arc::new(MemorySessionStore::new());
-    let invoker = CmfPluginInvoker::for_request(
+    let invoker = Arc::new(CmfPluginInvoker::for_request(
         Arc::clone(&mgr),
         extensions,
         cpex_core::cmf::MessagePayload {
@@ -769,12 +769,12 @@ routes:
         Arc::clone(&plan),
         Arc::clone(&session_store),
     )
-    .await;
-    let delegations = DelegationPluginInvoker::new(
+    .await);
+    let delegations = Arc::new(DelegationPluginInvoker::new(
         Arc::clone(&mgr),
         invoker.extensions_arc(),
         invoker.plan_arc(),
-    );
+    ));
 
     let mut bag = apl_cmf::BagBuilder::new()
         .with_extensions(&invoker.current_extensions().await)
@@ -785,9 +785,9 @@ routes:
         route,
         &mut bag,
         &mut payload,
-        &AllowPdp,
-        &invoker,
-        &delegations,
+        &(Arc::new(AllowPdp) as Arc<dyn apl_core::PdpResolver>),
+        &(invoker.clone() as Arc<dyn apl_core::PluginInvoker>),
+        &(delegations.clone() as Arc<dyn apl_core::DelegationInvoker>),
     )
     .await;
 
@@ -855,7 +855,7 @@ routes:
 
     let extensions = ext_with_subject_and_label("eyJ.fake.jwt", "alice", "pii");
     let session_store: Arc<dyn SessionStore> = Arc::new(MemorySessionStore::new());
-    let invoker = CmfPluginInvoker::for_request(
+    let invoker = Arc::new(CmfPluginInvoker::for_request(
         Arc::clone(&mgr),
         extensions,
         cpex_core::cmf::MessagePayload {
@@ -867,12 +867,12 @@ routes:
         Arc::clone(&plan),
         Arc::clone(&session_store),
     )
-    .await;
-    let delegations = DelegationPluginInvoker::new(
+    .await);
+    let delegations = Arc::new(DelegationPluginInvoker::new(
         Arc::clone(&mgr),
         invoker.extensions_arc(),
         invoker.plan_arc(),
-    );
+    ));
 
     let mut bag = apl_cmf::BagBuilder::new()
         .with_extensions(&invoker.current_extensions().await)
@@ -883,9 +883,9 @@ routes:
         route,
         &mut bag,
         &mut payload,
-        &AllowPdp,
-        &invoker,
-        &delegations,
+        &(Arc::new(AllowPdp) as Arc<dyn apl_core::PdpResolver>),
+        &(invoker.clone() as Arc<dyn apl_core::PluginInvoker>),
+        &(delegations.clone() as Arc<dyn apl_core::DelegationInvoker>),
     )
     .await;
 

@@ -97,6 +97,8 @@ name = "apl-core"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "cpex-orchestration",
+ "futures",
  "regex",
  "serde",
  "serde_json",
@@ -117,6 +119,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
+ "sha2 0.10.9",
  "tokio",
  "tracing",
 ]
@@ -778,6 +781,7 @@ dependencies = [
  "arc-swap",
  "async-trait",
  "chrono",
+ "cpex-orchestration",
  "futures",
  "hashbrown 0.15.5",
  "serde",
@@ -815,6 +819,14 @@ dependencies = [
  "serde_json",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "cpex-orchestration"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "tokio",
 ]
 
 [[package]]

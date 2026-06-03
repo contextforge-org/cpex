@@ -7,11 +7,14 @@
 // evaluator on a YAML-compiled route. If this test breaks, the whole
 // stack is misaligned (extension shape, bag vocabulary, or compiler).
 
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
+
 use apl_cmf::BagBuilder;
 use apl_core::{
-    compile_config, evaluate_route, AttributeBag, Decision, NoopDelegationInvoker, PdpCall,
-    PdpDecision, PdpDialect, PdpError, PdpResolver, PluginError, PluginInvocation, PluginInvoker,
-    PluginOutcome, RoutePayload,
+    compile_config, evaluate_route, AttributeBag, Decision, DelegationInvoker,
+    NoopDelegationInvoker, PdpCall, PdpDecision, PdpDialect, PdpError, PdpResolver, PluginError,
+    PluginInvocation, PluginInvoker, PluginOutcome, RoutePayload,
 };
 use async_trait::async_trait;
 use cpex_core::extensions::{
@@ -19,7 +22,19 @@ use cpex_core::extensions::{
     WorkloadIdentity,
 };
 use serde_json::json;
-use std::collections::{HashMap, HashSet};
+
+// `evaluate_route` takes `&Arc<dyn PluginInvoker>` / `&Arc<dyn DelegationInvoker>`
+// so the call paths inside apl-core can `Arc::clone` an owned, 'static reference
+// into each spawned branch (E3.2). All tests pass the same no-op stubs; wrap once.
+fn pdp() -> Arc<dyn PdpResolver> {
+    Arc::new(AllowPdp)
+}
+fn plugins() -> Arc<dyn PluginInvoker> {
+    Arc::new(NoPlugins)
+}
+fn delegations() -> Arc<dyn DelegationInvoker> {
+    Arc::new(NoopDelegationInvoker)
+}
 
 // HR route from unified-config-proposal.md §Example 1.
 const HR_ROUTE_YAML: &str = r#"
@@ -148,7 +163,7 @@ async fn alice_full_route_through_cmf_bridge() {
         }),
     );
 
-    let r = evaluate_route(route, &mut bag, &mut payload, &AllowPdp, &NoPlugins, &NoopDelegationInvoker).await;
+    let r = evaluate_route(route, &mut bag, &mut payload, &pdp(), &plugins(), &delegations()).await;
     assert_eq!(r.decision, Decision::Allow);
     let result = payload.result.as_ref().unwrap();
     // view_ssn=true and role.hr=true → both fields kept; employee_id masked.
@@ -176,7 +191,7 @@ async fn mallory_gets_both_fields_redacted_through_cmf_bridge() {
         }),
     );
 
-    let r = evaluate_route(route, &mut bag, &mut payload, &AllowPdp, &NoPlugins, &NoopDelegationInvoker).await;
+    let r = evaluate_route(route, &mut bag, &mut payload, &pdp(), &plugins(), &delegations()).await;
     assert_eq!(r.decision, Decision::Allow);
     let result = payload.result.as_ref().unwrap();
     // Neither role.hr nor perm.view_ssn populated → both redact()s fire.
@@ -201,7 +216,7 @@ async fn deep_delegation_denies_through_cmf_bridge() {
         json!({ "employee_id": "123-45-6789" }),
         json!({ "ssn": "x", "salary": 1, "employee_id": "123-45-6789" }),
     );
-    let r = evaluate_route(route, &mut bag, &mut payload, &AllowPdp, &NoPlugins, &NoopDelegationInvoker).await;
+    let r = evaluate_route(route, &mut bag, &mut payload, &pdp(), &plugins(), &delegations()).await;
     assert!(matches!(r.decision, Decision::Deny { .. }));
     // Result fields untouched — the result phase never ran.
     assert_eq!(payload.result.as_ref().unwrap()["ssn"], json!("x"));
@@ -230,7 +245,7 @@ routes:
     assert_eq!(bag.get_bool("args.include_ssn"), Some(true));
 
     let mut payload = RoutePayload::new(args);
-    let r = evaluate_route(route, &mut bag, &mut payload, &AllowPdp, &NoPlugins, &NoopDelegationInvoker).await;
+    let r = evaluate_route(route, &mut bag, &mut payload, &pdp(), &plugins(), &delegations()).await;
     match r.decision {
         Decision::Deny { rule_source, .. } => {
             assert!(rule_source.contains("policy"), "got source {}", rule_source);
@@ -255,6 +270,6 @@ async fn anonymous_user_denied_at_authenticated_check() {
         json!({ "employee_id": "123-45-6789" }),
         json!({ "ssn": "x", "salary": 1, "employee_id": "123-45-6789" }),
     );
-    let r = evaluate_route(route, &mut bag, &mut payload, &AllowPdp, &NoPlugins, &NoopDelegationInvoker).await;
+    let r = evaluate_route(route, &mut bag, &mut payload, &pdp(), &plugins(), &delegations()).await;
     assert!(matches!(r.decision, Decision::Deny { .. }));
 }

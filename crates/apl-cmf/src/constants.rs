@@ -78,7 +78,17 @@ pub const BAG_SUBJECT_TEAMS: &str = "subject.teams";
 pub const BAG_AUTHENTICATED: &str = "authenticated";
 pub const BAG_ROLE_PREFIX: &str = "role.";
 pub const BAG_PERM_PREFIX: &str = "perm.";
+pub const BAG_TEAM_PREFIX: &str = "team.";
 pub const BAG_CLAIM_PREFIX: &str = "claim.";
+
+// ----- Payload (args / result) -----
+//
+// These are the dotted-prefix forms used when apl-cmf::payload flattens
+// the request's args object and the upstream's result object into the
+// bag. APL predicates / Cedar `${args.X}` substitutions / OPA `input.X`
+// paths all resolve through these.
+pub const BAG_ARGS_PREFIX: &str = "args.";
+pub const BAG_RESULT_PREFIX: &str = "result.";
 
 // ----- Client + workload -----
 pub const BAG_CLIENT_PREFIX: &str = "client.";

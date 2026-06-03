@@ -33,6 +33,11 @@ serde_json = { workspace = true }
 serde_yaml = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
+# Stable hash for tier-3 (identity-derived) session id. `DefaultHasher`
+# is explicitly documented as not-stable-across-Rust-versions; session
+# keys persist across process restarts (SessionStore), so we need an
+# algorithmically fixed hash.
+sha2 = "0.10"
 
 [dev-dependencies]
 serde = { workspace = true }

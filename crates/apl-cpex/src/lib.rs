@@ -34,9 +34,11 @@
 pub mod cmf_invoker;
 pub mod delegation_invoker;
 pub mod dispatch_plan;
+pub mod parallel_safety;
 pub mod pdp_router;
 pub mod register;
 pub mod route_handler;
+pub mod session_resolver;
 pub mod session_store;
 pub mod visitor;
 

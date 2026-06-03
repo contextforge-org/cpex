@@ -462,6 +462,26 @@ impl ConfigVisitor for AplConfigVisitor {
                 continue;
             }
 
+            // E3.1 — plugin-mode validation for `parallel:` blocks.
+            // `apl-core::Effect::validate_parallel_purity` already rejected
+            // FieldOp / Delegate at parse time; this pass checks that every
+            // `plugin(X)` inside a `parallel:` references a plugin whose
+            // mode is safe for concurrent execution (Audit / Concurrent /
+            // FireAndForget). Sequential / Transform plugins would silently
+            // lose their mutations inside cloned branches.
+            //
+            // Looks up modes through the cpex-core PluginManager (it has
+            // the authoritative registration state). The lookup trait
+            // is `parallel_safety::PluginModeLookup`, which
+            // `PluginManager` implements.
+            if let Err(msg) = crate::parallel_safety::validate_parallel_plugin_modes(
+                &effective,
+                mgr.as_ref(),
+            ) {
+                let err_msg = format!("route '{}': parallel-safety: {}", route_key, msg);
+                return Err(err_msg.into());
+            }
+
             let route_arc = Arc::new(effective);
 
             // Resolve the entity-specific CMF hook pair. The visitor's

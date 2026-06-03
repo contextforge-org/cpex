@@ -9,6 +9,7 @@
 resolver = "2"
 members = [
     "crates/cpex-core",
+    "crates/cpex-orchestration",
     "crates/cpex-sdk",
     "crates/cpex-ffi",
     "crates/apl-core",
@@ -36,6 +37,7 @@ members = [
 #   cargo test --workspace                 # full sweep (CI)
 default-members = [
     "crates/cpex-core",
+    "crates/cpex-orchestration",
     "crates/cpex-sdk",
     "crates/cpex-ffi",
     "crates/apl-core",

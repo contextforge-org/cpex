@@ -32,6 +32,11 @@ use apl_core::step::PdpError;
 use cedar_policy::{Entities, Entity, Schema};
 use serde_json::{json, Map, Value};
 
+use crate::cedar_attrs::{
+    ATTR_CLAIMS, ATTR_ID, ATTR_PERMISSIONS, ATTR_ROLES, ATTR_TEAMS, ATTR_TYPE, KEY_ATTRS,
+    KEY_PARENTS, KEY_UID,
+};
+
 /// Build the entity set for one Cedar request. Returns owned
 /// `Entities` (Cedar takes them by reference at authorization time).
 pub fn build(
@@ -92,29 +97,38 @@ pub fn build_principal(
     // empty-set semantics. Populating empty sets / records by default
     // gives clean "attribute exists, just empty" behavior.
     let mut attrs = Map::new();
-    attrs.insert("id".to_string(), json!(id));
-    attrs.insert("type".to_string(), json!(kind));
+    attrs.insert(ATTR_ID.to_string(), json!(id));
+    attrs.insert(ATTR_TYPE.to_string(), json!(kind));
 
+    // TODO(vocab consolidation, Phase C): `"role."`, `"perm."`, and
+    // `"subject.teams"` are apl-cmf bag-key conventions. The cedar
+    // crate would need a dependency on apl-cmf (or the BAG_* constants
+    // need to move into apl-core / a shared crate) before we can
+    // reference them by symbol here. Left literal for now — the gap is
+    // tracked in the `project_vocab_consolidation` memory.
     let roles = collect_prefixed_bools(bag, "role.");
-    attrs.insert("roles".to_string(), json!(roles));
+    attrs.insert(ATTR_ROLES.to_string(), json!(roles));
 
     let permissions = collect_prefixed_bools(bag, "perm.");
-    attrs.insert("permissions".to_string(), json!(permissions));
+    attrs.insert(ATTR_PERMISSIONS.to_string(), json!(permissions));
 
     let teams: Vec<String> = bag
         .get_string_set("subject.teams")
         .map(|s| s.iter().cloned().collect())
         .unwrap_or_default();
-    attrs.insert("teams".to_string(), json!(teams));
+    attrs.insert(ATTR_TEAMS.to_string(), json!(teams));
 
     let claims = collect_claims(bag);
-    attrs.insert("claims".to_string(), Value::Object(claims));
+    attrs.insert(ATTR_CLAIMS.to_string(), Value::Object(claims));
 
-    let entity_json = json!({
-        "uid": { "type": entity_type, "id": id },
-        "attrs": attrs,
-        "parents": [],
-    });
+    let mut uid_obj = Map::new();
+    uid_obj.insert(ATTR_TYPE.to_string(), json!(entity_type));
+    uid_obj.insert(ATTR_ID.to_string(), json!(id));
+    let mut entity_obj = Map::new();
+    entity_obj.insert(KEY_UID.to_string(), Value::Object(uid_obj));
+    entity_obj.insert(KEY_ATTRS.to_string(), Value::Object(attrs));
+    entity_obj.insert(KEY_PARENTS.to_string(), Value::Array(vec![]));
+    let entity_json = Value::Object(entity_obj);
 
     Entity::from_json_value(entity_json, schema).map_err(|e| {
         PdpError::Dispatch(format!(
@@ -163,11 +177,14 @@ pub fn build_resource(
         ))
     })?;
 
-    let entity_json = json!({
-        "uid": { "type": entity_type, "id": id },
-        "attrs": attrs_json,
-        "parents": [],
-    });
+    let mut uid_obj = Map::new();
+    uid_obj.insert(ATTR_TYPE.to_string(), json!(entity_type));
+    uid_obj.insert(ATTR_ID.to_string(), json!(id));
+    let mut entity_obj = Map::new();
+    entity_obj.insert(KEY_UID.to_string(), Value::Object(uid_obj));
+    entity_obj.insert(KEY_ATTRS.to_string(), attrs_json);
+    entity_obj.insert(KEY_PARENTS.to_string(), Value::Array(vec![]));
+    let entity_json = Value::Object(entity_obj);
 
     Entity::from_json_value(entity_json, schema).map_err(|e| {
         PdpError::Dispatch(format!(

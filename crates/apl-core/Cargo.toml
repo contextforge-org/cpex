@@ -25,6 +25,8 @@ serde_yaml = { workspace = true }
 thiserror = { workspace = true }
 async-trait = { workspace = true }
 regex = { workspace = true }
+futures = { workspace = true }
+cpex-orchestration = { path = "../cpex-orchestration" }
 
 [dev-dependencies]
 tokio = { workspace = true }

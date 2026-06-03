@@ -30,10 +30,19 @@ use crate::evaluator::Decision;
 use crate::pipeline::{TaintEvent, TaintScope};
 use crate::rules::Rule;
 
-/// One entry in a `policy:` or `post_policy:` list.
+/// Parser-internal intermediate IR. After the parser builds a Step
+/// tree, `parser::step_to_top_level_effect` converts it into the
+/// unified [`crate::rules::Effect`] used by the evaluator + every
+/// public entry point.
+///
+/// `Step` exists only because `parse_step` builds its nodes
+/// incrementally and the conversion to `Effect::When` /
+/// `Effect::Pdp` happens at the top of `compile_apl_blocks` once
+/// the source position is known. Not part of the public API as of
+/// E4 — external code dispatches on `Effect` everywhere.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum Step {
+pub(crate) enum Step {
     /// Predicate-and-action rule (the existing 5a/5b/5c case).
     Rule(Rule),
 
@@ -98,7 +107,7 @@ pub enum Step {
 /// grants, split into `policy:` + `post_policy:` or reach for a
 /// future per-step `as:` alias (not in v0; see the design doc's
 /// "Open design questions" section).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DelegateStep {
     /// Plugin name — must reference an entry in the top-level
     /// `plugins:` block that registers under the `token.delegate`
@@ -128,7 +137,7 @@ pub struct DelegateStep {
 /// A PDP invocation, opaque-args style. Resolvers parse `args` based on
 /// the dialect they handle — apl-core doesn't impose a Cedar/OPA/AuthZen
 /// schema on `args`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PdpCall {
     pub dialect: PdpDialect,
     /// Dialect-specific call arguments — typically a map for Cedar

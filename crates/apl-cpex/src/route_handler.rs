@@ -191,14 +191,21 @@ impl AnyHookHandler for AplRouteHandler {
         // under interior mutability so successive plugin calls accumulate
         // mutations. Hydration + persistence are no-ops when there's no
         // session id (the common case for the first request in a session).
-        let invoker = CmfPluginInvoker::for_request(
-            Arc::clone(&manager),
-            extensions.clone(),
-            msg_payload.clone(),
-            plan,
-            Arc::clone(&self.session_store),
-        )
-        .await;
+        // Wrapped in Arc so it can be erased to `Arc<dyn PluginInvoker>`
+        // for the apl-core entry points (which take `&Arc<dyn PluginInvoker>`
+        // so `dispatch_parallel` can clone an owned, 'static reference into
+        // each spawned branch). Inherent-method calls on `CmfPluginInvoker`
+        // (e.g. `extensions_arc`, `persist_session`) deref through the Arc.
+        let invoker = Arc::new(
+            CmfPluginInvoker::for_request(
+                Arc::clone(&manager),
+                extensions.clone(),
+                msg_payload.clone(),
+                plan,
+                Arc::clone(&self.session_store),
+            )
+            .await,
+        );
 
         // Build the attribute bag. APL predicates read flat keys; the
         // BagBuilder bridges typed CPEX extensions into that namespace.
@@ -265,11 +272,18 @@ impl AnyHookHandler for AplRouteHandler {
         // `delegation_entries` map; if such a route accidentally hits
         // `delegate(...)`, the invoker returns `NotFound` and the
         // evaluator translates it via the step's `on_error`.
-        let delegations = DelegationPluginInvoker::new(
+        let delegations = Arc::new(DelegationPluginInvoker::new(
             Arc::clone(&manager),
             invoker.extensions_arc(),
             invoker.plan_arc(),
-        );
+        ));
+
+        // Unsized coercion: `Arc<ConcreteType>` → `Arc<dyn Trait>`. The
+        // erased forms get borrowed into `evaluate_pre`/`evaluate_post`;
+        // `dispatch_parallel` can then `Arc::clone` an owned 'static
+        // reference into each branch closure.
+        let invoker_dyn: Arc<dyn apl_core::step::PluginInvoker> = invoker.clone();
+        let delegations_dyn: Arc<dyn apl_core::step::DelegationInvoker> = delegations.clone();
 
         let decision = match self.phase {
             Phase::Pre => {
@@ -277,9 +291,9 @@ impl AnyHookHandler for AplRouteHandler {
                     &self.route,
                     &mut bag,
                     &mut route_payload,
-                    self.pdp.as_ref(),
-                    &invoker,
-                    &delegations,
+                    &self.pdp,
+                    &invoker_dyn,
+                    &delegations_dyn,
                 )
                 .await
             }
@@ -288,13 +302,21 @@ impl AnyHookHandler for AplRouteHandler {
                     &self.route,
                     &mut bag,
                     &mut route_payload,
-                    self.pdp.as_ref(),
-                    &invoker,
-                    &delegations,
+                    &self.pdp,
+                    &invoker_dyn,
+                    &delegations_dyn,
                 )
                 .await
             }
         };
+
+        // Drain Session-scoped taints (from `taint(label, session)` /
+        // pipeline `Stage::Taint`) into `extensions.security.labels`
+        // so the existing label-diff flow inside `persist_session`
+        // picks them up. Message-scoped taints are filtered out by
+        // `apply_session_taints` — they need their own destination
+        // (see TS2). No-op when no taints emitted.
+        invoker.apply_session_taints(&decision.taints).await;
 
         // Commit any session-scoped labels accumulated during this
         // request. No-op when there was no session id.

@@ -51,8 +51,7 @@ use cpex_core::registry::HookEntry;
 
 use apl_core::pipeline::Stage;
 use apl_core::plugin_decl::{EffectivePlugin, PluginRegistry};
-use apl_core::rules::CompiledRoute;
-use apl_core::step::Step;
+use apl_core::rules::{CompiledRoute, Effect};
 
 /// Per-plugin pre-resolved entries for one route. Stores ALL hook
 /// entries the plugin registered (keyed by hook name) so the
@@ -285,46 +284,72 @@ fn parse_on_error(s: &str) -> Option<OnError> {
     }
 }
 
+/// Recursively walk every effect node in an `Effect` tree, invoking
+/// `visit` on each. Used by `collect_*_names` below to find Plugin /
+/// Delegate references that may be nested inside `Effect::When`,
+/// `Effect::Sequential`, `Effect::Parallel`, or `Effect::Pdp` reaction
+/// lists. Pre-E4 these were flat — Step::Plugin lived directly under
+/// policy: — so a simple iter() was enough; after E4 the IR is tree-
+/// shaped and the same scan needs recursion.
+fn walk_effects<F: FnMut(&Effect)>(effects: &[Effect], visit: &mut F) {
+    for e in effects {
+        visit(e);
+        match e {
+            Effect::When { body, .. } => walk_effects(body, visit),
+            Effect::Sequential(inner) | Effect::Parallel(inner) => walk_effects(inner, visit),
+            Effect::Pdp { on_allow, on_deny, .. } => {
+                walk_effects(on_allow, visit);
+                walk_effects(on_deny, visit);
+            }
+            _ => {}
+        }
+    }
+}
+
 /// Walk a `CompiledRoute` and return the unique delegate-plugin names
-/// referenced by any `Step::Delegate` in `policy` / `post_policy`.
-/// Insertion-ordered for build determinism. Separate from
-/// [`collect_plugin_names`] because delegate plugins resolve under
-/// a different hook family (`token.delegate`) and the dispatch plan
-/// keeps them in a separate map.
+/// referenced by any `Effect::Delegate` anywhere in `policy` /
+/// `post_policy` (including effects nested inside When / Sequential /
+/// Parallel / Pdp reactions). Insertion-ordered for build determinism.
+/// Separate from [`collect_plugin_names`] because delegate plugins
+/// resolve under a different hook family (`token.delegate`) and the
+/// dispatch plan keeps them in a separate map.
 pub(crate) fn collect_delegate_plugin_names(route: &CompiledRoute) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
-    for step in route.policy.iter().chain(route.post_policy.iter()) {
-        if let Step::Delegate(ds) = step {
+    let mut visit = |e: &Effect| {
+        if let Effect::Delegate(ds) = e {
             if seen.insert(ds.plugin_name.clone()) {
                 out.push(ds.plugin_name.clone());
             }
         }
-    }
+    };
+    walk_effects(&route.policy, &mut visit);
+    walk_effects(&route.post_policy, &mut visit);
     out
 }
 
 /// Walk a `CompiledRoute` and return the unique plugin names referenced
-/// by any `Step::Plugin` (in `policy` / `post_policy`) or `Stage::Plugin`
-/// (in `args` / `result` pipelines). Insertion-ordered for build
-/// determinism.
+/// by any `Effect::Plugin` anywhere in `policy` / `post_policy` (including
+/// nested) or `Stage::Plugin` (in `args` / `result` pipelines).
+/// Insertion-ordered for build determinism.
 pub(crate) fn collect_plugin_names(route: &CompiledRoute) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
-    let push = |out: &mut Vec<String>, seen: &mut HashSet<String>, name: &str| {
-        if seen.insert(name.to_string()) {
-            out.push(name.to_string());
+    let mut visit = |e: &Effect| {
+        if let Effect::Plugin { name } = e {
+            if seen.insert(name.clone()) {
+                out.push(name.clone());
+            }
         }
     };
-    for step in route.policy.iter().chain(route.post_policy.iter()) {
-        if let Step::Plugin { name } = step {
-            push(&mut out, &mut seen, name);
-        }
-    }
+    walk_effects(&route.policy, &mut visit);
+    walk_effects(&route.post_policy, &mut visit);
     for fr in route.args.iter().chain(route.result.iter()) {
         for stage in &fr.pipeline.stages {
             if let Stage::Plugin { name } = stage {
-                push(&mut out, &mut seen, name);
+                if seen.insert(name.clone()) {
+                    out.push(name.clone());
+                }
             }
         }
     }

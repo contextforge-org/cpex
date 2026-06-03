@@ -23,14 +23,18 @@ use apl_core::AttributeBag;
 use serde_json::Value;
 use std::collections::HashSet;
 
+use crate::constants::{BAG_ARGS_PREFIX, BAG_RESULT_PREFIX};
+
 /// Flatten an args object into `args.*` keys.
 pub fn extract_args(args: &Value, bag: &mut AttributeBag) {
-    walk(args, "args", bag);
+    // `walk` builds dotted paths itself; strip the trailing `.` from
+    // the canonical prefix to match its signature.
+    walk(args, BAG_ARGS_PREFIX.trim_end_matches('.'), bag);
 }
 
 /// Flatten a result object into `result.*` keys.
 pub fn extract_result(result: &Value, bag: &mut AttributeBag) {
-    walk(result, "result", bag);
+    walk(result, BAG_RESULT_PREFIX.trim_end_matches('.'), bag);
 }
 
 pub(crate) fn walk(value: &Value, prefix: &str, bag: &mut AttributeBag) {

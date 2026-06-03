@@ -35,3 +35,6 @@ chrono = { workspace = true }
 # token-bearing structs in a future slice; for now only the
 # `Zeroizing<String>` wrapper is used directly.
 zeroize = { version = "1.8", features = ["zeroize_derive"] }
+# Shared concurrency primitive used by `executor::run_concurrent_phase`
+# (and apl-core's `Effect::Parallel`). Leaf crate, no cycles back here.
+cpex-orchestration = { path = "../cpex-orchestration" }

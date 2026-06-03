@@ -50,42 +50,47 @@ use cpex_core::extensions::{
 };
 use std::collections::HashSet;
 
+use crate::constants::{
+    BAG_AUTHENTICATED, BAG_CLAIM_PREFIX, BAG_PERM_PREFIX, BAG_ROLE_PREFIX, BAG_SUBJECT_ID,
+    BAG_SUBJECT_TEAMS, BAG_SUBJECT_TYPE, BAG_TEAM_PREFIX,
+};
+
 /// Flatten a `SecurityExtension` into the bag.
 pub fn extract_security(sec: &SecurityExtension, bag: &mut AttributeBag) {
     // ----- Subject (caller identity) -----
     if let Some(subject) = &sec.subject {
         let mut authenticated = false;
         if let Some(id) = &subject.id {
-            bag.set("subject.id", id.clone());
+            bag.set(BAG_SUBJECT_ID, id.clone());
             authenticated = true;
         }
         if let Some(st) = subject.subject_type {
-            bag.set("subject.type", subject_type_str(st));
+            bag.set(BAG_SUBJECT_TYPE, subject_type_str(st));
         }
         for role in &subject.roles {
-            bag.set(format!("role.{}", role), true);
+            bag.set(format!("{}{}", BAG_ROLE_PREFIX, role), true);
         }
         for perm in &subject.permissions {
-            bag.set(format!("perm.{}", perm), true);
+            bag.set(format!("{}{}", BAG_PERM_PREFIX, perm), true);
         }
         if !subject.teams.is_empty() {
             // Clone into a fresh HashSet — AttributeValue::StringSet owns its data.
             let teams: HashSet<String> = subject.teams.iter().cloned().collect();
-            bag.set("subject.teams", teams);
+            bag.set(BAG_SUBJECT_TEAMS, teams);
             // Mirror the role.X / perm.X namespace so policies can
             // gate on team membership with the same DSL shape, e.g.
             // `require(team.engineering | team.security)`.
             for team in &subject.teams {
-                bag.set(format!("team.{}", team), true);
+                bag.set(format!("{}{}", BAG_TEAM_PREFIX, team), true);
             }
         }
         for (k, v) in &subject.claims {
-            bag.set(format!("claim.{}", k), v.clone());
+            bag.set(format!("{}{}", BAG_CLAIM_PREFIX, k), v.clone());
         }
         // Single top-level authenticated marker — DSL idiom is `require(authenticated)`,
         // unprefixed. Only set when truly authenticated (subject + id present).
         if authenticated {
-            bag.set("authenticated", true);
+            bag.set(BAG_AUTHENTICATED, true);
         }
     }
 

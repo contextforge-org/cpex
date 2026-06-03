@@ -100,6 +100,7 @@
 // Without `@id` annotations, Cedar generates `policy0`, `policy1`, …
 // which is stable but meaningless. Worth documenting as best practice.
 
+pub mod cedar_attrs;
 pub mod decision;
 pub mod entities;
 pub mod error;

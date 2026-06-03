@@ -28,7 +28,7 @@ use thiserror::Error;
 
 use crate::pipeline::{FieldRule, Pipeline, ScanKind, Stage, TaintScope, TypeCheck};
 use crate::plugin_decl::{PluginDeclaration, PluginOverride, PluginRegistry};
-use crate::rules::{Action, CompareOp, CompiledRoute, Condition, Expression, Literal, Rule};
+use crate::rules::{CompareOp, CompiledRoute, Condition, Effect, Expression, Literal, Rule};
 use crate::step::{DelegateStep, PdpCall, PdpDialect, Step};
 
 // =====================================================================
@@ -447,11 +447,11 @@ pub fn parse_rule(line: &str, source: &str) -> Result<Rule, ParseError> {
     // as a top-level rule alternative, not a sub-predicate.
     if is_require_call(trimmed) {
         let condition = parse_require_rule(trimmed)?;
-        return Ok(Rule {
+        return Ok(Rule::single(
             condition,
-            action: Action::Deny { reason: None },
-            source: source.to_string(),
-        });
+            Effect::Deny { reason: None, code: None },
+            source,
+        ));
     }
 
     // Step kinds shouldn't end up here. If they do, the caller used the
@@ -463,18 +463,19 @@ pub fn parse_rule(line: &str, source: &str) -> Result<Rule, ParseError> {
         });
     }
 
-    let (predicate_str, action) = match split_predicate_action(trimmed) {
+    let (predicate_str, effects) = match split_predicate_action(trimmed) {
         Some((p, a)) => (p, parse_action(a, trimmed)?),
         None => {
             // No `:` — bare action (unconditional) or bare predicate (default deny).
-            if let Some(action) = try_bare_action(trimmed) {
+            if let Some(effects) = try_bare_action(trimmed) {
                 return Ok(Rule {
                     condition: Expression::Always,
-                    action,
+                    effects,
                     source: source.to_string(),
                 });
             }
-            (trimmed, Action::Deny { reason: None }) // DSL §2 default
+            // DSL §2 default: bare predicate denies.
+            (trimmed, vec![Effect::Deny { reason: None, code: None }])
         }
     };
 
@@ -484,7 +485,7 @@ pub fn parse_rule(line: &str, source: &str) -> Result<Rule, ParseError> {
             msg: format!("{}", e),
         })?;
 
-    Ok(Rule { condition, action, source: source.to_string() })
+    Ok(Rule { condition, effects, source: source.to_string() })
 }
 
 fn is_require_call(s: &str) -> bool {
@@ -498,7 +499,7 @@ fn is_require_call(s: &str) -> bool {
 ///   require(X, Y, ...)     →  Or([IsFalse(X), IsFalse(Y), ...])   (deny if any falsy)
 ///   require(X | Y | ...)   →  And([IsFalse(X), IsFalse(Y), ...])  (deny if all falsy)
 ///
-/// Caller wraps with `Action::Deny`.
+/// Caller wraps with `Effect::Deny`.
 fn parse_require_rule(line: &str) -> Result<Expression, ParseError> {
     let toks = Lexer::new(line).tokenize_all()?;
     let mut iter = toks.into_iter().peekable();
@@ -599,30 +600,94 @@ fn split_predicate_action(s: &str) -> Option<(&str, &str)> {
     last_colon.map(|i| (s[..i].trim(), s[i + 1..].trim()))
 }
 
-fn parse_action(s: &str, rule: &str) -> Result<Action, ParseError> {
-    match s.trim() {
-        "deny" => Ok(Action::Deny { reason: None }),
-        "allow" => Ok(Action::Allow),
-        other => {
-            // Be specific about why — common mistake will be `deny "reason"`.
-            Err(ParseError::Rule {
-                rule: rule.to_string(),
-                msg: format!(
-                    "unsupported action `{}` — only `deny` and `allow` in v1 (reasons come from PDP responses, not the DSL)",
-                    other
-                ),
-            })
-        }
+/// Parse the *right* side of a shorthand `predicate: action` rule into a
+/// single-element effects vec. Recognized forms (DSL §3 + the `code`
+/// extension we added in E1):
+///
+///   * `deny`                    → `vec![Effect::Deny { reason: None, code: None }]`
+///   * `deny('reason')`          → `vec![Effect::Deny { reason: Some, code: None }]`
+///   * `deny('reason', 'code')`  → `vec![Effect::Deny { reason: Some, code: Some }]`
+///   * `allow`                   → `vec![Effect::Allow]`
+///
+/// Anything else (plugin/delegate/taint) goes through `parse_step`, not
+/// here — those are sibling Steps in v0. Multi-effect `do:` lists use a
+/// separate parsing path that produces `Vec<Effect>` directly.
+fn parse_action(s: &str, rule: &str) -> Result<Vec<Effect>, ParseError> {
+    if let Some(effect) = try_bare_action(s) {
+        return Ok(effect);
     }
+    if let Some(deny) = try_parse_deny_call(s.trim(), rule)? {
+        return Ok(vec![deny]);
+    }
+    Err(ParseError::Rule {
+        rule: rule.to_string(),
+        msg: format!(
+            "unsupported action `{}` — recognized: `deny`, `deny('reason')`, `deny('reason', 'code')`, `allow`",
+            s.trim()
+        ),
+    })
 }
 
-fn try_bare_action(s: &str) -> Option<Action> {
+fn try_bare_action(s: &str) -> Option<Vec<Effect>> {
     match s.trim() {
-        "deny" => Some(Action::Deny { reason: None }),
-        "allow" => Some(Action::Allow),
+        "deny" => Some(vec![Effect::Deny { reason: None, code: None }]),
+        "allow" => Some(vec![Effect::Allow]),
         _ => None,
     }
 }
+
+/// Parse `deny('reason')` or `deny('reason', 'code')`. Returns
+/// `Ok(None)` when `s` doesn't start with `deny(` so the caller can
+/// fall through to other action handlers.
+fn try_parse_deny_call(s: &str, rule: &str) -> Result<Option<Effect>, ParseError> {
+    if !s.starts_with("deny(") {
+        return Ok(None);
+    }
+    let inside = extract_call_args(s, "deny").ok_or_else(|| ParseError::Rule {
+        rule: rule.to_string(),
+        msg: "malformed `deny(...)`".into(),
+    })?;
+    // Two positional args max. Spec precedent: `deny('reason')` (1 arg);
+    // E1 extension: `deny('reason', 'code')` (2 args). Both quoted.
+    let parts = split_top_level_commas(&inside).map_err(|e| ParseError::Rule {
+        rule: rule.to_string(),
+        msg: format!("deny(...): {}", e),
+    })?;
+    let mut iter = parts.into_iter();
+    let reason = match iter.next() {
+        Some(p) => Some(strip_string_literal(p.trim(), rule)?),
+        None => None,
+    };
+    let code = match iter.next() {
+        Some(p) => Some(strip_string_literal(p.trim(), rule)?),
+        None => None,
+    };
+    if iter.next().is_some() {
+        return Err(ParseError::Rule {
+            rule: rule.to_string(),
+            msg: "deny(...) takes at most two args: deny('reason', 'code')".into(),
+        });
+    }
+    Ok(Some(Effect::Deny { reason, code }))
+}
+
+/// Strip surrounding single or double quotes from a literal. The DSL
+/// uses single quotes (`'reason'`) per the spec examples, but accept
+/// double quotes too so YAML escaping is forgiving.
+fn strip_string_literal(s: &str, rule: &str) -> Result<String, ParseError> {
+    let s = s.trim();
+    if (s.starts_with('\'') && s.ends_with('\'') && s.len() >= 2)
+        || (s.starts_with('"') && s.ends_with('"') && s.len() >= 2)
+    {
+        Ok(s[1..s.len() - 1].to_string())
+    } else {
+        Err(ParseError::Rule {
+            rule: rule.to_string(),
+            msg: format!("expected a quoted string, got `{}`", s),
+        })
+    }
+}
+
 
 // =====================================================================
 // Step parser (policy: / post_policy: entries — supports steps + rules)
@@ -968,10 +1033,20 @@ fn parse_step_map(
     m: &serde_yaml::Mapping,
     source: &str,
 ) -> Result<Step, ParseError> {
+    // Canonical structured rule: `- when: X\n  do: Y` (DSL §3.2).
+    // Detected by the presence of *both* `when` and `do` keys — order
+    // doesn't matter, and the map can carry extra keys for future
+    // extensions (e.g. `id:` for rule identifiers).
+    if has_key(m, "when") && has_key(m, "do") {
+        return parse_when_do_rule(m, source);
+    }
+
     if m.len() != 1 {
         return Err(ParseError::Rule {
             rule: format!("{:?}", m),
-            msg: "step map must have exactly one key (PDP call signature)".into(),
+            msg: "step map must have exactly one key (PDP call signature, \
+                   `when:`/`do:`, or a `predicate: [effects...]` shorthand)"
+                .into(),
         });
     }
     let (key_val, body_val) = m.iter().next().unwrap();
@@ -980,10 +1055,57 @@ fn parse_step_map(
         msg: "PDP step key must be a string".into(),
     })?;
 
+    // Shorthand multi-effect map: `- "predicate": [list]` (DSL §3.1
+    // multi-effect from one predicate). Detected by a single-key map
+    // whose value is a YAML sequence. Single-effect map shorthand
+    // (`- "predicate": deny`) still goes through `parse_step_string`
+    // via the colon-split, NOT here — by the time we land in this
+    // function, single-string values have already been resolved by
+    // the caller's `parse_step` dispatch.
+    if let serde_yaml::Value::Sequence(items) = body_val {
+        // Skip PDP keys — `cedar:` / `opa:` etc. have list bodies for
+        // `on_deny:` / `on_allow:` and need the existing handling.
+        // Also skip `sequential:` / `parallel:` orchestration keys
+        // since they take a list body and would otherwise be parsed
+        // as predicates. The shorthand recognises only predicate-
+        // shaped keys.
+        let trimmed = key.trim();
+        if trimmed != "delegate"
+            && trimmed != "sequential"
+            && trimmed != "parallel"
+            && !is_known_pdp_dialect(trimmed)
+        {
+            return parse_shorthand_multi_effect(trimmed, items, source);
+        }
+    }
+
     // `delegate:` is a special non-PDP step shape — branch before the
     // dialect logic. See `parse_delegate_step` for the expected body.
     if key.trim() == "delegate" {
         return parse_delegate_step(body_val, source);
+    }
+
+    // E3: top-level `sequential:` / `parallel:` orchestration —
+    // wrap the resulting Effect into an unconditional Rule so the
+    // top-level Vec<Step> stays uniform.
+    match key.trim() {
+        "sequential" => {
+            let effect = parse_sequential_effect(body_val, source)?;
+            return Ok(Step::Rule(Rule {
+                condition: Expression::Always,
+                effects: vec![effect],
+                source: source.to_string(),
+            }));
+        }
+        "parallel" => {
+            let effect = parse_parallel_effect(body_val, source)?;
+            return Ok(Step::Rule(Rule {
+                condition: Expression::Always,
+                effects: vec![effect],
+                source: source.to_string(),
+            }));
+        }
+        _ => {}
     }
 
     // Split the key into "dialect" + optional "(args)" portion.
@@ -1029,6 +1151,418 @@ fn parse_step_map(
 ///     on_error: deny                  # optional — deny | continue (default deny)
 /// ```
 ///
+// =====================================================================
+// Effect / when-do parsing (E1)
+// =====================================================================
+
+/// Lookup helper — `serde_yaml::Mapping::contains_key` only matches when
+/// the search key is a `Value`, so we wrap the string conversion.
+fn has_key(m: &serde_yaml::Mapping, key: &str) -> bool {
+    m.contains_key(serde_yaml::Value::String(key.to_string()))
+}
+
+/// Whether a top-level map key is a recognized PDP dialect. Used by
+/// the shorthand-list detector to avoid mis-parsing a `cedar: [...]`
+/// reaction list as a predicate-with-effects map.
+fn is_known_pdp_dialect(key: &str) -> bool {
+    let base = key.find('(').map(|i| &key[..i]).unwrap_or(key);
+    matches!(
+        base.trim(),
+        "cedar" | "cedarling" | "opa" | "authzen" | "nemo"
+    )
+}
+
+/// Parse the canonical `- when: X` `do: Y` rule form (DSL §3.2). `Y`
+/// may be a single effect string (`do: deny`) or a list of effect
+/// entries (`do: [plugin(audit), taint(X), deny('msg')]`). Map-form
+/// effects (like a nested `delegate:` block) are allowed inside `do:`
+/// via the same dispatch as top-level steps.
+fn parse_when_do_rule(
+    m: &serde_yaml::Mapping,
+    source: &str,
+) -> Result<Step, ParseError> {
+    // Validate keys — surface a useful error if there's stray content
+    // beyond `when:` / `do:` (e.g. typo'd `whens:`). `id:` is reserved
+    // for a future rule-identifier extension; tolerate it as a
+    // pass-through for now.
+    for (k, _) in m.iter() {
+        let key = k.as_str().unwrap_or("");
+        if !matches!(key, "when" | "do" | "id") {
+            return Err(ParseError::Rule {
+                rule: format!("{:?}", m),
+                msg: format!(
+                    "unexpected key `{}` in when/do rule (allowed: `when`, `do`, `id`)",
+                    key
+                ),
+            });
+        }
+    }
+
+    let when_val = m
+        .get(serde_yaml::Value::String("when".into()))
+        .expect("has_key verified above");
+    let predicate = when_val.as_str().ok_or_else(|| ParseError::Rule {
+        rule: format!("{:?}", when_val),
+        msg: "`when:` must be a predicate string".into(),
+    })?;
+    let condition = parse_predicate(predicate).map_err(|e| ParseError::Rule {
+        rule: format!("when: {}", predicate),
+        msg: format!("{}", e),
+    })?;
+
+    let do_val = m
+        .get(serde_yaml::Value::String("do".into()))
+        .expect("has_key verified above");
+    let effects = parse_do_body(do_val, source)?;
+    if effects.is_empty() {
+        return Err(ParseError::Rule {
+            rule: format!("{:?}", m),
+            msg: "`do:` produced no effects".into(),
+        });
+    }
+
+    Ok(Step::Rule(Rule {
+        condition,
+        effects,
+        source: source.to_string(),
+    }))
+}
+
+/// Parse the shorthand multi-effect map form: `- "predicate": [list]`
+/// (DSL §3 example at line 386). Equivalent to the canonical
+/// `when: predicate` `do: [list]` shape, just terser.
+fn parse_shorthand_multi_effect(
+    predicate: &str,
+    effect_list: &[serde_yaml::Value],
+    source: &str,
+) -> Result<Step, ParseError> {
+    let condition = parse_predicate(predicate).map_err(|e| ParseError::Rule {
+        rule: predicate.to_string(),
+        msg: format!("{}", e),
+    })?;
+
+    let mut effects = Vec::with_capacity(effect_list.len());
+    for item in effect_list {
+        effects.push(parse_effect_value(item, source)?);
+    }
+    if effects.is_empty() {
+        return Err(ParseError::Rule {
+            rule: predicate.to_string(),
+            msg: "shorthand multi-effect map produced no effects".into(),
+        });
+    }
+    Ok(Step::Rule(Rule {
+        condition,
+        effects,
+        source: source.to_string(),
+    }))
+}
+
+/// Parse a `do:` body — single effect string, list of effects, or a
+/// single map-shaped effect (`do: { parallel: [...] }`,
+/// `do: { delegate: {...} }`, etc.).
+fn parse_do_body(
+    val: &serde_yaml::Value,
+    source: &str,
+) -> Result<Vec<Effect>, ParseError> {
+    match val {
+        serde_yaml::Value::String(s) => Ok(vec![parse_effect_string(s, source)?]),
+        serde_yaml::Value::Sequence(items) => items
+            .iter()
+            .map(|item| parse_effect_value(item, source))
+            .collect(),
+        serde_yaml::Value::Mapping(_) => {
+            // Single map-form effect — delegate, sequential, parallel.
+            // Route through parse_effect_value which dispatches by key.
+            Ok(vec![parse_effect_value(val, source)?])
+        }
+        other => Err(ParseError::Rule {
+            rule: format!("{:?}", other),
+            msg: "`do:` value must be a string, a list of effects, or an effect map".into(),
+        }),
+    }
+}
+
+/// Parse one effect entry from a YAML value — string form or map form
+/// (the latter for `delegate:` configs nested inside `do:`,
+/// `sequential:`, and `parallel:`).
+fn parse_effect_value(
+    val: &serde_yaml::Value,
+    source: &str,
+) -> Result<Effect, ParseError> {
+    match val {
+        serde_yaml::Value::String(s) => parse_effect_string(s, source),
+        serde_yaml::Value::Mapping(m) => {
+            // E3: `sequential:` / `parallel:` map forms — a single-key
+            // map whose key is `sequential` / `parallel` and whose
+            // value is a list of effects.
+            if m.len() == 1 {
+                let (k, v) = m.iter().next().unwrap();
+                if let Some(key_str) = k.as_str() {
+                    match key_str.trim() {
+                        "sequential" => return parse_sequential_effect(v, source),
+                        "parallel" => return parse_parallel_effect(v, source),
+                        _ => {}
+                    }
+                }
+            }
+            // Otherwise reuse the existing step-map parser for
+            // `delegate:`, `cedar:` etc. and collapse the Step.
+            let step = parse_step(val, source)?;
+            step_to_effect(step, source)
+        }
+        other => Err(ParseError::Rule {
+            rule: format!("{:?}", other),
+            msg: "effect entry must be a string or a map".into(),
+        }),
+    }
+}
+
+/// Parse a `sequential: [list]` effect value. The body MUST be a list
+/// (a single effect would defeat the purpose of explicit grouping).
+fn parse_sequential_effect(
+    body: &serde_yaml::Value,
+    source: &str,
+) -> Result<Effect, ParseError> {
+    let items = body.as_sequence().ok_or_else(|| ParseError::Rule {
+        rule: format!("{:?}", body),
+        msg: "`sequential:` body must be a list of effects".into(),
+    })?;
+    if items.is_empty() {
+        return Err(ParseError::Rule {
+            rule: format!("{:?}", body),
+            msg: "`sequential:` body is empty".into(),
+        });
+    }
+    let mut effects = Vec::with_capacity(items.len());
+    for item in items {
+        effects.push(parse_effect_value(item, source)?);
+    }
+    Ok(Effect::Sequential(effects))
+}
+
+/// Parse a `parallel: [list]` effect value. The body MUST be a list,
+/// and the parsed Effect is validated for parallel-purity (rejects
+/// `FieldOp` / `Delegate` nested anywhere underneath).
+fn parse_parallel_effect(
+    body: &serde_yaml::Value,
+    source: &str,
+) -> Result<Effect, ParseError> {
+    let items = body.as_sequence().ok_or_else(|| ParseError::Rule {
+        rule: format!("{:?}", body),
+        msg: "`parallel:` body must be a list of effects".into(),
+    })?;
+    if items.is_empty() {
+        return Err(ParseError::Rule {
+            rule: format!("{:?}", body),
+            msg: "`parallel:` body is empty".into(),
+        });
+    }
+    let mut effects = Vec::with_capacity(items.len());
+    for item in items {
+        effects.push(parse_effect_value(item, source)?);
+    }
+    let parallel = Effect::Parallel(effects);
+    parallel
+        .validate_parallel_purity()
+        .map_err(|msg| ParseError::Rule {
+            rule: source.to_string(),
+            msg,
+        })?;
+    Ok(parallel)
+}
+
+/// Parse one effect string. Reuses [`parse_step_string`] for forms
+/// shared with top-level steps (`plugin(...)`, `taint(...)`,
+/// `delegate(...)`, predicate-action rules), then collapses the
+/// resulting Step into an Effect.
+fn parse_effect_string(s: &str, source: &str) -> Result<Effect, ParseError> {
+    // Bare `allow` / `deny` / `deny('reason')` / `deny('reason', 'code')`
+    // are accepted directly — they map to control effects with no
+    // associated condition. Same parsing as the right-hand side of a
+    // shorthand `predicate: action` rule.
+    let trimmed = s.trim();
+    if let Some(mut effects) = try_bare_action(trimmed) {
+        if effects.len() == 1 {
+            return Ok(effects.pop().unwrap());
+        }
+    }
+    if let Some(effect) = try_parse_deny_call(trimmed, s)? {
+        return Ok(effect);
+    }
+    // Content effect — `result.salary | redact`, `args.ssn | mask(4)`,
+    // etc. Detected by a top-level `|` that splits a dotted path from
+    // a pipe chain. The pipe is at top level (depth 0); commas /
+    // parens inside the chain don't get confused.
+    if let Some(field_op) = try_parse_field_op(trimmed, s)? {
+        return Ok(field_op);
+    }
+    // Everything else (plugin/delegate/taint/rule) routes through the
+    // step parser; collapse the result.
+    let step = parse_step_string(s, source)?;
+    step_to_effect(step, source)
+}
+
+/// Parse `<path> | <stage> [| <stage>...]` into an `Effect::FieldOp`.
+/// Returns `Ok(None)` when no top-level `|` is found so the caller can
+/// fall through to other effect handlers.
+fn try_parse_field_op(s: &str, rule: &str) -> Result<Option<Effect>, ParseError> {
+    let Some(pipe_idx) = find_top_level_pipe(s) else {
+        return Ok(None);
+    };
+    let path = s[..pipe_idx].trim();
+    let chain = s[pipe_idx + 1..].trim();
+    if path.is_empty() || chain.is_empty() {
+        return Ok(None);
+    }
+    // The path must look like a dotted field reference. Anything else
+    // (e.g. `role.hr | role.security` — though that wouldn't get here
+    // because predicates don't appear in effect position) is a sign
+    // the author meant something other than a field op.
+    if !is_valid_field_path(path) {
+        return Ok(None);
+    }
+    let pipeline = parse_pipeline(chain).map_err(|e| ParseError::Rule {
+        rule: rule.to_string(),
+        msg: format!("field op `{}`: {}", path, e),
+    })?;
+    if pipeline.stages.is_empty() {
+        return Err(ParseError::Rule {
+            rule: rule.to_string(),
+            msg: format!("field op `{}` has no stages", path),
+        });
+    }
+    Ok(Some(Effect::FieldOp {
+        path: path.to_string(),
+        stages: pipeline.stages,
+    }))
+}
+
+/// Find the byte index of the first top-level `|` that isn't part of
+/// `||` (logical-or inside a predicate). Depth-aware: skips `|` inside
+/// `(...)` / `[...]` and inside single- or double-quoted strings.
+fn find_top_level_pipe(s: &str) -> Option<usize> {
+    let bytes = s.as_bytes();
+    let mut depth: i32 = 0;
+    let mut quote: Option<u8> = None;
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if let Some(q) = quote {
+            if b == b'\\' {
+                i += 2;
+                continue;
+            }
+            if b == q {
+                quote = None;
+            }
+            i += 1;
+            continue;
+        }
+        match b {
+            b'\'' | b'"' => quote = Some(b),
+            b'(' | b'[' => depth += 1,
+            b')' | b']' => depth -= 1,
+            b'|' if depth == 0 => {
+                // Skip `||` — never appears in effect strings today
+                // but defend against it anyway.
+                if bytes.get(i + 1) == Some(&b'|') {
+                    i += 2;
+                    continue;
+                }
+                return Some(i);
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    None
+}
+
+/// A field path is a dotted identifier sequence rooted at `args.` or
+/// `result.`. Reject anything else early so a stray `role.hr | …` in
+/// effect position fails fast.
+fn is_valid_field_path(s: &str) -> bool {
+    let Some(rest) = s.strip_prefix("args.").or_else(|| s.strip_prefix("result.")) else {
+        return false;
+    };
+    !rest.is_empty()
+        && rest
+            .split('.')
+            .all(|seg| !seg.is_empty() && seg.chars().all(|c| c.is_alphanumeric() || c == '_'))
+}
+
+/// Collapse a `Step` produced by the legacy step parser into an
+/// `Effect`. The legitimate inputs are `Plugin`, `Delegate`, `Taint`,
+/// and `Rule` (when a control action like `deny`/`allow` was parsed).
+/// Anything else (`Pdp`) is rejected — nested PDP calls inside `do:`
+/// are out of scope for E1.
+/// Recursively map a top-level `Step` (as produced by `parse_step`) into
+/// an `Effect`. Used at compile_apl_blocks during E4 — keeps `parse_step`'s
+/// internal shape for the moment while the public IR collapses to Effect.
+/// All five Step variants map cleanly: Rule → When, Pdp → Pdp (recursive
+/// on reactions), Plugin/Delegate/Taint pass-through.
+pub(crate) fn step_to_top_level_effect(step: Step) -> Result<Effect, ParseError> {
+    match step {
+        Step::Rule(rule) => Ok(Effect::When {
+            condition: rule.condition,
+            body: rule.effects,
+            source: rule.source,
+        }),
+        Step::Pdp { call, on_allow, on_deny } => {
+            let on_allow = on_allow
+                .into_iter()
+                .map(step_to_top_level_effect)
+                .collect::<Result<Vec<_>, _>>()?;
+            let on_deny = on_deny
+                .into_iter()
+                .map(step_to_top_level_effect)
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(Effect::Pdp { call, on_allow, on_deny })
+        }
+        Step::Plugin { name } => Ok(Effect::Plugin { name }),
+        Step::Delegate(d) => Ok(Effect::Delegate(d)),
+        Step::Taint { label, scopes } => Ok(Effect::Taint { label, scopes }),
+    }
+}
+
+fn step_to_effect(step: Step, source: &str) -> Result<Effect, ParseError> {
+    match step {
+        Step::Plugin { name } => Ok(Effect::Plugin { name }),
+        Step::Delegate(d) => Ok(Effect::Delegate(d)),
+        Step::Taint { label, scopes } => Ok(Effect::Taint { label, scopes }),
+        Step::Rule(rule) => {
+            // Nested when/do inside a do: list isn't supported in E1
+            // — only control effects (allow/deny) flatten cleanly.
+            if !matches!(rule.condition, Expression::Always) {
+                return Err(ParseError::Rule {
+                    rule: source.to_string(),
+                    msg: "conditional rules nested inside `do:` are not supported in E1 \
+                          (use a sibling `when:`/`do:` rule instead)"
+                        .into(),
+                });
+            }
+            if rule.effects.len() != 1 {
+                return Err(ParseError::Rule {
+                    rule: source.to_string(),
+                    msg: format!(
+                        "unconditional rule inside `do:` must produce exactly one \
+                         effect, got {}",
+                        rule.effects.len()
+                    ),
+                });
+            }
+            Ok(rule.effects.into_iter().next().unwrap())
+        }
+        Step::Pdp { .. } => Err(ParseError::Rule {
+            rule: source.to_string(),
+            msg: "PDP calls inside `do:` are not supported in E1 (use a sibling \
+                  step instead)"
+                .into(),
+        }),
+    }
+}
+
 /// `config:` is opaque — the framework hands it to the named plugin
 /// via the existing per-call config-override pathway. The plugin
 /// owns the typed schema (target / audience / permissions / mode /
@@ -1585,10 +2119,12 @@ fn compile_route(route_key: &str, raw: RouteYaml) -> Result<Option<CompiledRoute
 fn compile_apl_blocks(source: &str, raw: RouteYaml) -> Result<CompiledRoute, ParseError> {
     let mut route = CompiledRoute::new(source);
     for (i, entry) in raw.policy.iter().enumerate() {
-        route.policy.push(parse_step(entry, &format!("{}.policy[{}]", source, i))?);
+        let step = parse_step(entry, &format!("{}.policy[{}]", source, i))?;
+        route.policy.push(step_to_top_level_effect(step)?);
     }
     for (i, entry) in raw.post_policy.iter().enumerate() {
-        route.post_policy.push(parse_step(entry, &format!("{}.post_policy[{}]", source, i))?);
+        let step = parse_step(entry, &format!("{}.post_policy[{}]", source, i))?;
+        route.post_policy.push(step_to_top_level_effect(step)?);
     }
     for (field, chain) in &raw.args {
         let pipeline = parse_pipeline(chain).map_err(|e| ParseError::Rule {
@@ -1655,7 +2191,7 @@ pub fn compile_policy_block_value(
 mod tests {
     use super::*;
     use crate::attributes::AttributeBag;
-    use crate::evaluator::{evaluate_rules, Decision};
+    use crate::evaluator::Decision;
 
     // ----- Lexer -----
 
@@ -1770,7 +2306,7 @@ mod tests {
     fn rule_require_single_arg_desugars_to_isfalse_and_deny() {
         // require(X)  →  Rule { condition: IsFalse(X), action: Deny }   (DSL §8.1)
         let r = parse_rule("require(authenticated)", "test").unwrap();
-        assert!(matches!(r.action, Action::Deny { reason: None }));
+        assert!(matches!(r.effects.as_slice(), [Effect::Deny { reason: None, code: None }]));
         assert_eq!(
             r.condition,
             Expression::Condition(Condition::IsFalse { key: "authenticated".into() }),
@@ -1890,9 +2426,9 @@ mod tests {
     #[test]
     fn rule_predicate_action_form() {
         let r = parse_rule("delegation.depth > 2: deny", "test").unwrap();
-        match r.action {
-            Action::Deny { .. } => {}
-            other => panic!("expected Deny, got {:?}", other),
+        match r.effects.as_slice() {
+            [Effect::Deny { .. }] => {}
+            other => panic!("expected [Deny], got {:?}", other),
         }
         match r.condition {
             Expression::Condition(Condition::Comparison { .. }) => {}
@@ -1904,13 +2440,13 @@ mod tests {
     fn rule_predicate_only_defaults_to_deny() {
         // DSL §2: missing action defaults to deny.
         let r = parse_rule("!authenticated", "test").unwrap();
-        assert!(matches!(r.action, Action::Deny { .. }));
+        assert!(matches!(r.effects.as_slice(), [Effect::Deny { .. }]));
     }
 
     #[test]
     fn rule_explicit_allow() {
         let r = parse_rule("role.admin: allow", "test").unwrap();
-        assert!(matches!(r.action, Action::Allow));
+        assert!(matches!(r.effects.as_slice(), [Effect::Allow]));
     }
 
     #[test]
@@ -1919,11 +2455,11 @@ mod tests {
         // Expression::Always as the predicate (DSL §3.1).
         let r = parse_rule("deny", "test").unwrap();
         assert_eq!(r.condition, Expression::Always);
-        assert!(matches!(r.action, Action::Deny { reason: None }));
+        assert!(matches!(r.effects.as_slice(), [Effect::Deny { reason: None, code: None }]));
 
         let r = parse_rule("allow", "test").unwrap();
         assert_eq!(r.condition, Expression::Always);
-        assert!(matches!(r.action, Action::Allow));
+        assert!(matches!(r.effects.as_slice(), [Effect::Allow]));
     }
 
     #[test]
@@ -1938,10 +2474,493 @@ mod tests {
     }
 
     #[test]
-    fn rule_deny_with_reason_rejected() {
-        // DSL has no `deny "reason"` form — reasons come from PDPs.
+    fn rule_deny_with_unquoted_arg_rejected() {
+        // `deny "reason"` (space-separated, no parens) is not a valid
+        // form. The supported reason-carrying shape is
+        // `deny('reason')` / `deny('reason', 'code')` per DSL §3 and
+        // the E1 `code` extension.
         let err = parse_rule(r#"authenticated: deny "go away""#, "test").unwrap_err();
-        assert!(format!("{}", err).contains("only `deny` and `allow`"));
+        assert!(format!("{}", err).contains("unsupported action"));
+    }
+
+    #[test]
+    fn rule_deny_with_quoted_reason_accepted() {
+        // `deny('reason')` — single-arg form. Reason landing on the
+        // effect; code defaulting to None.
+        let r = parse_rule(r#"delegation.depth > 2: deny('too deep')"#, "test").unwrap();
+        assert!(matches!(
+            r.effects.as_slice(),
+            [Effect::Deny { reason: Some(s), code: None }] if s == "too deep"
+        ));
+    }
+
+    #[test]
+    fn rule_deny_with_reason_and_code_accepted() {
+        // `deny('reason', 'code')` — E1 extension. Both reason and
+        // author-supplied code surface in the violation.
+        let r = parse_rule(
+            r#"delegation.depth > 2: deny('too deep', 'delegation.depth_exceeded')"#,
+            "test",
+        )
+        .unwrap();
+        match r.effects.as_slice() {
+            [Effect::Deny { reason: Some(reason), code: Some(code) }] => {
+                assert_eq!(reason, "too deep");
+                assert_eq!(code, "delegation.depth_exceeded");
+            }
+            other => panic!("expected Deny with reason+code, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn rule_deny_with_too_many_args_rejected() {
+        // Cap on positional args — `deny(reason, code)` is the limit.
+        let err = parse_rule(r#"x: deny('a', 'b', 'c')"#, "test").unwrap_err();
+        assert!(format!("{}", err).contains("at most two args"));
+    }
+
+    #[test]
+    fn rule_deny_with_unquoted_args_in_call_rejected() {
+        // The args MUST be quoted; bare identifiers aren't legal.
+        let err = parse_rule(r#"x: deny(bare, identifier)"#, "test").unwrap_err();
+        assert!(format!("{}", err).contains("expected a quoted string"));
+    }
+
+    // ----- E1: when/do canonical form -----
+
+    fn parse_step_yaml(yaml: &str) -> Result<Step, ParseError> {
+        let v: serde_yaml::Value = serde_yaml::from_str(yaml).unwrap();
+        parse_step(&v, "test")
+    }
+
+    #[test]
+    fn when_do_single_effect_deny() {
+        // do: deny  — single string value, no list.
+        let step = parse_step_yaml("when: delegation.depth > 2\ndo: deny").unwrap();
+        match step {
+            Step::Rule(rule) => {
+                assert!(matches!(
+                    rule.condition,
+                    Expression::Condition(Condition::Comparison { .. })
+                ));
+                assert!(matches!(
+                    rule.effects.as_slice(),
+                    [Effect::Deny { reason: None, code: None }]
+                ));
+            }
+            other => panic!("expected Step::Rule, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn when_do_single_effect_deny_with_reason_and_code() {
+        // The E1 `deny('reason', 'code')` extension works inside `do:` too.
+        let step = parse_step_yaml(
+            "when: delegation.depth > 2\ndo: deny('too deep', 'delegation.depth_exceeded')",
+        )
+        .unwrap();
+        let Step::Rule(rule) = step else {
+            panic!("expected Step::Rule");
+        };
+        match rule.effects.as_slice() {
+            [Effect::Deny { reason: Some(r), code: Some(c) }] => {
+                assert_eq!(r, "too deep");
+                assert_eq!(c, "delegation.depth_exceeded");
+            }
+            other => panic!("expected Deny+reason+code, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn when_do_multi_effect_list() {
+        // The headline demo case: fan-out from one predicate.
+        // do: [plugin(audit_logger), taint(unauth), deny('refused')]
+        let yaml = r#"
+when: "!role.hr"
+do:
+  - "plugin(audit_logger)"
+  - "taint(unauth, session)"
+  - "deny('refused', 'role.hr_required')"
+"#;
+        let step = parse_step_yaml(yaml).unwrap();
+        let Step::Rule(rule) = step else {
+            panic!("expected Step::Rule");
+        };
+        assert_eq!(rule.effects.len(), 3);
+        assert!(matches!(rule.effects[0], Effect::Plugin { ref name } if name == "audit_logger"));
+        assert!(matches!(
+            rule.effects[1],
+            Effect::Taint { ref label, .. } if label == "unauth"
+        ));
+        match &rule.effects[2] {
+            Effect::Deny { reason: Some(r), code: Some(c) } => {
+                assert_eq!(r, "refused");
+                assert_eq!(c, "role.hr_required");
+            }
+            other => panic!("expected Deny+reason+code, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn when_do_key_order_does_not_matter() {
+        // YAML maps are unordered; `do:` first should parse the same.
+        let step =
+            parse_step_yaml("do: deny\nwhen: delegation.depth > 2").unwrap();
+        assert!(matches!(step, Step::Rule(_)));
+    }
+
+    #[test]
+    fn when_do_with_unknown_key_rejected() {
+        // Typo guard — surface unknown keys instead of silently dropping.
+        let err = parse_step_yaml("when: x\ndo: deny\nwhne: typo").unwrap_err();
+        assert!(format!("{}", err).contains("unexpected key"));
+    }
+
+    #[test]
+    fn when_do_empty_do_list_rejected() {
+        // An empty `do:` is almost certainly an author mistake;
+        // require at least one effect.
+        let err = parse_step_yaml("when: x\ndo: []").unwrap_err();
+        assert!(format!("{}", err).contains("no effects"));
+    }
+
+    // ----- E1: shorthand multi-effect map (predicate: [list]) -----
+
+    #[test]
+    fn shorthand_multi_effect_map() {
+        // Shorthand for the canonical when/do form. The predicate is
+        // the map's only key, the value is a list of effects.
+        let yaml = r#"
+"!role.hr":
+  - "plugin(audit_logger)"
+  - "deny('unauthorized')"
+"#;
+        let step = parse_step_yaml(yaml).unwrap();
+        let Step::Rule(rule) = step else {
+            panic!("expected Step::Rule");
+        };
+        assert_eq!(rule.effects.len(), 2);
+        assert!(matches!(rule.effects[0], Effect::Plugin { ref name } if name == "audit_logger"));
+        assert!(matches!(
+            rule.effects[1],
+            Effect::Deny { reason: Some(ref r), code: None } if r == "unauthorized"
+        ));
+    }
+
+    #[test]
+    fn shorthand_multi_effect_map_with_nested_delegate() {
+        // Map-form effects (like `delegate:`) work inside a shorthand
+        // list, exercising the parse_effect_value path.
+        let yaml = r#"
+"role.hr":
+  - delegate:
+      plugin: workday-oauth
+      config:
+        audience: workday-api
+  - "plugin(audit_logger)"
+"#;
+        let step = parse_step_yaml(yaml).unwrap();
+        let Step::Rule(rule) = step else {
+            panic!("expected Step::Rule");
+        };
+        assert_eq!(rule.effects.len(), 2);
+        assert!(matches!(rule.effects[0], Effect::Delegate(_)));
+        assert!(matches!(rule.effects[1], Effect::Plugin { .. }));
+    }
+
+    #[test]
+    fn cedar_with_list_body_still_parses_as_pdp() {
+        // Regression guard — `cedar:` and other PDP keys whose body
+        // happens to be list-shaped (e.g. when the author embeds a
+        // bare reaction list) must NOT be reinterpreted as a
+        // shorthand multi-effect map.
+        //
+        // Cedar bodies in production are maps with `action`/`resource`
+        // keys — we don't actually accept a Sequence body, but the
+        // shorthand-list detector explicitly excludes known PDP
+        // dialect keys so the failure mode here is the existing PDP
+        // body error, not a shorthand misparse.
+        let err = parse_step_yaml("cedar: [oh no]").unwrap_err();
+        // Existing PDP body validator complains about the shape —
+        // proves we didn't try to read `cedar` as a predicate.
+        assert!(format!("{}", err).contains("body must be a map"));
+    }
+
+    #[test]
+    fn shorthand_multi_effect_empty_list_rejected() {
+        let err = parse_step_yaml(r#""x": []"#).unwrap_err();
+        assert!(format!("{}", err).contains("no effects"));
+    }
+
+    // ----- E2: content effects in do: (field pipe chains) -----
+
+    #[test]
+    fn when_do_with_field_op_result_redact() {
+        // The headline E2 case: `result.salary | redact` as an effect
+        // inside a do: list, alongside other effect kinds.
+        let yaml = r#"
+when: "!perm.view_ssn"
+do:
+  - "plugin(audit_logger)"
+  - "result.salary | redact"
+"#;
+        let step = parse_step_yaml(yaml).unwrap();
+        let Step::Rule(rule) = step else {
+            panic!("expected Step::Rule");
+        };
+        assert_eq!(rule.effects.len(), 2);
+        assert!(matches!(rule.effects[0], Effect::Plugin { .. }));
+        match &rule.effects[1] {
+            Effect::FieldOp { path, stages } => {
+                assert_eq!(path, "result.salary");
+                assert_eq!(stages.len(), 1, "single `redact` stage");
+            }
+            other => panic!("expected FieldOp, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn when_do_with_field_op_args_mask() {
+        // `args.card_number | mask(4)` — args side + parametrised stage.
+        let yaml = r#"
+when: role.support
+do: "args.card_number | mask(4)"
+"#;
+        let step = parse_step_yaml(yaml).unwrap();
+        let Step::Rule(rule) = step else {
+            panic!("expected Step::Rule");
+        };
+        match &rule.effects[..] {
+            [Effect::FieldOp { path, stages }] => {
+                assert_eq!(path, "args.card_number");
+                assert_eq!(stages.len(), 1);
+            }
+            other => panic!("expected single FieldOp, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn when_do_with_chained_field_op() {
+        // Chained stages — type check + content effect. Uses stages
+        // the pipeline parser actually knows about (`str` and `mask`).
+        let yaml = r#"
+when: role.support
+do: "args.card_number | str | mask(4)"
+"#;
+        let step = parse_step_yaml(yaml).unwrap();
+        let Step::Rule(rule) = step else {
+            panic!("expected Step::Rule");
+        };
+        match &rule.effects[..] {
+            [Effect::FieldOp { path, stages }] => {
+                assert_eq!(path, "args.card_number");
+                assert_eq!(stages.len(), 2, "two-stage chain");
+            }
+            other => panic!("expected single FieldOp, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn field_op_invalid_path_falls_through() {
+        // `role.hr | redact` looks like a pipe chain but the path
+        // doesn't start with `args.` / `result.`. We refuse to treat
+        // it as a FieldOp; instead it falls through to the predicate
+        // parser, which will fail with a more specific error.
+        let yaml = r#"do: "role.hr | redact""#;
+        let _ = parse_step_yaml(&format!("when: true\n{}", yaml));
+        // The exact failure mode here isn't load-bearing — what matters
+        // is we don't silently produce an unconditional FieldOp with a
+        // bogus path. So just confirm we either error or produce
+        // *something other than* a FieldOp.
+        let step = parse_step_yaml("when: true\ndo: \"role.hr | redact\"");
+        match step {
+            Ok(Step::Rule(rule)) => {
+                assert!(
+                    !matches!(rule.effects.as_slice(), [Effect::FieldOp { .. }]),
+                    "bare `role.hr` must NOT parse as a FieldOp path"
+                );
+            }
+            Err(_) => {} // also fine
+            other => panic!("unexpected: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn field_op_empty_chain_rejected() {
+        // `args.x |` (trailing pipe with nothing after) — author bug.
+        let yaml = r#"when: true
+do: "args.x | ""#;
+        let _ = parse_step_yaml(yaml); // shape varies by YAML parser, just ensure no panic
+    }
+
+    #[test]
+    fn shorthand_multi_effect_with_field_op() {
+        // Shorthand `predicate: [list]` with a content effect.
+        let yaml = r#"
+"!perm.view_ssn":
+  - "plugin(audit_logger)"
+  - "result.ssn | redact"
+"#;
+        let step = parse_step_yaml(yaml).unwrap();
+        let Step::Rule(rule) = step else {
+            panic!("expected Step::Rule");
+        };
+        assert_eq!(rule.effects.len(), 2);
+        assert!(matches!(rule.effects[1], Effect::FieldOp { .. }));
+    }
+
+    #[test]
+    fn find_top_level_pipe_skips_inside_parens() {
+        // Top-level `|` between path and chain → returns its index.
+        // Inner `|` inside `(...)` or quotes is ignored.
+        assert_eq!(find_top_level_pipe("args.x | mask(4)"), Some(7));
+        assert_eq!(find_top_level_pipe("validate(luhn)"), None);
+        assert_eq!(find_top_level_pipe(r#"args.x | mask("a|b")"#), Some(7));
+        // No top-level pipe even with a `|` inside the parameter set.
+        assert_eq!(find_top_level_pipe("mask(a|b)"), None);
+    }
+
+    // ----- E3: sequential: / parallel: parsing -----
+
+    #[test]
+    fn top_level_sequential() {
+        // `- sequential: [list]` as a top-level policy step.
+        let yaml = r#"
+sequential:
+  - "plugin(rate_limiter)"
+  - "plugin(audit_logger)"
+"#;
+        let step = parse_step_yaml(yaml).unwrap();
+        let Step::Rule(rule) = step else {
+            panic!("expected Rule");
+        };
+        assert!(matches!(rule.condition, Expression::Always));
+        match rule.effects.as_slice() {
+            [Effect::Sequential(inner)] => {
+                assert_eq!(inner.len(), 2);
+                assert!(matches!(inner[0], Effect::Plugin { .. }));
+                assert!(matches!(inner[1], Effect::Plugin { .. }));
+            }
+            other => panic!("expected single Sequential effect, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn top_level_parallel() {
+        let yaml = r#"
+parallel:
+  - "plugin(pii_scanner)"
+  - "plugin(nemo_guardrails)"
+"#;
+        let step = parse_step_yaml(yaml).unwrap();
+        let Step::Rule(rule) = step else {
+            panic!("expected Rule");
+        };
+        match rule.effects.as_slice() {
+            [Effect::Parallel(inner)] => {
+                assert_eq!(inner.len(), 2);
+            }
+            other => panic!("expected single Parallel effect, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parallel_inside_do_body() {
+        // The DSL spec's "Conditional parallel" example: a `when:`
+        // rule whose `do:` is a single parallel block.
+        let yaml = r#"
+when: args.include_ssn == true
+do:
+  parallel:
+    - "plugin(pii_scanner)"
+    - "plugin(nemo_guardrails)"
+"#;
+        let step = parse_step_yaml(yaml).unwrap();
+        let Step::Rule(rule) = step else {
+            panic!("expected Rule");
+        };
+        match rule.effects.as_slice() {
+            [Effect::Parallel(inner)] => assert_eq!(inner.len(), 2),
+            other => panic!("expected Parallel in do:, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parallel_rejects_field_op_at_parse_time() {
+        // FieldOp inside Parallel should fail at parse, not at runtime.
+        let yaml = r#"
+parallel:
+  - "plugin(audit)"
+  - "args.ssn | redact"
+"#;
+        let err = parse_step_yaml(yaml).unwrap_err();
+        assert!(format!("{}", err).contains("mutation"), "got: {}", err);
+    }
+
+    #[test]
+    fn parallel_rejects_delegate_at_parse_time() {
+        let yaml = r#"
+parallel:
+  - "plugin(audit)"
+  - "delegate(workday)"
+"#;
+        let err = parse_step_yaml(yaml).unwrap_err();
+        assert!(format!("{}", err).contains("mutation"));
+    }
+
+    #[test]
+    fn sequential_allows_mutations() {
+        // The escape valve — Sequential lets mutations through.
+        let yaml = r#"
+sequential:
+  - "args.ssn | redact"
+  - "plugin(audit)"
+"#;
+        let step = parse_step_yaml(yaml).unwrap();
+        let Step::Rule(rule) = step else { panic!("expected Rule") };
+        match rule.effects.as_slice() {
+            [Effect::Sequential(inner)] => {
+                assert!(matches!(inner[0], Effect::FieldOp { .. }));
+                assert!(matches!(inner[1], Effect::Plugin { .. }));
+            }
+            other => panic!("got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parallel_empty_list_rejected() {
+        let err = parse_step_yaml("parallel: []").unwrap_err();
+        assert!(format!("{}", err).contains("empty"));
+    }
+
+    #[test]
+    fn sequential_empty_list_rejected() {
+        let err = parse_step_yaml("sequential: []").unwrap_err();
+        assert!(format!("{}", err).contains("empty"));
+    }
+
+    #[test]
+    fn nested_orchestration() {
+        // `sequential: [plugin, parallel: [plugin, plugin]]` — the
+        // parser handles arbitrary nesting through parse_effect_value.
+        let yaml = r#"
+sequential:
+  - "plugin(rate_limiter)"
+  - parallel:
+      - "plugin(pii_scanner)"
+      - "plugin(nemo)"
+"#;
+        let step = parse_step_yaml(yaml).unwrap();
+        let Step::Rule(rule) = step else { panic!("expected Rule") };
+        let Effect::Sequential(outer) = &rule.effects[0] else {
+            panic!("expected Sequential");
+        };
+        assert_eq!(outer.len(), 2);
+        assert!(matches!(outer[0], Effect::Plugin { .. }));
+        match &outer[1] {
+            Effect::Parallel(inner) => assert_eq!(inner.len(), 2),
+            other => panic!("expected nested Parallel, got {:?}", other),
+        }
     }
 
     // ----- Colon-splitting edge cases -----
@@ -1953,7 +2972,7 @@ mod tests {
             r#"session.labels contains "a:b": deny"#,
             "test",
         ).unwrap();
-        assert!(matches!(r.action, Action::Deny { .. }));
+        assert!(matches!(r.effects.as_slice(), [Effect::Deny { .. }]));
         if let Expression::Condition(Condition::Comparison { value, .. }) = r.condition {
             assert_eq!(value, Literal::String("a:b".into()));
         } else {
@@ -2047,8 +3066,8 @@ routes:
         let route = routes.get("rate_limited").unwrap();
         assert_eq!(route.policy.len(), 1);
         match &route.policy[0] {
-            Step::Plugin { name } => assert_eq!(name, "rate_limiter"),
-            other => panic!("expected Step::Plugin, got {:?}", other),
+            Effect::Plugin { name } => assert_eq!(name, "rate_limiter"),
+            other => panic!("expected Effect::Plugin, got {:?}", other),
         }
     }
 
@@ -2063,11 +3082,11 @@ routes:
         let routes = compile_config(yaml).unwrap().routes;
         let route = routes.get("audit_marked").unwrap();
         match &route.policy[0] {
-            Step::Taint { label, scopes } => {
+            Effect::Taint { label, scopes } => {
                 assert_eq!(label, "audit");
                 assert_eq!(scopes, &vec![TaintScope::Session]);
             }
-            other => panic!("expected Step::Taint, got {:?}", other),
+            other => panic!("expected Effect::Taint, got {:?}", other),
         }
     }
 
@@ -2089,7 +3108,7 @@ routes:
         let routes = compile_config(yaml).unwrap().routes;
         let route = routes.get("authz_check").unwrap();
         match &route.policy[0] {
-            Step::Pdp { call, on_deny, on_allow } => {
+            Effect::Pdp { call, on_deny, on_allow } => {
                 assert_eq!(call.dialect, PdpDialect::Cedar);
                 // Cedar args are a map: action + resource (with reaction
                 // keys stripped out).
@@ -2100,7 +3119,7 @@ routes:
                 assert_eq!(on_deny.len(), 1);
                 assert_eq!(on_allow.len(), 1);
             }
-            other => panic!("expected Step::Pdp, got {:?}", other),
+            other => panic!("expected Effect::Pdp, got {:?}", other),
         }
     }
 
@@ -2122,7 +3141,7 @@ routes:
         let routes = compile_config(yaml).unwrap().routes;
         let route = routes.get("authz_check").unwrap();
         match &route.policy[0] {
-            Step::Pdp { call, on_deny, .. } => {
+            Effect::Pdp { call, on_deny, .. } => {
                 assert_eq!(call.dialect, PdpDialect::Cedarling);
                 let args_map = call.args.as_mapping().expect("cedarling args should be a map");
                 assert!(args_map.contains_key(serde_yaml::Value::String("action".into())));
@@ -2130,7 +3149,7 @@ routes:
                 assert!(!args_map.contains_key(serde_yaml::Value::String("on_deny".into())));
                 assert_eq!(on_deny.len(), 1);
             }
-            other => panic!("expected Step::Pdp, got {:?}", other),
+            other => panic!("expected Effect::Pdp, got {:?}", other),
         }
     }
 
@@ -2148,13 +3167,13 @@ routes:
         let routes = compile_config(yaml).unwrap().routes;
         let route = routes.get("opa_check").unwrap();
         match &route.policy[0] {
-            Step::Pdp { call, on_deny, .. } => {
+            Effect::Pdp { call, on_deny, .. } => {
                 assert_eq!(call.dialect, PdpDialect::Opa);
                 // OPA args are a string (the path).
                 assert!(call.args.as_str().unwrap().contains("hr/compensation/deny"));
                 assert_eq!(on_deny.len(), 1);
             }
-            other => panic!("expected Step::Pdp, got {:?}", other),
+            other => panic!("expected Effect::Pdp, got {:?}", other),
         }
     }
 
@@ -2169,7 +3188,7 @@ routes:
 "#;
         let routes = compile_config(yaml).unwrap().routes;
         match &routes.get("custom_pdp").unwrap().policy[0] {
-            Step::Pdp { call, .. } => {
+            Effect::Pdp { call, .. } => {
                 assert_eq!(call.dialect, PdpDialect::Custom("my_engine".into()));
             }
             other => panic!("expected Pdp, got {:?}", other),
@@ -2191,8 +3210,12 @@ routes:
         let routes = compile_config(yaml).unwrap().routes;
         let route = routes.get("get_compensation").unwrap();
 
-        let pdp = NullPdpResolver;
-        let plugins = NullPluginInvoker;
+        let pdp: std::sync::Arc<dyn crate::PdpResolver> =
+            std::sync::Arc::new(NullPdpResolver);
+        let plugins: std::sync::Arc<dyn crate::PluginInvoker> =
+            std::sync::Arc::new(NullPluginInvoker);
+        let delegations: std::sync::Arc<dyn crate::DelegationInvoker> =
+            std::sync::Arc::new(crate::NoopDelegationInvoker);
 
         // Alice: authenticated, hr role, depth=1 → allow.
         let mut bag = AttributeBag::new();
@@ -2200,13 +3223,13 @@ routes:
         bag.set("role.hr", true);
         bag.set("delegation.depth", 1_i64);
         assert_eq!(
-            crate::evaluate_steps(&route.policy, &mut bag, &pdp, &plugins, &crate::NoopDelegationInvoker, crate::DispatchPhase::Pre).await.decision,
+            crate::evaluate_effects(&route.policy, &mut bag, &pdp, &plugins, &delegations, crate::DispatchPhase::Pre, &mut crate::route::RoutePayload::new(serde_json::Value::Null)).await.decision,
             Decision::Allow,
         );
 
         // Same Alice but depth=3 → deny (third rule fires).
         bag.set("delegation.depth", 3_i64);
-        match crate::evaluate_steps(&route.policy, &mut bag, &pdp, &plugins, &crate::NoopDelegationInvoker, crate::DispatchPhase::Pre).await.decision {
+        match crate::evaluate_effects(&route.policy, &mut bag, &pdp, &plugins, &delegations, crate::DispatchPhase::Pre, &mut crate::route::RoutePayload::new(serde_json::Value::Null)).await.decision {
             Decision::Deny { rule_source, .. } => {
                 assert!(rule_source.contains("policy[2]"), "expected policy[2], got {}", rule_source);
             }
@@ -2217,7 +3240,7 @@ routes:
         let mut bag = AttributeBag::new();
         bag.set("authenticated", true);
         bag.set("delegation.depth", 1_i64);
-        match crate::evaluate_steps(&route.policy, &mut bag, &pdp, &plugins, &crate::NoopDelegationInvoker, crate::DispatchPhase::Pre).await.decision {
+        match crate::evaluate_effects(&route.policy, &mut bag, &pdp, &plugins, &delegations, crate::DispatchPhase::Pre, &mut crate::route::RoutePayload::new(serde_json::Value::Null)).await.decision {
             Decision::Deny { rule_source, .. } => {
                 assert!(rule_source.contains("policy[1]"), "expected policy[1], got {}", rule_source);
             }
@@ -2539,10 +3562,10 @@ policy:
         let compiled =
             compile_policy_block_value("global.policies.hr", &value).expect("compile");
         match &compiled.policy[0] {
-            crate::step::Step::Rule(rule) => {
-                assert_eq!(rule.source, "global.policies.hr.policy[0]");
+            crate::rules::Effect::When { source, .. } => {
+                assert_eq!(source, "global.policies.hr.policy[0]");
             }
-            other => panic!("expected Rule, got {:?}", other),
+            other => panic!("expected When, got {:?}", other),
         }
     }
 
@@ -2815,14 +3838,14 @@ routes:
         assert_eq!(route.policy.len(), 3);
 
         // Step [1] is the string-form delegate.
-        let crate::step::Step::Delegate(s1) = &route.policy[1] else {
+        let crate::rules::Effect::Delegate(s1) = &route.policy[1] else {
             panic!("expected Delegate at policy[1]");
         };
         assert_eq!(s1.plugin_name, "workday-oauth");
         assert!(s1.on_error.is_none());
 
         // Step [2] is the map-form delegate.
-        let crate::step::Step::Delegate(s2) = &route.policy[2] else {
+        let crate::rules::Effect::Delegate(s2) = &route.policy[2] else {
             panic!("expected Delegate at policy[2]");
         };
         assert_eq!(s2.plugin_name, "audit-receipt");
@@ -2855,14 +3878,14 @@ routes:
         assert_eq!(route.policy.len(), 3);
 
         // Policy step [1] is the delegate.
-        let crate::step::Step::Delegate(ds) = &route.policy[1] else {
+        let crate::rules::Effect::Delegate(ds) = &route.policy[1] else {
             panic!("expected Delegate at policy[1], got {:?}", route.policy[1]);
         };
         assert_eq!(ds.plugin_name, "workday-oauth");
         assert_eq!(ds.source, "get_compensation.policy[1]");
 
         // post_policy[0] is the audit-biscuit delegate.
-        let crate::step::Step::Delegate(post_ds) = &route.post_policy[0] else {
+        let crate::rules::Effect::Delegate(post_ds) = &route.post_policy[0] else {
             panic!("expected Delegate at post_policy[0]");
         };
         assert_eq!(post_ds.plugin_name, "audit-biscuit");

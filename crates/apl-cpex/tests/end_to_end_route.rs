@@ -204,19 +204,19 @@ routes:
     let route = cfg.routes.get("get_weather").expect("route present");
     let cache = DispatchCache::new();
     let plan = cache.get_or_build(route, &cfg.plugins, &mgr).await;
-    let invoker = CmfPluginInvoker::for_request(
+    let invoker = Arc::new(CmfPluginInvoker::for_request(
         mgr,
         Extensions::default(),
         cmf_payload(),
         plan,
         Arc::new(MemorySessionStore::new()),
     )
-    .await;
+    .await);
 
     let mut bag = AttributeBag::new();
     let mut payload = empty_payload();
     let decision =
-        evaluate_route(route, &mut bag, &mut payload, &AllowPdp, &invoker, &NoopDelegationInvoker).await;
+        evaluate_route(route, &mut bag, &mut payload, &(Arc::new(AllowPdp) as Arc<dyn apl_core::PdpResolver>), &(invoker.clone() as Arc<dyn apl_core::PluginInvoker>), &(Arc::new(NoopDelegationInvoker) as Arc<dyn apl_core::DelegationInvoker>)).await;
 
     assert_eq!(decision.decision, Decision::Allow);
     assert!(decision.taints.is_empty());
@@ -245,19 +245,19 @@ routes:
     let route = cfg.routes.get("get_weather").expect("route present");
     let cache = DispatchCache::new();
     let plan = cache.get_or_build(route, &cfg.plugins, &mgr).await;
-    let invoker = CmfPluginInvoker::for_request(
+    let invoker = Arc::new(CmfPluginInvoker::for_request(
         mgr,
         Extensions::default(),
         cmf_payload(),
         plan,
         Arc::new(MemorySessionStore::new()),
     )
-    .await;
+    .await);
 
     let mut bag = AttributeBag::new();
     let mut payload = empty_payload();
     let decision =
-        evaluate_route(route, &mut bag, &mut payload, &AllowPdp, &invoker, &NoopDelegationInvoker).await;
+        evaluate_route(route, &mut bag, &mut payload, &(Arc::new(AllowPdp) as Arc<dyn apl_core::PdpResolver>), &(invoker.clone() as Arc<dyn apl_core::PluginInvoker>), &(Arc::new(NoopDelegationInvoker) as Arc<dyn apl_core::DelegationInvoker>)).await;
 
     match decision.decision {
         Decision::Deny {
@@ -364,7 +364,8 @@ routes:
     let cache = DispatchCache::new();
     let plan = cache.get_or_build(route, &cfg.plugins, &mgr).await;
 
-    // Session ID comes from extensions.agent.session_id.
+    // Session id pinned via tier-0 (agent.session_id) — lets the test
+    // specify an exact value without faking the identity hash.
     let mut agent = cpex_core::extensions::AgentExtension::default();
     agent.session_id = Some("sess-taint-test".into());
     let extensions = Extensions {
@@ -373,19 +374,19 @@ routes:
     };
 
     let session_store = Arc::new(MemorySessionStore::new());
-    let invoker = CmfPluginInvoker::for_request(
+    let invoker = Arc::new(CmfPluginInvoker::for_request(
         mgr,
         extensions,
         cmf_payload(),
         plan,
         session_store.clone(),
     )
-    .await;
+    .await);
 
     let mut bag = AttributeBag::new();
     let mut payload = empty_payload();
     let decision =
-        evaluate_route(route, &mut bag, &mut payload, &AllowPdp, &invoker, &NoopDelegationInvoker).await;
+        evaluate_route(route, &mut bag, &mut payload, &(Arc::new(AllowPdp) as Arc<dyn apl_core::PdpResolver>), &(invoker.clone() as Arc<dyn apl_core::PluginInvoker>), &(Arc::new(NoopDelegationInvoker) as Arc<dyn apl_core::DelegationInvoker>)).await;
 
     // Decision flows through allow (plugin's modify_extensions doesn't
     // halt the pipeline).
@@ -445,9 +446,10 @@ routes:
         ..Default::default()
     };
 
-    let invoker =
+    let invoker = Arc::new(
         CmfPluginInvoker::for_request(mgr, extensions, cmf_payload(), plan, session_store.clone())
-            .await;
+            .await,
+    );
 
     // Hydrated labels should be observable on the invoker's extensions.
     let snapshot = invoker.current_extensions().await;
@@ -459,7 +461,7 @@ routes:
     let mut bag = AttributeBag::new();
     let mut payload = empty_payload();
     let decision =
-        evaluate_route(route, &mut bag, &mut payload, &AllowPdp, &invoker, &NoopDelegationInvoker).await;
+        evaluate_route(route, &mut bag, &mut payload, &(Arc::new(AllowPdp) as Arc<dyn apl_core::PdpResolver>), &(invoker.clone() as Arc<dyn apl_core::PluginInvoker>), &(Arc::new(NoopDelegationInvoker) as Arc<dyn apl_core::DelegationInvoker>)).await;
     assert_eq!(decision.decision, Decision::Allow);
 
     // Only the NEW label (PII) shows up as a taint — PRIOR was already
@@ -471,4 +473,79 @@ routes:
     let mut stored = session_store.load_labels("sess-existing").await;
     stored.sort();
     assert_eq!(stored, vec!["PII".to_string(), "PRIOR".to_string()]);
+}
+
+/// Slice TS1 proof: an APL `taint(audit, session)` step lands the
+/// label in `security.labels` (via `apply_session_taints`) AND the
+/// SessionStore (via `persist_session`). No plugin is involved — the
+/// taint comes from the YAML, not from any handler's modify_extensions.
+/// This is the load-bearing end-to-end test for the
+/// "policy with side-effects" pitch: writing `taint(...)` in YAML
+/// actually causes the session to be permanently labelled.
+#[tokio::test]
+async fn apl_taint_step_lands_in_security_labels_and_persists() {
+    const YAML: &str = r#"
+routes:
+  classify:
+    policy:
+      - "taint(audit, session)"
+"#;
+
+    let mgr = manager_with("noop", Box::new(AllowPluginFactory)).await;
+    let cfg = compile_config(YAML).expect("compile_config");
+    let route = cfg.routes.get("classify").expect("route present");
+    let plan = DispatchCache::new().get_or_build(route, &cfg.plugins, &mgr).await;
+
+    let mut agent = cpex_core::extensions::AgentExtension::default();
+    agent.session_id = Some("sess-apl-taint".into());
+    let extensions = Extensions {
+        agent: Some(Arc::new(agent)),
+        ..Default::default()
+    };
+
+    let session_store = Arc::new(MemorySessionStore::new());
+    let invoker = Arc::new(
+        CmfPluginInvoker::for_request(mgr, extensions, cmf_payload(), plan, session_store.clone())
+            .await,
+    );
+
+    let mut bag = AttributeBag::new();
+    let mut payload = empty_payload();
+    let decision = evaluate_route(
+        route,
+        &mut bag,
+        &mut payload,
+        &(Arc::new(AllowPdp) as Arc<dyn apl_core::PdpResolver>),
+        &(invoker.clone() as Arc<dyn apl_core::PluginInvoker>),
+        &(Arc::new(NoopDelegationInvoker) as Arc<dyn apl_core::DelegationInvoker>),
+    )
+    .await;
+    assert_eq!(decision.decision, Decision::Allow);
+
+    // Evaluator surfaced the YAML taint into the decision.
+    assert_eq!(decision.taints.len(), 1, "expected one taint from `taint(...)` step");
+    assert_eq!(decision.taints[0].label, "audit");
+    assert!(decision.taints[0]
+        .scopes
+        .contains(&TaintScope::Session));
+
+    // This is the new wiring: drain Session-scoped taints into
+    // `security.labels` exactly as `AplRouteHandler::invoke` does.
+    invoker.apply_session_taints(&decision.taints).await;
+
+    let snapshot = invoker.current_extensions().await;
+    let security = snapshot
+        .security
+        .as_ref()
+        .expect("apply_session_taints should have created the security ext");
+    assert!(
+        security.has_label("audit"),
+        "session-scoped taint should land in security.labels",
+    );
+
+    // And `persist_session` should pick up the label via the diff
+    // against `initial_labels` (which was empty here).
+    invoker.persist_session().await;
+    let stored = session_store.load_labels("sess-apl-taint").await;
+    assert_eq!(stored, vec!["audit".to_string()]);
 }

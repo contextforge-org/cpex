@@ -24,7 +24,7 @@ pub mod step;
 
 pub use attributes::{AttributeBag, AttributeExtractor, AttributeValue};
 pub use evaluator::{
-    evaluate_pipeline, evaluate_rules, evaluate_steps, Decision, FieldOutcome, PipelineEvaluation,
+    evaluate_pipeline, evaluate_rules, evaluate_effects, Decision, FieldOutcome, PipelineEvaluation,
 };
 pub use parser::{
     compile_config, compile_policy_block_value, parse_pipeline, parse_predicate, parse_rule,
@@ -36,10 +36,10 @@ pub use plugin_decl::{
 };
 pub use route::{evaluate_post, evaluate_pre, evaluate_route, RouteDecision, RoutePayload};
 pub use rules::{
-    Action, CompareOp, CompiledRoute, Condition, Expression, Literal, Phase, PhaseSet, Rule,
+    CompareOp, CompiledRoute, Condition, Effect, Expression, Literal, Phase, PhaseSet, Rule,
 };
 pub use step::{
     delegation_bag_keys, DelegateStep, DelegationError, DelegationInvoker, DelegationOutcome,
     DispatchPhase, NoopDelegationInvoker, PdpCall, PdpDecision, PdpDialect, PdpError, PdpFactory,
-    PdpResolver, PluginError, PluginInvocation, PluginInvoker, PluginOutcome, Step,
+    PdpResolver, PluginError, PluginInvocation, PluginInvoker, PluginOutcome,
 };

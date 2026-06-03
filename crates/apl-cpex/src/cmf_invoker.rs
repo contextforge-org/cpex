@@ -88,9 +88,11 @@ pub struct CmfPluginInvoker {
     /// Pre-resolved per-route plugin lineup. Built (or fetched from a
     /// shared `DispatchCache`) at request start by the host.
     plan: Arc<RouteDispatchPlan>,
-    /// Session ID pulled from `extensions.agent.session_id` at construction.
-    /// `None` for non-session traffic — hydration + persistence become
-    /// no-ops in that case.
+    /// Session ID resolved at request start by the 4-tier
+    /// [`session_resolver::resolve_session`] (token claim → header →
+    /// identity-derived → none). `None` for fully-anonymous traffic
+    /// (no claim, no header, no subject id) — hydration + persistence
+    /// become no-ops in that case.
     session_id: Option<String>,
     /// Pluggable session-scoped state backend. `Arc<dyn SessionStore>`
     /// rather than a generic so a single invoker type works for memory /
@@ -117,13 +119,12 @@ impl CmfPluginInvoker {
         plan: Arc<RouteDispatchPlan>,
         session_store: Arc<dyn SessionStore>,
     ) -> Self {
-        // session_id is part of the agent extension. Cloned out before
-        // we touch `extensions` so the borrow isn't held across the
-        // hydration mutation.
-        let session_id: Option<String> = extensions
-            .agent
-            .as_ref()
-            .and_then(|a| a.session_id.clone());
+        // Resolve session id via the 4-tier resolver (token claim →
+        // header → identity-derived → none). Snapshotted before
+        // hydration so the lookup is independent of the COW write
+        // that hydration performs.
+        let session_id: Option<String> = crate::session_resolver::resolve_session(&extensions)
+            .map(|(sid, _src)| sid);
 
         // Hydration: union the session's accumulated labels into the
         // request's security labels. Skipped when there's no session_id
@@ -176,6 +177,43 @@ impl CmfPluginInvoker {
     /// entries in the same per-route plan the CMF invoker uses.
     pub fn plan_arc(&self) -> Arc<RouteDispatchPlan> {
         Arc::clone(&self.plan)
+    }
+
+    /// Drain APL-emitted session-scoped taints into the request's
+    /// `security.labels` so the existing label-monotonic flow
+    /// ([`persist_session`] below) picks them up. Filters by
+    /// `TaintScope::Session` — Message-scoped taints (and any future
+    /// scope) are deliberately ignored here; they have their own
+    /// destination (TBD: TS2 — a labels slot on `MessagePayload`).
+    ///
+    /// Host (`AplRouteHandler`) calls this once per request after
+    /// `evaluate_pre` / `evaluate_post` returns, with the
+    /// `RouteDecision.taints` slice. No-op when the slice has no
+    /// Session-scoped entries — common for routes that don't taint.
+    pub async fn apply_session_taints(&self, taints: &[apl_core::pipeline::TaintEvent]) {
+        use apl_core::pipeline::TaintScope;
+        use cpex_core::extensions::SecurityExtension;
+
+        let session_labels: Vec<&str> = taints
+            .iter()
+            .filter(|t| t.scopes.contains(&TaintScope::Session))
+            .map(|t| t.label.as_str())
+            .collect();
+        if session_labels.is_empty() {
+            return;
+        }
+        let mut current = self.extensions.lock().await;
+        // `Extensions.security` is `Option<Arc<SecurityExtension>>`.
+        // Initialize the slot if absent; `Arc::make_mut` gives us a
+        // mutable reference to the underlying value, cloning when
+        // other Arc holders exist (e.g., a downstream snapshot reader).
+        let arc = current
+            .security
+            .get_or_insert_with(|| Arc::new(SecurityExtension::default()));
+        let sec = Arc::make_mut(arc);
+        for label in session_labels {
+            sec.add_label(label);
+        }
     }
 
     /// Persist session-scoped state added during this request. Diffs

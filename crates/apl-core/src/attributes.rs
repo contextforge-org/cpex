@@ -1,5 +1,5 @@
 // Location: ./crates/apl-core/src/attributes.rs
-// Copyright 2025
+// Copyright 2026
 // SPDX-License-Identifier: Apache-2.0
 // Authors: Teryl Taylor
 //
