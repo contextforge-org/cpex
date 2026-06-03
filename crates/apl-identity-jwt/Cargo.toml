@@ -71,8 +71,16 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 # concurrently at initialize time rather than one-at-a-time.
 futures = { workspace = true }
 
+# `tokio::spawn` + `tokio::time::interval` for the background JWKS
+# refresh tasks introduced in Slice B. The runtime is already in
+# the workspace dep tree via cpex-core / apl-cpex, so this just
+# makes the existing types directly nameable here. We only need
+# the runtime + time features at runtime; full "macros / rt / rt-multi-thread"
+# was test-only previously.
+tokio = { workspace = true, features = ["rt", "time"] }
+
 [dev-dependencies]
-tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 # Mock JWKS endpoint for the async `JwksUrl` resolution tests.
 mockito = "1"
 # RSA keypair + JWK fixtures for tests. `rsa` generates keypairs;

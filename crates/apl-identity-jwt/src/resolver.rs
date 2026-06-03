@@ -64,7 +64,7 @@ use cpex_core::plugin::{Plugin, PluginConfig};
 
 use super::claim_map::{ClaimMap, ClaimMapper, StandardClaimMap};
 use super::config::{JwtIdentityResolverConfig, TrustedIssuerConfig};
-use super::trusted_issuer::TrustedIssuer;
+use super::trusted_issuer::{KeyStore, TrustedIssuer};
 
 /// Default clock-skew tolerance, in seconds. Matches what most OIDC
 /// clients use as a sane default for `exp` / `nbf`.
@@ -109,6 +109,12 @@ pub struct JwtIdentityResolver {
     /// `RawInboundToken.source_header` so forwarding plugins know
     /// where to put it (or strip it) on the upstream call.
     header: String,
+    /// Background JWKS-refresh tasks, one per JwksUrl issuer.
+    /// Spawned during `initialize()`. Aborted in the resolver's
+    /// `Drop` impl — without that, tokio JoinHandles silently
+    /// detach the task and the refresh loop runs forever (until
+    /// the runtime shuts down or it panics).
+    refresh_tasks: std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>,
 }
 
 impl JwtIdentityResolver {
@@ -228,7 +234,27 @@ impl JwtIdentityResolver {
             claim_mapper,
             role: typed.role,
             header: typed.header,
+            refresh_tasks: std::sync::Mutex::new(Vec::new()),
         })
+    }
+}
+
+impl Drop for JwtIdentityResolver {
+    /// Stop every background refresh task when the resolver drops.
+    /// Without this, `tokio::task::JoinHandle` *detaches* on drop
+    /// — the refresh loop keeps running until the tokio runtime
+    /// shuts down. That's harmless for the program-lifetime
+    /// singleton case but creates orphan tasks during plugin
+    /// hot-reload or in tests that construct/discard resolvers
+    /// repeatedly.
+    fn drop(&mut self) {
+        let mut tasks = match self.refresh_tasks.lock() {
+            Ok(t) => t,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        for handle in tasks.drain(..) {
+            handle.abort();
+        }
     }
 }
 
@@ -238,10 +264,23 @@ impl Plugin for JwtIdentityResolver {
         &self.cfg
     }
 
-    /// Resolve any `JwksUrl` decoding keys deferred at construction.
-    /// Fetches happen concurrently — N pending issuers → one
-    /// `join_all`, not N sequential round-trips — so the time-to-
-    /// ready scales with the slowest IdP, not the sum.
+    /// Resolve any `JwksUrl` decoding keys deferred at construction,
+    /// then spawn a background task per JwksUrl issuer to refresh
+    /// the KeyStore on a periodic schedule (default 10 min,
+    /// configurable per-issuer via `refresh_secs`).
+    ///
+    /// **Soft-fail semantics (Slice B):** an unreachable / slow /
+    /// malformed JWKS at startup logs a warning and leaves the
+    /// issuer's KeyStore *empty*. The plugin still loads, the
+    /// gateway still boots, and the background refresh task gets
+    /// spawned anyway — so a transient IdP outage during boot
+    /// recovers on its own as soon as refresh succeeds. Verify-time
+    /// requests against an issuer with an empty KeyStore receive
+    /// `auth.jwks_unavailable` rather than crashing the request.
+    ///
+    /// Initial fetches happen concurrently — N pending issuers
+    /// → one `join_all`, not N sequential round-trips — so the
+    /// time-to-ready scales with the slowest IdP, not the sum.
     ///
     /// The `PluginManager` drives this once per plugin lifetime
     /// (before any hooks fire). Idempotent: if `pending_jwks` is
@@ -251,26 +290,117 @@ impl Plugin for JwtIdentityResolver {
             return Ok(());
         }
 
-        let fetches = self
-            .pending_jwks
-            .iter()
-            .cloned()
-            .map(|cfg| async move { cfg.build_async().await });
-        let resolved: Vec<Result<TrustedIssuer, String>> =
+        // 1. Initial concurrent fetch. Each result is (config,
+        //    outcome) — we keep the config alongside the result
+        //    so the soft-fail path can construct an empty
+        //    KeyStore *and* still spawn refresh for that issuer.
+        let fetches = self.pending_jwks.iter().cloned().map(|cfg| async move {
+            let outcome = cfg.clone().build_async().await;
+            (cfg, outcome)
+        });
+        let resolved: Vec<(TrustedIssuerConfig, Result<TrustedIssuer, String>)> =
             futures::future::join_all(fetches).await;
 
         let mut issuers = self
             .trusted_issuers
             .write()
             .unwrap_or_else(|p| p.into_inner());
-        for r in resolved {
-            let issuer = r.map_err(|e| {
-                Box::new(PluginError::Config {
-                    message: format!("plugin '{}' (apl-identity-jwt): {e}", self.cfg.name),
-                })
-            })?;
+        let mut new_tasks: Vec<tokio::task::JoinHandle<()>> = Vec::new();
+
+        for (cfg, outcome) in resolved {
+            // Get the shared store: from the successful fetch's
+            // TrustedIssuer if we have one, else an empty store
+            // bound to a freshly-constructed TrustedIssuer shell.
+            // Either way we end up with one TrustedIssuer in
+            // `issuers` and a clone of its `Arc<RwLock<KeyStore>>`
+            // captured by the refresh task.
+            let (shared, plugin_name) = (self.cfg.name.clone(), cfg.issuer.clone());
+            let issuer = match outcome {
+                Ok(iss) => iss,
+                Err(e) => {
+                    tracing::warn!(
+                        plugin = %shared,
+                        issuer = %plugin_name,
+                        error = %e,
+                        "initial JWKS fetch failed; soft-fail. Verify requests \
+                         against this issuer will receive auth.jwks_unavailable \
+                         until refresh succeeds."
+                    );
+                    // Build a TrustedIssuer with an empty KeyStore
+                    // so the refresh task can swap a fresh store in
+                    // without re-running validation logic.
+                    TrustedIssuer {
+                        issuer: cfg.issuer.clone(),
+                        audiences: cfg.audiences.clone(),
+                        keys: Arc::new(std::sync::RwLock::new(KeyStore::empty())),
+                        algorithms: cfg.algorithms.clone(),
+                        leeway_seconds: cfg.leeway_seconds,
+                    }
+                }
+            };
+
+            // Spawn refresh task. The closure owns:
+            //   - a clone of the source (cfg.decoding_key) for
+            //     re-fetching
+            //   - a clone of the Arc<RwLock<KeyStore>> for atomic
+            //     whole-store replacement on success
+            //   - plugin / issuer names for diagnostic logging
+            if let Some(interval) = cfg.decoding_key.refresh_interval() {
+                let source = cfg.decoding_key.clone();
+                let shared_store = Arc::clone(&issuer.keys);
+                let plugin_label = self.cfg.name.clone();
+                let issuer_label = cfg.issuer.clone();
+                let handle = tokio::spawn(async move {
+                    let mut ticker = tokio::time::interval(interval);
+                    // Skip the first immediate tick — the initial
+                    // fetch already ran synchronously above. The
+                    // first refresh fires at `now + interval`.
+                    ticker.tick().await;
+                    loop {
+                        ticker.tick().await;
+                        match source.build_async().await {
+                            Ok(new_store) => {
+                                // Whole-store replacement. The
+                                // old store drops when the write
+                                // completes — bounded steady-state
+                                // memory regardless of how many
+                                // rotations have happened.
+                                match shared_store.write() {
+                                    Ok(mut g) => *g = new_store,
+                                    Err(poisoned) => *poisoned.into_inner() = new_store,
+                                }
+                                tracing::info!(
+                                    plugin = %plugin_label,
+                                    issuer = %issuer_label,
+                                    "JWKS refresh succeeded"
+                                );
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    plugin = %plugin_label,
+                                    issuer = %issuer_label,
+                                    error = %e,
+                                    "JWKS refresh failed; keeping previous KeyStore"
+                                );
+                            }
+                        }
+                    }
+                });
+                new_tasks.push(handle);
+            }
+
             issuers.push(issuer);
         }
+
+        // Park the handles so Drop can abort them. Held under a
+        // std::sync::Mutex because the resolver's outer methods are
+        // a mix of sync and async; we don't await while holding it.
+        let mut tasks = self
+            .refresh_tasks
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        tasks.extend(new_tasks);
+
         Ok(())
     }
 }
@@ -339,10 +469,40 @@ impl HookHandler<IdentityHook> for JwtIdentityResolver {
             }
         };
 
-        // 2. Validate signature + standard claims.
+        // 2. Validate signature + standard claims, after kid-driven
+        //    key selection. Three distinct deny codes so operators
+        //    can tell:
+        //      - rotation lag (`auth.unknown_kid`): the IdP rolled
+        //        and our refresh hasn't yet pulled the new key.
+        //      - JWKS-unavailable (`auth.jwks_unavailable`): the
+        //        initial fetch failed and refresh hasn't recovered
+        //        — the gateway didn't crash by design, but it
+        //        also can't verify tokens for this issuer right now.
+        //      - forgery / corruption (`auth.signature_invalid` and
+        //        friends): the standard jsonwebtoken outcomes.
         let token_data = match validate_token(&raw_token, issuer) {
             Ok(td) => td,
-            Err(e) => {
+            Err(ValidateError::KeysUnavailable) => {
+                return PluginResult::deny(PluginViolation::new(
+                    "auth.jwks_unavailable",
+                    format!(
+                        "issuer '{iss}' has no signing keys available — \
+                         initial JWKS fetch failed and refresh has not \
+                         yet succeeded; check upstream IdP reachability"
+                    ),
+                ));
+            }
+            Err(ValidateError::UnknownKid(kid)) => {
+                let reason = match kid {
+                    Some(k) => format!(
+                        "token's header `kid` = '{k}' did not match any key in issuer's JWKS"
+                    ),
+                    None => "token has no `kid` header; issuer's JWKS keys all require kid match"
+                        .to_string(),
+                };
+                return PluginResult::deny(PluginViolation::new("auth.unknown_kid", reason));
+            }
+            Err(ValidateError::Jwt(e)) => {
                 let (code, reason) = classify_jwt_error(&e);
                 return PluginResult::deny(PluginViolation::new(code, reason));
             }
@@ -450,12 +610,72 @@ fn peek_issuer(token: &str) -> Option<String> {
     value.get("iss")?.as_str().map(String::from)
 }
 
+/// Reason `validate_token` couldn't verify the JWT. Wraps the
+/// usual `jsonwebtoken::errors::Error` plus the kid-selection
+/// and JWKS-availability cases introduced by Slice A / B.
+enum ValidateError {
+    /// The JWT's header `kid` didn't match any key the issuer's
+    /// KeyStore knows about. Distinct from `InvalidSignature` so
+    /// the verify path can surface `auth.unknown_kid` with the
+    /// specific kid that was missing — operators can match this
+    /// against their IdP's currently-published JWKS to confirm
+    /// rotation propagated.
+    UnknownKid(Option<String>),
+    /// The issuer's KeyStore is empty: initial JWKS fetch failed
+    /// at `initialize()`, refresh task hasn't yet succeeded. The
+    /// gateway didn't crash (soft-fail by design), but it also
+    /// can't verify any token from this issuer until refresh
+    /// catches up. Surfaces as `auth.jwks_unavailable` so
+    /// operators see "JWKS issue at IdP X" rather than the more
+    /// alarming `auth.signature_invalid` they'd see if we
+    /// silently fell back to e.g. an empty key.
+    KeysUnavailable,
+    /// jsonwebtoken's own validation outcome (signature, exp,
+    /// nbf, iss, aud, algorithm).
+    Jwt(jsonwebtoken::errors::Error),
+}
+
 /// Validate the token against the matched issuer's config:
-/// signature, exp, nbf, aud, iss.
+/// `kid`-driven key selection, then signature, exp, nbf, aud, iss.
+///
+/// Two-step lookup:
+///   1. Decode just the JWT header (no signature check yet) to
+///      read the `kid` claim. We don't trust the result for
+///      authorization decisions — we use it only to pick a
+///      candidate key from the issuer's `KeyStore`.
+///   2. If a key is found, run jsonwebtoken's full validation
+///      against it. Failure modes (bad sig, expired, etc.) flow
+///      through unchanged.
+///   3. If no key matches, return `UnknownKid` — distinct from
+///      `InvalidSignature` so operators can tell rotation lag
+///      from a forgery attempt at the audit layer.
 fn validate_token(
     token: &str,
     issuer: &TrustedIssuer,
-) -> Result<jsonwebtoken::TokenData<ClaimMap>, jsonwebtoken::errors::Error> {
+) -> Result<jsonwebtoken::TokenData<ClaimMap>, ValidateError> {
+    let header = jsonwebtoken::decode_header(token).map_err(ValidateError::Jwt)?;
+    let kid = header.kid.as_deref();
+
+    // Acquire a read guard on the issuer's KeyStore. The guard is
+    // held for the duration of `decode()` below — sync, no .await
+    // between acquire and release, so no risk of deadlock against
+    // the refresh task's write lock. Refresh writes block until
+    // outstanding readers release; a verify in flight when refresh
+    // fires waits a few µs at most.
+    let keys = issuer
+        .keys
+        .read()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+    if keys.is_empty() {
+        return Err(ValidateError::KeysUnavailable);
+    }
+
+    let key = match keys.select(kid) {
+        Some(k) => k,
+        None => return Err(ValidateError::UnknownKid(kid.map(String::from))),
+    };
+
     let primary = issuer.algorithms[0];
     let mut validation = Validation::new(primary);
     validation.algorithms = issuer.algorithms.clone();
@@ -471,7 +691,7 @@ fn validate_token(
         let aud_refs: Vec<&str> = issuer.audiences.iter().map(String::as_str).collect();
         validation.set_audience(&aud_refs);
     }
-    decode::<ClaimMap>(token, &issuer.decoding_key, &validation)
+    decode::<ClaimMap>(token, key, &validation).map_err(ValidateError::Jwt)
 }
 
 /// Map jsonwebtoken errors to stable violation codes.
