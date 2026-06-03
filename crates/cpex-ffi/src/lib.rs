@@ -59,6 +59,50 @@ pub const RC_TIMEOUT: c_int = -6;
 /// Plugin panicked; caught by `catch_unwind` at the FFI boundary.
 pub const RC_PANIC: c_int = -7;
 
+// ---------------------------------------------------------------------------
+// FFI ABI Version
+// ---------------------------------------------------------------------------
+//
+// The FFI ABI version is an integer that identifies the C-surface
+// contract this crate exposes. Bump it on any breaking change to the
+// C surface:
+//
+//   - added / removed / renamed extern "C" function
+//   - argument count, argument type, or return type change on an
+//     existing function
+//   - layout change of a struct that crosses the boundary
+//   - semantic change to an existing function (e.g. new RC_* value
+//     returned for a previously-success case, change in pointer
+//     ownership)
+//
+// Adding a new RC_* code at the end of the existing range is *not* a
+// breaking change (the wire codes are stable; consumers handle unknown
+// codes as generic failure).
+//
+// Consumers — every language binding — MUST call `cpex_ffi_abi_version`
+// at init and compare against the version their binding was generated
+// for. Mismatch is a hard error: the C surface they generated against
+// is not the one they're linked against. Document the binding's
+// expected ABI version in its source.
+//
+// Bumps are recorded in CHANGELOG.md under "Changed" with the from→to
+// integers and a one-line description of what moved.
+
+/// FFI ABI version. Bump on breaking C-surface changes; see module
+/// docs above for what counts as breaking.
+pub const FFI_ABI_VERSION: u32 = 1;
+
+/// Returns the FFI ABI version this `libcpex_ffi` was built with.
+/// Language bindings call this at `init` and panic on mismatch
+/// against the version they were generated for.
+///
+/// Pure const access — no allocation, no runtime, no panics. Safe to
+/// call from anywhere including signal handlers.
+#[no_mangle]
+pub extern "C" fn cpex_ffi_abi_version() -> u32 {
+    FFI_ABI_VERSION
+}
+
 /// Outer wall-clock timeout for any FFI-driven async call. Per-plugin
 /// `tokio::time::timeout` only catches cooperative-async timeouts; this
 /// catches CPU-bound or thread-blocking plugins that never yield. Set
