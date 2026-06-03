@@ -24,6 +24,7 @@ on:
       # prerelease branch.
       - 'v[0-9]+.[0-9]+.[0-9]+'
       - 'v[0-9]+.[0-9]+.[0-9]+-*'
+  workflow_dispatch:
 
 # id-token: write is what unlocks Sigstore keyless signing (Fulcio
 # reads the GHA OIDC token to issue the short-lived signing cert).
