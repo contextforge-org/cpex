@@ -77,6 +77,17 @@ jobs:
           # subsequent releases of the same target.
           key: ${{ matrix.target }}
 
+      - name: Install musl toolchain
+        # ring (via jsonwebtoken/rustls/quinn) compiles C + asm through
+        # cc-rs, which for a *-unknown-linux-musl target shells out to
+        # <arch>-linux-musl-gcc. The runners ship only the glibc gcc, so
+        # we install musl-gcc here. The matrix runs each musl target on
+        # its native-arch runner, so musl-gcc targets the host arch and
+        # the CC_/LINKER env vars below redirect cc-rs and the linker to
+        # it. Scoped to the musl legs; gnu/darwin use their default cc.
+        if: contains(matrix.target, 'musl')
+        run: sudo apt-get update && sudo apt-get install -y musl-tools musl-dev
+
       - name: Build artifact
         env:
           TARGET: ${{ matrix.target }}
@@ -84,6 +95,12 @@ jobs:
           # name matches the tag verbatim.
           VERSION: ${{ github.ref_name }}
           DIST_DIR: dist
+          # Point cc-rs and the linker at musl-gcc for the musl targets.
+          # No-ops for gnu/darwin (those triples don't match these keys).
+          CC_x86_64_unknown_linux_musl: musl-gcc
+          CC_aarch64_unknown_linux_musl: musl-gcc
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
         run: bash scripts/release/build-artifact.sh
 
       - name: Upload tarball + sha256
