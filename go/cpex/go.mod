@@ -1,4 +1,4 @@
-module github.com/contextforge-org/contextforge-plugins-framework/go/cpex
+module github.com/contextforge-org/cpex/go/cpex
 
 go 1.25.4
 
