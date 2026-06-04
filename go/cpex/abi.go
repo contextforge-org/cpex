@@ -40,7 +40,7 @@ func init() {
 		panic(fmt.Sprintf(
 			"cpex: FFI ABI version mismatch — Go binding expects %d, "+
 				"linked libcpex_ffi reports %d. Upgrade github.com/"+
-				"contextforge-org/contextforge-plugins-framework/go/cpex "+
+				"contextforge-org/cpex/go/cpex "+
 				"to a version generated against libcpex_ffi ABI %d, "+
 				"or rebuild libcpex_ffi from a CPEX commit whose "+
 				"FFI_ABI_VERSION is %d.",
