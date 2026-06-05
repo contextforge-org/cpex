@@ -934,6 +934,257 @@ pub unsafe extern "C" fn cpex_invoke(
     RC_OK
 }
 
+/// Fused `identity.resolve` + hook invoke.
+///
+/// Runs `identity.resolve` and the named hook in ONE FFI call so the
+/// resolved `Extensions` — including `raw_credentials`, whose inbound
+/// tokens are `#[serde(skip)]` + `Zeroizing` and therefore cannot survive
+/// an FFI round-trip — flow from identity into the hook entirely in Rust
+/// memory. This is the FFI analogue of an in-process host calling
+/// `IdentityPayload::apply_to_extensions(...)` between hooks; it lets
+/// out-of-process hosts (Go / Python / WASM) drive `delegate()` flows
+/// that need the inbound bearer token, which a two-call
+/// resolve-then-invoke sequence loses on the way back out.
+///
+/// `identity_msgpack` is a `PAYLOAD_IDENTITY`-shaped `IdentityPayload`
+/// carrying request headers. When `identity_len <= 0` or no
+/// `identity.resolve` hook is registered, this degrades to a plain hook
+/// invoke against the supplied extensions. If `identity.resolve` denies
+/// (e.g. bad token), that denial is returned and the hook does not run.
+///
+/// # Safety / ownership
+/// Identical contract to [`cpex_invoke`]: the input `context_table` is
+/// consumed unconditionally (used for the hook invoke; the internal
+/// identity invoke gets a fresh one); out params are null/zero on error
+/// and populated on `RC_OK`.
+#[no_mangle]
+pub unsafe extern "C" fn cpex_invoke_resolved(
+    mgr: *const CpexManagerInner,
+    identity_msgpack: *const u8,
+    identity_len: c_int,
+    hook_name: *const c_char,
+    hook_len: c_int,
+    payload_type: u8,
+    payload_msgpack: *const u8,
+    payload_len: c_int,
+    extensions_msgpack: *const u8,
+    extensions_len: c_int,
+    context_table: *mut CpexContextTableInner, // NULL for first call
+    result_msgpack_out: *mut *mut u8,
+    result_len_out: *mut c_int,
+    context_table_out: *mut *mut CpexContextTableInner,
+    bg_handle_out: *mut *mut CpexBackgroundTasksInner,
+) -> c_int {
+    *result_msgpack_out = std::ptr::null_mut();
+    *result_len_out = 0;
+    *context_table_out = std::ptr::null_mut();
+    *bg_handle_out = std::ptr::null_mut();
+
+    // Consume the input context table up front (used for the hook invoke),
+    // matching cpex_invoke's unconditional-consume ownership contract.
+    let input_ctx_table: Option<PluginContextTable> = if context_table.is_null() {
+        None
+    } else {
+        Some(Box::from_raw(context_table).table)
+    };
+
+    let inner = match mgr.as_ref() {
+        Some(m) => m,
+        None => return RC_INVALID_HANDLE,
+    };
+
+    let name = match c_str_to_slice(hook_name, hook_len) {
+        Some(s) => s,
+        None => return RC_INVALID_INPUT,
+    };
+
+    let payload_bytes = match c_bytes_to_slice(payload_msgpack, payload_len) {
+        Some(b) => b,
+        None => return RC_INVALID_INPUT,
+    };
+    let payload: Box<dyn PluginPayload> = match deserialize_payload(payload_type, payload_bytes) {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::error!("cpex_invoke_resolved: {}", e);
+            return RC_PARSE_ERROR;
+        }
+    };
+
+    let base_extensions: Extensions = if extensions_len > 0 {
+        let ext_bytes = match c_bytes_to_slice(extensions_msgpack, extensions_len) {
+            Some(b) => b,
+            None => return RC_INVALID_INPUT,
+        };
+        match rmp_serde::from_slice(ext_bytes) {
+            Ok(e) => e,
+            Err(e) => {
+                tracing::error!("cpex_invoke_resolved: extensions deserialize failed: {}", e);
+                return RC_PARSE_ERROR;
+            }
+        }
+    } else {
+        Extensions::default()
+    };
+
+    // ---- Identity resolution (in-process) ----
+    // Resolve identity and merge the result into the extensions BEFORE the
+    // hook runs, so raw_credentials (skip-serialized across FFI) reach the
+    // hook in Rust memory. Skipped when no identity payload was supplied or
+    // no identity.resolve hook is registered.
+    let merged_extensions: Extensions = if identity_len > 0
+        && inner
+            .manager
+            .has_hooks_for(cpex_core::identity::HOOK_IDENTITY_RESOLVE)
+    {
+        let id_bytes = match c_bytes_to_slice(identity_msgpack, identity_len) {
+            Some(b) => b,
+            None => return RC_INVALID_INPUT,
+        };
+        let id_payload: IdentityPayload = match rmp_serde::from_slice(id_bytes) {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::error!(
+                    "cpex_invoke_resolved: identity payload deserialize failed: {}",
+                    e
+                );
+                return RC_PARSE_ERROR;
+            }
+        };
+
+        let (id_result, _id_bg) = match run_safely(
+            inner.manager.invoke_by_name(
+                cpex_core::identity::HOOK_IDENTITY_RESOLVE,
+                Box::new(id_payload),
+                Extensions::default(),
+                None,
+            ),
+            "cpex_invoke_resolved/identity",
+        ) {
+            SafeRun::Ok(r) => r,
+            other => return other.rc(),
+        };
+
+        // Identity denied (bad / missing credential): surface that denial
+        // as the result; the hook never runs. Identity resolvers (jwt,
+        // mtls) are synchronous and don't spawn background tasks, so the
+        // identity bg is dropped.
+        if !id_result.continue_processing {
+            return finish_pipeline_result(
+                id_result,
+                None,
+                payload_type,
+                result_msgpack_out,
+                result_len_out,
+                context_table_out,
+                bg_handle_out,
+            );
+        }
+
+        match IdentityPayload::from_pipeline_result(&id_result) {
+            Some(resolved) => resolved.apply_to_extensions(base_extensions),
+            None => base_extensions,
+        }
+    } else {
+        base_extensions
+    };
+
+    // ---- Hook invoke with the identity-enriched extensions ----
+    let (result, bg) = match run_safely(
+        inner
+            .manager
+            .invoke_by_name(name, payload, merged_extensions, input_ctx_table),
+        "cpex_invoke_resolved",
+    ) {
+        SafeRun::Ok(r) => r,
+        other => return other.rc(),
+    };
+
+    finish_pipeline_result(
+        result,
+        Some(bg),
+        payload_type,
+        result_msgpack_out,
+        result_len_out,
+        context_table_out,
+        bg_handle_out,
+    )
+}
+
+/// Serialize a `(PipelineResult, Option<BackgroundTasks>)` into the FFI
+/// out-params. Shared tail for [`cpex_invoke_resolved`]'s hook-result and
+/// identity-denial paths; mirrors [`cpex_invoke`]'s inline serialization.
+/// `bg` is `None` on the identity-denial path (no hook background tasks to
+/// hand back) — `*bg_handle_out` is then left null.
+///
+/// # Safety
+/// Out pointers must be writable. Returns `RC_OK` on success or
+/// `RC_SERIALIZE_ERROR` if the result can't be MessagePack-encoded.
+unsafe fn finish_pipeline_result(
+    mut result: cpex_core::executor::PipelineResult,
+    bg: Option<BackgroundTasks>,
+    payload_type: u8,
+    result_msgpack_out: *mut *mut u8,
+    result_len_out: *mut c_int,
+    context_table_out: *mut *mut CpexContextTableInner,
+    bg_handle_out: *mut *mut CpexBackgroundTasksInner,
+) -> c_int {
+    let (result_payload_type, modified_payload_bytes) = match result.modified_payload.as_ref() {
+        None => (payload_type, None),
+        Some(p) => match serialize_payload(p.as_ref()) {
+            Ok((t, b)) => (t, Some(b)),
+            Err(e) => {
+                tracing::warn!("cpex_invoke_resolved: dropped modified payload — {}", e);
+                result.errors.push(cpex_core::error::PluginErrorRecord {
+                    plugin_name: "<ffi>".to_string(),
+                    message: format!("modified payload could not be serialized across FFI: {e}"),
+                    code: Some("ffi_serialize_error".to_string()),
+                    details: std::collections::HashMap::new(),
+                    proto_error_code: None,
+                });
+                (payload_type, None)
+            }
+        },
+    };
+
+    let modified_extensions_bytes: Option<Vec<u8>> = result
+        .modified_extensions
+        .as_ref()
+        .and_then(|ext| rmp_serde::to_vec_named(ext).ok());
+
+    let ffi_result = FfiPipelineResult {
+        continue_processing: result.continue_processing,
+        violation: result.violation,
+        errors: result.errors,
+        metadata: result.metadata,
+        payload_type: result_payload_type,
+        modified_payload: modified_payload_bytes,
+        modified_extensions: modified_extensions_bytes,
+    };
+
+    let result_bytes = match rmp_serde::to_vec_named(&ffi_result) {
+        Ok(b) => b,
+        Err(e) => {
+            tracing::error!("cpex_invoke_resolved: result serialize failed: {}", e);
+            return RC_SERIALIZE_ERROR;
+        }
+    };
+
+    let (ptr, len) = alloc_bytes(&result_bytes);
+    *result_msgpack_out = ptr;
+    *result_len_out = len;
+
+    *context_table_out = Box::into_raw(Box::new(CpexContextTableInner {
+        table: result.context_table,
+    }));
+
+    *bg_handle_out = match bg {
+        Some(b) => Box::into_raw(Box::new(CpexBackgroundTasksInner { tasks: b })),
+        None => std::ptr::null_mut(),
+    };
+
+    RC_OK
+}
+
 // ---------------------------------------------------------------------------
 // Background Tasks
 // ---------------------------------------------------------------------------

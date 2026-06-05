@@ -55,6 +55,7 @@ FIXMEs
 logs/
 *.log
 .sketchpad
+.localtarget*
 
 # Fuzzing artifacts and reports
 reports/

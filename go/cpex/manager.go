@@ -75,6 +75,18 @@ extern int cpex_invoke(
     CpexContextTable* context_table_out,
     CpexBackgroundTasks* bg_handle_out
 );
+extern int cpex_invoke_resolved(
+    CpexManager mgr,
+    const uint8_t* identity_msgpack, int identity_len,
+    const char* hook_name, int hook_len,
+    uint8_t payload_type,
+    const uint8_t* payload_msgpack, int payload_len,
+    const uint8_t* extensions_msgpack, int extensions_len,
+    CpexContextTable context_table,
+    uint8_t** result_msgpack_out, int* result_len_out,
+    CpexContextTable* context_table_out,
+    CpexBackgroundTasks* bg_handle_out
+);
 extern int cpex_wait_background(
     CpexManager mgr,
     CpexBackgroundTasks bg_handle,
@@ -410,6 +422,116 @@ func (m *PluginManager) InvokeByName(
 	// Hold *PluginManager (not the raw C handle) so Wait() can check
 	// mgr.handle != nil under the manager's mutex — preventing UAF
 	// if Shutdown is called between this invoke and Wait().
+	bg := &BackgroundTasks{handle: bgOut, mgr: m}
+
+	return &result, resultCT, bg, nil
+}
+
+// InvokeResolved runs identity.resolve and the named hook in a single FFI
+// call. The resolved Extensions — including raw_credentials, whose inbound
+// tokens are skip-serialized and so can't survive an FFI round-trip — are
+// threaded from identity into the hook in Rust memory. This lets an
+// out-of-process host drive delegate() flows that need the inbound bearer
+// token, which a separate resolve-then-invoke pair loses.
+//
+// `identity` carries the request headers the resolvers read (X-User-Token,
+// Authorization, …). When the manager has no identity.resolve hook
+// registered, this degrades to a plain InvokeByName(hookName, ...).
+// Otherwise the semantics (ContextTable threading, ownership, result
+// shape) match InvokeByName.
+func (m *PluginManager) InvokeResolved(
+	identity IdentityPayload,
+	hookName string,
+	payloadType uint8,
+	payload any,
+	extensions *Extensions,
+	contextTable *ContextTable,
+) (*PipelineResult, *ContextTable, *BackgroundTasks, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if m.handle == nil {
+		return nil, nil, nil, fmt.Errorf("InvokeResolved: %w", ErrCpexInvalidHandle)
+	}
+
+	idBytes, err := msgpack.Marshal(identity)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("cpex: identity marshal failed: %w", err)
+	}
+	payloadBytes, err := msgpack.Marshal(payload)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("cpex: payload marshal failed: %w", err)
+	}
+	var extBytes []byte
+	if extensions != nil {
+		extBytes, err = msgpack.Marshal(extensions)
+		if err != nil {
+			return nil, nil, nil, fmt.Errorf("cpex: extensions marshal failed: %w", err)
+		}
+	}
+
+	cHookName := C.CString(hookName)
+	defer C.free(unsafe.Pointer(cHookName))
+
+	var ctHandle C.CpexContextTable
+	if contextTable != nil {
+		ctHandle = contextTable.handle
+	}
+
+	var resultPtr *C.uint8_t
+	var resultLen C.int
+	var ctOut C.CpexContextTable
+	var bgOut C.CpexBackgroundTasks
+
+	var idPtr *C.uint8_t
+	if len(idBytes) > 0 {
+		idPtr = (*C.uint8_t)(unsafe.Pointer(&idBytes[0]))
+	}
+	var payloadPtr *C.uint8_t
+	if len(payloadBytes) > 0 {
+		payloadPtr = (*C.uint8_t)(unsafe.Pointer(&payloadBytes[0]))
+	}
+	var extPtr *C.uint8_t
+	var extLen C.int
+	if len(extBytes) > 0 {
+		extPtr = (*C.uint8_t)(unsafe.Pointer(&extBytes[0]))
+		extLen = C.int(len(extBytes))
+	}
+
+	rc := C.cpex_invoke_resolved(
+		m.handle,
+		idPtr, C.int(len(idBytes)),
+		cHookName, C.int(len(hookName)),
+		C.uint8_t(payloadType),
+		payloadPtr, C.int(len(payloadBytes)),
+		extPtr, extLen,
+		ctHandle,
+		&resultPtr, &resultLen,
+		&ctOut,
+		&bgOut,
+	)
+
+	if rc != 0 {
+		return nil, nil, nil, errorFromRC(int(rc), "InvokeResolved")
+	}
+
+	// Rust consumed ctHandle and produced ctOut — safe to nil our ref.
+	if contextTable != nil {
+		contextTable.handle = nil
+	}
+
+	resultBytes := C.GoBytes(unsafe.Pointer(resultPtr), resultLen)
+	C.cpex_free_bytes((*C.uint8_t)(unsafe.Pointer(resultPtr)), resultLen)
+
+	var result PipelineResult
+	if err := msgpack.Unmarshal(resultBytes, &result); err != nil {
+		return nil, nil, nil, fmt.Errorf("cpex: result unmarshal failed: %w", err)
+	}
+
+	resultCT := &ContextTable{handle: ctOut}
+	runtime.SetFinalizer(resultCT, func(ct *ContextTable) {
+		ct.Close()
+	})
+
 	bg := &BackgroundTasks{handle: bgOut, mgr: m}
 
 	return &result, resultCT, bg, nil
