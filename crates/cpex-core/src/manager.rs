@@ -1793,11 +1793,25 @@ impl PluginManager {
     // Query Methods
     // -----------------------------------------------------------------------
 
-    /// Whether any plugins are registered for the given hook name.
+    /// Whether anything would run for the given hook name — either a
+    /// registered plugin handler OR a route annotation targeting that hook.
+    ///
+    /// Route annotations (installed by APL from a route's `policy:` /
+    /// `args:` / `result:` blocks) must be counted here: a route whose only
+    /// handler for a phase is an annotation (e.g. a response-side
+    /// `result: { ssn: redact(...) }` on `cmf.tool_post_invoke`, with no
+    /// globally-registered post-invoke plugin) would otherwise report
+    /// "no hooks" and be skipped by out-of-process hosts that use this as a
+    /// fast-skip gate — silently dropping the route's policy for that phase.
     pub fn has_hooks_for(&self, hook_name: &str) -> bool {
-        self.load_runtime()
+        let snapshot = self.load_runtime();
+        snapshot
             .registry
             .has_hooks_for(&HookType::new(hook_name))
+            || snapshot
+                .route_annotations
+                .keys()
+                .any(|k| k.hook_name.as_str() == hook_name)
     }
 
     /// Look up a plugin by name. Returns an `Arc<PluginRef>` clone — works
