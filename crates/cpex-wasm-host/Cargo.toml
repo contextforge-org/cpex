@@ -13,4 +13,5 @@ anyhow = "1.0"
 serde = { version = "1", features = ["derive"] }
 serde_yaml = "0.9"
 serde_json = { workspace = true }
-axum = "0.8"
+cpex-core = { path = "../cpex-core" }
+async-trait = "0.1"

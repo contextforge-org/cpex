@@ -123,11 +123,11 @@ impl PluginConfig {
         SandboxConfig::from_policy(self.sandbox_policy.as_ref())
     }
 
-    /// Extract the wasm filename from the `kind` field.
-    /// Expected format: "wasm/<filename>.wasm"
-    /// Returns `None` if kind is absent or doesn't start with "wasm/".
+    /// Extract the wasm path from the `kind` field.
+    /// Expected format: "wasm://path/to/plugin.wasm"
+    /// Returns `None` if kind is absent or doesn't start with "wasm://".
     pub fn wasm_filename(&self) -> Option<&str> {
-        self.kind.as_deref().and_then(|k| k.strip_prefix("wasm/"))
+        self.kind.as_deref().and_then(|k| k.strip_prefix("wasm://"))
     }
 }
 
@@ -221,7 +221,7 @@ mod tests {
         let yaml = r#"
 plugins:
   - name: identity-checker
-    kind: wasm/identity_checker.wasm
+    kind: wasm://identity_checker.wasm
     hooks: [cmf.tool_pre_invoke]
     mode: sequential
     priority: 10
@@ -241,7 +241,7 @@ plugins:
         max_fuel: 1000000000
 
   - name: audit-logger
-    kind: wasm/audit_logger.wasm
+    kind: wasm://audit_logger.wasm
     hooks: [cmf.tool_post_invoke]
     mode: audit
     priority: 100

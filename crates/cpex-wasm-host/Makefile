@@ -1,18 +1,12 @@
-.PHONY: build build-plugins run clean
+.PHONY: build build-plugin run clean
 
 PLUGIN_DIR = ../cpex-wasm-plugin
 WASM_DIR = wasm
-PLUGINS = identity_checker.wasm audit_logger.wasm header_injector.wasm
 
-build-plugins:
+build-plugin:
 	$(MAKE) -C $(PLUGIN_DIR) build
-	@mkdir -p $(WASM_DIR)
-	@for f in $(PLUGINS); do \
-		cp $(PLUGIN_DIR)/$$f $(WASM_DIR)/$$f; \
-	done
-	@echo "Copied plugins to $(WASM_DIR)/"
 
-build: build-plugins
+build: build-plugin
 	cargo build --release
 
 run: build
@@ -20,4 +14,4 @@ run: build
 
 clean:
 	cargo clean
-	rm -f $(WASM_DIR)/*.wasm
+	rm -f $(WASM_DIR)/plugin.wasm

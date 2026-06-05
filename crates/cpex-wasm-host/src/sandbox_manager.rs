@@ -1,9 +1,15 @@
-use std::collections::HashMap;
+// Location: ./crates/cpex-wasm-host/src/sandbox_manager.rs
+// Copyright 2025
+// SPDX-License-Identifier: Apache-2.0
+// Authors: Shriti Priya
+//
+// SandboxManager — loads and invokes a single WASM plugin in a wasmtime sandbox.
+// Enforces resource limits (fuel, memory, execution time) and network policy.
+
 use std::path::Path;
-use std::sync::{Arc, atomic::{AtomicU64, Ordering}};
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use serde::Serialize;
 use wasmtime::component::{Component, Linker, ResourceTable};
 use wasmtime::{Config, Engine, Store, StoreLimits, StoreLimitsBuilder};
 use wasmtime_wasi::{WasiCtx, WasiCtxView, WasiView};
@@ -14,7 +20,7 @@ use wasmtime_wasi_http::p2::types::{HostFutureIncomingResponse, OutgoingRequestC
 use wasmtime_wasi_http::p2::{HttpResult, WasiHttpHooks, default_send_request};
 use wasmtime_wasi_http::p2::bindings::http::types::ErrorCode;
 
-use crate::policy_loader::{build_wasi_context, load_all_plugins_config, SandboxConfig};
+use crate::policy_loader::{build_wasi_context, SandboxConfig};
 
 wasmtime::component::bindgen!({
     path: "wit",
@@ -26,45 +32,11 @@ pub mod types {
     pub use super::cpex::plugin::types::*;
 }
 
-#[derive(Debug, Default)]
-pub struct PluginMetrics {
-    pub total_invocations: AtomicU64,
-    pub total_fuel_consumed: AtomicU64,
-    pub total_traps: AtomicU64,
-    pub network_denials: AtomicU64,
-    pub network_allowed: AtomicU64,
-    pub last_fuel_consumed: AtomicU64,
-}
-
-impl PluginMetrics {
-    pub fn snapshot(&self) -> PluginMetricsSnapshot {
-        PluginMetricsSnapshot {
-            total_invocations: self.total_invocations.load(Ordering::Relaxed),
-            total_fuel_consumed: self.total_fuel_consumed.load(Ordering::Relaxed),
-            total_traps: self.total_traps.load(Ordering::Relaxed),
-            network_denials: self.network_denials.load(Ordering::Relaxed),
-            network_allowed: self.network_allowed.load(Ordering::Relaxed),
-            last_fuel_consumed: self.last_fuel_consumed.load(Ordering::Relaxed),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct PluginMetricsSnapshot {
-    pub total_invocations: u64,
-    pub total_fuel_consumed: u64,
-    pub total_traps: u64,
-    pub network_denials: u64,
-    pub network_allowed: u64,
-    pub last_fuel_consumed: u64,
-}
-
-struct MeteredHttpHooks {
+struct NetworkPolicy {
     allowed_hosts: Arc<Vec<String>>,
-    metrics: Arc<PluginMetrics>,
 }
 
-impl WasiHttpHooks for MeteredHttpHooks {
+impl WasiHttpHooks for NetworkPolicy {
     fn send_request(
         &mut self,
         request: hyper::Request<HyperOutgoingBody>,
@@ -81,24 +53,22 @@ impl WasiHttpHooks for MeteredHttpHooks {
         });
 
         if !is_allowed {
-            self.metrics.network_denials.fetch_add(1, Ordering::Relaxed);
             return Err(ErrorCode::HttpRequestDenied.into());
         }
 
-        self.metrics.network_allowed.fetch_add(1, Ordering::Relaxed);
         Ok(default_send_request(request, config))
     }
 }
 
-struct PluginState {
+struct WasmPluginState {
     wasi: WasiCtx,
     http: WasiHttpCtx,
-    hooks: MeteredHttpHooks,
+    network: NetworkPolicy,
     table: ResourceTable,
     limits: StoreLimits,
 }
 
-impl WasiView for PluginState {
+impl WasiView for WasmPluginState {
     fn ctx(&mut self) -> WasiCtxView<'_> {
         WasiCtxView {
             ctx: &mut self.wasi,
@@ -107,32 +77,32 @@ impl WasiView for PluginState {
     }
 }
 
-impl WasiHttpView for PluginState {
+impl WasiHttpView for WasmPluginState {
     fn http(&mut self) -> WasiHttpCtxView<'_> {
         WasiHttpCtxView {
             ctx: &mut self.http,
             table: &mut self.table,
-            hooks: &mut self.hooks,
+            hooks: &mut self.network,
         }
     }
 }
 
-struct PluginInstance {
-    store: Store<PluginState>,
+struct WasmPluginInstance {
+    store: Store<WasmPluginState>,
     plugin: Plugin,
-    fuel_budget: u64,
     epoch_deadline: u64,
-    wasm_path: std::path::PathBuf,
-    metrics: Arc<PluginMetrics>,
 }
 
+/// Manages a single WASM plugin in a sandboxed wasmtime environment.
+/// Enforces resource limits (fuel, memory, execution time) and network policy.
 pub struct SandboxManager {
     engine: Engine,
-    linker: Linker<PluginState>,
-    plugins: HashMap<String, PluginInstance>,
+    linker: Linker<WasmPluginState>,
+    instance: Option<WasmPluginInstance>,
 }
 
 impl SandboxManager {
+    /// Create a new SandboxManager with no plugin loaded.
     pub fn new() -> Result<Self> {
         let mut config = Config::new();
         config.wasm_component_model(true);
@@ -154,17 +124,20 @@ impl SandboxManager {
         Ok(Self {
             engine,
             linker,
-            plugins: HashMap::new(),
+            instance: None,
         })
     }
 
-    pub async fn load_plugin(
+    /// Load a plugin from a WASM file with the given sandbox config.
+    /// Replaces any previously loaded plugin.
+    pub async fn load_wasmplugin(
         &mut self,
-        name: &str,
         wasm_path: &Path,
         sandbox_config: SandboxConfig,
     ) -> Result<()> {
+        eprintln!("[SANDBOX] load_wasmplugin: path={}", wasm_path.display());
         let ctx = build_wasi_context(&sandbox_config)?;
+        eprintln!("[SANDBOX] WASI context built");
         let resources = &sandbox_config.resources;
 
         // Build store limits from resource config
@@ -180,19 +153,18 @@ impl SandboxManager {
         }
         let limits = limits_builder.trap_on_grow_failure(true).build();
 
+        eprintln!("[SANDBOX] Loading component from file...");
         let component = Component::from_file(&self.engine, wasm_path)
             .map_err(|e| anyhow::anyhow!("failed to load wasm from {}: {}", wasm_path.display(), e))?;
-
-        let metrics = Arc::new(PluginMetrics::default());
+        eprintln!("[SANDBOX] Component loaded successfully");
 
         let mut store = Store::new(
             &self.engine,
-            PluginState {
+            WasmPluginState {
                 wasi: ctx.wasi_ctx,
                 http: ctx.http_ctx,
-                hooks: MeteredHttpHooks {
+                network: NetworkPolicy {
                     allowed_hosts: ctx.allowed_hosts,
-                    metrics: metrics.clone(),
                 },
                 table: ResourceTable::new(),
                 limits,
@@ -209,179 +181,59 @@ impl SandboxManager {
 
         // Apply execution timeout via epoch deadline
         // Each epoch tick is ~1ms (from ticker thread), so ms ≈ ticks
-        // Use a very large default (1 hour) to avoid overflow
         let epoch_deadline = resources.max_execution_time_ms.unwrap_or(3_600_000);
         store.set_epoch_deadline(epoch_deadline);
         store.epoch_deadline_trap();
 
+        eprintln!("[SANDBOX] Instantiating plugin component...");
         let plugin = Plugin::instantiate_async(&mut store, &component, &self.linker)
             .await
-            .map_err(|e| anyhow::anyhow!("failed to instantiate plugin '{}': {}", name, e))?;
+            .map_err(|e| anyhow::anyhow!("failed to instantiate plugin: {}", e))?;
+        eprintln!("[SANDBOX] Plugin instantiated OK");
 
-        self.plugins.insert(
-            name.to_string(),
-            PluginInstance {
-                store,
-                plugin,
-                fuel_budget: fuel,
-                epoch_deadline,
-                wasm_path: wasm_path.to_path_buf(),
-                metrics,
-            },
-        );
+        self.instance = Some(WasmPluginInstance {
+            store,
+            plugin,
+            epoch_deadline,
+        });
 
         Ok(())
     }
 
+    /// Invoke the loaded plugin's handle-hook function.
+    /// Fuel is a session-level budget (not reset between invocations).
+    /// Epoch deadline is per-invocation (reset each call so no single call hangs).
     pub async fn invoke(
         &mut self,
-        plugin_name: &str,
         payload: types::MessagePayload,
         extensions: types::Extensions,
         ctx: types::PluginContext,
     ) -> Result<types::PluginResult> {
+        eprintln!("[SANDBOX] invoke() called, plugin loaded: {}", self.is_loaded());
         let instance = self
-            .plugins
-            .get_mut(plugin_name)
-            .with_context(|| format!("plugin '{}' not loaded", plugin_name))?;
+            .instance
+            .as_mut()
+            .with_context(|| "no plugin loaded")?;
 
-        // Reset fuel and epoch deadline for each invocation
-        let _ = instance.store.set_fuel(instance.fuel_budget);
+        // Reset epoch deadline per invocation (timeout is per-call)
         instance.store.set_epoch_deadline(instance.epoch_deadline);
 
-        instance.metrics.total_invocations.fetch_add(1, Ordering::Relaxed);
-
-        let fuel_before = instance.store.get_fuel().unwrap_or(0);
-
+        eprintln!("[SANDBOX] Calling handle_hook on WASM component...");
         let result = instance
             .plugin
             .call_handle_hook(&mut instance.store, &payload, &extensions, &ctx)
             .await;
 
-        let fuel_after = instance.store.get_fuel().unwrap_or(0);
-        let fuel_used = fuel_before.saturating_sub(fuel_after);
-        instance.metrics.total_fuel_consumed.fetch_add(fuel_used, Ordering::Relaxed);
-        instance.metrics.last_fuel_consumed.store(fuel_used, Ordering::Relaxed);
-
-        match result {
-            Ok(r) => Ok(r),
-            Err(e) => {
-                instance.metrics.total_traps.fetch_add(1, Ordering::Relaxed);
-                Err(anyhow::anyhow!("failed to invoke handle_hook on '{}': {}", plugin_name, e))
-            }
-        }
-    }
-
-    pub fn unload_plugin(&mut self, name: &str) -> Result<()> {
-        self.plugins
-            .remove(name)
-            .with_context(|| format!("plugin '{}' not loaded", name))?;
-        Ok(())
-    }
-
-    /// Reload a plugin with a new sandbox policy.
-    /// Destroys the old instance and creates a fresh one with the updated config.
-    pub async fn reload_plugin(
-        &mut self,
-        name: &str,
-        new_config: SandboxConfig,
-    ) -> Result<()> {
-        let wasm_path = self
-            .plugins
-            .get(name)
-            .map(|inst| inst.wasm_path.clone())
-            .with_context(|| format!("plugin '{}' not loaded, cannot reload", name))?;
-
-        self.plugins.remove(name);
-        self.load_plugin(name, &wasm_path, new_config).await
-    }
-
-    /// Reload all plugins from a config file.
-    /// Any plugin whose config differs from current will be restarted.
-    /// Plugins without a `kind` starting with "wasm/" are skipped.
-    /// Plugins without a `sandbox_policy` get deny-by-default (no capabilities).
-    pub async fn reload_from_config(
-        &mut self,
-        config_path: &Path,
-        wasm_dir: &Path,
-    ) -> Result<()> {
-        let plugins = load_all_plugins_config(config_path)?;
-
-        let new_plugin_names: Vec<String> =
-            plugins.iter().map(|p| p.name.clone()).collect();
-
-        // Remove plugins that are no longer in config
-        let current_names: Vec<String> = self.plugins.keys().cloned().collect();
-        for name in &current_names {
-            if !new_plugin_names.contains(name) {
-                self.plugins.remove(name);
-            }
+        match &result {
+            Ok(r) => eprintln!("[SANDBOX] handle_hook OK: continue_processing={}", r.continue_processing),
+            Err(e) => eprintln!("[SANDBOX] handle_hook FAILED: {}", e),
         }
 
-        // Load or reload plugins from config
-        for plugin_cfg in &plugins {
-            let wasm_filename = match plugin_cfg.wasm_filename() {
-                Some(f) => f,
-                None => continue, // not a wasm plugin
-            };
-
-            let wasm_path = wasm_dir.join(wasm_filename);
-            if !wasm_path.exists() {
-                continue;
-            }
-
-            let sandbox = plugin_cfg.sandbox_config();
-
-            if self.plugins.contains_key(&plugin_cfg.name) {
-                self.reload_plugin(&plugin_cfg.name, sandbox).await?;
-            } else {
-                self.load_plugin(&plugin_cfg.name, &wasm_path, sandbox).await?;
-            }
-        }
-
-        Ok(())
+        result.map_err(|e| anyhow::anyhow!("plugin invocation failed: {}", e))
     }
 
-    pub fn list_plugins(&self) -> Vec<&str> {
-        self.plugins.keys().map(|s| s.as_str()).collect()
-    }
-
-    pub fn metrics(&self, plugin_name: &str) -> Option<PluginMetricsSnapshot> {
-        self.plugins.get(plugin_name).map(|inst| inst.metrics.snapshot())
-    }
-
-    pub fn all_metrics(&self) -> HashMap<String, PluginMetricsSnapshot> {
-        self.plugins
-            .iter()
-            .map(|(name, inst)| (name.clone(), inst.metrics.snapshot()))
-            .collect()
-    }
-
-    /// Load all wasm plugins from config.
-    /// Extracts the wasm filename from the `kind` field (e.g. "wasm/foo.wasm").
-    /// Plugins without a `sandbox_policy` get deny-by-default (no capabilities).
-    pub async fn load_from_config(
-        &mut self,
-        config_path: &Path,
-        wasm_dir: &Path,
-    ) -> Result<()> {
-        let plugins = load_all_plugins_config(config_path)?;
-
-        for plugin_cfg in &plugins {
-            let wasm_filename = match plugin_cfg.wasm_filename() {
-                Some(f) => f,
-                None => continue, // not a wasm plugin
-            };
-
-            let wasm_path = wasm_dir.join(wasm_filename);
-            if wasm_path.exists() {
-                let sandbox = plugin_cfg.sandbox_config();
-                self.load_plugin(&plugin_cfg.name, &wasm_path, sandbox)
-                    .await
-                    .with_context(|| format!("failed to load plugin '{}'", plugin_cfg.name))?;
-            }
-        }
-
-        Ok(())
+    /// Returns whether a plugin is currently loaded.
+    pub fn is_loaded(&self) -> bool {
+        self.instance.is_some()
     }
 }

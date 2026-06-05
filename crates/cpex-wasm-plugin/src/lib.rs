@@ -45,19 +45,29 @@ impl Guest for Plugin {
         extensions: Extensions,
         ctx: PluginContext,
     ) -> PluginResult {
+        eprintln!("[WASM] handle_hook called");
+        eprintln!("[WASM] payload content parts {:?} : with length {}",payload.message.content, payload.message.content.len());
+
         // Convert the WIT MessagePayload to native cpex-payload MessagePayload
         let native_payload = wit_payload_to_native(payload);
+        eprintln!("[WASM] payload converted to native={:?}",native_payload);
+
         // Convert the WIT Extensions to native Extensions (wrapped in Arc)
         let native_extensions = wit_extensions_to_native(extensions);
+        eprintln!("[WASM] extensions converted to native={:?}",native_extensions);
+
         // Convert the WIT PluginContext JSON strings to native HashMap-based context
         let native_ctx = wit_context_to_native(ctx);
+        eprintln!("[WASM] context converted to native={:?}",native_ctx);
 
         // Call the plugin logic — swap this line to use a different plugin
+        eprintln!("[WASM] calling identity_check...");
         let result = cpex_payload::plugins::identity_checker::identity_check(
             &native_payload,    // the CMF message being processed
             &native_extensions, // security, HTTP, meta, request extensions
             &native_ctx,        // plugin-local and global shared state
         );
+        eprintln!("[WASM] identity_check returned: continue_processing={}", result.continue_processing);
 
         // Convert the native PluginResult back to WIT for the host to consume
         native_result_to_wit(result)

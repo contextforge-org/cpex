@@ -1,11 +1,14 @@
+// Location: ./crates/cpex-wasm-host/wit/world.wit
+// Copyright 2025
+// SPDX-License-Identifier: Apache-2.0
+// Authors: Shriti Priya
+//
+// WIT world definition for the CPEX plugin component.
+// Defines the types and exported function that the WASM host uses to invoke plugins.
+
 package cpex:plugin;
 
 interface types {
-  record plugin-config {
-    name: string,
-    version: string,
-  }
-
   enum role {
     system,
     developer,
