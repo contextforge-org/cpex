@@ -459,6 +459,24 @@ impl PluginRegistry {
     pub fn plugin_names(&self) -> Vec<String> {
         self.plugins.keys().cloned().collect()
     }
+
+    /// Returns every (hook_name, HookEntry) pair where the entry's plugin
+    /// matches the given name. Used by external orchestrators that need
+    /// to build pre-resolved dispatch lineups for a single plugin across
+    /// every hook it registered to (e.g. apl-cpex deciding which entry
+    /// handles step-style invocations vs field-style invocations for the
+    /// same plugin). Owned tuples — no borrows held on the registry.
+    pub fn entries_for_plugin(&self, plugin_name: &str) -> Vec<(String, HookEntry)> {
+        let mut out = Vec::new();
+        for (hook_type, entries) in &self.hook_index {
+            for entry in entries {
+                if entry.plugin_ref.name() == plugin_name {
+                    out.push((hook_type.as_str().to_string(), entry.clone()));
+                }
+            }
+        }
+        out
+    }
 }
 
 impl Default for PluginRegistry {

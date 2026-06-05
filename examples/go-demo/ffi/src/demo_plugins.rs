@@ -268,7 +268,7 @@ impl PluginFactory for AuditLoggerFactory {
 }
 
 /// Register all demo plugin factories on a manager.
-pub fn register_demo_factories(manager: &mut cpex_core::manager::PluginManager) {
+pub fn register_demo_factories(manager: &cpex_core::manager::PluginManager) {
     manager.register_factory("builtin/identity", Box::new(IdentityCheckerFactory));
     manager.register_factory("builtin/pii", Box::new(PiiGuardFactory));
     manager.register_factory("builtin/audit", Box::new(AuditLoggerFactory));

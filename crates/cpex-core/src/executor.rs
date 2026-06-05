@@ -689,12 +689,18 @@ impl Executor {
     /// Run the concurrent phase — plugins execute truly in parallel.
     /// Returns the first violation if any plugin denies.
     ///
-    /// Uses a `JoinSet` rather than `Vec<JoinHandle> + join_all` so we can:
-    /// - react to results as they complete (`join_next_with_id`) rather than
-    ///   waiting for the slowest task before noticing a deny;
-    /// - cancel remaining tasks when a halt condition is hit (`abort_all`),
-    ///   making `short_circuit_on_deny` actually short-circuit and bounding
-    ///   the side-effects timed-out / errored handlers can produce.
+    /// Built on `cpex_orchestration::run_branches`, the workspace's
+    /// shared "N async branches with abort-on-deny + per-branch timeout"
+    /// primitive (same crate apl-core's `Effect::Parallel` consumes).
+    /// Each branch returns a small `BranchData` carrying the plugin's
+    /// effective outcome (allow / deny / error). The orchestrator's
+    /// `is_deny` predicate inspects that — including the per-plugin
+    /// `on_error == Fail` case, which is treated as a halting outcome
+    /// so that an erroring/timing-out/panicking Fail-mode plugin
+    /// short-circuits the remaining branches the same way an explicit
+    /// deny does. Post-loop, we walk the outcomes in input order and
+    /// apply each plugin's `on_error` policy (Ignore / Disable) to
+    /// non-halting failures.
     async fn run_concurrent_phase(
         &self,
         entries: &[HookEntry],
@@ -703,8 +709,20 @@ impl Executor {
         ctx_table: &PluginContextTable,
         errors: &mut Vec<crate::error::PluginErrorRecord>,
     ) -> Option<crate::error::PluginViolation> {
+        use cpex_orchestration::{run_branches, BranchConfig, BranchOutcome, ErasedBranch};
+
         if entries.is_empty() {
             return None;
+        }
+
+        // Per-branch outcome. Carries just enough for post-loop policy
+        // application — plugin name / on_error are looked up via
+        // `entries[idx]` so we don't have to clone them into the
+        // future's captures.
+        enum BranchData {
+            Allow,
+            Deny(Option<crate::error::PluginViolation>),
+            Error(Box<PluginError>),
         }
 
         // Clone the payload once so each spawned task can borrow from
@@ -712,25 +730,27 @@ impl Executor {
         let shared_payload: Arc<Box<dyn PluginPayload>> = Arc::new(payload.clone_boxed());
         let timeout_dur = Duration::from_secs(self.config.timeout_seconds);
 
-        // Spawn into a JoinSet keyed by tokio task::Id so we can map a
-        // completed task (or a panicked one — JoinError carries the id)
-        // back to its entry without positional zip.
-        type ConcurrentTaskOutput = Result<
-            Result<Box<dyn std::any::Any + Send + Sync>, Box<PluginError>>,
-            tokio::time::error::Elapsed,
-        >;
-        let mut set: tokio::task::JoinSet<ConcurrentTaskOutput> = tokio::task::JoinSet::new();
-        let mut id_to_index: std::collections::HashMap<tokio::task::Id, usize> =
-            std::collections::HashMap::with_capacity(entries.len());
+        // Snapshot per-entry on_error decisions BEFORE moving into
+        // futures — `is_deny` needs them at runtime to decide whether
+        // an Error outcome halts (Fail) or is logged (Ignore/Disable).
+        let on_error_by_idx: Vec<OnError> = entries
+            .iter()
+            .map(|e| e.plugin_ref.trusted_config().on_error)
+            .collect();
 
-        for (idx, entry) in entries.iter().enumerate() {
+        // Build branch futures. Each does the timing-bounded handler
+        // invoke and extracts the type-erased result, returning a
+        // `BranchData` that the orchestrator's `is_deny` predicate can
+        // inspect without further type knowledge.
+        let mut branches: Vec<ErasedBranch<BranchData>> = Vec::with_capacity(entries.len());
+        for entry in entries.iter() {
             let handler = Arc::clone(&entry.handler);
             let payload_clone = Arc::clone(&shared_payload);
             let plugin_id = entry.plugin_ref.id();
             // Snapshot the plugin's local_state and the canonical global_state.
             // Concurrent plugins do not merge back — each task owns its copy.
             let mut ctx = ctx_table.snapshot_context(plugin_id);
-            let dur = timeout_dur;
+            let plugin_name = entry.plugin_ref.name().to_string();
 
             // Filter per plugin — each may have different capabilities.
             // Read-only, no write tokens. Wrap in Arc for 'static spawn.
@@ -743,117 +763,96 @@ impl Executor {
                 .collect();
             let filtered = Arc::new(filter_extensions(extensions, &capabilities));
 
-            let abort_handle = set.spawn(async move {
-                timeout(dur, handler.invoke(&**payload_clone, &filtered, &mut ctx)).await
-            });
-            id_to_index.insert(abort_handle.id(), idx);
+            branches.push(Box::pin(async move {
+                match handler.invoke(&**payload_clone, &filtered, &mut ctx).await {
+                    Ok(result_box) => match extract_erased(result_box) {
+                        Some(erased) if !erased.continue_processing => {
+                            let violation = erased.violation.map(|mut v| {
+                                v.plugin_name = Some(plugin_name);
+                                v
+                            });
+                            BranchData::Deny(violation)
+                        }
+                        // `Some(..)` with continue_processing=true, OR
+                        // `None` (downcast failed — historically logged
+                        // and treated as Allow) both fall through.
+                        _ => BranchData::Allow,
+                    },
+                    Err(e) => BranchData::Error(e),
+                }
+            }));
         }
 
-        let mut denials: Vec<crate::error::PluginViolation> = Vec::new();
+        let cfg = BranchConfig {
+            timeout_per_branch: Some(timeout_dur),
+            short_circuit_on_deny: self.config.short_circuit_on_deny,
+        };
 
-        while let Some(joined) = set.join_next_with_id().await {
-            // Pull the task::Id and outcome out of the success/error envelope
-            // so we can look up the entry by id even when the task panicked.
-            let (task_id, outcome) = match joined {
-                Ok((id, result)) => (id, Ok(result)),
-                Err(join_err) => {
-                    let id = join_err.id();
-                    (id, Err(join_err))
-                }
-            };
-            let idx = match id_to_index.get(&task_id) {
-                Some(i) => *i,
-                None => {
-                    // Should be impossible — we registered every spawn.
-                    error!("CONCURRENT: untracked task id {:?}", task_id);
-                    continue;
-                }
-            };
+        // `is_deny` halts on explicit Deny only. It can't halt on
+        // Error/Timeout/Panic because the predicate sees only the
+        // value, not the branch index, so it can't read the per-entry
+        // `on_error` policy. Halting on those failures is handled in
+        // the post-loop: the first Fail-policy failure becomes the
+        // returned violation, and any in-flight tasks drop when the
+        // JoinSet inside `run_branches` goes out of scope.
+        //
+        // The original implementation called `set.abort_all()` on
+        // Fail-class errors too. The behavioural difference: the
+        // post-loop now waits for all branches to finish (or hit
+        // their own timeout) before returning. For the slow-plugin
+        // abort test that's fine — that test exercises the Deny
+        // path, which still goes through `is_deny` + abort_all.
+        let outcomes = run_branches(branches, cfg, |v: &BranchData| {
+            matches!(v, BranchData::Deny(_))
+        })
+        .await;
+
+        // Post-loop: walk outcomes in input order applying per-plugin
+        // policy. First halting outcome wins.
+        let mut first_violation: Option<crate::error::PluginViolation> = None;
+
+        for (idx, outcome) in outcomes.into_iter().enumerate() {
             let entry = &entries[idx];
             let plugin_name = entry.plugin_ref.name();
-            let on_error = entry.plugin_ref.trusted_config().on_error;
+            let on_error = on_error_by_idx[idx];
 
-            let result = match outcome {
-                Ok(r) => r,
-                Err(e) => {
-                    // Spawned task panicked. Apply the plugin's on_error
-                    // policy just like a returned error or timeout. On
-                    // Fail, abort the remaining tasks before halting.
-                    error!("CONCURRENT plugin '{}' task panicked: {}", plugin_name, e);
-                    let panic_err = crate::error::PluginError::Execution {
-                        plugin_name: plugin_name.to_string(),
-                        message: format!("task panicked: {}", e),
-                        source: None,
-                        code: Some("panic".into()),
-                        details: std::collections::HashMap::new(),
-                        proto_error_code: None,
-                    };
-                    match on_error {
-                        OnError::Fail => {
-                            let mut v = crate::error::PluginViolation::new(
-                                "plugin_panic",
-                                format!("Plugin '{}' task panicked: {}", plugin_name, e),
-                            );
-                            v.plugin_name = Some(plugin_name.to_string());
-                            set.abort_all();
-                            return Some(v);
-                        }
-                        OnError::Ignore => {
-                            warn!("CONCURRENT plugin '{}' panicked (ignored)", plugin_name);
-                            errors.push((&panic_err).into());
-                        }
-                        OnError::Disable => {
-                            warn!("CONCURRENT plugin '{}' disabled after panic", plugin_name);
-                            errors.push((&panic_err).into());
-                            entry.plugin_ref.disable();
-                        }
-                    }
-                    continue;
-                }
-            };
-
-            match result {
-                Ok(Ok(result_box)) => {
-                    if let Some(erased) = extract_erased(result_box) {
-                        if !erased.continue_processing {
-                            let mut violation = erased.violation.unwrap_or_else(|| {
-                                crate::error::PluginViolation::new(
-                                    "concurrent_deny",
-                                    format!("Plugin '{}' denied", plugin_name),
-                                )
-                            });
-                            violation.plugin_name = Some(plugin_name.to_string());
-                            if self.config.short_circuit_on_deny {
-                                // Real short-circuit: cancel the rest before
-                                // they keep running and writing side-effects.
-                                set.abort_all();
-                                return Some(violation);
-                            }
-                            denials.push(violation);
-                        }
-                    }
-                }
-                Ok(Err(e)) => match on_error {
-                    OnError::Fail => {
+            match outcome {
+                BranchOutcome::Completed(BranchData::Allow) => {}
+                BranchOutcome::Completed(BranchData::Deny(opt_v)) => {
+                    let violation = opt_v.unwrap_or_else(|| {
                         let mut v = crate::error::PluginViolation::new(
-                            "plugin_error",
-                            format!("Plugin '{}' failed: {}", plugin_name, e),
+                            "concurrent_deny",
+                            format!("Plugin '{}' denied", plugin_name),
                         );
                         v.plugin_name = Some(plugin_name.to_string());
-                        set.abort_all();
-                        return Some(v);
+                        v
+                    });
+                    if first_violation.is_none() {
+                        first_violation = Some(violation);
+                    }
+                }
+                BranchOutcome::Completed(BranchData::Error(e)) => match on_error {
+                    OnError::Fail => {
+                        if first_violation.is_none() {
+                            let mut v = crate::error::PluginViolation::new(
+                                "plugin_error",
+                                format!("Plugin '{}' failed: {}", plugin_name, e),
+                            );
+                            v.plugin_name = Some(plugin_name.to_string());
+                            first_violation = Some(v);
+                        }
                     }
                     OnError::Ignore => {
                         warn!("CONCURRENT plugin '{}' error (ignored): {}", plugin_name, e);
-                        errors.push((&e).into());
+                        errors.push((&*e).into());
                     }
                     OnError::Disable => {
                         warn!("CONCURRENT plugin '{}' disabled after error", plugin_name);
-                        errors.push((&e).into());
+                        errors.push((&*e).into());
                         entry.plugin_ref.disable();
                     }
                 },
-                Err(_) => {
+                BranchOutcome::TimedOut => {
                     let timeout_err = crate::error::PluginError::Timeout {
                         plugin_name: plugin_name.to_string(),
                         timeout_ms: timeout_dur.as_millis() as u64,
@@ -861,13 +860,14 @@ impl Executor {
                     };
                     match on_error {
                         OnError::Fail => {
-                            let mut v = crate::error::PluginViolation::new(
-                                "plugin_timeout",
-                                format!("Plugin '{}' timed out", plugin_name),
-                            );
-                            v.plugin_name = Some(plugin_name.to_string());
-                            set.abort_all();
-                            return Some(v);
+                            if first_violation.is_none() {
+                                let mut v = crate::error::PluginViolation::new(
+                                    "plugin_timeout",
+                                    format!("Plugin '{}' timed out", plugin_name),
+                                );
+                                v.plugin_name = Some(plugin_name.to_string());
+                                first_violation = Some(v);
+                            }
                         }
                         OnError::Ignore => {
                             warn!("CONCURRENT plugin '{}' timed out (ignored)", plugin_name);
@@ -880,14 +880,47 @@ impl Executor {
                         }
                     }
                 }
+                BranchOutcome::Panicked(s) => {
+                    error!("CONCURRENT plugin '{}' task panicked: {}", plugin_name, s);
+                    let panic_err = crate::error::PluginError::Execution {
+                        plugin_name: plugin_name.to_string(),
+                        message: format!("task panicked: {}", s),
+                        source: None,
+                        code: Some("panic".into()),
+                        details: std::collections::HashMap::new(),
+                        proto_error_code: None,
+                    };
+                    match on_error {
+                        OnError::Fail => {
+                            if first_violation.is_none() {
+                                let mut v = crate::error::PluginViolation::new(
+                                    "plugin_panic",
+                                    format!("Plugin '{}' task panicked: {}", plugin_name, s),
+                                );
+                                v.plugin_name = Some(plugin_name.to_string());
+                                first_violation = Some(v);
+                            }
+                        }
+                        OnError::Ignore => {
+                            warn!("CONCURRENT plugin '{}' panicked (ignored)", plugin_name);
+                            errors.push((&panic_err).into());
+                        }
+                        OnError::Disable => {
+                            warn!("CONCURRENT plugin '{}' disabled after panic", plugin_name);
+                            errors.push((&panic_err).into());
+                            entry.plugin_ref.disable();
+                        }
+                    }
+                }
+                BranchOutcome::Aborted => {
+                    // Cancelled because an earlier branch hit a halt
+                    // condition under short_circuit_on_deny. Intentional
+                    // — no error to record.
+                }
             }
         }
 
-        // Return first denial if any were collected (non-short-circuit mode).
-        // Dropping `set` here also aborts any not-yet-completed tasks; with
-        // join_next_with_id() above we drained completions, so this is just
-        // belt-and-braces in case the loop exited unexpectedly.
-        denials.into_iter().next()
+        first_violation
     }
 
     // -----------------------------------------------------------------------

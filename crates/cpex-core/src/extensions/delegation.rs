@@ -6,7 +6,32 @@
 // DelegationExtension — token delegation chain.
 // Mirrors cpex/framework/extensions/delegation.py.
 
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+
+use super::authorization::AuthorizationDetail;
+use super::security::SubjectType;
+
+/// Delegation strategy used to mint the credential at this hop.
+///
+/// The known variants cover the reference implementations in
+/// docs/specs/delegation-hooks-rust-spec.md §9.5. `Custom(String)` is the
+/// escape hatch for host-defined strategies (UCAN variants, in-house mints).
+/// Marked `#[non_exhaustive]` so new known variants can be added without a
+/// breaking change to host code that exhaustively matches.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum DelegationStrategy {
+    TokenExchange,
+    ClientCredentials,
+    SpiffeSvid,
+    Passthrough,
+    Ucan,
+    TransactionToken,
+    #[serde(untagged)]
+    Custom(String),
+}
 
 /// A single hop in the delegation chain.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -14,9 +39,10 @@ pub struct DelegationHop {
     /// Subject ID of the delegator.
     pub subject_id: String,
 
-    /// Subject type of the delegator.
+    /// Subject type of the delegator. Reuses the typed `SubjectType`
+    /// enum from `SecurityExtension.subject`, not a freeform string.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub subject_type: Option<String>,
+    pub subject_type: Option<SubjectType>,
 
     /// Target audience.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -26,9 +52,15 @@ pub struct DelegationHop {
     #[serde(default)]
     pub scopes_granted: Vec<String>,
 
-    /// Timestamp of delegation (ISO 8601).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub timestamp: Option<String>,
+    /// RFC 9396 authorization_details carried alongside scopes.
+    /// Each hop's details must be structurally narrowed from the previous.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub authorization_details: Vec<AuthorizationDetail>,
+
+    /// When this hop was minted. Default is the Unix epoch — production
+    /// code constructs with `Utc::now()`; only tests rely on the default.
+    #[serde(default)]
+    pub timestamp: DateTime<Utc>,
 
     /// Time-to-live in seconds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -36,7 +68,7 @@ pub struct DelegationHop {
 
     /// Delegation strategy used.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub strategy: Option<String>,
+    pub strategy: Option<DelegationStrategy>,
 
     /// Whether this hop was resolved from cache.
     #[serde(default)]
@@ -53,9 +85,9 @@ pub struct DelegationExtension {
     #[serde(default)]
     pub chain: Vec<DelegationHop>,
 
-    /// Chain depth (number of hops).
+    /// Chain depth (number of hops). `u32` for wire-stable width.
     #[serde(default)]
-    pub depth: usize,
+    pub depth: u32,
 
     /// Subject ID of the original delegator.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -78,7 +110,9 @@ impl DelegationExtension {
     /// Append a delegation hop (monotonic — cannot remove).
     pub fn append_hop(&mut self, hop: DelegationHop) {
         self.chain.push(hop);
-        self.depth = self.chain.len();
+        // Cast is safe: a chain with > u32::MAX hops would have failed
+        // memory allocation long ago.
+        self.depth = self.chain.len() as u32;
         self.delegated = true;
     }
 }
@@ -122,7 +156,7 @@ mod tests {
             subject_id: "alice".into(),
             audience: Some("service-b".into()),
             scopes_granted: vec!["read".into(), "write".into()],
-            strategy: Some("token_exchange".into()),
+            strategy: Some(DelegationStrategy::TokenExchange),
             ..Default::default()
         });
 
@@ -140,6 +174,25 @@ mod tests {
     }
 
     #[test]
+    fn test_strategy_serde_known_and_custom() {
+        // Known variant serializes as snake_case string.
+        let known = DelegationStrategy::TokenExchange;
+        let json = serde_json::to_string(&known).unwrap();
+        assert_eq!(json, "\"token_exchange\"");
+        let back: DelegationStrategy = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, DelegationStrategy::TokenExchange);
+
+        // Custom variant serializes as a bare string (untagged).
+        let custom = DelegationStrategy::Custom("in_house_mint".into());
+        let json = serde_json::to_string(&custom).unwrap();
+        assert_eq!(json, "\"in_house_mint\"");
+        // Deserializing a string that doesn't match a known variant falls
+        // through to Custom — the escape hatch.
+        let back: DelegationStrategy = serde_json::from_str("\"in_house_mint\"").unwrap();
+        assert_eq!(back, DelegationStrategy::Custom("in_house_mint".into()));
+    }
+
+    #[test]
     fn test_delegation_serde_roundtrip() {
         let mut del = DelegationExtension {
             origin_subject_id: Some("alice".into()),
@@ -148,7 +201,7 @@ mod tests {
         };
         del.append_hop(DelegationHop {
             subject_id: "alice".into(),
-            subject_type: Some("user".into()),
+            subject_type: Some(SubjectType::User),
             scopes_granted: vec!["admin".into()],
             from_cache: true,
             ..Default::default()

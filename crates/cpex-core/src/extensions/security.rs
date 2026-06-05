@@ -8,7 +8,9 @@
 
 use std::collections::{HashMap, HashSet};
 
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use super::monotonic::MonotonicSet;
 
@@ -106,41 +108,179 @@ pub struct DataPolicy {
     pub retention: Option<RetentionPolicy>,
 }
 
-/// This agent's own workload identity.
+/// Trust classification for the OAuth client / gateway that brokered
+/// the request. Distinct from the *user's* subject identity — the same
+/// human can connect through a first-party browser flow or a
+/// third-party agent, and policies often want to distinguish them.
 ///
-/// Distinct from `SubjectExtension` which represents the *caller*.
-/// `AgentIdentity` represents *this agent/service* — its own
-/// workload identity, OAuth client_id, and trust domain.
+/// `Custom(String)` lets operators carry a finer-grained vocabulary
+/// (e.g. `"partner-tier-A"`) without forking the type. The enum is
+/// `#[non_exhaustive]` so new well-known variants can be added later
+/// without breaking external matches.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ClientTrustLevel {
+    /// First-party clients operated by the same org as this gateway.
+    FirstParty,
+    /// External third-party clients, integrated but not operated by us.
+    ThirdParty,
+    /// Internal infrastructure clients (control plane, ops tooling).
+    Internal,
+    /// Operator-defined trust level — string carried verbatim into
+    /// policy. Lookups by value (Hash + Eq) work as long as both
+    /// sides construct identical strings.
+    #[serde(untagged)]
+    Custom(String),
+}
+
+impl Default for ClientTrustLevel {
+    /// Default to the most restrictive well-known level so a
+    /// missing-or-misconfigured client doesn't silently inherit
+    /// first-party privileges.
+    fn default() -> Self {
+        ClientTrustLevel::ThirdParty
+    }
+}
+
+/// The OAuth client / gateway-access principal — *what application*
+/// is brokering the request, as opposed to *which user* is using it
+/// (`SubjectExtension`) and *which attested workload* is the network
+/// peer (`WorkloadIdentity`). Populated from a client-credentials or
+/// session JWT by an identity-resolver plugin (or supplied directly
+/// by a trusted upstream gateway).
 ///
-/// Populated by the host before the pipeline runs. Plugins can
-/// make decisions based on both who is calling (Subject) and
-/// which agent is processing (AgentIdentity).
-///
-/// Maps to AuthBridge's `AgentIdentity` and the Go bindings'
-/// `SecurityExtension.Agent`.
+/// The shape is deliberately symmetric with `SubjectExtension` —
+/// roles / permissions / teams / claims appear on both. That lets APL
+/// policies write `client.roles.contains("partner")` and
+/// `subject.roles.contains("admin")` with the same idiom; some IdPs
+/// (Keycloak service accounts, Auth0 M2M apps, AWS IAM role grants)
+/// attach RBAC grants to clients directly.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct AgentIdentity {
-    /// OAuth client_id of this agent.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub client_id: Option<String>,
+pub struct ClientExtension {
+    /// OAuth `client_id` — required. Anchor identifier for the client.
+    pub client_id: String,
 
-    /// Workload identity URI (SPIFFE, k8s service account, platform-specific).
-    /// e.g., `spiffe://example.com/ns/team1/sa/weather-tool`
+    /// Human-readable client name from the IdP. Useful for audit logs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub workload_id: Option<String>,
+    pub client_name: Option<String>,
 
-    /// Trust domain of the workload identity.
-    /// e.g., `example.com`
+    /// Trust classification — see [`ClientTrustLevel`].
+    #[serde(default)]
+    pub trust_level: ClientTrustLevel,
+
+    /// OAuth scopes the IdP authorized for this client (across all
+    /// audiences). Policy authors use this to gate on what the IdP
+    /// believes the client is allowed to ask for, before checking
+    /// whether the specific request stays within those scopes.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub authorized_scopes: Vec<String>,
+
+    /// OAuth audiences the IdP authorized this client to address.
+    /// Different IdPs encode this differently; the resolver
+    /// normalizes them into this list.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub authorized_audiences: Vec<String>,
+
+    /// Platform-native RBAC roles attached to the client (Keycloak
+    /// service-account-roles, Auth0 M2M permissions, IAM role grants).
+    /// Distinct from `authorized_scopes` — scopes are OAuth-issued,
+    /// roles are platform-issued.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub roles: Vec<String>,
+
+    /// Platform-native permissions attached to the client.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub permissions: Vec<String>,
+
+    /// Team / tenant / account memberships, for multi-tenant
+    /// platforms that scope clients to organizational units.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub teams: Vec<String>,
+
+    /// Raw remaining JWT claims (or equivalent), keyed by claim name.
+    /// `Value` (not `String`) because claim values can be booleans,
+    /// numbers, nested objects, arrays — policy authors who reach
+    /// here generally know the claim's expected shape.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub claims: HashMap<String, Value>,
+}
+
+/// SPIFFE-style workload identity, used for both inbound callers
+/// (`SecurityExtension.caller_workload` — added in a subsequent slice)
+/// and our own outbound identity (`SecurityExtension.this_workload`).
+///
+/// Distinct from `SubjectExtension` (the human/agent caller) and
+/// `ClientExtension` (the OAuth client, added in a subsequent slice).
+/// Where `Subject` is "who", `Client` is "what app", `Workload` is
+/// "which attested process" — typically established at the network
+/// edge via mTLS or a SPIFFE attestation API and never present on
+/// the same request as an unauthenticated principal.
+///
+/// Populated by the framework / identity-resolver plugin from
+/// attestation evidence. Plugins read it via the `read_workload`
+/// capability.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct WorkloadIdentity {
+    /// SPIFFE-SVID identifier — `spiffe://<trust-domain>/<path>`.
+    /// Set when the workload presented a SPIFFE-SVID (X.509 or JWT)
+    /// or otherwise carries a SPIFFE-shaped identity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spiffe_id: Option<String>,
+
+    /// Trust domain extracted from the SPIFFE-SVID (or supplied by
+    /// the attestation source for non-SPIFFE attestors). Lets policy
+    /// authors gate on the trust boundary without parsing the URI.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trust_domain: Option<String>,
+
+    /// When the attestation was performed. Useful for stale-evidence
+    /// rejection in policy. Populated by the attestor; the framework
+    /// doesn't refresh it on its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attested_at: Option<DateTime<Utc>>,
+
+    /// Name of the attestor that vouched for the workload — `mtls`,
+    /// `spire-agent`, `aws-iid`, `gke-workload-identity`, etc. The
+    /// vocabulary is open; operators document the values they use.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attestor: Option<String>,
+
+    /// SPIFFE workload selectors — `k8s:ns:foo`, `unix:uid:1000`, …
+    /// Empty when no selectors were attached (the SPIFFE-ID alone is
+    /// the workload's identity).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub selectors: Vec<String>,
+
+    /// OAuth client_id, when the workload also carries one. Kept
+    /// alongside SPIFFE so call sites with both shapes (a SPIFFE
+    /// workload that's *also* registered as an OAuth client to a
+    /// dynamic-client-registration IdP) don't have to populate two
+    /// extensions. The OAuth client's authorization data
+    /// (scopes / audiences / claims) lives on the separate
+    /// `ClientExtension` slot, not here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_id: Option<String>,
 }
 
 /// Security-related extensions.
 ///
 /// Carries security labels (monotonic add-only), classification,
-/// authenticated caller identity (subject), this agent's own
-/// workload identity (agent), object security profiles, and
-/// data policies.
+/// up to four distinct identity principals, and data-policy metadata.
+/// The four principal slots map to the identity sources documented in
+/// `docs/specs/delegation-hooks-rust-spec.md` §4.1:
+///
+/// - `subject` — the *user* (or service-as-user) initiating the request
+/// - `client`  — the *OAuth client / application* brokering the request
+/// - `caller_workload` — the *attested workload* on the inbound network
+///                       peer (SPIFFE-SVID, mTLS cert chain)
+/// - `this_workload` — *our own* gateway's attested identity, used for
+///                     outbound calls
+///
+/// A request can populate any subset; identity-resolver plugins are
+/// expected to fill the slots they're configured for. Policy authors
+/// reason about all four uniformly through the `subject.*` /
+/// `client.*` / `caller_workload.*` / `this_workload.*` bag namespaces.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SecurityExtension {
     /// Security labels (monotonic — add-only via MonotonicSet).
@@ -152,14 +292,31 @@ pub struct SecurityExtension {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub classification: Option<String>,
 
-    /// Authenticated caller identity (who is calling).
+    /// Authenticated *user* identity (who is calling).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subject: Option<SubjectExtension>,
 
-    /// This agent's own workload identity (who this agent is).
-    /// Populated by the host, not by plugins.
+    /// Authenticated *OAuth client / application* brokering the
+    /// request. Distinct from `subject` — the same user can connect
+    /// through different clients (first-party web, third-party
+    /// integration), and policies sometimes want to gate on which.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub agent: Option<AgentIdentity>,
+    pub client: Option<ClientExtension>,
+
+    /// The inbound caller's attested workload identity — the network
+    /// peer's SPIFFE-SVID or mTLS-attested identity. Distinct from
+    /// `client` (the OAuth-layer identity of the application) and
+    /// `subject` (the user). All three can be present on the same
+    /// request when an agent acts on behalf of a user through our
+    /// gateway, peered via mTLS.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caller_workload: Option<WorkloadIdentity>,
+
+    /// This agent / gateway's own workload identity — the SPIFFE-SVID
+    /// or attested identity *we* present when making outbound calls.
+    /// Populated by the host at startup, not per request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub this_workload: Option<WorkloadIdentity>,
 
     /// Authentication method used (e.g., "jwt", "mtls", "spiffe", "api_key").
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -229,30 +386,38 @@ mod tests {
     }
 
     #[test]
-    fn test_agent_identity() {
-        let agent = AgentIdentity {
-            client_id: Some("weather-agent".into()),
-            workload_id: Some("spiffe://example.com/ns/team1/sa/weather-tool".into()),
+    fn test_workload_identity() {
+        let w = WorkloadIdentity {
+            spiffe_id: Some("spiffe://example.com/ns/team1/sa/weather-tool".into()),
             trust_domain: Some("example.com".into()),
+            attestor: Some("spire-agent".into()),
+            selectors: vec!["k8s:ns:team1".into(), "k8s:sa:weather-tool".into()],
+            client_id: Some("weather-agent".into()),
+            ..Default::default()
         };
-        assert_eq!(agent.client_id.as_deref(), Some("weather-agent"));
         assert_eq!(
-            agent.workload_id.as_deref(),
+            w.spiffe_id.as_deref(),
             Some("spiffe://example.com/ns/team1/sa/weather-tool")
         );
-        assert_eq!(agent.trust_domain.as_deref(), Some("example.com"));
+        assert_eq!(w.trust_domain.as_deref(), Some("example.com"));
+        assert_eq!(w.attestor.as_deref(), Some("spire-agent"));
+        assert_eq!(w.selectors.len(), 2);
+        assert_eq!(w.client_id.as_deref(), Some("weather-agent"));
     }
 
     #[test]
-    fn test_agent_identity_default() {
-        let agent = AgentIdentity::default();
-        assert!(agent.client_id.is_none());
-        assert!(agent.workload_id.is_none());
-        assert!(agent.trust_domain.is_none());
+    fn test_workload_identity_default() {
+        let w = WorkloadIdentity::default();
+        assert!(w.spiffe_id.is_none());
+        assert!(w.trust_domain.is_none());
+        assert!(w.attested_at.is_none());
+        assert!(w.attestor.is_none());
+        assert!(w.selectors.is_empty());
+        assert!(w.client_id.is_none());
     }
 
     #[test]
-    fn test_security_with_agent_and_subject() {
+    fn test_security_with_this_workload_and_subject() {
         let sec = SecurityExtension {
             labels: {
                 let mut l = super::super::MonotonicSet::new();
@@ -265,10 +430,11 @@ mod tests {
                 subject_type: Some(SubjectType::User),
                 ..Default::default()
             }),
-            agent: Some(AgentIdentity {
-                client_id: Some("hr-agent".into()),
-                workload_id: Some("spiffe://corp.com/hr-agent".into()),
+            this_workload: Some(WorkloadIdentity {
+                spiffe_id: Some("spiffe://corp.com/hr-agent".into()),
                 trust_domain: Some("corp.com".into()),
+                client_id: Some("hr-agent".into()),
+                ..Default::default()
             }),
             auth_method: Some("jwt".into()),
             ..Default::default()
@@ -276,13 +442,13 @@ mod tests {
 
         // Caller identity
         assert_eq!(sec.subject.as_ref().unwrap().id.as_deref(), Some("alice"));
-        // Agent identity (distinct from caller)
+        // Our own workload identity (distinct from caller)
         assert_eq!(
-            sec.agent.as_ref().unwrap().client_id.as_deref(),
+            sec.this_workload.as_ref().unwrap().client_id.as_deref(),
             Some("hr-agent")
         );
         assert_eq!(
-            sec.agent.as_ref().unwrap().trust_domain.as_deref(),
+            sec.this_workload.as_ref().unwrap().trust_domain.as_deref(),
             Some("corp.com")
         );
         // Auth method
@@ -296,7 +462,7 @@ mod tests {
         let mut sec = SecurityExtension::default();
         sec.add_label("PII");
         sec.classification = Some("internal".into());
-        sec.agent = Some(AgentIdentity {
+        sec.this_workload = Some(WorkloadIdentity {
             client_id: Some("my-agent".into()),
             ..Default::default()
         });
@@ -308,7 +474,12 @@ mod tests {
         assert!(deserialized.has_label("PII"));
         assert_eq!(deserialized.classification.as_deref(), Some("internal"));
         assert_eq!(
-            deserialized.agent.as_ref().unwrap().client_id.as_deref(),
+            deserialized
+                .this_workload
+                .as_ref()
+                .unwrap()
+                .client_id
+                .as_deref(),
             Some("my-agent")
         );
         assert_eq!(deserialized.auth_method.as_deref(), Some("mtls"));

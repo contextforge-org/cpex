@@ -1,0 +1,190 @@
+# ===============================================================
+# Release FFI - Build, sign, and publish libcpex_ffi.a artifacts
+# ===============================================================
+#
+# Triggered by semver-strict tag pushes. Matrix-builds the FFI
+# static library for the supported target tuples, packages each into
+# a tarball with VERSION / FFI_ABI / LICENSE metadata, signs every
+# tarball + the aggregate SHA256SUMS with cosign keyless (Sigstore),
+# and attaches everything to the GitHub Release for the tag.
+#
+# See crates/cpex-ffi/RELEASE.md for the artifact schema and the
+# consumer-side verify-and-unpack recipe.
+
+name: Release FFI
+
+on:
+  push:
+    tags:
+      # Semver-strict. Two patterns so vMAJOR.MINOR.PATCH (release)
+      # and vMAJOR.MINOR.PATCH-<prerelease> (rc / beta / ffi.test)
+      # both fire, while loose `v*` matches (vendor-bump, v1, v-foo)
+      # and the legacy non-prefixed tags (0.1.0, plugins.dev1) do not.
+      # Dry-run tags like v0.0.0-ffi.test.1 deliberately hit the
+      # prerelease branch.
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+      - 'v[0-9]+.[0-9]+.[0-9]+-*'
+  workflow_dispatch:
+
+# id-token: write is what unlocks Sigstore keyless signing (Fulcio
+# reads the GHA OIDC token to issue the short-lived signing cert).
+# contents: write is needed to create / upload to the GitHub Release.
+permissions:
+  contents: write
+  id-token: write
+
+# Prevent concurrent runs on the same tag from racing the release
+# creation. Tag pushes are one-shot, so this is belt-and-suspenders.
+concurrency:
+  group: release-ffi-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false  # one tuple failing should not cancel the others
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-22.04-arm
+          - target: x86_64-unknown-linux-musl
+            runner: ubuntu-latest
+          - target: aarch64-unknown-linux-musl
+            runner: ubuntu-22.04-arm
+          - target: aarch64-apple-darwin
+            runner: macos-14
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        # dtolnay/rust-toolchain is the de-facto rustup action.
+        # `stable` picks the latest stable; pin if we need a floor.
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+        with:
+          # Share cache across tags (the key includes the target +
+          # Cargo.lock hash by default). Significant speedup on
+          # subsequent releases of the same target.
+          key: ${{ matrix.target }}
+
+      - name: Install musl toolchain
+        # ring (via jsonwebtoken/rustls/quinn) compiles C + asm through
+        # cc-rs, which for a *-unknown-linux-musl target shells out to
+        # <arch>-linux-musl-gcc. The runners ship only the glibc gcc, so
+        # we install musl-gcc here. The matrix runs each musl target on
+        # its native-arch runner, so musl-gcc targets the host arch and
+        # the CC_/LINKER env vars below redirect cc-rs and the linker to
+        # it. Scoped to the musl legs; gnu/darwin use their default cc.
+        if: contains(matrix.target, 'musl')
+        run: sudo apt-get update && sudo apt-get install -y musl-tools musl-dev
+
+      - name: Build artifact
+        env:
+          TARGET: ${{ matrix.target }}
+          # VERSION drops the leading "refs/tags/" so the tarball
+          # name matches the tag verbatim.
+          VERSION: ${{ github.ref_name }}
+          DIST_DIR: dist
+          # Point cc-rs and the linker at musl-gcc for the musl targets.
+          # No-ops for gnu/darwin (those triples don't match these keys).
+          CC_x86_64_unknown_linux_musl: musl-gcc
+          CC_aarch64_unknown_linux_musl: musl-gcc
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
+        run: bash scripts/release/build-artifact.sh
+
+      - name: Upload tarball + sha256
+        uses: actions/upload-artifact@v4
+        with:
+          # Unique per-target name so the download step in
+          # sign-and-release can merge them all into one dist/.
+          name: cpex-ffi-${{ github.ref_name }}-${{ matrix.target }}
+          path: dist/cpex-ffi-*
+          if-no-files-found: error
+          retention-days: 7
+
+  sign-and-release:
+    name: Sign and publish release
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download all matrix artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          # merge-multiple flattens the per-target subdirs into one
+          # dist/ so the sign script and gh release upload see a
+          # flat layout.
+          merge-multiple: true
+
+      - name: Generate aggregate SHA256SUMS
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          cd dist
+          # Concat all individual .sha256 files into one signed
+          # integrity manifest. The per-tarball .sha256 files stay
+          # as convenience companions, but the SHA256SUMS file is
+          # what auditors care about.
+          : > "cpex-ffi-${VERSION}-SHA256SUMS"
+          for f in cpex-ffi-*.tar.gz; do
+              if command -v sha256sum >/dev/null; then
+                  sha256sum "$f" >> "cpex-ffi-${VERSION}-SHA256SUMS"
+              else
+                  shasum -a 256 "$f" >> "cpex-ffi-${VERSION}-SHA256SUMS"
+              fi
+          done
+          echo "--- SHA256SUMS ---"
+          cat "cpex-ffi-${VERSION}-SHA256SUMS"
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign artifacts
+        env:
+          DIST_DIR: dist
+        run: bash scripts/release/sign-artifact.sh
+
+      - name: Create or update GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          # Auto-detect prerelease by suffix so dry-run tags
+          # (v0.0.0-ffi.test.1) land as prereleases and don't surface
+          # as "latest" on the repo's Releases page.
+          PRERELEASE_FLAG=""
+          if [[ "$TAG" == *-* ]]; then
+              PRERELEASE_FLAG="--prerelease"
+          fi
+
+          # Idempotent: if the release exists, upload --clobber the
+          # new files; if it doesn't, create it with the tarballs +
+          # SHA256SUMS + sigs in one shot.
+          if gh release view "$TAG" >/dev/null 2>&1; then
+              echo "Release $TAG exists; uploading artifacts with --clobber"
+              gh release upload "$TAG" dist/cpex-ffi-* --clobber
+          else
+              echo "Creating release $TAG"
+              gh release create "$TAG" \
+                  --title "$TAG" \
+                  --notes "Automated FFI artifact release. See crates/cpex-ffi/RELEASE.md for the schema and verify-and-consume recipe." \
+                  $PRERELEASE_FLAG \
+                  dist/cpex-ffi-*
+          fi

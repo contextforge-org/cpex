@@ -1,0 +1,63 @@
+# Location: ./crates/apl-pdp-cedar-direct/Cargo.toml
+# Copyright 2025
+# SPDX-License-Identifier: Apache-2.0
+# Authors: Teryl Taylor
+#
+# apl-pdp-cedar-direct — a `PdpResolver` implementation that wraps the bare
+# `cedar-policy` crate (Amazon's Cedar engine, no JWT validation, no policy
+# store loading, no Lock Server integration).
+#
+# When to use this crate vs `apl-pdp-cedarling`:
+#
+#   - **cedar-direct** — host already has identity validated (via gateway,
+#     SPIFFE, prior plugin, or hand-rolled JWT validation); policies are
+#     loaded as text/files at startup and don't change at runtime; smallest
+#     dep tree; ~5 transitive crates instead of 200+.
+#   - **cedarling** — host wants JWT validation + claims-to-entity mapping
+#     + centralized policy management (Janssen Lock Server) all in one
+#     library.
+#
+# Both crates speak Cedar 4.x; their decisions on identical policy + entity
+# + request inputs are byte-identical. The difference is what's around the
+# Cedar engine.
+
+[package]
+name = "apl-pdp-cedar-direct"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+apl-core = { path = "../apl-core" }
+# Permissive caret spec — `"4"` means "any 4.x that Cargo can find."
+# We rely on Cargo's standard version resolution to dedup with
+# cedarling's `cedar-policy = "4.9.0"` (also caret), so both crates
+# end up compiling against the same `cedar-policy` version (currently
+# 4.11 — bumps automatically when either side allows a newer 4.x).
+# This matters because mixing `cedar_policy@4.9::Decision` and
+# `cedar_policy@4.11::Decision` in the same workspace would produce
+# distinct types Rust treats as incompatible.
+#
+# Code-side note: we use `Request::new(...)` (added in 4.11 alongside
+# the deprecated builder; still available in older 4.x via the
+# constructor form). Tracked separately if we ever need to support
+# pre-4.x or post-5.x.
+cedar-policy = "4"
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+# End-to-end integration tests wire the cedar-direct factory through the
+# apl-cpex visitor and exercise it against a real `PluginManager`. These
+# dev-dep edges only exist for tests — the crate itself stays
+# apl-core-only at compile time so it can be used standalone (e.g. in a
+# custom orchestrator that doesn't go through apl-cpex at all).
+apl-cmf = { path = "../apl-cmf" }
+apl-cpex = { path = "../apl-cpex" }
+cpex-core = { path = "../cpex-core" }
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }
