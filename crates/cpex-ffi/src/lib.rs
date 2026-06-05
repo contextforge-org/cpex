@@ -22,6 +22,7 @@ use cpex_core::context::PluginContextTable;
 use cpex_core::executor::BackgroundTasks;
 use cpex_core::extensions::Extensions;
 use cpex_core::hooks::payload::PluginPayload;
+use cpex_core::identity::IdentityPayload;
 use cpex_core::manager::PluginManager;
 
 // APL governance wiring — the `cpex_apl_install` extern "C" entry point.
@@ -321,6 +322,14 @@ where
 /// Payload type IDs — must match Go constants.
 pub const PAYLOAD_GENERIC: u8 = 0;
 pub const PAYLOAD_CMF_MESSAGE: u8 = 1;
+/// `IdentityPayload` — the input/output state of the `identity.resolve`
+/// hook. Lets non-Rust hosts (the Go bindings) drive identity resolution
+/// over the FFI: send the request headers in, read the resolved
+/// `subject` / `client` / `raw_credentials` back out. Without this an
+/// FFI host can't run `identity.resolve` (its payload is neither a
+/// generic value nor a CMF message), so per-route APL gates that read
+/// `subject.*` never see a principal.
+pub const PAYLOAD_IDENTITY: u8 = 2;
 
 /// Deserialize a MessagePack payload based on its type ID.
 /// Array-indexed — O(1) lookup, zero allocation.
@@ -335,6 +344,11 @@ fn deserialize_payload(payload_type: u8, bytes: &[u8]) -> Result<Box<dyn PluginP
             let msg: cpex_core::cmf::MessagePayload = rmp_serde::from_slice(bytes)
                 .map_err(|e| format!("CMF payload deserialize failed: {}", e))?;
             Ok(Box::new(msg))
+        }
+        PAYLOAD_IDENTITY => {
+            let idp: IdentityPayload = rmp_serde::from_slice(bytes)
+                .map_err(|e| format!("identity payload deserialize failed: {}", e))?;
+            Ok(Box::new(idp))
         }
         _ => Err(format!("unknown payload type: {}", payload_type)),
     }
@@ -366,6 +380,13 @@ fn serialize_payload(payload: &dyn PluginPayload) -> Result<(u8, Vec<u8>), Strin
         return rmp_serde::to_vec_named(&gp.value)
             .map(|b| (PAYLOAD_GENERIC, b))
             .map_err(|e| format!("generic payload serialize failed: {e}"));
+    }
+    // Try IdentityPayload — carries the resolved subject/client/raw
+    // credentials back to an FFI host after `identity.resolve`.
+    if let Some(idp) = payload.as_any().downcast_ref::<IdentityPayload>() {
+        return rmp_serde::to_vec_named(idp)
+            .map(|b| (PAYLOAD_IDENTITY, b))
+            .map_err(|e| format!("identity payload serialize failed: {e}"));
     }
     Err("unknown payload type, cannot serialize across FFI".to_string())
 }
