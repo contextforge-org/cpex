@@ -4,7 +4,7 @@
 // Authors: Shriti Priya
 //
 // Demonstrates invoking a WASM plugin through the PluginManager pipeline.
-// Reads plugin configuration from config/config_wasm_sandbox.yaml.
+// Reads plugin configuration from config/config.yaml.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -25,7 +25,7 @@ async fn main() {
     // 1. Create plugin manager and register wasm factory under the exact kind string.
     //    Each plugin gets its own isolated SandboxManager instance.
     let crate_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let config_path = crate_dir.join("config/config_wasm_sandbox.yaml");
+    let config_path = crate_dir.join("config/config.yaml");
     println!("--- Loading config from {} ---\n", config_path.display());
     let yaml = std::fs::read_to_string(&config_path)
         .unwrap_or_else(|e| panic!("Failed to read {}: {}", config_path.display(), e));

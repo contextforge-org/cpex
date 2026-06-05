@@ -20,18 +20,23 @@ use wasmtime_wasi_http::p2::types::{HostFutureIncomingResponse, OutgoingRequestC
 use wasmtime_wasi_http::p2::{HttpResult, WasiHttpHooks, default_send_request};
 use wasmtime_wasi_http::p2::bindings::http::types::ErrorCode;
 
-use crate::policy_loader::{build_wasi_context, SandboxConfig};
+use crate::policy_loader::{build_wasi_context, SandboxPolicy, ResourceLimits};
 
+// Generate Rust bindings from the WIT interface definition.
+// This creates the `Plugin` struct with `call_handle_hook` and the WIT types.
 wasmtime::component::bindgen!({
     path: "wit",
     world: "plugin",
     exports: { default: async },
 });
 
+/// Re-export WIT-generated types for use by the factory and conversions modules.
 pub mod types {
     pub use super::cpex::plugin::types::*;
 }
 
+/// Intercepts outbound HTTP requests from the WASM plugin and enforces the network allow-list.
+/// Only requests to explicitly allowed hosts (or their subdomains) are permitted.
 struct NetworkPolicy {
     allowed_hosts: Arc<Vec<String>>,
 }
@@ -42,12 +47,14 @@ impl WasiHttpHooks for NetworkPolicy {
         request: hyper::Request<HyperOutgoingBody>,
         config: OutgoingRequestConfig,
     ) -> HttpResult<HostFutureIncomingResponse> {
+        // Extract the target host from the request URI
         let authority = request
             .uri()
             .authority()
             .map(|a| a.host().to_string())
             .unwrap_or_default();
 
+        // Check exact match or subdomain match (e.g., "api.example.com" matches "example.com")
         let is_allowed = self.allowed_hosts.iter().any(|allowed| {
             authority == *allowed || authority.ends_with(&format!(".{}", allowed))
         });
@@ -60,6 +67,8 @@ impl WasiHttpHooks for NetworkPolicy {
     }
 }
 
+/// Per-plugin state held in the wasmtime Store.
+/// Contains WASI context, HTTP context, network policy, resource table, and store limits.
 struct WasmPluginState {
     wasi: WasiCtx,
     http: WasiHttpCtx,
@@ -87,9 +96,11 @@ impl WasiHttpView for WasmPluginState {
     }
 }
 
+/// A loaded and instantiated WASM plugin, ready for invocation.
 struct WasmPluginInstance {
     store: Store<WasmPluginState>,
     plugin: Plugin,
+    /// Epoch ticks before the store traps (used to reset timeout per invocation)
     epoch_deadline: u64,
 }
 
@@ -128,17 +139,20 @@ impl SandboxManager {
         })
     }
 
-    /// Load a plugin from a WASM file with the given sandbox config.
+    /// Load a plugin from a WASM file with the given sandbox policy.
     /// Replaces any previously loaded plugin.
     pub async fn load_wasmplugin(
         &mut self,
         wasm_path: &Path,
-        sandbox_config: SandboxConfig,
+        sandbox_policy: Option<&SandboxPolicy>,
     ) -> Result<()> {
         eprintln!("[SANDBOX] load_wasmplugin: path={}", wasm_path.display());
-        let ctx = build_wasi_context(&sandbox_config)?;
+        let ctx = build_wasi_context(sandbox_policy)?;
         eprintln!("[SANDBOX] WASI context built");
-        let resources = &sandbox_config.resources;
+        let default_resources = ResourceLimits::default();
+        let resources = sandbox_policy
+            .map(|p| &p.resources)
+            .unwrap_or(&default_resources);
 
         // Build store limits from resource config
         let mut limits_builder = StoreLimitsBuilder::new();

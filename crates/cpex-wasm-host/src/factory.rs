@@ -24,7 +24,6 @@ use cpex_core::plugin::{Plugin, PluginConfig};
 use cpex_core::registry::AnyHookHandler;
 
 use crate::conversions::{native_context_to_wit, native_extensions_to_wit, native_payload_to_wit, wit_result_to_native};
-use crate::policy_loader::SandboxConfig;
 use crate::sandbox_manager::SandboxManager;
 
 // ---------------------------------------------------------------------------
@@ -60,23 +59,20 @@ impl PluginFactory for WasmPluginFactory {
 
         let wasm_path = self.wasm_dir.join(wasm_filename);
 
-        // Build sandbox config from plugin's config field.
-        // Looks for a "sandbox_policy" key in config.config (the opaque JSON value).
+        // Extract sandbox policy from plugin's config field.
         // If absent, deny-by-default applies (no filesystem, no network, no env vars).
-        let sandbox_config = config
+        let sandbox_policy = config
             .config
             .as_ref()
             .and_then(|v| v.get("sandbox_policy"))
-            .and_then(|v| serde_json::from_value::<crate::policy_loader::SandboxPolicy>(v.clone()).ok())
-            .map(|policy| SandboxConfig::from_policy(Some(&policy)))
-            .unwrap_or_default();
+            .and_then(|v| serde_json::from_value::<crate::policy_loader::SandboxPolicy>(v.clone()).ok());
 
         // Create a new SandboxManager for this plugin (isolated engine + store)
         let sandbox = tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current().block_on(async {
                 let mut mgr = SandboxManager::new()
                     .map_err(|e| format!("failed to create sandbox: {}", e))?;
-                mgr.load_wasmplugin(&wasm_path, sandbox_config)
+                mgr.load_wasmplugin(&wasm_path, sandbox_policy.as_ref())
                     .await
                     .map_err(|e| format!("failed to load WASM: {}", e))?;
                 Ok::<_, String>(mgr)
