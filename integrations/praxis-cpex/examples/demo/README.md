@@ -370,7 +370,7 @@ Alice has `role.engineer` (not `role.hr`). Expected:
 
 | Gateway | Backend |
 |---|---|
-| `HTTP 200` + JSON-RPC error envelope `{"error":{"code":-32001,"message":"denied by APL","data":{"violation":"routes.tool:get_compensation.apl.policy[0]"}}}` | **No request reaches the backend** — `require(role.hr)` short-circuits before delegation runs. The mock IdP never sees a token-exchange call either. |
+| `HTTP 200` + JSON-RPC error envelope `{"error":{"code":-32001,"message":"access denied","data":{"violation":"routes.tool:get_compensation.apl.policy[0]"}}}` | **No request reaches the backend** — `require(role.hr)` short-circuits before delegation runs. The mock IdP never sees a token-exchange call either. |
 
 #### Why HTTP 200 + JSON-RPC error (not HTTP 403)
 

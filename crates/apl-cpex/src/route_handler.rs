@@ -391,7 +391,7 @@ impl AnyHookHandler for AplRouteHandler {
                 } else {
                     rule_source
                 };
-                let reason = reason.unwrap_or_else(|| "denied by APL".to_string());
+                let reason = reason.unwrap_or_else(|| "access denied".to_string());
                 (false, Some(PluginViolation::new(code, reason)))
             }
         };
