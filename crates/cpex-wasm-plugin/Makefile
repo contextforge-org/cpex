@@ -1,22 +1,21 @@
-.PHONY: build build-identity build-audit build-headers clean
+.PHONY: build validate inspect clean
 
 TARGET = wasm32-wasip2
 WORKSPACE_TARGET_DIR = ../../target
+WASM_HOST_DIR = ../cpex-wasm-host/wasm
 
-build: build-identity build-audit build-headers
+build:
+	cargo build --target $(TARGET) --release
+	cp $(WORKSPACE_TARGET_DIR)/$(TARGET)/release/cpex_wasm_plugin.wasm plugin.wasm
+	cp plugin.wasm $(WASM_HOST_DIR)/
 
-build-identity:
-	cargo build --target $(TARGET) --release --features identity-checker
-	cp $(WORKSPACE_TARGET_DIR)/$(TARGET)/release/cpex_wasm_plugin.wasm identity_checker.wasm
+validate: plugin.wasm
+	wasm-tools validate plugin.wasm
+	@echo "plugin.wasm is valid"
 
-build-audit:
-	cargo build --target $(TARGET) --release --features audit-logger
-	cp $(WORKSPACE_TARGET_DIR)/$(TARGET)/release/cpex_wasm_plugin.wasm audit_logger.wasm
-
-build-headers:
-	cargo build --target $(TARGET) --release --features header-injector
-	cp $(WORKSPACE_TARGET_DIR)/$(TARGET)/release/cpex_wasm_plugin.wasm header_injector.wasm
+inspect: plugin.wasm
+	wasm-tools component wit plugin.wasm
 
 clean:
 	cargo clean
-	rm -f identity_checker.wasm audit_logger.wasm header_injector.wasm
+	rm -f plugin.wasm

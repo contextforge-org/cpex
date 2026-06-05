@@ -1,3 +1,12 @@
+// Location: ./crates/cpex-wasm-plugin/src/conversions.rs
+// Copyright 2025
+// SPDX-License-Identifier: Apache-2.0
+// Authors: Shriti Priya
+//
+// Bidirectional type conversions between WIT-generated types and native cpex-payload types.
+// WIT types are flat/serialized (e.g., JSON strings for maps), while native types use
+// proper Rust collections (HashMap, HashSet, Vec).
+
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
@@ -23,12 +32,14 @@ use crate::cpex::plugin::types::*;
 // WIT → Native: MessagePayload
 // ---------------------------------------------------------------------------
 
+/// Converts a WIT MessagePayload into the native cpex-payload MessagePayload.
 pub fn wit_payload_to_native(payload: MessagePayload) -> native_msg::MessagePayload {
     native_msg::MessagePayload {
         message: wit_message_to_native(payload.message),
     }
 }
 
+/// Converts a WIT Message (role, content parts, channel) into native Message.
 fn wit_message_to_native(msg: Message) -> native_msg::Message {
     native_msg::Message {
         schema_version: msg.schema_version,
@@ -38,6 +49,7 @@ fn wit_message_to_native(msg: Message) -> native_msg::Message {
     }
 }
 
+/// Maps WIT Role enum to native Role enum.
 fn wit_role_to_native(role: Role) -> native_enums::Role {
     match role {
         Role::System => native_enums::Role::System,
@@ -48,6 +60,7 @@ fn wit_role_to_native(role: Role) -> native_enums::Role {
     }
 }
 
+/// Maps WIT Channel enum to native Channel enum.
 fn wit_channel_to_native(channel: Channel) -> native_enums::Channel {
     match channel {
         Channel::Analysis => native_enums::Channel::Analysis,
@@ -56,6 +69,8 @@ fn wit_channel_to_native(channel: Channel) -> native_enums::Channel {
     }
 }
 
+/// Converts each WIT ContentPart variant to its native equivalent.
+/// Handles all 12 content types (text, thinking, tool-call, tool-result, etc.).
 fn wit_content_part_to_native(part: ContentPart) -> native_content::ContentPart {
     match part {
         ContentPart::Text(text) => native_content::ContentPart::Text { text },
@@ -112,6 +127,7 @@ fn wit_content_part_to_native(part: ContentPart) -> native_content::ContentPart 
     }
 }
 
+/// Deserializes the JSON arguments string into a HashMap for the native ToolCall.
 fn wit_tool_call_to_native(tc: ToolCall) -> native_content::ToolCall {
     let arguments: HashMap<String, serde_json::Value> =
         serde_json::from_str(&tc.arguments).unwrap_or_default();
@@ -123,6 +139,7 @@ fn wit_tool_call_to_native(tc: ToolCall) -> native_content::ToolCall {
     }
 }
 
+/// Deserializes the JSON content string into a serde_json::Value for the native ToolResult.
 fn wit_tool_result_to_native(tr: ToolResult) -> native_content::ToolResult {
     let content: serde_json::Value =
         serde_json::from_str(&tr.content).unwrap_or(serde_json::Value::String(tr.content.clone()));
@@ -134,6 +151,7 @@ fn wit_tool_result_to_native(tr: ToolResult) -> native_content::ToolResult {
     }
 }
 
+/// Converts a WIT CmfResource to native Resource, deserializing the annotations JSON string.
 fn wit_resource_to_native(r: CmfResource) -> native_content::Resource {
     let annotations: HashMap<String, serde_json::Value> =
         serde_json::from_str(&r.annotations).unwrap_or_default();
@@ -152,6 +170,7 @@ fn wit_resource_to_native(r: CmfResource) -> native_content::Resource {
     }
 }
 
+/// Maps WIT ResourceType enum to native ResourceType enum.
 fn wit_resource_type_to_native(rt: ResourceType) -> native_enums::ResourceType {
     match rt {
         ResourceType::File => native_enums::ResourceType::File,
@@ -164,6 +183,7 @@ fn wit_resource_type_to_native(rt: ResourceType) -> native_enums::ResourceType {
     }
 }
 
+/// Converts a WIT ResourceReference to native ResourceReference.
 fn wit_resource_ref_to_native(rr: ResourceReference) -> native_content::ResourceReference {
     native_content::ResourceReference {
         resource_request_id: rr.resource_request_id,
@@ -176,6 +196,7 @@ fn wit_resource_ref_to_native(rr: ResourceReference) -> native_content::Resource
     }
 }
 
+/// Converts a WIT PromptRequest to native, deserializing the arguments JSON string.
 fn wit_prompt_request_to_native(pr: PromptRequest) -> native_content::PromptRequest {
     let arguments: HashMap<String, serde_json::Value> =
         serde_json::from_str(&pr.arguments).unwrap_or_default();
@@ -187,6 +208,7 @@ fn wit_prompt_request_to_native(pr: PromptRequest) -> native_content::PromptRequ
     }
 }
 
+/// Converts a WIT PromptResult to native, deserializing the messages JSON string into Vec<Message>.
 fn wit_prompt_result_to_native(pr: PromptResult) -> native_content::PromptResult {
     let messages: Vec<native_msg::Message> =
         serde_json::from_str(&pr.messages).unwrap_or_default();
@@ -204,6 +226,7 @@ fn wit_prompt_result_to_native(pr: PromptResult) -> native_content::PromptResult
 // WIT → Native: Extensions
 // ---------------------------------------------------------------------------
 
+/// Converts WIT Extensions to native Extensions, wrapping each sub-extension in Arc.
 pub fn wit_extensions_to_native(ext: Extensions) -> NativeExtensions {
     NativeExtensions {
         request: ext.request.map(|r| Arc::new(wit_request_to_native(r))),
@@ -214,6 +237,7 @@ pub fn wit_extensions_to_native(ext: Extensions) -> NativeExtensions {
     }
 }
 
+/// Converts WIT RequestExtension (environment, request-id, timestamps, tracing) to native.
 fn wit_request_to_native(r: RequestExtension) -> NativeRequestExtension {
     NativeRequestExtension {
         environment: r.environment,
@@ -224,6 +248,7 @@ fn wit_request_to_native(r: RequestExtension) -> NativeRequestExtension {
     }
 }
 
+/// Converts WIT SecurityExtension to native, rebuilding MonotonicSet from the labels list.
 fn wit_security_to_native(s: SecurityExtension) -> NativeSecurityExtension {
     NativeSecurityExtension {
         labels: MonotonicSet::from_set(s.labels.into_iter().collect()),
@@ -234,6 +259,7 @@ fn wit_security_to_native(s: SecurityExtension) -> NativeSecurityExtension {
     }
 }
 
+/// Converts WIT SubjectExtension to native, collecting lists into HashSets/HashMaps.
 fn wit_subject_to_native(s: SubjectExtension) -> NativeSubjectExtension {
     NativeSubjectExtension {
         id: s.id,
@@ -245,6 +271,7 @@ fn wit_subject_to_native(s: SubjectExtension) -> NativeSubjectExtension {
     }
 }
 
+/// Maps WIT SubjectType enum to native SubjectType enum.
 fn wit_subject_type_to_native(st: SubjectType) -> NativeSubjectType {
     match st {
         SubjectType::User => NativeSubjectType::User,
@@ -254,6 +281,7 @@ fn wit_subject_type_to_native(st: SubjectType) -> NativeSubjectType {
     }
 }
 
+/// Converts WIT HttpExtension (list of tuples) to native (HashMap-based headers).
 fn wit_http_to_native(h: HttpExtension) -> NativeHttpExtension {
     NativeHttpExtension {
         request_headers: h.request_headers.into_iter().collect::<HashMap<_, _>>(),
@@ -261,6 +289,7 @@ fn wit_http_to_native(h: HttpExtension) -> NativeHttpExtension {
     }
 }
 
+/// Converts WIT MetaExtension to native, collecting lists into HashSets/HashMaps.
 fn wit_meta_to_native(m: MetaExtension) -> NativeMetaExtension {
     NativeMetaExtension {
         entity_type: m.entity_type,
@@ -275,6 +304,7 @@ fn wit_meta_to_native(m: MetaExtension) -> NativeMetaExtension {
 // WIT → Native: PluginContext
 // ---------------------------------------------------------------------------
 
+/// Deserializes the JSON state strings into HashMaps for the native PluginContext.
 pub fn wit_context_to_native(ctx: PluginContext) -> NativePluginContext {
     let local_state = serde_json::from_str(&ctx.local_state).unwrap_or_default();
     let global_state = serde_json::from_str(&ctx.global_state).unwrap_or_default();
@@ -288,6 +318,8 @@ pub fn wit_context_to_native(ctx: PluginContext) -> NativePluginContext {
 // Native → WIT: PluginResult<MessagePayload> → PluginResult (record)
 // ---------------------------------------------------------------------------
 
+/// Converts the native PluginResult back to WIT, including any modified payload,
+/// modified extensions, violation, or metadata.
 pub fn native_result_to_wit(result: NativePluginResult<native_msg::MessagePayload>) -> PluginResult {
     PluginResult {
         continue_processing: result.continue_processing,
@@ -298,6 +330,7 @@ pub fn native_result_to_wit(result: NativePluginResult<native_msg::MessagePayloa
     }
 }
 
+/// Converts a native PluginViolation to WIT, serializing details HashMap to JSON string.
 fn native_violation_to_wit(v: NativePluginViolation) -> PluginViolation {
     PluginViolation {
         code: v.code,
@@ -312,12 +345,14 @@ fn native_violation_to_wit(v: NativePluginViolation) -> PluginViolation {
 // Native → WIT: MessagePayload
 // ---------------------------------------------------------------------------
 
+/// Converts a native MessagePayload back to WIT format for the return value.
 fn native_payload_to_wit(payload: native_msg::MessagePayload) -> MessagePayload {
     MessagePayload {
         message: native_message_to_wit(payload.message),
     }
 }
 
+/// Converts a native Message back to WIT Message.
 fn native_message_to_wit(msg: native_msg::Message) -> Message {
     Message {
         schema_version: msg.schema_version,
@@ -327,6 +362,7 @@ fn native_message_to_wit(msg: native_msg::Message) -> Message {
     }
 }
 
+/// Maps native Role enum to WIT Role enum.
 fn native_role_to_wit(role: native_enums::Role) -> Role {
     match role {
         native_enums::Role::System => Role::System,
@@ -337,6 +373,7 @@ fn native_role_to_wit(role: native_enums::Role) -> Role {
     }
 }
 
+/// Maps native Channel enum to WIT Channel enum.
 fn native_channel_to_wit(channel: native_enums::Channel) -> Channel {
     match channel {
         native_enums::Channel::Analysis => Channel::Analysis,
@@ -345,6 +382,7 @@ fn native_channel_to_wit(channel: native_enums::Channel) -> Channel {
     }
 }
 
+/// Converts each native ContentPart variant back to its WIT equivalent.
 fn native_content_part_to_wit(part: native_content::ContentPart) -> ContentPart {
     match part {
         native_content::ContentPart::Text { text } => ContentPart::Text(text),
@@ -395,6 +433,7 @@ fn native_content_part_to_wit(part: native_content::ContentPart) -> ContentPart 
     }
 }
 
+/// Serializes the native ToolCall arguments HashMap back to a JSON string for WIT.
 fn native_tool_call_to_wit(tc: native_content::ToolCall) -> ToolCall {
     ToolCall {
         tool_call_id: tc.tool_call_id,
@@ -404,6 +443,7 @@ fn native_tool_call_to_wit(tc: native_content::ToolCall) -> ToolCall {
     }
 }
 
+/// Serializes the native ToolResult content Value back to a JSON string for WIT.
 fn native_tool_result_to_wit(tr: native_content::ToolResult) -> ToolResult {
     ToolResult {
         tool_call_id: tr.tool_call_id,
@@ -413,6 +453,7 @@ fn native_tool_result_to_wit(tr: native_content::ToolResult) -> ToolResult {
     }
 }
 
+/// Converts native Resource to WIT CmfResource, serializing annotations to JSON string.
 fn native_resource_to_wit(r: native_content::Resource) -> CmfResource {
     CmfResource {
         resource_request_id: r.resource_request_id,
@@ -429,6 +470,7 @@ fn native_resource_to_wit(r: native_content::Resource) -> CmfResource {
     }
 }
 
+/// Maps native ResourceType enum to WIT ResourceType enum.
 fn native_resource_type_to_wit(rt: native_enums::ResourceType) -> ResourceType {
     match rt {
         native_enums::ResourceType::File => ResourceType::File,
@@ -441,6 +483,7 @@ fn native_resource_type_to_wit(rt: native_enums::ResourceType) -> ResourceType {
     }
 }
 
+/// Converts native ResourceReference to WIT ResourceReference.
 fn native_resource_ref_to_wit(rr: native_content::ResourceReference) -> ResourceReference {
     ResourceReference {
         resource_request_id: rr.resource_request_id,
@@ -453,6 +496,7 @@ fn native_resource_ref_to_wit(rr: native_content::ResourceReference) -> Resource
     }
 }
 
+/// Converts native PromptRequest to WIT, serializing arguments HashMap to JSON string.
 fn native_prompt_request_to_wit(pr: native_content::PromptRequest) -> PromptRequest {
     PromptRequest {
         prompt_request_id: pr.prompt_request_id,
@@ -462,6 +506,7 @@ fn native_prompt_request_to_wit(pr: native_content::PromptRequest) -> PromptRequ
     }
 }
 
+/// Converts native PromptResult to WIT, serializing messages Vec to JSON string.
 fn native_prompt_result_to_wit(pr: native_content::PromptResult) -> PromptResult {
     PromptResult {
         prompt_request_id: pr.prompt_request_id,
@@ -477,6 +522,7 @@ fn native_prompt_result_to_wit(pr: native_content::PromptResult) -> PromptResult
 // Native → WIT: OwnedExtensions → Extensions
 // ---------------------------------------------------------------------------
 
+/// Converts native OwnedExtensions (used in modified results) back to WIT Extensions.
 fn native_owned_extensions_to_wit(
     ext: &cpex_payload::extensions::container::OwnedExtensions,
 ) -> Extensions {
@@ -488,6 +534,7 @@ fn native_owned_extensions_to_wit(
     }
 }
 
+/// Converts native RequestExtension to WIT RequestExtension.
 fn native_request_to_wit(r: &NativeRequestExtension) -> RequestExtension {
     RequestExtension {
         environment: r.environment.clone(),
@@ -498,6 +545,7 @@ fn native_request_to_wit(r: &NativeRequestExtension) -> RequestExtension {
     }
 }
 
+/// Converts native SecurityExtension to WIT, collecting MonotonicSet labels into a list.
 fn native_security_to_wit(s: &NativeSecurityExtension) -> SecurityExtension {
     SecurityExtension {
         labels: s.labels.iter().cloned().collect(),
@@ -507,6 +555,7 @@ fn native_security_to_wit(s: &NativeSecurityExtension) -> SecurityExtension {
     }
 }
 
+/// Converts native SubjectExtension to WIT, collecting HashSets into lists.
 fn native_subject_to_wit(s: &NativeSubjectExtension) -> SubjectExtension {
     SubjectExtension {
         id: s.id.clone(),
@@ -518,6 +567,7 @@ fn native_subject_to_wit(s: &NativeSubjectExtension) -> SubjectExtension {
     }
 }
 
+/// Maps native SubjectType enum to WIT SubjectType enum.
 fn native_subject_type_to_wit(st: &NativeSubjectType) -> SubjectType {
     match st {
         NativeSubjectType::User => SubjectType::User,
@@ -527,6 +577,7 @@ fn native_subject_type_to_wit(st: &NativeSubjectType) -> SubjectType {
     }
 }
 
+/// Converts native HttpExtension (HashMaps) to WIT (list of tuples).
 fn native_http_to_wit(h: &NativeHttpExtension) -> HttpExtension {
     HttpExtension {
         request_headers: h.request_headers.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
@@ -534,6 +585,7 @@ fn native_http_to_wit(h: &NativeHttpExtension) -> HttpExtension {
     }
 }
 
+/// Converts native MetaExtension (HashSets/HashMaps) to WIT (lists of strings/tuples).
 fn native_meta_to_wit(m: &NativeMetaExtension) -> MetaExtension {
     MetaExtension {
         entity_type: m.entity_type.clone(),
