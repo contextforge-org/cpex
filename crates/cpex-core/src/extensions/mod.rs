@@ -12,6 +12,7 @@
 // Mirrors the Python extensions in cpex/framework/extensions/.
 
 pub mod agent;
+pub mod authorization;
 pub mod completion;
 pub mod container;
 pub mod delegation;
@@ -24,6 +25,7 @@ pub mod mcp;
 pub mod meta;
 pub mod monotonic;
 pub mod provenance;
+pub mod raw_credentials;
 pub mod request;
 pub mod security;
 pub mod tiers;
@@ -33,8 +35,9 @@ pub use container::{Extensions, OwnedExtensions};
 
 // Re-export all extension types
 pub use agent::{AgentExtension, ConversationContext};
+pub use authorization::AuthorizationDetail;
 pub use completion::{CompletionExtension, StopReason, TokenUsage};
-pub use delegation::{DelegationExtension, DelegationHop};
+pub use delegation::{DelegationExtension, DelegationHop, DelegationStrategy};
 pub use filter::{filter_extensions, SlotName};
 pub use framework::FrameworkExtension;
 pub use guarded::{Guarded, WriteToken};
@@ -44,9 +47,13 @@ pub use mcp::{MCPExtension, PromptMetadata, ResourceMetadata, ToolMetadata};
 pub use meta::MetaExtension;
 pub use monotonic::{DeclassifierToken, MonotonicSet};
 pub use provenance::ProvenanceExtension;
+pub use raw_credentials::{
+    DelegationKey, DelegationMode, RawCredentialsExtension, RawDelegatedToken, RawInboundToken,
+    TokenKind, TokenRole,
+};
 pub use request::RequestExtension;
 pub use security::{
-    AgentIdentity, DataPolicy, ObjectSecurityProfile, RetentionPolicy, SecurityExtension,
-    SubjectExtension, SubjectType,
+    ClientExtension, ClientTrustLevel, DataPolicy, ObjectSecurityProfile, RetentionPolicy,
+    SecurityExtension, SubjectExtension, SubjectType, WorkloadIdentity,
 };
 pub use tiers::{AccessPolicy, Capability, MutabilityTier, SlotPolicy};

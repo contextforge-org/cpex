@@ -1,0 +1,32 @@
+# Location: ./crates/apl-core/Cargo.toml
+# Copyright 2025
+# SPDX-License-Identifier: Apache-2.0
+# Authors: Teryl Taylor
+#
+# APL core — predicate language, compiler, evaluator.
+# Module structure follows docs/specs/apl-design.md §4.
+
+[package]
+name = "apl-core"
+description = "APL — Attribute Policy Language core (compiler + evaluator)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[lib]
+# Plain rlib; APL is consumed by other workspace crates (apl-cmf, apl-cpex)
+# and does not need cdylib for FFI.
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+thiserror = { workspace = true }
+async-trait = { workspace = true }
+regex = { workspace = true }
+futures = { workspace = true }
+cpex-orchestration = { path = "../cpex-orchestration" }
+
+[dev-dependencies]
+tokio = { workspace = true }

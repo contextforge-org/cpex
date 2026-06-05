@@ -43,8 +43,15 @@ pub enum SlotName {
     SecuritySubjectTeams,
     SecuritySubjectClaims,
     SecuritySubjectPermissions,
+    SecurityClient,
+    SecurityCallerWorkload,
+    SecurityThisWorkload,
     SecurityObjects,
     SecurityData,
+    // Raw credentials sub-slots (Layer 3 — capability-gated, never
+    // visible to out-of-process plugins regardless of cap).
+    RawCredentialsInbound,
+    RawCredentialsDelegated,
 }
 
 /// Get the policy for a given slot.
@@ -167,6 +174,44 @@ pub fn slot_policy(slot: SlotName) -> SlotPolicy {
             read_cap: None,
             write_cap: None,
         },
+        // Identity slots populated by IdentityResolve handlers. Read
+        // gated; write is None because the framework — not plugins —
+        // mutates these slots in response to handler-returned
+        // `IdentityResult` payloads (see `Capability` docstring).
+        SlotName::SecurityClient => SlotPolicy {
+            tier: MutabilityTier::Immutable,
+            access: AccessPolicy::CapabilityGated,
+            read_cap: Some(Capability::ReadClient),
+            write_cap: None,
+        },
+        SlotName::SecurityCallerWorkload => SlotPolicy {
+            tier: MutabilityTier::Immutable,
+            access: AccessPolicy::CapabilityGated,
+            read_cap: Some(Capability::ReadWorkload),
+            write_cap: None,
+        },
+        SlotName::SecurityThisWorkload => SlotPolicy {
+            tier: MutabilityTier::Immutable,
+            access: AccessPolicy::CapabilityGated,
+            read_cap: Some(Capability::ReadWorkload),
+            write_cap: None,
+        },
+        // Layer-3 raw credentials. Granular gating so a forwarding
+        // plugin that only needs delegated tokens never sees inbound
+        // bearer material, and an identity-resolver that only needs
+        // inbound tokens never sees the cached delegated set.
+        SlotName::RawCredentialsInbound => SlotPolicy {
+            tier: MutabilityTier::Immutable,
+            access: AccessPolicy::CapabilityGated,
+            read_cap: Some(Capability::ReadInboundCredentials),
+            write_cap: None,
+        },
+        SlotName::RawCredentialsDelegated => SlotPolicy {
+            tier: MutabilityTier::Immutable,
+            access: AccessPolicy::CapabilityGated,
+            read_cap: Some(Capability::ReadDelegatedTokens),
+            write_cap: None,
+        },
     }
 }
 
@@ -282,7 +327,57 @@ pub fn filter_extensions(extensions: &Extensions, capabilities: &HashSet<String>
         filtered.security = Some(Arc::new(build_filtered_security(security, capabilities)));
     }
 
+    // Raw credentials — granular sub-map filtering. The slot itself
+    // appears in the filtered view iff at least one of the two
+    // sub-caps is held; otherwise the whole slot is `None` so the
+    // plugin can't even observe that credentials exist. When the
+    // slot does appear, only the maps whose caps the plugin holds
+    // are populated; the others are empty.
+    if let Some(ref raw) = extensions.raw_credentials {
+        let inbound_policy = slot_policy(SlotName::RawCredentialsInbound);
+        let delegated_policy = slot_policy(SlotName::RawCredentialsDelegated);
+        let allow_inbound = has_read_access(&inbound_policy, capabilities);
+        let allow_delegated = has_read_access(&delegated_policy, capabilities);
+        if allow_inbound || allow_delegated {
+            filtered.raw_credentials = Some(Arc::new(
+                build_filtered_raw_credentials(raw, allow_inbound, allow_delegated),
+            ));
+        }
+    }
+
     filtered
+}
+
+/// Build a filtered `RawCredentialsExtension` containing only the
+/// sub-maps the plugin can read. `inbound_tokens` and
+/// `delegated_tokens` are gated independently — a forwarding plugin
+/// that only needs to re-attach minted tokens holds
+/// `read_delegated_tokens` and never sees inbound bearer material;
+/// an identity-resolver holds `read_inbound_credentials` and never
+/// sees the cached outbound set.
+///
+/// Token *contents* are also stripped at the serde layer
+/// (`RawInboundToken.token` / `RawDelegatedToken.token` are
+/// `#[serde(skip)]`), so even a serialized snapshot of the filtered
+/// extension produces no bearer material. The capability gate is
+/// belt-and-suspenders.
+fn build_filtered_raw_credentials(
+    raw: &super::raw_credentials::RawCredentialsExtension,
+    allow_inbound: bool,
+    allow_delegated: bool,
+) -> super::raw_credentials::RawCredentialsExtension {
+    super::raw_credentials::RawCredentialsExtension {
+        inbound_tokens: if allow_inbound {
+            raw.inbound_tokens.clone()
+        } else {
+            Default::default()
+        },
+        delegated_tokens: if allow_delegated {
+            raw.delegated_tokens.clone()
+        } else {
+            Default::default()
+        },
+    }
 }
 
 /// Build a filtered SecurityExtension containing only accessible fields.
@@ -298,12 +393,16 @@ fn build_filtered_security(
         objects: security.objects.clone(),
         data: security.data.clone(),
         classification: security.classification.clone(),
-        // Agent identity and auth method — always included (host-set, immutable)
-        agent: security.agent.clone(),
+        // `auth_method` is metadata about how the request authenticated
+        // — useful for audit/branching, never carries credential bytes
+        // — so it's kept unrestricted.
         auth_method: security.auth_method.clone(),
-        // Default empty for capability-gated fields
+        // Default empty / None for capability-gated fields below.
         labels: super::MonotonicSet::new(),
         subject: None,
+        client: None,
+        caller_workload: None,
+        this_workload: None,
     };
 
     // Labels — capability-gated
@@ -312,10 +411,45 @@ fn build_filtered_security(
         filtered.labels = security.labels.clone();
     }
 
-    // Subject — granular capability-gated
+    // Subject — granular capability-gated. The slot appears iff any
+    // subject sub-cap is held; individual sub-fields then check
+    // their own caps in `build_filtered_subject`.
     if let Some(ref subject) = security.subject {
         if has_any_subject_capability(capabilities) {
             filtered.subject = Some(build_filtered_subject(subject, capabilities));
+        }
+    }
+
+    // Client (OAuth application identity) — gated under `read_client`.
+    // Note: no granular sub-field gating for client at v0 — operators
+    // hold `read_client` to see the slot or nothing. Granular caps
+    // can land later if a real use case wants to expose, say,
+    // `client.authorized_scopes` without `client.claims`.
+    if let Some(ref client) = security.client {
+        let client_policy = slot_policy(SlotName::SecurityClient);
+        if has_read_access(&client_policy, capabilities) {
+            filtered.client = Some(client.clone());
+        }
+    }
+
+    // Inbound caller's attested workload identity — gated under
+    // `read_workload`. Same single cap controls both workload slots.
+    if let Some(ref cw) = security.caller_workload {
+        let policy = slot_policy(SlotName::SecurityCallerWorkload);
+        if has_read_access(&policy, capabilities) {
+            filtered.caller_workload = Some(cw.clone());
+        }
+    }
+
+    // Our own outbound workload identity — also gated under
+    // `read_workload`. Plugins not declaring it never see our
+    // gateway's SPIFFE-SVID (previously this slot was always-visible
+    // under the old `agent` name; the cap gating is intentional new
+    // behavior, per spec §4.4).
+    if let Some(ref tw) = security.this_workload {
+        let policy = slot_policy(SlotName::SecurityThisWorkload);
+        if has_read_access(&policy, capabilities) {
+            filtered.this_workload = Some(tw.clone());
         }
     }
 
@@ -543,5 +677,187 @@ mod tests {
 
         assert!(filtered.delegation.is_some());
         assert!(filtered.delegation.unwrap().delegated);
+    }
+
+    // -----------------------------------------------------------------
+    // New identity-slot capability gating (slice 1 step C)
+    // -----------------------------------------------------------------
+
+    /// Builds a SecurityExtension carrying all four identity principal
+    /// slots — subject, client, caller_workload, this_workload.
+    /// Used by the new-slot cap-gating tests.
+    fn security_with_all_principals() -> SecurityExtension {
+        use crate::extensions::{
+            ClientExtension, ClientTrustLevel, SubjectExtension, WorkloadIdentity,
+        };
+        SecurityExtension {
+            subject: Some(SubjectExtension {
+                id: Some("alice".into()),
+                ..Default::default()
+            }),
+            client: Some(ClientExtension {
+                client_id: "agent-app".into(),
+                trust_level: ClientTrustLevel::FirstParty,
+                authorized_scopes: vec!["read".into()],
+                ..Default::default()
+            }),
+            caller_workload: Some(WorkloadIdentity {
+                spiffe_id: Some("spiffe://corp.com/caller".into()),
+                trust_domain: Some("corp.com".into()),
+                ..Default::default()
+            }),
+            this_workload: Some(WorkloadIdentity {
+                spiffe_id: Some("spiffe://corp.com/gateway".into()),
+                trust_domain: Some("corp.com".into()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    fn extensions_with_principals() -> Extensions {
+        Extensions {
+            security: Some(Arc::new(security_with_all_principals())),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn no_caps_hides_client_workload_slots() {
+        // Sanity for the new gating: with empty caps, none of the new
+        // identity slots should appear post-filter. Subject also stays
+        // hidden (existing behavior — left in for breadth).
+        let ext = extensions_with_principals();
+        let filtered = filter_extensions(&ext, &HashSet::new());
+        let sec = filtered.security.as_ref().unwrap();
+        assert!(sec.subject.is_none());
+        assert!(sec.client.is_none(), "client must be hidden without read_client");
+        assert!(
+            sec.caller_workload.is_none(),
+            "caller_workload must be hidden without read_workload",
+        );
+        assert!(
+            sec.this_workload.is_none(),
+            "this_workload must be hidden without read_workload (changed from always-visible in slice 1)",
+        );
+    }
+
+    #[test]
+    fn read_client_exposes_client_only() {
+        let ext = extensions_with_principals();
+        let caps: HashSet<String> = ["read_client".to_string()].into();
+        let filtered = filter_extensions(&ext, &caps);
+        let sec = filtered.security.as_ref().unwrap();
+        assert!(sec.client.is_some());
+        assert_eq!(sec.client.as_ref().unwrap().client_id, "agent-app");
+        // Granting read_client must not leak workload slots.
+        assert!(sec.caller_workload.is_none());
+        assert!(sec.this_workload.is_none());
+    }
+
+    #[test]
+    fn read_workload_exposes_both_workload_slots() {
+        // One cap controls both inbound (`caller_workload`) and
+        // outbound (`this_workload`) attested-workload slots. Asserting
+        // the symmetric behavior is load-bearing for the architectural
+        // decision; if we ever split them into separate caps this test
+        // will catch the regression.
+        let ext = extensions_with_principals();
+        let caps: HashSet<String> = ["read_workload".to_string()].into();
+        let filtered = filter_extensions(&ext, &caps);
+        let sec = filtered.security.as_ref().unwrap();
+        assert!(sec.caller_workload.is_some());
+        assert_eq!(
+            sec.caller_workload.as_ref().unwrap().spiffe_id.as_deref(),
+            Some("spiffe://corp.com/caller"),
+        );
+        assert!(sec.this_workload.is_some());
+        assert_eq!(
+            sec.this_workload.as_ref().unwrap().spiffe_id.as_deref(),
+            Some("spiffe://corp.com/gateway"),
+        );
+        // No leak into client.
+        assert!(sec.client.is_none());
+    }
+
+    // -----------------------------------------------------------------
+    // RawCredentialsExtension capability gating
+    // -----------------------------------------------------------------
+
+    fn extensions_with_raw_credentials() -> Extensions {
+        use crate::extensions::raw_credentials::{
+            DelegationKey, DelegationMode, RawCredentialsExtension, RawDelegatedToken,
+            RawInboundToken, TokenKind, TokenRole,
+        };
+        let mut raw = RawCredentialsExtension::default();
+        raw.inbound_tokens.insert(
+            TokenRole::User,
+            RawInboundToken::new("user-jwt-bytes", "X-User-Token", TokenKind::Jwt),
+        );
+        raw.delegated_tokens.insert(
+            DelegationKey {
+                subject_id: "alice".into(),
+                audience: "https://api.example.com".into(),
+                scopes: vec!["read".into()],
+                mode: DelegationMode::OnBehalfOfUser,
+            },
+            RawDelegatedToken::new(
+                "delegated-bytes",
+                "Authorization",
+                "https://api.example.com",
+                vec!["read".into()],
+                chrono::Utc::now(),
+            ),
+        );
+        Extensions {
+            raw_credentials: Some(Arc::new(raw)),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn no_raw_credential_caps_hides_slot_entirely() {
+        // Belt-and-suspenders security story: without either sub-cap,
+        // the plugin can't even observe that credentials exist.
+        let ext = extensions_with_raw_credentials();
+        let filtered = filter_extensions(&ext, &HashSet::new());
+        assert!(filtered.raw_credentials.is_none());
+    }
+
+    #[test]
+    fn read_inbound_credentials_exposes_inbound_only() {
+        let ext = extensions_with_raw_credentials();
+        let caps: HashSet<String> = ["read_inbound_credentials".to_string()].into();
+        let filtered = filter_extensions(&ext, &caps);
+        let raw = filtered.raw_credentials.as_ref().unwrap();
+        // Inbound visible.
+        assert_eq!(raw.inbound_tokens.len(), 1);
+        // Delegated map present but empty — a plugin holding only
+        // inbound cap must never see minted outbound tokens.
+        assert!(raw.delegated_tokens.is_empty());
+    }
+
+    #[test]
+    fn read_delegated_tokens_exposes_delegated_only() {
+        let ext = extensions_with_raw_credentials();
+        let caps: HashSet<String> = ["read_delegated_tokens".to_string()].into();
+        let filtered = filter_extensions(&ext, &caps);
+        let raw = filtered.raw_credentials.as_ref().unwrap();
+        assert!(raw.inbound_tokens.is_empty());
+        assert_eq!(raw.delegated_tokens.len(), 1);
+    }
+
+    #[test]
+    fn both_raw_credential_caps_exposes_both_maps() {
+        let ext = extensions_with_raw_credentials();
+        let caps: HashSet<String> = [
+            "read_inbound_credentials".to_string(),
+            "read_delegated_tokens".to_string(),
+        ]
+        .into();
+        let filtered = filter_extensions(&ext, &caps);
+        let raw = filtered.raw_credentials.as_ref().unwrap();
+        assert_eq!(raw.inbound_tokens.len(), 1);
+        assert_eq!(raw.delegated_tokens.len(), 1);
     }
 }

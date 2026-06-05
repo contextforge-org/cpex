@@ -1,0 +1,29 @@
+# Location: ./crates/apl-audit-logger/Cargo.toml
+# Copyright 2026
+# SPDX-License-Identifier: Apache-2.0
+# Authors: Teryl Taylor
+#
+# apl-audit-logger — CMF plugin that emits a structured audit
+# record for every dispatched request. Subject, client, action,
+# delegation outcome, and capability-filtered context fields land
+# in a single JSON line per call. Always allows; never blocks.
+
+[package]
+name = "apl-audit-logger"
+version.workspace      = true
+edition.workspace      = true
+license.workspace      = true
+authors.workspace      = true
+
+[dependencies]
+cpex-core = { path = "../cpex-core" }
+
+async-trait = { workspace = true }
+chrono      = { workspace = true }
+serde       = { workspace = true }
+serde_json  = { workspace = true }
+thiserror   = { workspace = true }
+tracing     = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }

@@ -45,12 +45,14 @@ use std::os::raw::c_int;
 pub unsafe extern "C" fn cpex_demo_register_factories(
     mgr: *mut cpex_ffi::CpexManagerInner,
 ) -> c_int {
-    let inner = match mgr.as_mut() {
+    let inner = match mgr.as_ref() {
         Some(m) => m,
         None => return -1,
     };
 
-    demo_plugins::register_demo_factories(&mut inner.manager);
-    cmf_plugins::register_cmf_factories(&mut inner.manager);
+    // `register_factory` takes `&self`; `&inner.manager` deref-coerces
+    // from `Arc<PluginManager>` to `&PluginManager`.
+    demo_plugins::register_demo_factories(&inner.manager);
+    cmf_plugins::register_cmf_factories(&inner.manager);
     0
 }
