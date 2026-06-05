@@ -11,7 +11,8 @@ use std::sync::Arc;
 
 use cpex_core::cmf::{CmfHook, ContentPart, Message, MessagePayload, Role, ToolCall};
 use cpex_core::config::parse_config;
-use cpex_core::extensions::{Extensions, SecurityExtension};
+use cpex_core::extensions::{HttpExtension, RequestExtension, SecurityExtension};
+use cpex_core::hooks::payload::{Extensions, MetaExtension};
 use cpex_core::extensions::security::SubjectExtension;
 use cpex_core::manager::PluginManager;
 
@@ -23,30 +24,26 @@ async fn main() {
 
     // 1. Create plugin manager and register wasm factory under the exact kind string.
     //    Each plugin gets its own isolated SandboxManager instance.
+    let crate_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let config_path = crate_dir.join("config/config_wasm_sandbox.yaml");
+    println!("--- Loading config from {} ---\n", config_path.display());
+    let yaml = std::fs::read_to_string(&config_path)
+        .unwrap_or_else(|e| panic!("Failed to read {}: {}", config_path.display(), e));
+    let cpex_config = parse_config(&yaml).unwrap();
+
     let mgr = PluginManager::default();
     mgr.register_factory(
         "wasm://plugin.wasm",
-        Box::new(WasmPluginFactory::new(PathBuf::from("wasm"))),
+        Box::new(WasmPluginFactory::new(crate_dir.join("wasm"))),
     );
 
-    // 2. Load config from YAML file — triggers WasmPluginFactory::create()
-    println!("[DEBUG] Reading config/config_wasm_sandbox.yaml...");
-    let yaml = std::fs::read_to_string("config/config_wasm_sandbox.yaml")
-        .expect("failed to read config/config_wasm_sandbox.yaml");
-    println!("[DEBUG] Config YAML loaded ({} bytes)", yaml.len());
-
-    let config = parse_config(&yaml).unwrap();
-    println!("[DEBUG] Config parsed, loading into PluginManager...");
-    mgr.load_config(config).unwrap();
-    println!("[DEBUG] load_config OK — WasmPluginFactory::create() succeeded");
-
+    mgr.load_config(cpex_config).unwrap();
     mgr.initialize().await.unwrap();
-    println!("[DEBUG] initialize() OK — plugin ready\n");
 
     // 3. Build a test payload (assistant requesting a tool call)
     let payload = MessagePayload {
         message: Message {
-            schema_version: "1.0".into(),
+            schema_version: cpex_core::cmf::constants::SCHEMA_VERSION.into(),
             role: Role::Assistant,
             content: vec![
                 ContentPart::Text {
@@ -68,36 +65,132 @@ async fn main() {
     // 4. Build extensions with security context
     let mut security = SecurityExtension::default();
     security.add_label("PII");
+    security.add_label("HR_DATA");
+    security.classification = Some("confidential".into());
     security.subject = Some(SubjectExtension {
         id: Some("alice".into()),
+        subject_type: Some(cpex_core::extensions::security::SubjectType::User),
         roles: ["hr_admin".to_string()].into(),
+        permissions: ["read_compensation".to_string()].into(),
         ..Default::default()
     });
 
+    let mut http = HttpExtension::default();
+    http.set_header("Authorization", "Bearer eyJ...");
+    http.set_header("X-Request-ID", "req-abc-123");
+
     let ext = Extensions {
+        request: Some(Arc::new(RequestExtension {
+            environment: Some("production".into()),
+            request_id: Some("req-abc-123".into()),
+            ..Default::default()
+        })),
         security: Some(Arc::new(security)),
+        http: Some(Arc::new(http)),
+        meta: Some(Arc::new(MetaExtension {
+            entity_type: Some("tool".into()),
+            entity_name: Some("get_compensation".into()),
+            tags: ["pii".to_string(), "hr".to_string()].into(),
+            ..Default::default()
+        })),
         ..Default::default()
     };
 
-    // 5. Invoke through the plugin manager pipeline
-    println!("=== Invoking cmf.tool_pre_invoke ===");
-    println!("[DEBUG] Payload: role={:?}, content_parts={}", payload.message.role, payload.message.content.len());
-    println!("[DEBUG] Extensions: security={}", ext.security.is_some());
-
-    let (result, bg) = mgr
-        .invoke_named::<CmfHook>("cmf.tool_pre_invoke", payload, ext, None)
+    // --- Pre-invoke: type-safe dispatch via invoke_named ---
+    println!("=== Phase 1: cmf.tool_pre_invoke ===\n");
+    let (pre_result, bg) = mgr
+        .invoke_named::<CmfHook>(
+            "cmf.tool_pre_invoke",
+            payload,
+            ext,
+            None, // first hook — no context table
+        )
         .await;
 
-    println!("[DEBUG] invoke_named returned, waiting for background tasks...");
-    bg.wait_for_background_tasks().await;
-    println!("[DEBUG] Background tasks done");
+    println!();
 
-    println!("[DEBUG] continue_processing={}, violation={:?}", result.continue_processing, result.violation.is_some());
-    if result.continue_processing {
-        println!("  Result: ALLOW");
-    } else if let Some(ref violation) = result.violation {
-        println!("  Result: DENY - [{}] {}", violation.code, violation.reason);
+        println!();
+    if pre_result.continue_processing {
+        println!("Pre-invoke result: ALLOWED");
+        if let Some(ref modified_ext) = pre_result.modified_extensions {
+            if let Some(ref sec) = modified_ext.security {
+                let labels: Vec<&String> = sec.labels.iter().collect();
+                println!("  Labels after pre-invoke: {:?}", labels);
+            }
+            if let Some(ref http) = modified_ext.http {
+                println!("  Headers after pre-invoke: {:?}", http.request_headers);
+            }
+        }
     } else {
-        println!("  Result: DENY (no violation details)");
+        println!(
+            "Pre-invoke result: DENIED — {}",
+            pre_result.violation.as_ref().unwrap().reason
+        );
+        bg.wait_for_background_tasks().await;
+        println!("\n=== Demo complete ===");
+        return;
     }
+    bg.wait_for_background_tasks().await;
+
+    println!("\n--- Tool 'get_compensation' executes... ---");
+    println!("  Result: {{\"salary\": 150000, \"currency\": \"USD\"}}\n");
+
+    // --- Post-invoke: different CMF message with tool result ---
+    println!("=== Phase 2: cmf.tool_post_invoke ===\n");
+
+
+    let post_payload = MessagePayload {
+        message: Message {
+            schema_version: cpex_core::cmf::constants::SCHEMA_VERSION.into(),
+            role: Role::Tool,
+            content: vec![ContentPart::ToolResult {
+                content: cpex_core::cmf::ToolResult {
+                    tool_call_id: "tc_001".into(),
+                    tool_name: "get_compensation".into(),
+                    content: serde_json::json!({"salary": 150000, "currency": "USD"}),
+                    is_error: false,
+                },
+            }],
+            channel: None,
+        },
+    };
+
+        // Build post-invoke extensions — carry forward any modifications
+    // from pre-invoke via the context table
+    let post_ext = pre_result.modified_extensions.unwrap_or_else(|| {
+        // Rebuild if no modifications
+        let mut security = SecurityExtension::default();
+        security.add_label("PII");
+        Extensions {
+            security: Some(Arc::new(security)),
+            meta: Some(Arc::new(MetaExtension {
+                entity_type: Some("tool".into()),
+                entity_name: Some("get_compensation".into()),
+                ..Default::default()
+            })),
+            ..Default::default()
+        }
+    });
+
+        let (post_result, post_bg) = mgr
+        .invoke_named::<CmfHook>(
+            "cmf.tool_post_invoke",
+            post_payload,
+            post_ext,
+            Some(pre_result.context_table),
+        )
+        .await;
+
+    println!();
+    if post_result.continue_processing {
+        println!("Post-invoke result: ALLOWED");
+    } else {
+        println!(
+            "Post-invoke result: DENIED — {}",
+            post_result.violation.as_ref().unwrap().reason
+        );
+    }
+
+    post_bg.wait_for_background_tasks().await;
+    println!("\n=== Demo complete ===");
 }
