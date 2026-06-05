@@ -1,7 +1,7 @@
 // Location: ./crates/cpex-ffi/src/apl.rs
 // Copyright 2025
 // SPDX-License-Identifier: Apache-2.0
-// Authors: Teryl Taylor
+// Authors: Fred Araujo
 //
 // APL (Attribute Policy Language) FFI wiring.
 //

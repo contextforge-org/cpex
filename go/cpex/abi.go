@@ -1,7 +1,7 @@
 // Location: ./go/cpex/abi.go
 // Copyright 2025
 // SPDX-License-Identifier: Apache-2.0
-// Authors: Teryl Taylor
+// Authors: Fred Araujo
 //
 // FFI ABI version check.
 //

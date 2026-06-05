@@ -1,7 +1,7 @@
 // Location: ./go/cpex/apl_test.go
 // Copyright 2025
 // SPDX-License-Identifier: Apache-2.0
-// Authors: Teryl Taylor
+// Authors: Fred Araujo
 //
 // Tests for APL wiring (EnableAPL). Run against the real Rust runtime
 // via cgo; build the staticlib first:

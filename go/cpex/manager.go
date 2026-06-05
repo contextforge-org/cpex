@@ -1,7 +1,7 @@
 // Location: ./go/cpex/manager.go
 // Copyright 2025
 // SPDX-License-Identifier: Apache-2.0
-// Authors: Teryl Taylor
+// Authors: Teryl Taylor, Fred Araujo
 //
 // PluginManager — Go wrapper for the CPEX plugin runtime.
 //

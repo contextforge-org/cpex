@@ -1,7 +1,7 @@
 // Location: ./crates/apl-cpex/src/route_handler.rs
 // Copyright 2025
 // SPDX-License-Identifier: Apache-2.0
-// Authors: Teryl Taylor
+// Authors: Teryl Taylor, Fred Araujo
 //
 // `AplRouteHandler` — synthetic plugin that drives APL evaluation when
 // cpex-core's `filter_entries_by_route` matches an annotated route. Each

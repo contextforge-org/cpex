@@ -1,7 +1,7 @@
 // Location: ./crates/cpex-ffi/src/lib.rs
 // Copyright 2025
 // SPDX-License-Identifier: Apache-2.0
-// Authors: Teryl Taylor
+// Authors: Teryl Taylor, Fred Araujo
 //
 // CPEX FFI — C API for embedding the CPEX runtime.
 //
