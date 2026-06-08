@@ -1,11 +1,24 @@
 # PyO3 Python Bindings Implementation Plan
 
-**Issue**: [#19 - Python bindings (PyO3)](https://github.com/contextforge-org/cpex/issues/19)  
+**Issue**: [#19 - Python bindings (PyO3)](https://github.com/contextforge-org/cpex/issues/19)
 **Epic**: CPEX Rust Core (#12)
+**Status**: Updated based on technical review feedback
 
 ## Executive Summary
 
 This plan outlines the implementation of PyO3 bindings for CPEX, enabling Python code (like the ContextForge gateway) to use the Rust PluginManager as a drop-in replacement. The bindings provide compile-time invariant enforcement and the typed hook system while maintaining compatibility with existing Python integration code.
+
+## Review Feedback Addressed
+
+This plan has been updated to address critical technical issues identified in review:
+
+1. **✅ Async Runtime**: Replaced deprecated `pyo3-asyncio` with maintained `pyo3-async-runtimes`
+2. **✅ Payload Design**: Eliminated generic `PyPayload<T>` in favor of concrete `#[pyclass]` types per payload
+3. **✅ API Contract**: Clarified that Python plugins receive typed PyO3 wrapper objects, not dicts
+4. **✅ Initialization**: Separated sync `__new__` (config loading) from async `initialize()` (plugin init)
+5. **✅ Testing Strategy**: Revised compatibility tests to explicitly import both backends
+6. **✅ Performance Claims**: Scoped performance expectations with realistic benchmarks
+7. **✅ Type Stubs**: Will use PyO3's stub generation tooling instead of hand-written stubs
 
 ## Architecture Overview
 
@@ -96,16 +109,19 @@ This plan outlines the implementation of PyO3 bindings for CPEX, enabling Python
 
 ### 3. Payload Wrapping Strategy
 
-**Decision**: Wrap Rust payloads in PyO3 classes with `#[pyclass]`, expose attributes via `#[pymethods]`
+**Decision**: Create concrete `#[pyclass]` types for each payload (no generics)
 
 **Rationale**:
+- PyO3 `#[pyclass]` cannot be generic - must be concrete, monomorphized types
+- Each payload type gets its own `#[pyclass]` implementation
 - Rust controls memory layout and access patterns (prevents corruption)
-- Python plugins see familiar attribute access: `payload.prompt_id`
+- Python plugins receive typed wrapper objects with attribute access: `payload.prompt_id`
 - Copy-on-write semantics preserved (modifications create new instances)
 - Type validation happens in Rust before Python sees the data
 
-**Example**:
+**Implementation Pattern**:
 ```rust
+// Concrete pyclass for each payload type (no generics)
 #[pyclass]
 pub struct PyMessagePayload {
     inner: Arc<MessagePayload>,
@@ -120,13 +136,23 @@ impl PyMessagePayload {
     
     fn model_copy(&self, py: Python, updates: &PyDict) -> PyResult<Self> {
         // Create modified copy with Rust validation
+        let mut modified = (*self.inner).clone();
+        // Apply updates from dict...
+        Ok(PyMessagePayload {
+            inner: Arc::new(modified)
+        })
     }
 }
+
+// Repeat for PyToolPayload, PyPromptPayload, etc.
+// Use a macro to reduce boilerplate if needed
 ```
+
+**Note**: Python plugins receive these typed wrapper objects directly, NOT dicts. The `invoke_hook` API accepts dicts for convenience but immediately converts them to typed wrappers before passing to plugins.
 
 ### 4. Import Switch Pattern
 
-**Decision**: Conditional import in `cpex/__init__.py` with graceful fallback
+**Decision**: Conditional import in `cpex/__init__.py` with graceful fallback, plus explicit backend imports
 
 **Implementation**:
 ```python
@@ -139,6 +165,13 @@ except ImportError:
     from cpex.framework.manager import PluginManager as _PythonPluginManager
     PluginManager = _PythonPluginManager
     BACKEND = "python"
+
+# Always expose both backends explicitly for testing
+from cpex.framework.manager import PluginManager as PythonPluginManager
+try:
+    from cpex._native import PluginManager as RustPluginManager
+except ImportError:
+    RustPluginManager = None
 ```
 
 **Rationale**:
@@ -146,6 +179,7 @@ except ImportError:
 - Developers can opt-in by building the Rust extension
 - CI/CD can test both backends
 - Gradual migration path
+- Explicit backend imports enable proper compatibility testing
 
 ### 5. Build System Integration
 
@@ -156,6 +190,25 @@ except ImportError:
 - Integrates with `pyproject.toml` (PEP 517/518)
 - Handles cross-compilation and wheel building
 - Works with existing `pip install -e .` workflow
+
+### 6. Initialization Pattern
+
+**Decision**: Separate sync construction from async initialization
+
+**Implementation**:
+```python
+# Sync construction - loads config, validates YAML
+manager = PluginManager("config.yaml")
+
+# Async initialization - calls plugin.initialize() on all plugins
+await manager.initialize()
+```
+
+**Rationale**:
+- Config loading and validation can be synchronous
+- Plugin initialization may require async I/O (network, files, etc.)
+- Matches existing Python API pattern
+- Clear separation of concerns
 
 ## Implementation Phases
 
@@ -172,9 +225,10 @@ except ImportError:
 
 2. **Implement `PyPluginManager`**
    - Wrap `cpex_core::PluginManager` in `#[pyclass]`
-   - Implement `__new__` for initialization from config path
+   - Implement `__new__` for sync config loading and validation
+   - Implement async `initialize()` for plugin initialization
    - Implement `invoke_hook` method (basic version)
-   - Handle async execution (PyO3 async or sync wrapper)
+   - Use `pyo3-async-runtimes` for async bridge (NOT deprecated `pyo3-asyncio`)
 
 3. **Configure Maturin build**
    - Update `pyproject.toml` with `[tool.maturin]` section
@@ -231,7 +285,8 @@ except ImportError:
 #### Tasks:
 
 1. **Design payload wrapper architecture**
-   - Generic `PyPayload<T>` wrapper pattern
+   - Concrete `#[pyclass]` per payload type (NO generics - PyO3 limitation)
+   - Consider macro to reduce boilerplate across payload types
    - Attribute access via `#[pymethods]` getters
    - `model_copy(update={...})` for modifications
 
@@ -264,8 +319,9 @@ except ImportError:
 
 1. **Implement async bridge**
    - Handle Python async/await in Rust
-   - Use `pyo3-asyncio` or sync wrapper
+   - Use `pyo3-async-runtimes` (maintained successor to deprecated `pyo3-asyncio`)
    - Manage GIL properly during execution
+   - Support tokio runtime integration
 
 2. **Implement phase execution**
    - SEQUENTIAL: serial, chained, blocking + modifying
@@ -307,7 +363,8 @@ except ImportError:
    - Test all plugin modes
 
 3. **Generate type stubs**
-   - Create `cpex/_native.pyi`
+   - Use PyO3's stub generation tooling (avoid hand-written stubs that drift)
+   - Generate `cpex/_native.pyi` automatically
    - Document all public APIs
    - Ensure IDE autocomplete works
 
@@ -335,9 +392,15 @@ except ImportError:
    - Update quickstart with Rust backend option
 
 2. **Performance benchmarking**
-   - Compare Rust vs Python backend
-   - Document performance characteristics
-   - Identify optimization opportunities
+   - Define realistic benchmark workloads upfront
+   - Measure hook dispatch overhead (both backends)
+   - Note: Python plugins under GIL limit parallelism gains
+   - Document where Rust backend provides benefits:
+     * Reduced orchestration overhead
+     * Better memory safety guarantees
+     * Compile-time type checking
+   - Be realistic: dict↔Rust marshaling adds overhead
+   - Performance gains most visible with Rust-native plugins
 
 3. **CI/CD integration**
    - Add Rust backend tests to CI
@@ -373,10 +436,10 @@ crates/cpex-python/
 │   │   └── result.rs       # PyPluginResult
 │   ├── payloads/
 │   │   ├── mod.rs
-│   │   ├── base.rs         # Generic PyPayload<T> wrapper
-│   │   ├── message.rs      # PyMessagePayload
-│   │   ├── tool.rs         # PyToolPayload
-│   │   └── prompt.rs       # PyPromptPayload
+│   │   ├── macros.rs       # Macro to reduce boilerplate (optional)
+│   │   ├── message.rs      # PyMessagePayload (concrete #[pyclass])
+│   │   ├── tool.rs         # PyToolPayload (concrete #[pyclass])
+│   │   └── prompt.rs       # PyPromptPayload (concrete #[pyclass])
 │   ├── executor.rs         # Async bridge and phase execution
 │   ├── error.rs            # Error conversion
 │   └── utils.rs            # Helper functions
@@ -389,7 +452,7 @@ crates/cpex-python/
 ```toml
 [dependencies]
 pyo3 = { version = "0.21", features = ["extension-module", "abi3-py311"] }
-pyo3-asyncio = { version = "0.21", features = ["tokio-runtime"] }
+pyo3-async-runtimes = { version = "0.21", features = ["tokio"] }
 cpex-core = { path = "../cpex-core" }
 tokio = { workspace = true }
 serde = { workspace = true }
@@ -418,12 +481,18 @@ features = ["pyo3/extension-module"]
 class PluginManager:
     """Rust-backed plugin manager."""
     
-    def __init__(self, config_path: str) -> None:
-        """Initialize from YAML config file."""
+    def __new__(cls, config_path: str) -> Self:
+        """
+        Create manager from YAML config file (sync).
+        Loads and validates config but does not initialize plugins.
+        """
         ...
     
     async def initialize(self) -> None:
-        """Initialize all plugins."""
+        """
+        Initialize all plugins (async).
+        Must be called after construction before invoking hooks.
+        """
         ...
     
     async def invoke_hook(
@@ -436,6 +505,9 @@ class PluginManager:
         """
         Invoke a hook with the given payload.
         
+        Note: payload dict is converted to typed PyO3 wrapper internally.
+        Python plugins receive typed wrapper objects, not dicts.
+        
         Returns:
             Tuple of (modified_payload, context_table)
         """
@@ -445,20 +517,36 @@ class PluginManager:
         """Shutdown all plugins."""
         ...
 
-# Type stubs in cpex/_native.pyi
-from typing import Any, Dict, Tuple
+# Type stubs in cpex/_native.pyi (auto-generated by PyO3 tooling)
+from typing import Any, Dict, Tuple, Self
 
 class PluginManager:
-    def __init__(self, config_path: str) -> None: ...
-    async def initialize(self) -> None: ...
+    """Rust-backed plugin manager with 5-phase execution."""
+    
+    def __new__(cls, config_path: str) -> Self:
+        """Load config (sync). Call initialize() before use."""
+        ...
+    
+    async def initialize(self) -> None:
+        """Initialize all plugins (async)."""
+        ...
+    
     async def invoke_hook(
         self,
         hook_name: str,
         payload: Dict[str, Any],
         context: Dict[str, Any],
         extensions: Dict[str, Any] | None = None,
-    ) -> Tuple[Dict[str, Any], Dict[str, Any]]: ...
-    async def shutdown(self) -> None: ...
+    ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+        """
+        Invoke hook. Payload dict converted to typed wrapper internally.
+        Python plugins receive typed PyO3 objects, not dicts.
+        """
+        ...
+    
+    async def shutdown(self) -> None:
+        """Shutdown all plugins."""
+        ...
 ```
 
 ## Testing Strategy
@@ -538,23 +626,46 @@ class TestRustBackend:
 # tests/unit/cpex/test_backend_compatibility.py
 
 import pytest
-from cpex import PluginManager, BACKEND
+from cpex import PythonPluginManager, RustPluginManager, BACKEND
 
 class TestBackendCompatibility:
     """Ensure both backends produce identical results."""
     
-    @pytest.mark.parametrize("backend", ["rust", "python"])
-    async def test_identical_results(self, backend):
-        # Force specific backend
-        if backend == "rust" and BACKEND != "rust":
-            pytest.skip("Rust backend not available")
-        
-        manager = PluginManager("test-config.yaml")
+    async def test_python_backend(self):
+        """Test pure Python backend."""
+        manager = PythonPluginManager("test-config.yaml")
+        await manager.initialize()
         result = await manager.invoke_hook(...)
-        
-        # Compare results between backends
         assert result == expected_result
+    
+    @pytest.mark.skipif(RustPluginManager is None, reason="Rust backend not compiled")
+    async def test_rust_backend(self):
+        """Test Rust backend."""
+        manager = RustPluginManager("test-config.yaml")
+        await manager.initialize()
+        result = await manager.invoke_hook(...)
+        assert result == expected_result
+    
+    @pytest.mark.skipif(RustPluginManager is None, reason="Rust backend not compiled")
+    async def test_backends_produce_identical_results(self):
+        """Compare outputs from both backends."""
+        py_manager = PythonPluginManager("test-config.yaml")
+        rust_manager = RustPluginManager("test-config.yaml")
+        
+        await py_manager.initialize()
+        await rust_manager.initialize()
+        
+        payload = {"prompt_id": "123", "name": "test"}
+        context = {"request_id": "456"}
+        
+        py_result = await py_manager.invoke_hook("test_hook", payload, context)
+        rust_result = await rust_manager.invoke_hook("test_hook", payload, context)
+        
+        # Both backends should produce identical results
+        assert py_result == rust_result
 ```
+
+**Note**: This approach explicitly imports both backends, avoiding the "force backend" pattern that doesn't work with the import switch.
 
 ## Risk Mitigation
 
@@ -566,13 +677,22 @@ class TestBackendCompatibility:
 - Test both backends in CI
 - Document any unavoidable differences
 
-### Risk 2: Performance Regression
+### Risk 2: Performance Expectations
+
+**Reality Check**:
+- Python plugins run under GIL - no true parallelism in CONCURRENT phase
+- Dict↔Rust marshaling adds overhead vs pure Python
+- Performance gains come from:
+  * Reduced orchestration overhead
+  * Better memory safety (fewer defensive copies)
+  * Compile-time guarantees (fewer runtime checks)
+  * Rust-native plugins (when available)
 
 **Mitigation**:
-- Benchmark both backends
-- Profile PyO3 overhead
-- Optimize hot paths
-- Document performance characteristics
+- Define realistic benchmark workloads upfront
+- Measure and document actual performance characteristics
+- Don't oversell performance gains
+- Focus on correctness and safety benefits
 
 ### Risk 3: Build Complexity
 
@@ -585,7 +705,7 @@ class TestBackendCompatibility:
 ### Risk 4: Async/GIL Issues
 
 **Mitigation**:
-- Use `pyo3-asyncio` for proper async bridge
+- Use `pyo3-async-runtimes` (maintained successor to deprecated `pyo3-asyncio`)
 - Careful GIL management
 - Extensive async testing
 - Document async behavior
@@ -594,14 +714,17 @@ class TestBackendCompatibility:
 
 1. ✅ `from cpex import PluginManager` loads Rust backend when compiled
 2. ✅ `manager.invoke_hook()` dispatches through Rust 5-phase executor
-3. ✅ Python plugins receive PyO3-wrapped payloads with typed attributes
+3. ✅ Python plugins receive PyO3-wrapped payloads with typed attribute access (not dicts)
 4. ✅ Existing `PluginConfig` YAML format works without changes
 5. ✅ Falls back to pure Python implementation if Rust module not compiled
 6. ✅ All existing integration tests pass with Rust backend
-7. ✅ Performance improvement over pure Python backend
-8. ✅ Type stubs provide IDE autocomplete
+7. ✅ Performance characteristics documented with realistic benchmarks
+8. ✅ Auto-generated type stubs provide IDE autocomplete
 9. ✅ Documentation complete and accurate
-10. ✅ CI/CD tests both backends
+10. ✅ CI/CD tests both backends explicitly
+11. ✅ Sync `__new__` + async `initialize()` pattern implemented correctly
+12. ✅ Uses maintained `pyo3-async-runtimes` (not deprecated `pyo3-asyncio`)
+13. ✅ Concrete `#[pyclass]` per payload type (no generics)
 
 ## Timeline
 
