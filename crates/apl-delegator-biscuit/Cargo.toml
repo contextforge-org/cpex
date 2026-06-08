@@ -1,0 +1,67 @@
+# Location: ./crates/apl-delegator-biscuit/Cargo.toml
+# Copyright 2025
+# SPDX-License-Identifier: Apache-2.0
+# Authors: Teryl Taylor
+#
+# apl-delegator-biscuit — `TokenDelegateHandler` that performs
+# biscuit-auth capability-token attenuation.
+#
+# # Why this exists
+#
+# Slice 3's `TokenDelegateHook` defines the surface; this crate is
+# the *decentralized* backend — cryptographic scope attenuation
+# without an IdP roundtrip. Reads the inbound biscuit, appends a
+# delegation block narrowing the capabilities (resource / operation
+# / time-bound checks), produces a new biscuit base64-encoded as
+# the outbound credential.
+#
+# # AIP alignment
+#
+# The IETF draft `draft-prakash-aip-00` (Agent Identity Protocol)
+# defines a "Chained Mode" using biscuit tokens with
+# authority/delegation/completion blocks. This crate produces the
+# delegation-block half of that flow; the authority block is the
+# inbound biscuit; completion blocks land in a future post-result
+# audit hook.
+#
+# # When to reach for this vs `apl-delegator-oauth`
+#
+# - **`apl-delegator-biscuit`** — capability tokens, cryptographic
+#   attenuation, no IdP roundtrip. Use for federated agent
+#   ecosystems where there's no shared IdP, or for performance-
+#   sensitive paths where the IdP roundtrip cost matters.
+# - **`apl-delegator-oauth`** (slice 6) — RFC 8693 against an
+#   OAuth IdP. Use when centralized audit/revocation matters more
+#   than roundtrip cost.
+
+[package]
+name = "apl-delegator-biscuit"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+apl-core = { path = "../apl-core" }
+cpex-core = { path = "../cpex-core" }
+
+# biscuit-auth v6 — current major. Maintained by Clever Cloud +
+# community. Ed25519 + Datalog. No default-features off needed; the
+# default feature set is reasonable (no Tonic/network deps).
+biscuit-auth = "6"
+
+# `hex` for parsing raw 32-byte Ed25519 public keys from config.
+# biscuit-auth doesn't re-export hex parsing.
+hex = "0.4"
+
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true }
+chrono = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }

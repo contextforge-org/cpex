@@ -1,7 +1,7 @@
 // Location: ./crates/cpex-core/src/manager.rs
 // Copyright 2025
 // SPDX-License-Identifier: Apache-2.0
-// Authors: Teryl Taylor
+// Authors: Teryl Taylor, Fred Araujo
 //
 // Plugin manager.
 //
@@ -26,7 +26,7 @@
 
 use std::hash::{Hash, Hasher};
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 
 use hashbrown::HashMap;
@@ -170,6 +170,46 @@ struct RuntimeSnapshot {
     /// Maximum number of entries the route cache will hold. Once reached,
     /// new resolutions are computed normally but not memoized (reject-on-full).
     route_cache_max_entries: usize,
+
+    /// Per-route, per-hook handler overrides keyed by
+    /// `(entity_type, entity_name, scope, hook_name)`. When a request matches
+    /// an annotation, route resolution short-circuits to a single-entry list
+    /// containing the annotated handler instead of resolving the route's
+    /// imperative `plugins:` chain.
+    ///
+    /// Per-hook keying lets an orchestrator install distinct handlers for
+    /// `cmf.tool_pre_invoke` and `cmf.tool_post_invoke` on the same route —
+    /// useful when the pre/post phases need different handler state (e.g.
+    /// apl-cpex's `AplRouteHandler` binds each instance to either
+    /// `evaluate_pre` or `evaluate_post`).
+    ///
+    /// `scope` (None vs `Some("virtual-server-A")`) lets two virtual
+    /// servers / gateways with the same tool name carry distinct
+    /// orchestrators. Matching mirrors cpex-core's existing
+    /// `find_matching_route` semantics: a scoped request first tries the
+    /// exact `(et, en, Some(req_scope), hook)` annotation; on miss it falls
+    /// back to the unscoped `(et, en, None, hook)` default. An unscoped
+    /// request only matches `(et, en, None, hook)`. Net effect: None-scope
+    /// annotations act as a global default, scoped annotations override
+    /// per-scope.
+    ///
+    /// The plugins listed under the matching route are *still* registered
+    /// in the registry — they remain discoverable via `find_plugin_entries`
+    /// so the annotated handler can dispatch into them by-name (this is
+    /// what apl-cpex's `AplRouteHandler` does via `CmfPluginInvoker` for
+    /// `plugin(name)` references inside APL rules).
+    route_annotations: HashMap<AnnotationKey, crate::registry::HookEntry>,
+}
+
+/// Composite key for route annotations. Includes the hook name so a single
+/// route can carry distinct handlers per phase (e.g. pre-invoke vs
+/// post-invoke).
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+struct AnnotationKey {
+    entity_type: String,
+    entity_name: String,
+    scope: Option<String>,
+    hook_name: String,
 }
 
 pub struct PluginManager {
@@ -204,6 +244,15 @@ pub struct PluginManager {
     /// can be `&self` and the manager itself can sit behind `Arc`.
     initialized: AtomicBool,
 
+    /// Monotonic config-generation counter. Bumped every time the runtime
+    /// snapshot is swapped (factory mutation, config (re)load, plugin
+    /// register/unregister). External orchestrators (apl-cpex's dispatch
+    /// plan cache) pair their cached values with the generation seen at
+    /// build time; a generation mismatch on lookup signals "evict + rebuild."
+    /// Starts at 0; first snapshot publish (empty registry) leaves it at 0,
+    /// so callers can use 0 as a "never observed" sentinel.
+    generation: AtomicU64,
+
     /// Tracks in-flight fire-and-forget background tasks across all
     /// invocations so `shutdown()` can wait for them to drain before
     /// returning. Without this, audit/telemetry tasks spawned by recent
@@ -213,6 +262,13 @@ pub struct PluginManager {
     ///
     /// `TaskTracker` is internally `Arc`'d, so cloning is a refcount bump.
     task_tracker: tokio_util::task::TaskTracker,
+
+    /// External orchestrators registered via `register_visitor`. Walked
+    /// in registration order during `load_config_yaml` (after plugin
+    /// instantiation) so each visitor can inspect raw YAML sections and
+    /// install handlers via `annotate_route`. Empty by default — the
+    /// `load_config(CpexConfig)` path skips visitors entirely.
+    visitors: RwLock<Vec<Arc<dyn crate::visitor::ConfigVisitor>>>,
 }
 
 /// Emit warnings for YAML settings that the runtime doesn't currently
@@ -300,6 +356,7 @@ fn snapshot_from_config(registry: PluginRegistry, cpex_config: CpexConfig) -> Ru
         executor,
         cpex_config: Some(cpex_config),
         route_cache_max_entries,
+        route_annotations: HashMap::new(),
     }
 }
 
@@ -312,6 +369,7 @@ impl PluginManager {
             executor: Executor::new(config.executor),
             cpex_config: None,
             route_cache_max_entries: config.route_cache_max_entries,
+            route_annotations: HashMap::new(),
         };
         Self {
             runtime: arc_swap::ArcSwap::from_pointee(snapshot),
@@ -320,7 +378,9 @@ impl PluginManager {
             cache_hasher,
             route_cache_full_warned: AtomicBool::new(false),
             initialized: AtomicBool::new(false),
+            generation: AtomicU64::new(0),
             task_tracker: tokio_util::task::TaskTracker::new(),
+            visitors: RwLock::new(Vec::new()),
         }
     }
 
@@ -341,6 +401,10 @@ impl PluginManager {
         let mut next = (*current).clone();
         let result = f(&mut next);
         self.runtime.store(Arc::new(next));
+        // Release ordering pairs with the Acquire load in
+        // config_generation() — external cache consumers that observe a
+        // higher generation are guaranteed to see the new snapshot.
+        self.generation.fetch_add(1, Ordering::Release);
         result
     }
 
@@ -355,7 +419,21 @@ impl PluginManager {
         let mut next = (*current).clone();
         let result = f(&mut next)?;
         self.runtime.store(Arc::new(next));
+        // Same Release-ordered bump as mutate_runtime — only on Ok, since
+        // Err leaves the snapshot untouched.
+        self.generation.fetch_add(1, Ordering::Release);
         Ok(result)
+    }
+
+    /// Monotonic counter that increments on every runtime snapshot swap
+    /// (registry mutation, config (re)load). External orchestrators
+    /// (e.g. apl-cpex's dispatch-plan cache) pair their cached values
+    /// with the generation seen at build time; a mismatch on lookup
+    /// signals "evict + rebuild." `Acquire` pairs with the `Release`
+    /// fetch_add in `mutate_runtime` / `try_mutate_runtime` so observing
+    /// a higher generation guarantees visibility of the new snapshot.
+    pub fn config_generation(&self) -> u64 {
+        self.generation.load(Ordering::Acquire)
     }
 
     // -----------------------------------------------------------------------
@@ -435,9 +513,161 @@ impl PluginManager {
 
         self.runtime
             .store(Arc::new(snapshot_from_config(new_registry, cpex_config)));
+        // Same generation bump as mutate_runtime — load_config doesn't
+        // go through that helper because it has to swap registry + executor
+        // + cache-cap atomically as one snapshot.
+        self.generation.fetch_add(1, Ordering::Release);
 
         // Clear routing cache — config changed.
         self.clear_routing_cache();
+
+        Ok(())
+    }
+
+    /// Register an external config visitor. Visitors run during
+    /// `load_config_yaml` (after plugin instantiation) and can install
+    /// per-route handler overrides via `annotate_route`. Visitor order
+    /// matches registration order. Multiple visitors are allowed —
+    /// they typically don't share state, so order rarely matters.
+    pub fn register_visitor(&self, visitor: Arc<dyn crate::visitor::ConfigVisitor>) {
+        let mut v = self.visitors.write().unwrap_or_else(|p| p.into_inner());
+        v.push(visitor);
+    }
+
+    /// Load a unified-config YAML string. Parses the YAML twice — once
+    /// into a typed `CpexConfig` for plugin instantiation, once into a
+    /// raw `serde_yaml::Value` so visitors can inspect orchestrator-
+    /// specific blocks (e.g. `apl:`) that cpex-core itself doesn't
+    /// model. Calls existing `load_config(cpex_config)` first, then
+    /// walks each registered visitor over the raw YAML's sections in
+    /// the documented hierarchy order:
+    ///
+    /// 1. `visit_global(global_yaml)`
+    /// 2. `visit_default(entity_type, default_yaml)` per `global.defaults` entry
+    /// 3. `visit_policy_bundle(tag, bundle_yaml)` per `global.policies` entry
+    /// 4. `visit_route(route_yaml, parsed_route)` per `routes[]` entry
+    ///
+    /// All sections for one visitor run before the next visitor starts,
+    /// giving each visitor a consistent view of its own accumulated
+    /// state. A visitor returning Err aborts the load — the plugin
+    /// snapshot stays at the post-`load_config` state (partial load is
+    /// not rolled back; operators should treat any error from this
+    /// method as a hard stop).
+    pub fn load_config_yaml(self: &Arc<Self>, yaml: &str) -> Result<(), Box<PluginError>> {
+        // Parse once into a Value so the raw shape is available to
+        // visitors. Then deserialize from that Value into CpexConfig —
+        // saves a second tokenize/lex pass vs parsing the string twice.
+        let raw: serde_yaml::Value = serde_yaml::from_str(yaml).map_err(|e| {
+            Box::new(PluginError::Config {
+                message: format!("YAML parse error: {}", e),
+            })
+        })?;
+        let cpex_config: CpexConfig = serde_yaml::from_value(raw.clone()).map_err(|e| {
+            Box::new(PluginError::Config {
+                message: format!("CpexConfig deserialize error: {}", e),
+            })
+        })?;
+
+        // Snapshot the parsed routes + plugin declarations before
+        // load_config moves the config — visitors get the typed
+        // structures side-by-side with the raw YAML so they don't have
+        // to re-deserialize anything cpex-core has already validated.
+        let parsed_routes: Vec<crate::config::RouteEntry> = cpex_config.routes.clone();
+        let parsed_plugins: Vec<crate::plugin::PluginConfig> = cpex_config.plugins.clone();
+
+        // Existing plugin-instantiation path.
+        self.load_config(cpex_config)?;
+
+        // Visitor walk. No-op when no visitors registered — the common
+        // case for hosts that don't use the orchestrator extension point.
+        let visitors = {
+            let v = self.visitors.read().unwrap_or_else(|p| p.into_inner());
+            if v.is_empty() {
+                return Ok(());
+            }
+            v.clone()
+        };
+
+        let mgr: Arc<PluginManager> = Arc::clone(self);
+        let global_yaml = raw.get("global").cloned().unwrap_or(serde_yaml::Value::Null);
+        let defaults_yaml = global_yaml
+            .get("defaults")
+            .and_then(serde_yaml::Value::as_mapping)
+            .cloned();
+        let policies_yaml = global_yaml
+            .get("policies")
+            .and_then(serde_yaml::Value::as_mapping)
+            .cloned();
+        let routes_yaml: Vec<serde_yaml::Value> = raw
+            .get("routes")
+            .and_then(serde_yaml::Value::as_sequence)
+            .cloned()
+            .unwrap_or_default();
+
+        for visitor in &visitors {
+            visitor.visit_plugins(&mgr, &parsed_plugins).map_err(|e| {
+                Box::new(PluginError::Config {
+                    message: format!("visitor '{}' visit_plugins: {}", visitor.name(), e),
+                })
+            })?;
+
+            visitor.visit_global(&mgr, &global_yaml).map_err(|e| {
+                Box::new(PluginError::Config {
+                    message: format!("visitor '{}' visit_global: {}", visitor.name(), e),
+                })
+            })?;
+
+            if let Some(defaults) = &defaults_yaml {
+                for (k, v) in defaults {
+                    let Some(entity_type) = k.as_str() else { continue };
+                    visitor.visit_default(&mgr, entity_type, v).map_err(|e| {
+                        Box::new(PluginError::Config {
+                            message: format!(
+                                "visitor '{}' visit_default('{}'): {}",
+                                visitor.name(),
+                                entity_type,
+                                e
+                            ),
+                        })
+                    })?;
+                }
+            }
+
+            if let Some(policies) = &policies_yaml {
+                for (k, v) in policies {
+                    let Some(tag) = k.as_str() else { continue };
+                    visitor.visit_policy_bundle(&mgr, tag, v).map_err(|e| {
+                        Box::new(PluginError::Config {
+                            message: format!(
+                                "visitor '{}' visit_policy_bundle('{}'): {}",
+                                visitor.name(),
+                                tag,
+                                e
+                            ),
+                        })
+                    })?;
+                }
+            }
+
+            for (i, parsed) in parsed_routes.iter().enumerate() {
+                let route_yaml = routes_yaml
+                    .get(i)
+                    .cloned()
+                    .unwrap_or(serde_yaml::Value::Null);
+                visitor
+                    .visit_route(&mgr, &route_yaml, parsed)
+                    .map_err(|e| {
+                        Box::new(PluginError::Config {
+                            message: format!(
+                                "visitor '{}' visit_route[{}]: {}",
+                                visitor.name(),
+                                i,
+                                e
+                            ),
+                        })
+                    })?;
+            }
+        }
 
         Ok(())
     }
@@ -713,7 +943,11 @@ impl PluginManager {
         let hook_type = HookType::new(hook_name);
         let all_entries = snapshot.registry.entries_for_hook(&hook_type);
 
-        if all_entries.is_empty() {
+        // Same caveat as `invoke_named`: route annotations can produce a
+        // dispatch entry without any plugin being registered on the
+        // hook directly, so we can only short-circuit when both the
+        // registry and the annotation map are empty.
+        if all_entries.is_empty() && snapshot.route_annotations.is_empty() {
             return (
                 PipelineResult::allowed_with(
                     payload,
@@ -791,7 +1025,10 @@ impl PluginManager {
         let hook_type = HookType::new(H::NAME);
         let all_entries = snapshot.registry.entries_for_hook(&hook_type);
 
-        if all_entries.is_empty() {
+        // See `invoke_named` for why we don't short-circuit on
+        // `all_entries.is_empty()` alone — route annotations can fire
+        // without a directly-registered plugin.
+        if all_entries.is_empty() && snapshot.route_annotations.is_empty() {
             let boxed: Box<dyn PluginPayload> = Box::new(payload);
             return (
                 PipelineResult::allowed_with(boxed, extensions, context_table.unwrap_or_default()),
@@ -862,7 +1099,13 @@ impl PluginManager {
         let hook_type = HookType::new(hook_name);
         let all_entries = snapshot.registry.entries_for_hook(&hook_type);
 
-        if all_entries.is_empty() {
+        // No registered entries AND no route annotations → nothing to
+        // do. Allow-and-pass-through. We can't short-circuit on
+        // `all_entries.is_empty()` alone, because route annotations
+        // (external-orchestrator handlers from APL / future Rego /
+        // Cedar-direct) can produce a single-entry dispatch even when
+        // no plugin was registered on the hook directly.
+        if all_entries.is_empty() && snapshot.route_annotations.is_empty() {
             let boxed: Box<dyn PluginPayload> = Box::new(payload);
             return (
                 PipelineResult::allowed_with(boxed, extensions, context_table.unwrap_or_default()),
@@ -895,6 +1138,151 @@ impl PluginManager {
             .await
     }
 
+    /// Find every (hook_name, HookEntry) pair belonging to the named
+    /// plugin. Returns an empty `Vec` if the plugin isn't registered.
+    ///
+    /// Used by external orchestrators (notably apl-cpex) that decide
+    /// the per-route plugin lineup themselves and need handler refs +
+    /// trusted_config to build pre-resolved dispatch plans. Cheaper than
+    /// going through `invoke_named` per request because the caller can
+    /// cache the resulting entries — pair the result with
+    /// [`config_generation`](Self::config_generation) to invalidate the
+    /// cache on snapshot swaps.
+    ///
+    /// Bypasses route/entity filtering — caller has already decided this
+    /// plugin should run. APL's `routes:` is itself the authoritative
+    /// lineup; cpex-core's condition-based routing is a parallel model
+    /// for non-APL hosts.
+    pub fn find_plugin_entries(
+        &self,
+        plugin_name: &str,
+    ) -> Vec<(String, crate::registry::HookEntry)> {
+        let snapshot = self.load_runtime();
+        snapshot.registry.entries_for_plugin(plugin_name)
+    }
+
+    /// Dispatch a caller-supplied slice of HookEntries through the
+    /// executor's full 5-phase pipeline (sequential, transform, audit,
+    /// concurrent, fire-and-forget). All on_error / timeout / mode /
+    /// write-token machinery applies.
+    ///
+    /// Bypasses hook-name lookup and route/entity filtering — caller has
+    /// already resolved the lineup (typically via
+    /// [`find_plugin_entries`](Self::find_plugin_entries) + a per-route
+    /// dispatch plan). The `H: HookTypeDef` parameter enforces payload
+    /// type at compile time; mismatched payloads fail to compile, same
+    /// as [`invoke_named`](Self::invoke_named).
+    ///
+    /// Returns `(PipelineResult, BackgroundTasks)` identical in shape to
+    /// `invoke_named` so callers can swap between the two paths without
+    /// rewriting downstream result handling.
+    pub async fn invoke_entries<H: HookTypeDef>(
+        &self,
+        entries: &[crate::registry::HookEntry],
+        payload: H::Payload,
+        extensions: Extensions,
+        context_table: Option<PluginContextTable>,
+    ) -> (PipelineResult, BackgroundTasks) {
+        if entries.is_empty() {
+            let boxed: Box<dyn PluginPayload> = Box::new(payload);
+            return (
+                PipelineResult::allowed_with(boxed, extensions, context_table.unwrap_or_default()),
+                BackgroundTasks::empty(),
+            );
+        }
+        let snapshot = self.load_runtime();
+        let boxed: Box<dyn PluginPayload> = Box::new(payload);
+        snapshot
+            .executor
+            .execute(
+                entries,
+                boxed,
+                extensions,
+                context_table,
+                &self.task_tracker,
+            )
+            .await
+    }
+
+    // -----------------------------------------------------------------------
+    // Route Annotation
+    // -----------------------------------------------------------------------
+
+    /// Override the resolved plugin list for one `(entity_type, entity_name)`
+    /// pair on the listed hooks with a single synthetic handler. The handler
+    /// takes responsibility for any further plugin dispatch within itself
+    /// (typically by calling [`invoke_entries`](Self::invoke_entries) against
+    /// the same registry's other entries — i.e. APL's `plugin(name)` →
+    /// `CmfPluginInvoker` → `invoke_entries` flow).
+    ///
+    /// This is the integration point external orchestrators (APL, future
+    /// Rego/Cedar-direct/Custom) use to drive plugins via their own
+    /// semantics instead of cpex-core's imperative `routes.*.plugins:`
+    /// chain. Bumps the config generation so cached dispatch plans in
+    /// downstream caches invalidate.
+    ///
+    /// `config` provides the trusted_config for the synthetic plugin —
+    /// the executor reads `mode`, `on_error`, `capabilities`, etc. from
+    /// it the same way it does for any other registered plugin. Capabilities
+    /// should be a *superset* of what the orchestrator needs to read from
+    /// `Extensions` (cpex-core's per-plugin filter still applies to the
+    /// synthetic handler).
+    ///
+    /// The underlying `plugins:` chain for this route is *not* removed —
+    /// those plugins stay discoverable via [`find_plugin_entries`](Self::find_plugin_entries)
+    /// so the orchestrator can dispatch into them by name.
+    pub fn annotate_route<H>(
+        &self,
+        entity_type: impl Into<String>,
+        entity_name: impl Into<String>,
+        scope: Option<String>,
+        hook_name: impl Into<String>,
+        handler: Arc<H>,
+        config: crate::plugin::PluginConfig,
+    )
+    where
+        H: crate::plugin::Plugin + crate::registry::AnyHookHandler + 'static,
+    {
+        let key = AnnotationKey {
+            entity_type: entity_type.into(),
+            entity_name: entity_name.into(),
+            scope,
+            hook_name: hook_name.into(),
+        };
+        let plugin_ref = Arc::new(crate::registry::PluginRef::new(
+            handler.clone() as Arc<dyn crate::plugin::Plugin>,
+            config,
+        ));
+        let entry = crate::registry::HookEntry {
+            plugin_ref,
+            handler: handler as Arc<dyn crate::registry::AnyHookHandler>,
+        };
+        self.mutate_runtime(|snap| {
+            snap.route_annotations.insert(key, entry);
+        });
+    }
+
+    /// Remove a route annotation for a specific hook. No-op when no
+    /// annotation exists for the key. Bumps the generation so downstream
+    /// caches invalidate.
+    pub fn remove_route_annotation(
+        &self,
+        entity_type: &str,
+        entity_name: &str,
+        scope: Option<&str>,
+        hook_name: &str,
+    ) {
+        let key = AnnotationKey {
+            entity_type: entity_type.to_string(),
+            entity_name: entity_name.to_string(),
+            scope: scope.map(str::to_string),
+            hook_name: hook_name.to_string(),
+        };
+        self.mutate_runtime(|snap| {
+            snap.route_annotations.remove(&key);
+        });
+    }
+
     // -----------------------------------------------------------------------
     // Route Filtering
     // -----------------------------------------------------------------------
@@ -916,6 +1304,45 @@ impl PluginManager {
         extensions: &Extensions,
         hook_name: &str,
     ) -> Arc<Vec<crate::registry::HookEntry>> {
+        // Route annotation short-circuit: if the request's
+        // (entity_type, entity_name) has an annotation that handles this
+        // hook, return a one-entry list containing the annotated handler.
+        // External orchestrators (APL via apl-cpex; future Rego/Cedar)
+        // register annotations to drive plugin dispatch under their own
+        // semantics instead of cpex-core's imperative chain. Underlying
+        // `plugins:` entries stay in the registry for the orchestrator
+        // to dispatch into by-name via `invoke_entries`.
+        if !snapshot.route_annotations.is_empty() {
+            if let Some(meta) = &extensions.meta {
+                if let (Some(et), Some(en)) = (&meta.entity_type, &meta.entity_name) {
+                    // Scoped lookup first (specific wins); unscoped lookup
+                    // falls back as a "global default" — matches the
+                    // specificity tiebreaker `find_matching_route` uses.
+                    // Lookup is keyed on the hook name as well, so a route
+                    // can install distinct handlers per phase.
+                    let scoped = meta.scope.as_ref().and_then(|s| {
+                        snapshot.route_annotations.get(&AnnotationKey {
+                            entity_type: et.clone(),
+                            entity_name: en.clone(),
+                            scope: Some(s.clone()),
+                            hook_name: hook_name.to_string(),
+                        })
+                    });
+                    let candidate = scoped.or_else(|| {
+                        snapshot.route_annotations.get(&AnnotationKey {
+                            entity_type: et.clone(),
+                            entity_name: en.clone(),
+                            scope: None,
+                            hook_name: hook_name.to_string(),
+                        })
+                    });
+                    if let Some(entry) = candidate {
+                        return Arc::new(vec![entry.clone()]);
+                    }
+                }
+            }
+        }
+
         // Routing disabled (or no config): fall back to per-plugin
         // condition filtering. Empty conditions Vec means "fire always",
         // so this is backward-compatible with configs that don't use
@@ -976,14 +1403,29 @@ impl PluginManager {
             }
         }
 
-        // Slow path: resolve, filter, and cache (allocations only here)
-        let resolved = config::resolve_plugins_for_entity(
-            cpex_config,
-            entity_type,
-            entity_name,
-            request_scope,
-            &meta.tags,
-        );
+        // Slow path: resolve, filter, and cache (allocations only here).
+        //
+        // Hook-specific resolution for identity.resolve: the route's
+        // `identity:` block is the authoritative dispatch list (NOT
+        // the `plugins:` block, which in APL-driven routes means
+        // "per-route overrides" rather than "binding"). For every
+        // other hook, the generic plugins-block resolution applies.
+        let resolved = if hook_name == crate::identity::HOOK_IDENTITY_RESOLVE {
+            config::resolve_identity_plugins_for_route(
+                cpex_config,
+                entity_type,
+                entity_name,
+                request_scope,
+            )
+        } else {
+            config::resolve_plugins_for_entity(
+                cpex_config,
+                entity_type,
+                entity_name,
+                request_scope,
+                &meta.tags,
+            )
+        };
 
         // Filter entries to resolved plugins, preserving resolution order.
         // If a plugin has config overrides and we have a factory for its kind,
@@ -1043,6 +1485,173 @@ impl PluginManager {
         }
 
         cached
+    }
+
+    /// Build per-hook `HookEntry`s for a plugin with optional route-
+    /// level overrides. Used by external orchestrators (notably
+    /// apl-cpex's dispatch plan) that need to splice per-route plugin
+    /// variants — different `config`, narrower `capabilities`, different
+    /// `on_error` — into the dispatch lineup while keeping cpex-core
+    /// the source of truth for instantiation and isolation.
+    ///
+    /// Behavior:
+    /// - **All three overrides `None`:** returns the base entries
+    ///   unchanged. Caller can use them as-is.
+    /// - **Only `capabilities_override` / `on_error_override` set
+    ///   (`config_override` is `None`):** builds new `PluginRef`s
+    ///   sharing the *base plugin `Arc`* with a merged `TrustedConfig`
+    ///   (override caps / on_error replace base values) and an
+    ///   independent circuit breaker. Cheap — no factory call.
+    /// - **`config_override` set:** invokes the registered factory for
+    ///   the plugin's `kind` with a merged `PluginConfig` (override
+    ///   `config` *replaces* base `config` wholesale per unified-config
+    ///   spec — not deep merge), calls `initialize()` on the new
+    ///   instance, and wraps every returned handler in a new
+    ///   `PluginRef` with a fresh circuit breaker.
+    ///
+    /// Returns an empty `Vec` when:
+    /// - the plugin name isn't registered in the manager,
+    /// - the factory for the plugin's `kind` is missing,
+    /// - the factory's `create` errors,
+    /// - or `initialize()` fails on the new instance.
+    ///
+    /// Each of those is a configuration / wiring fault the caller
+    /// should treat as `NotFound` at dispatch time. The method logs
+    /// the underlying error before returning empty so debugging
+    /// surfaces in operator logs rather than as a silent miss.
+    pub async fn build_override_entries(
+        &self,
+        plugin_name: &str,
+        config_override: Option<&serde_yaml::Value>,
+        capabilities_override: Option<&std::collections::HashSet<String>>,
+        on_error_override: Option<crate::plugin::OnError>,
+    ) -> Vec<(String, crate::registry::HookEntry)> {
+        let base_entries = self.find_plugin_entries(plugin_name);
+        if base_entries.is_empty() {
+            return Vec::new();
+        }
+
+        // No overrides at all — caller can use base entries unchanged.
+        if config_override.is_none()
+            && capabilities_override.is_none()
+            && on_error_override.is_none()
+        {
+            return base_entries;
+        }
+
+        // Pull the base trusted_config off any of the base entries —
+        // all of them share the same `Arc<PluginRef>` for a given
+        // plugin name, so picking the first is fine.
+        let base_ref = Arc::clone(&base_entries[0].1.plugin_ref);
+        let mut merged_config = base_ref.trusted_config().clone();
+
+        // Capabilities: override replaces base when present.
+        if let Some(caps) = capabilities_override {
+            merged_config.capabilities = caps.clone();
+        }
+
+        // on_error: override replaces base when present.
+        if let Some(oe) = on_error_override {
+            merged_config.on_error = oe;
+        }
+
+        // Caps/on_error-only path — shared base plugin Arc, new
+        // PluginRef with merged config + fresh circuit breaker.
+        // No factory call, no async work.
+        if config_override.is_none() {
+            let new_ref = Arc::new(crate::registry::PluginRef::new(
+                Arc::clone(base_ref.plugin()),
+                merged_config,
+            ));
+            return base_entries
+                .into_iter()
+                .map(|(hook_name, base_entry)| {
+                    (
+                        hook_name,
+                        crate::registry::HookEntry {
+                            plugin_ref: Arc::clone(&new_ref),
+                            handler: base_entry.handler,
+                        },
+                    )
+                })
+                .collect();
+        }
+
+        // Config override present — factory path. Convert YAML
+        // override value into the JSON shape `PluginConfig.config`
+        // carries (YAML is a superset of JSON so serde re-serialization
+        // is safe). Per spec, override `config` replaces the base
+        // `config` wholesale.
+        let cfg_yaml = config_override.expect("checked above");
+        let cfg_json = match serde_json::to_value(cfg_yaml) {
+            Ok(v) => v,
+            Err(e) => {
+                error!(
+                    plugin = %plugin_name,
+                    error = %e,
+                    "build_override_entries: YAML→JSON config conversion failed",
+                );
+                return Vec::new();
+            }
+        };
+        merged_config.config = Some(cfg_json);
+
+        let kind = merged_config.kind.clone();
+        let instance = {
+            let factories = self.factories.read().unwrap_or_else(|p| p.into_inner());
+            let factory = match factories.get(&kind) {
+                Some(f) => f,
+                None => {
+                    error!(
+                        plugin = %plugin_name,
+                        kind = %kind,
+                        "build_override_entries: no factory registered for kind",
+                    );
+                    return Vec::new();
+                }
+            };
+            match factory.create(&merged_config) {
+                Ok(i) => i,
+                Err(e) => {
+                    error!(
+                        plugin = %plugin_name,
+                        error = %e,
+                        "build_override_entries: factory.create failed",
+                    );
+                    return Vec::new();
+                }
+            }
+        };
+
+        if let Err(e) = instance.plugin.initialize().await {
+            error!(
+                plugin = %plugin_name,
+                error = %e,
+                "build_override_entries: initialize() failed on new instance",
+            );
+            return Vec::new();
+        }
+
+        // One PluginRef shared across the new instance's handlers —
+        // all hooks served by one instance share a circuit breaker
+        // (matches registration semantics).
+        let new_ref = Arc::new(crate::registry::PluginRef::new(
+            Arc::clone(&instance.plugin),
+            merged_config,
+        ));
+        instance
+            .handlers
+            .into_iter()
+            .map(|(hook_name, handler)| {
+                (
+                    hook_name.to_string(),
+                    crate::registry::HookEntry {
+                        plugin_ref: Arc::clone(&new_ref),
+                        handler,
+                    },
+                )
+            })
+            .collect()
     }
 
     /// Create an override plugin instance with merged config.
@@ -1184,11 +1793,25 @@ impl PluginManager {
     // Query Methods
     // -----------------------------------------------------------------------
 
-    /// Whether any plugins are registered for the given hook name.
+    /// Whether anything would run for the given hook name — either a
+    /// registered plugin handler OR a route annotation targeting that hook.
+    ///
+    /// Route annotations (installed by APL from a route's `policy:` /
+    /// `args:` / `result:` blocks) must be counted here: a route whose only
+    /// handler for a phase is an annotation (e.g. a response-side
+    /// `result: { ssn: redact(...) }` on `cmf.tool_post_invoke`, with no
+    /// globally-registered post-invoke plugin) would otherwise report
+    /// "no hooks" and be skipped by out-of-process hosts that use this as a
+    /// fast-skip gate — silently dropping the route's policy for that phase.
     pub fn has_hooks_for(&self, hook_name: &str) -> bool {
-        self.load_runtime()
+        let snapshot = self.load_runtime();
+        snapshot
             .registry
             .has_hooks_for(&HookType::new(hook_name))
+            || snapshot
+                .route_annotations
+                .keys()
+                .any(|k| k.hook_name.as_str() == hook_name)
     }
 
     /// Look up a plugin by name. Returns an `Arc<PluginRef>` clone — works

@@ -9,8 +9,46 @@
 resolver = "2"
 members = [
     "crates/cpex-core",
+    "crates/cpex-orchestration",
     "crates/cpex-sdk",
     "crates/cpex-ffi",
+    "crates/apl-core",
+    "crates/apl-cmf",
+    "crates/apl-cpex",
+    "crates/apl-pdp-cedar-direct",
+    "crates/apl-cedarling",
+    "crates/apl-identity-jwt",
+    "crates/apl-delegator-oauth",
+    "crates/apl-delegator-biscuit",
+    "crates/apl-pii-scanner",
+    "crates/apl-audit-logger",
+    "examples/go-demo/ffi",
+]
+
+# `default-members` controls what `cargo build` / `cargo test` (with no
+# `-p` or `--workspace` flag) picks up. Cedarling integration crates
+# pull ~200 transitive deps (jsonwebtoken, reqwest, sparkv, datalogic-rs,
+# flate2, etc.) and slow default builds significantly — excluding them
+# from default-members keeps everyday iteration fast.
+#
+# To exercise Cedarling crates:
+#   cargo build --workspace                # all members
+#   cargo build -p apl-cedarling           # just this one
+#   cargo test --workspace                 # full sweep (CI)
+default-members = [
+    "crates/cpex-core",
+    "crates/cpex-orchestration",
+    "crates/cpex-sdk",
+    "crates/cpex-ffi",
+    "crates/apl-core",
+    "crates/apl-cmf",
+    "crates/apl-cpex",
+    "crates/apl-pdp-cedar-direct",
+    "crates/apl-identity-jwt",
+    "crates/apl-delegator-oauth",
+    "crates/apl-delegator-biscuit",
+    "crates/apl-pii-scanner",
+    "crates/apl-audit-logger",
     "examples/go-demo/ffi",
 ]
 
@@ -37,3 +75,5 @@ arc-swap = "1.7"
 wildmatch = "2"
 rmp-serde = "1"
 serde_bytes = "0.11"
+chrono = { version = "0.4", features = ["serde"] }
+regex = "1"

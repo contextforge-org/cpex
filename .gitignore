@@ -56,6 +56,7 @@ FIXMEs
 logs/
 *.log
 .sketchpad
+.localtarget*
 
 # Fuzzing artifacts and reports
 reports/
@@ -201,12 +202,28 @@ celerybeat-schedule
 
 # Environments
 .env
+.env.*
+*.env
+env.bak/
+env.back
+env.bak
 .venv
 env/
 venv/
 ENV/
-env.bak/
 venv.bak/
+
+# Loose credential / token files — defensive net against accidental
+# `git add` of dev-captured real tokens. The `.env` patterns above
+# already cover the canonical case.
+bearertoken*
+*.token
+*.tokens
+*credentials*.json
+*credentials*.yaml
+*credentials*.yml
+apikey*
+*.pem
 
 # Spyder project settings
 .spyderproject
