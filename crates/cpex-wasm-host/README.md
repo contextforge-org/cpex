@@ -177,20 +177,6 @@ cargo test
 
 ## Usage
 
-### Direct (without PluginManager)
-
-```rust
-use std::path::Path;
-use cpex_wasm_host::policy_loader::SandboxPolicy;
-use cpex_wasm_host::sandbox_manager::SandboxManager;
-
-let policy = SandboxPolicy::default(); // deny-all sandbox
-let mut manager = SandboxManager::new()?;
-manager.load_wasmplugin(Path::new("wasm/plugin.wasm"), Some(&policy)).await?;
-
-let result = manager.invoke(payload, extensions, ctx).await?;
-```
-
 ### Via PluginManager
 
 ```rust
