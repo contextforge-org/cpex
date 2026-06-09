@@ -14,6 +14,8 @@ members = [
     "crates/cpex-sdk",
     "crates/cpex-builtins",
     "crates/cpex-ffi",
+    "crates/cpex-payload",
+    "crates/cpex-wasm-host",
     "crates/apl-core",
     "crates/apl-cmf",
     "crates/apl-cpex",
@@ -26,6 +28,9 @@ members = [
     "builtins/pdps/cel",
     "builtins/session/valkey",
     "examples/go-demo/ffi",
+]
+exclude = [
+    "crates/cpex-wasm-plugin",
 ]
 
 # `default-members` controls what `cargo build` / `cargo test` (with no
