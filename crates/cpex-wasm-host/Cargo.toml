@@ -1,0 +1,17 @@
+[package]
+name = "cpex-wasm-host"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { version = "1", features = ["sync", "macros", "io-util", "rt", "rt-multi-thread", "time", "signal", "net"] }
+wasmtime = { version = "45.0", features = ["component-model", "async"] }
+wasmtime-wasi = "45.0"
+wasmtime-wasi-http = { version = "45.0", features = ["default-send-request"] }
+hyper = "1"
+anyhow = "1.0"
+serde = { version = "1", features = ["derive"] }
+serde_yaml = "0.9"
+serde_json = { workspace = true }
+cpex-core = { path = "../cpex-core" }
+async-trait = "0.1"
