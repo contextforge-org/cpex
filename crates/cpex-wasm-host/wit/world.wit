@@ -1,0 +1,231 @@
+// Location: ./crates/cpex-wasm-host/wit/world.wit
+// Copyright 2025
+// SPDX-License-Identifier: Apache-2.0
+// Authors: Shriti Priya
+//
+// WIT world definition for the CPEX plugin component.
+// Defines the types and exported function that the WASM host uses to invoke plugins.
+
+package cpex:plugin;
+
+interface types {
+  enum role {
+    system,
+    developer,
+    user,
+    assistant,
+    tool,
+  }
+
+  enum channel {
+    analysis,
+    commentary,
+    final,
+  }
+
+  enum resource-type {
+    file,
+    blob,
+    uri,
+    database,
+    api,
+    memory,
+    artifact,
+  }
+
+  enum subject-type {
+    user,
+    agent,
+    service,
+    system,
+  }
+
+  record image-source {
+    source-type: string,
+    data: string,
+    media-type: option<string>,
+  }
+
+  record video-source {
+    source-type: string,
+    data: string,
+    media-type: option<string>,
+    duration-ms: option<u64>,
+  }
+
+  record audio-source {
+    source-type: string,
+    data: string,
+    media-type: option<string>,
+    duration-ms: option<u64>,
+  }
+
+  record document-source {
+    source-type: string,
+    data: string,
+    media-type: option<string>,
+    title: option<string>,
+  }
+
+  record tool-call {
+    tool-call-id: string,
+    name: string,
+    arguments: string,
+    namespace: option<string>,
+  }
+
+  record tool-result {
+    tool-call-id: string,
+    tool-name: string,
+    content: string,
+    is-error: bool,
+  }
+
+  record cmf-resource {
+    resource-request-id: string,
+    uri: string,
+    name: option<string>,
+    description: option<string>,
+    resource-type: resource-type,
+    content: option<string>,
+    blob: option<list<u8>>,
+    mime-type: option<string>,
+    size-bytes: option<u64>,
+    annotations: string,
+    version: option<string>,
+  }
+
+  record resource-reference {
+    resource-request-id: string,
+    uri: string,
+    name: option<string>,
+    resource-type: resource-type,
+    range-start: option<u64>,
+    range-end: option<u64>,
+    selector: option<string>,
+  }
+
+  record prompt-request {
+    prompt-request-id: string,
+    name: string,
+    arguments: string,
+    server-id: option<string>,
+  }
+
+  record prompt-result {
+    prompt-request-id: string,
+    prompt-name: string,
+    messages: string,
+    content: option<string>,
+    is-error: bool,
+    error-message: option<string>,
+  }
+
+  variant content-part {
+    text(string),
+    thinking(string),
+    tool-call(tool-call),
+    tool-result(tool-result),
+    cmf-resource(cmf-resource),
+    resource-ref(resource-reference),
+    prompt-request(prompt-request),
+    prompt-result(prompt-result),
+    image(image-source),
+    video(video-source),
+    audio(audio-source),
+    document(document-source),
+  }
+
+  record message {
+    schema-version: string,
+    role: role,
+    content: list<content-part>,
+    channel: option<channel>,
+  }
+
+  record message-payload {
+    message: message,
+  }
+
+  record request-extension {
+    environment: option<string>,
+    request-id: option<string>,
+    timestamp: option<string>,
+    trace-id: option<string>,
+    span-id: option<string>,
+  }
+
+  record subject-extension {
+    id: option<string>,
+    subject-type: option<subject-type>,
+    roles: list<string>,
+    permissions: list<string>,
+    teams: list<string>,
+    claims: list<tuple<string, string>>,
+  }
+
+  record security-extension {
+    labels: list<string>,
+    classification: option<string>,
+    subject: option<subject-extension>,
+    auth-method: option<string>,
+  }
+
+  record http-extension {
+    request-headers: list<tuple<string, string>>,
+    response-headers: list<tuple<string, string>>,
+  }
+
+  record meta-extension {
+    entity-type: option<string>,
+    entity-name: option<string>,
+    tags: list<string>,
+    scope: option<string>,
+    properties: list<tuple<string, string>>,
+  }
+
+  record extensions {
+    request: option<request-extension>,
+    security: option<security-extension>,
+    http: option<http-extension>,
+    meta: option<meta-extension>,
+  }
+
+  record plugin-context {
+    local-state: string,
+    global-state: string,
+  }
+
+  record plugin-violation {
+    code: string,
+    reason: string,
+    description: option<string>,
+    details: string,
+    proto-error-code: option<s64>,
+  }
+
+  record plugin-result {
+    continue-processing: bool,
+    modified-payload: option<message-payload>,
+    modified-extensions: option<extensions>,
+    violation: option<plugin-violation>,
+    metadata: option<string>,
+  }
+}
+
+world plugin {
+  import wasi:io/poll@0.2.6;
+  import wasi:io/error@0.2.6;
+  import wasi:io/streams@0.2.6;
+  import wasi:clocks/monotonic-clock@0.2.6;
+  import wasi:http/types@0.2.6;
+  import wasi:http/outgoing-handler@0.2.6;
+
+  use types.{message-payload, extensions, plugin-context, plugin-result};
+
+  export handle-hook: func(
+    payload: message-payload,
+    extensions: extensions,
+    ctx: plugin-context
+  ) -> plugin-result;
+}
