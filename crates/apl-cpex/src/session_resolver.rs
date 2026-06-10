@@ -101,7 +101,7 @@ fn short_hash(raw: &str) -> String {
 /// so a session id chosen by one principal cannot address another principal's
 /// session bucket. Returns `None` when there is no authenticated subject — a
 /// bare client value has no safe scope, consistent with Tiers 2/3, which also
-/// require a subject. See security review Finding 2.
+/// require a subject.
 fn subject_scoped(subject_id: Option<&str>, raw: &str) -> Option<String> {
     let sub = subject_id?;
     Some(short_hash(&format!("{}:{}", sub, raw)))
@@ -123,7 +123,7 @@ pub fn resolve_session(ext: &Extensions) -> Option<(String, SessionSource)> {
     // The authenticated subject, populated by the identity resolvers
     // (apl-identity-jwt) before this runs. Every client/upstream-supplied
     // session value below is bound to it so one principal can't address
-    // another's session bucket (Finding 2).
+    // another's session bucket.
     let subject_id = ext
         .security
         .as_deref()
@@ -239,7 +239,7 @@ mod tests {
     #[test]
     fn tier0_agent_session_id_is_subject_bound() {
         // A pre-resolved (client-supplied) session id is hashed together
-        // with the authenticated subject, never returned raw. Finding 2.
+        // with the authenticated subject, never returned raw.
         let ext = extensions_with_agent_and_subject("sess-upstream", "alice");
         let (sid, src) = resolve_session(&ext).expect("should resolve");
         assert_eq!(src, SessionSource::Agent);
@@ -249,7 +249,7 @@ mod tests {
 
     #[test]
     fn tier0_same_session_id_different_subjects_are_distinct() {
-        // THE core Finding 2 guarantee: principal A reusing principal B's
+        // Guarantee: principal A reusing principal B's
         // session id must NOT land in B's session bucket.
         let alice = extensions_with_agent_and_subject("shared-sid", "alice");
         let bob = extensions_with_agent_and_subject("shared-sid", "bob");
@@ -342,7 +342,7 @@ mod tests {
 
         let (sid, src) = resolve_session(&ext).expect("should resolve");
         assert_eq!(src, SessionSource::TokenClaim);
-        // Subject-bound, not the raw claim value (Finding 2).
+        // Subject-bound, not the raw claim value.
         assert_eq!(
             sid,
             subject_scoped(Some("alice@corp.com"), "sess-from-token-789").unwrap()

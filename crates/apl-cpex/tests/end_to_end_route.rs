@@ -40,8 +40,7 @@ use apl_cpex::{CmfPluginInvoker, DispatchCache, MemorySessionStore, SessionStore
 
 // Build Extensions carrying a client/upstream session id (tier-0) AND an
 // authenticated subject, and return the session-store key the resolver
-// derives for them. Tier-0 session ids are subject-bound (security review
-// Finding 2), so these tests must key the store by the resolved value rather
+// derives for them. Tier-0 session ids are subject-bound, so these tests must key the store by the resolved value rather
 // than the raw string they supply.
 fn session_ext_and_key(session_id: &str, subject_id: &str) -> (Extensions, String) {
     let mut agent = cpex_core::extensions::AgentExtension::default();
@@ -457,7 +456,7 @@ async fn session_store_hydrates_labels_at_request_start() {
     // Pre-seed the session store with a label, then verify the invoker
     // hydrates it into extensions.security.labels at for_request time
     // (so the first plugin call sees the accumulated session state).
-    // Subject-bound session key (Finding 2): pre-seed under the resolved key.
+    // Subject-bound session key: pre-seed under the resolved key.
     let (extensions, session_key) = session_ext_and_key("sess-existing", "alice");
     let session_store = Arc::new(MemorySessionStore::new());
     session_store
