@@ -22,17 +22,19 @@
 //
 //   0. `agent`      — `AgentExtension.session_id`. A *pre-resolved*
 //      value: an upstream plugin or middleware decided what the
-//      session is and wrote it here. Highest priority because it
-//      represents authority, not derivation — overriding this with a
-//      derived value would discard that upstream decision. Plugins
-//      that need bespoke session resolution (e.g., reading from a
-//      separate session-management service) write here and let the
-//      resolver pick it up.
+//      session is and wrote it here (for the FFI/AuthBridge path this
+//      is the client `X-Session-Id` header / A2A contextId). Highest
+//      priority among sources, but **subject-bound** before use
+//      (`sha256(subject_id : value)`): the raw value is attacker-chosen,
+//      so it must only scope state WITHIN the authenticated subject,
+//      never across principals. Falls through when no subject is present.
 //
 //   1. `token_claim` — explicit `session_id` claim in the inbound JWT.
 //      Strongest binding among the *derived* tiers: the auth issuer
 //      chose this session and signed it into the token. Read from
-//      `SecurityExtension.subject.claims["session_id"]`.
+//      `SecurityExtension.subject.claims["session_id"]` and **subject-
+//      bound** the same way (a signed claim is per-issuer and may repeat
+//      across principals, so the key must still include the subject).
 //
 //   2. `identity`   — derived: sha256(sub : caller_workload : this_workload)[:16].
 //      No special infrastructure needed; the triple is already populated
@@ -78,6 +80,33 @@ impl SessionSource {
     }
 }
 
+/// 16 hex chars (64 bits) of `sha256(raw)`. Shared by the identity tier
+/// and the subject-binding of the Agent/TokenClaim tiers so all derived
+/// session ids have one keying scheme. Matches the Python implementation's
+/// `hexdigest()[:16]`.
+fn short_hash(raw: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(raw.as_bytes());
+    let digest = hasher.finalize();
+    digest
+        .iter()
+        .take(8)
+        .map(|b| format!("{:02x}", b))
+        .collect()
+}
+
+/// Bind a client/upstream-supplied raw session value to the authenticated
+/// subject: `sha256(subject_id : raw)`. This is the subject-bound shape the
+/// module doc prescribes for the (previously raw) Agent and TokenClaim tiers,
+/// so a session id chosen by one principal cannot address another principal's
+/// session bucket. Returns `None` when there is no authenticated subject — a
+/// bare client value has no safe scope, consistent with Tiers 2/3, which also
+/// require a subject. See security review Finding 2.
+fn subject_scoped(subject_id: Option<&str>, raw: &str) -> Option<String> {
+    let sub = subject_id?;
+    Some(short_hash(&format!("{}:{}", sub, raw)))
+}
+
 /// Resolve a session id from the request's `Extensions`. Returns
 /// `Some((id, source))` on the first tier that hits, or `None` when
 /// every tier comes up empty (anonymous request, no claims, no
@@ -91,23 +120,41 @@ impl SessionSource {
 /// degrades to a (sub, *, *) session — usually fine for demos with
 /// a single gateway and single agent.
 pub fn resolve_session(ext: &Extensions) -> Option<(String, SessionSource)> {
-    // Tier 0: pre-resolved by an upstream plugin. Authoritative —
-    // wins over every derived tier so plugin-supplied custom session
-    // resolution isn't silently overridden by a derived hash.
+    // The authenticated subject, populated by the identity resolvers
+    // (apl-identity-jwt) before this runs. Every client/upstream-supplied
+    // session value below is bound to it so one principal can't address
+    // another's session bucket (Finding 2).
+    let subject_id = ext
+        .security
+        .as_deref()
+        .and_then(|s| s.subject.as_ref())
+        .and_then(|s| s.id.as_deref());
+
+    // Tier 0: pre-resolved by an upstream plugin (for the FFI/AuthBridge
+    // path this is `X-Session-Id` / the A2A contextId). Authoritative among
+    // sources, but subject-bound here rather than trusted raw: the raw value
+    // is attacker-chosen, so it only ever scopes state WITHIN the
+    // authenticated subject. Falls through when no subject is present.
     if let Some(agent) = ext.agent.as_deref() {
         if let Some(sid) = agent.session_id.as_deref() {
             if !sid.is_empty() {
-                return Some((sid.to_string(), SessionSource::Agent));
+                if let Some(bound) = subject_scoped(subject_id, sid) {
+                    return Some((bound, SessionSource::Agent));
+                }
             }
         }
     }
 
-    // Tier 1: explicit JWT claim.
+    // Tier 1: explicit JWT `session_id` claim — also subject-bound. Even a
+    // signed claim is per-issuer and could repeat across principals, so the
+    // store key must still incorporate the subject.
     if let Some(sec) = ext.security.as_deref() {
         if let Some(subj) = sec.subject.as_ref() {
             if let Some(sid) = subj.claims.get("session_id") {
                 if !sid.is_empty() {
-                    return Some((sid.clone(), SessionSource::TokenClaim));
+                    if let Some(bound) = subject_scoped(subject_id, sid) {
+                        return Some((bound, SessionSource::TokenClaim));
+                    }
                 }
             }
         }
@@ -134,18 +181,7 @@ pub fn resolve_session(ext: &Extensions) -> Option<(String, SessionSource)> {
                 .and_then(|w| w.client_id.as_deref())
                 .unwrap_or("-");
             let raw = format!("{}:{}:{}", sub, actor, aud);
-            let mut hasher = Sha256::new();
-            hasher.update(raw.as_bytes());
-            // 16 hex chars = 64 bits — plenty for the workload sizes
-            // CPEX targets, matches the Python implementation's
-            // `hexdigest()[:16]`.
-            let digest = hasher.finalize();
-            let hex: String = digest
-                .iter()
-                .take(8)
-                .map(|b| format!("{:02x}", b))
-                .collect();
-            return Some((hex, SessionSource::Identity));
+            return Some((short_hash(&raw), SessionSource::Identity));
         }
     }
 
@@ -184,20 +220,67 @@ mod tests {
         }
     }
 
+    // Build Extensions carrying both an agent.session_id and a subject id.
+    fn extensions_with_agent_and_subject(session_id: &str, subject_id: &str) -> Extensions {
+        let mut agent = AgentExtension::default();
+        agent.session_id = Some(session_id.into());
+        Extensions {
+            agent: Some(Arc::new(agent)),
+            security: Some(Arc::new(SecurityExtension {
+                subject: Some(subject_with_claims(Some(subject_id), &[])),
+                ..Default::default()
+            })),
+            ..Default::default()
+        }
+    }
+
     // --- Tier 0: agent (pre-resolved) ---
 
     #[test]
-    fn tier0_agent_session_id_hits_first() {
+    fn tier0_agent_session_id_is_subject_bound() {
+        // A pre-resolved (client-supplied) session id is hashed together
+        // with the authenticated subject, never returned raw. Finding 2.
+        let ext = extensions_with_agent_and_subject("sess-upstream", "alice");
+        let (sid, src) = resolve_session(&ext).expect("should resolve");
+        assert_eq!(src, SessionSource::Agent);
+        assert_eq!(sid, subject_scoped(Some("alice"), "sess-upstream").unwrap());
+        assert_ne!(sid, "sess-upstream", "raw client value must not be the key");
+    }
+
+    #[test]
+    fn tier0_same_session_id_different_subjects_are_distinct() {
+        // THE core Finding 2 guarantee: principal A reusing principal B's
+        // session id must NOT land in B's session bucket.
+        let alice = extensions_with_agent_and_subject("shared-sid", "alice");
+        let bob = extensions_with_agent_and_subject("shared-sid", "bob");
+        let (sid_a, _) = resolve_session(&alice).unwrap();
+        let (sid_b, _) = resolve_session(&bob).unwrap();
+        assert_ne!(
+            sid_a, sid_b,
+            "same client session id under different subjects must not collide",
+        );
+    }
+
+    #[test]
+    fn tier0_stable_for_same_subject_and_session_id() {
+        // Same subject + same client session id → same key, so a legit
+        // user's taint persists across their own request/response cycles.
+        let (sid1, _) = resolve_session(&extensions_with_agent_and_subject("s1", "bob")).unwrap();
+        let (sid2, _) = resolve_session(&extensions_with_agent_and_subject("s1", "bob")).unwrap();
+        assert_eq!(sid1, sid2);
+    }
+
+    #[test]
+    fn tier0_no_subject_falls_through() {
+        // A client session id with no authenticated subject has no safe
+        // scope: do not honor it (no anonymous cross-readable bucket).
         let mut agent = AgentExtension::default();
         agent.session_id = Some("sess-upstream".into());
         let ext = Extensions {
             agent: Some(Arc::new(agent)),
             ..Default::default()
         };
-
-        let (sid, src) = resolve_session(&ext).expect("should resolve");
-        assert_eq!(sid, "sess-upstream");
-        assert_eq!(src, SessionSource::Agent);
+        assert!(resolve_session(&ext).is_none());
     }
 
     #[test]
@@ -209,14 +292,21 @@ mod tests {
         agent.session_id = Some("".into());
         let ext = Extensions {
             agent: Some(Arc::new(agent)),
+            security: Some(Arc::new(SecurityExtension {
+                subject: Some(subject_with_claims(Some("alice"), &[])),
+                ..Default::default()
+            })),
             ..Default::default()
         };
-        assert!(resolve_session(&ext).is_none());
+        // Empty Tier 0 falls through; identity tier (subject present) hits.
+        let (_, src) = resolve_session(&ext).expect("should fall through to identity");
+        assert_eq!(src, SessionSource::Identity);
     }
 
     #[test]
     fn tier0_wins_over_token_claim() {
-        // Pre-resolved value beats a JWT claim — upstream authority.
+        // Pre-resolved value beats a JWT claim — upstream authority — and is
+        // subject-bound rather than returned raw.
         let mut agent = AgentExtension::default();
         agent.session_id = Some("from-agent".into());
         let sec = SecurityExtension {
@@ -233,8 +323,8 @@ mod tests {
         };
 
         let (sid, src) = resolve_session(&ext).unwrap();
-        assert_eq!(sid, "from-agent");
         assert_eq!(src, SessionSource::Agent);
+        assert_eq!(sid, subject_scoped(Some("alice"), "from-agent").unwrap());
     }
 
     // --- Tier 1: token_claim ---
@@ -251,8 +341,13 @@ mod tests {
         let ext = extensions_with_security(sec);
 
         let (sid, src) = resolve_session(&ext).expect("should resolve");
-        assert_eq!(sid, "sess-from-token-789");
         assert_eq!(src, SessionSource::TokenClaim);
+        // Subject-bound, not the raw claim value (Finding 2).
+        assert_eq!(
+            sid,
+            subject_scoped(Some("alice@corp.com"), "sess-from-token-789").unwrap()
+        );
+        assert_ne!(sid, "sess-from-token-789");
     }
 
     #[test]
@@ -262,10 +357,7 @@ mod tests {
         // an empty string in the claim would yield "" as the session
         // key, which would alias every such request.
         let sec = SecurityExtension {
-            subject: Some(subject_with_claims(
-                Some("alice"),
-                &[("session_id", "")],
-            )),
+            subject: Some(subject_with_claims(Some("alice"), &[("session_id", "")])),
             ..Default::default()
         };
         let ext = extensions_with_security(sec);
