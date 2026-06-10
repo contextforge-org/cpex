@@ -327,6 +327,40 @@ mod tests {
         assert_eq!(sid, subject_scoped(Some("alice"), "from-agent").unwrap());
     }
 
+    #[test]
+    fn tier0_wins_over_identity() {
+        // T0 (agent.session_id) must win over T2 (identity triple) when
+        // both are available. Pins the tier priority explicitly so a
+        // future refactor of the resolver's walk order regresses loudly.
+        let mut agent = AgentExtension::default();
+        agent.session_id = Some("from-agent".into());
+        let sec = SecurityExtension {
+            subject: Some(subject_with_claims(Some("alice"), &[])),
+            caller_workload: Some(WorkloadIdentity {
+                client_id: Some("agent-007".into()),
+                ..Default::default()
+            }),
+            this_workload: Some(WorkloadIdentity {
+                client_id: Some("praxis-gateway".into()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let ext = Extensions {
+            agent: Some(Arc::new(agent)),
+            security: Some(Arc::new(sec)),
+            ..Default::default()
+        };
+
+        let (sid, src) = resolve_session(&ext).unwrap();
+        assert_eq!(
+            src,
+            SessionSource::Agent,
+            "T0 must win over T2 when both are available",
+        );
+        assert_eq!(sid, subject_scoped(Some("alice"), "from-agent").unwrap());
+    }
+
     // --- Tier 1: token_claim ---
 
     #[test]
@@ -364,6 +398,104 @@ mod tests {
 
         let (_, src) = resolve_session(&ext).expect("should fall through to identity");
         assert_eq!(src, SessionSource::Identity);
+    }
+
+    #[test]
+    fn tier1_same_session_id_claim_different_subjects_are_distinct() {
+        // The Finding 2 guarantee for T1. An issuer that reuses a
+        // session_id value across multiple principals (multi-tenant
+        // naming conventions, counters that don't carry the subject,
+        // etc.) must NOT let one principal land in another's session
+        // bucket. Direct mirror of the T0 cross-principal test.
+        let mk = |sub: &str| -> SecurityExtension {
+            SecurityExtension {
+                subject: Some(subject_with_claims(
+                    Some(sub),
+                    &[("session_id", "issuer-shared-sid")],
+                )),
+                ..Default::default()
+            }
+        };
+        let (sid_a, _) = resolve_session(&extensions_with_security(mk("alice"))).unwrap();
+        let (sid_b, _) = resolve_session(&extensions_with_security(mk("bob"))).unwrap();
+        assert_ne!(
+            sid_a, sid_b,
+            "same JWT session_id claim under different subjects must not collide",
+        );
+    }
+
+    #[test]
+    fn tier1_stable_for_same_subject_and_session_id_claim() {
+        // Same subject + same claim value → same key. A legit user's
+        // session stays consistent across requests carrying the same
+        // claim, so accumulated taint persists where it should.
+        let mk = || -> Extensions {
+            extensions_with_security(SecurityExtension {
+                subject: Some(subject_with_claims(
+                    Some("alice"),
+                    &[("session_id", "claim-value-42")],
+                )),
+                ..Default::default()
+            })
+        };
+        let (sid1, _) = resolve_session(&mk()).unwrap();
+        let (sid2, _) = resolve_session(&mk()).unwrap();
+        assert_eq!(sid1, sid2);
+    }
+
+    #[test]
+    fn tier1_no_subject_id_falls_through() {
+        // A JWT carries a `session_id` claim but has no `sub` (subject
+        // present but `id == None`). T1 has no safe scope without a
+        // subject — must fall through. T2 also requires a subject and
+        // therefore returns None overall.
+        let sec = SecurityExtension {
+            subject: Some(SubjectExtension {
+                id: None,
+                claims: [("session_id".to_string(), "claim-value".to_string())]
+                    .into_iter()
+                    .collect(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let ext = extensions_with_security(sec);
+        assert!(
+            resolve_session(&ext).is_none(),
+            "claim with no subject id has no safe scope; must not honor",
+        );
+    }
+
+    #[test]
+    fn tier1_wins_over_identity() {
+        // Both a JWT session_id claim AND a full identity triple are
+        // present. T1 must win over T2. Pins the tier priority
+        // explicitly — the existing happy-path test happens to omit
+        // T2 inputs, so without this T1>T2 priority is only implicit.
+        let sec = SecurityExtension {
+            subject: Some(subject_with_claims(
+                Some("alice"),
+                &[("session_id", "from-claim")],
+            )),
+            caller_workload: Some(WorkloadIdentity {
+                client_id: Some("agent-007".into()),
+                ..Default::default()
+            }),
+            this_workload: Some(WorkloadIdentity {
+                client_id: Some("praxis-gateway".into()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let ext = extensions_with_security(sec);
+
+        let (sid, src) = resolve_session(&ext).unwrap();
+        assert_eq!(
+            src,
+            SessionSource::TokenClaim,
+            "T1 must win over T2 when both are available",
+        );
+        assert_eq!(sid, subject_scoped(Some("alice"), "from-claim").unwrap());
     }
 
     // --- Tier 2 (`X-CPEX-Session-Id` header) is intentionally absent ---
@@ -477,6 +609,34 @@ mod tests {
         };
         let ext = extensions_with_security(sec);
         assert!(resolve_session(&ext).is_none());
+    }
+
+    // --- Wire-format documentation ---
+
+    #[test]
+    fn separator_format_collides_when_subject_contains_colon() {
+        // Document — but do not silently ignore — the colon-separator
+        // format's known ambiguity. A colon inside subject_id collides
+        // with one inside the raw value: both
+        //   subject="alice:foo", raw="bar"
+        // and
+        //   subject="alice",     raw="foo:bar"
+        // hash the same string "alice:foo:bar" and thus produce the
+        // same session key.
+        //
+        // JWT `sub` claims are conventionally opaque URNs or emails,
+        // which in practice don't carry colons. This test asserts the
+        // collision exists so a future migration that introduces
+        // colon-bearing subject IDs (or changes the separator format
+        // unilaterally) breaks the build and forces a deliberate
+        // re-design — most likely a length-prefixed format like
+        // `{sub_len}:{sub}:{raw}`.
+        let a = subject_scoped(Some("alice:foo"), "bar").unwrap();
+        let b = subject_scoped(Some("alice"), "foo:bar").unwrap();
+        assert_eq!(
+            a, b,
+            "current format collides; if subject IDs can contain colons, switch to length-prefix",
+        );
     }
 
     // --- Spoofing guard (regression test for P0-2) ---
