@@ -14,6 +14,7 @@ in plugin contexts.
 import copy
 import logging
 import weakref
+from collections.abc import Mapping
 from typing import Any, Iterator, Optional, TypeVar
 
 # Third-Party
@@ -172,6 +173,48 @@ class CopyOnWriteDict(dict):
             A string representation showing the current state.
         """
         return f"CopyOnWriteDict({dict(self.items())})"
+
+    __hash__ = None
+
+    def __eq__(self, other: Any) -> bool:
+        """
+        Compare equality with another mapping.
+
+        Compares the materialized logical mapping (original + modifications - deletions)
+        rather than the empty base dict storage.
+
+        Args:
+            other: The object to compare with.
+
+        Returns:
+            True if other is a Mapping with the same key-value pairs, False otherwise.
+            Returns NotImplemented for non-Mapping types to allow other.__eq__ to handle it.
+        """
+        if not isinstance(other, Mapping):
+            return NotImplemented
+
+        # Fast-path: if lengths differ, mappings cannot be equal
+        if len(self) != len(other):
+            return False
+
+        # Compare materialized items
+        return dict(self.items()) == dict(other.items())
+
+    def __ne__(self, other: Any) -> bool:
+        """
+        Compare inequality with another mapping.
+
+        Args:
+            other: The object to compare with.
+
+        Returns:
+            True if not equal, False if equal.
+            Returns NotImplemented for non-Mapping types.
+        """
+        eq = self.__eq__(other)
+        if eq is NotImplemented:
+            return NotImplemented
+        return not eq
 
     def get(self, key: Any, default: Optional[Any] = None) -> Any:
         """

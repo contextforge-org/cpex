@@ -79,3 +79,22 @@ class ConfigLoader:
         except FileNotFoundError:
             # Graceful fallback for tests and minimal environments without plugin config
             return Config(plugins=[], plugin_dirs=[])
+
+
+class ConfigSaver:
+    """
+    A configuration saver
+    """
+
+    @staticmethod
+    def save_config(config: Config, config_path: str) -> None:
+        """
+        Save the supplied configuration data to the filesystem
+        """
+        try:
+            updated_content = yaml.safe_dump(config.model_dump(mode="json"), default_flow_style=False)
+            with open(os.path.normpath(config_path), "w", encoding="utf-8") as file:
+                file.write(updated_content)
+                file.flush()
+        except OSError as ose:
+            raise RuntimeError(f"Error saving PluginConfig to {config_path}") from ose

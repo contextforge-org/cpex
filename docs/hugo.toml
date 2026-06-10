@@ -1,4 +1,4 @@
-baseURL = "https://contextforge-org.github.io/contextforge-plugins-framework/"
+baseURL = "https://contextforge-org.github.io/cpex/"
 languageCode = "en-us"
 title = "CPEX Documentation"
 theme = "hugo-book"
@@ -7,7 +7,7 @@ theme = "hugo-book"
   BookTheme = "auto"
   BookToC = true
   BookSection = "docs"
-  BookRepo = "https://github.com/contextforge-org/contextforge-plugins-framework"
+  BookRepo = "https://github.com/contextforge-org/cpex"
   BookSearch = true
   BookComments = false
   BookEditLink = '{{ .Site.Params.BookRepo }}/edit/main/docs/{{ .Path }}'
