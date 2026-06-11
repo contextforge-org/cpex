@@ -53,6 +53,13 @@ class VenvProcessCommunicator:
 
         return str(python_exe)
 
+    def upgrade_pip(self) -> None:
+        """Upgrade pip in the target venv."""
+        try:
+            subprocess.check_call([self.python_executable, "-m", "pip", "install", "--upgrade", "pip"])
+        except Exception as e:
+            raise RuntimeError("Failed to upgrade pip") from e
+
     def install_requirements(self, requirements_file: str) -> None:
         """
         Install Python requirements from a file in the target venv.
@@ -62,6 +69,7 @@ class VenvProcessCommunicator:
         requirements_path = Path(requirements_file)
         if requirements_path.exists():
             try:
+                self.upgrade_pip()
                 subprocess.check_call([self.python_executable, "-m", "pip", "install", "-r", requirements_file])
             except Exception as e:
                 raise RuntimeError(f"Failed to install requirements from {requirements_file}") from e

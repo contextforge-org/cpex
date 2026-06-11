@@ -45,11 +45,23 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/).
   blocks are walked). The Go binding's `expectedFFIABIVersion` is bumped
   in lockstep.
 
+## [0.1.1] - 2026-06-04
+
+### Added
+
+- Plugin bundling, catalog, installation and versioning ([#31](https://github.com/contextforge-org/cpex/pull/31))
+
+### Fixed
+
+- Implement `__eq__` and `__ne__` for CopyOnWriteDict ([#55](https://github.com/contextforge-org/cpex/pull/55))
+- Respect `PLUGINS_LOG_LEVEL` environment variable in all runtime.py files ([#48](https://github.com/contextforge-org/cpex/pull/48))
+
 ## [0.1.0] - 2026-05-05
 
 ### Added
 
 - Initial release
 
-[Unreleased]: https://github.com/contextforge-org/contextforge-plugins-framework/compare/0.1.0...HEAD
-[0.1.0]: https://github.com/contextforge-org/contextforge-plugins-framework/releases/tag/0.1.0
+[Unreleased]: https://github.com/contextforge-org/cpex/compare/0.1.1...HEAD
+[0.1.1]: https://github.com/contextforge-org/cpex/compare/0.1.0...0.1.1
+[0.1.0]: https://github.com/contextforge-org/cpex/releases/tag/0.1.0

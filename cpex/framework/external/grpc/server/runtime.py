@@ -289,10 +289,14 @@ Examples:
 
     args = parser.parse_args()
 
-    # Configure logging
+    # Configure logging - respect PLUGINS_LOG_LEVEL environment variable
+    settings = get_settings()
+    log_level_str = settings.log_level or args.log_level
+    log_level = getattr(logging, log_level_str.upper(), logging.INFO)
     logging.basicConfig(
-        level=getattr(logging, args.log_level),
+        level=log_level,
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        stream=sys.stderr,
     )
 
     # Run the server

@@ -657,6 +657,25 @@ class TestIsolatedVenvPlugin:
         # Should install requirements when cache is invalid
         mock_comm.install_requirements.assert_called_once()
         mock_save_metadata.assert_called_once()
+    @pytest.mark.asyncio
+    async def test_cleanup(self, plugin):
+        """Test cleanup method stops worker process."""
+        mock_comm = MagicMock()
+        plugin.comm = mock_comm
+        
+        await plugin.cleanup()
+        
+        mock_comm.stop_worker.assert_called_once()
+        assert plugin.comm is None
+
+    @pytest.mark.asyncio
+    async def test_cleanup_no_comm(self, plugin):
+        """Test cleanup when comm is None."""
+        plugin.comm = None
+        
+        # Should not raise error
+        await plugin.cleanup()
+
 
     @pytest.mark.asyncio
     async def test_cleanup(self, plugin):
