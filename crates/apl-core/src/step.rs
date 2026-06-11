@@ -8,8 +8,8 @@
 // The DSL allows policy:/post_policy: lists to contain three kinds of
 // entries beyond predicate-and-action rules:
 //
-//   - PDP calls: `cedar:(...)`, `opa(...)`, `authzen(...)`, `nemo(...)`
-//     with optional `on_deny:` / `on_allow:` reaction blocks
+//   - PDP calls: `cedar:(...)`, `opa(...)`, `authzen(...)`, `nemo(...)`,
+//     `cel:(...)` with optional `on_deny:` / `on_allow:` reaction blocks
 //   - Plugin invocations: `plugin(name)`
 //   - Taint effects: `taint(label[, scope])`
 //
@@ -163,6 +163,14 @@ pub enum PdpDialect {
     Opa,
     AuthZen,
     NeMo,
+    /// CEL (Common Expression Language) evaluation — `apl-pdp-cel`.
+    /// The `cel:` step carries an `expr:` string that must evaluate to a
+    /// boolean against the policy `AttributeBag` (exposed to CEL as nested
+    /// namespaces: `subject.id`, `delegation.depth`, `session.labels`, …).
+    /// A small, safe, non-Turing-complete predicate language — distinct
+    /// from the full PDPs (Cedar/OPA) so all can coexist on one
+    /// `PdpRouter`; route YAML targets it with the `cel:(...)` key.
+    Cel,
     #[serde(untagged)]
     Custom(String),
 }
@@ -178,6 +186,7 @@ impl PdpDialect {
             "opa" => Self::Opa,
             "authzen" => Self::AuthZen,
             "nemo" => Self::NeMo,
+            "cel" => Self::Cel,
             other => Self::Custom(other.to_string()),
         }
     }
@@ -503,4 +512,37 @@ pub mod delegation_bag_keys {
     /// (i.e. evaluates to false) when no delegate step has run OR
     /// when the most recent one denied.
     pub const GRANTED: &str = "delegation.granted";
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn from_key_maps_known_dialects() {
+        assert_eq!(PdpDialect::from_key("cedar"), PdpDialect::Cedar);
+        assert_eq!(PdpDialect::from_key("cedarling"), PdpDialect::Cedarling);
+        assert_eq!(PdpDialect::from_key("opa"), PdpDialect::Opa);
+        assert_eq!(PdpDialect::from_key("authzen"), PdpDialect::AuthZen);
+        assert_eq!(PdpDialect::from_key("nemo"), PdpDialect::NeMo);
+        assert_eq!(PdpDialect::from_key("cel"), PdpDialect::Cel);
+    }
+
+    #[test]
+    fn from_key_unknown_is_custom() {
+        assert_eq!(
+            PdpDialect::from_key("rego-remote"),
+            PdpDialect::Custom("rego-remote".to_string())
+        );
+    }
+
+    #[test]
+    fn cel_dialect_serde_roundtrips_as_snake_case() {
+        // `Cel` is a tagged variant (snake_case) — must round-trip so
+        // compiled-route serialization (audit/cache) preserves it.
+        let json = serde_json::to_string(&PdpDialect::Cel).unwrap();
+        assert_eq!(json, "\"cel\"");
+        let back: PdpDialect = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, PdpDialect::Cel);
+    }
 }
