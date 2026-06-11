@@ -52,6 +52,7 @@ dev = [
     "bandit>=1.8.6",
     "check-manifest>=0.50",
     "interrogate>=1.7.0",
+    "maturin>=1.0,<2.0",
     "mypy>=1.18.2",
     "pyroma>=5.0",
     "pytest-asyncio>=1.2.0",
@@ -160,8 +161,11 @@ max-statements-in-try = 50
 ".github/**/*.py" = ["D1", "PL"]
 
 [build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["cpex"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["cpex"]

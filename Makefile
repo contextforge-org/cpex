@@ -70,6 +70,13 @@ help:
 	@echo "  rust-lint-check   Read-only fmt --check + clippy (CI-safe)"
 	@echo "  rust-clean        Remove the Rust target/ directory"
 	@echo ""
+	@echo "Python Bindings (PyO3 / cpex-python):"
+	@echo "  python-build      Build Python extension with maturin (debug)"
+	@echo "  python-build-release  Build Python extension (release, optimized)"
+	@echo "  python-install    Install Python extension in development mode"
+	@echo "  python-install-release  Install Python extension (release, editable)"
+	@echo "  python-test       Run tests with Rust backend enabled"
+	@echo ""
 	@echo "Go (go/cpex):"
 	@echo "  go-build          Build the Go cpex package (requires libcpex_ffi)"
 	@echo "  go-test           Run Go tests"
@@ -503,6 +510,44 @@ rust-clean:
 	@echo "🧹 Removing Rust target directory..."
 	@$(CARGO) clean
 	@echo "✅  target/ removed"
+# =============================================================================
+# Python bindings (PyO3 / Maturin)
+# =============================================================================
+#
+# PyO3 bindings provide a native Python extension module (cpex._native)
+# that wraps the Rust PluginManager. Maturin handles the build process.
+# Requires maturin to be installed (included in dev dependencies).
+
+.PHONY: python-build
+python-build:
+	@echo "🐍 Building Python extension (debug)..."
+	@maturin build --manifest-path crates/cpex-python/Cargo.toml
+	@echo "✅  Python extension built (debug)"
+
+.PHONY: python-build-release
+python-build-release:
+	@echo "🐍 Building Python extension (release)..."
+	@maturin build --release --manifest-path crates/cpex-python/Cargo.toml
+	@echo "✅  Python extension built (release)"
+
+.PHONY: python-install
+python-install:
+	@echo "🐍 Installing Python extension in development mode..."
+	@maturin develop --manifest-path crates/cpex-python/Cargo.toml
+	@echo "✅  Python extension installed (editable)"
+
+.PHONY: python-install-release
+python-install-release:
+	@echo "🐍 Installing Python extension in development mode (release)..."
+	@maturin develop --release --manifest-path crates/cpex-python/Cargo.toml
+	@echo "✅  Python extension installed (editable, release)"
+
+.PHONY: python-test
+python-test: python-install
+	@echo "🐍 Running tests with Rust backend..."
+	@PYTHONPATH="cpex" pytest -n auto tests/
+	@echo "✅  Tests passed with Rust backend"
+
 
 # =============================================================================
 # Go bindings (go/cpex)
