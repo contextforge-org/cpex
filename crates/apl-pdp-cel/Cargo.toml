@@ -1,0 +1,57 @@
+# Location: ./crates/apl-pdp-cel/Cargo.toml
+# Copyright 2026
+# SPDX-License-Identifier: Apache-2.0
+# Authors: Teryl Taylor
+#
+# apl-pdp-cel — a `PdpResolver` implementation that evaluates CEL (Common
+# Expression Language) boolean predicates against the policy `AttributeBag`.
+#
+# When to use this crate vs the full PDPs (`apl-pdp-cedar-direct`,
+# `apl-cedarling`, OPA):
+#
+#   - **cel** — inline, self-contained boolean decisions written by the
+#     policy author directly in the route YAML (`cel: { expr: "..." }`).
+#     No external policy store, no JWT validation, no network call. Ideal
+#     for relevance / consistency / lightweight ABAC checks that read the
+#     common attribute vocabulary (`subject.*`, `delegation.*`,
+#     `session.*`, `args.*`). Smallest dep tree of the PDP backends.
+#   - **cedar / cedarling / opa** — when policy lives outside the route
+#     (versioned policy sets, signed stores, central management) or needs
+#     the full entity/relationship model.
+#
+# CEL is non-Turing-complete, side-effect-free, and terminates — safe to
+# evaluate operator- or author-supplied expressions in-process. The crate
+# compiles each distinct expression once (cached by source string) and
+# evaluates it many times, matching CEL's intended usage.
+
+[package]
+name = "apl-pdp-cel"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+apl-core = { path = "../apl-core" }
+# clarkmcc's CEL interpreter (published as `cel`; formerly
+# `cel-interpreter`). Sync eval, comprehension macros (`has`, `all`,
+# `exists`, `map`, `filter`), custom functions. Caret spec tracks 0.x
+# patch/minor; pin tighter if the activation API churns.
+cel = "0.13"
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+# End-to-end integration tests wire the cel factory through the apl-cpex
+# visitor and exercise it against a real `PluginManager`. These dev-dep
+# edges only exist for tests — the crate itself stays apl-core-only at
+# compile time so it can be used standalone (e.g. in a custom orchestrator
+# that doesn't go through apl-cpex at all).
+apl-cmf = { path = "../apl-cmf" }
+apl-cpex = { path = "../apl-cpex" }
+cpex-core = { path = "../cpex-core" }
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }
