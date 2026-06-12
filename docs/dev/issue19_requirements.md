@@ -1,9 +1,5 @@
 # Requirements: CPEX Python Bindings (Issue #19)
 
-**This document supersedes `docs/specs/pyo3-bindings-plan.md`.**
-
----
-
 ## Philosophy
 
 **The Rust implementation is the canonical CPEX.** The Python bindings expose the Rust API faithfully — they do not bend to match the legacy Python framework's conventions. The legacy `./cpex/` package remains untouched; users migrate to the new package at their own pace via a migration guide.
