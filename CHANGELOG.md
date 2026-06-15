@@ -44,6 +44,28 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/).
   config visitors (it now calls `load_config_yaml` internally so `apl:`
   blocks are walked). The Go binding's `expectedFFIABIVersion` is bumped
   in lockstep.
+- Size-first `[profile.release]`: `opt-level = "z"`, `lto = true`,
+  `codegen-units = 1`, `strip = true`. `libcpex_ffi.a` is linked statically
+  into host binaries, so this flows straight into their image size — a
+  representative statically-linked consumer shrank ~21%. `panic = "abort"`
+  is intentionally not set (the FFI relies on `catch_unwind` at its
+  `#[no_mangle]` boundary). No API or ABI change.
+- Trimmed the workspace `tokio` feature floor from `["full"]` to
+  `["rt", "rt-multi-thread", "sync", "time", "macros"]` — the union of what
+  the crates actually use; `reqwest`/`hyper` still pull `net`/`io` where they
+  need them via feature unification. Drops the unused `fs`/`process`/`signal`
+  surface (and the `signal-hook-registry` dependency).
+
+### Fixed
+
+- Cedar evaluation no longer fails with "recursion limit reached" on hosts
+  that give the FFI a small thread stack (notably musl, whose default is
+  128 KiB). `cedar-policy` aborts when `stacker::remaining_stack()` is below
+  its 100 KiB floor; the cedar dispatch in `apl-pdp-cedar-direct` is now
+  wrapped in `stacker::maybe_grow`, so it runs on an adequately sized stack
+  regardless of the host (a no-op when there is already headroom, e.g.
+  glibc's 8 MiB threads). Regression test exercises a real evaluation on a
+  128 KiB stack.
 
 ## [0.1.0] - 2026-05-05
 
