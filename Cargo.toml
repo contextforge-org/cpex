@@ -59,7 +59,13 @@ license = "Apache-2.0"
 authors = ["Teryl Taylor", "Fred Araujo"]
 
 [workspace.dependencies]
-tokio = { version = "1", features = ["full"] }
+# Minimal tokio feature floor for crates that take `tokio = { workspace = true }`
+# without their own `features`. Production code uses time, sync, task/spawn
+# (rt) and a multi-threaded runtime (cpex-ffi's `new_multi_thread`); `net` and
+# `io` appear only in tests, and reqwest/hyper union those back in via feature
+# unification where they are actually needed. Dropping `full` removes the
+# fs/process/signal/io-std surface the embedded library never exercises.
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "sync", "time", "macros"] }
 tokio-util = { version = "0.7", features = ["rt"] }
 serde = { version = "1", features = ["derive", "rc"] }
 serde_yaml = "0.9"
@@ -77,3 +83,19 @@ rmp-serde = "1"
 serde_bytes = "0.11"
 chrono = { version = "0.4", features = ["serde"] }
 regex = "1"
+
+# Size-first release profile. The FFI artifact (libcpex_ffi.a) is linked
+# statically into host binaries, so its compiled size flows straight into
+# those images. The default release profile leaves symbols + debug info in
+# and does no cross-crate inlining/dead-code elimination; the settings below
+# trade build time for a materially smaller archive.
+#
+# panic = "abort" is intentionally NOT set: cpex-ffi catches panics at its
+# `#[no_mangle]` boundary with `catch_unwind`, and aborting would turn a
+# recoverable policy panic into a host-process kill. Revisit only if that
+# boundary is reworked to not rely on unwinding.
+[profile.release]
+opt-level = "z"      # optimize for size
+lto = true           # cross-crate inlining + dead-code elimination
+codegen-units = 1    # maximize optimization (one unit, no parallel-codegen bloat)
+strip = true         # drop symbols + debug info from the artifact
