@@ -70,6 +70,11 @@ help:
 	@echo "  rust-lint-check   Read-only fmt --check + clippy (CI-safe)"
 	@echo "  rust-clean        Remove the Rust target/ directory"
 	@echo ""
+	@echo "Python bindings (bindings/python — requires maturin):"
+	@echo "  bindings-python-build          Build and install Python bindings (debug)"
+	@echo "  bindings-python-build-release  Build Python bindings wheel (release)"
+	@echo "  bindings-python-test           Build + run Python binding tests"
+	@echo ""
 	@echo "Go (go/cpex):"
 	@echo "  go-build          Build the Go cpex package (requires libcpex_ffi)"
 	@echo "  go-test           Run Go tests"
@@ -443,19 +448,19 @@ GO_DIR = go/cpex
 .PHONY: rust-build
 rust-build:
 	@echo "🦀 Building Rust workspace (debug)..."
-	@$(CARGO) build --workspace
+	@$(CARGO) build --workspace --exclude cpex-python
 	@echo "✅  Rust workspace built"
 
 .PHONY: rust-build-release
 rust-build-release:
 	@echo "🦀 Building Rust workspace (release)..."
-	@$(CARGO) build --release --workspace
+	@$(CARGO) build --release --workspace --exclude cpex-python
 	@echo "✅  Rust workspace built (release)"
 
 .PHONY: rust-test
 rust-test:
 	@echo "🧪 Running Rust workspace tests..."
-	@$(CARGO) test --workspace
+	@$(CARGO) test --workspace --exclude cpex-python
 	@echo "✅  Rust tests passed"
 
 .PHONY: rust-test-ffi
@@ -486,7 +491,7 @@ rust-lint: rust-lint-fix
 rust-lint-fix:
 	@echo "🦀 Formatting + auto-fixing Rust..."
 	@$(CARGO) fmt --all
-	@$(CARGO) clippy --workspace --all-targets --fix --allow-dirty --allow-staged -- -D warnings
+	@$(CARGO) clippy --workspace --exclude cpex-python --all-targets --fix --allow-dirty --allow-staged -- -D warnings
 	@echo "✅  Rust lint-fix complete"
 
 # rust-lint-check is the CI-safe variant: no writes. Fails if formatting
@@ -495,7 +500,7 @@ rust-lint-fix:
 rust-lint-check:
 	@echo "🦀 Checking Rust formatting + clippy (read-only)..."
 	@$(CARGO) fmt --all -- --check
-	@$(CARGO) clippy --workspace --all-targets -- -D warnings
+	@$(CARGO) clippy --workspace --exclude cpex-python --all-targets -- -D warnings
 	@echo "✅  Rust lint-check passed"
 
 .PHONY: rust-clean
@@ -503,6 +508,36 @@ rust-clean:
 	@echo "🧹 Removing Rust target directory..."
 	@$(CARGO) clean
 	@echo "✅  target/ removed"
+
+# =============================================================================
+# Python bindings (bindings/python)
+# =============================================================================
+#
+# cpex-python is built via maturin, not plain cargo. The targets below
+# require maturin to be installed (`pip install maturin`). The crate is
+# excluded from the pure-Rust `rust-build` / `rust-test` targets so those
+# paths stay libpython-independent (KD3).
+
+PYTHON_BINDINGS_DIR = bindings/python
+MATURIN ?= maturin
+
+.PHONY: bindings-python-build
+bindings-python-build:
+	@echo "🐍 Building Python bindings (debug)..."
+	@cd $(PYTHON_BINDINGS_DIR) && $(MATURIN) develop
+	@echo "✅  Python bindings built (debug)"
+
+.PHONY: bindings-python-build-release
+bindings-python-build-release:
+	@echo "🐍 Building Python bindings (release)..."
+	@cd $(PYTHON_BINDINGS_DIR) && $(MATURIN) build --release
+	@echo "✅  Python bindings built (release)"
+
+.PHONY: bindings-python-test
+bindings-python-test: bindings-python-build
+	@echo "🧪 Running Python binding tests..."
+	@cd $(PYTHON_BINDINGS_DIR) && $(VENV_BIN)/pytest tests/ -v
+	@echo "✅  Python binding tests passed"
 
 # =============================================================================
 # Go bindings (go/cpex)

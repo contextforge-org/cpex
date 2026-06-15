@@ -1,0 +1,59 @@
+# Location: ./bindings/python/Cargo.toml
+# Copyright 2025
+# SPDX-License-Identifier: Apache-2.0
+# Authors: Ted Habeck
+#
+# cpex-python — PyO3 bindings over the CPEX Rust runtime.
+#
+# Built via maturin (`maturin develop` / `maturin build`).
+# The `extension-module` feature is opt-in (non-default) so the pure-Rust
+# workspace build stays libpython-independent (KD3). maturin activates it
+# automatically via `[features] -> pyo3/extension-module` in pyproject.toml.
+#
+# Build this crate directly (macOS, Python present):
+#   cargo build -p cpex-python
+# Build via maturin (any platform):
+#   cd bindings/python && maturin develop
+
+[package]
+name = "cpex-python"
+description = "PyO3 bindings for the CPEX plugin runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[lib]
+name = "_lib"
+crate-type = ["cdylib"]
+
+[dependencies]
+cpex-core = { path = "../../crates/cpex-core" }
+
+# APL governance layer — same set as cpex-ffi so bundled factories are
+# available to Python callers. Keep in sync with crates/cpex-ffi/Cargo.toml.
+apl-cpex = { path = "../../crates/apl-cpex" }
+apl-pii-scanner = { path = "../../crates/apl-pii-scanner" }
+apl-audit-logger = { path = "../../crates/apl-audit-logger" }
+apl-identity-jwt = { path = "../../crates/apl-identity-jwt" }
+apl-delegator-oauth = { path = "../../crates/apl-delegator-oauth" }
+apl-pdp-cedar-direct = { path = "../../crates/apl-pdp-cedar-direct" }
+
+# Heavy Cedarling deps behind an opt-in feature — off by default.
+apl-cedarling = { path = "../../crates/apl-cedarling", optional = true }
+
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+futures = { workspace = true }
+tracing = { workspace = true }
+
+# PyO3 — extension-module is non-default; maturin enables it via pyproject.toml.
+# Plan KD6 pinned "0.28"; using 0.29 (released 2026-06-11/12) as the latest
+# compatible stable pair. pyo3 0.28.0 was yanked; 0.29 is the current series.
+pyo3 = { version = "0.29", features = [] }
+pyo3-async-runtimes = { version = "0.29", features = ["tokio-runtime"] }
+
+[features]
+default = []
+cedarling = ["dep:apl-cedarling"]
