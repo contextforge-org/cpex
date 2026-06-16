@@ -33,11 +33,23 @@ authors.workspace = true
 
 [dependencies]
 apl-core = { path = "../apl-core" }
-# clarkmcc's CEL interpreter (published as `cel`; formerly
-# `cel-interpreter`). Sync eval, comprehension macros (`has`, `all`,
+# The CEL interpreter from cel-rust/cel-rust (formerly
+# clarkmcc/cel-rust). Sync eval, comprehension macros (`has`, `all`,
 # `exists`, `map`, `filter`), custom functions. Caret spec tracks 0.x
 # patch/minor; pin tighter if the activation API churns.
-cel = "0.13"
+#
+# Features pinned explicitly so a future change to the upstream
+# `default = [...]` set can't silently add or remove capabilities
+# operator policies depend on:
+#   - regex: enables `matches(s, pattern)` for URL/path predicates
+#     ("did the request target match `^/api/v1/`?"); virtually every
+#     real policy needs this.
+#   - chrono: enables `timestamp()`, `duration()`, and date/time
+#     arithmetic for time-window policies ("business hours", "this
+#     credential is fresh enough").
+# `json` and `bytes` are deliberately off — APL marshals JSON at its
+# own layer, and CEL bytes ops aren't needed for ABAC predicates.
+cel = { version = "0.13", default-features = false, features = ["regex", "chrono"] }
 async-trait = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

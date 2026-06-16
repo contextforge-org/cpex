@@ -72,6 +72,17 @@ fn security_with_roles(id: &str, roles: &[&str]) -> SecurityExtension {
 }
 
 async fn build_manager() -> Arc<PluginManager> {
+    build_manager_with_yaml(YAML)
+        .await
+        .expect("load_config_yaml")
+}
+
+/// Build a manager from arbitrary YAML; returns the load error so
+/// negative tests can inspect it. Mirrors `build_manager` but lets
+/// tests swap the config text under test.
+async fn build_manager_with_yaml(
+    yaml: &str,
+) -> Result<Arc<PluginManager>, Box<dyn std::error::Error + Send + Sync>> {
     let mgr = Arc::new(PluginManager::default());
     register_apl(
         &mgr,
@@ -85,9 +96,13 @@ async fn build_manager() -> Arc<PluginManager> {
             base_capabilities: None,
         },
     );
-    mgr.load_config_yaml(YAML).expect("load_config_yaml");
-    mgr.initialize().await.expect("initialize");
-    mgr
+    mgr.load_config_yaml(yaml).map_err(|e| -> Box<dyn std::error::Error + Send + Sync> {
+        format!("{e}").into()
+    })?;
+    mgr.initialize().await.map_err(|e| -> Box<dyn std::error::Error + Send + Sync> {
+        format!("{e}").into()
+    })?;
+    Ok(mgr)
 }
 
 fn payload() -> MessagePayload {
@@ -143,5 +158,78 @@ async fn config_declared_cel_pdp_denies_non_matching_subject() {
     assert!(
         result.violation.is_some(),
         "deny path must surface a violation",
+    );
+}
+
+/// A malformed CEL PDP config (`on_error: maybe`) must be rejected at
+/// `load_config_yaml` rather than discovered on first request. The
+/// visitor → `CelPdpFactory::build` → `CelResolver::from_config` chain
+/// surfaces `BuildError::ConfigShape` as a `cpex_core::PluginError`,
+/// which bubbles out of load.
+#[tokio::test]
+async fn malformed_on_error_is_rejected_at_load() {
+    const BAD_YAML: &str = r#"
+global:
+  apl:
+    pdp:
+      - kind: cel
+        on_error: maybe
+routes:
+  - tool: get_document
+    apl:
+      policy:
+        - cel:
+            expr: |
+              subject.id == "alice"
+"#;
+    let err = match build_manager_with_yaml(BAD_YAML).await {
+        Ok(_) => panic!("malformed on_error must fail load_config_yaml"),
+        Err(e) => e,
+    };
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("on_error") && msg.contains("maybe"),
+        "load error should name the bad field and value; got: {msg}",
+    );
+}
+
+/// `on_error: allow` at the config level flips an eval error (here, an
+/// undeclared-variable reference) to Allow end-to-end. Pins the
+/// fail-open knob travels from YAML → factory → resolver → router →
+/// route-handler decision the same way as the unit-level resolver test.
+#[tokio::test]
+async fn on_error_allow_yaml_flips_eval_error_to_allow_end_to_end() {
+    const ALLOW_YAML: &str = r#"
+global:
+  apl:
+    pdp:
+      - kind: cel
+        on_error: allow
+routes:
+  - tool: get_document
+    apl:
+      policy:
+        - cel:
+            expr: |
+              nonexistent.field == "value"
+"#;
+    let mgr = build_manager_with_yaml(ALLOW_YAML)
+        .await
+        .expect("on_error: allow config must load cleanly");
+
+    let ext = Extensions {
+        meta: Some(Arc::new(meta_for_tool("get_document"))),
+        security: Some(Arc::new(security_with_roles("alice", &["reader"]))),
+        ..Default::default()
+    };
+
+    let (result, _bg) = mgr
+        .invoke_named::<CmfHook>("cmf.tool_pre_invoke", payload(), ext, None)
+        .await;
+
+    assert!(
+        result.continue_processing,
+        "eval error under on_error=allow must surface as Allow; got violation = {:?}",
+        result.violation,
     );
 }

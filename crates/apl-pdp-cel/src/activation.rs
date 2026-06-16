@@ -49,21 +49,34 @@ pub fn bag_to_context(bag: &AttributeBag, extra_args: &serde_yaml::Value) -> Con
     let mut ctx = Context::default();
 
     // 1. Author-supplied extra args first (so the bag overrides on
-    //    collision). Skip `expr` — that's the program text, not a variable.
+    //    collision). Skip `expr` — that's the program text, not a
+    //    variable.
+    let mut extra_names: std::collections::HashSet<String> = std::collections::HashSet::new();
     if let Some(map) = extra_args.as_mapping() {
         for (k, v) in map {
             let Some(name) = k.as_str() else { continue };
             if name == "expr" {
                 continue;
             }
+            extra_names.insert(name.to_string());
             ctx.add_variable_from_value(name.to_string(), yaml_to_value(v));
         }
     }
 
     // 2. The bag namespaces (authoritative). Build the tree, then register
-    //    each top-level node as a variable.
+    //    each top-level node as a variable. Log when a bag namespace
+    //    shadows an author-supplied extra arg with the same name — the
+    //    bag wins by design, but a silent shadow can mask a typo in the
+    //    author's args block.
     let root = build_tree(bag);
     for (name, node) in root {
+        if extra_names.contains(&name) {
+            tracing::debug!(
+                name = %name,
+                "CEL activation: bag namespace shadows an extra-arg of the same name; \
+                 bag value wins by design",
+            );
+        }
         ctx.add_variable_from_value(name, node_to_value(node));
     }
 
@@ -89,8 +102,14 @@ fn build_tree(bag: &AttributeBag) -> BTreeMap<String, Node> {
 /// Insert a leaf at the dotted path, creating intermediate branches.
 /// Namespace-wins on leaf/branch collisions (see module docs).
 fn insert(level: &mut BTreeMap<String, Node>, full_key: &str, segments: &[&str], leaf: Value) {
-    let (head, rest) = segments.split_first().expect("key never splits empty");
-    let head = head.to_string();
+    // `bag.iter()` never yields empty keys today, but iterator
+    // contracts can drift — return cleanly rather than panic if a
+    // future bag implementation emits one. The caller's leaf is just
+    // dropped; no name to insert under.
+    let Some((head, rest)) = segments.split_first() else {
+        return;
+    };
+    let head = (*head).to_string();
 
     if rest.is_empty() {
         // Terminal segment — place the leaf, unless a namespace already
@@ -141,18 +160,45 @@ fn node_to_value(node: Node) -> Value {
 }
 
 /// Convert one `AttributeValue` to a `cel::Value`.
+///
+/// CEL's type model distinguishes `int` and `double` strictly:
+/// `delegation.depth <= 2` errors if `delegation.depth` is a double
+/// and `2` is an int (the literal). To shield authors from that
+/// asymmetry, an `f64` whose value is a whole number and fits a `i64`
+/// is yielded as `Value::Int`. The same logic applies to the
+/// author-supplied yaml args (see `yaml_to_value`) — both surfaces
+/// now agree.
 fn attr_to_value(attr: &AttributeValue) -> Value {
     match attr {
         AttributeValue::Bool(b) => Value::from(*b),
         AttributeValue::Int(i) => Value::from(*i),
-        AttributeValue::Float(f) => Value::from(*f),
+        AttributeValue::Float(f) => float_to_value(*f),
         AttributeValue::String(s) => Value::from(s.clone()),
-        // StringSet → list(string). Order is irrelevant for `in` /
-        // comprehensions; HashSet iteration order is fine.
+        // StringSet → list(string). Sort before yielding so authors
+        // who reach for `session.labels[0]` (or any other
+        // index-dependent operation) get a stable answer across runs
+        // and rust releases. `in` / `exists` / `all` / `filter` don't
+        // care about order, but determinism by construction beats
+        // "works on my machine" when the policy ever indexes.
         AttributeValue::StringSet(set) => {
-            let items: Vec<Value> = set.iter().map(|s| Value::from(s.clone())).collect();
+            let mut sorted: Vec<&String> = set.iter().collect();
+            sorted.sort();
+            let items: Vec<Value> = sorted.into_iter().map(|s| Value::from(s.clone())).collect();
             Value::from(items)
         }
+    }
+}
+
+/// Yield an `f64` as `Value::Int` when it represents a whole number
+/// in `i64` range, otherwise `Value::Float`. Used by both
+/// `attr_to_value` (bag scalars) and `yaml_to_value` (author args) so
+/// `delegation.depth: 2` works against the literal `2` regardless of
+/// whether the bag populated it as `Int(2)` or `Float(2.0)`.
+fn float_to_value(f: f64) -> Value {
+    if f.is_finite() && f.fract() == 0.0 && f >= i64::MIN as f64 && f <= i64::MAX as f64 {
+        Value::from(f as i64)
+    } else {
+        Value::from(f)
     }
 }
 
@@ -168,7 +214,7 @@ fn yaml_to_value(v: &serde_yaml::Value) -> Value {
             if let Some(i) = n.as_i64() {
                 Value::from(i)
             } else {
-                Value::from(n.as_f64().unwrap_or(f64::NAN))
+                float_to_value(n.as_f64().unwrap_or(f64::NAN))
             }
         }
         serde_yaml::Value::String(s) => Value::from(s.clone()),
@@ -244,6 +290,42 @@ mod tests {
         assert!(truthy("!('PHI' in session.labels)", &bag));
         // Comprehension macros work over the list too.
         assert!(truthy("session.labels.exists(l, l == 'PII')", &bag));
+    }
+
+    /// An `f64` whose value is a whole number is yielded as an int so
+    /// authors can compare against integer literals without CEL's
+    /// strict int-vs-double type rules blowing up. A genuinely
+    /// fractional `f64` still arrives as a float (so `confidence > 0.9`
+    /// behaves correctly).
+    #[test]
+    fn whole_number_float_arrives_as_int_for_literal_compare() {
+        let mut bag = AttributeBag::new();
+        bag.set("delegation.depth", 2.0_f64);
+        bag.set("intent.confidence", 0.92_f64);
+        // Compare-with-int-literal: requires the bag value to be int.
+        assert!(truthy("delegation.depth == 2", &bag));
+        assert!(truthy("delegation.depth <= 2", &bag));
+        // Genuine doubles still compare to double literals.
+        assert!(truthy("intent.confidence > 0.9", &bag));
+    }
+
+    /// `StringSet` is yielded in sorted order so indexing returns a
+    /// stable value across runs. `"compensation" < "PII"` (ASCII;
+    /// uppercase letters sort before lowercase, but both labels here
+    /// are different cases so ordering is alphanumeric on the first
+    /// char). Pinning the order keeps an author who reaches for
+    /// `session.labels[0]` from getting different answers between
+    /// builds.
+    #[test]
+    fn string_set_yields_sorted_order_for_stable_indexing() {
+        let mut bag = AttributeBag::new();
+        bag.set(
+            "session.labels",
+            HashSet::from(["zeta".to_string(), "alpha".to_string(), "mu".to_string()]),
+        );
+        assert!(truthy("session.labels[0] == 'alpha'", &bag));
+        assert!(truthy("session.labels[1] == 'mu'", &bag));
+        assert!(truthy("session.labels[2] == 'zeta'", &bag));
     }
 
     #[test]

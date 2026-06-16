@@ -27,12 +27,4 @@ pub enum BuildError {
     /// an unrecognized value (e.g. `on_error: maybe`).
     #[error("invalid CEL PDP config: {0}")]
     ConfigShape(String),
-
-    /// An optional default `expr` was supplied in the config block but
-    /// didn't parse as CEL. Per-step expressions are validated lazily at
-    /// request time (their text isn't known until a route calls), but a
-    /// config-level default is checked eagerly so the operator learns of
-    /// the typo at load.
-    #[error("failed to compile CEL expression: {0}")]
-    ExprCompile(String),
 }
