@@ -566,10 +566,10 @@ fn parse_require_rule(line: &str) -> Result<Expression, ParseError> {
     })
 }
 
-/// Detect `taint(...)` / `plugin(...)` / `cedar:` / `cedarling:` / `opa(` / `authzen(` / `nemo(`.
+/// Detect `taint(...)` / `plugin(...)` / `cedar:` / `cedarling:` / `opa(` / `authzen(` / `nemo(` / `cel:`.
 fn detect_step_kind(s: &str) -> Option<&'static str> {
     let s = s.trim_start();
-    for prefix in ["taint(", "plugin(", "cedar:", "cedarling:", "opa(", "authzen(", "nemo(", "sequential:", "parallel:"] {
+    for prefix in ["taint(", "plugin(", "cedar:", "cedarling:", "opa(", "authzen(", "nemo(", "cel:", "sequential:", "parallel:"] {
         if s.starts_with(prefix) {
             return Some(prefix.trim_end_matches('(').trim_end_matches(':'));
         }
@@ -1168,7 +1168,7 @@ fn is_known_pdp_dialect(key: &str) -> bool {
     let base = key.find('(').map(|i| &key[..i]).unwrap_or(key);
     matches!(
         base.trim(),
-        "cedar" | "cedarling" | "opa" | "authzen" | "nemo"
+        "cedar" | "cedarling" | "opa" | "authzen" | "nemo" | "cel"
     )
 }
 
@@ -3118,6 +3118,35 @@ routes:
                 assert!(!args_map.contains_key(serde_yaml::Value::String("on_deny".into())));
                 assert_eq!(on_deny.len(), 1);
                 assert_eq!(on_allow.len(), 1);
+            }
+            other => panic!("expected Effect::Pdp, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn compile_pdp_call_cel_map_form() {
+        // `cel:` carries an `expr:` string + optional on_deny/on_allow
+        // reactions. Routes to the CEL-backed resolver via PdpDialect::Cel.
+        let yaml = r#"
+routes:
+  authz_check:
+    policy:
+      - cel:
+          expr: "subject.id == 'alice' && delegation.depth <= 2"
+          on_deny:
+            - deny
+"#;
+        let routes = compile_config(yaml).unwrap().routes;
+        let route = routes.get("authz_check").unwrap();
+        match &route.policy[0] {
+            Effect::Pdp { call, on_deny, on_allow } => {
+                assert_eq!(call.dialect, PdpDialect::Cel);
+                let args_map = call.args.as_mapping().expect("cel args should be a map");
+                assert!(args_map.contains_key(serde_yaml::Value::String("expr".into())));
+                // Reaction keys are stripped from the opaque call args.
+                assert!(!args_map.contains_key(serde_yaml::Value::String("on_deny".into())));
+                assert_eq!(on_deny.len(), 1);
+                assert_eq!(on_allow.len(), 0);
             }
             other => panic!("expected Effect::Pdp, got {:?}", other),
         }
