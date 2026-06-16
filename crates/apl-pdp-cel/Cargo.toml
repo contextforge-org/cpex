@@ -3,26 +3,14 @@
 # SPDX-License-Identifier: Apache-2.0
 # Authors: Teryl Taylor
 #
-# apl-pdp-cel — a `PdpResolver` implementation that evaluates CEL (Common
-# Expression Language) boolean predicates against the policy `AttributeBag`.
+# apl-pdp-cel — a `PdpResolver` that evaluates CEL (Common Expression
+# Language) boolean predicates against the policy `AttributeBag`, authored
+# inline in route YAML (`cel: { expr: "..." }`).
 #
-# When to use this crate vs the full PDPs (`apl-pdp-cedar-direct`,
-# `apl-cedarling`, OPA):
-#
-#   - **cel** — inline, self-contained boolean decisions written by the
-#     policy author directly in the route YAML (`cel: { expr: "..." }`).
-#     No external policy store, no JWT validation, no network call. Ideal
-#     for relevance / consistency / lightweight ABAC checks that read the
-#     common attribute vocabulary (`subject.*`, `delegation.*`,
-#     `session.*`, `args.*`). Smallest dep tree of the PDP backends.
-#   - **cedar / cedarling / opa** — when policy lives outside the route
-#     (versioned policy sets, signed stores, central management) or needs
-#     the full entity/relationship model.
-#
-# CEL is non-Turing-complete, side-effect-free, and terminates — safe to
-# evaluate operator- or author-supplied expressions in-process. The crate
-# compiles each distinct expression once (cached by source string) and
-# evaluates it many times, matching CEL's intended usage.
+# See the crate-level module docs in `src/lib.rs` for the full picture:
+# where it sits in the stack, the bag→CEL activation, the decision
+# contract, when to choose CEL vs Cedar/OPA, and why evaluation is
+# synchronous and side-effect-free.
 
 [package]
 name = "apl-pdp-cel"

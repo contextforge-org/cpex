@@ -169,7 +169,8 @@ pub enum PdpDialect {
     /// namespaces: `subject.id`, `delegation.depth`, `session.labels`, …).
     /// A small, safe, non-Turing-complete predicate language — distinct
     /// from the full PDPs (Cedar/OPA) so all can coexist on one
-    /// `PdpRouter`; route YAML targets it with the `cel:(...)` key.
+    /// `PdpRouter`. The canonical route-YAML form is the block map
+    /// `cel: { expr: "..." }`; the `cel:(...)` call form is also accepted.
     Cel,
     #[serde(untagged)]
     Custom(String),

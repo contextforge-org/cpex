@@ -233,3 +233,88 @@ routes:
         result.violation,
     );
 }
+
+/// A `cel:` step with no `expr` (the author wrote reactions but forgot
+/// the predicate) is an author bug that the parser accepts opaquely —
+/// the resolver only learns of it at request time. It must surface as a
+/// clean Deny ("PDP error") that halts the pipeline, never a panic.
+/// Complements the unit-level `missing_expr_is_dispatch_error` by
+/// proving the error travels through the real dispatcher.
+#[tokio::test]
+async fn missing_expr_at_request_time_denies_without_panicking() {
+    const NO_EXPR_YAML: &str = r#"
+global:
+  apl:
+    pdp:
+      - kind: cel
+routes:
+  - tool: get_document
+    apl:
+      policy:
+        - cel:
+            on_deny:
+              - deny
+"#;
+    let mgr = build_manager_with_yaml(NO_EXPR_YAML)
+        .await
+        .expect("a cel step without expr is accepted at parse/load time");
+
+    let ext = Extensions {
+        meta: Some(Arc::new(meta_for_tool("get_document"))),
+        security: Some(Arc::new(security_with_roles("alice", &["reader"]))),
+        ..Default::default()
+    };
+
+    let (result, _bg) = mgr
+        .invoke_named::<CmfHook>("cmf.tool_pre_invoke", payload(), ext, None)
+        .await;
+
+    assert!(
+        !result.continue_processing,
+        "a missing-expr cel step must halt the pipeline, not allow through",
+    );
+    assert!(
+        result.violation.is_some(),
+        "missing-expr dispatch error must surface as a violation",
+    );
+}
+
+/// A `cel:` predicate that reads the `meta` namespace
+/// (`meta.entity_name`) proves the cmf BagBuilder lifts `MetaExtension`
+/// into the bag and the activation exposes it to CEL — the other
+/// integration cases only exercise `subject.*` / `role.*` from the
+/// SecurityExtension. Gates the tool by name end-to-end.
+#[tokio::test]
+async fn cel_reads_meta_entity_name_from_bag() {
+    const META_YAML: &str = r#"
+global:
+  apl:
+    pdp:
+      - kind: cel
+routes:
+  - tool: get_document
+    apl:
+      policy:
+        - cel:
+            expr: |
+              meta.entity_name == "get_document"
+"#;
+    let mgr = build_manager_with_yaml(META_YAML)
+        .await
+        .expect("load_config_yaml");
+
+    // Matching tool name → predicate true → Allow.
+    let allow_ext = Extensions {
+        meta: Some(Arc::new(meta_for_tool("get_document"))),
+        security: Some(Arc::new(security_with_roles("alice", &["reader"]))),
+        ..Default::default()
+    };
+    let (allow, _bg) = mgr
+        .invoke_named::<CmfHook>("cmf.tool_pre_invoke", payload(), allow_ext, None)
+        .await;
+    assert!(
+        allow.continue_processing,
+        "meta.entity_name == \"get_document\" must reach CEL and allow; got violation = {:?}",
+        allow.violation,
+    );
+}

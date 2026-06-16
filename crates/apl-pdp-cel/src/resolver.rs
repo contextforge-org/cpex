@@ -51,11 +51,14 @@ pub enum OnError {
     /// default and the safe choice for access decisions.
     #[default]
     Deny,
-    /// Fail-open: a degenerate runtime outcome allows through. Use
-    /// only when CEL is a soft/advisory check layered behind a hard
-    /// PDP. The Allow path emits `tracing::error!` (not warn) so
-    /// runtime errors masquerading as Allows are not invisible in
-    /// production logs.
+    /// Fail-open: a degenerate runtime outcome allows through.
+    /// Intended for when CEL is a soft/advisory check layered behind a
+    /// hard PDP — but **APL does not enforce that layering**. Nothing
+    /// stops an operator from making a `cel:` step with `on_error:
+    /// allow` the only gate on a route, which turns every runtime error
+    /// into an allow. Layering is the operator's responsibility. The
+    /// Allow path emits `tracing::error!` (not warn) so runtime errors
+    /// masquerading as Allows are not invisible in production logs.
     Allow,
 }
 
@@ -168,6 +171,17 @@ impl CelResolver {
     /// Function names that collide with the CEL standard library
     /// (`size`, `has`, `matches`, etc.) silently shadow the built-in
     /// — be deliberate.
+    ///
+    /// # Ownership of the function set
+    ///
+    /// The custom-function set is a **host concern**, registered once
+    /// when the host wires up the resolver (typically via the
+    /// `CelPdpFactory` in the host project), not authored per-route in
+    /// policy YAML. The host owns the stable contract of which functions
+    /// exist; policy authors only call them. Adding or removing a
+    /// function changes that contract for every route at once, so treat
+    /// the set like any other host API surface — version it, and avoid
+    /// renaming/removing functions that live policies depend on.
     pub fn with_functions<F>(mut self, setup: F) -> Self
     where
         F: Fn(&mut Context<'static>) + Send + Sync + 'static,
@@ -202,6 +216,24 @@ impl CelResolver {
         let map = value
             .as_mapping()
             .ok_or_else(|| BuildError::ConfigShape("CEL PDP config must be a mapping".into()))?;
+
+        // Reject unknown keys so a typo (`on_errr: deny`) fails loud at
+        // load rather than being silently dropped and defaulting. `kind`
+        // is consumed by the visitor/factory but is present on the block;
+        // `on_error` is the only knob this resolver reads.
+        const KNOWN_KEYS: &[&str] = &["kind", "on_error"];
+        for (key, _) in map {
+            let Some(name) = key.as_str() else {
+                return Err(BuildError::ConfigShape(
+                    "CEL PDP config keys must be strings".into(),
+                ));
+            };
+            if !KNOWN_KEYS.contains(&name) {
+                return Err(BuildError::ConfigShape(format!(
+                    "unknown CEL PDP config key `{name}`; expected one of {KNOWN_KEYS:?}"
+                )));
+            }
+        }
 
         let on_error = match read_yaml_string(map, "on_error").as_deref() {
             None | Some("deny") => OnError::Deny,
@@ -775,4 +807,61 @@ mod tests {
         ));
     }
 
+    /// An unknown config key (here `on_errr`, a typo for `on_error`) is
+    /// rejected at config-parse time rather than silently dropped — a
+    /// dropped key would mask the typo and use the default `Deny`,
+    /// leaving the operator believing they'd set `allow`. The error
+    /// names the offending key.
+    #[test]
+    fn from_config_rejects_unknown_key() {
+        let yaml: serde_yaml::Value =
+            serde_yaml::from_str("kind: cel\non_errr: allow\n").unwrap();
+        match CelResolver::from_config(&yaml) {
+            Err(BuildError::ConfigShape(msg)) => assert!(
+                msg.contains("on_errr"),
+                "error must name the unknown key; got {msg:?}",
+            ),
+            Ok(_) => panic!("unknown key `on_errr` must be rejected"),
+        }
+    }
+
+    /// Many threads evaluating the same expression on one shared
+    /// resolver must all get the right decision, and the compile cache
+    /// must hold exactly one entry (the `RwLock` read path is
+    /// uncontended in steady state; this pins that concurrent reads
+    /// don't double-insert or deadlock).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_evaluation_shares_one_cached_program() {
+        let resolver = Arc::new(CelResolver::new());
+        let expr = "subject.id == 'alice'";
+
+        let tasks: Vec<_> = (0..64)
+            .map(|i| {
+                let r = Arc::clone(&resolver);
+                tokio::spawn(async move {
+                    // Half match, half don't — exercises both Allow and
+                    // Deny through the shared cache concurrently.
+                    let id = if i % 2 == 0 { "alice" } else { "bob" };
+                    let bag = bag_with(&[("subject.id", id)]);
+                    let out = r.evaluate(&cel_call(expr), &bag).await.unwrap();
+                    (id, out.decision)
+                })
+            })
+            .collect();
+
+        for task in tasks {
+            let (id, decision) = task.await.unwrap();
+            if id == "alice" {
+                assert_eq!(decision, Decision::Allow);
+            } else {
+                assert!(matches!(decision, Decision::Deny { .. }));
+            }
+        }
+
+        // One distinct expr → exactly one compiled program despite the
+        // concurrent first-miss race.
+        let cache = resolver.cache.read().unwrap();
+        assert_eq!(cache.len(), 1, "concurrent compiles must converge to one entry");
+        assert!(cache.contains_key(expr));
+    }
 }
