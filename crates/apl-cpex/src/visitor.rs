@@ -328,7 +328,7 @@ impl ConfigVisitor for AplConfigVisitor {
         // accepts maps with `policy:` / `post_policy:` / `args:` /
         // `result:` / `plugins:` (and inert fields it ignores), so a
         // shallow strip on a clone is enough.
-        let policy_only = strip_pdp_key(apl_block);
+        let policy_only = strip_pdp_key(&apl_block);
         let compiled = compile_policy_block_value("global.apl", &policy_only)
             .map_err(|e| Box::new(e) as VisitorError)?;
         self.state
@@ -348,7 +348,7 @@ impl ConfigVisitor for AplConfigVisitor {
             return Ok(());
         };
         let source = format!("global.defaults.{}.apl", entity_type);
-        let compiled = compile_policy_block_value(&source, apl_block)
+        let compiled = compile_policy_block_value(&source, &apl_block)
             .map_err(|e| Box::new(e) as VisitorError)?;
         self.state
             .write()
@@ -368,7 +368,7 @@ impl ConfigVisitor for AplConfigVisitor {
             return Ok(());
         };
         let source = format!("global.policies.{}.apl", tag);
-        let compiled = compile_policy_block_value(&source, apl_block)
+        let compiled = compile_policy_block_value(&source, &apl_block)
             .map_err(|e| Box::new(e) as VisitorError)?;
         self.state
             .write()
@@ -449,7 +449,7 @@ impl ConfigVisitor for AplConfigVisitor {
             }
             drop(state);
 
-            if let Some(block) = route_apl {
+            if let Some(block) = &route_apl {
                 let source = format!("routes.{}.apl", route_key);
                 let route_layer = compile_policy_block_value(&source, block)
                     .map_err(|e| Box::new(e) as VisitorError)?;
@@ -667,14 +667,128 @@ fn on_error_to_string(on_err: &cpex_core::plugin::OnError) -> String {
     on_err.to_string()
 }
 
-/// Pull the `apl:` sub-block out of a section's raw YAML. Returns `None`
-/// when absent or null — callers treat that as "no contribution from
-/// this section" and move on.
-fn apl_subblock(yaml: &serde_yaml::Value) -> Option<&serde_yaml::Value> {
-    let block = yaml.get("apl")?;
-    if block.is_null() {
+/// APL DSL keys recognized directly on a section (route / global /
+/// defaults / policy-bundle) when the `apl:` wrapper is omitted.
+/// `plugins` is intentionally absent here — it is shape-ambiguous (a
+/// structural plugin-ref *list* vs an apl-override *map*) and handled
+/// separately in [`apl_subblock`].
+const FLAT_APL_KEYS: [&str; 5] = ["policy", "post_policy", "args", "result", "pdp"];
+
+/// Pull a section's APL block out of its raw YAML.
+///
+/// The explicit `apl:` wrapper (`route -> apl -> policy`) takes
+/// precedence. When it is absent, APL terms written directly on the
+/// section (`route -> policy`) are accepted too: a synthetic block is
+/// assembled from the recognized [`FLAT_APL_KEYS`] present on the
+/// container, plus `plugins` when (and only when) it is a *mapping* —
+/// the apl-override shape. A structural `plugins:` *list*
+/// (`RouteEntry` / `PolicyGroup`) is left untouched. Returns `None`
+/// when neither a wrapper nor any flat APL key is present — callers
+/// treat that as "no contribution from this section" and move on.
+fn apl_subblock(yaml: &serde_yaml::Value) -> Option<serde_yaml::Value> {
+    // Explicit `apl:` wrapper wins.
+    if let Some(block) = yaml.get("apl") {
+        return if block.is_null() {
+            None
+        } else {
+            Some(block.clone())
+        };
+    }
+
+    // Fallback: APL terms written directly on the section, with no
+    // `apl:` nesting. Copy only the unambiguous APL keys so structural
+    // keys (tool / identity / defaults / ...) are never misread.
+    let mut block = serde_yaml::Mapping::new();
+    for key in FLAT_APL_KEYS {
+        if let Some(value) = yaml.get(key) {
+            block.insert(serde_yaml::Value::String(key.to_string()), value.clone());
+        }
+    }
+    // `plugins` only in its apl-override (map) shape; a list is the
+    // structural plugin-ref form and belongs to the section's own parse.
+    if let Some(value) = yaml.get("plugins") {
+        if value.is_mapping() {
+            block.insert(
+                serde_yaml::Value::String("plugins".to_string()),
+                value.clone(),
+            );
+        }
+    }
+
+    if block.is_empty() {
         None
     } else {
-        Some(block)
+        Some(serde_yaml::Value::Mapping(block))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::apl_subblock;
+
+    fn yaml(s: &str) -> serde_yaml::Value {
+        serde_yaml::from_str(s).expect("valid yaml")
+    }
+
+    #[test]
+    fn apl_wrapper_is_returned_as_is() {
+        let v = yaml("apl:\n  policy:\n    - \"deny\"\n");
+        let block = apl_subblock(&v).expect("wrapper present");
+        assert!(block.get("policy").is_some(), "wrapper block exposes policy");
+    }
+
+    #[test]
+    fn null_apl_wrapper_is_none() {
+        let v = yaml("apl: null\n");
+        assert!(apl_subblock(&v).is_none(), "explicit null apl => no contribution");
+    }
+
+    #[test]
+    fn flat_policy_without_wrapper_is_collected() {
+        let v = yaml("tool: get_weather\npolicy:\n  - \"deny\"\n");
+        let block = apl_subblock(&v).expect("flat policy recognized");
+        assert!(block.get("policy").is_some(), "flat policy lifted into the block");
+        assert!(
+            block.get("tool").is_none(),
+            "structural keys must not leak into the apl block",
+        );
+    }
+
+    #[test]
+    fn flat_plugins_map_included_but_list_excluded() {
+        // Map shape is the apl-override form → kept.
+        let m = yaml("plugins:\n  audit:\n    on_error: ignore\n");
+        let block = apl_subblock(&m).expect("plugins map is an apl term");
+        assert!(block.get("plugins").is_some(), "plugins map is kept");
+
+        // List shape is structural plugin-refs → not an apl block; with no
+        // other APL keys present, the section contributes nothing.
+        let l = yaml("plugins:\n  - audit\n");
+        assert!(
+            apl_subblock(&l).is_none(),
+            "structural plugins list must not be treated as an apl block",
+        );
+    }
+
+    #[test]
+    fn section_without_apl_terms_is_none() {
+        let v = yaml("tool: get_weather\n");
+        assert!(apl_subblock(&v).is_none(), "no APL terms => no contribution");
+    }
+
+    #[test]
+    fn explicit_wrapper_wins_over_flat_keys() {
+        let v = yaml("apl:\n  policy:\n    - \"allow\"\npolicy:\n  - \"deny\"\n");
+        let block = apl_subblock(&v).expect("wrapper present");
+        let policy = block
+            .get("policy")
+            .and_then(|p| p.as_sequence())
+            .expect("policy sequence");
+        assert_eq!(policy.len(), 1);
+        assert_eq!(
+            policy[0].as_str(),
+            Some("allow"),
+            "the explicit apl wrapper takes precedence over flat top-level keys",
+        );
     }
 }

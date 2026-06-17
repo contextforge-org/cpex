@@ -703,3 +703,64 @@ routes:
         msg
     );
 }
+
+/// Flat form: a route may declare `policy:` directly, without the `apl:`
+/// wrapper. The visitor recognizes it identically to the wrapped form.
+/// (Also exercises the `run(...)` plugin alias.)
+#[tokio::test]
+async fn visitor_flat_route_without_apl_wrapper_allows() {
+    const YAML: &str = r#"
+plugins:
+  - name: allow-gate
+    kind: allow-gate
+    hooks: [cmf.tool_pre_invoke]
+routes:
+  - tool: get_weather
+    policy:
+      - "run(allow-gate)"
+"#;
+    let mgr = build_manager_with_visitor(YAML).await;
+
+    let ext = Extensions {
+        meta: Some(Arc::new(meta_for_tool("get_weather"))),
+        ..Default::default()
+    };
+    let (result, _bg) = mgr
+        .invoke_named::<CmfHook>("cmf.tool_pre_invoke", cmf_payload("hi"), ext, None)
+        .await;
+
+    assert!(
+        result.continue_processing,
+        "flat (no-apl-wrapper) allow path should continue: violation = {:?}",
+        result.violation
+    );
+}
+
+/// Flat form deny mirrors the wrapped deny path — the route's `policy:`
+/// is honored without an `apl:` wrapper and the violation propagates.
+#[tokio::test]
+async fn visitor_flat_route_without_apl_wrapper_denies() {
+    const YAML: &str = r#"
+plugins:
+  - name: deny-gate
+    kind: deny-gate
+    hooks: [cmf.tool_pre_invoke]
+routes:
+  - tool: get_weather
+    policy:
+      - "plugin(deny-gate)"
+"#;
+    let mgr = build_manager_with_visitor(YAML).await;
+
+    let ext = Extensions {
+        meta: Some(Arc::new(meta_for_tool("get_weather"))),
+        ..Default::default()
+    };
+    let (result, _bg) = mgr
+        .invoke_named::<CmfHook>("cmf.tool_pre_invoke", cmf_payload("hi"), ext, None)
+        .await;
+
+    assert!(!result.continue_processing, "flat deny path should halt");
+    let violation = result.violation.expect("deny path must surface a violation");
+    assert_eq!(violation.reason, "deny-gate fired");
+}
