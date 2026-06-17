@@ -579,10 +579,10 @@ fn parse_require_rule(line: &str) -> Result<Expression, ParseError> {
     })
 }
 
-/// Detect `taint(...)` / `plugin(...)` / `cedar:` / `cedarling:` / `opa(` / `authzen(` / `nemo(` / `cel:`.
+/// Detect `taint(...)` / `plugin(...)` / `run(...)` / `cedar:` / `cedarling:` / `opa(` / `authzen(` / `nemo(` / `cel:`.
 fn detect_step_kind(s: &str) -> Option<&'static str> {
     let s = s.trim_start();
-    for prefix in ["taint(", "plugin(", "cedar:", "cedarling:", "opa(", "authzen(", "nemo(", "cel:", "sequential:", "parallel:"] {
+    for prefix in ["taint(", "plugin(", "run(", "cedar:", "cedarling:", "opa(", "authzen(", "nemo(", "cel:", "sequential:", "parallel:"] {
         if s.starts_with(prefix) {
             return Some(prefix.trim_end_matches('(').trim_end_matches(':'));
         }
@@ -712,7 +712,7 @@ fn strip_string_literal(s: &str, rule: &str) -> Result<String, ParseError> {
 /// - **String entry** — a rule line, taint effect, or plugin call.
 ///   - `"require(authenticated)"` → `Step::Rule`
 ///   - `"delegation.depth > 2: deny"` → `Step::Rule`
-///   - `"plugin(rate_limiter)"` → `Step::Plugin`
+///   - `"plugin(rate_limiter)"` → `Step::Plugin` (`"run(rate_limiter)"` is an alias)
 ///   - `"taint(PII, session)"` → `Step::Taint`
 /// - **Map entry** (single-key map) — PDP call with optional reactions.
 ///   - `cedar: { action: read, resource: e, on_deny: [...] }` → `Step::Pdp`
@@ -747,18 +747,25 @@ fn parse_step_string(line: &str, source: &str) -> Result<Step, ParseError> {
         unreachable!("parse_taint always returns Stage::Taint");
     }
 
-    // plugin(name) — emit as Step::Plugin.
-    if trimmed.starts_with("plugin(") {
-        let inside = extract_call_args(trimmed, "plugin")
-            .ok_or_else(|| ParseError::Rule {
-                rule: trimmed.to_string(),
-                msg: "malformed `plugin(...)`".into(),
-            })?;
+    // plugin(name) / run(name) — invoke a named plugin. `run` is an
+    // alias for `plugin`; both emit Step::Plugin.
+    let plugin_verb = if trimmed.starts_with("plugin(") {
+        Some("plugin")
+    } else if trimmed.starts_with("run(") {
+        Some("run")
+    } else {
+        None
+    };
+    if let Some(verb) = plugin_verb {
+        let inside = extract_call_args(trimmed, verb).ok_or_else(|| ParseError::Rule {
+            rule: trimmed.to_string(),
+            msg: format!("malformed `{verb}(...)`"),
+        })?;
         let name = inside.trim();
         if name.is_empty() {
             return Err(ParseError::Rule {
                 rule: trimmed.to_string(),
-                msg: "plugin name must not be empty".into(),
+                msg: format!("`{verb}(...)`: plugin name must not be empty"),
             });
         }
         return Ok(Step::Plugin { name: name.to_string() });
@@ -1889,7 +1896,8 @@ fn parse_stage(src: &str) -> Result<Stage, ParseError> {
                 a.trim(),
             )))
         }
-        ("plugin", Some(a)) => Ok(Stage::Plugin { name: a.trim().to_string() }),
+        // `run` is an alias for `plugin` (mirrors the policy-step alias).
+        ("plugin" | "run", Some(a)) => Ok(Stage::Plugin { name: a.trim().to_string() }),
         ("taint", Some(a)) => parse_taint(a, src),
 
         (other, _) => Err(bad(&format!("unknown stage `{}`", other))),
@@ -2808,6 +2816,30 @@ do: "args.card_number | str | mask(4)"
     }
 
     #[test]
+    fn field_stage_run_aliases_plugin() {
+        // In a field pipeline, `run(name)` is the same plugin-transform
+        // stage as `plugin(name)` — symmetry with the policy-step alias.
+        let yaml = r#"
+when: role.support
+do: "args.card_number | run(luhn)"
+"#;
+        let step = parse_step_yaml(yaml).unwrap();
+        let Step::Rule(rule) = step else {
+            panic!("expected Step::Rule");
+        };
+        match &rule.effects[..] {
+            [Effect::FieldOp { path, stages }] => {
+                assert_eq!(path, "args.card_number");
+                match &stages[..] {
+                    [Stage::Plugin { name }] => assert_eq!(name, "luhn"),
+                    other => panic!("expected [Stage::Plugin], got {:?}", other),
+                }
+            }
+            other => panic!("expected single FieldOp, got {:?}", other),
+        }
+    }
+
+    #[test]
     fn field_op_invalid_path_falls_through() {
         // `role.hr | redact` looks like a pipe chain but the path
         // doesn't start with `args.` / `result.`. We refuse to treat
@@ -3116,6 +3148,39 @@ routes:
             Effect::Plugin { name } => assert_eq!(name, "rate_limiter"),
             other => panic!("expected Effect::Plugin, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn compile_run_step_string_form_aliases_plugin() {
+        // `run(name)` is an alias for `plugin(name)`: both invoke a named
+        // plugin and compile to Effect::Plugin.
+        let yaml = r#"
+routes:
+  rate_limited:
+    policy:
+      - "run(rate_limiter)"
+"#;
+        let routes = compile_config(yaml).unwrap().routes;
+        let route = routes.get("rate_limited").unwrap();
+        assert_eq!(route.policy.len(), 1);
+        match &route.policy[0] {
+            Effect::Plugin { name } => assert_eq!(name, "rate_limiter"),
+            other => panic!("expected Effect::Plugin, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_step_run_is_plugin_alias() {
+        for s in ["run(audit-log)", "plugin(audit-log)"] {
+            let step = parse_step(&serde_yaml::Value::String(s.to_string()), "test").unwrap();
+            match step {
+                crate::step::Step::Plugin { name } => assert_eq!(name, "audit-log", "{s}"),
+                other => panic!("expected Step::Plugin for `{s}`, got {other:?}"),
+            }
+        }
+        // Empty / malformed `run(...)` surfaces a clear, verb-named error.
+        let err = parse_step(&serde_yaml::Value::String("run()".to_string()), "test").unwrap_err();
+        assert!(format!("{err}").contains("run("), "error should name `run(...)`: {err}");
     }
 
     #[test]
