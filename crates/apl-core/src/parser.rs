@@ -474,6 +474,19 @@ pub fn parse_rule(line: &str, source: &str) -> Result<Rule, ParseError> {
                     source: source.to_string(),
                 });
             }
+            // Unconditional `deny('reason')` / `deny('reason', 'code')` —
+            // the call form of a bare deny. Lets reaction lists
+            // (`on_deny: [...]` / `on_allow: [...]`) and standalone rule
+            // lines attach a reason/code without a guard predicate. A
+            // malformed `deny(...)` surfaces its own error here rather
+            // than being misread as a predicate downstream.
+            if let Some(deny) = try_parse_deny_call(trimmed, trimmed)? {
+                return Ok(Rule {
+                    condition: Expression::Always,
+                    effects: vec![deny],
+                    source: source.to_string(),
+                });
+            }
             // DSL §2 default: bare predicate denies.
             (trimmed, vec![Effect::Deny { reason: None, code: None }])
         }
@@ -2460,6 +2473,40 @@ mod tests {
         let r = parse_rule("allow", "test").unwrap();
         assert_eq!(r.condition, Expression::Always);
         assert!(matches!(r.effects.as_slice(), [Effect::Allow]));
+    }
+
+    #[test]
+    fn rule_bare_deny_call_carries_reason_and_code() {
+        // Unconditional `deny('reason')` / `deny('reason', 'code')` parse
+        // to an Always-guarded Deny, so they're usable as bare rule lines
+        // and as `on_deny:` / `on_allow:` reactions.
+        let r = parse_rule("deny('nope')", "test").unwrap();
+        assert_eq!(r.condition, Expression::Always);
+        match r.effects.as_slice() {
+            [Effect::Deny { reason: Some(reason), code: None }] => assert_eq!(reason, "nope"),
+            other => panic!("expected [Deny{{reason: Some, code: None}}], got {:?}", other),
+        }
+
+        let r = parse_rule("deny('nope', 'cel.policy')", "test").unwrap();
+        assert_eq!(r.condition, Expression::Always);
+        match r.effects.as_slice() {
+            [Effect::Deny { reason: Some(reason), code: Some(code) }] => {
+                assert_eq!(reason, "nope");
+                assert_eq!(code, "cel.policy");
+            }
+            other => panic!("expected [Deny{{reason, code}}], got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn rule_malformed_bare_deny_call_errors() {
+        // A malformed `deny(...)` must surface its own error rather than
+        // falling through to the predicate parser.
+        let err = parse_rule("deny(unquoted)", "test").unwrap_err();
+        assert!(
+            matches!(err, ParseError::Rule { .. }),
+            "expected ParseError::Rule, got {:?}", err
+        );
     }
 
     #[test]
