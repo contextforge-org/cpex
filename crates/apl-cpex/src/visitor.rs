@@ -405,7 +405,7 @@ impl ConfigVisitor for AplConfigVisitor {
             return Ok(());
         };
         let source = format!("global.defaults.{}.apl", entity_type);
-        warn_if_pdp_at_nonglobal_scope(&source, &apl_block);
+        warn_if_global_only_key_at_nonglobal_scope(&source, &apl_block);
         let compiled = compile_policy_block_value(&source, &apl_block)
             .map_err(|e| Box::new(e) as VisitorError)?;
         self.state
@@ -426,7 +426,7 @@ impl ConfigVisitor for AplConfigVisitor {
             return Ok(());
         };
         let source = format!("global.policies.{}.apl", tag);
-        warn_if_pdp_at_nonglobal_scope(&source, &apl_block);
+        warn_if_global_only_key_at_nonglobal_scope(&source, &apl_block);
         let compiled = compile_policy_block_value(&source, &apl_block)
             .map_err(|e| Box::new(e) as VisitorError)?;
         self.state
@@ -457,7 +457,7 @@ impl ConfigVisitor for AplConfigVisitor {
             }
         };
         if let Some(block) = &route_apl {
-            warn_if_pdp_at_nonglobal_scope(&format!("routes.{entity_type}"), block);
+            warn_if_global_only_key_at_nonglobal_scope(&format!("routes.{entity_type}"), block);
         }
         let scope = parsed.meta.as_ref().and_then(|m| m.scope.clone());
         let tags: Vec<String> = parsed
@@ -722,21 +722,25 @@ fn names_of(sol: &cpex_core::config::StringOrList) -> Vec<String> {
     }
 }
 
-/// Warn when an APL block carries a `pdp:` declaration at a scope that
+/// Warn when an APL block carries a global-only wiring key
+/// ([`GLOBAL_ONLY_NON_DSL_KEYS`]: `pdp`, `session_store`) at a scope that
 /// cannot act on it. Only [`AplConfigVisitor::visit_global`] builds PDPs
-/// (they are process-global CPEX wiring); a `pdp:` written under a
-/// default / policy-bundle / route block is folded into the policy body
-/// and silently discarded by `compile_policy_block_value`. Surfacing it
-/// here turns that quiet no-op into an actionable signal. Applies to
-/// both the flat and `apl:`-wrapped forms — neither is processed off the
-/// global scope.
-fn warn_if_pdp_at_nonglobal_scope(scope: &str, apl_block: &serde_yaml::Value) {
-    if apl_block.get("pdp").is_some() {
-        tracing::warn!(
-            scope,
-            "APL visitor: `pdp:` is only honored under the top-level `global:` block; \
-             the declaration at this scope is ignored",
-        );
+/// and selects the session store (they are process-global CPEX wiring); a
+/// `pdp:` / `session_store:` written under a default / policy-bundle /
+/// route block is folded into the policy body and silently discarded by
+/// `compile_policy_block_value`. Surfacing it here turns that quiet no-op
+/// into an actionable signal. Applies to both the flat and `apl:`-wrapped
+/// forms — neither is processed off the global scope.
+fn warn_if_global_only_key_at_nonglobal_scope(scope: &str, apl_block: &serde_yaml::Value) {
+    for key in GLOBAL_ONLY_NON_DSL_KEYS {
+        if apl_block.get(key).is_some() {
+            tracing::warn!(
+                scope,
+                key,
+                "APL visitor: this key is only honored under the top-level `global:` block; \
+                 the declaration at this scope is ignored",
+            );
+        }
     }
 }
 
@@ -767,18 +771,27 @@ fn warn_unreferenced_plugin_overrides(route: &CompiledRoute) {
     }
 }
 
-/// Strip the `pdp` sub-key from an `apl:` mapping so the remainder can
-/// be handed to `compile_policy_block_value` (which doesn't model PDP
-/// declarations — those are CPEX wiring concerns). Returns a clone of
-/// the mapping with the non-DSL `pdp` and `session_store` keys removed;
-/// the original is left intact.
+/// APL sub-keys that are CPEX *wiring*, not policy DSL: they are honored
+/// only under the top-level `global:` block (where `visit_global` acts on
+/// them) and are stripped before the remainder is handed to
+/// `compile_policy_block_value`, which doesn't model them. Kept as a single
+/// source of truth shared by [`strip_non_dsl_keys`] and
+/// [`warn_if_global_only_key_at_nonglobal_scope`].
+const GLOBAL_ONLY_NON_DSL_KEYS: [&str; 2] = ["pdp", "session_store"];
+
+/// Strip the global-only wiring sub-keys ([`GLOBAL_ONLY_NON_DSL_KEYS`])
+/// from an `apl:` mapping so the remainder can be handed to
+/// `compile_policy_block_value` (which doesn't model PDP / session-store
+/// declarations — those are CPEX wiring concerns). Returns a clone of the
+/// mapping with those keys removed; the original is left intact.
 fn strip_non_dsl_keys(apl_block: &serde_yaml::Value) -> serde_yaml::Value {
     let Some(map) = apl_block.as_mapping() else {
         return apl_block.clone();
     };
     let mut cloned = map.clone();
-    cloned.remove(serde_yaml::Value::String("pdp".to_string()));
-    cloned.remove(serde_yaml::Value::String("session_store".to_string()));
+    for key in GLOBAL_ONLY_NON_DSL_KEYS {
+        cloned.remove(serde_yaml::Value::String(key.to_string()));
+    }
     serde_yaml::Value::Mapping(cloned)
 }
 
@@ -798,12 +811,24 @@ fn on_error_to_string(on_err: &cpex_core::plugin::OnError) -> String {
     on_err.to_string()
 }
 
-/// APL DSL keys recognized directly on a section (route / global /
-/// defaults / policy-bundle) when the `apl:` wrapper is omitted.
+/// APL keys recognized directly on a section (route / global / defaults /
+/// policy-bundle) when the `apl:` wrapper is omitted. Includes the policy
+/// DSL terms plus the global-only wiring keys ([`GLOBAL_ONLY_NON_DSL_KEYS`]):
+/// `pdp` and `session_store` are accepted flat for parse symmetry with their
+/// `apl:`-wrapped form, but only `visit_global` acts on them — at other
+/// scopes they are inert and flagged by
+/// [`warn_if_global_only_key_at_nonglobal_scope`].
 /// `plugins` is intentionally absent here — it is shape-ambiguous (a
 /// structural plugin-ref *list* vs an apl-override *map*) and handled
 /// separately in [`apl_subblock`].
-const FLAT_APL_KEYS: [&str; 5] = ["policy", "post_policy", "args", "result", "pdp"];
+const FLAT_APL_KEYS: [&str; 6] = [
+    "policy",
+    "post_policy",
+    "args",
+    "result",
+    "pdp",
+    "session_store",
+];
 
 /// Pull a section's APL block out of its raw YAML.
 ///
@@ -886,6 +911,21 @@ mod tests {
     }
 
     #[test]
+    fn flat_session_store_without_wrapper_is_collected() {
+        // A `session_store:` written directly on `global:` (no `apl:`
+        // wrapper) must be lifted into the block so `visit_global` can act
+        // on it — symmetric with the `apl:`-wrapped form and with `pdp:`.
+        let v = yaml("session_store:\n  kind: valkey\n  endpoint: localhost:6379\n");
+        let block = apl_subblock(&v).expect("flat session_store recognized");
+        let ss = block.get("session_store").expect("session_store lifted into the block");
+        assert_eq!(
+            ss.get("kind").and_then(|k| k.as_str()),
+            Some("valkey"),
+            "the session_store mapping is preserved intact",
+        );
+    }
+
+    #[test]
     fn flat_plugins_map_included_but_list_excluded() {
         // Map shape is the apl-override form → kept.
         let m = yaml("plugins:\n  audit:\n    on_error: ignore\n");
@@ -924,15 +964,18 @@ mod tests {
     }
 
     #[test]
-    fn warn_if_pdp_at_nonglobal_scope_is_a_safe_noop() {
-        use super::warn_if_pdp_at_nonglobal_scope;
-        // The helper only emits a tracing event; it must never panic
-        // whether `pdp` is present or not. (The drop semantics are
-        // exercised end-to-end; here we just guard the helper's contract.)
+    fn warn_if_global_only_key_at_nonglobal_scope_is_a_safe_noop() {
+        use super::warn_if_global_only_key_at_nonglobal_scope;
+        // The helper only emits a tracing event; it must never panic for
+        // either global-only wiring key (`pdp` / `session_store`), or for
+        // none present. (The drop semantics are exercised end-to-end; here
+        // we just guard the helper's contract.)
         let with_pdp = yaml("policy:\n  - \"deny\"\npdp:\n  - kind: cel\n");
-        let without_pdp = yaml("policy:\n  - \"deny\"\n");
-        warn_if_pdp_at_nonglobal_scope("route", &with_pdp);
-        warn_if_pdp_at_nonglobal_scope("global.defaults.tool.apl", &without_pdp);
+        let with_session_store = yaml("policy:\n  - \"deny\"\nsession_store:\n  kind: valkey\n");
+        let without = yaml("policy:\n  - \"deny\"\n");
+        warn_if_global_only_key_at_nonglobal_scope("route", &with_pdp);
+        warn_if_global_only_key_at_nonglobal_scope("routes.tool", &with_session_store);
+        warn_if_global_only_key_at_nonglobal_scope("global.defaults.tool.apl", &without);
     }
 
     #[test]
