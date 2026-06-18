@@ -92,12 +92,33 @@ impl ValkeyConfig {
     }
 
     /// Enforce the non-negotiable invariants. TLS is mandatory off
-    /// localhost (R10); the TTL-soundness warning (R17) is emitted here.
+    /// localhost (R10); a `tls: true` + plaintext `redis://` scheme is a
+    /// contradiction (would connect in cleartext); the connection URL
+    /// must build; the TTL-soundness warning (R17) is emitted here.
+    ///
+    /// All error text routes the endpoint through [`redact_endpoint`] so
+    /// embedded credentials never leak into errors or logs.
     fn validate(&self) -> Result<(), BuildError> {
-        let tls = self.tls_enabled();
-        if !tls && !endpoint_is_localhost(&self.endpoint) {
-            return Err(BuildError::TlsRequired(self.endpoint.clone()));
+        // A fully-formed plaintext `redis://` endpoint with `tls: true`
+        // is contradictory: tls_enabled() would say "secure" while the
+        // explicit scheme forces cleartext. Reject rather than silently
+        // connecting in the clear.
+        if self.tls && self.endpoint.starts_with("redis://") {
+            return Err(BuildError::Config(format!(
+                "`tls: true` conflicts with the plaintext `redis://` scheme in endpoint '{}'; \
+                 use a `rediss://` URL or a bare host:port",
+                redact_endpoint(&self.endpoint)
+            )));
         }
+
+        if !self.tls_enabled() && !endpoint_is_localhost(&self.endpoint) {
+            return Err(BuildError::TlsRequired(redact_endpoint(&self.endpoint)));
+        }
+
+        // Build the URL now so a malformed endpoint / unencodable
+        // credential fails at config-load, not on first request.
+        self.connection_url()?;
+
         if let (Some(ttl), Some(life)) = (self.ttl_seconds, self.max_session_lifetime_seconds) {
             if ttl < life {
                 tracing::warn!(
@@ -117,25 +138,66 @@ impl ValkeyConfig {
         self.tls || self.endpoint.starts_with("rediss://")
     }
 
-    /// Build the `redis`/`rediss` connection URL deadpool consumes,
-    /// folding in scheme (from TLS) and any ACL credentials.
-    pub fn connection_url(&self) -> String {
-        // Already a fully-formed URL → trust it as-is.
+    /// Build the `redis`/`rediss` connection URL deadpool consumes.
+    ///
+    /// Credentials are percent-encoded via the `url` crate (never naive
+    /// string interpolation), and the wire scheme always reflects
+    /// [`Self::tls_enabled`] so it cannot disagree with the validated TLS
+    /// intent. A fully-formed endpoint URL is parsed (and trusted for its
+    /// own embedded credentials); a bare `host:port` is assembled with
+    /// the configured scheme and any separate `username`/`password`.
+    pub fn connection_url(&self) -> Result<String, BuildError> {
         if self.endpoint.starts_with("redis://") || self.endpoint.starts_with("rediss://") {
-            return self.endpoint.clone();
+            // Validate it parses; trust the operator's embedded scheme +
+            // credentials. (validate() has already rejected the
+            // tls:true + redis:// contradiction.)
+            let url = url::Url::parse(&self.endpoint).map_err(|e| {
+                BuildError::Config(format!(
+                    "invalid endpoint URL '{}': {e}",
+                    redact_endpoint(&self.endpoint)
+                ))
+            })?;
+            return Ok(url.to_string());
         }
+
         let scheme = if self.tls_enabled() {
             "rediss"
         } else {
             "redis"
         };
-        let auth = match (&self.username, &self.password) {
-            (Some(u), Some(p)) => format!("{u}:{p}@"),
-            (None, Some(p)) => format!(":{p}@"),
-            _ => String::new(),
-        };
-        format!("{scheme}://{auth}{}", self.endpoint)
+        let mut url = url::Url::parse(&format!("{scheme}://{}", self.endpoint)).map_err(|e| {
+            BuildError::Config(format!(
+                "invalid endpoint '{}': {e}",
+                redact_endpoint(&self.endpoint)
+            ))
+        })?;
+        if let Some(password) = &self.password {
+            // set_username/set_password percent-encode and reject hosts
+            // that cannot carry userinfo (e.g. cannot-be-a-base URLs).
+            url.set_username(self.username.as_deref().unwrap_or(""))
+                .map_err(|_| BuildError::Config("endpoint cannot carry credentials".to_string()))?;
+            url.set_password(Some(password))
+                .map_err(|_| BuildError::Config("endpoint cannot carry credentials".to_string()))?;
+        }
+        Ok(url.to_string())
     }
+}
+
+/// Strip any `userinfo` (`user:pass@`) from an endpoint before it appears
+/// in an error message or log line, so credentials are never disclosed.
+fn redact_endpoint(endpoint: &str) -> String {
+    if let Some(scheme_end) = endpoint.find("://") {
+        let (scheme, after) = (&endpoint[..scheme_end], &endpoint[scheme_end + 3..]);
+        if let Some(at) = after.rfind('@') {
+            return format!("{scheme}://***@{}", &after[at + 1..]);
+        }
+        return endpoint.to_string();
+    }
+    // Bare host:port may still carry userinfo if misconfigured.
+    if let Some(at) = endpoint.rfind('@') {
+        return format!("***@{}", &endpoint[at + 1..]);
+    }
+    endpoint.to_string()
 }
 
 /// Best-effort localhost check for the TLS-required rule. Strips scheme,
@@ -171,7 +233,10 @@ mod tests {
         assert_eq!(cfg.connect_timeout_ms, 250);
         assert_eq!(cfg.command_timeout_ms, 500);
         assert_eq!(cfg.max_retries, 1);
-        assert_eq!(cfg.connection_url(), "redis://localhost:6379");
+        assert!(cfg
+            .connection_url()
+            .unwrap()
+            .starts_with("redis://localhost:6379"));
     }
 
     #[test]
@@ -181,29 +246,47 @@ mod tests {
     }
 
     #[test]
-    fn non_localhost_with_tls_is_allowed() {
+    fn non_localhost_with_tls_uses_rediss_scheme() {
         let cfg = parse("kind: valkey\nendpoint: valkey.prod.internal:6379\ntls: true\n").unwrap();
         assert!(cfg.tls_enabled());
-        assert_eq!(cfg.connection_url(), "rediss://valkey.prod.internal:6379");
+        assert!(cfg
+            .connection_url()
+            .unwrap()
+            .starts_with("rediss://valkey.prod.internal:6379"));
     }
 
     #[test]
     fn rediss_scheme_implies_tls() {
         let cfg = parse("kind: valkey\nendpoint: rediss://valkey.prod.internal:6379\n").unwrap();
         assert!(cfg.tls_enabled());
-        // A fully-formed URL is trusted as-is.
-        assert_eq!(cfg.connection_url(), "rediss://valkey.prod.internal:6379");
+        assert!(cfg.connection_url().unwrap().starts_with("rediss://"));
+    }
+
+    /// Regression for the TLS-bypass finding: `tls: true` with an explicit
+    /// plaintext `redis://` scheme must be rejected, not silently connect
+    /// in the clear.
+    #[test]
+    fn tls_true_with_plaintext_scheme_is_rejected() {
+        let err = parse("kind: valkey\nendpoint: redis://valkey.prod.internal:6379\ntls: true\n")
+            .unwrap_err();
+        assert!(matches!(err, BuildError::Config(_)), "got {err:?}");
     }
 
     #[test]
-    fn credentials_fold_into_url() {
+    fn credentials_are_percent_encoded_in_url() {
+        // A password with URL-significant characters must be encoded, not
+        // interpolated raw (which would corrupt the URL).
         let cfg = parse(
-            "kind: valkey\nendpoint: valkey.prod.internal:6379\ntls: true\nusername: gw\npassword: secret\n",
+            "kind: valkey\nendpoint: valkey.prod.internal:6379\ntls: true\nusername: gw\npassword: \"p@ss:w/rd\"\n",
         )
         .unwrap();
-        assert_eq!(
-            cfg.connection_url(),
-            "rediss://gw:secret@valkey.prod.internal:6379"
+        let url = cfg.connection_url().unwrap();
+        assert!(url.starts_with("rediss://gw:"), "url: {url}");
+        assert!(url.contains("@valkey.prod.internal:6379"), "url: {url}");
+        // The raw special chars must NOT appear unencoded in the userinfo.
+        assert!(
+            url.contains("p%40ss"),
+            "password '@' must be encoded: {url}"
         );
     }
 
@@ -217,5 +300,27 @@ mod tests {
     fn ipv6_loopback_without_tls_is_allowed() {
         let cfg = parse("kind: valkey\nendpoint: \"[::1]:6379\"\n").unwrap();
         assert!(!cfg.tls_enabled());
+    }
+
+    #[test]
+    fn redact_endpoint_strips_userinfo() {
+        assert_eq!(
+            redact_endpoint("rediss://user:secret@host:6379"),
+            "rediss://***@host:6379"
+        );
+        assert_eq!(redact_endpoint("host:6379"), "host:6379");
+    }
+
+    /// Credentials must never leak into the TLS-required error.
+    #[test]
+    fn tls_required_error_redacts_credentials() {
+        // rediss-less, non-localhost, with embedded creds, tls off → error.
+        let err =
+            parse("kind: valkey\nendpoint: redis://user:topsecret@prod.host:6379\n").unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            !msg.contains("topsecret"),
+            "error leaked credentials: {msg}"
+        );
     }
 }

@@ -32,6 +32,10 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 tokio = { workspace = true }
 sha2 = "0.10"
+# URL building/parsing so connection credentials are percent-encoded and
+# the wire scheme is consistent with the TLS setting (already in the tree
+# via redis-rs).
+url = "2"
 # Async Valkey/Redis client. `default-features = false` drops the command
 # groups we don't use (acl/geo/script/streams/json). `tokio-rustls-comp`
 # selects the rustls TLS path (tokio-rustls + rustls), keeping the tree

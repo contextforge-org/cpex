@@ -19,8 +19,11 @@ use crate::error::BuildError;
 /// on first use (where it correctly fails the request closed) rather than
 /// blocking `load_config_yaml`.
 pub(crate) fn build_pool(cfg: &ValkeyConfig) -> Result<Pool, BuildError> {
-    let url = cfg.connection_url();
+    let url = cfg.connection_url()?;
     let pool_cfg = PoolConfig::from_url(url);
+    // Note: the pool-create error is intentionally not interpolated with
+    // the URL — that string carries credentials. `connection_url()` has
+    // already validated the URL parses, so failures here are rare.
     pool_cfg
         .create_pool(Some(Runtime::Tokio1))
         .map_err(|e| BuildError::Pool(e.to_string()))
