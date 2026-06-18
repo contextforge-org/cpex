@@ -1,7 +1,7 @@
 ---
 title: "feat: Valkey-backed SessionStore for CPEX"
 type: feat
-status: active
+status: completed
 date: 2026-06-17
 deepened: 2026-06-17
 origin: docs/brainstorms/valkey-session-store-requirements.md
