@@ -709,14 +709,15 @@ fn names_of(sol: &cpex_core::config::StringOrList) -> Vec<String> {
 /// Strip the `pdp` sub-key from an `apl:` mapping so the remainder can
 /// be handed to `compile_policy_block_value` (which doesn't model PDP
 /// declarations — those are CPEX wiring concerns). Returns a clone of
-/// the mapping with `pdp` removed; the original is left intact.
+/// the mapping with the non-DSL `pdp` and `session_store` keys removed;
+/// the original is left intact.
 fn strip_non_dsl_keys(apl_block: &serde_yaml::Value) -> serde_yaml::Value {
     let Some(map) = apl_block.as_mapping() else {
         return apl_block.clone();
     };
     let mut cloned = map.clone();
-    cloned.remove(&serde_yaml::Value::String("pdp".to_string()));
-    cloned.remove(&serde_yaml::Value::String("session_store".to_string()));
+    cloned.remove(serde_yaml::Value::String("pdp".to_string()));
+    cloned.remove(serde_yaml::Value::String("session_store".to_string()));
     serde_yaml::Value::Mapping(cloned)
 }
 
