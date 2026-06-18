@@ -131,7 +131,9 @@ fn insert(level: &mut BTreeMap<String, Node>, full_key: &str, segments: &[&str],
 
     // Intermediate segment — descend, converting a leaf into a branch if
     // needed (namespace wins).
-    let entry = level.entry(head).or_insert_with(|| Node::Branch(BTreeMap::new()));
+    let entry = level
+        .entry(head)
+        .or_insert_with(|| Node::Branch(BTreeMap::new()));
     if let Node::Leaf(_) = entry {
         tracing::warn!(
             key = %full_key,
@@ -347,7 +349,10 @@ mod tests {
         let ctx = bag_to_context(&bag, &args);
         // Author-supplied `resource` is visible.
         assert!(matches!(
-            run_cel("resource.kind == 'document' && resource.sensitivity == 3", &ctx),
+            run_cel(
+                "resource.kind == 'document' && resource.sensitivity == 3",
+                &ctx
+            ),
             Ok(Value::Bool(true))
         ));
         // `subject` from the bag wins over the args' `subject: shadowed`.

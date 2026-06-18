@@ -93,15 +93,15 @@ async fn build_manager_with_yaml(
             // The factory is the load-bearing wiring under test: the visitor
             // sees `kind: cel` in YAML and finds this factory by key.
             pdp_factories: vec![Arc::new(CelPdpFactory::new())],
+            session_store_factories: Vec::new(),
             base_capabilities: None,
         },
     );
-    mgr.load_config_yaml(yaml).map_err(|e| -> Box<dyn std::error::Error + Send + Sync> {
-        format!("{e}").into()
-    })?;
-    mgr.initialize().await.map_err(|e| -> Box<dyn std::error::Error + Send + Sync> {
-        format!("{e}").into()
-    })?;
+    mgr.load_config_yaml(yaml)
+        .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { format!("{e}").into() })?;
+    mgr.initialize()
+        .await
+        .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { format!("{e}").into() })?;
     Ok(mgr)
 }
 

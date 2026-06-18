@@ -133,7 +133,9 @@ fn walk_effect<L: PluginModeLookup + ?Sized>(
                 walk_effect(e, location, under_parallel, registry, errors);
             }
         }
-        Effect::Pdp { on_allow, on_deny, .. } => {
+        Effect::Pdp {
+            on_allow, on_deny, ..
+        } => {
             for e in on_allow.iter().chain(on_deny.iter()) {
                 walk_effect(e, location, under_parallel, registry, errors);
             }

@@ -308,7 +308,10 @@ impl CelResolver {
                     "CEL runtime error; on_error=allow → allowing through. \
                      This is fail-open behavior; verify it is intentional."
                 );
-                PdpDecision { decision: Decision::Allow, diagnostics: vec![cause] }
+                PdpDecision {
+                    decision: Decision::Allow,
+                    diagnostics: vec![cause],
+                }
             }
             OnError::Deny => PdpDecision {
                 decision: Decision::Deny {
@@ -374,11 +377,7 @@ impl PdpResolver for CelResolver {
         self.dialect.clone()
     }
 
-    async fn evaluate(
-        &self,
-        call: &PdpCall,
-        bag: &AttributeBag,
-    ) -> Result<PdpDecision, PdpError> {
+    async fn evaluate(&self, call: &PdpCall, bag: &AttributeBag) -> Result<PdpDecision, PdpError> {
         // 1. Pull the expression text from the step args. A `cel:` step
         //    with no `expr` string is an author/config bug — hard error.
         let expr = call
@@ -387,9 +386,7 @@ impl PdpResolver for CelResolver {
             .and_then(|m| m.get(serde_yaml::Value::String("expr".into())))
             .and_then(|v| v.as_str())
             .ok_or_else(|| {
-                PdpError::Dispatch(
-                    "cel:() step requires a string `expr` argument".to_string(),
-                )
+                PdpError::Dispatch("cel:() step requires a string `expr` argument".to_string())
             })?;
 
         // 2. Compile (cached). Compile errors always Deny (an author
@@ -437,9 +434,10 @@ impl PdpResolver for CelResolver {
                     diagnostics,
                 })
             }
-            Ok(other) => Ok(self.on_error_decision(format!(
-                "CEL expression must return bool, got {other:?}"
-            ))),
+            Ok(other) => {
+                Ok(self
+                    .on_error_decision(format!("CEL expression must return bool, got {other:?}")))
+            }
             Err(e) => {
                 // Eval errors are usually undeclared-variable typos.
                 // Enumerate the variables the expression references AND
@@ -477,17 +475,13 @@ impl PdpResolver for CelResolver {
 /// diagnostic string per matched key in `key=value` form. Used to
 /// enrich Deny diagnostics so auditors can see what made the predicate
 /// false without re-running with debug logging.
-fn snapshot_referenced_bag_values(
-    program: &Program,
-    bag: &AttributeBag,
-) -> Vec<String> {
+fn snapshot_referenced_bag_values(program: &Program, bag: &AttributeBag) -> Vec<String> {
     let refs = program.references();
     let referenced = refs.variables();
     if referenced.is_empty() {
         return Vec::new();
     }
-    let referenced_set: std::collections::HashSet<&str> =
-        referenced.iter().copied().collect();
+    let referenced_set: std::collections::HashSet<&str> = referenced.iter().copied().collect();
 
     let mut snapshot: Vec<String> = bag
         .iter()
@@ -547,10 +541,16 @@ mod tests {
         let r = CelResolver::new();
         let bag = bag_with(&[("subject.id", "alice")]);
 
-        let allow = r.evaluate(&cel_call("subject.id == 'alice'"), &bag).await.unwrap();
+        let allow = r
+            .evaluate(&cel_call("subject.id == 'alice'"), &bag)
+            .await
+            .unwrap();
         assert_eq!(allow.decision, Decision::Allow);
 
-        let deny = r.evaluate(&cel_call("subject.id == 'bob'"), &bag).await.unwrap();
+        let deny = r
+            .evaluate(&cel_call("subject.id == 'bob'"), &bag)
+            .await
+            .unwrap();
         assert!(matches!(deny.decision, Decision::Deny { .. }));
     }
 
@@ -572,23 +572,21 @@ mod tests {
     async fn custom_function_registration_round_trips() {
         let r = CelResolver::new()
             .with_functions(|ctx| {
-                ctx.add_function(
-                    "double",
-                    |n: i64| -> i64 { n * 2 },
-                );
+                ctx.add_function("double", |n: i64| -> i64 { n * 2 });
             })
             .with_functions(|ctx| {
-                ctx.add_function(
-                    "shout",
-                    |s: Arc<String>| -> String { s.to_uppercase() },
-                );
+                ctx.add_function("shout", |s: Arc<String>| -> String { s.to_uppercase() });
             });
         let bag = bag_with(&[("subject.id", "alice")]);
 
         // First registered function works.
-        let out = r.evaluate(&cel_call("double(21) == 42"), &bag).await.unwrap();
+        let out = r
+            .evaluate(&cel_call("double(21) == 42"), &bag)
+            .await
+            .unwrap();
         assert_eq!(
-            out.decision, Decision::Allow,
+            out.decision,
+            Decision::Allow,
             "first registered function must be callable",
         );
 
@@ -598,7 +596,8 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            out.decision, Decision::Allow,
+            out.decision,
+            Decision::Allow,
             "subsequent with_functions calls must compose, not replace",
         );
     }
@@ -615,7 +614,8 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            out.decision, Decision::Allow,
+            out.decision,
+            Decision::Allow,
             "the regex CEL feature must be enabled so authors can match paths",
         );
     }
@@ -624,7 +624,10 @@ mod tests {
     async fn undeclared_variable_fails_closed_by_default() {
         let r = CelResolver::new();
         // `nonexistent` is not in the bag → eval error → fail-closed Deny.
-        let out = r.evaluate(&cel_call("nonexistent.field == 1"), &AttributeBag::new()).await.unwrap();
+        let out = r
+            .evaluate(&cel_call("nonexistent.field == 1"), &AttributeBag::new())
+            .await
+            .unwrap();
         assert!(matches!(out.decision, Decision::Deny { .. }));
     }
 
@@ -692,9 +695,15 @@ mod tests {
     async fn compile_error_always_denies_even_with_on_error_allow() {
         let r = CelResolver::new().with_on_error(OnError::Allow);
         // `1 +` is a syntax error → compile failure → unconditional Deny.
-        let out = r.evaluate(&cel_call("1 +"), &AttributeBag::new()).await.unwrap();
+        let out = r
+            .evaluate(&cel_call("1 +"), &AttributeBag::new())
+            .await
+            .unwrap();
         match out.decision {
-            Decision::Deny { reason, rule_source } => {
+            Decision::Deny {
+                reason,
+                rule_source,
+            } => {
                 assert_eq!(rule_source, "cel");
                 let r = reason.unwrap_or_default();
                 assert!(
@@ -709,7 +718,10 @@ mod tests {
     #[tokio::test]
     async fn on_error_allow_flips_eval_error_to_allow() {
         let r = CelResolver::new().with_on_error(OnError::Allow);
-        let out = r.evaluate(&cel_call("nonexistent.field == 1"), &AttributeBag::new()).await.unwrap();
+        let out = r
+            .evaluate(&cel_call("nonexistent.field == 1"), &AttributeBag::new())
+            .await
+            .unwrap();
         assert_eq!(out.decision, Decision::Allow);
     }
 
@@ -745,12 +757,18 @@ mod tests {
         let bag = bag_with(&[("subject.id", "alice")]);
 
         // First expr fills the cache.
-        let first = r.evaluate(&cel_call("subject.id == 'alice'"), &bag).await.unwrap();
+        let first = r
+            .evaluate(&cel_call("subject.id == 'alice'"), &bag)
+            .await
+            .unwrap();
         assert_eq!(first.decision, Decision::Allow);
         assert_eq!(r.cache.read().unwrap().len(), 1);
 
         // Second distinct expr → rejected by the cap → on_error Deny.
-        let second = r.evaluate(&cel_call("subject.id != ''"), &bag).await.unwrap();
+        let second = r
+            .evaluate(&cel_call("subject.id != ''"), &bag)
+            .await
+            .unwrap();
         assert!(
             matches!(second.decision, Decision::Deny { .. }),
             "cap rejection must route through on_error Deny by default",
@@ -767,7 +785,10 @@ mod tests {
         );
 
         // Cached expr still works.
-        let third = r.evaluate(&cel_call("subject.id == 'alice'"), &bag).await.unwrap();
+        let third = r
+            .evaluate(&cel_call("subject.id == 'alice'"), &bag)
+            .await
+            .unwrap();
         assert_eq!(third.decision, Decision::Allow);
     }
 
@@ -782,25 +803,29 @@ mod tests {
         let bag = bag_with(&[("subject.id", "alice")]);
 
         // Fill the cache.
-        let _ = r.evaluate(&cel_call("subject.id == 'alice'"), &bag).await.unwrap();
+        let _ = r
+            .evaluate(&cel_call("subject.id == 'alice'"), &bag)
+            .await
+            .unwrap();
 
         // Second distinct expr is cap-rejected → on_error Allow.
-        let out = r.evaluate(&cel_call("subject.id != ''"), &bag).await.unwrap();
+        let out = r
+            .evaluate(&cel_call("subject.id != ''"), &bag)
+            .await
+            .unwrap();
         assert_eq!(out.decision, Decision::Allow);
     }
 
     #[test]
     fn from_config_parses_on_error() {
-        let yaml: serde_yaml::Value =
-            serde_yaml::from_str("kind: cel\non_error: allow\n").unwrap();
+        let yaml: serde_yaml::Value = serde_yaml::from_str("kind: cel\non_error: allow\n").unwrap();
         let r = CelResolver::from_config(&yaml).unwrap();
         assert_eq!(r.on_error, OnError::Allow);
     }
 
     #[test]
     fn from_config_rejects_bad_on_error() {
-        let yaml: serde_yaml::Value =
-            serde_yaml::from_str("kind: cel\non_error: maybe\n").unwrap();
+        let yaml: serde_yaml::Value = serde_yaml::from_str("kind: cel\non_error: maybe\n").unwrap();
         assert!(matches!(
             CelResolver::from_config(&yaml),
             Err(BuildError::ConfigShape(_))
@@ -814,8 +839,7 @@ mod tests {
     /// names the offending key.
     #[test]
     fn from_config_rejects_unknown_key() {
-        let yaml: serde_yaml::Value =
-            serde_yaml::from_str("kind: cel\non_errr: allow\n").unwrap();
+        let yaml: serde_yaml::Value = serde_yaml::from_str("kind: cel\non_errr: allow\n").unwrap();
         match CelResolver::from_config(&yaml) {
             Err(BuildError::ConfigShape(msg)) => assert!(
                 msg.contains("on_errr"),
@@ -861,7 +885,11 @@ mod tests {
         // One distinct expr → exactly one compiled program despite the
         // concurrent first-miss race.
         let cache = resolver.cache.read().unwrap();
-        assert_eq!(cache.len(), 1, "concurrent compiles must converge to one entry");
+        assert_eq!(
+            cache.len(),
+            1,
+            "concurrent compiles must converge to one entry"
+        );
         assert!(cache.contains_key(expr));
     }
 }

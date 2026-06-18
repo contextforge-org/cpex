@@ -177,6 +177,7 @@ async fn build_manager_with_visitor(yaml: &str) -> Arc<PluginManager> {
             session_store: Arc::new(MemorySessionStore::new()),
             pdps: Vec::new(),
             pdp_factories: Vec::new(),
+            session_store_factories: Vec::new(),
             base_capabilities: None,
         },
     );

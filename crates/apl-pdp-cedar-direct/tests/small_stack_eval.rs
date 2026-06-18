@@ -44,8 +44,7 @@ fn evaluate_succeeds_on_musl_sized_thread_stack() {
                 @id("allow-all")
                 permit(principal, action, resource);
             "#;
-            let resolver =
-                CedarDirectResolver::from_policy_text(POLICY).expect("policy parses");
+            let resolver = CedarDirectResolver::from_policy_text(POLICY).expect("policy parses");
 
             let call = PdpCall {
                 dialect: PdpDialect::Cedar,

@@ -687,6 +687,7 @@ async fn tagger_manager_with_store(store: Arc<dyn SessionStore>) -> Arc<PluginMa
             session_store: store,
             pdps: Vec::new(),
             pdp_factories: Vec::new(),
+            session_store_factories: Vec::new(),
             base_capabilities: None,
         },
     );
@@ -773,5 +774,145 @@ async fn sessionless_request_unaffected_by_store_failure() {
         result.continue_processing,
         "sessionless traffic should not be denied by a store outage: {:?}",
         result.violation
+    );
+}
+
+// ---------------------------------------------------------------------
+// Config-driven backend selection (U3 / R2, R3; AE3, AE5).
+// ---------------------------------------------------------------------
+
+/// Records every load/append so a test can prove which store was active.
+#[derive(Default)]
+struct RecordingSessionStore {
+    loads: std::sync::Mutex<Vec<String>>,
+    appends: std::sync::Mutex<Vec<(String, Vec<String>)>>,
+}
+
+#[async_trait]
+impl SessionStore for RecordingSessionStore {
+    async fn load_labels(&self, session_id: &str) -> Result<Vec<String>, SessionStoreError> {
+        self.loads.lock().unwrap().push(session_id.to_string());
+        Ok(Vec::new())
+    }
+    async fn append_labels(
+        &self,
+        session_id: &str,
+        labels: &[String],
+    ) -> Result<(), SessionStoreError> {
+        self.appends
+            .lock()
+            .unwrap()
+            .push((session_id.to_string(), labels.to_vec()));
+        Ok(())
+    }
+}
+
+/// Factory that hands back a specific recording store so the test can
+/// inspect it after the config walk selected it.
+struct RecordingFactory {
+    store: Arc<RecordingSessionStore>,
+}
+
+impl apl_cpex::SessionStoreFactory for RecordingFactory {
+    fn kind(&self) -> &str {
+        "recording-fake"
+    }
+    fn build(
+        &self,
+        _config: &serde_yaml::Value,
+    ) -> Result<Arc<dyn SessionStore>, Box<dyn std::error::Error + Send + Sync>> {
+        Ok(self.store.clone())
+    }
+}
+
+/// AE5: a `global.apl.session_store { kind: recording-fake }` block makes
+/// the factory-built store the active one — the default `MemorySessionStore`
+/// passed to `AplOptions` is overridden by config.
+#[tokio::test]
+async fn config_selects_session_store_via_factory() {
+    const YAML: &str = r#"
+plugins:
+  - name: tagger
+    kind: tagger
+    hooks: [cmf.tool_pre_invoke]
+    capabilities: [append_labels, read_labels]
+global:
+  apl:
+    session_store:
+      kind: recording-fake
+routes:
+  - tool: get_weather
+    apl:
+      policy:
+        - "plugin(tagger)"
+"#;
+
+    let recording = Arc::new(RecordingSessionStore::default());
+    let mgr = Arc::new(PluginManager::default());
+    mgr.register_factory("tagger", Box::new(TaintingPluginFactory));
+    register_apl(
+        &mgr,
+        AplOptions {
+            dispatch_cache: Arc::new(DispatchCache::new()),
+            // Default store that config should override:
+            session_store: Arc::new(MemorySessionStore::new()),
+            pdps: Vec::new(),
+            pdp_factories: Vec::new(),
+            session_store_factories: vec![Arc::new(RecordingFactory {
+                store: Arc::clone(&recording),
+            })],
+            base_capabilities: None,
+        },
+    );
+    mgr.load_config_yaml(YAML).expect("load_config_yaml");
+    mgr.initialize().await.expect("initialize");
+
+    let (mut ext, _key) = session_ext_and_key("sess-cfg", "alice");
+    set_tool_meta(&mut ext, "get_weather");
+    let (result, _bg) = mgr
+        .invoke_named::<CmfHook>("cmf.tool_pre_invoke", cmf_payload(), ext, None)
+        .await;
+    assert!(result.continue_processing, "tagger route allows");
+
+    // The config-selected recording store — NOT the default memory store —
+    // received the hydration load and the taint append.
+    assert!(
+        !recording.loads.lock().unwrap().is_empty(),
+        "config-selected store should receive the hydration load"
+    );
+    assert_eq!(
+        recording.appends.lock().unwrap().len(),
+        1,
+        "config-selected store should receive the taint append"
+    );
+}
+
+/// Unknown `kind` in a session_store block fails config load loudly.
+#[tokio::test]
+async fn unknown_session_store_kind_fails_config_load() {
+    const YAML: &str = r#"
+global:
+  apl:
+    session_store:
+      kind: nonexistent-backend
+"#;
+    let mgr = Arc::new(PluginManager::default());
+    register_apl(
+        &mgr,
+        AplOptions {
+            dispatch_cache: Arc::new(DispatchCache::new()),
+            session_store: Arc::new(MemorySessionStore::new()),
+            pdps: Vec::new(),
+            pdp_factories: Vec::new(),
+            session_store_factories: Vec::new(),
+            base_capabilities: None,
+        },
+    );
+    let err = mgr
+        .load_config_yaml(YAML)
+        .expect_err("unknown kind must fail load");
+    assert!(
+        format!("{err}").contains("nonexistent-backend"),
+        "error should name the unresolved kind: {err}"
     );
 }

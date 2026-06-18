@@ -47,9 +47,8 @@ pub fn build(
 ) -> Result<Entities, PdpError> {
     let principal = build_principal(bag, schema, entity_namespace)?;
     let resource = build_resource(resource_args, schema)?;
-    Entities::from_entities([principal, resource], schema).map_err(|e| {
-        PdpError::Dispatch(format!("failed to assemble Cedar entity set: {}", e))
-    })
+    Entities::from_entities([principal, resource], schema)
+        .map_err(|e| PdpError::Dispatch(format!("failed to assemble Cedar entity set: {}", e)))
 }
 
 /// Build the principal `Entity` from the bag. Reads:

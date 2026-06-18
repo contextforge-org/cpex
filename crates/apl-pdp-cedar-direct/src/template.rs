@@ -233,7 +233,11 @@ email: ${claim.email}
         let yaml = serde_yaml::Value::String("${args.missing}".into());
         let err = resolve_refs(&yaml, &bag).unwrap_err();
         let msg = format!("{:?}", err);
-        assert!(msg.contains("args.missing"), "error mentions the key: {}", msg);
+        assert!(
+            msg.contains("args.missing"),
+            "error mentions the key: {}",
+            msg
+        );
     }
 
     #[test]

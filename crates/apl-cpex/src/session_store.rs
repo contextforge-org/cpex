@@ -27,7 +27,7 @@
 // hydration/persistence into/out of `Extensions.security.labels`.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::RwLock;
+use std::sync::{Arc, RwLock};
 
 use async_trait::async_trait;
 
@@ -83,6 +83,31 @@ pub trait SessionStore: Send + Sync {
         session_id: &str,
         labels: &[String],
     ) -> Result<(), SessionStoreError>;
+}
+
+/// Factory the visitor consults when it encounters a
+/// `global.apl.session_store` block in the unified config. Mirrors
+/// [`apl_core::step::PdpFactory`]: each factory advertises a `kind()`
+/// string matching the YAML block's `kind:` field, and `build` turns the
+/// block into a live store. Registered up front via
+/// [`crate::AplOptions::session_store_factories`]; the visitor selects
+/// the active store from config during its global-config walk, before
+/// any route handler captures the store.
+///
+/// `build` errors are construction-time (bad config, unresolvable
+/// endpoint) and surface as a config-load failure — distinct from the
+/// request-time [`SessionStoreError`] the trait methods return.
+pub trait SessionStoreFactory: Send + Sync {
+    /// The `kind:` discriminator this factory builds (e.g. `"valkey"`).
+    fn kind(&self) -> &str;
+
+    /// Build a store from its config block. The whole
+    /// `global.apl.session_store` mapping is passed so the factory can
+    /// read its own keys (endpoint, TLS, auth, prefix, TTL, …).
+    fn build(
+        &self,
+        config: &serde_yaml::Value,
+    ) -> Result<Arc<dyn SessionStore>, Box<dyn std::error::Error + Send + Sync>>;
 }
 
 /// In-process `SessionStore` backed by a `HashMap` of `HashSet`s. Suitable
