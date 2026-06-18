@@ -28,9 +28,6 @@ fn default_connect_timeout_ms() -> u64 {
 fn default_command_timeout_ms() -> u64 {
     500
 }
-fn default_max_retries() -> u32 {
-    1
-}
 
 /// Parsed `global.apl.session_store` config for `kind: valkey`.
 ///
@@ -76,10 +73,11 @@ pub struct ValkeyConfig {
     /// Per-command response timeout (ms) — the fail-closed hot-path knob.
     #[serde(default = "default_command_timeout_ms")]
     pub command_timeout_ms: u64,
-
-    /// Max retries for a transient command failure (≤1 recommended).
-    #[serde(default = "default_max_retries")]
-    pub max_retries: u32,
+    // NOTE: bounded retry + circuit-breaker are deliberately NOT implemented
+    // in v0 (deferred follow-up). The store fails closed on the first
+    // backend error, which is safe — it just fails faster. A `max_retries`
+    // knob is intentionally absent rather than present-but-dead, so config
+    // never advertises behavior the code doesn't have.
 }
 
 impl ValkeyConfig {
@@ -232,7 +230,6 @@ mod tests {
         assert_eq!(cfg.key_prefix, "taint:v1");
         assert_eq!(cfg.connect_timeout_ms, 250);
         assert_eq!(cfg.command_timeout_ms, 500);
-        assert_eq!(cfg.max_retries, 1);
         assert!(cfg
             .connection_url()
             .unwrap()

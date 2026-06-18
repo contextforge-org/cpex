@@ -46,9 +46,12 @@ redis = { version = "1.2", default-features = false, features = [
     "tokio-rustls-comp",
     "connection-manager",
 ] }
-# External async connection pool over redis-rs; forwards the rustls feature.
+# External async connection pool over redis-rs. Forward the rustls TLS
+# feature explicitly so the rediss:// path is robust even if feature
+# unification with the redis dep ever changes.
 deadpool-redis = { version = "0.23", default-features = false, features = [
     "rt_tokio_1",
+    "tokio-rustls-comp",
 ] }
 
 [dev-dependencies]

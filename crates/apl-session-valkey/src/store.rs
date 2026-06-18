@@ -39,6 +39,7 @@ pub struct ValkeySessionStore {
     pool: Pool,
     key_prefix: String,
     ttl_seconds: Option<u64>,
+    connect_timeout: Duration,
     command_timeout: Duration,
 }
 
@@ -51,6 +52,7 @@ impl ValkeySessionStore {
             pool: build_pool(cfg)?,
             key_prefix: cfg.key_prefix.clone(),
             ttl_seconds: cfg.ttl_seconds,
+            connect_timeout: Duration::from_millis(cfg.connect_timeout_ms),
             command_timeout: Duration::from_millis(cfg.command_timeout_ms),
         })
     }
@@ -69,9 +71,11 @@ impl ValkeySessionStore {
         format!("{}:{}", self.key_prefix, hex)
     }
 
-    /// Acquire a pooled connection, bounded by the command timeout.
+    /// Acquire a pooled connection, bounded by the connect timeout (the
+    /// fail-fast knob for a dead/slow endpoint, distinct from the
+    /// per-command timeout applied to SMEMBERS/SADD below).
     async fn conn(&self) -> Result<Connection, SessionStoreError> {
-        match tokio::time::timeout(self.command_timeout, self.pool.get()).await {
+        match tokio::time::timeout(self.connect_timeout, self.pool.get()).await {
             Ok(Ok(conn)) => Ok(conn),
             Ok(Err(e)) => Err(backend(e)),
             Err(_) => Err(SessionStoreError::Backend(

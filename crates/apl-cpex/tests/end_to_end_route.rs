@@ -752,6 +752,68 @@ async fn append_failure_fails_request_closed() {
     );
 }
 
+/// R18 merge precedence: when the policy already Denies AND the append
+/// fails, the original policy violation is preserved (not overwritten by
+/// `session.persist_failed`) — the request is already denied, so the
+/// append failure surfaces only as the alarm.
+#[tokio::test]
+async fn deny_plus_append_failure_preserves_policy_violation() {
+    const YAML: &str = r#"
+plugins:
+  - name: tagger
+    kind: tagger
+    hooks: [cmf.tool_pre_invoke]
+    capabilities: [append_labels, read_labels]
+  - name: scope-gate
+    kind: scope-gate
+    hooks: [cmf.tool_pre_invoke]
+routes:
+  - tool: get_weather
+    apl:
+      policy:
+        - "plugin(tagger)"
+        - "plugin(scope-gate)"
+"#;
+    let store: Arc<dyn SessionStore> = Arc::new(ErrorSessionStore {
+        fail_load: false,
+        fail_append: true,
+    });
+    let mgr = Arc::new(PluginManager::default());
+    mgr.register_factory("tagger", Box::new(TaintingPluginFactory));
+    mgr.register_factory("scope-gate", Box::new(DenyPluginFactory));
+    register_apl(
+        &mgr,
+        AplOptions {
+            dispatch_cache: Arc::new(DispatchCache::new()),
+            session_store: store,
+            pdps: Vec::new(),
+            pdp_factories: Vec::new(),
+            session_store_factories: Vec::new(),
+            base_capabilities: None,
+        },
+    );
+    mgr.load_config_yaml(YAML).expect("load_config_yaml");
+    mgr.initialize().await.expect("initialize");
+
+    let (mut ext, _key) = session_ext_and_key("sess-deny-append", "alice");
+    set_tool_meta(&mut ext, "get_weather");
+    let (result, _bg) = mgr
+        .invoke_named::<CmfHook>("cmf.tool_pre_invoke", cmf_payload(), ext, None)
+        .await;
+
+    assert!(
+        !result.continue_processing,
+        "policy denied → request blocked"
+    );
+    // The original policy violation is preserved; the append failure does
+    // NOT overwrite it with session.persist_failed.
+    assert_eq!(
+        result.violation.as_ref().map(|v| v.code.as_str()),
+        Some("policy.forbidden"),
+        "Deny+append-err must keep the policy violation, not session.persist_failed"
+    );
+}
+
 /// Sessionless/anonymous traffic carries no session_id, so it never
 /// touches the store and is unaffected by a store outage.
 #[tokio::test]
