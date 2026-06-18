@@ -102,10 +102,7 @@ async fn role_in_bag_reaches_principal_attributes() {
     // Alice has role.hr → policy permits.
     let mut bag = alice_bag();
     bag.set("role.hr", true);
-    let decision = resolver
-        .evaluate(&read_doc_call(), &bag)
-        .await
-        .expect("evaluate");
+    let decision = resolver.evaluate(&read_doc_call(), &bag).await.expect("evaluate");
     assert_eq!(decision.decision, Decision::Allow);
     assert_eq!(decision.diagnostics, vec!["hr-only".to_string()]);
 
@@ -149,10 +146,7 @@ async fn forbid_attribution_carries_policy_id() {
         .expect("evaluate");
 
     match decision.decision {
-        Decision::Deny {
-            rule_source,
-            reason,
-        } => {
+        Decision::Deny { rule_source, reason } => {
             assert_eq!(
                 rule_source, "blocklist",
                 "violation should be attributed to the forbid policy by id"
@@ -222,8 +216,5 @@ async fn with_dialect_overrides_default() {
         .expect("policy parses")
         .with_dialect(PdpDialect::Custom("workload".to_string()));
 
-    assert_eq!(
-        resolver.dialect(),
-        PdpDialect::Custom("workload".to_string())
-    );
+    assert_eq!(resolver.dialect(), PdpDialect::Custom("workload".to_string()));
 }

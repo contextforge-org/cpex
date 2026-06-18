@@ -68,7 +68,10 @@ pub fn translate(response: &cedar_policy::Response, policy_set: &PolicySet) -> P
         })
         .collect();
 
-    let errors: Vec<String> = diagnostics.errors().map(|e| e.to_string()).collect();
+    let errors: Vec<String> = diagnostics
+        .errors()
+        .map(|e| e.to_string())
+        .collect();
 
     // Fail-closed: any runtime evaluation error → Deny with the error
     // text so the operator sees what went wrong. Cedar's own

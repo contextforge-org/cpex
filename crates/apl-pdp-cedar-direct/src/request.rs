@@ -85,7 +85,9 @@ pub fn parse<'a>(
 
     let resource_args = map
         .get(serde_yaml::Value::String("resource".to_string()))
-        .ok_or_else(|| PdpError::Dispatch("cedar:() `resource` missing".to_string()))?;
+        .ok_or_else(|| {
+            PdpError::Dispatch("cedar:() `resource` missing".to_string())
+        })?;
 
     // Build the merged context: operator-supplied `args.context` keys,
     // overlaid on top of CPEX-derived context (delegation, meta,
@@ -99,13 +101,17 @@ pub fn parse<'a>(
     let mut merged = cpex_ctx;
     if !operator_ctx.is_null() {
         let op_json: Value = serde_json::to_value(&operator_ctx).map_err(|e| {
-            PdpError::Dispatch(format!("cedar:() `context` not JSON-representable: {}", e))
+            PdpError::Dispatch(format!(
+                "cedar:() `context` not JSON-representable: {}",
+                e
+            ))
         })?;
         merge_into(&mut merged, op_json);
     }
 
-    let cedar_context = cedar_policy::Context::from_json_value(merged, None)
-        .map_err(|e| PdpError::Dispatch(format!("failed to construct Cedar context: {}", e)))?;
+    let cedar_context = cedar_policy::Context::from_json_value(merged, None).map_err(|e| {
+        PdpError::Dispatch(format!("failed to construct Cedar context: {}", e))
+    })?;
     // Note: schema-validated context construction takes an
     // (action_schema, action) pair via Cedar's `from_json_value`. For
     // v0 we skip schema-side validation of the context shape — the
@@ -164,10 +170,7 @@ fn build_cpex_context(bag: &AttributeBag) -> Value {
 
     let mut security = Map::new();
     if let Some(labels) = bag.get_string_set("security.labels") {
-        security.insert(
-            "labels".to_string(),
-            json!(labels.iter().collect::<Vec<_>>()),
-        );
+        security.insert("labels".to_string(), json!(labels.iter().collect::<Vec<_>>()));
     }
     if let Some(cls) = bag.get_string("security.classification") {
         security.insert("classification".to_string(), json!(cls));

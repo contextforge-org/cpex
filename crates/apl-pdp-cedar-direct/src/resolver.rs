@@ -147,11 +147,10 @@ impl CedarDirectResolver {
         let schema = match (schema_text, schema_file) {
             (Some(text), _) => Some(parse_schema(&text)?),
             (None, Some(path)) => {
-                let text =
-                    std::fs::read_to_string(&path).map_err(|source| BuildError::SchemaFile {
-                        path: path.clone(),
-                        source,
-                    })?;
+                let text = std::fs::read_to_string(&path).map_err(|source| BuildError::SchemaFile {
+                    path: path.clone(),
+                    source,
+                })?;
                 Some(parse_schema(&text)?)
             }
             (None, None) => None,
@@ -205,7 +204,11 @@ impl PdpResolver for CedarDirectResolver {
         self.dialect.clone()
     }
 
-    async fn evaluate(&self, call: &PdpCall, bag: &AttributeBag) -> Result<PdpDecision, PdpError> {
+    async fn evaluate(
+        &self,
+        call: &PdpCall,
+        bag: &AttributeBag,
+    ) -> Result<PdpDecision, PdpError> {
         // Resolve `${bag-key}` placeholders in the call's args against
         // the bag before any parsing. The author writes things like
         // `id: ${args.repo_name}`; this pass turns them into concrete
@@ -297,19 +300,20 @@ fn build_principal_uid(
     })
 }
 
-fn build_resource_uid(
-    resource_args: &serde_yaml::Value,
-) -> Result<cedar_policy::EntityUid, PdpError> {
-    let map = resource_args
-        .as_mapping()
-        .ok_or_else(|| PdpError::Dispatch("cedar:() `resource` must be a mapping".to_string()))?;
+fn build_resource_uid(resource_args: &serde_yaml::Value) -> Result<cedar_policy::EntityUid, PdpError> {
+    let map = resource_args.as_mapping().ok_or_else(|| {
+        PdpError::Dispatch("cedar:() `resource` must be a mapping".to_string())
+    })?;
     let type_name = read_yaml_string(map, "type")
         .ok_or_else(|| PdpError::Dispatch("cedar:() `resource.type` missing".to_string()))?;
     let id = read_yaml_string(map, "id")
         .ok_or_else(|| PdpError::Dispatch("cedar:() `resource.id` missing".to_string()))?;
     let uid_str = format!("{}::\"{}\"", type_name, escape_id(&id));
     uid_str.parse().map_err(|e| {
-        PdpError::Dispatch(format!("failed to parse resource UID '{}': {}", uid_str, e))
+        PdpError::Dispatch(format!(
+            "failed to parse resource UID '{}': {}",
+            uid_str, e
+        ))
     })
 }
 
