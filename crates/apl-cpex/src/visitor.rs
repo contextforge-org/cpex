@@ -385,7 +385,7 @@ impl ConfigVisitor for AplConfigVisitor {
         // keys. `compile_policy_block_value` accepts maps with `policy:` /
         // `post_policy:` / `args:` / `result:` / `plugins:` (and inert
         // fields it ignores), so a shallow strip on a clone is enough.
-        let policy_only = strip_non_dsl_keys(apl_block);
+        let policy_only = strip_non_dsl_keys(&apl_block);
         let compiled = compile_policy_block_value("global.apl", &policy_only)
             .map_err(|e| Box::new(e) as VisitorError)?;
         self.state
@@ -405,7 +405,8 @@ impl ConfigVisitor for AplConfigVisitor {
             return Ok(());
         };
         let source = format!("global.defaults.{}.apl", entity_type);
-        let compiled = compile_policy_block_value(&source, apl_block)
+        warn_if_pdp_at_nonglobal_scope(&source, &apl_block);
+        let compiled = compile_policy_block_value(&source, &apl_block)
             .map_err(|e| Box::new(e) as VisitorError)?;
         self.state
             .write()
@@ -425,7 +426,8 @@ impl ConfigVisitor for AplConfigVisitor {
             return Ok(());
         };
         let source = format!("global.policies.{}.apl", tag);
-        let compiled = compile_policy_block_value(&source, apl_block)
+        warn_if_pdp_at_nonglobal_scope(&source, &apl_block);
+        let compiled = compile_policy_block_value(&source, &apl_block)
             .map_err(|e| Box::new(e) as VisitorError)?;
         self.state
             .write()
@@ -454,6 +456,9 @@ impl ConfigVisitor for AplConfigVisitor {
                 return Ok(());
             }
         };
+        if let Some(block) = &route_apl {
+            warn_if_pdp_at_nonglobal_scope(&format!("routes.{entity_type}"), block);
+        }
         let scope = parsed.meta.as_ref().and_then(|m| m.scope.clone());
         let tags: Vec<String> = parsed
             .meta
@@ -477,7 +482,7 @@ impl ConfigVisitor for AplConfigVisitor {
             )
         };
 
-        for entity_name in &entity_names {
+        for (idx, entity_name) in entity_names.iter().enumerate() {
             // route_key is what `DispatchCache` keys on, so it must
             // disambiguate scoped vs unscoped routes for the same
             // entity — otherwise two same-named annotations share one
@@ -506,11 +511,22 @@ impl ConfigVisitor for AplConfigVisitor {
             }
             drop(state);
 
-            if let Some(block) = route_apl {
+            if let Some(block) = &route_apl {
                 let source = format!("routes.{}.apl", route_key);
                 let route_layer = compile_policy_block_value(&source, block)
                     .map_err(|e| Box::new(e) as VisitorError)?;
                 effective.apply_layer(route_layer);
+            }
+
+            // Load-time lint, once per route: flag any APL `plugins:`
+            // override declared for a plugin that no policy / delegate step
+            // references. Checked on the fully-stacked `effective` route so
+            // an override consumed by an inherited (global / default / tag)
+            // policy is not falsely flagged. The overrides and referenced
+            // names are entity-independent, so the first entity is
+            // representative — guarding on `idx == 0` keeps it to one pass.
+            if idx == 0 {
+                warn_unreferenced_plugin_overrides(&effective);
             }
 
             // No layers contributed anything? Don't install a handler — the
@@ -706,6 +722,51 @@ fn names_of(sol: &cpex_core::config::StringOrList) -> Vec<String> {
     }
 }
 
+/// Warn when an APL block carries a `pdp:` declaration at a scope that
+/// cannot act on it. Only [`AplConfigVisitor::visit_global`] builds PDPs
+/// (they are process-global CPEX wiring); a `pdp:` written under a
+/// default / policy-bundle / route block is folded into the policy body
+/// and silently discarded by `compile_policy_block_value`. Surfacing it
+/// here turns that quiet no-op into an actionable signal. Applies to
+/// both the flat and `apl:`-wrapped forms — neither is processed off the
+/// global scope.
+fn warn_if_pdp_at_nonglobal_scope(scope: &str, apl_block: &serde_yaml::Value) {
+    if apl_block.get("pdp").is_some() {
+        tracing::warn!(
+            scope,
+            "APL visitor: `pdp:` is only honored under the top-level `global:` block; \
+             the declaration at this scope is ignored",
+        );
+    }
+}
+
+/// Load-time lint: warn when an APL `plugins:` override is declared for a
+/// plugin that no `plugin(...)` / `run(...)` policy step (or `delegate(...)`
+/// step) in the effective route references. The `plugins:` map only
+/// *configures* a plugin — policy steps do the *activating* — so an
+/// unreferenced override has no effect and is almost always a typo or a
+/// leftover. Inspects the fully-stacked route, so an override consumed by an
+/// inherited (global / default / tag) policy is not falsely flagged. Called
+/// once per route from `visit_route` at config-load time, never per request.
+fn warn_unreferenced_plugin_overrides(route: &CompiledRoute) {
+    if route.plugin_overrides.is_empty() {
+        return;
+    }
+    let mut referenced: std::collections::HashSet<String> =
+        crate::dispatch_plan::collect_plugin_names(route).into_iter().collect();
+    referenced.extend(crate::dispatch_plan::collect_delegate_plugin_names(route));
+    for name in route.plugin_overrides.keys() {
+        if !referenced.contains(name) {
+            tracing::warn!(
+                plugin = %name,
+                route = %route.route_key,
+                "APL `plugins:` override declared for a plugin no policy step references \
+                 — the override has no effect (the `plugins:` map configures; policy steps activate)",
+            );
+        }
+    }
+}
+
 /// Strip the `pdp` sub-key from an `apl:` mapping so the remainder can
 /// be handed to `compile_policy_block_value` (which doesn't model PDP
 /// declarations — those are CPEX wiring concerns). Returns a clone of
@@ -737,14 +798,165 @@ fn on_error_to_string(on_err: &cpex_core::plugin::OnError) -> String {
     on_err.to_string()
 }
 
-/// Pull the `apl:` sub-block out of a section's raw YAML. Returns `None`
-/// when absent or null — callers treat that as "no contribution from
-/// this section" and move on.
-fn apl_subblock(yaml: &serde_yaml::Value) -> Option<&serde_yaml::Value> {
-    let block = yaml.get("apl")?;
-    if block.is_null() {
+/// APL DSL keys recognized directly on a section (route / global /
+/// defaults / policy-bundle) when the `apl:` wrapper is omitted.
+/// `plugins` is intentionally absent here — it is shape-ambiguous (a
+/// structural plugin-ref *list* vs an apl-override *map*) and handled
+/// separately in [`apl_subblock`].
+const FLAT_APL_KEYS: [&str; 5] = ["policy", "post_policy", "args", "result", "pdp"];
+
+/// Pull a section's APL block out of its raw YAML.
+///
+/// The explicit `apl:` wrapper (`route -> apl -> policy`) takes
+/// precedence. When it is absent, APL terms written directly on the
+/// section (`route -> policy`) are accepted too: a synthetic block is
+/// assembled from the recognized [`FLAT_APL_KEYS`] present on the
+/// container, plus `plugins` when (and only when) it is a *mapping* —
+/// the apl-override shape. A structural `plugins:` *list*
+/// (`RouteEntry` / `PolicyGroup`) is left untouched. Returns `None`
+/// when neither a wrapper nor any flat APL key is present — callers
+/// treat that as "no contribution from this section" and move on.
+fn apl_subblock(yaml: &serde_yaml::Value) -> Option<serde_yaml::Value> {
+    // Explicit `apl:` wrapper wins.
+    if let Some(block) = yaml.get("apl") {
+        return if block.is_null() {
+            None
+        } else {
+            Some(block.clone())
+        };
+    }
+
+    // Fallback: APL terms written directly on the section, with no
+    // `apl:` nesting. Copy only the unambiguous APL keys so structural
+    // keys (tool / identity / defaults / ...) are never misread.
+    let mut block = serde_yaml::Mapping::new();
+    for key in FLAT_APL_KEYS {
+        if let Some(value) = yaml.get(key) {
+            block.insert(serde_yaml::Value::String(key.to_string()), value.clone());
+        }
+    }
+    // `plugins` only in its apl-override (map) shape; a list is the
+    // structural plugin-ref form and belongs to the section's own parse.
+    if let Some(value) = yaml.get("plugins") {
+        if value.is_mapping() {
+            block.insert(
+                serde_yaml::Value::String("plugins".to_string()),
+                value.clone(),
+            );
+        }
+    }
+
+    if block.is_empty() {
         None
     } else {
-        Some(block)
+        Some(serde_yaml::Value::Mapping(block))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::apl_subblock;
+
+    fn yaml(s: &str) -> serde_yaml::Value {
+        serde_yaml::from_str(s).expect("valid yaml")
+    }
+
+    #[test]
+    fn apl_wrapper_is_returned_as_is() {
+        let v = yaml("apl:\n  policy:\n    - \"deny\"\n");
+        let block = apl_subblock(&v).expect("wrapper present");
+        assert!(block.get("policy").is_some(), "wrapper block exposes policy");
+    }
+
+    #[test]
+    fn null_apl_wrapper_is_none() {
+        let v = yaml("apl: null\n");
+        assert!(apl_subblock(&v).is_none(), "explicit null apl => no contribution");
+    }
+
+    #[test]
+    fn flat_policy_without_wrapper_is_collected() {
+        let v = yaml("tool: get_weather\npolicy:\n  - \"deny\"\n");
+        let block = apl_subblock(&v).expect("flat policy recognized");
+        assert!(block.get("policy").is_some(), "flat policy lifted into the block");
+        assert!(
+            block.get("tool").is_none(),
+            "structural keys must not leak into the apl block",
+        );
+    }
+
+    #[test]
+    fn flat_plugins_map_included_but_list_excluded() {
+        // Map shape is the apl-override form → kept.
+        let m = yaml("plugins:\n  audit:\n    on_error: ignore\n");
+        let block = apl_subblock(&m).expect("plugins map is an apl term");
+        assert!(block.get("plugins").is_some(), "plugins map is kept");
+
+        // List shape is structural plugin-refs → not an apl block; with no
+        // other APL keys present, the section contributes nothing.
+        let l = yaml("plugins:\n  - audit\n");
+        assert!(
+            apl_subblock(&l).is_none(),
+            "structural plugins list must not be treated as an apl block",
+        );
+    }
+
+    #[test]
+    fn section_without_apl_terms_is_none() {
+        let v = yaml("tool: get_weather\n");
+        assert!(apl_subblock(&v).is_none(), "no APL terms => no contribution");
+    }
+
+    #[test]
+    fn explicit_wrapper_wins_over_flat_keys() {
+        let v = yaml("apl:\n  policy:\n    - \"allow\"\npolicy:\n  - \"deny\"\n");
+        let block = apl_subblock(&v).expect("wrapper present");
+        let policy = block
+            .get("policy")
+            .and_then(|p| p.as_sequence())
+            .expect("policy sequence");
+        assert_eq!(policy.len(), 1);
+        assert_eq!(
+            policy[0].as_str(),
+            Some("allow"),
+            "the explicit apl wrapper takes precedence over flat top-level keys",
+        );
+    }
+
+    #[test]
+    fn warn_if_pdp_at_nonglobal_scope_is_a_safe_noop() {
+        use super::warn_if_pdp_at_nonglobal_scope;
+        // The helper only emits a tracing event; it must never panic
+        // whether `pdp` is present or not. (The drop semantics are
+        // exercised end-to-end; here we just guard the helper's contract.)
+        let with_pdp = yaml("policy:\n  - \"deny\"\npdp:\n  - kind: cel\n");
+        let without_pdp = yaml("policy:\n  - \"deny\"\n");
+        warn_if_pdp_at_nonglobal_scope("route", &with_pdp);
+        warn_if_pdp_at_nonglobal_scope("global.defaults.tool.apl", &without_pdp);
+    }
+
+    #[test]
+    fn unreferenced_plugin_override_is_detectable_and_lint_is_safe() {
+        use super::{compile_policy_block_value, warn_unreferenced_plugin_overrides};
+        // A route configures two plugins but its policy only activates one:
+        // `used` is referenced by a `plugin(...)` step, `unused` is only
+        // configured. The lint relies on `collect_plugin_names` seeing the
+        // referenced set; verify that linkage, then that the helper runs.
+        let block = yaml(
+            "policy:\n  - \"plugin(used)\"\n\
+             plugins:\n  used:\n    on_error: ignore\n  unused:\n    on_error: ignore\n",
+        );
+        let route = compile_policy_block_value("test", &block).expect("compiles");
+
+        let referenced = crate::dispatch_plan::collect_plugin_names(&route);
+        assert!(referenced.contains(&"used".to_string()), "policy step is referenced");
+        assert!(
+            !referenced.contains(&"unused".to_string()),
+            "config-only override is not a reference",
+        );
+        assert!(route.plugin_overrides.contains_key("unused"), "override was compiled in");
+
+        // Must not panic; it warns on `unused` and stays silent on `used`.
+        warn_unreferenced_plugin_overrides(&route);
     }
 }
