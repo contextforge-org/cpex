@@ -36,7 +36,7 @@ class TaskProcessor:
 
     config_hash: str
     module_path_hash: str
-    hook_ref: HookRef
+    plugin_ref: PluginRef
     executor: PluginExecutor
     plugin_config: PluginConfig | None = None
 
@@ -55,18 +55,26 @@ class TaskProcessor:
 
     def initialize(
         self,
-        hook_ref: HookRef,
+        plugin_ref: PluginRef,
         executor: PluginExecutor,
         json_config: str,
         module_path: str,
         plugin_config: PluginConfig,
     ):
         """Assign locals, and compute hashes."""
-        self.hook_ref = hook_ref
+        # self.hook_ref = hook_ref
+        self.plugin_ref = plugin_ref
         self.executor = executor
         self.config_hash = self.compute_hash(json_config_or_module_path=json_config)
         self.module_path_hash = self.compute_hash(json_config_or_module_path=module_path)
         self.plugin_config = plugin_config
+
+    def get_hook_ref(self, hook_type: str) -> HookRef:
+        """
+        make sure that the hook ref is not stale for the current task data.
+        """
+        hook_ref = HookRef(hook_type, self.plugin_ref)
+        return hook_ref
 
 
 def get_environment_info():
@@ -112,7 +120,6 @@ async def process_task(task_data, tp: TaskProcessor):
         if tp.config_hash != tp.compute_hash(json_config):
             # pull the resolved plugin path and only add the module path if it has the same root
             config: PluginConfig = PluginConfig(**config_raw)
-            hook_type = task_data.get(HOOK_TYPE)
             cls_name: str = task_data.get("class_name")
             mod_name, n_cls_name = parse_class_name(cls_name)
             module: ModuleType = import_module(mod_name)
@@ -121,12 +128,10 @@ async def process_task(task_data, tp: TaskProcessor):
             plugin_type = cast(Type[Plugin], class_)
             plugin = plugin_type(config)
             await plugin.initialize()
-            # now invoke the hook
             plugin_ref = PluginRef(plugin)
-            hook_ref = HookRef(hook_type, plugin_ref)
             executor = PluginExecutor(None, 30)
             tp.initialize(
-                hook_ref=hook_ref,
+                plugin_ref=plugin_ref,
                 executor=executor,
                 json_config=json_config,
                 module_path=json.dumps(resolved_paths),
@@ -134,11 +139,12 @@ async def process_task(task_data, tp: TaskProcessor):
             )
         # retrieve the context
         context = task_data.get("context")
+        hook_type = task_data.get(HOOK_TYPE)
         plugin_context = PluginContext(
             state=context.get("state"), global_context=context.get("global_context"), metadata=context.get("metadata")
         )
         result = await tp.executor.execute_plugin(
-            hook_ref=tp.hook_ref,
+            hook_ref=tp.get_hook_ref(hook_type),
             payload=task_data.get("payload"),
             local_context=plugin_context,
             violations_as_exceptions=False,
