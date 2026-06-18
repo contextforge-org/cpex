@@ -620,6 +620,16 @@ pub fn parse_config(yaml: &str) -> Result<CpexConfig, Box<PluginError>> {
 // ---------------------------------------------------------------------------
 
 /// Validate a parsed config for structural correctness.
+///
+/// This checks only the *structural* plugin activation lists
+/// (`route.plugins` / `policy_group.plugins` sequences). It deliberately
+/// does NOT validate APL plugin references — neither `plugin(...)` / `run(...)`
+/// policy steps nor the APL per-plugin override *map* (which
+/// [`deserialize_plugin_refs`] folds into an empty structural `Vec`, leaving
+/// it for the APL visitor to consume). Those are resolved and validated at
+/// dispatch-plan build time, where an unknown or unreferenced plugin is logged
+/// and skipped (see `apl-cpex::dispatch_plan`). Keeping cpex-core's validation
+/// free of APL semantics is intentional.
 fn validate_config(config: &CpexConfig) -> Result<(), Box<PluginError>> {
     let mut seen_names = HashSet::new();
     for plugin in &config.plugins {

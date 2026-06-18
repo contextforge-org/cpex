@@ -390,9 +390,6 @@ impl ConfigVisitor for AplConfigVisitor {
         // we need for annotate_route. A route without an APL block AND
         // without inherited layers contributes nothing — skip.
         let route_apl = apl_subblock(yaml);
-        if let Some(block) = &route_apl {
-            warn_if_pdp_at_nonglobal_scope("route", block);
-        }
         let (entity_type, entity_names) = match entity_identity(parsed) {
             Some(e) => e,
             None => {
@@ -402,6 +399,9 @@ impl ConfigVisitor for AplConfigVisitor {
                 return Ok(());
             }
         };
+        if let Some(block) = &route_apl {
+            warn_if_pdp_at_nonglobal_scope(&format!("routes.{entity_type}"), block);
+        }
         let scope = parsed.meta.as_ref().and_then(|m| m.scope.clone());
         let tags: Vec<String> = parsed
             .meta
@@ -425,7 +425,7 @@ impl ConfigVisitor for AplConfigVisitor {
             )
         };
 
-        for entity_name in &entity_names {
+        for (idx, entity_name) in entity_names.iter().enumerate() {
             // route_key is what `DispatchCache` keys on, so it must
             // disambiguate scoped vs unscoped routes for the same
             // entity — otherwise two same-named annotations share one
@@ -459,6 +459,17 @@ impl ConfigVisitor for AplConfigVisitor {
                 let route_layer = compile_policy_block_value(&source, block)
                     .map_err(|e| Box::new(e) as VisitorError)?;
                 effective.apply_layer(route_layer);
+            }
+
+            // Load-time lint, once per route: flag any APL `plugins:`
+            // override declared for a plugin that no policy / delegate step
+            // references. Checked on the fully-stacked `effective` route so
+            // an override consumed by an inherited (global / default / tag)
+            // policy is not falsely flagged. The overrides and referenced
+            // names are entity-independent, so the first entity is
+            // representative — guarding on `idx == 0` keeps it to one pass.
+            if idx == 0 {
+                warn_unreferenced_plugin_overrides(&effective);
             }
 
             // No layers contributed anything? Don't install a handler — the
@@ -661,6 +672,33 @@ fn warn_if_pdp_at_nonglobal_scope(scope: &str, apl_block: &serde_yaml::Value) {
     }
 }
 
+/// Load-time lint: warn when an APL `plugins:` override is declared for a
+/// plugin that no `plugin(...)` / `run(...)` policy step (or `delegate(...)`
+/// step) in the effective route references. The `plugins:` map only
+/// *configures* a plugin — policy steps do the *activating* — so an
+/// unreferenced override has no effect and is almost always a typo or a
+/// leftover. Inspects the fully-stacked route, so an override consumed by an
+/// inherited (global / default / tag) policy is not falsely flagged. Called
+/// once per route from `visit_route` at config-load time, never per request.
+fn warn_unreferenced_plugin_overrides(route: &CompiledRoute) {
+    if route.plugin_overrides.is_empty() {
+        return;
+    }
+    let mut referenced: std::collections::HashSet<String> =
+        crate::dispatch_plan::collect_plugin_names(route).into_iter().collect();
+    referenced.extend(crate::dispatch_plan::collect_delegate_plugin_names(route));
+    for name in route.plugin_overrides.keys() {
+        if !referenced.contains(name) {
+            tracing::warn!(
+                plugin = %name,
+                route = %route.route_key,
+                "APL `plugins:` override declared for a plugin no policy step references \
+                 — the override has no effect (the `plugins:` map configures; policy steps activate)",
+            );
+        }
+    }
+}
+
 /// Strip the `pdp` sub-key from an `apl:` mapping so the remainder can
 /// be handed to `compile_policy_block_value` (which doesn't model PDP
 /// declarations — those are CPEX wiring concerns). Returns a clone of
@@ -825,5 +863,30 @@ mod tests {
         let without_pdp = yaml("policy:\n  - \"deny\"\n");
         warn_if_pdp_at_nonglobal_scope("route", &with_pdp);
         warn_if_pdp_at_nonglobal_scope("global.defaults.tool.apl", &without_pdp);
+    }
+
+    #[test]
+    fn unreferenced_plugin_override_is_detectable_and_lint_is_safe() {
+        use super::{compile_policy_block_value, warn_unreferenced_plugin_overrides};
+        // A route configures two plugins but its policy only activates one:
+        // `used` is referenced by a `plugin(...)` step, `unused` is only
+        // configured. The lint relies on `collect_plugin_names` seeing the
+        // referenced set; verify that linkage, then that the helper runs.
+        let block = yaml(
+            "policy:\n  - \"plugin(used)\"\n\
+             plugins:\n  used:\n    on_error: ignore\n  unused:\n    on_error: ignore\n",
+        );
+        let route = compile_policy_block_value("test", &block).expect("compiles");
+
+        let referenced = crate::dispatch_plan::collect_plugin_names(&route);
+        assert!(referenced.contains(&"used".to_string()), "policy step is referenced");
+        assert!(
+            !referenced.contains(&"unused".to_string()),
+            "config-only override is not a reference",
+        );
+        assert!(route.plugin_overrides.contains_key("unused"), "override was compiled in");
+
+        // Must not panic; it warns on `unused` and stays silent on `used`.
+        warn_unreferenced_plugin_overrides(&route);
     }
 }
