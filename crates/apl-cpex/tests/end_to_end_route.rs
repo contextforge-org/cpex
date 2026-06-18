@@ -36,7 +36,10 @@ use apl_core::{
     PdpDecision, PdpDialect, PdpError, PdpResolver, RoutePayload,
 };
 
-use apl_cpex::{CmfPluginInvoker, DispatchCache, MemorySessionStore, SessionStore};
+use apl_cpex::{
+    register_apl, AplOptions, CmfPluginInvoker, DispatchCache, MemorySessionStore, SessionStore,
+    SessionStoreError,
+};
 
 // Build Extensions carrying a client/upstream session id (tier-0) AND an
 // authenticated subject, and return the session-store key the resolver
@@ -232,7 +235,8 @@ routes:
             plan,
             Arc::new(MemorySessionStore::new()),
         )
-        .await,
+        .await
+        .expect("for_request"),
     );
 
     let mut bag = AttributeBag::new();
@@ -282,7 +286,8 @@ routes:
             plan,
             Arc::new(MemorySessionStore::new()),
         )
-        .await,
+        .await
+        .expect("for_request"),
     );
 
     let mut bag = AttributeBag::new();
@@ -407,7 +412,8 @@ routes:
     let session_store = Arc::new(MemorySessionStore::new());
     let invoker = Arc::new(
         CmfPluginInvoker::for_request(mgr, extensions, cmf_payload(), plan, session_store.clone())
-            .await,
+            .await
+            .expect("for_request"),
     );
 
     let mut bag = AttributeBag::new();
@@ -446,8 +452,11 @@ routes:
     // SessionStore persistence — host calls persist_session after route
     // evaluation; new labels (vs the post-hydration snapshot) land in
     // the store under the request's session_id.
-    invoker.persist_session().await;
-    let stored = session_store.load_labels(&session_key).await;
+    invoker.persist_session().await.expect("persist_session");
+    let stored = session_store
+        .load_labels(&session_key)
+        .await
+        .expect("load_labels");
     assert_eq!(stored, vec!["PII".to_string()]);
 }
 
@@ -461,7 +470,8 @@ async fn session_store_hydrates_labels_at_request_start() {
     let session_store = Arc::new(MemorySessionStore::new());
     session_store
         .append_labels(&session_key, &["PRIOR".to_string()])
-        .await;
+        .await
+        .expect("append_labels");
 
     let mgr = tainting_manager().await;
     let yaml = r#"
@@ -483,7 +493,8 @@ routes:
 
     let invoker = Arc::new(
         CmfPluginInvoker::for_request(mgr, extensions, cmf_payload(), plan, session_store.clone())
-            .await,
+            .await
+            .expect("for_request"),
     );
 
     // Hydrated labels should be observable on the invoker's extensions.
@@ -516,8 +527,11 @@ routes:
     assert_eq!(decision.taints.len(), 1);
     assert_eq!(decision.taints[0].label, "PII");
 
-    invoker.persist_session().await;
-    let mut stored = session_store.load_labels(&session_key).await;
+    invoker.persist_session().await.expect("persist_session");
+    let mut stored = session_store
+        .load_labels(&session_key)
+        .await
+        .expect("load_labels");
     stored.sort();
     assert_eq!(stored, vec!["PII".to_string(), "PRIOR".to_string()]);
 }
@@ -550,7 +564,8 @@ routes:
     let session_store = Arc::new(MemorySessionStore::new());
     let invoker = Arc::new(
         CmfPluginInvoker::for_request(mgr, extensions, cmf_payload(), plan, session_store.clone())
-            .await,
+            .await
+            .expect("for_request"),
     );
 
     let mut bag = AttributeBag::new();
@@ -591,7 +606,172 @@ routes:
 
     // And `persist_session` should pick up the label via the diff
     // against `initial_labels` (which was empty here).
-    invoker.persist_session().await;
-    let stored = session_store.load_labels(&session_key).await;
+    invoker.persist_session().await.expect("persist_session");
+    let stored = session_store
+        .load_labels(&session_key)
+        .await
+        .expect("load_labels");
     assert_eq!(stored, vec!["audit".to_string()]);
+}
+
+// ---------------------------------------------------------------------
+// Fail-closed semantics (U2 / R4, R5, R18; AE1, AE6).
+//
+// A distributed SessionStore can fail. These tests use an erroring
+// test-double to prove the request fails *closed* — a store error
+// becomes a Deny, never a silent "no labels" Allow.
+// ---------------------------------------------------------------------
+
+/// Test-double store that fails load and/or append on demand.
+struct ErrorSessionStore {
+    fail_load: bool,
+    fail_append: bool,
+}
+
+#[async_trait]
+impl SessionStore for ErrorSessionStore {
+    async fn load_labels(&self, _session_id: &str) -> Result<Vec<String>, SessionStoreError> {
+        if self.fail_load {
+            Err(SessionStoreError::Backend("simulated load failure".into()))
+        } else {
+            Ok(Vec::new())
+        }
+    }
+
+    async fn append_labels(
+        &self,
+        _session_id: &str,
+        _labels: &[String],
+    ) -> Result<(), SessionStoreError> {
+        if self.fail_append {
+            Err(SessionStoreError::Backend(
+                "simulated append failure".into(),
+            ))
+        } else {
+            Ok(())
+        }
+    }
+}
+
+// Tagger route wired through `register_apl` so requests flow through the
+// real `AplRouteHandler::invoke` path (where the fail-closed logic lives).
+const TAGGER_ROUTE_YAML: &str = r#"
+plugins:
+  - name: tagger
+    kind: tagger
+    hooks: [cmf.tool_pre_invoke]
+    capabilities: [append_labels, read_labels]
+routes:
+  - tool: get_weather
+    apl:
+      policy:
+        - "plugin(tagger)"
+"#;
+
+// Route matching keys on the request's `meta` (entity type + name), so a
+// request must carry tool meta for the `tool: get_weather` handler to fire.
+fn set_tool_meta(ext: &mut Extensions, tool: &str) {
+    let mut meta = cpex_core::extensions::MetaExtension::default();
+    meta.entity_type = Some("tool".to_string());
+    meta.entity_name = Some(tool.to_string());
+    ext.meta = Some(Arc::new(meta));
+}
+
+async fn tagger_manager_with_store(store: Arc<dyn SessionStore>) -> Arc<PluginManager> {
+    let mgr = Arc::new(PluginManager::default());
+    mgr.register_factory("tagger", Box::new(TaintingPluginFactory));
+    register_apl(
+        &mgr,
+        AplOptions {
+            dispatch_cache: Arc::new(DispatchCache::new()),
+            session_store: store,
+            pdps: Vec::new(),
+            pdp_factories: Vec::new(),
+            base_capabilities: None,
+        },
+    );
+    mgr.load_config_yaml(TAGGER_ROUTE_YAML)
+        .expect("load_config_yaml");
+    mgr.initialize().await.expect("initialize");
+    mgr
+}
+
+/// AE1: a load failure during hydration fails the request closed *before*
+/// any decision, with the distinguished `session.load_failed` violation.
+#[tokio::test]
+async fn load_failure_fails_request_closed() {
+    let store: Arc<dyn SessionStore> = Arc::new(ErrorSessionStore {
+        fail_load: true,
+        fail_append: false,
+    });
+    let mgr = tagger_manager_with_store(store).await;
+    let (mut ext, _key) = session_ext_and_key("sess-load-fail", "alice");
+    set_tool_meta(&mut ext, "get_weather");
+
+    let (result, _bg) = mgr
+        .invoke_named::<CmfHook>("cmf.tool_pre_invoke", cmf_payload(), ext, None)
+        .await;
+
+    assert!(
+        !result.continue_processing,
+        "a load failure must fail the request closed (Deny)"
+    );
+    assert_eq!(
+        result.violation.as_ref().map(|v| v.code.as_str()),
+        Some("session.load_failed"),
+    );
+}
+
+/// AE6: an append failure after the (Allow) decision flips the request to
+/// Deny with the distinguished `session.persist_failed` violation — the
+/// accumulated taint is never silently dropped.
+#[tokio::test]
+async fn append_failure_fails_request_closed() {
+    let store: Arc<dyn SessionStore> = Arc::new(ErrorSessionStore {
+        fail_load: false,
+        fail_append: true,
+    });
+    let mgr = tagger_manager_with_store(store).await;
+    let (mut ext, _key) = session_ext_and_key("sess-append-fail", "alice");
+    set_tool_meta(&mut ext, "get_weather");
+
+    // The tagger emits a session-scoped label, so persist_session has a
+    // new label to append — which the store rejects.
+    let (result, _bg) = mgr
+        .invoke_named::<CmfHook>("cmf.tool_pre_invoke", cmf_payload(), ext, None)
+        .await;
+
+    assert!(
+        !result.continue_processing,
+        "an append failure must flip the Allow decision to Deny"
+    );
+    assert_eq!(
+        result.violation.as_ref().map(|v| v.code.as_str()),
+        Some("session.persist_failed"),
+    );
+}
+
+/// Sessionless/anonymous traffic carries no session_id, so it never
+/// touches the store and is unaffected by a store outage.
+#[tokio::test]
+async fn sessionless_request_unaffected_by_store_failure() {
+    let store: Arc<dyn SessionStore> = Arc::new(ErrorSessionStore {
+        fail_load: true,
+        fail_append: true,
+    });
+    let mgr = tagger_manager_with_store(store).await;
+
+    // Tool meta so the route handler fires, but no session/subject — so
+    // the request resolves to no session id and never touches the store.
+    let mut ext = Extensions::default();
+    set_tool_meta(&mut ext, "get_weather");
+    let (result, _bg) = mgr
+        .invoke_named::<CmfHook>("cmf.tool_pre_invoke", cmf_payload(), ext, None)
+        .await;
+
+    assert!(
+        result.continue_processing,
+        "sessionless traffic should not be denied by a store outage: {:?}",
+        result.violation
+    );
 }

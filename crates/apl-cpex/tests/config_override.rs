@@ -434,9 +434,9 @@ routes:
 async fn on_error_override_plumbs_through_to_trusted_config() {
     use std::collections::HashMap;
 
-    use apl_cpex::{DispatchCache, RouteDispatchPlan};
     use apl_core::plugin_decl::{PluginDeclaration, PluginOverride, PluginRegistry};
     use apl_core::rules::{CompiledRoute, Effect};
+    use apl_cpex::{DispatchCache, RouteDispatchPlan};
     use cpex_core::plugin::OnError;
 
     // Single-plugin cpex-core config — load it via the manager so the
@@ -476,7 +476,9 @@ plugins:
     // Override route — sets `on_error: ignore` only.
     let mut route_override = CompiledRoute::default();
     route_override.route_key = "override-route".into();
-    route_override.policy.push(Effect::Plugin { name: "gate".into() });
+    route_override.policy.push(Effect::Plugin {
+        name: "gate".into(),
+    });
     let mut override_block = PluginOverride::default();
     override_block.on_error = Some("ignore".into());
     route_override
@@ -501,7 +503,9 @@ plugins:
     // Base-config route — no overrides; should carry default Fail.
     let mut route_base = CompiledRoute::default();
     route_base.route_key = "base-route".into();
-    route_base.policy.push(Effect::Plugin { name: "gate".into() });
+    route_base.policy.push(Effect::Plugin {
+        name: "gate".into(),
+    });
     let plan_base = cache.get_or_build(&route_base, &registry, &mgr).await;
     let entry_base = plan_base
         .plugins

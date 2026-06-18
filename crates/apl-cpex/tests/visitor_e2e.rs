@@ -76,10 +76,7 @@ impl PluginFactory for AllowGateFactory {
         // in `hooks: [...]`. Lets tests pin the plugin to llm / prompt
         // / resource hooks via YAML without per-entity factory copies.
         let handlers = hooks_for(config, plugin.clone());
-        Ok(PluginInstance {
-            plugin,
-            handlers,
-        })
+        Ok(PluginInstance { plugin, handlers })
     }
 }
 
@@ -89,10 +86,7 @@ impl PluginFactory for AllowGateFactory {
 fn hooks_for<H>(
     config: &PluginConfig,
     plugin: Arc<H>,
-) -> Vec<(
-    &'static str,
-    Arc<dyn cpex_core::registry::AnyHookHandler>,
-)>
+) -> Vec<(&'static str, Arc<dyn cpex_core::registry::AnyHookHandler>)>
 where
     H: HookHandler<CmfHook> + Plugin + 'static,
 {
@@ -108,9 +102,8 @@ where
     hook_names
         .into_iter()
         .map(|name| {
-            let adapter: Arc<dyn cpex_core::registry::AnyHookHandler> = Arc::new(
-                TypedHandlerAdapter::<CmfHook, _>::new(Arc::clone(&plugin)),
-            );
+            let adapter: Arc<dyn cpex_core::registry::AnyHookHandler> =
+                Arc::new(TypedHandlerAdapter::<CmfHook, _>::new(Arc::clone(&plugin)));
             (name, adapter)
         })
         .collect()
@@ -134,10 +127,7 @@ impl HookHandler<CmfHook> for DenyGate {
         _extensions: &Extensions,
         _ctx: &mut PluginContext,
     ) -> PluginResult<MessagePayload> {
-        PluginResult::deny(PluginViolation::new(
-            "policy.forbidden",
-            "deny-gate fired",
-        ))
+        PluginResult::deny(PluginViolation::new("policy.forbidden", "deny-gate fired"))
     }
 }
 
@@ -148,10 +138,7 @@ impl PluginFactory for DenyGateFactory {
             cfg: config.clone(),
         });
         let handlers = hooks_for(config, plugin.clone());
-        Ok(PluginInstance {
-            plugin,
-            handlers,
-        })
+        Ok(PluginInstance { plugin, handlers })
     }
 }
 
@@ -227,12 +214,7 @@ routes:
         ..Default::default()
     };
     let (result, _bg) = mgr
-        .invoke_named::<CmfHook>(
-            "cmf.tool_pre_invoke",
-            cmf_payload("hi"),
-            ext,
-            None,
-        )
+        .invoke_named::<CmfHook>("cmf.tool_pre_invoke", cmf_payload("hi"), ext, None)
         .await;
 
     assert!(
@@ -266,16 +248,13 @@ routes:
         ..Default::default()
     };
     let (result, _bg) = mgr
-        .invoke_named::<CmfHook>(
-            "cmf.tool_pre_invoke",
-            cmf_payload("hi"),
-            ext,
-            None,
-        )
+        .invoke_named::<CmfHook>("cmf.tool_pre_invoke", cmf_payload("hi"), ext, None)
         .await;
 
     assert!(!result.continue_processing, "deny path should halt");
-    let violation = result.violation.expect("deny path must surface a violation");
+    let violation = result
+        .violation
+        .expect("deny path must surface a violation");
     assert_eq!(
         violation.reason, "deny-gate fired",
         "violation reason must propagate from the plugin through the handler"
@@ -316,12 +295,7 @@ routes:
         ..Default::default()
     };
     let (result, _bg) = mgr
-        .invoke_named::<CmfHook>(
-            "cmf.tool_pre_invoke",
-            cmf_payload("hi"),
-            ext,
-            None,
-        )
+        .invoke_named::<CmfHook>("cmf.tool_pre_invoke", cmf_payload("hi"), ext, None)
         .await;
 
     let violation = result.violation.expect("route-level deny must fire");
@@ -357,12 +331,7 @@ routes:
         ..Default::default()
     };
     let (result, _bg) = mgr
-        .invoke_named::<CmfHook>(
-            "cmf.tool_pre_invoke",
-            cmf_payload("hi"),
-            ext,
-            None,
-        )
+        .invoke_named::<CmfHook>("cmf.tool_pre_invoke", cmf_payload("hi"), ext, None)
         .await;
 
     let violation = result
@@ -455,12 +424,7 @@ routes:
         ..Default::default()
     };
     let (result, _bg) = mgr
-        .invoke_named::<CmfHook>(
-            "cmf.tool_pre_invoke",
-            cmf_payload("hi"),
-            ext,
-            None,
-        )
+        .invoke_named::<CmfHook>("cmf.tool_pre_invoke", cmf_payload("hi"), ext, None)
         .await;
 
     // Without APL annotations the route resolves through the legacy
@@ -604,7 +568,10 @@ routes:
     let mgr = build_manager_with_visitor(YAML).await;
 
     let ext = Extensions {
-        meta: Some(Arc::new(meta_for_entity("resource", "hr://employees/E001234"))),
+        meta: Some(Arc::new(meta_for_entity(
+            "resource",
+            "hr://employees/E001234",
+        ))),
         ..Default::default()
     };
     let (result, _bg) = mgr
@@ -652,12 +619,7 @@ routes:
     // APL annotation. With no annotation AND no plugin registered on
     // cmf.tool_pre_invoke, dispatch returns continue.
     let (tool_result, _bg) = mgr
-        .invoke_named::<CmfHook>(
-            "cmf.tool_pre_invoke",
-            cmf_payload("hi"),
-            ext.clone(),
-            None,
-        )
+        .invoke_named::<CmfHook>("cmf.tool_pre_invoke", cmf_payload("hi"), ext.clone(), None)
         .await;
     assert!(
         tool_result.continue_processing,
@@ -695,7 +657,9 @@ routes:
     mgr.register_factory("allow-gate", Box::new(AllowGateFactory));
     register_apl(&mgr, AplOptions::in_process());
 
-    let err = mgr.load_config_yaml(YAML).expect_err("malformed APL block must error");
+    let err = mgr
+        .load_config_yaml(YAML)
+        .expect_err("malformed APL block must error");
     let msg = format!("{}", err);
     assert!(
         msg.contains("visitor 'apl'"),

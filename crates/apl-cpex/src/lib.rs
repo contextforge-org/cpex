@@ -48,5 +48,5 @@ pub use dispatch_plan::{DispatchCache, RouteDispatchPlan, RoutePluginEntry};
 pub use pdp_router::PdpRouter;
 pub use register::{register_apl, AplOptions};
 pub use route_handler::{AplRouteHandler, Phase};
-pub use session_store::{MemorySessionStore, SessionStore};
+pub use session_store::{MemorySessionStore, SessionStore, SessionStoreError};
 pub use visitor::AplConfigVisitor;
