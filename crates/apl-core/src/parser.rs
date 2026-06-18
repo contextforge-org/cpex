@@ -1897,7 +1897,16 @@ fn parse_stage(src: &str) -> Result<Stage, ParseError> {
             )))
         }
         // `run` is an alias for `plugin` (mirrors the policy-step alias).
-        ("plugin" | "run", Some(a)) => Ok(Stage::Plugin { name: a.trim().to_string() }),
+        ("plugin" | "run", Some(a)) => {
+            let name = a.trim();
+            if name.is_empty() {
+                // Mirror the empty-name guard in `parse_step_string` so
+                // both the policy-step and field-stage paths reject a
+                // nameless `plugin()` / `run()` with the same diagnostic.
+                return Err(bad(&format!("`{head}(...)`: plugin name must not be empty")));
+            }
+            Ok(Stage::Plugin { name: name.to_string() })
+        }
         ("taint", Some(a)) => parse_taint(a, src),
 
         (other, _) => Err(bad(&format!("unknown stage `{}`", other))),
@@ -2836,6 +2845,22 @@ do: "args.card_number | run(luhn)"
                 }
             }
             other => panic!("expected single FieldOp, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn field_stage_plugin_empty_name_is_rejected() {
+        // `plugin()` / `run()` with no name in a field pipeline must be
+        // rejected, mirroring the policy-step path (`parse_step_string`).
+        // Previously the field-stage path accepted it as
+        // `Stage::Plugin { name: "" }`.
+        for verb in ["plugin", "run"] {
+            let err = parse_stage(&format!("{verb}()")).expect_err("empty name must error");
+            let msg = format!("{err}");
+            assert!(
+                msg.contains(verb) && msg.contains("must not be empty"),
+                "{verb}(): expected verb-named empty-name error, got: {msg}"
+            );
         }
     }
 

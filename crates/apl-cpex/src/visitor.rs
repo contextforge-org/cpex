@@ -348,6 +348,7 @@ impl ConfigVisitor for AplConfigVisitor {
             return Ok(());
         };
         let source = format!("global.defaults.{}.apl", entity_type);
+        warn_if_pdp_at_nonglobal_scope(&source, &apl_block);
         let compiled = compile_policy_block_value(&source, &apl_block)
             .map_err(|e| Box::new(e) as VisitorError)?;
         self.state
@@ -368,6 +369,7 @@ impl ConfigVisitor for AplConfigVisitor {
             return Ok(());
         };
         let source = format!("global.policies.{}.apl", tag);
+        warn_if_pdp_at_nonglobal_scope(&source, &apl_block);
         let compiled = compile_policy_block_value(&source, &apl_block)
             .map_err(|e| Box::new(e) as VisitorError)?;
         self.state
@@ -388,6 +390,9 @@ impl ConfigVisitor for AplConfigVisitor {
         // we need for annotate_route. A route without an APL block AND
         // without inherited layers contributes nothing — skip.
         let route_apl = apl_subblock(yaml);
+        if let Some(block) = &route_apl {
+            warn_if_pdp_at_nonglobal_scope("route", block);
+        }
         let (entity_type, entity_names) = match entity_identity(parsed) {
             Some(e) => e,
             None => {
@@ -638,6 +643,24 @@ fn names_of(sol: &cpex_core::config::StringOrList) -> Vec<String> {
     }
 }
 
+/// Warn when an APL block carries a `pdp:` declaration at a scope that
+/// cannot act on it. Only [`AplConfigVisitor::visit_global`] builds PDPs
+/// (they are process-global CPEX wiring); a `pdp:` written under a
+/// default / policy-bundle / route block is folded into the policy body
+/// and silently discarded by `compile_policy_block_value`. Surfacing it
+/// here turns that quiet no-op into an actionable signal. Applies to
+/// both the flat and `apl:`-wrapped forms — neither is processed off the
+/// global scope.
+fn warn_if_pdp_at_nonglobal_scope(scope: &str, apl_block: &serde_yaml::Value) {
+    if apl_block.get("pdp").is_some() {
+        tracing::warn!(
+            scope,
+            "APL visitor: `pdp:` is only honored under the top-level `global:` block; \
+             the declaration at this scope is ignored",
+        );
+    }
+}
+
 /// Strip the `pdp` sub-key from an `apl:` mapping so the remainder can
 /// be handed to `compile_policy_block_value` (which doesn't model PDP
 /// declarations — those are CPEX wiring concerns). Returns a clone of
@@ -790,5 +813,17 @@ mod tests {
             Some("allow"),
             "the explicit apl wrapper takes precedence over flat top-level keys",
         );
+    }
+
+    #[test]
+    fn warn_if_pdp_at_nonglobal_scope_is_a_safe_noop() {
+        use super::warn_if_pdp_at_nonglobal_scope;
+        // The helper only emits a tracing event; it must never panic
+        // whether `pdp` is present or not. (The drop semantics are
+        // exercised end-to-end; here we just guard the helper's contract.)
+        let with_pdp = yaml("policy:\n  - \"deny\"\npdp:\n  - kind: cel\n");
+        let without_pdp = yaml("policy:\n  - \"deny\"\n");
+        warn_if_pdp_at_nonglobal_scope("route", &with_pdp);
+        warn_if_pdp_at_nonglobal_scope("global.defaults.tool.apl", &without_pdp);
     }
 }
