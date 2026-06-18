@@ -166,7 +166,7 @@ sequenceDiagram
     Reg->>Vis: new(.. session_store field = Memory ..)
     Note over Host,Walk: later — config arrives via cpex_load_config
     Walk->>Vis: visit_global sees global.apl.session_store { kind: valkey, .. }
-    Vis->>Vis: factory.build(cfg) yields Arc<dyn SessionStore>; swap visitor.session_store
+    Vis->>Vis: factory.build(cfg) yields a SessionStore Arc, then swaps visitor.session_store
     Walk->>H: visit_route → install_handler clones the (already-swapped) Arc by value
     Note over H: request time — handler uses the config-selected (valkey) store
 ```
