@@ -23,6 +23,7 @@ members = [
     "crates/apl-delegator-biscuit",
     "crates/apl-pii-scanner",
     "crates/apl-audit-logger",
+    "crates/apl-session-valkey",
     "examples/go-demo/ffi",
 ]
 

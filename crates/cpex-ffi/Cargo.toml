@@ -33,6 +33,11 @@ apl-pdp-cedar-direct = { path = "../apl-pdp-cedar-direct" }
 # Heavy (~200 transitive deps via the Cedarling git dep); kept out of the
 # default `.a` and behind the `cedarling` feature.
 apl-cedarling = { path = "../apl-cedarling", optional = true }
+# Valkey-backed SessionStore (redis client + rustls TLS stack). Optional
+# and behind the `valkey` feature so the default `.a` artifact size is
+# unaffected; default-members exclusion alone does NOT keep its object
+# code out of a `-p cpex-ffi` build — the feature gate does.
+apl-session-valkey = { path = "../apl-session-valkey", optional = true }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -45,6 +50,9 @@ default = []
 # Opt-in Cedarling-backed identity + PDP. Build with
 # `cargo build -p cpex-ffi --features cedarling`.
 cedarling = ["dep:apl-cedarling"]
+# Opt-in Valkey-backed SessionStore. Build with
+# `cargo build -p cpex-ffi --features valkey`.
+valkey = ["dep:apl-session-valkey"]
 
 [dev-dependencies]
 async-trait = { workspace = true }
