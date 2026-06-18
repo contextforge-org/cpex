@@ -113,6 +113,34 @@ impl ValkeyConfig {
             return Err(BuildError::TlsRequired(redact_endpoint(&self.endpoint)));
         }
 
+        // Credential-consistency checks, rejected loud at config-load rather
+        // than silently mis-connecting on first request.
+        //
+        // 1. A full `redis://`/`rediss://` endpoint carries its own
+        //    credentials; the separate `username`/`password` fields are
+        //    ignored for URL endpoints (connection_url returns early). Setting
+        //    both is ambiguous — force credentials into one place.
+        let endpoint_is_url =
+            self.endpoint.starts_with("redis://") || self.endpoint.starts_with("rediss://");
+        if endpoint_is_url && (self.username.is_some() || self.password.is_some()) {
+            return Err(BuildError::Config(format!(
+                "endpoint '{}' is a full URL; put credentials in the URL userinfo \
+                 (rediss://user:pass@host) or use a bare host:port — the separate \
+                 `username`/`password` fields are ignored for URL endpoints",
+                redact_endpoint(&self.endpoint)
+            )));
+        }
+
+        // 2. A `username` with no `password` would silently connect as the
+        //    default user with the username dropped. Reject the ambiguity.
+        if self.username.is_some() && self.password.is_none() {
+            return Err(BuildError::Config(
+                "`username` is set without a `password`; supply a `password` for the ACL \
+                 user, or remove `username` to connect as the default user"
+                    .to_string(),
+            ));
+        }
+
         // Build the URL now so a malformed endpoint / unencodable
         // credential fails at config-load, not on first request.
         self.connection_url()?;
@@ -169,13 +197,19 @@ impl ValkeyConfig {
                 redact_endpoint(&self.endpoint)
             ))
         })?;
-        if let Some(password) = &self.password {
+        // Apply credentials when either is present. `validate()` guarantees a
+        // `username` is always paired with a `password`; a lone `password`
+        // (default-user AUTH) stays valid and sets an empty username.
+        if self.username.is_some() || self.password.is_some() {
             // set_username/set_password percent-encode and reject hosts
             // that cannot carry userinfo (e.g. cannot-be-a-base URLs).
             url.set_username(self.username.as_deref().unwrap_or(""))
                 .map_err(|_| BuildError::Config("endpoint cannot carry credentials".to_string()))?;
-            url.set_password(Some(password))
-                .map_err(|_| BuildError::Config("endpoint cannot carry credentials".to_string()))?;
+            if let Some(password) = &self.password {
+                url.set_password(Some(password)).map_err(|_| {
+                    BuildError::Config("endpoint cannot carry credentials".to_string())
+                })?;
+            }
         }
         Ok(url.to_string())
     }
@@ -285,6 +319,37 @@ mod tests {
             url.contains("p%40ss"),
             "password '@' must be encoded: {url}"
         );
+    }
+
+    /// Nit 1: a `username` with no `password` is ambiguous (would silently
+    /// connect as the default user). Reject it at config-load.
+    #[test]
+    fn username_without_password_is_rejected() {
+        let err = parse(
+            "kind: valkey\nendpoint: valkey.prod.internal:6379\ntls: true\nusername: gateway\n",
+        )
+        .unwrap_err();
+        assert!(matches!(err, BuildError::Config(_)), "got {err:?}");
+    }
+
+    /// Nit 2: a full URL endpoint carries its own credentials; separate
+    /// `username`/`password` fields are ignored, so supplying both is rejected.
+    #[test]
+    fn url_endpoint_with_separate_credentials_is_rejected() {
+        let err = parse(
+            "kind: valkey\nendpoint: rediss://valkey.prod.internal:6379\nusername: gw\npassword: s3cret\n",
+        )
+        .unwrap_err();
+        assert!(matches!(err, BuildError::Config(_)), "got {err:?}");
+    }
+
+    /// A lone `password` (no username) is the default-user AUTH case and stays
+    /// valid, producing `redis://:pass@host` (empty username).
+    #[test]
+    fn password_without_username_uses_default_user() {
+        let cfg = parse("kind: valkey\nendpoint: localhost:6379\npassword: s3cret\n").unwrap();
+        let url = cfg.connection_url().unwrap();
+        assert!(url.starts_with("redis://:s3cret@localhost:6379"), "url: {url}");
     }
 
     #[test]

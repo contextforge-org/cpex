@@ -73,8 +73,11 @@ valkey-cli CONFIG GET maxmemory          # must be a non-zero bound
 - Watch `used_memory` vs `maxmemory` and the OOM write-error rate so you scale
   before the instance fills.
 
-The backend issues a best-effort `CONFIG GET maxmemory-policy` check and logs
-a warning if it is not `noeviction`, but the authoritative control is yours.
+This is operator-owned contract — the backend does **not** verify it for you.
+A best-effort startup `CONFIG GET maxmemory-policy` self-check that warns when
+the policy is not `noeviction` is a deferred follow-up (it would require the
+connection pool to dial at config-load, which today it does not). Until then,
+the authoritative control — and its monitoring — is yours.
 
 ---
 
@@ -140,7 +143,54 @@ expire between requests and silently drop taint. Alert on
 
 ---
 
-## 5. Topology, availability, and blast radius
+## 5. Persistence and durability (required)
+
+The label keyspace is a **security system-of-record**, not a cache. Promoting
+Valkey to hold an authorization input inverts its default durability
+assumptions, so its on-disk persistence is part of the deployment contract —
+alongside `noeviction` (§2) and the TTL rule (§4), this closes the third way a
+label can silently vanish.
+
+**The failure mode this closes.** A `SADD` is acknowledged to the gateway, the
+node crashes before the write is fsync'd to disk, and the label is **gone**. On
+restart (or replica failover) the next read returns a normal `Ok(empty)` —
+*not* an error — so fail-closed never trips. The request proceeds with **less
+taint than actually accumulated**: a silent downgrade. Critically, this is
+**invisible to every alarm in §7** because nothing errors, which is exactly why
+it has to be closed at the server-config layer rather than detected at runtime.
+
+**The fsync options and their crash-loss windows:**
+
+| Setting | On crash | Notes |
+|---------|----------|-------|
+| `appendonly no` (RDB only) | Lose everything since the last snapshot (minutes) | Cache-shaped; **unsafe** for the label keyspace |
+| `appendfsync everysec` | ~1s loss window | Recommended floor |
+| `appendfsync always` | Effectively no loss | Per-write latency cost |
+
+**Recommended baseline:** AOF on with `appendfsync everysec` as the floor; use
+`appendfsync always` where the threat model cannot tolerate the ~1s window.
+
+```
+# valkey.conf (sketch)
+appendonly yes
+appendfsync everysec   # or: always
+```
+
+**Failover interaction with §6.** The "fail over to a healthy primary" guidance
+inherits Valkey's **asynchronous** replication: a failover can promote a replica
+that is missing the most recent un-replicated appends — the same downgrade by a
+different path. Tighten replication durability (e.g. `min-replicas-to-write` /
+`min-replicas-max-lag`, or `WAIT`-aware fronting) if your failover budget
+demands it.
+
+Like `noeviction`, this is operator-owned contract: the client cannot set or
+enforce it, and the backend does **not** self-check it today. A best-effort
+startup `CONFIG GET appendonly` / `appendfsync` warning is a deferred follow-up
+(same dial-at-config-load constraint as the `noeviction` self-check in §2).
+
+---
+
+## 6. Topology, availability, and blast radius
 
 - **Single endpoint, primary-only reads.** The backend reads and writes one
   endpoint and never read-splits to replicas — replica replication lag would
@@ -164,7 +214,7 @@ expire between requests and silently drop taint. Alert on
 
 ---
 
-## 6. Alarms to wire up
+## 7. Alarms to wire up
 
 | Signal | Meaning | Action |
 |--------|---------|--------|
@@ -175,7 +225,7 @@ expire between requests and silently drop taint. Alert on
 
 ---
 
-## 7. Local development
+## 8. Local development
 
 ```
 docker compose -f deploy/valkey-compose.yml up -d
@@ -183,5 +233,6 @@ VALKEY_TEST_URL=redis://127.0.0.1:6379 \
   cargo test -p apl-session-valkey --test valkey_store_integration -- --ignored
 ```
 
-The compose file runs a `noeviction`-configured Valkey. It has no TLS/ACL —
-that is a dev-only convenience; production must add both per §3.
+The compose file runs a `noeviction`-configured Valkey. It has no TLS/ACL and
+runs RDB-default (non-durable, no AOF) — those are dev-only conveniences;
+production must add TLS/ACL per §3 and AOF persistence per §5.
