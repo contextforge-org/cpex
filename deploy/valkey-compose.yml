@@ -1,0 +1,36 @@
+# Location: ./deploy/valkey-compose.yml
+# Copyright 2026
+# SPDX-License-Identifier: Apache-2.0
+#
+# Local development / integration Valkey for the apl-session-valkey
+# backend. Brings up a single Valkey primary configured the way the
+# security model requires (see docs/operations/valkey-session-store.md):
+#
+#   - maxmemory-policy noeviction: a full instance fails writes closed
+#     rather than silently evicting accumulated taint labels (R9).
+#
+# Usage:
+#   docker compose -f deploy/valkey-compose.yml up -d
+#   VALKEY_TEST_URL=redis://127.0.0.1:6379 \
+#     cargo test -p apl-session-valkey --test valkey_store_integration -- --ignored
+#
+# This is a DEV/TEST topology only — no TLS, no ACL. Production deployments
+# must add TLS (mTLS recommended), a least-privilege ACL, and HA via a
+# fronting endpoint. See the operator runbook.
+
+services:
+  valkey:
+    image: valkey/valkey:8
+    command:
+      - valkey-server
+      - --maxmemory
+      - 256mb
+      - --maxmemory-policy
+      - noeviction
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
