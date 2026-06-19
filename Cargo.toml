@@ -8,6 +8,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/cpex",
     "crates/cpex-core",
     "crates/cpex-orchestration",
     "crates/cpex-sdk",
@@ -38,6 +39,7 @@ members = [
 #   cargo build -p apl-cedarling           # just this one
 #   cargo test --workspace                 # full sweep (CI)
 default-members = [
+    "crates/cpex",
     "crates/cpex-core",
     "crates/cpex-orchestration",
     "crates/cpex-sdk",

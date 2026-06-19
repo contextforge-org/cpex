@@ -1051,6 +1051,23 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "773648b94d0e5d620f64f280777445740e61fe701025087ec8b57f45c791888b"
 
 [[package]]
+name = "cpex"
+version = "0.2.0"
+dependencies = [
+ "apl-audit-logger",
+ "apl-cmf",
+ "apl-core",
+ "apl-cpex",
+ "apl-delegator-oauth",
+ "apl-identity-jwt",
+ "apl-pdp-cedar-direct",
+ "apl-pdp-cel",
+ "apl-pii-scanner",
+ "apl-session-valkey",
+ "cpex-core",
+]
+
+[[package]]
 name = "cpex-core"
 version = "0.2.0"
 dependencies = [
