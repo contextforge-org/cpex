@@ -112,6 +112,12 @@ pub struct PluginSettings {
     /// investigate the entity-name growth.
     #[serde(default = "default_route_cache_max_entries")]
     pub route_cache_max_entries: usize,
+
+    /// Capture per-plugin / per-PDP wall-clock timing into the pipeline
+    /// result for profiling and benchmarking. Off by default — the
+    /// production hot path pays nothing. Enable in benchmark configs.
+    #[serde(default)]
+    pub capture_timings: bool,
 }
 
 impl Default for PluginSettings {
@@ -123,6 +129,7 @@ impl Default for PluginSettings {
             parallel_execution_within_band: false,
             fail_on_plugin_error: false,
             route_cache_max_entries: default_route_cache_max_entries(),
+            capture_timings: false,
         }
     }
 }

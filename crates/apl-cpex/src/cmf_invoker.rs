@@ -300,6 +300,7 @@ impl PluginInvoker for CmfPluginInvoker {
         // these become `PluginOutcome.taints`.
         let before_labels = snapshot_labels(&current_extensions);
 
+        let t0 = std::time::Instant::now();
         let (result, _bg) = self
             .manager
             .invoke_entries::<CmfHook>(
@@ -309,6 +310,20 @@ impl PluginInvoker for CmfPluginInvoker {
                 None,
             )
             .await;
+        // Per-effect plugin timing. Each `run(plugin)` / field-mutator
+        // effect inside the APL route handler lands here, so this is the
+        // seam that breaks the route-handler total down into individual
+        // plugins (delegation, audit, PII, …) — the executor upstream
+        // only sees the route handler as one entry. `info` so it is
+        // captured at the gateway's default level; fires once per effect.
+        tracing::info!(
+            target: "cpex.plugin",
+            plugin = %plugin_name,
+            phase = ?invocation.phase(),
+            denied = result.is_denied(),
+            duration_ns = u64::try_from(t0.elapsed().as_nanos()).unwrap_or(u64::MAX),
+            "plugin invoke",
+        );
 
         // Map deny: violation reason → APL deny reason; plugin code →
         // rule_source for audit attribution.

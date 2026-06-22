@@ -119,7 +119,26 @@ impl PdpResolver for PdpRouter {
             .resolvers
             .get(&call.dialect)
             .ok_or_else(|| PdpError::NoResolver(call.dialect.clone()))?;
-        resolver.evaluate(call, bag).await
+        // Time the inner PDP evaluation and surface it as a structured
+        // tracing event. This is the per-call PDP-engine cost (Cedar vs
+        // CEL), isolated from the rest of the APL route handler. Capture
+        // is race-free (per call, on this task) and zero-overhead when
+        // the `cpex.pdp` target is not enabled. Consumers attach a
+        // tracing layer (or scrape the gateway log) to aggregate it.
+        let t0 = std::time::Instant::now();
+        let decision = resolver.evaluate(call, bag).await;
+        let duration_ns = t0.elapsed().as_nanos() as u64;
+        // `info` (not `debug`) so the per-call PDP-engine cost is captured
+        // at the gateway's default level without a log-filter tweak. Fires
+        // once per routed `pdp(...)` evaluation — bounded and low-volume.
+        tracing::info!(
+            target: "cpex.pdp",
+            dialect = ?call.dialect,
+            duration_ns,
+            denied = matches!(&decision, Ok(d) if matches!(d.decision, apl_core::evaluator::Decision::Deny { .. })),
+            "pdp evaluate",
+        );
+        decision
     }
 }
 

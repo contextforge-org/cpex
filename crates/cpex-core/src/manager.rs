@@ -349,6 +349,7 @@ fn snapshot_from_config(registry: PluginRegistry, cpex_config: CpexConfig) -> Ru
     let executor = Executor::new(ExecutorConfig {
         timeout_seconds: cpex_config.plugin_settings.plugin_timeout,
         short_circuit_on_deny: cpex_config.plugin_settings.short_circuit_on_deny,
+        capture_timings: cpex_config.plugin_settings.capture_timings,
     });
     let route_cache_max_entries = cpex_config.plugin_settings.route_cache_max_entries;
     RuntimeSnapshot {
@@ -3035,6 +3036,7 @@ mod tests {
             executor: crate::executor::ExecutorConfig {
                 timeout_seconds: 30,
                 short_circuit_on_deny: false,
+                capture_timings: false,
             },
             route_cache_max_entries: DEFAULT_ROUTE_CACHE_MAX_ENTRIES,
         };
@@ -3207,6 +3209,7 @@ mod tests {
             executor: crate::executor::ExecutorConfig {
                 timeout_seconds: 1,
                 short_circuit_on_deny: true,
+                capture_timings: false,
             },
             route_cache_max_entries: DEFAULT_ROUTE_CACHE_MAX_ENTRIES,
         };

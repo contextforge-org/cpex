@@ -184,6 +184,7 @@ impl DelegationInvoker for DelegationPluginInvoker {
         //    per-route config override merged into the plugin's
         //    instance config; what we're passing on this call is the
         //    typed payload (target / audience / permissions / etc.).
+        let t0 = std::time::Instant::now();
         let (result, _bg) = self
             .manager
             .invoke_entries::<TokenDelegateHook>(
@@ -193,6 +194,19 @@ impl DelegationInvoker for DelegationPluginInvoker {
                 None,
             )
             .await;
+        // Per-effect delegation timing. RFC 8693 token exchange is a live
+        // round-trip to the IdP, so this is typically the dominant slice
+        // of the route-handler total — breaking it out here is the whole
+        // point of per-effect timing. Same `cpex.plugin` target as the
+        // CMF invoker so the harness aggregates both uniformly.
+        tracing::info!(
+            target: "cpex.plugin",
+            plugin = %step.plugin_name,
+            phase = "Delegate",
+            denied = !result.continue_processing,
+            duration_ns = u64::try_from(t0.elapsed().as_nanos()).unwrap_or(u64::MAX),
+            "plugin invoke",
+        );
 
         // 6. Translate the result.
         if !result.continue_processing {

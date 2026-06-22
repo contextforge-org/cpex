@@ -27,7 +27,7 @@
 use std::any::Any;
 use std::fmt;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use tokio::time::timeout;
 use tracing::{error, warn};
@@ -51,6 +51,11 @@ pub struct ExecutorConfig {
 
     /// Whether to halt on the first deny in concurrent mode.
     pub short_circuit_on_deny: bool,
+
+    /// Capture per-plugin wall-clock timing into
+    /// [`PipelineResult::timings`]. Off by default so the production
+    /// hot path pays nothing; benchmarks/profilers turn it on.
+    pub capture_timings: bool,
 }
 
 impl Default for ExecutorConfig {
@@ -58,6 +63,7 @@ impl Default for ExecutorConfig {
         Self {
             timeout_seconds: 30,
             short_circuit_on_deny: true,
+            capture_timings: false,
         }
     }
 }
@@ -107,6 +113,11 @@ pub struct PipelineResult {
     /// Optional metadata aggregated from plugins (telemetry, diagnostics).
     pub metadata: Option<serde_json::Value>,
 
+    /// Per-plugin / per-PDP wall-clock timing for this invocation.
+    /// `Some` only when `ExecutorConfig.capture_timings` was set;
+    /// `None` on the production hot path (zero cost).
+    pub timings: Option<PipelineTimings>,
+
     /// Plugin contexts indexed by plugin ID. Thread this into the
     /// next hook invocation to preserve per-plugin `local_state`.
     pub context_table: PluginContextTable,
@@ -126,6 +137,7 @@ impl PipelineResult {
             violation: None,
             errors: Vec::new(),
             metadata: None,
+            timings: None,
             context_table,
         }
     }
@@ -143,6 +155,7 @@ impl PipelineResult {
             violation: Some(violation),
             errors: Vec::new(),
             metadata: None,
+            timings: None,
             context_table,
         }
     }
@@ -155,9 +168,75 @@ impl PipelineResult {
         self
     }
 
+    /// Attach captured per-plugin timing. No-op-shaped builder used by
+    /// the executor only when `ExecutorConfig.capture_timings` is set.
+    pub fn with_timings(mut self, timings: Option<PipelineTimings>) -> Self {
+        self.timings = timings;
+        self
+    }
+
     /// Whether this result represents a denial.
     pub fn is_denied(&self) -> bool {
         !self.continue_processing
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Timing (opt-in, via ExecutorConfig.capture_timings)
+// ---------------------------------------------------------------------------
+
+/// Wall-clock timing for a single plugin's handler `invoke`, including
+/// the await. Captured by the executor — not self-reported by plugins
+/// (the type-erased result path drops plugin metadata), so every plugin
+/// is measured uniformly.
+#[derive(Debug, Clone)]
+pub struct PluginTiming {
+    /// Plugin instance name (e.g. `jwt-user`, `pii-scan`, `apl-route`).
+    pub plugin_name: String,
+    /// Execution mode / phase: `SEQUENTIAL`, `TRANSFORM`, `AUDIT`,
+    /// or `CONCURRENT`.
+    pub mode: &'static str,
+    /// Wall-clock duration around the handler `invoke`, in nanoseconds.
+    pub duration_ns: u64,
+    /// Whether this plugin denied the request.
+    pub denied: bool,
+    /// PDP (policy-decision-point) evaluation time folded out of this
+    /// plugin's total, when it ran a `pdp(...)` step (the APL route
+    /// handler). `None` for plugins that don't invoke a PDP.
+    pub pdp_ns: Option<u64>,
+    /// PDP dialect (`cedar` / `cel`) for the `pdp_ns` above, when set.
+    pub pdp_dialect: Option<String>,
+}
+
+/// PDP (Cedar/CEL) evaluation timing, surfaced from the APL route
+/// handler. Aggregated to the request level for the Cedar-vs-CEL view.
+#[derive(Debug, Clone)]
+pub struct PdpTiming {
+    /// PDP dialect: `cedar` or `cel`.
+    pub dialect: String,
+    /// Evaluation duration in nanoseconds.
+    pub duration_ns: u64,
+}
+
+/// Aggregate per-request timing breakdown. Populated only when
+/// `ExecutorConfig.capture_timings` is true.
+#[derive(Debug, Clone, Default)]
+pub struct PipelineTimings {
+    /// One entry per plugin that ran, in execution order across phases.
+    pub plugins: Vec<PluginTiming>,
+    /// PDP evaluation timing, if a `pdp(...)` step ran this request.
+    pub pdp: Option<PdpTiming>,
+    /// Total wall-clock time inside `Executor::execute`, in nanoseconds.
+    pub total_ns: u64,
+}
+
+/// Map a runtime phase label to a `'static` mode tag for [`PluginTiming`].
+fn phase_mode(label: &str) -> &'static str {
+    match label {
+        "SEQUENTIAL" => "SEQUENTIAL",
+        "TRANSFORM" => "TRANSFORM",
+        "AUDIT" => "AUDIT",
+        _ => "CONCURRENT",
     }
 }
 
@@ -305,6 +384,11 @@ impl Executor {
         // become the violation directly.
         let mut errors: Vec<crate::error::PluginErrorRecord> = Vec::new();
 
+        // Opt-in per-plugin timing. The accumulator stays empty (and
+        // `assemble_timings` returns `None`) on the production hot path.
+        let exec_start = Instant::now();
+        let mut plugin_timings: Vec<PluginTiming> = Vec::new();
+
         // Phase 1: SEQUENTIAL — serial, chained, can block + modify
         if let Some(v) = self
             .run_serial_phase(
@@ -316,11 +400,15 @@ impl Executor {
                 true, // can_modify
                 "SEQUENTIAL",
                 &mut errors,
+                &mut plugin_timings,
             )
             .await
         {
+            let timings = self.assemble_timings(exec_start, std::mem::take(&mut plugin_timings));
             return (
-                PipelineResult::denied(v, current_extensions, ctx_table).with_errors(errors),
+                PipelineResult::denied(v, current_extensions, ctx_table)
+                    .with_errors(errors)
+                    .with_timings(timings),
                 BackgroundTasks::empty(),
             );
         }
@@ -336,6 +424,7 @@ impl Executor {
             true,  // can_modify
             "TRANSFORM",
             &mut errors,
+            &mut plugin_timings,
         )
         .await;
 
@@ -347,6 +436,7 @@ impl Executor {
             &ctx_table,
             "AUDIT",
             &mut errors,
+            &mut plugin_timings,
         )
         .await;
 
@@ -358,12 +448,15 @@ impl Executor {
                 &current_extensions,
                 &ctx_table,
                 &mut errors,
+                &mut plugin_timings,
             )
             .await
         {
+            let timings = self.assemble_timings(exec_start, std::mem::take(&mut plugin_timings));
             return (
                 PipelineResult::denied(violation, current_extensions, ctx_table)
-                    .with_errors(errors),
+                    .with_errors(errors)
+                    .with_timings(timings),
                 BackgroundTasks::empty(),
             );
         }
@@ -379,11 +472,61 @@ impl Executor {
             task_tracker,
         );
 
+        let timings = self.assemble_timings(exec_start, plugin_timings);
         (
             PipelineResult::allowed_with(current_payload, current_extensions, ctx_table)
-                .with_errors(errors),
+                .with_errors(errors)
+                .with_timings(timings),
             BackgroundTasks::from_handles(bg_handles),
         )
+    }
+
+    /// Build the aggregate [`PipelineTimings`] from the per-plugin
+    /// accumulator. Returns `None` (zero cost) unless
+    /// `capture_timings` is set. The request-level `pdp` field is
+    /// derived from whichever plugin recorded a PDP evaluation.
+    fn assemble_timings(
+        &self,
+        start: Instant,
+        plugins: Vec<PluginTiming>,
+    ) -> Option<PipelineTimings> {
+        if !self.config.capture_timings {
+            return None;
+        }
+        let pdp = plugins.iter().find_map(|p| {
+            p.pdp_ns.map(|ns| PdpTiming {
+                dialect: p.pdp_dialect.clone().unwrap_or_default(),
+                duration_ns: ns,
+            })
+        });
+        Some(PipelineTimings {
+            pdp,
+            total_ns: start.elapsed().as_nanos() as u64,
+            plugins,
+        })
+    }
+
+    /// Push a per-plugin timing entry when capture is enabled. No-op on
+    /// the production hot path (the `Instant` pairs around the handler
+    /// are cheap, but the allocation/push is gated).
+    fn record_timing(
+        &self,
+        timings: &mut Vec<PluginTiming>,
+        plugin_name: &str,
+        mode: &'static str,
+        dur: Duration,
+        denied: bool,
+    ) {
+        if self.config.capture_timings {
+            timings.push(PluginTiming {
+                plugin_name: plugin_name.to_string(),
+                mode,
+                duration_ns: dur.as_nanos() as u64,
+                denied,
+                pdp_ns: None,
+                pdp_dialect: None,
+            });
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -411,6 +554,7 @@ impl Executor {
         can_modify: bool,
         phase_label: &str,
         errors: &mut Vec<crate::error::PluginErrorRecord>,
+        plugin_timings: &mut Vec<PluginTiming>,
     ) -> Option<crate::error::PluginViolation> {
         for entry in entries {
             // Borrow names/ids on the happy path — allocate only when
@@ -452,11 +596,13 @@ impl Executor {
 
             // Execute with timeout — handler borrows payload, gets filtered extensions
             let timeout_dur = Duration::from_secs(self.config.timeout_seconds);
+            let t0 = Instant::now();
             let result = timeout(
                 timeout_dur,
                 entry.handler.invoke(&**payload, &filtered, &mut ctx),
             )
             .await;
+            let dur = t0.elapsed();
 
             match result {
                 Ok(Ok(result_box)) => {
@@ -465,6 +611,13 @@ impl Executor {
                         if !erased.continue_processing && can_block {
                             if let Some(mut v) = erased.violation {
                                 v.plugin_name = Some(plugin_name.to_string());
+                                self.record_timing(
+                                    plugin_timings,
+                                    plugin_name,
+                                    phase_mode(phase_label),
+                                    dur,
+                                    true,
+                                );
                                 return Some(v);
                             }
                         }
@@ -589,6 +742,17 @@ impl Executor {
                 }
             }
 
+            // Record timing for the non-halting path (allow, suppressed
+            // deny in TRANSFORM, or a recorded non-Fail error). Halting
+            // denies recorded inline above before their early return.
+            self.record_timing(
+                plugin_timings,
+                plugin_name,
+                phase_mode(phase_label),
+                dur,
+                false,
+            );
+
             // Commit this plugin's context back to the table — replaces the
             // canonical global_state with its (possibly modified) copy and
             // stores the local_state for the next hook invocation. The
@@ -612,6 +776,7 @@ impl Executor {
         ctx_table: &PluginContextTable,
         phase_label: &str,
         errors: &mut Vec<crate::error::PluginErrorRecord>,
+        plugin_timings: &mut Vec<PluginTiming>,
     ) {
         for entry in entries {
             let plugin_name = entry.plugin_ref.name().to_string();
@@ -631,11 +796,19 @@ impl Executor {
             let filtered = filter_extensions(extensions, &capabilities);
             let timeout_dur = Duration::from_secs(self.config.timeout_seconds);
 
+            let t0 = Instant::now();
             let result = timeout(
                 timeout_dur,
                 entry.handler.invoke(payload, &filtered, &mut ctx),
             )
             .await;
+            self.record_timing(
+                plugin_timings,
+                &plugin_name,
+                phase_mode(phase_label),
+                t0.elapsed(),
+                false,
+            );
 
             // Audit / fire-and-forget cannot block, so OnError::Fail can't
             // halt the pipeline — but OnError::Disable must still take a
@@ -708,6 +881,7 @@ impl Executor {
         extensions: &Extensions,
         ctx_table: &PluginContextTable,
         errors: &mut Vec<crate::error::PluginErrorRecord>,
+        plugin_timings: &mut Vec<PluginTiming>,
     ) -> Option<crate::error::PluginViolation> {
         use cpex_orchestration::{run_branches, BranchConfig, BranchOutcome, ErasedBranch};
 
@@ -720,9 +894,9 @@ impl Executor {
         // `entries[idx]` so we don't have to clone them into the
         // future's captures.
         enum BranchData {
-            Allow,
-            Deny(Option<crate::error::PluginViolation>),
-            Error(Box<PluginError>),
+            Allow(u64),
+            Deny(Option<crate::error::PluginViolation>, u64),
+            Error(Box<PluginError>, u64),
         }
 
         // Clone the payload once so each spawned task can borrow from
@@ -764,21 +938,24 @@ impl Executor {
             let filtered = Arc::new(filter_extensions(extensions, &capabilities));
 
             branches.push(Box::pin(async move {
-                match handler.invoke(&**payload_clone, &filtered, &mut ctx).await {
+                let t0 = Instant::now();
+                let outcome = handler.invoke(&**payload_clone, &filtered, &mut ctx).await;
+                let dur_ns = t0.elapsed().as_nanos() as u64;
+                match outcome {
                     Ok(result_box) => match extract_erased(result_box) {
                         Some(erased) if !erased.continue_processing => {
                             let violation = erased.violation.map(|mut v| {
                                 v.plugin_name = Some(plugin_name);
                                 v
                             });
-                            BranchData::Deny(violation)
+                            BranchData::Deny(violation, dur_ns)
                         }
                         // `Some(..)` with continue_processing=true, OR
                         // `None` (downcast failed — historically logged
                         // and treated as Allow) both fall through.
-                        _ => BranchData::Allow,
+                        _ => BranchData::Allow(dur_ns),
                     },
-                    Err(e) => BranchData::Error(e),
+                    Err(e) => BranchData::Error(e, dur_ns),
                 }
             }));
         }
@@ -803,7 +980,7 @@ impl Executor {
         // abort test that's fine — that test exercises the Deny
         // path, which still goes through `is_deny` + abort_all.
         let outcomes = run_branches(branches, cfg, |v: &BranchData| {
-            matches!(v, BranchData::Deny(_))
+            matches!(v, BranchData::Deny(..))
         })
         .await;
 
@@ -817,8 +994,23 @@ impl Executor {
             let on_error = on_error_by_idx[idx];
 
             match outcome {
-                BranchOutcome::Completed(BranchData::Allow) => {}
-                BranchOutcome::Completed(BranchData::Deny(opt_v)) => {
+                BranchOutcome::Completed(BranchData::Allow(dur_ns)) => {
+                    self.record_timing(
+                        plugin_timings,
+                        plugin_name,
+                        "CONCURRENT",
+                        Duration::from_nanos(dur_ns),
+                        false,
+                    );
+                }
+                BranchOutcome::Completed(BranchData::Deny(opt_v, dur_ns)) => {
+                    self.record_timing(
+                        plugin_timings,
+                        plugin_name,
+                        "CONCURRENT",
+                        Duration::from_nanos(dur_ns),
+                        true,
+                    );
                     let violation = opt_v.unwrap_or_else(|| {
                         let mut v = crate::error::PluginViolation::new(
                             "concurrent_deny",
@@ -831,7 +1023,15 @@ impl Executor {
                         first_violation = Some(violation);
                     }
                 }
-                BranchOutcome::Completed(BranchData::Error(e)) => match on_error {
+                BranchOutcome::Completed(BranchData::Error(e, dur_ns)) => {
+                    self.record_timing(
+                        plugin_timings,
+                        plugin_name,
+                        "CONCURRENT",
+                        Duration::from_nanos(dur_ns),
+                        false,
+                    );
+                    match on_error {
                     OnError::Fail => {
                         if first_violation.is_none() {
                             let mut v = crate::error::PluginViolation::new(
@@ -851,7 +1051,8 @@ impl Executor {
                         errors.push((&*e).into());
                         entry.plugin_ref.disable();
                     }
-                },
+                    }
+                }
                 BranchOutcome::TimedOut => {
                     let timeout_err = crate::error::PluginError::Timeout {
                         plugin_name: plugin_name.to_string(),
