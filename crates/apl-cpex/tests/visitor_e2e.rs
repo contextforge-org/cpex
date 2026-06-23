@@ -76,10 +76,7 @@ impl PluginFactory for AllowGateFactory {
         // in `hooks: [...]`. Lets tests pin the plugin to llm / prompt
         // / resource hooks via YAML without per-entity factory copies.
         let handlers = hooks_for(config, plugin.clone());
-        Ok(PluginInstance {
-            plugin,
-            handlers,
-        })
+        Ok(PluginInstance { plugin, handlers })
     }
 }
 
@@ -89,10 +86,7 @@ impl PluginFactory for AllowGateFactory {
 fn hooks_for<H>(
     config: &PluginConfig,
     plugin: Arc<H>,
-) -> Vec<(
-    &'static str,
-    Arc<dyn cpex_core::registry::AnyHookHandler>,
-)>
+) -> Vec<(&'static str, Arc<dyn cpex_core::registry::AnyHookHandler>)>
 where
     H: HookHandler<CmfHook> + Plugin + 'static,
 {
@@ -108,9 +102,8 @@ where
     hook_names
         .into_iter()
         .map(|name| {
-            let adapter: Arc<dyn cpex_core::registry::AnyHookHandler> = Arc::new(
-                TypedHandlerAdapter::<CmfHook, _>::new(Arc::clone(&plugin)),
-            );
+            let adapter: Arc<dyn cpex_core::registry::AnyHookHandler> =
+                Arc::new(TypedHandlerAdapter::<CmfHook, _>::new(Arc::clone(&plugin)));
             (name, adapter)
         })
         .collect()
@@ -134,10 +127,7 @@ impl HookHandler<CmfHook> for DenyGate {
         _extensions: &Extensions,
         _ctx: &mut PluginContext,
     ) -> PluginResult<MessagePayload> {
-        PluginResult::deny(PluginViolation::new(
-            "policy.forbidden",
-            "deny-gate fired",
-        ))
+        PluginResult::deny(PluginViolation::new("policy.forbidden", "deny-gate fired"))
     }
 }
 
@@ -148,10 +138,7 @@ impl PluginFactory for DenyGateFactory {
             cfg: config.clone(),
         });
         let handlers = hooks_for(config, plugin.clone());
-        Ok(PluginInstance {
-            plugin,
-            handlers,
-        })
+        Ok(PluginInstance { plugin, handlers })
     }
 }
 
@@ -190,6 +177,7 @@ async fn build_manager_with_visitor(yaml: &str) -> Arc<PluginManager> {
             session_store: Arc::new(MemorySessionStore::new()),
             pdps: Vec::new(),
             pdp_factories: Vec::new(),
+            session_store_factories: Vec::new(),
             base_capabilities: None,
         },
     );
@@ -227,12 +215,7 @@ routes:
         ..Default::default()
     };
     let (result, _bg) = mgr
-        .invoke_named::<CmfHook>(
-            "cmf.tool_pre_invoke",
-            cmf_payload("hi"),
-            ext,
-            None,
-        )
+        .invoke_named::<CmfHook>("cmf.tool_pre_invoke", cmf_payload("hi"), ext, None)
         .await;
 
     assert!(
@@ -266,16 +249,13 @@ routes:
         ..Default::default()
     };
     let (result, _bg) = mgr
-        .invoke_named::<CmfHook>(
-            "cmf.tool_pre_invoke",
-            cmf_payload("hi"),
-            ext,
-            None,
-        )
+        .invoke_named::<CmfHook>("cmf.tool_pre_invoke", cmf_payload("hi"), ext, None)
         .await;
 
     assert!(!result.continue_processing, "deny path should halt");
-    let violation = result.violation.expect("deny path must surface a violation");
+    let violation = result
+        .violation
+        .expect("deny path must surface a violation");
     assert_eq!(
         violation.reason, "deny-gate fired",
         "violation reason must propagate from the plugin through the handler"
@@ -316,12 +296,7 @@ routes:
         ..Default::default()
     };
     let (result, _bg) = mgr
-        .invoke_named::<CmfHook>(
-            "cmf.tool_pre_invoke",
-            cmf_payload("hi"),
-            ext,
-            None,
-        )
+        .invoke_named::<CmfHook>("cmf.tool_pre_invoke", cmf_payload("hi"), ext, None)
         .await;
 
     let violation = result.violation.expect("route-level deny must fire");
@@ -357,12 +332,7 @@ routes:
         ..Default::default()
     };
     let (result, _bg) = mgr
-        .invoke_named::<CmfHook>(
-            "cmf.tool_pre_invoke",
-            cmf_payload("hi"),
-            ext,
-            None,
-        )
+        .invoke_named::<CmfHook>("cmf.tool_pre_invoke", cmf_payload("hi"), ext, None)
         .await;
 
     let violation = result
@@ -455,12 +425,7 @@ routes:
         ..Default::default()
     };
     let (result, _bg) = mgr
-        .invoke_named::<CmfHook>(
-            "cmf.tool_pre_invoke",
-            cmf_payload("hi"),
-            ext,
-            None,
-        )
+        .invoke_named::<CmfHook>("cmf.tool_pre_invoke", cmf_payload("hi"), ext, None)
         .await;
 
     // Without APL annotations the route resolves through the legacy
@@ -604,7 +569,10 @@ routes:
     let mgr = build_manager_with_visitor(YAML).await;
 
     let ext = Extensions {
-        meta: Some(Arc::new(meta_for_entity("resource", "hr://employees/E001234"))),
+        meta: Some(Arc::new(meta_for_entity(
+            "resource",
+            "hr://employees/E001234",
+        ))),
         ..Default::default()
     };
     let (result, _bg) = mgr
@@ -652,12 +620,7 @@ routes:
     // APL annotation. With no annotation AND no plugin registered on
     // cmf.tool_pre_invoke, dispatch returns continue.
     let (tool_result, _bg) = mgr
-        .invoke_named::<CmfHook>(
-            "cmf.tool_pre_invoke",
-            cmf_payload("hi"),
-            ext.clone(),
-            None,
-        )
+        .invoke_named::<CmfHook>("cmf.tool_pre_invoke", cmf_payload("hi"), ext.clone(), None)
         .await;
     assert!(
         tool_result.continue_processing,
@@ -695,11 +658,216 @@ routes:
     mgr.register_factory("allow-gate", Box::new(AllowGateFactory));
     register_apl(&mgr, AplOptions::in_process());
 
-    let err = mgr.load_config_yaml(YAML).expect_err("malformed APL block must error");
+    let err = mgr
+        .load_config_yaml(YAML)
+        .expect_err("malformed APL block must error");
     let msg = format!("{}", err);
     assert!(
         msg.contains("visitor 'apl'"),
         "expected visitor error context, got: {}",
         msg
+    );
+}
+
+/// Flat form: a route may declare `policy:` directly, without the `apl:`
+/// wrapper. The visitor recognizes it identically to the wrapped form.
+/// (Also exercises the `run(...)` plugin alias.)
+#[tokio::test]
+async fn visitor_flat_route_without_apl_wrapper_allows() {
+    const YAML: &str = r#"
+plugins:
+  - name: allow-gate
+    kind: allow-gate
+    hooks: [cmf.tool_pre_invoke]
+routes:
+  - tool: get_weather
+    policy:
+      - "run(allow-gate)"
+"#;
+    let mgr = build_manager_with_visitor(YAML).await;
+
+    let ext = Extensions {
+        meta: Some(Arc::new(meta_for_tool("get_weather"))),
+        ..Default::default()
+    };
+    let (result, _bg) = mgr
+        .invoke_named::<CmfHook>("cmf.tool_pre_invoke", cmf_payload("hi"), ext, None)
+        .await;
+
+    assert!(
+        result.continue_processing,
+        "flat (no-apl-wrapper) allow path should continue: violation = {:?}",
+        result.violation
+    );
+}
+
+/// Flat form deny mirrors the wrapped deny path — the route's `policy:`
+/// is honored without an `apl:` wrapper and the violation propagates.
+#[tokio::test]
+async fn visitor_flat_route_without_apl_wrapper_denies() {
+    const YAML: &str = r#"
+plugins:
+  - name: deny-gate
+    kind: deny-gate
+    hooks: [cmf.tool_pre_invoke]
+routes:
+  - tool: get_weather
+    policy:
+      - "plugin(deny-gate)"
+"#;
+    let mgr = build_manager_with_visitor(YAML).await;
+
+    let ext = Extensions {
+        meta: Some(Arc::new(meta_for_tool("get_weather"))),
+        ..Default::default()
+    };
+    let (result, _bg) = mgr
+        .invoke_named::<CmfHook>("cmf.tool_pre_invoke", cmf_payload("hi"), ext, None)
+        .await;
+
+    assert!(!result.continue_processing, "flat deny path should halt");
+    let violation = result.violation.expect("deny path must surface a violation");
+    assert_eq!(violation.reason, "deny-gate fired");
+}
+
+// =====================================================================
+// Flat `plugins:` MAP form (no `apl:` wrapper) — regression coverage
+// for the load-path bug where a route/defaults/policy `plugins:` map
+// failed to deserialize into `Vec<PluginRouteRef>` *before* any visitor
+// ran. The structural parse now tolerates the map (treats it as APL
+// per-plugin override data and leaves the structural list empty); the
+// APL visitor consumes the map from the raw YAML. These tests drive the
+// map through the real `load_config_yaml` path the unit tests can't hit.
+// =====================================================================
+
+/// A route with a flat `policy:` AND a flat `plugins:` *map* override
+/// (no `apl:` wrapper) loads through `load_config_yaml` (previously a
+/// hard `invalid type: map, expected a sequence` error) and the policy
+/// still fires — proving the override map and the activating policy
+/// coexist on the same section.
+#[tokio::test]
+async fn flat_route_with_plugins_map_and_policy_loads_and_denies() {
+    const YAML: &str = r#"
+plugins:
+  - name: deny-gate
+    kind: deny-gate
+    hooks: [cmf.tool_pre_invoke]
+routes:
+  - tool: get_weather
+    policy:
+      - "plugin(deny-gate)"
+    plugins:
+      deny-gate:
+        on_error: ignore
+"#;
+    let mgr = build_manager_with_visitor(YAML).await;
+
+    let ext = Extensions {
+        meta: Some(Arc::new(meta_for_tool("get_weather"))),
+        ..Default::default()
+    };
+    let (result, _bg) = mgr
+        .invoke_named::<CmfHook>("cmf.tool_pre_invoke", cmf_payload("hi"), ext, None)
+        .await;
+
+    assert!(
+        !result.continue_processing,
+        "flat plugins-map route should still run its policy and deny"
+    );
+    let violation = result.violation.expect("deny path must surface a violation");
+    assert_eq!(violation.reason, "deny-gate fired");
+}
+
+/// The flat `plugins:` map form must be behaviorally identical to the
+/// `apl: { plugins: {...} }` wrapper form — that equivalence is the
+/// whole point of "the wrapper is optional". An override map alone
+/// declares no phases, so neither form installs an APL handler; whatever
+/// the legacy chain then does, both forms must do the same thing. We
+/// assert the two routes resolve to the same decision rather than
+/// hard-coding the legacy-chain outcome (which this PR doesn't touch).
+#[tokio::test]
+async fn flat_plugins_map_only_matches_wrapped_plugins_map_only() {
+    const FLAT: &str = r#"
+plugins:
+  - name: deny-gate
+    kind: deny-gate
+    hooks: [cmf.tool_pre_invoke]
+routes:
+  - tool: get_weather
+    plugins:
+      deny-gate:
+        on_error: ignore
+"#;
+    const WRAPPED: &str = r#"
+plugins:
+  - name: deny-gate
+    kind: deny-gate
+    hooks: [cmf.tool_pre_invoke]
+routes:
+  - tool: get_weather
+    apl:
+      plugins:
+        deny-gate:
+          on_error: ignore
+"#;
+
+    async fn decide(yaml: &str) -> bool {
+        let mgr = build_manager_with_visitor(yaml).await;
+        let ext = Extensions {
+            meta: Some(Arc::new(meta_for_tool("get_weather"))),
+            ..Default::default()
+        };
+        let (result, _bg) = mgr
+            .invoke_named::<CmfHook>("cmf.tool_pre_invoke", cmf_payload("hi"), ext, None)
+            .await;
+        result.continue_processing
+    }
+
+    assert_eq!(
+        decide(FLAT).await,
+        decide(WRAPPED).await,
+        "flat plugins-map and apl-wrapped plugins-map must resolve identically",
+    );
+}
+
+/// A `plugins:` map at `global.defaults.<entity>` scope loads through
+/// the full pipeline. Before the fix this failed at the structural
+/// `CpexConfig` parse (the defaults group's `plugins` is also a `Vec`).
+/// The default layer contributes the policy; the route inherits it.
+#[tokio::test]
+async fn flat_defaults_plugins_map_loads_through_full_pipeline() {
+    const YAML: &str = r#"
+plugins:
+  - name: deny-gate
+    kind: deny-gate
+    hooks: [cmf.tool_pre_invoke]
+global:
+  defaults:
+    tool:
+      policy:
+        - "plugin(deny-gate)"
+      plugins:
+        deny-gate:
+          on_error: ignore
+routes:
+  - tool: get_weather
+"#;
+    let mgr = build_manager_with_visitor(YAML).await;
+
+    let ext = Extensions {
+        meta: Some(Arc::new(meta_for_tool("get_weather"))),
+        ..Default::default()
+    };
+    let (result, _bg) = mgr
+        .invoke_named::<CmfHook>("cmf.tool_pre_invoke", cmf_payload("hi"), ext, None)
+        .await;
+
+    assert!(
+        !result.continue_processing,
+        "tool default with a flat plugins-map override should still deny via inherited policy"
+    );
+    assert_eq!(
+        result.violation.expect("deny expected").reason,
+        "deny-gate fired"
     );
 }

@@ -5,8 +5,20 @@
 //
 // `PdpRouter` — composite `PdpResolver` that dispatches each call to the
 // resolver matching the requested `PdpDialect`. Lets a single host (or a
-// single `AplRouteHandler`) carry resolvers for Cedar **and** OPA **and**
-// NeMo at the same time without having to pick one at construction.
+// single `AplRouteHandler`) carry resolvers for several backends at the
+// same time without having to pick one at construction.
+//
+// The PDP backends that ship in this workspace, each its own crate
+// registered here by dialect:
+//
+//   - **cedar** (`apl-pdp-cedar-direct`) / **cedarling** (`apl-cedarling`)
+//     — Cedar policy-set evaluation, in-process and via Cedarling.
+//   - **opa** — Open Policy Agent / Rego.
+//   - **authzen** — AuthZen-protocol external decision point.
+//   - **nemo** — NeMo reasoning backend.
+//   - **cel** (`apl-pdp-cel`) — inline CEL boolean predicates authored in
+//     the route YAML (`cel: { expr: "..." }`); smallest dep tree, no
+//     external policy store.
 //
 // Routing is by dialect equality. The first registered resolver for a
 // given dialect wins on duplicate registration — registering Cedar twice

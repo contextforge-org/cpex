@@ -8,6 +8,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/cpex",
     "crates/cpex-core",
     "crates/cpex-orchestration",
     "crates/cpex-sdk",
@@ -16,6 +17,7 @@ members = [
     "crates/apl-cmf",
     "crates/apl-cpex",
     "crates/apl-pdp-cedar-direct",
+    "crates/apl-pdp-cel",
     "crates/apl-cedarling",
     "crates/apl-identity-jwt",
     "crates/apl-delegator-oauth",
@@ -23,6 +25,7 @@ members = [
     "crates/apl-pii-scanner",
     "crates/apl-audit-logger",
     "crates/cpex-hosts-python",
+    "crates/apl-session-valkey",
     "examples/go-demo/ffi",
 ]
 
@@ -37,6 +40,7 @@ members = [
 #   cargo build -p apl-cedarling           # just this one
 #   cargo test --workspace                 # full sweep (CI)
 default-members = [
+    "crates/cpex",
     "crates/cpex-core",
     "crates/cpex-orchestration",
     "crates/cpex-sdk",
@@ -45,6 +49,7 @@ default-members = [
     "crates/apl-cmf",
     "crates/apl-cpex",
     "crates/apl-pdp-cedar-direct",
+    "crates/apl-pdp-cel",
     "crates/apl-identity-jwt",
     "crates/apl-delegator-oauth",
     "crates/apl-delegator-biscuit",

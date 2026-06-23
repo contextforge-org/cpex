@@ -17,8 +17,8 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use cpex_core::cmf::{CmfHook, ContentPart, Message, MessagePayload};
 use cpex_core::cmf::enums::Role;
+use cpex_core::cmf::{CmfHook, ContentPart, Message, MessagePayload};
 use cpex_core::context::PluginContext;
 use cpex_core::error::{PluginError as CoreError, PluginViolation};
 use cpex_core::extensions::{SecurityExtension, SubjectExtension};
@@ -40,12 +40,18 @@ use apl_cpex::{CmfPluginInvoker, MemorySessionStore, RouteDispatchPlan};
 /// registry — no APL CompiledRoute involved. Used by the invoker-primitive
 /// tests below to exercise the plan-based dispatch path without standing
 /// up a full route.
-fn plan_for(manager: &cpex_core::manager::PluginManager, plugin_name: &str) -> Arc<RouteDispatchPlan> {
+fn plan_for(
+    manager: &cpex_core::manager::PluginManager,
+    plugin_name: &str,
+) -> Arc<RouteDispatchPlan> {
     let entry = RouteDispatchPlan::resolve_plugin(manager, plugin_name)
         .expect("plugin must be registered with the manager");
     let mut plugins = std::collections::HashMap::new();
     plugins.insert(plugin_name.to_string(), entry);
-    Arc::new(RouteDispatchPlan { plugins, delegation_entries: Default::default() })
+    Arc::new(RouteDispatchPlan {
+        plugins,
+        delegation_entries: Default::default(),
+    })
 }
 
 // ---------------------------------------------------------------------
@@ -78,7 +84,9 @@ impl HookHandler<CmfHook> for AllowPlugin {
 struct AllowPluginFactory;
 impl PluginFactory for AllowPluginFactory {
     fn create(&self, config: &PluginConfig) -> Result<PluginInstance, Box<CoreError>> {
-        let plugin = Arc::new(AllowPlugin { cfg: config.clone() });
+        let plugin = Arc::new(AllowPlugin {
+            cfg: config.clone(),
+        });
         Ok(PluginInstance {
             plugin: plugin.clone(),
             handlers: vec![(
@@ -117,7 +125,9 @@ impl HookHandler<CmfHook> for DenyPlugin {
 struct DenyPluginFactory;
 impl PluginFactory for DenyPluginFactory {
     fn create(&self, config: &PluginConfig) -> Result<PluginInstance, Box<CoreError>> {
-        let plugin = Arc::new(DenyPlugin { cfg: config.clone() });
+        let plugin = Arc::new(DenyPlugin {
+            cfg: config.clone(),
+        });
         Ok(PluginInstance {
             plugin: plugin.clone(),
             handlers: vec![(
@@ -173,7 +183,9 @@ impl HookHandler<CmfHook> for ModifyPlugin {
 struct ModifyPluginFactory;
 impl PluginFactory for ModifyPluginFactory {
     fn create(&self, config: &PluginConfig) -> Result<PluginInstance, Box<CoreError>> {
-        let plugin = Arc::new(ModifyPlugin { cfg: config.clone() });
+        let plugin = Arc::new(ModifyPlugin {
+            cfg: config.clone(),
+        });
         Ok(PluginInstance {
             plugin: plugin.clone(),
             handlers: vec![(
@@ -200,17 +212,11 @@ fn empty_bag() -> AttributeBag {
 
 /// Build a manager, register one factory + one plugin under the given
 /// kind, and return the wired manager ready for invocation.
-async fn build_manager(
-    factory_kind: &str,
-    factory: Box<dyn PluginFactory>,
-) -> Arc<PluginManager> {
+async fn build_manager(factory_kind: &str, factory: Box<dyn PluginFactory>) -> Arc<PluginManager> {
     let mgr = PluginManager::default();
     mgr.register_factory(factory_kind, factory);
 
-    let yaml = format!(
-        "plugins:\n  - name: {0}\n    kind: {0}\n",
-        factory_kind
-    );
+    let yaml = format!("plugins:\n  - name: {0}\n    kind: {0}\n", factory_kind);
     let cfg = cpex_core::config::parse_config(&yaml).expect("parse_config");
     mgr.load_config(cfg).expect("load_config");
     mgr.initialize().await.expect("initialize");
@@ -232,10 +238,17 @@ async fn step_invocation_allow_returns_decision_allow() {
         plan,
         Arc::new(MemorySessionStore::new()),
     )
-    .await;
+    .await
+    .expect("for_request");
 
     let outcome = invoker
-        .invoke("allow-plugin", &empty_bag(), PluginInvocation::Step { phase: apl_core::step::DispatchPhase::Pre })
+        .invoke(
+            "allow-plugin",
+            &empty_bag(),
+            PluginInvocation::Step {
+                phase: apl_core::step::DispatchPhase::Pre,
+            },
+        )
         .await
         .expect("invoke");
 
@@ -254,15 +267,25 @@ async fn step_invocation_deny_surfaces_violation_reason_and_code() {
         plan,
         Arc::new(MemorySessionStore::new()),
     )
-    .await;
+    .await
+    .expect("for_request");
 
     let outcome = invoker
-        .invoke("deny-plugin", &empty_bag(), PluginInvocation::Step { phase: apl_core::step::DispatchPhase::Pre })
+        .invoke(
+            "deny-plugin",
+            &empty_bag(),
+            PluginInvocation::Step {
+                phase: apl_core::step::DispatchPhase::Pre,
+            },
+        )
         .await
         .expect("invoke");
 
     match outcome.decision {
-        Decision::Deny { reason, rule_source } => {
+        Decision::Deny {
+            reason,
+            rule_source,
+        } => {
             assert_eq!(reason.as_deref(), Some("test-fixture denied this call"));
             assert_eq!(rule_source, "policy.forbidden");
         }
@@ -281,7 +304,8 @@ async fn field_invocation_modify_surfaces_modified_value_and_persists_payload() 
         plan,
         Arc::new(MemorySessionStore::new()),
     )
-    .await;
+    .await
+    .expect("for_request");
 
     let bag = empty_bag();
     let value = serde_json::Value::String("hello".to_string());
@@ -337,7 +361,8 @@ async fn current_payload_reflects_accumulated_mutations() {
         plan,
         Arc::new(MemorySessionStore::new()),
     )
-    .await;
+    .await
+    .expect("for_request");
 
     let bag = empty_bag();
     let value = serde_json::Value::String("ignored".to_string());
@@ -355,10 +380,7 @@ async fn current_payload_reflects_accumulated_mutations() {
         .expect("invoke");
 
     let final_payload = invoker.current_payload().await;
-    assert_eq!(
-        final_payload.message.get_text_content(),
-        "hello [MODIFIED]"
-    );
+    assert_eq!(final_payload.message.get_text_content(), "hello [MODIFIED]");
 }
 
 // ---------------------------------------------------------------------
@@ -490,7 +512,10 @@ fn plan_with_narrowed_caps(
             entries_by_hook,
         },
     );
-    Arc::new(apl_cpex::RouteDispatchPlan { plugins, delegation_entries: Default::default() })
+    Arc::new(apl_cpex::RouteDispatchPlan {
+        plugins,
+        delegation_entries: Default::default(),
+    })
 }
 
 #[tokio::test]
@@ -519,10 +544,17 @@ async fn route_override_caps_narrow_what_plugin_sees() {
         plan,
         Arc::new(MemorySessionStore::new()),
     )
-    .await;
+    .await
+    .expect("for_request");
 
     let outcome = invoker
-        .invoke("capture-plugin", &empty_bag(), PluginInvocation::Step { phase: apl_core::step::DispatchPhase::Pre })
+        .invoke(
+            "capture-plugin",
+            &empty_bag(),
+            PluginInvocation::Step {
+                phase: apl_core::step::DispatchPhase::Pre,
+            },
+        )
         .await
         .expect("invoke");
     assert_eq!(outcome.decision, Decision::Allow);
@@ -623,9 +655,15 @@ impl Plugin for MultiHookMarker {
 struct MultiHookPluginFactory;
 impl PluginFactory for MultiHookPluginFactory {
     fn create(&self, config: &PluginConfig) -> Result<PluginInstance, Box<CoreError>> {
-        let marker = Arc::new(MultiHookMarker { cfg: config.clone() });
-        let pre = Arc::new(PreSideHandler { cfg: config.clone() });
-        let post = Arc::new(PostSideHandler { cfg: config.clone() });
+        let marker = Arc::new(MultiHookMarker {
+            cfg: config.clone(),
+        });
+        let pre = Arc::new(PreSideHandler {
+            cfg: config.clone(),
+        });
+        let post = Arc::new(PostSideHandler {
+            cfg: config.clone(),
+        });
         Ok(PluginInstance {
             plugin: marker as Arc<dyn Plugin>,
             handlers: vec![
@@ -659,7 +697,8 @@ async fn multi_hook_plugin_dispatches_per_phase_via_routing_table() {
         plan,
         Arc::new(MemorySessionStore::new()),
     )
-    .await;
+    .await
+    .expect("for_request");
 
     // Pre phase — should hit pre handler → Allow.
     let pre_outcome = invoker

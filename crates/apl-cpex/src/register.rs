@@ -39,9 +39,8 @@ use cpex_core::visitor::ConfigVisitor;
 use apl_core::step::{PdpFactory, PdpResolver};
 
 use crate::dispatch_plan::DispatchCache;
-use crate::session_store::SessionStore;
+use crate::session_store::{SessionStore, SessionStoreFactory};
 use crate::visitor::AplConfigVisitor;
-
 
 /// Configuration for [`register_apl`]. All runtime collaborators APL
 /// needs to do its work are funneled through here so the call site
@@ -75,6 +74,14 @@ pub struct AplOptions {
     /// `pdps`.
     pub pdp_factories: Vec<Arc<dyn PdpFactory>>,
 
+    /// Session-store factories the visitor consults when it encounters a
+    /// `global.apl.session_store` block. Each factory advertises a
+    /// `kind()` string matching the block's `kind:` field — e.g.
+    /// `valkey`. An empty list keeps the constructor-supplied
+    /// `session_store` (the `MemorySessionStore` default) active, so
+    /// existing deployments are unaffected.
+    pub session_store_factories: Vec<Arc<dyn SessionStoreFactory>>,
+
     /// Override the visitor's baseline capabilities for installed
     /// `AplRouteHandler`s. `None` uses the visitor's default
     /// (read-only across the common attribute namespaces); `Some(set)`
@@ -96,6 +103,7 @@ impl AplOptions {
             session_store: Arc::new(crate::session_store::MemorySessionStore::new()),
             pdps: Vec::new(),
             pdp_factories: Vec::new(),
+            session_store_factories: Vec::new(),
             base_capabilities: None,
         }
     }
@@ -142,15 +150,13 @@ impl AplOptions {
 /// mgr.load_config_yaml(&yaml_string)?;
 /// mgr.initialize().await?;
 /// ```
-pub fn register_apl(
-    mgr: &Arc<PluginManager>,
-    opts: AplOptions,
-) -> Arc<AplConfigVisitor> {
+pub fn register_apl(mgr: &Arc<PluginManager>, opts: AplOptions) -> Arc<AplConfigVisitor> {
     let AplOptions {
         dispatch_cache,
         session_store,
         pdps,
         pdp_factories,
+        session_store_factories,
         base_capabilities,
     } = opts;
 
@@ -160,11 +166,7 @@ pub fn register_apl(
     // handle to the manager. Code-supplied PDPs go through
     // `register_pdp(&self, ...)` which uses interior mutability, so
     // they're registered after the `Arc` wrap.
-    let mut visitor = AplConfigVisitor::new(
-        dispatch_cache,
-        session_store,
-        Arc::downgrade(mgr),
-    );
+    let mut visitor = AplConfigVisitor::new(dispatch_cache, session_store, Arc::downgrade(mgr));
 
     if let Some(caps) = base_capabilities {
         visitor = visitor.with_base_capabilities(caps);
@@ -172,6 +174,10 @@ pub fn register_apl(
 
     for factory in pdp_factories {
         visitor.register_pdp_factory(factory);
+    }
+
+    for factory in session_store_factories {
+        visitor.register_session_store_factory(factory);
     }
 
     let arc = Arc::new(visitor);
