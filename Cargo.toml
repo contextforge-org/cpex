@@ -24,6 +24,7 @@ members = [
     "crates/apl-delegator-biscuit",
     "crates/apl-pii-scanner",
     "crates/apl-audit-logger",
+    "crates/cpex-hosts-python",
     "crates/apl-session-valkey",
     "examples/go-demo/ffi",
 ]
@@ -88,6 +89,7 @@ rmp-serde = "1"
 serde_bytes = "0.11"
 chrono = { version = "0.4", features = ["serde"] }
 regex = "1"
+sha2 = "0.10"
 
 # Size-first release profile. The FFI artifact (libcpex_ffi.a) is linked
 # statically into host binaries, so its compiled size flows straight into
