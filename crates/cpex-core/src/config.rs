@@ -189,7 +189,7 @@ pub struct PolicyGroup {
     pub metadata: HashMap<String, String>,
 
     /// Plugin references to activate when this group matches.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_plugin_refs")]
     pub plugins: Vec<PluginRouteRef>,
 
     /// Identity dispatch list contributed by this tag bundle.
@@ -241,6 +241,49 @@ impl PluginRouteRef {
     }
 }
 
+/// Deserialize a `plugins:` field that may take either of two YAML
+/// shapes, so the `apl:` wrapper is genuinely optional everywhere.
+///
+/// - A **sequence** is the structural activation list — each item is a
+///   [`PluginRouteRef`] (bare name or single-key override map). It
+///   deserializes into the `Vec` as usual.
+/// - A **mapping** is the APL per-plugin *override* form, written
+///   directly on the section when the `apl:` wrapper is omitted (e.g.
+///   `plugins: { audit: { on_error: ignore } }`). It is **not** a
+///   structural activation list: the override map is consumed
+///   separately by the APL visitor straight from the raw YAML, so here
+///   it deserializes to an empty `Vec`. This mirrors the explicit
+///   `apl: { plugins: {...} }` wrapper form, where the map never
+///   reaches this field at all — keeping the two forms behaviorally
+///   identical (the map supplies overrides; policy steps still do the
+///   activating).
+///
+/// Null / absent → empty `Vec` (same as `#[serde(default)]`).
+fn deserialize_plugin_refs<'de, D>(deserializer: D) -> Result<Vec<PluginRouteRef>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::Error;
+
+    match serde_yaml::Value::deserialize(deserializer)? {
+        // Structural activation list.
+        serde_yaml::Value::Sequence(items) => items
+            .into_iter()
+            .map(|item| serde_yaml::from_value(item).map_err(D::Error::custom))
+            .collect(),
+        // APL override map — owned by the APL visitor, not the
+        // structural parse. See doc comment above.
+        serde_yaml::Value::Mapping(_) => Ok(Vec::new()),
+        // Null / absent → no structural plugins.
+        serde_yaml::Value::Null => Ok(Vec::new()),
+        other => Err(D::Error::custom(format!(
+            "`plugins:` must be a sequence (activation list) or a mapping \
+             (APL per-plugin overrides), got {:?}",
+            other
+        ))),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Route Entry
 // ---------------------------------------------------------------------------
@@ -278,7 +321,7 @@ pub struct RouteEntry {
     pub when: Option<String>,
 
     /// Plugin references to activate for this route.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_plugin_refs")]
     pub plugins: Vec<PluginRouteRef>,
 
     /// Identity-resolve dispatch list for this route. **Hook-specific**:
@@ -577,6 +620,16 @@ pub fn parse_config(yaml: &str) -> Result<CpexConfig, Box<PluginError>> {
 // ---------------------------------------------------------------------------
 
 /// Validate a parsed config for structural correctness.
+///
+/// This checks only the *structural* plugin activation lists
+/// (`route.plugins` / `policy_group.plugins` sequences). It deliberately
+/// does NOT validate APL plugin references — neither `plugin(...)` / `run(...)`
+/// policy steps nor the APL per-plugin override *map* (which
+/// [`deserialize_plugin_refs`] folds into an empty structural `Vec`, leaving
+/// it for the APL visitor to consume). Those are resolved and validated at
+/// dispatch-plan build time, where an unknown or unreferenced plugin is logged
+/// and skipped (see `apl-cpex::dispatch_plan`). Keeping cpex-core's validation
+/// free of APL semantics is intentional.
 fn validate_config(config: &CpexConfig) -> Result<(), Box<PluginError>> {
     let mut seen_names = HashSet::new();
     for plugin in &config.plugins {
@@ -2002,5 +2055,100 @@ routes:
             Some("tenant-b"),
         );
         assert!(non_matching.is_empty());
+    }
+
+    // -----------------------------------------------------------------
+    // `plugins:` accepts both shapes (map-tolerant deserializer)
+    //
+    // A *sequence* is the structural activation list. A *mapping* is the
+    // APL per-plugin override form (consumed by the APL visitor from the
+    // raw YAML), so it deserializes to an empty structural list here.
+    // Before this, a map at route/defaults/policy scope failed the whole
+    // `CpexConfig` parse with "invalid type: map, expected a sequence".
+    //
+    // These exercise deserialization directly (not `parse_config`, which
+    // also runs `validate_config`'s plugin-reference checks) because the
+    // bug being fixed was a *deserialize-time* failure.
+    // -----------------------------------------------------------------
+
+    fn deserialize_cfg(yaml: &str) -> Result<CpexConfig, String> {
+        serde_yaml::from_str(yaml).map_err(|e| e.to_string())
+    }
+
+    #[test]
+    fn route_plugins_list_parses_as_activation_list() {
+        let cfg = deserialize_cfg(
+            r#"
+routes:
+  - tool: get_weather
+    plugins:
+      - rate_limiter
+      - pii_scanner:
+          config:
+            sensitivity: high
+"#,
+        )
+        .unwrap();
+        let plugins = &cfg.routes[0].plugins;
+        assert_eq!(plugins.len(), 2);
+        assert_eq!(plugins[0].name(), "rate_limiter");
+        assert_eq!(plugins[1].name(), "pii_scanner");
+    }
+
+    #[test]
+    fn route_plugins_map_loads_as_empty_structural_list() {
+        let cfg = deserialize_cfg(
+            r#"
+routes:
+  - tool: get_weather
+    plugins:
+      audit:
+        on_error: ignore
+"#,
+        )
+        .expect("flat plugins map must deserialize");
+        assert!(
+            cfg.routes[0].plugins.is_empty(),
+            "a plugins map is APL-override data, not a structural activation list",
+        );
+    }
+
+    #[test]
+    fn defaults_and_policies_plugins_map_loads() {
+        let cfg = deserialize_cfg(
+            r#"
+global:
+  defaults:
+    tool:
+      plugins:
+        audit:
+          on_error: ignore
+  policies:
+    sensitive:
+      plugins:
+        pii_scanner:
+          config:
+            sensitivity: high
+"#,
+        )
+        .expect("defaults/policies plugins map must deserialize");
+        assert!(cfg.global.defaults["tool"].plugins.is_empty());
+        assert!(cfg.global.policies["sensitive"].plugins.is_empty());
+    }
+
+    #[test]
+    fn scalar_plugins_value_is_rejected_with_clear_error() {
+        let err = deserialize_cfg(
+            r#"
+routes:
+  - tool: get_weather
+    plugins: nonsense
+"#,
+        )
+        .expect_err("scalar plugins must error");
+        assert!(
+            err.contains("sequence") && err.contains("mapping"),
+            "expected a shape-aware error, got: {err}",
+        );
     }
 }

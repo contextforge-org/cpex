@@ -206,6 +206,7 @@ routes:
             session_store: Arc::new(MemorySessionStore::new()),
             pdps: Vec::new(),
             pdp_factories: Vec::new(),
+            session_store_factories: Vec::new(),
             base_capabilities: None,
         },
     );
@@ -268,6 +269,7 @@ routes:
             session_store: Arc::new(MemorySessionStore::new()),
             pdps: Vec::new(),
             pdp_factories: Vec::new(),
+            session_store_factories: Vec::new(),
             base_capabilities: Some(std::collections::HashSet::new()),
         },
     );
@@ -415,6 +417,7 @@ routes:
             session_store: Arc::new(MemorySessionStore::new()),
             pdps: Vec::new(),
             pdp_factories: Vec::new(),
+            session_store_factories: Vec::new(),
             base_capabilities: Some(std::collections::HashSet::new()),
         },
     );

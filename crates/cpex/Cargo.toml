@@ -1,0 +1,61 @@
+# Location: ./crates/cpex/Cargo.toml
+# Copyright 2025
+# SPDX-License-Identifier: Apache-2.0
+# Authors: Fred Araujo
+#
+# cpex — batteries-included host facade.
+#
+# One dependency instead of a dozen: re-exports the host runtime
+# (PluginManager, AplOptions, register_apl) plus the bundled plugin
+# factories, each gated behind a cargo feature. A host enables the
+# plugins it wants and gets them through this single crate rather than
+# pinning apl-cmf / apl-cpex / apl-pdp-* / apl-session-* individually.
+#
+#   cpex = { version = "0.2.0", features = ["jwt", "oauth", "cedar", "cel", "valkey"] }
+#
+# then `cpex::install_builtins(&mgr)` registers every enabled factory and
+# installs the APL config visitor in one call.
+
+[package]
+name = "cpex"
+description = "CPEX host facade — re-exports the runtime and feature-gated plugin factories."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[features]
+# No plugins are forced on a re-export-only consumer, but the common
+# in-process set is on by default so `cpex = "0.2"` is useful out of the
+# box. Heavier / external-backend plugins (valkey, and future cedarling)
+# stay opt-in, mirroring the workspace's default-members policy.
+default = ["jwt", "oauth", "pii", "audit", "cedar", "cel"]
+
+# Individual plugins, each pulling exactly one apl-* crate.
+jwt = ["dep:apl-identity-jwt"]
+oauth = ["dep:apl-delegator-oauth"]
+pii = ["dep:apl-pii-scanner"]
+audit = ["dep:apl-audit-logger"]
+cedar = ["dep:apl-pdp-cedar-direct"]
+cel = ["dep:apl-pdp-cel"]
+valkey = ["dep:apl-session-valkey"]
+
+# Everything the facade knows how to wire, including the Valkey session
+# store (redis client + rustls TLS stack).
+full = ["jwt", "oauth", "pii", "audit", "cedar", "cel", "valkey"]
+
+[dependencies]
+# Host runtime — always present, this is the point of the facade.
+cpex-core = { path = "../cpex-core" }
+apl-core = { path = "../apl-core" }
+apl-cmf = { path = "../apl-cmf" }
+apl-cpex = { path = "../apl-cpex" }
+
+# Bundled plugin factories — each behind its feature.
+apl-identity-jwt = { path = "../apl-identity-jwt", optional = true }
+apl-delegator-oauth = { path = "../apl-delegator-oauth", optional = true }
+apl-pii-scanner = { path = "../apl-pii-scanner", optional = true }
+apl-audit-logger = { path = "../apl-audit-logger", optional = true }
+apl-pdp-cedar-direct = { path = "../apl-pdp-cedar-direct", optional = true }
+apl-pdp-cel = { path = "../apl-pdp-cel", optional = true }
+apl-session-valkey = { path = "../apl-session-valkey", optional = true }

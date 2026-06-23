@@ -27,9 +27,7 @@ use std::sync::Arc;
 
 use cpex_core::cmf::enums::Role;
 use cpex_core::cmf::{CmfHook, Message, MessagePayload};
-use cpex_core::extensions::{
-    MetaExtension, SecurityExtension, SubjectExtension, SubjectType,
-};
+use cpex_core::extensions::{MetaExtension, SecurityExtension, SubjectExtension, SubjectType};
 use cpex_core::hooks::payload::Extensions;
 use cpex_core::manager::PluginManager;
 
@@ -94,6 +92,7 @@ async fn build_manager() -> Arc<PluginManager> {
             // visitor sees `kind: cedar-direct` in YAML and finds this
             // factory by key.
             pdp_factories: vec![Arc::new(CedarDirectPdpFactory::new())],
+            session_store_factories: Vec::new(),
             base_capabilities: None,
         },
     );
@@ -157,7 +156,9 @@ async fn config_declared_cedar_pdp_denies_non_reader() {
         !result.continue_processing,
         "missing reader role should default-deny",
     );
-    let v = result.violation.expect("deny path must surface a violation");
+    let v = result
+        .violation
+        .expect("deny path must surface a violation");
     assert_eq!(
         v.code, "cedar.default_deny",
         "default-deny path should use the cedar-direct sentinel code; got {}",

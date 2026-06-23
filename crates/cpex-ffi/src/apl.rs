@@ -85,8 +85,19 @@ pub unsafe extern "C" fn cpex_apl_install(mgr: *const CpexManagerInner) -> c_int
         // default. The visitor keeps a Weak<PluginManager> (see
         // CpexManagerInner) that upgrades during load_config_yaml.
         let mut opts = apl_cpex::AplOptions::in_process();
-        opts.pdp_factories =
-            vec![Arc::new(apl_pdp_cedar_direct::CedarDirectPdpFactory::new())];
+        opts.pdp_factories = vec![Arc::new(apl_pdp_cedar_direct::CedarDirectPdpFactory::new())];
+
+        // With the `valkey` cargo feature, register the Valkey
+        // SessionStore factory so a `global.apl.session_store:
+        // { kind: valkey, ... }` config block selects it. Without the
+        // feature, the default in-process MemorySessionStore stays active
+        // and no Valkey object code is linked.
+        #[cfg(feature = "valkey")]
+        {
+            opts.session_store_factories = vec![Arc::new(
+                apl_session_valkey::ValkeySessionStoreFactory::new(),
+            )];
+        }
 
         apl_cpex::register_apl(&inner.manager, opts);
     }));
