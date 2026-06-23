@@ -51,7 +51,7 @@ tracing = { workspace = true }
 # PyO3 — extension-module is non-default; maturin enables it via pyproject.toml.
 # Plan KD6 pinned "0.28"; using 0.29 (released 2026-06-11/12) as the latest
 # compatible stable pair. pyo3 0.28.0 was yanked; 0.29 is the current series.
-pyo3 = { version = "0.29", features = [] }
+pyo3 = { version = "0.29", features = ["multiple-pymethods"] }
 pyo3-async-runtimes = { version = "0.29", features = ["tokio-runtime"] }
 
 [features]

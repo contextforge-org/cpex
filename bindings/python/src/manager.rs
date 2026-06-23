@@ -140,15 +140,27 @@ impl PyPluginManager {
         extensions: Option<&Bound<'_, PyAny>>,
         context_table: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Bound<'py, PyAny>> {
-        // --- GIL held: convert all arguments ---
-        let payload_value = pyobj_to_json_value(py, payload, 0)?;
-        let rust_payload = resolve_payload(hook_name, payload_value)?;
-
-        let ext_value = match extensions {
-            None => serde_json::Value::Object(Default::default()),
-            Some(o) => pyobj_to_json_value(py, o, 0)?,
+        // --- GIL held: resolve all arguments ---
+        // Fast path: a wrapped `Message` handle clones its inner Rust struct
+        // straight into a MessagePayload — no PyObject->Value->typed pass.
+        // Fall back to the dict conversion path for legacy callers.
+        let rust_payload = match crate::wrappers::try_wrapped_payload(payload) {
+            Some(p) => p,
+            None => {
+                let payload_value = pyobj_to_json_value(py, payload, 0)?;
+                resolve_payload(hook_name, payload_value)?
+            }
         };
-        let rust_extensions: Extensions = extensions_from_value(ext_value)?;
+
+        let rust_extensions: Extensions = match extensions {
+            None => Extensions::default(),
+            // Fast path: a wrapped SecurityExtension handle, zero conversion.
+            // Fall back to the dict path when it isn't a known wrapper.
+            Some(o) => match crate::wrappers::try_wrapped_extensions(o) {
+                Some(ext) => ext,
+                None => extensions_from_value(pyobj_to_json_value(py, o, 0)?)?,
+            },
+        };
 
         let ctx_value = match context_table {
             None => serde_json::Value::Null,

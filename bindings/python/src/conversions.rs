@@ -184,6 +184,21 @@ pub fn serialize_payload(payload: &dyn PluginPayload) -> Option<Value> {
     if let Some(mp) = payload.as_any().downcast_ref::<MessagePayload>() {
         return serde_json::to_value(mp).ok();
     }
+    // Identity / Delegation payloads modify in place (e.g. the JWT resolver
+    // populates `subject`), so their modified form must serialize back too —
+    // mirrors cpex-ffi's PAYLOAD_IDENTITY / PAYLOAD_DELEGATION arms.
+    if let Some(idp) = payload
+        .as_any()
+        .downcast_ref::<cpex_core::identity::IdentityPayload>()
+    {
+        return serde_json::to_value(idp).ok();
+    }
+    if let Some(dp) = payload
+        .as_any()
+        .downcast_ref::<cpex_core::delegation::DelegationPayload>()
+    {
+        return serde_json::to_value(dp).ok();
+    }
     if let Some(gp) = payload.as_any().downcast_ref::<GenericPayload>() {
         return serde_json::to_value(&gp.value).ok();
     }
