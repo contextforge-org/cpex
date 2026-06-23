@@ -41,6 +41,18 @@ use crate::entities::build as build_entities;
 use crate::error::BuildError;
 use crate::request::parse as parse_call;
 
+/// Grow the cedar evaluation stack when the current thread has less than this
+/// much headroom. cedar-policy-core's own guard is 100 KiB
+/// (`REQUIRED_STACK_SPACE`); we grow at 10x that so the guard never fires
+/// mid-descent. On glibc (8 MiB thread stacks) there is always more than this
+/// available, so `maybe_grow` is a cheap no-op; on musl (128 KiB default) we
+/// fall below it and grow onto a fresh segment.
+const CEDAR_STACK_RED_ZONE: usize = 1024 * 1024;
+/// Size of the fresh stack segment to run cedar on when we grow. Matches
+/// glibc's default 8 MiB thread stack — the headroom cedar is validated
+/// against. Allocated only on small-stack hosts, freed when evaluation returns.
+const CEDAR_STACK_GROW_SIZE: usize = 8 * 1024 * 1024;
+
 /// PdpResolver wrapping a bare `cedar-policy` engine. Constructed from
 /// policy text / file / config block at startup; evaluates each call
 /// against the loaded `PolicySet`.
@@ -207,31 +219,43 @@ impl PdpResolver for CedarDirectResolver {
             args: resolved_args,
         };
 
-        let parsed = parse_call(&resolved_call, bag, self.schema.as_deref())?;
-        let entities = build_entities(
-            bag,
-            parsed.resource_args,
-            self.schema.as_deref(),
-            self.entity_namespace.as_deref(),
-        )?;
+        // Everything below recurses through cedar (context/entity JSON parsing
+        // and policy evaluation), which self-aborts with "recursion limit
+        // reached" when the running thread's remaining stack drops under
+        // cedar's 100 KiB floor. The FFI host decides that thread's stack size,
+        // and musl's 128 KiB default trips the floor on inputs glibc handles
+        // fine. `maybe_grow` runs this block on a fresh, generously-sized stack
+        // segment when headroom is low (a no-op when there's already room, so
+        // glibc pays nothing), making cedar host-stack-agnostic. The block is
+        // fully synchronous — no `.await` — so it is safe to run inside the
+        // grown segment. See CEDAR_STACK_RED_ZONE / CEDAR_STACK_GROW_SIZE.
+        stacker::maybe_grow(CEDAR_STACK_RED_ZONE, CEDAR_STACK_GROW_SIZE, || {
+            let parsed = parse_call(&resolved_call, bag, self.schema.as_deref())?;
+            let entities = build_entities(
+                bag,
+                parsed.resource_args,
+                self.schema.as_deref(),
+                self.entity_namespace.as_deref(),
+            )?;
 
-        let principal_uid = build_principal_uid(bag, self.entity_namespace.as_deref())?;
-        let resource_uid = build_resource_uid(parsed.resource_args)?;
+            let principal_uid = build_principal_uid(bag, self.entity_namespace.as_deref())?;
+            let resource_uid = build_resource_uid(parsed.resource_args)?;
 
-        let request = cedar_policy::Request::new(
-            principal_uid,
-            parsed.action,
-            resource_uid,
-            parsed.context,
-            self.schema.as_deref(),
-        )
-        .map_err(|e| PdpError::Dispatch(format!("Cedar request validation failed: {}", e)))?;
+            let request = cedar_policy::Request::new(
+                principal_uid,
+                parsed.action,
+                resource_uid,
+                parsed.context,
+                self.schema.as_deref(),
+            )
+            .map_err(|e| PdpError::Dispatch(format!("Cedar request validation failed: {}", e)))?;
 
-        let response = self
-            .authorizer
-            .is_authorized(&request, &self.policies, &entities);
+            let response = self
+                .authorizer
+                .is_authorized(&request, &self.policies, &entities);
 
-        Ok(translate(&response, &self.policies))
+            Ok(translate(&response, &self.policies))
+        })
     }
 }
 

@@ -474,6 +474,19 @@ pub fn parse_rule(line: &str, source: &str) -> Result<Rule, ParseError> {
                     source: source.to_string(),
                 });
             }
+            // Unconditional `deny('reason')` / `deny('reason', 'code')` —
+            // the call form of a bare deny. Lets reaction lists
+            // (`on_deny: [...]` / `on_allow: [...]`) and standalone rule
+            // lines attach a reason/code without a guard predicate. A
+            // malformed `deny(...)` surfaces its own error here rather
+            // than being misread as a predicate downstream.
+            if let Some(deny) = try_parse_deny_call(trimmed, trimmed)? {
+                return Ok(Rule {
+                    condition: Expression::Always,
+                    effects: vec![deny],
+                    source: source.to_string(),
+                });
+            }
             // DSL §2 default: bare predicate denies.
             (trimmed, vec![Effect::Deny { reason: None, code: None }])
         }
@@ -566,10 +579,10 @@ fn parse_require_rule(line: &str) -> Result<Expression, ParseError> {
     })
 }
 
-/// Detect `taint(...)` / `plugin(...)` / `cedar:` / `cedarling:` / `opa(` / `authzen(` / `nemo(`.
+/// Detect `taint(...)` / `plugin(...)` / `run(...)` / `cedar:` / `cedarling:` / `opa(` / `authzen(` / `nemo(` / `cel:`.
 fn detect_step_kind(s: &str) -> Option<&'static str> {
     let s = s.trim_start();
-    for prefix in ["taint(", "plugin(", "cedar:", "cedarling:", "opa(", "authzen(", "nemo(", "sequential:", "parallel:"] {
+    for prefix in ["taint(", "plugin(", "run(", "cedar:", "cedarling:", "opa(", "authzen(", "nemo(", "cel:", "sequential:", "parallel:"] {
         if s.starts_with(prefix) {
             return Some(prefix.trim_end_matches('(').trim_end_matches(':'));
         }
@@ -699,7 +712,7 @@ fn strip_string_literal(s: &str, rule: &str) -> Result<String, ParseError> {
 /// - **String entry** — a rule line, taint effect, or plugin call.
 ///   - `"require(authenticated)"` → `Step::Rule`
 ///   - `"delegation.depth > 2: deny"` → `Step::Rule`
-///   - `"plugin(rate_limiter)"` → `Step::Plugin`
+///   - `"plugin(rate_limiter)"` → `Step::Plugin` (`"run(rate_limiter)"` is an alias)
 ///   - `"taint(PII, session)"` → `Step::Taint`
 /// - **Map entry** (single-key map) — PDP call with optional reactions.
 ///   - `cedar: { action: read, resource: e, on_deny: [...] }` → `Step::Pdp`
@@ -734,18 +747,25 @@ fn parse_step_string(line: &str, source: &str) -> Result<Step, ParseError> {
         unreachable!("parse_taint always returns Stage::Taint");
     }
 
-    // plugin(name) — emit as Step::Plugin.
-    if trimmed.starts_with("plugin(") {
-        let inside = extract_call_args(trimmed, "plugin")
-            .ok_or_else(|| ParseError::Rule {
-                rule: trimmed.to_string(),
-                msg: "malformed `plugin(...)`".into(),
-            })?;
+    // plugin(name) / run(name) — invoke a named plugin. `run` is an
+    // alias for `plugin`; both emit Step::Plugin.
+    let plugin_verb = if trimmed.starts_with("plugin(") {
+        Some("plugin")
+    } else if trimmed.starts_with("run(") {
+        Some("run")
+    } else {
+        None
+    };
+    if let Some(verb) = plugin_verb {
+        let inside = extract_call_args(trimmed, verb).ok_or_else(|| ParseError::Rule {
+            rule: trimmed.to_string(),
+            msg: format!("malformed `{verb}(...)`"),
+        })?;
         let name = inside.trim();
         if name.is_empty() {
             return Err(ParseError::Rule {
                 rule: trimmed.to_string(),
-                msg: "plugin name must not be empty".into(),
+                msg: format!("`{verb}(...)`: plugin name must not be empty"),
             });
         }
         return Ok(Step::Plugin { name: name.to_string() });
@@ -1168,7 +1188,7 @@ fn is_known_pdp_dialect(key: &str) -> bool {
     let base = key.find('(').map(|i| &key[..i]).unwrap_or(key);
     matches!(
         base.trim(),
-        "cedar" | "cedarling" | "opa" | "authzen" | "nemo"
+        "cedar" | "cedarling" | "opa" | "authzen" | "nemo" | "cel"
     )
 }
 
@@ -1876,7 +1896,17 @@ fn parse_stage(src: &str) -> Result<Stage, ParseError> {
                 a.trim(),
             )))
         }
-        ("plugin", Some(a)) => Ok(Stage::Plugin { name: a.trim().to_string() }),
+        // `run` is an alias for `plugin` (mirrors the policy-step alias).
+        ("plugin" | "run", Some(a)) => {
+            let name = a.trim();
+            if name.is_empty() {
+                // Mirror the empty-name guard in `parse_step_string` so
+                // both the policy-step and field-stage paths reject a
+                // nameless `plugin()` / `run()` with the same diagnostic.
+                return Err(bad(&format!("`{head}(...)`: plugin name must not be empty")));
+            }
+            Ok(Stage::Plugin { name: name.to_string() })
+        }
         ("taint", Some(a)) => parse_taint(a, src),
 
         (other, _) => Err(bad(&format!("unknown stage `{}`", other))),
@@ -2463,6 +2493,40 @@ mod tests {
     }
 
     #[test]
+    fn rule_bare_deny_call_carries_reason_and_code() {
+        // Unconditional `deny('reason')` / `deny('reason', 'code')` parse
+        // to an Always-guarded Deny, so they're usable as bare rule lines
+        // and as `on_deny:` / `on_allow:` reactions.
+        let r = parse_rule("deny('nope')", "test").unwrap();
+        assert_eq!(r.condition, Expression::Always);
+        match r.effects.as_slice() {
+            [Effect::Deny { reason: Some(reason), code: None }] => assert_eq!(reason, "nope"),
+            other => panic!("expected [Deny{{reason: Some, code: None}}], got {:?}", other),
+        }
+
+        let r = parse_rule("deny('nope', 'cel.policy')", "test").unwrap();
+        assert_eq!(r.condition, Expression::Always);
+        match r.effects.as_slice() {
+            [Effect::Deny { reason: Some(reason), code: Some(code) }] => {
+                assert_eq!(reason, "nope");
+                assert_eq!(code, "cel.policy");
+            }
+            other => panic!("expected [Deny{{reason, code}}], got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn rule_malformed_bare_deny_call_errors() {
+        // A malformed `deny(...)` must surface its own error rather than
+        // falling through to the predicate parser.
+        let err = parse_rule("deny(unquoted)", "test").unwrap_err();
+        assert!(
+            matches!(err, ParseError::Rule { .. }),
+            "expected ParseError::Rule, got {:?}", err
+        );
+    }
+
+    #[test]
     fn rule_step_kinds_rejected_clearly() {
         for s in ["plugin(rate_limiter)", "cedar:(action: read)", "opa(path)", "taint(audit)"] {
             let err = parse_rule(s, "test").unwrap_err();
@@ -2757,6 +2821,46 @@ do: "args.card_number | str | mask(4)"
                 assert_eq!(stages.len(), 2, "two-stage chain");
             }
             other => panic!("expected single FieldOp, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn field_stage_run_aliases_plugin() {
+        // In a field pipeline, `run(name)` is the same plugin-transform
+        // stage as `plugin(name)` — symmetry with the policy-step alias.
+        let yaml = r#"
+when: role.support
+do: "args.card_number | run(luhn)"
+"#;
+        let step = parse_step_yaml(yaml).unwrap();
+        let Step::Rule(rule) = step else {
+            panic!("expected Step::Rule");
+        };
+        match &rule.effects[..] {
+            [Effect::FieldOp { path, stages }] => {
+                assert_eq!(path, "args.card_number");
+                match &stages[..] {
+                    [Stage::Plugin { name }] => assert_eq!(name, "luhn"),
+                    other => panic!("expected [Stage::Plugin], got {:?}", other),
+                }
+            }
+            other => panic!("expected single FieldOp, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn field_stage_plugin_empty_name_is_rejected() {
+        // `plugin()` / `run()` with no name in a field pipeline must be
+        // rejected, mirroring the policy-step path (`parse_step_string`).
+        // Previously the field-stage path accepted it as
+        // `Stage::Plugin { name: "" }`.
+        for verb in ["plugin", "run"] {
+            let err = parse_stage(&format!("{verb}()")).expect_err("empty name must error");
+            let msg = format!("{err}");
+            assert!(
+                msg.contains(verb) && msg.contains("must not be empty"),
+                "{verb}(): expected verb-named empty-name error, got: {msg}"
+            );
         }
     }
 
@@ -3072,6 +3176,39 @@ routes:
     }
 
     #[test]
+    fn compile_run_step_string_form_aliases_plugin() {
+        // `run(name)` is an alias for `plugin(name)`: both invoke a named
+        // plugin and compile to Effect::Plugin.
+        let yaml = r#"
+routes:
+  rate_limited:
+    policy:
+      - "run(rate_limiter)"
+"#;
+        let routes = compile_config(yaml).unwrap().routes;
+        let route = routes.get("rate_limited").unwrap();
+        assert_eq!(route.policy.len(), 1);
+        match &route.policy[0] {
+            Effect::Plugin { name } => assert_eq!(name, "rate_limiter"),
+            other => panic!("expected Effect::Plugin, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_step_run_is_plugin_alias() {
+        for s in ["run(audit-log)", "plugin(audit-log)"] {
+            let step = parse_step(&serde_yaml::Value::String(s.to_string()), "test").unwrap();
+            match step {
+                crate::step::Step::Plugin { name } => assert_eq!(name, "audit-log", "{s}"),
+                other => panic!("expected Step::Plugin for `{s}`, got {other:?}"),
+            }
+        }
+        // Empty / malformed `run(...)` surfaces a clear, verb-named error.
+        let err = parse_step(&serde_yaml::Value::String("run()".to_string()), "test").unwrap_err();
+        assert!(format!("{err}").contains("run("), "error should name `run(...)`: {err}");
+    }
+
+    #[test]
     fn compile_taint_step_string_form() {
         let yaml = r#"
 routes:
@@ -3118,6 +3255,35 @@ routes:
                 assert!(!args_map.contains_key(serde_yaml::Value::String("on_deny".into())));
                 assert_eq!(on_deny.len(), 1);
                 assert_eq!(on_allow.len(), 1);
+            }
+            other => panic!("expected Effect::Pdp, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn compile_pdp_call_cel_map_form() {
+        // `cel:` carries an `expr:` string + optional on_deny/on_allow
+        // reactions. Routes to the CEL-backed resolver via PdpDialect::Cel.
+        let yaml = r#"
+routes:
+  authz_check:
+    policy:
+      - cel:
+          expr: "subject.id == 'alice' && delegation.depth <= 2"
+          on_deny:
+            - deny
+"#;
+        let routes = compile_config(yaml).unwrap().routes;
+        let route = routes.get("authz_check").unwrap();
+        match &route.policy[0] {
+            Effect::Pdp { call, on_deny, on_allow } => {
+                assert_eq!(call.dialect, PdpDialect::Cel);
+                let args_map = call.args.as_mapping().expect("cel args should be a map");
+                assert!(args_map.contains_key(serde_yaml::Value::String("expr".into())));
+                // Reaction keys are stripped from the opaque call args.
+                assert!(!args_map.contains_key(serde_yaml::Value::String("on_deny".into())));
+                assert_eq!(on_deny.len(), 1);
+                assert_eq!(on_allow.len(), 0);
             }
             other => panic!("expected Effect::Pdp, got {:?}", other),
         }

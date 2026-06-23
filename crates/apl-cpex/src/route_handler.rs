@@ -196,16 +196,41 @@ impl AnyHookHandler for AplRouteHandler {
         // so `dispatch_parallel` can clone an owned, 'static reference into
         // each spawned branch). Inherent-method calls on `CmfPluginInvoker`
         // (e.g. `extensions_arc`, `persist_session`) deref through the Arc.
-        let invoker = Arc::new(
-            CmfPluginInvoker::for_request(
-                Arc::clone(&manager),
-                extensions.clone(),
-                msg_payload.clone(),
-                plan,
-                Arc::clone(&self.session_store),
-            )
-            .await,
-        );
+        // Hydration loads accumulated session labels. A store failure
+        // here happens *before* any policy decision, so we fail the
+        // request closed immediately (R5/R18, F2): deny with a
+        // distinguished violation rather than proceeding as if the
+        // session carried no taint. Sessionless traffic never reaches
+        // the store, so this only denies session-bearing requests.
+        let invoker = match CmfPluginInvoker::for_request(
+            Arc::clone(&manager),
+            extensions.clone(),
+            msg_payload.clone(),
+            plan,
+            Arc::clone(&self.session_store),
+        )
+        .await
+        {
+            Ok(inv) => Arc::new(inv),
+            Err(e) => {
+                tracing::error!(
+                    alarm = "session_store_failure",
+                    op = "load",
+                    route = %self.route.route_key,
+                    error = %e,
+                    "session label load failed; failing request closed"
+                );
+                return Ok(Box::new(ErasedResultFields {
+                    continue_processing: false,
+                    modified_payload: None,
+                    modified_extensions: None,
+                    violation: Some(PluginViolation::new(
+                        "session.load_failed",
+                        "session state could not be loaded",
+                    )),
+                }));
+            }
+        };
 
         // Build the attribute bag. APL predicates read flat keys; the
         // BagBuilder bridges typed CPEX extensions into that namespace.
@@ -319,8 +344,10 @@ impl AnyHookHandler for AplRouteHandler {
         invoker.apply_session_taints(&decision.taints).await;
 
         // Commit any session-scoped labels accumulated during this
-        // request. No-op when there was no session id.
-        invoker.persist_session().await;
+        // request. No-op when there was no session id. The result is
+        // folded into the decision below (R18) — captured here because
+        // `continue_processing`/`violation` are computed after persist.
+        let persist_result = invoker.persist_session().await;
 
         // Surface the final mutated payload + extensions back into the
         // PipelineResult the executor returns to the host. The host's
@@ -341,41 +368,39 @@ impl AnyHookHandler for AplRouteHandler {
             Phase::Pre => None,
             Phase::Post => Some(extract_result_from_message(&msg_payload.message)),
         };
-        let modified_payload: Option<Box<dyn PluginPayload>> =
-            if route_payload.args != pre_args {
-                // An args pipeline (Pre) rewrote a field. Fold the new
-                // args back into a fresh MessagePayload so downstream
-                // readers (the host's body re-serializer) see the
-                // change.
-                let mut updated = final_payload.clone();
-                write_args_back_to_message(&mut updated.message, &route_payload.args);
-                Some(Box::new(updated) as Box<dyn PluginPayload>)
-            } else if matches!(self.phase, Phase::Post)
-                && pre_result
-                    .as_ref()
-                    .zip(route_payload.result.as_ref())
-                    .map(|(prev, current)| prev != current)
-                    .unwrap_or(false)
-            {
-                // A `result:` pipeline rewrote a field in the upstream
-                // response. Fold the new result back into the message
-                // so the host's response body re-serializer can write
-                // it out before forwarding downstream.
-                let mut updated = final_payload.clone();
-                if let Some(result_value) = route_payload.result.as_ref() {
-                    write_result_back_to_message(&mut updated.message, result_value);
-                }
-                Some(Box::new(updated) as Box<dyn PluginPayload>)
-            } else if msg_payload.message.get_text_content()
-                != final_payload.message.get_text_content()
-            {
-                // A `policy:` plugin mutated the message directly via
-                // `modify_payload` (not through a field pipeline). Pass
-                // the invoker's view through unchanged.
-                Some(Box::new(final_payload) as Box<dyn PluginPayload>)
-            } else {
-                None
-            };
+        let modified_payload: Option<Box<dyn PluginPayload>> = if route_payload.args != pre_args {
+            // An args pipeline (Pre) rewrote a field. Fold the new
+            // args back into a fresh MessagePayload so downstream
+            // readers (the host's body re-serializer) see the
+            // change.
+            let mut updated = final_payload.clone();
+            write_args_back_to_message(&mut updated.message, &route_payload.args);
+            Some(Box::new(updated) as Box<dyn PluginPayload>)
+        } else if matches!(self.phase, Phase::Post)
+            && pre_result
+                .as_ref()
+                .zip(route_payload.result.as_ref())
+                .map(|(prev, current)| prev != current)
+                .unwrap_or(false)
+        {
+            // A `result:` pipeline rewrote a field in the upstream
+            // response. Fold the new result back into the message
+            // so the host's response body re-serializer can write
+            // it out before forwarding downstream.
+            let mut updated = final_payload.clone();
+            if let Some(result_value) = route_payload.result.as_ref() {
+                write_result_back_to_message(&mut updated.message, result_value);
+            }
+            Some(Box::new(updated) as Box<dyn PluginPayload>)
+        } else if msg_payload.message.get_text_content() != final_payload.message.get_text_content()
+        {
+            // A `policy:` plugin mutated the message directly via
+            // `modify_payload` (not through a field pipeline). Pass
+            // the invoker's view through unchanged.
+            Some(Box::new(final_payload) as Box<dyn PluginPayload>)
+        } else {
+            None
+        };
 
         let modified_extensions = if extensions_changed(extensions, &final_extensions) {
             Some(final_extensions.cow_copy())
@@ -383,9 +408,12 @@ impl AnyHookHandler for AplRouteHandler {
             None
         };
 
-        let (continue_processing, violation) = match decision.decision {
+        let (mut continue_processing, mut violation) = match decision.decision {
             Decision::Allow => (true, None),
-            Decision::Deny { reason, rule_source } => {
+            Decision::Deny {
+                reason,
+                rule_source,
+            } => {
                 let code = if rule_source.is_empty() {
                     "policy.deny".to_string()
                 } else {
@@ -395,6 +423,33 @@ impl AnyHookHandler for AplRouteHandler {
                 (false, Some(PluginViolation::new(code, reason)))
             }
         };
+
+        // Append fail-closed (R18) with merge precedence:
+        //   - decision Allow + append Err → flip to Deny with a
+        //     distinguished `session.persist_failed` violation.
+        //   - decision Deny + append Err → keep the original policy
+        //     violation (preserve attribution); the request is already
+        //     denied. The append failure surfaces only as the alarm.
+        // The alarm/metric fires on every append failure regardless of
+        // decision, since the dangerous residual is a *selective*
+        // failure (append rejected while reads still succeed).
+        if let Err(e) = persist_result {
+            tracing::error!(
+                alarm = "session_store_failure",
+                op = "append",
+                route = %self.route.route_key,
+                decision_was_allow = continue_processing,
+                error = %e,
+                "session label persist failed; failing request closed"
+            );
+            if continue_processing {
+                continue_processing = false;
+                violation = Some(PluginViolation::new(
+                    "session.persist_failed",
+                    "session state could not be persisted",
+                ));
+            }
+        }
 
         Ok(Box::new(ErasedResultFields {
             continue_processing,
@@ -566,4 +621,3 @@ fn extensions_changed(before: &Extensions, after: &Extensions) -> bool {
     };
     security_changed || delegation_changed || raw_creds_changed
 }
-

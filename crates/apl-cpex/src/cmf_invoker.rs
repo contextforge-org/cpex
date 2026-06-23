@@ -62,12 +62,10 @@ use cpex_core::manager::PluginManager;
 use apl_core::attributes::AttributeBag;
 use apl_core::evaluator::Decision;
 use apl_core::pipeline::{TaintEvent, TaintScope};
-use apl_core::step::{
-    DispatchPhase, PluginError, PluginInvocation, PluginInvoker, PluginOutcome,
-};
+use apl_core::step::{DispatchPhase, PluginError, PluginInvocation, PluginInvoker, PluginOutcome};
 
 use crate::dispatch_plan::RouteDispatchPlan;
-use crate::session_store::SessionStore;
+use crate::session_store::{SessionStore, SessionStoreError};
 
 /// Bridges APL plugin dispatch to CMF-family CPEX hooks.
 ///
@@ -118,19 +116,23 @@ impl CmfPluginInvoker {
         payload: MessagePayload,
         plan: Arc<RouteDispatchPlan>,
         session_store: Arc<dyn SessionStore>,
-    ) -> Self {
+    ) -> Result<Self, SessionStoreError> {
         // Resolve session id via the 4-tier resolver (token claim →
         // header → identity-derived → none). Snapshotted before
         // hydration so the lookup is independent of the COW write
         // that hydration performs.
-        let session_id: Option<String> = crate::session_resolver::resolve_session(&extensions)
-            .map(|(sid, _src)| sid);
+        let session_id: Option<String> =
+            crate::session_resolver::resolve_session(&extensions).map(|(sid, _src)| sid);
 
         // Hydration: union the session's accumulated labels into the
         // request's security labels. Skipped when there's no session_id
-        // OR no stored labels (avoid the COW clone for nothing).
+        // (anonymous/sessionless traffic has no state to load and is
+        // unaffected by a store outage). A load error propagates so the
+        // caller fails the request closed *before* any decision is made
+        // — a distributed store being unreachable must never silently
+        // present as "no accumulated labels".
         if let Some(sid) = &session_id {
-            let stored = session_store.load_labels(sid).await;
+            let stored = session_store.load_labels(sid).await?;
             if !stored.is_empty() {
                 extensions = hydrate_labels(extensions, &stored);
             }
@@ -138,7 +140,7 @@ impl CmfPluginInvoker {
 
         let initial_labels = snapshot_labels(&extensions);
 
-        Self {
+        Ok(Self {
             manager,
             extensions: Arc::new(Mutex::new(extensions)),
             payload: Arc::new(Mutex::new(payload)),
@@ -146,7 +148,7 @@ impl CmfPluginInvoker {
             session_id,
             session_store,
             initial_labels,
-        }
+        })
     }
 
     /// Snapshot the current payload. Call after route evaluation to
@@ -218,13 +220,22 @@ impl CmfPluginInvoker {
 
     /// Persist session-scoped state added during this request. Diffs
     /// current `security.labels` against the post-hydration snapshot
-    /// and appends new labels to the session store. No-op when there
-    /// was no session ID. Host calls this exactly once after route
-    /// evaluation completes.
-    pub async fn persist_session(&self) {
-        let Some(sid) = &self.session_id else { return };
+    /// and appends new labels to the session store. No-op (returns
+    /// `Ok`) when there was no session ID or no new labels. Host calls
+    /// this exactly once after route evaluation completes.
+    ///
+    /// An append error is returned so the caller can fail the request
+    /// closed (R18). Because this runs after the policy decision is
+    /// computed, the route handler converts an append error into a Deny
+    /// outcome rather than dropping the accumulated taint silently.
+    pub async fn persist_session(&self) -> Result<(), SessionStoreError> {
+        let Some(sid) = &self.session_id else {
+            return Ok(());
+        };
         let current = self.extensions.lock().await;
-        let Some(security) = current.security.as_ref() else { return };
+        let Some(security) = current.security.as_ref() else {
+            return Ok(());
+        };
         let new_labels: Vec<String> = security
             .labels
             .iter()
@@ -233,8 +244,9 @@ impl CmfPluginInvoker {
             .collect();
         drop(current); // release the lock before the await
         if !new_labels.is_empty() {
-            self.session_store.append_labels(sid, &new_labels).await;
+            self.session_store.append_labels(sid, &new_labels).await?;
         }
+        Ok(())
     }
 }
 
@@ -305,7 +317,10 @@ impl PluginInvoker for CmfPluginInvoker {
                 Some(v) => (Some(v.reason), v.code),
                 None => (None, "policy.forbidden".to_string()),
             };
-            Decision::Deny { reason, rule_source }
+            Decision::Deny {
+                reason,
+                rule_source,
+            }
         } else {
             Decision::Allow
         };
@@ -319,11 +334,9 @@ impl PluginInvoker for CmfPluginInvoker {
                 Some(modified) => {
                     *self.payload.lock().await = modified.clone();
                     match invocation {
-                        PluginInvocation::Field { .. } => {
-                            Some(serde_json::Value::String(
-                                modified.message.get_text_content(),
-                            ))
-                        }
+                        PluginInvocation::Field { .. } => Some(serde_json::Value::String(
+                            modified.message.get_text_content(),
+                        )),
                         PluginInvocation::Step { .. } => None,
                     }
                 }
@@ -347,10 +360,8 @@ impl PluginInvoker for CmfPluginInvoker {
         // already validated label monotonicity on the way out.
         let taints = if let Some(modified_ext) = result.modified_extensions {
             let after_labels = snapshot_labels(&modified_ext);
-            let new_labels: Vec<String> = after_labels
-                .difference(&before_labels)
-                .cloned()
-                .collect();
+            let new_labels: Vec<String> =
+                after_labels.difference(&before_labels).cloned().collect();
             *self.extensions.lock().await = modified_ext;
             new_labels
                 .into_iter()
@@ -407,4 +418,3 @@ fn hydrate_labels(mut extensions: Extensions, labels: &[String]) -> Extensions {
     extensions.security = Some(Arc::new(security));
     extensions
 }
-

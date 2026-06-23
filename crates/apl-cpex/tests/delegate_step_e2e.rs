@@ -25,9 +25,7 @@ use async_trait::async_trait;
 use chrono::{Duration, Utc};
 
 use cpex_core::context::PluginContext;
-use cpex_core::delegation::{
-    DelegationPayload, TokenDelegateHook, HOOK_TOKEN_DELEGATE,
-};
+use cpex_core::delegation::{DelegationPayload, TokenDelegateHook, HOOK_TOKEN_DELEGATE};
 use cpex_core::error::PluginViolation;
 use cpex_core::extensions::raw_credentials::{
     RawCredentialsExtension, RawDelegatedToken, RawInboundToken, TokenKind, TokenRole,
@@ -222,11 +220,7 @@ fn ext_with_bearer(token: &str) -> Extensions {
 /// Build Extensions populated with a subject + label so cap-gating
 /// tests can verify what a delegate plugin actually sees after the
 /// executor's per-entry filter narrows the view to declared caps.
-fn ext_with_subject_and_label(
-    token: &str,
-    subject_id: &str,
-    label: &str,
-) -> Extensions {
+fn ext_with_subject_and_label(token: &str, subject_id: &str, label: &str) -> Extensions {
     use cpex_core::extensions::{SecurityExtension, SubjectExtension};
 
     let mut raw = RawCredentialsExtension::default();
@@ -255,7 +249,11 @@ fn ext_with_subject_and_label(
 async fn build_setup(
     yaml: &str,
     plugins: Vec<(String, Arc<RecordingDelegate>, PluginConfig)>,
-) -> (Arc<PluginManager>, apl_core::CompiledConfig, Arc<DispatchCache>) {
+) -> (
+    Arc<PluginManager>,
+    apl_core::CompiledConfig,
+    Arc<DispatchCache>,
+) {
     let mgr = Arc::new(PluginManager::default());
     for (_, plugin, cfg) in plugins {
         mgr.register_handler::<TokenDelegateHook, _>(plugin, cfg)
@@ -319,19 +317,22 @@ routes:
 
     let extensions = ext_with_bearer("eyJ.fake.user-jwt");
     let session_store: Arc<dyn SessionStore> = Arc::new(MemorySessionStore::new());
-    let invoker = Arc::new(CmfPluginInvoker::for_request(
-        Arc::clone(&mgr),
-        extensions,
-        cpex_core::cmf::MessagePayload {
-            message: cpex_core::cmf::Message::text(
-                cpex_core::cmf::enums::Role::User,
-                "fetch compensation",
-            ),
-        },
-        Arc::clone(&plan),
-        Arc::clone(&session_store),
-    )
-    .await);
+    let invoker = Arc::new(
+        CmfPluginInvoker::for_request(
+            Arc::clone(&mgr),
+            extensions,
+            cpex_core::cmf::MessagePayload {
+                message: cpex_core::cmf::Message::text(
+                    cpex_core::cmf::enums::Role::User,
+                    "fetch compensation",
+                ),
+            },
+            Arc::clone(&plan),
+            Arc::clone(&session_store),
+        )
+        .await
+        .expect("for_request"),
+    );
     let delegations = Arc::new(DelegationPluginInvoker::new(
         Arc::clone(&mgr),
         invoker.extensions_arc(),
@@ -440,19 +441,22 @@ routes:
 
     let extensions = ext_with_bearer("eyJ.fake.user-jwt");
     let session_store: Arc<dyn SessionStore> = Arc::new(MemorySessionStore::new());
-    let invoker = Arc::new(CmfPluginInvoker::for_request(
-        Arc::clone(&mgr),
-        extensions,
-        cpex_core::cmf::MessagePayload {
-            message: cpex_core::cmf::Message::text(
-                cpex_core::cmf::enums::Role::User,
-                "fetch comp",
-            ),
-        },
-        Arc::clone(&plan),
-        Arc::clone(&session_store),
-    )
-    .await);
+    let invoker = Arc::new(
+        CmfPluginInvoker::for_request(
+            Arc::clone(&mgr),
+            extensions,
+            cpex_core::cmf::MessagePayload {
+                message: cpex_core::cmf::Message::text(
+                    cpex_core::cmf::enums::Role::User,
+                    "fetch comp",
+                ),
+            },
+            Arc::clone(&plan),
+            Arc::clone(&session_store),
+        )
+        .await
+        .expect("for_request"),
+    );
     let delegations = Arc::new(DelegationPluginInvoker::new(
         Arc::clone(&mgr),
         invoker.extensions_arc(),
@@ -532,19 +536,19 @@ routes:
 
     let extensions = ext_with_bearer("eyJ.fake.user-jwt");
     let session_store: Arc<dyn SessionStore> = Arc::new(MemorySessionStore::new());
-    let invoker = Arc::new(CmfPluginInvoker::for_request(
-        Arc::clone(&mgr),
-        extensions,
-        cpex_core::cmf::MessagePayload {
-            message: cpex_core::cmf::Message::text(
-                cpex_core::cmf::enums::Role::User,
-                "any",
-            ),
-        },
-        Arc::clone(&plan),
-        Arc::clone(&session_store),
-    )
-    .await);
+    let invoker = Arc::new(
+        CmfPluginInvoker::for_request(
+            Arc::clone(&mgr),
+            extensions,
+            cpex_core::cmf::MessagePayload {
+                message: cpex_core::cmf::Message::text(cpex_core::cmf::enums::Role::User, "any"),
+            },
+            Arc::clone(&plan),
+            Arc::clone(&session_store),
+        )
+        .await
+        .expect("for_request"),
+    );
     let delegations = Arc::new(DelegationPluginInvoker::new(
         Arc::clone(&mgr),
         invoker.extensions_arc(),
@@ -643,19 +647,19 @@ routes:
 
     let extensions = ext_with_bearer("eyJ.fake.user-jwt");
     let session_store: Arc<dyn SessionStore> = Arc::new(MemorySessionStore::new());
-    let invoker = Arc::new(CmfPluginInvoker::for_request(
-        Arc::clone(&mgr),
-        extensions,
-        cpex_core::cmf::MessagePayload {
-            message: cpex_core::cmf::Message::text(
-                cpex_core::cmf::enums::Role::User,
-                "fanout",
-            ),
-        },
-        Arc::clone(&plan),
-        Arc::clone(&session_store),
-    )
-    .await);
+    let invoker = Arc::new(
+        CmfPluginInvoker::for_request(
+            Arc::clone(&mgr),
+            extensions,
+            cpex_core::cmf::MessagePayload {
+                message: cpex_core::cmf::Message::text(cpex_core::cmf::enums::Role::User, "fanout"),
+            },
+            Arc::clone(&plan),
+            Arc::clone(&session_store),
+        )
+        .await
+        .expect("for_request"),
+    );
     let delegations = Arc::new(DelegationPluginInvoker::new(
         Arc::clone(&mgr),
         invoker.extensions_arc(),
@@ -745,7 +749,11 @@ routes:
 "#;
     let (mgr, cfg, cache) = build_setup(
         yaml,
-        vec![("scoped-delegate".to_string(), Arc::clone(&plugin), plugin_cfg)],
+        vec![(
+            "scoped-delegate".to_string(),
+            Arc::clone(&plugin),
+            plugin_cfg,
+        )],
     )
     .await;
 
@@ -757,19 +765,22 @@ routes:
     // proves the cap filter is selective.
     let extensions = ext_with_subject_and_label("eyJ.fake.jwt", "alice", "pii");
     let session_store: Arc<dyn SessionStore> = Arc::new(MemorySessionStore::new());
-    let invoker = Arc::new(CmfPluginInvoker::for_request(
-        Arc::clone(&mgr),
-        extensions,
-        cpex_core::cmf::MessagePayload {
-            message: cpex_core::cmf::Message::text(
-                cpex_core::cmf::enums::Role::User,
-                "fetch compensation",
-            ),
-        },
-        Arc::clone(&plan),
-        Arc::clone(&session_store),
-    )
-    .await);
+    let invoker = Arc::new(
+        CmfPluginInvoker::for_request(
+            Arc::clone(&mgr),
+            extensions,
+            cpex_core::cmf::MessagePayload {
+                message: cpex_core::cmf::Message::text(
+                    cpex_core::cmf::enums::Role::User,
+                    "fetch compensation",
+                ),
+            },
+            Arc::clone(&plan),
+            Arc::clone(&session_store),
+        )
+        .await
+        .expect("for_request"),
+    );
     let delegations = Arc::new(DelegationPluginInvoker::new(
         Arc::clone(&mgr),
         invoker.extensions_arc(),
@@ -845,7 +856,11 @@ routes:
 "#;
     let (mgr, cfg, cache) = build_setup(
         yaml,
-        vec![("capless-delegate".to_string(), Arc::clone(&plugin), plugin_cfg)],
+        vec![(
+            "capless-delegate".to_string(),
+            Arc::clone(&plugin),
+            plugin_cfg,
+        )],
     )
     .await;
 
@@ -855,19 +870,19 @@ routes:
 
     let extensions = ext_with_subject_and_label("eyJ.fake.jwt", "alice", "pii");
     let session_store: Arc<dyn SessionStore> = Arc::new(MemorySessionStore::new());
-    let invoker = Arc::new(CmfPluginInvoker::for_request(
-        Arc::clone(&mgr),
-        extensions,
-        cpex_core::cmf::MessagePayload {
-            message: cpex_core::cmf::Message::text(
-                cpex_core::cmf::enums::Role::User,
-                "any",
-            ),
-        },
-        Arc::clone(&plan),
-        Arc::clone(&session_store),
-    )
-    .await);
+    let invoker = Arc::new(
+        CmfPluginInvoker::for_request(
+            Arc::clone(&mgr),
+            extensions,
+            cpex_core::cmf::MessagePayload {
+                message: cpex_core::cmf::Message::text(cpex_core::cmf::enums::Role::User, "any"),
+            },
+            Arc::clone(&plan),
+            Arc::clone(&session_store),
+        )
+        .await
+        .expect("for_request"),
+    );
     let delegations = Arc::new(DelegationPluginInvoker::new(
         Arc::clone(&mgr),
         invoker.extensions_arc(),
@@ -910,4 +925,3 @@ routes:
         "without read_inbound_credentials, inbound token must be hidden",
     );
 }
-
