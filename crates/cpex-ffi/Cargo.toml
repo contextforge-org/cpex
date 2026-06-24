@@ -38,7 +38,7 @@ cpex-builtins = { path = "../cpex-builtins", default-features = false, features 
 ] }
 # Heavy (~200 transitive deps via the Cedarling git dep); kept out of the
 # default `.a` and behind the `cedarling` feature.
-apl-cedarling = { path = "../apl-cedarling", optional = true }
+apl-cedarling = { path = "../../builtins/cedarling", optional = true }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

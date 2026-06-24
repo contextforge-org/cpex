@@ -46,13 +46,13 @@ apl-core = { path = "../apl-core" }
 apl-cpex = { path = "../apl-cpex" }
 
 # Builtin extension crates — each behind its feature.
-apl-pii-scanner = { path = "../apl-pii-scanner", optional = true }
-apl-audit-logger = { path = "../apl-audit-logger", optional = true }
-apl-identity-jwt = { path = "../apl-identity-jwt", optional = true }
-apl-delegator-oauth = { path = "../apl-delegator-oauth", optional = true }
-apl-pdp-cedar-direct = { path = "../apl-pdp-cedar-direct", optional = true }
-apl-pdp-cel = { path = "../apl-pdp-cel", optional = true }
-apl-session-valkey = { path = "../apl-session-valkey", optional = true }
+apl-pii-scanner = { path = "../../builtins/plugins/pii-scanner", optional = true }
+apl-audit-logger = { path = "../../builtins/plugins/audit-logger", optional = true }
+apl-identity-jwt = { path = "../../builtins/plugins/identity-jwt", optional = true }
+apl-delegator-oauth = { path = "../../builtins/plugins/delegator-oauth", optional = true }
+apl-pdp-cedar-direct = { path = "../../builtins/pdps/cedar-direct", optional = true }
+apl-pdp-cel = { path = "../../builtins/pdps/cel", optional = true }
+apl-session-valkey = { path = "../../builtins/session/valkey", optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }

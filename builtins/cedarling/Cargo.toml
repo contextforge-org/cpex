@@ -1,0 +1,64 @@
+# Location: ./builtins/cedarling/Cargo.toml
+# Copyright 2025
+# SPDX-License-Identifier: Apache-2.0
+# Authors: Teryl Taylor
+#
+# apl-cedarling — Cedarling-backed IdentityResolveHandler and
+# PdpResolver implementations.
+#
+# Two modules in one crate because they share the same heavy dep
+# (cedarling) and almost always run in the same deployment — an
+# operator using Cedarling for identity resolution invariably also
+# wants it for policy decisions, and the two consume the same
+# `Cedarling` instance + policy store.
+#
+# # Why this crate isn't in default-members
+#
+# Cedarling pulls ~200 transitive dependencies (jsonwebtoken, reqwest,
+# sparkv, datalogic-rs, flate2, regex, ahash, time, vfs, zip, …). To
+# keep `cargo build` at the workspace root fast for the majority of
+# iteration, the workspace excludes this crate from `default-members`.
+# Build it explicitly with `cargo build -p apl-cedarling` or with
+# `cargo build --workspace` for the full sweep.
+
+[package]
+name = "apl-cedarling"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+apl-core = { path = "../../crates/apl-core" }
+cpex-core = { path = "../../crates/cpex-core" }
+
+# Cedarling lives in the Janssen Project monorepo at the path
+# `jans-cedarling/cedarling/` within that repo. We pin to a release
+# tag rather than a branch so the dep tree stays reproducible across
+# checkouts — bump the tag deliberately when we want a new version.
+#
+# `package = "cedarling"` tells Cargo which named crate to pick from
+# the monorepo's multiple workspaces. `default-features = false`
+# disables `grpc` (tonic+prost for Lock Server); Lock Server
+# integration lands behind its own feature flag if/when we wire it.
+#
+# First build for new collaborators clones the Janssen monorepo (~200
+# transitive deps + cedarling's vendored workspace). Cached in
+# ~/.cargo/git/ afterward.
+cedarling = { git = "https://github.com/JanssenProject/jans", tag = "v2.1.0", package = "cedarling", default-features = false }
+
+# cedar-policy is a direct dep so we can name `cedar_policy::Decision`
+# etc. in the resolver. Caret spec lets Cargo dedup to the same
+# version Cedarling pulls (currently 4.11.0 transitively).
+cedar-policy = "4"
+
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }
