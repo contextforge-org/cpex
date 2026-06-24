@@ -1,6 +1,6 @@
 # Operating the Valkey Session Store
 
-The Valkey-backed `SessionStore` (`apl-session-valkey`) persists per-session
+The Valkey-backed `SessionStore` (`cpex-session-valkey`) persists per-session
 security **taint labels** across process restarts and shares them across
 gateway nodes. Those labels drive information-flow authorization, so the
 backend is **fail-closed**: any store error denies the request rather than
@@ -230,7 +230,7 @@ startup `CONFIG GET appendonly` / `appendfsync` warning is a deferred follow-up
 ```
 docker compose -f deploy/valkey-compose.yml up -d
 VALKEY_TEST_URL=redis://127.0.0.1:6379 \
-  cargo test -p apl-session-valkey --test valkey_store_integration -- --ignored
+  cargo test -p cpex-session-valkey --test valkey_store_integration -- --ignored
 ```
 
 The compose file runs a `noeviction`-configured Valkey. It has no TLS/ACL and

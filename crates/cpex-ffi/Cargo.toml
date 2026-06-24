@@ -21,23 +21,21 @@ crate-type = ["lib", "cdylib", "staticlib"]
 [dependencies]
 cpex-core = { path = "../cpex-core" }
 # APL governance layer — bundled so Go/Python hosts can enable APL
-# policies, route handlers, and the standard plugin/PDP factories via
-# the `cpex_apl_install` FFI entry point. Symbols survive in the
-# staticlib because that entry point references each factory.
+# policies and route handlers via the `cpex_apl_install` FFI entry point.
 apl-cpex = { path = "../apl-cpex" }
-apl-pii-scanner = { path = "../apl-pii-scanner" }
-apl-audit-logger = { path = "../apl-audit-logger" }
-apl-identity-jwt = { path = "../apl-identity-jwt" }
-apl-delegator-oauth = { path = "../apl-delegator-oauth" }
-apl-pdp-cedar-direct = { path = "../apl-pdp-cedar-direct" }
-# Heavy (~200 transitive deps via the Cedarling git dep); kept out of the
-# default `.a` and behind the `cedarling` feature.
-apl-cedarling = { path = "../apl-cedarling", optional = true }
-# Valkey-backed SessionStore (redis client + rustls TLS stack). Optional
-# and behind the `valkey` feature so the default `.a` artifact size is
-# unaffected; default-members exclusion alone does NOT keep its object
-# code out of a `-p cpex-ffi` build — the feature gate does.
-apl-session-valkey = { path = "../apl-session-valkey", optional = true }
+# The builtin extension set. `cpex_apl_install` delegates registration to
+# cpex-builtins, whose `register_builtins` expands to explicit
+# `register_factory` calls — so the factory symbols survive in the
+# staticlib (no inventory/linkme link-section GC hazard). The feature set
+# below is the exact bundle the default `.a` ships: four hook plugins plus
+# the cedar-direct PDP (note: NOT `cel`, matching the prior footprint).
+cpex-builtins = { path = "../cpex-builtins", default-features = false, features = [
+    "pii-scanner",
+    "audit-logger",
+    "identity-jwt",
+    "delegator-oauth",
+    "cedar-direct",
+] }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -47,12 +45,10 @@ tracing = { workspace = true }
 
 [features]
 default = []
-# Opt-in Cedarling-backed identity + PDP. Build with
-# `cargo build -p cpex-ffi --features cedarling`.
-cedarling = ["dep:apl-cedarling"]
-# Opt-in Valkey-backed SessionStore. Build with
-# `cargo build -p cpex-ffi --features valkey`.
-valkey = ["dep:apl-session-valkey"]
+# Opt-in Valkey-backed SessionStore (redis client + rustls TLS stack).
+# Routed through cpex-builtins so the `.a` artifact size is unaffected
+# without the feature. Build with `cargo build -p cpex-ffi --features valkey`.
+valkey = ["cpex-builtins/valkey"]
 
 [dev-dependencies]
 async-trait = { workspace = true }

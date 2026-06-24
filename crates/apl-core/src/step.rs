@@ -151,19 +151,12 @@ pub struct PdpCall {
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum PdpDialect {
-    /// Bare Cedar policy evaluation (`apl-pdp-cedar-direct`).
+    /// Bare Cedar policy evaluation (`cpex-pdp-cedar-direct`).
     Cedar,
-    /// Cedarling-mediated Cedar evaluation — same language but
-    /// adds signed policy stores, multi-issuer JWT validation, and
-    /// (with Lock Server) centralized policy management. Distinct
-    /// from `Cedar` so both can coexist in a single `PdpRouter`;
-    /// route YAML can target either with `cedar:(...)` or
-    /// `cedarling:(...)` keys.
-    Cedarling,
     Opa,
     AuthZen,
     NeMo,
-    /// CEL (Common Expression Language) evaluation — `apl-pdp-cel`.
+    /// CEL (Common Expression Language) evaluation — `cpex-pdp-cel`.
     /// The `cel:` step carries an `expr:` string that must evaluate to a
     /// boolean against the policy `AttributeBag` (exposed to CEL as nested
     /// namespaces: `subject.id`, `delegation.depth`, `session.labels`, …).
@@ -177,13 +170,11 @@ pub enum PdpDialect {
 }
 
 impl PdpDialect {
-    /// Parse a YAML key prefix like `cedar`, `cedarling`, `opa`,
-    /// `authzen`, `nemo` into the matching `PdpDialect`. Unknown
-    /// dialects become `Custom`.
+    /// Parse a YAML key prefix like `cedar`, `opa`, `authzen`, `nemo`
+    /// into the matching `PdpDialect`. Unknown dialects become `Custom`.
     pub fn from_key(key: &str) -> Self {
         match key {
             "cedar" => Self::Cedar,
-            "cedarling" => Self::Cedarling,
             "opa" => Self::Opa,
             "authzen" => Self::AuthZen,
             "nemo" => Self::NeMo,
@@ -197,9 +188,9 @@ impl PdpDialect {
 // Resolver traits
 // =====================================================================
 
-/// External policy-decision dispatch. Implemented by Cedar/Cedarling, OPA
-/// HTTP clients, AuthZen clients, NeMo Guardrails — anything that can
-/// answer "given this call, allow or deny?" against a request context.
+/// External policy-decision dispatch. Implemented by Cedar, OPA HTTP
+/// clients, AuthZen clients, NeMo Guardrails — anything that can answer
+/// "given this call, allow or deny?" against a request context.
 ///
 /// `apl-cpex` provides the bridge from CPEX plugins (e.g. `cedar-direct`)
 /// to this trait so the host doesn't have to know about the plugin types.
@@ -217,7 +208,7 @@ pub trait PdpResolver: Send + Sync {
 }
 
 /// Build a [`PdpResolver`] from a unified-config block. Implemented per
-/// PDP backend (cedar-direct, cedarling, opa, …) and registered with
+/// PDP backend (cedar-direct, opa, …) and registered with
 /// the apl-cpex visitor so unified-config YAML can declare PDPs
 /// without the host pre-constructing them in code.
 ///
@@ -233,7 +224,7 @@ pub trait PdpResolver: Send + Sync {
 pub trait PdpFactory: Send + Sync {
     /// Identifies which `kind:` in a config block this factory handles.
     /// Convention: kebab-case matching the published PDP product name
-    /// (`"cedar-direct"`, `"cedarling"`, `"opa"`, …).
+    /// (`"cedar-direct"`, `"opa"`, …).
     fn kind(&self) -> &str;
 
     /// Build a resolver from the rest of the PDP config block (everything
@@ -522,7 +513,6 @@ mod tests {
     #[test]
     fn from_key_maps_known_dialects() {
         assert_eq!(PdpDialect::from_key("cedar"), PdpDialect::Cedar);
-        assert_eq!(PdpDialect::from_key("cedarling"), PdpDialect::Cedarling);
         assert_eq!(PdpDialect::from_key("opa"), PdpDialect::Opa);
         assert_eq!(PdpDialect::from_key("authzen"), PdpDialect::AuthZen);
         assert_eq!(PdpDialect::from_key("nemo"), PdpDialect::NeMo);
