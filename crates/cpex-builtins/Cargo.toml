@@ -27,13 +27,13 @@ authors.workspace      = true
 default = ["pii-scanner", "audit-logger", "identity-jwt", "delegator-oauth", "cedar-direct", "cel"]
 
 # Each feature pulls exactly one builtin crate.
-pii-scanner     = ["dep:apl-pii-scanner"]
-audit-logger    = ["dep:apl-audit-logger"]
-identity-jwt    = ["dep:apl-identity-jwt"]
-delegator-oauth = ["dep:apl-delegator-oauth"]
-cedar-direct    = ["dep:apl-pdp-cedar-direct"]
-cel             = ["dep:apl-pdp-cel"]
-valkey          = ["dep:apl-session-valkey"]
+pii-scanner     = ["dep:cpex-plugin-pii-scanner"]
+audit-logger    = ["dep:cpex-plugin-audit-logger"]
+identity-jwt    = ["dep:cpex-plugin-identity-jwt"]
+delegator-oauth = ["dep:cpex-plugin-delegator-oauth"]
+cedar-direct    = ["dep:cpex-pdp-cedar-direct"]
+cel             = ["dep:cpex-pdp-cel"]
+valkey          = ["dep:cpex-session-valkey"]
 
 # Everything wired here, including the Valkey session store (redis client +
 # rustls TLS stack).
@@ -46,13 +46,13 @@ apl-core = { path = "../apl-core" }
 apl-cpex = { path = "../apl-cpex" }
 
 # Builtin extension crates — each behind its feature.
-apl-pii-scanner = { path = "../../builtins/plugins/pii-scanner", optional = true }
-apl-audit-logger = { path = "../../builtins/plugins/audit-logger", optional = true }
-apl-identity-jwt = { path = "../../builtins/plugins/identity-jwt", optional = true }
-apl-delegator-oauth = { path = "../../builtins/plugins/delegator-oauth", optional = true }
-apl-pdp-cedar-direct = { path = "../../builtins/pdps/cedar-direct", optional = true }
-apl-pdp-cel = { path = "../../builtins/pdps/cel", optional = true }
-apl-session-valkey = { path = "../../builtins/session/valkey", optional = true }
+cpex-plugin-pii-scanner = { path = "../../builtins/plugins/pii-scanner", optional = true }
+cpex-plugin-audit-logger = { path = "../../builtins/plugins/audit-logger", optional = true }
+cpex-plugin-identity-jwt = { path = "../../builtins/plugins/identity-jwt", optional = true }
+cpex-plugin-delegator-oauth = { path = "../../builtins/plugins/delegator-oauth", optional = true }
+cpex-pdp-cedar-direct = { path = "../../builtins/pdps/cedar-direct", optional = true }
+cpex-pdp-cel = { path = "../../builtins/pdps/cel", optional = true }
+cpex-session-valkey = { path = "../../builtins/session/valkey", optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }

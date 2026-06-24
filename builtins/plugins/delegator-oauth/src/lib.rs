@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Authors: Teryl Taylor
 //
-// apl-delegator-oauth — `TokenDelegateHandler` backed by RFC 8693
+// cpex-plugin-delegator-oauth — `TokenDelegateHandler` backed by RFC 8693
 // OAuth 2.0 Token Exchange.
 //
 // The host registers this handler against `token.delegate`; outbound

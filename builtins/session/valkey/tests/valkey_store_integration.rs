@@ -7,7 +7,7 @@
 // container (testcontainers). These are `#[ignore]`d by default so unit
 // runs don't require Docker; run them with:
 //
-//   cargo test -p apl-session-valkey -- --ignored
+//   cargo test -p cpex-session-valkey -- --ignored
 //
 // Skip discipline (learning from PR #67's silent no-op tests):
 //   - If `VALKEY_TEST_URL` is set, run against that endpoint (a CI service
@@ -20,7 +20,7 @@
 //     stops a silent green.
 
 use apl_cpex::{SessionStore, SessionStoreError};
-use apl_session_valkey::{ValkeyConfig, ValkeySessionStore};
+use cpex_session_valkey::{ValkeyConfig, ValkeySessionStore};
 use sha2::{Digest, Sha256};
 use testcontainers_modules::testcontainers::runners::AsyncRunner;
 use testcontainers_modules::testcontainers::ContainerAsync;

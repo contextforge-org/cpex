@@ -39,19 +39,19 @@ use cpex_core::manager::PluginManager;
 // -----------------------------------------------------------------------------
 
 #[cfg(feature = "audit-logger")]
-pub use apl_audit_logger::{AuditLoggerFactory, KIND as AUDIT_KIND};
+pub use cpex_plugin_audit_logger::{AuditLoggerFactory, KIND as AUDIT_KIND};
 #[cfg(feature = "delegator-oauth")]
-pub use apl_delegator_oauth::{OAuthDelegatorFactory, KIND as OAUTH_KIND};
+pub use cpex_plugin_delegator_oauth::{OAuthDelegatorFactory, KIND as OAUTH_KIND};
 #[cfg(feature = "identity-jwt")]
-pub use apl_identity_jwt::{JwtIdentityFactory, KIND as JWT_KIND};
+pub use cpex_plugin_identity_jwt::{JwtIdentityFactory, KIND as JWT_KIND};
 #[cfg(feature = "cedar-direct")]
-pub use apl_pdp_cedar_direct::CedarDirectPdpFactory;
+pub use cpex_pdp_cedar_direct::CedarDirectPdpFactory;
 #[cfg(feature = "cel")]
-pub use apl_pdp_cel::CelPdpFactory;
+pub use cpex_pdp_cel::CelPdpFactory;
 #[cfg(feature = "pii-scanner")]
-pub use apl_pii_scanner::{PiiScannerFactory, KIND as PII_KIND};
+pub use cpex_plugin_pii_scanner::{PiiScannerFactory, KIND as PII_KIND};
 #[cfg(feature = "valkey")]
-pub use apl_session_valkey::{ValkeyConfig, ValkeySessionStoreFactory, KIND as VALKEY_KIND};
+pub use cpex_session_valkey::{ValkeyConfig, ValkeySessionStoreFactory, KIND as VALKEY_KIND};
 
 // -----------------------------------------------------------------------------
 // Plugin-factory registration (by-kind axis)
@@ -88,10 +88,10 @@ macro_rules! register_builtins {
 }
 
 register_builtins! {
-    feature "identity-jwt"    => apl_identity_jwt::JwtIdentityFactory,
-    feature "delegator-oauth" => apl_delegator_oauth::OAuthDelegatorFactory,
-    feature "pii-scanner"     => apl_pii_scanner::PiiScannerFactory,
-    feature "audit-logger"    => apl_audit_logger::AuditLoggerFactory,
+    feature "identity-jwt"    => cpex_plugin_identity_jwt::JwtIdentityFactory,
+    feature "delegator-oauth" => cpex_plugin_delegator_oauth::OAuthDelegatorFactory,
+    feature "pii-scanner"     => cpex_plugin_pii_scanner::PiiScannerFactory,
+    feature "audit-logger"    => cpex_plugin_audit_logger::AuditLoggerFactory,
 }
 
 // -----------------------------------------------------------------------------
@@ -107,9 +107,9 @@ register_builtins! {
 pub fn builtin_pdps() -> Vec<Arc<dyn PdpFactory>> {
     let mut factories: Vec<Arc<dyn PdpFactory>> = Vec::new();
     #[cfg(feature = "cedar-direct")]
-    factories.push(Arc::new(apl_pdp_cedar_direct::CedarDirectPdpFactory::new()));
+    factories.push(Arc::new(cpex_pdp_cedar_direct::CedarDirectPdpFactory::new()));
     #[cfg(feature = "cel")]
-    factories.push(Arc::new(apl_pdp_cel::CelPdpFactory::new()));
+    factories.push(Arc::new(cpex_pdp_cel::CelPdpFactory::new()));
     factories
 }
 
@@ -121,7 +121,7 @@ pub fn builtin_pdps() -> Vec<Arc<dyn PdpFactory>> {
 pub fn builtin_session_store_factories() -> Vec<Arc<dyn SessionStoreFactory>> {
     let mut factories: Vec<Arc<dyn SessionStoreFactory>> = Vec::new();
     #[cfg(feature = "valkey")]
-    factories.push(Arc::new(apl_session_valkey::ValkeySessionStoreFactory::new()));
+    factories.push(Arc::new(cpex_session_valkey::ValkeySessionStoreFactory::new()));
     factories
 }
 

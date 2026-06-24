@@ -32,7 +32,7 @@ impl AuditLogger {
             Some(raw) => serde_json::from_value(raw.clone()).map_err(|e| {
                 Box::new(PluginError::Config {
                     message: format!(
-                        "plugin '{}' (apl-audit-logger) config parse failed: {e}",
+                        "plugin '{}' (cpex-plugin-audit-logger) config parse failed: {e}",
                         cfg.name
                     ),
                 })

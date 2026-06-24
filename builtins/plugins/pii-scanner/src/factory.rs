@@ -37,7 +37,7 @@ impl PluginFactory for PiiScannerFactory {
         if config.hooks.is_empty() {
             return Err(Box::new(PluginError::Config {
                 message: format!(
-                    "plugin '{}' (apl-pii-scanner): `hooks:` must list at \
+                    "plugin '{}' (cpex-plugin-pii-scanner): `hooks:` must list at \
                      least one CMF hook to scan on (e.g. cmf.tool_pre_invoke)",
                     config.name
                 ),

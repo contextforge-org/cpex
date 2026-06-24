@@ -26,7 +26,7 @@ use cpex_core::hooks::payload::Extensions;
 use cpex_core::manager::PluginManager;
 use cpex_core::plugin::{OnError, PluginConfig, PluginMode};
 
-use apl_delegator_biscuit::BiscuitDelegator;
+use cpex_plugin_delegator_biscuit::BiscuitDelegator;
 
 use serde_json::json;
 

@@ -97,7 +97,7 @@ impl OAuthDelegator {
         let raw = cfg.config.as_ref().ok_or_else(|| {
             Box::new(PluginError::Config {
                 message: format!(
-                    "plugin '{}' (apl-delegator-oauth) requires a `config:` block",
+                    "plugin '{}' (cpex-plugin-delegator-oauth) requires a `config:` block",
                     cfg.name
                 ),
             })
@@ -106,7 +106,7 @@ impl OAuthDelegator {
             .map_err(|e| {
                 Box::new(PluginError::Config {
                     message: format!(
-                        "plugin '{}' (apl-delegator-oauth) config parse failed: {e}",
+                        "plugin '{}' (cpex-plugin-delegator-oauth) config parse failed: {e}",
                         cfg.name
                     ),
                 })
@@ -115,7 +115,7 @@ impl OAuthDelegator {
         if typed.token_endpoint.trim().is_empty() {
             return Err(Box::new(PluginError::Config {
                 message: format!(
-                    "plugin '{}' (apl-delegator-oauth): token_endpoint must be non-empty",
+                    "plugin '{}' (cpex-plugin-delegator-oauth): token_endpoint must be non-empty",
                     cfg.name
                 ),
             }));
@@ -128,7 +128,7 @@ impl OAuthDelegator {
         if let Err(e) = require_https(&typed.token_endpoint, typed.insecure_http) {
             return Err(Box::new(PluginError::Config {
                 message: format!(
-                    "plugin '{}' (apl-delegator-oauth): token_endpoint {e}",
+                    "plugin '{}' (cpex-plugin-delegator-oauth): token_endpoint {e}",
                     cfg.name,
                 ),
             }));
@@ -136,7 +136,7 @@ impl OAuthDelegator {
         if typed.client_id.trim().is_empty() {
             return Err(Box::new(PluginError::Config {
                 message: format!(
-                    "plugin '{}' (apl-delegator-oauth): client_id must be non-empty",
+                    "plugin '{}' (cpex-plugin-delegator-oauth): client_id must be non-empty",
                     cfg.name
                 ),
             }));
@@ -145,7 +145,7 @@ impl OAuthDelegator {
         let secret = typed.client_secret_source.resolve().map_err(|e| {
             Box::new(PluginError::Config {
                 message: format!(
-                    "plugin '{}' (apl-delegator-oauth) client secret resolve failed: {e}",
+                    "plugin '{}' (cpex-plugin-delegator-oauth) client secret resolve failed: {e}",
                     cfg.name
                 ),
             })
@@ -157,7 +157,7 @@ impl OAuthDelegator {
             .map_err(|e| {
                 Box::new(PluginError::Config {
                     message: format!(
-                        "plugin '{}' (apl-delegator-oauth) HTTP client build failed: {e}",
+                        "plugin '{}' (cpex-plugin-delegator-oauth) HTTP client build failed: {e}",
                         cfg.name
                     ),
                 })

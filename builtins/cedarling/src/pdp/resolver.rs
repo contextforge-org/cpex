@@ -6,13 +6,13 @@
 // `CedarlingPdpResolver` — `PdpResolver` impl that delegates Cedar
 // policy evaluation to a Cedarling instance.
 //
-// # Why Cedarling here instead of `apl-pdp-cedar-direct`
+// # Why Cedarling here instead of `cpex-pdp-cedar-direct`
 //
 // Both call the same Cedar evaluator under the hood. The difference
 // is the policy-store loading + management layer Cedarling provides:
 // signed policy bundles, multi-policy stores keyed by ID, optional
 // Lock Server integration for fleet-wide updates. Deployments that
-// don't need any of that should reach for `apl-pdp-cedar-direct`
+// don't need any of that should reach for `cpex-pdp-cedar-direct`
 // instead — it's ~5 deps vs ~200.
 //
 // # Construction
@@ -50,7 +50,7 @@ use apl_core::step::{PdpCall, PdpDecision, PdpDialect, PdpError, PdpResolver};
 
 /// `PdpResolver` that dispatches policy decisions to a Cedarling
 /// instance. See module docs for when to prefer this over
-/// `apl-pdp-cedar-direct`.
+/// `cpex-pdp-cedar-direct`.
 pub struct CedarlingPdpResolver {
     /// Shared Cedarling instance — built once at host startup,
     /// passed to both this resolver and the identity handler.
@@ -58,14 +58,14 @@ pub struct CedarlingPdpResolver {
 
     /// The dialect this resolver registers under in the `PdpRouter`.
     /// Defaults to `PdpDialect::Cedarling` (a distinct variant from
-    /// `Cedar`) so both `apl-pdp-cedar-direct` and this crate can
+    /// `Cedar`) so both `cpex-pdp-cedar-direct` and this crate can
     /// coexist in the same router and routes target each explicitly
     /// via `cedar:(...)` vs `cedarling:(...)` step keys.
     dialect: PdpDialect,
 
     /// Optional namespace prefix prepended to entity types built
     /// from the bag (`"User"` → `"Jans::User"`). Matches the
-    /// `apl-pdp-cedar-direct` ergonomics; deployments with
+    /// `cpex-pdp-cedar-direct` ergonomics; deployments with
     /// namespaced schemas set this once at startup.
     entity_namespace: Option<String>,
 }
@@ -158,7 +158,7 @@ impl PdpResolver for CedarlingPdpResolver {
 // =====================================================================
 
 /// Build the Cedarling principal entity from the attribute bag. Same
-/// claim shape as `apl-pdp-cedar-direct`:
+/// claim shape as `cpex-pdp-cedar-direct`:
 ///
 ///   * `subject.id`        → entity id (required)
 ///   * `subject.type`      → entity type ("User" default)
@@ -265,7 +265,7 @@ fn build_resource_entity_data(
 }
 
 /// Translate Cedarling's `AuthorizeResult` into APL's `PdpDecision`.
-/// Mirrors `apl-pdp-cedar-direct`'s decision-translation logic since
+/// Mirrors `cpex-pdp-cedar-direct`'s decision-translation logic since
 /// both crates ultimately read the same `cedar_policy::Response`.
 /// Fail-closed on diagnostic errors.
 fn translate_authorize_result(result: &cedarling::AuthorizeResult) -> PdpDecision {
@@ -281,7 +281,7 @@ fn translate_authorize_result(result: &cedarling::AuthorizeResult) -> PdpDecisio
     let errors: Vec<String> = diagnostics.errors().map(|e| e.to_string()).collect();
 
     // Cedar evaluation errors → fail-closed deny. Same rule as
-    // `apl-pdp-cedar-direct`: any runtime error during evaluation
+    // `cpex-pdp-cedar-direct`: any runtime error during evaluation
     // produces an untrustworthy decision, so we override to deny.
     if !errors.is_empty() {
         let reason = format!(

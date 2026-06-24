@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Authors: Teryl Taylor
 //
-// apl-cedarling — Cedarling-backed plugins for APL's two adjacent
+// cpex-cedarling — Cedarling-backed plugins for APL's two adjacent
 // auth seams:
 //
 //   * [`identity`] — `IdentityResolveHandler` that validates inbound
@@ -23,14 +23,14 @@
 //
 // # When to reach for this crate vs alternatives
 //
-// - **`apl-pdp-cedar-direct`** — simpler, ~5 transitive deps,
+// - **`cpex-pdp-cedar-direct`** — simpler, ~5 transitive deps,
 //   policies as inline text. Use for tests, dev, or deployments
 //   that don't need policy-store signing / centralized management.
-// - **`apl-identity-jwt`** (future) — JWT validation via the
+// - **`cpex-plugin-identity-jwt`** (future) — JWT validation via the
 //   `jsonwebtoken` crate, no Cedar coupling, ~5 transitive deps.
 //   Use when you want lightweight identity without policy-driven
 //   identity decisions.
-// - **`apl-cedarling`** (this crate) — heavy dep tree but gives you
+// - **`cpex-cedarling`** (this crate) — heavy dep tree but gives you
 //   signed policy stores, Cedar-driven identity decisions, and
 //   (future) Lock Server fleet management. Use for production
 //   deployments with centralized policy management.

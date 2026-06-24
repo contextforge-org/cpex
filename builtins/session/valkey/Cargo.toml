@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # Authors: Fred Araujo
 #
-# apl-session-valkey — a Valkey-backed `SessionStore` for distributed,
+# cpex-session-valkey — a Valkey-backed `SessionStore` for distributed,
 # cross-restart persistence of session security labels.
 #
 # # Dependency discipline
@@ -11,13 +11,13 @@
 # This crate is OPTIONAL and feature-gated into cpex-ffi (`valkey` feature)
 # and excluded from the workspace `default-members`, so the Valkey client +
 # its TLS/async stack never land in the default FFI artifact or everyday
-# `cargo build` (mirrors apl-cedarling). The redis client is pinned with
+# `cargo build` (mirrors cpex-cedarling). The redis client is pinned with
 # `default-features = false` and a rustls TLS path to stay openssl-free,
 # matching the `reqwest = { features = ["rustls-tls"] }` discipline in
-# apl-identity-jwt / apl-delegator-oauth.
+# cpex-plugin-identity-jwt / cpex-plugin-delegator-oauth.
 
 [package]
-name = "apl-session-valkey"
+name = "cpex-session-valkey"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

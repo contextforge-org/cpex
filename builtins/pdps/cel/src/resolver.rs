@@ -151,7 +151,7 @@ impl CelResolver {
     ///
     /// ```rust,ignore
     /// use std::sync::Arc;
-    /// use apl_pdp_cel::CelResolver;
+    /// use cpex_pdp_cel::CelResolver;
     ///
     /// let resolver = CelResolver::new().with_functions(|ctx| {
     ///     // Regex helper — authors can write `args.path.matches_prefix("/api/")`.

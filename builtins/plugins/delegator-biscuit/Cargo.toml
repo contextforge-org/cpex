@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # Authors: Teryl Taylor
 #
-# apl-delegator-biscuit — `TokenDelegateHandler` that performs
+# cpex-plugin-delegator-biscuit — `TokenDelegateHandler` that performs
 # biscuit-auth capability-token attenuation.
 #
 # # Why this exists
@@ -24,18 +24,18 @@
 # inbound biscuit; completion blocks land in a future post-result
 # audit hook.
 #
-# # When to reach for this vs `apl-delegator-oauth`
+# # When to reach for this vs `cpex-plugin-delegator-oauth`
 #
-# - **`apl-delegator-biscuit`** — capability tokens, cryptographic
+# - **`cpex-plugin-delegator-biscuit`** — capability tokens, cryptographic
 #   attenuation, no IdP roundtrip. Use for federated agent
 #   ecosystems where there's no shared IdP, or for performance-
 #   sensitive paths where the IdP roundtrip cost matters.
-# - **`apl-delegator-oauth`** (slice 6) — RFC 8693 against an
+# - **`cpex-plugin-delegator-oauth`** (slice 6) — RFC 8693 against an
 #   OAuth IdP. Use when centralized audit/revocation matters more
 #   than roundtrip cost.
 
 [package]
-name = "apl-delegator-biscuit"
+name = "cpex-plugin-delegator-biscuit"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

@@ -28,7 +28,7 @@ impl PluginFactory for AuditLoggerFactory {
         if config.hooks.is_empty() {
             return Err(Box::new(PluginError::Config {
                 message: format!(
-                    "plugin '{}' (apl-audit-logger): `hooks:` must list at \
+                    "plugin '{}' (cpex-plugin-audit-logger): `hooks:` must list at \
                      least one CMF hook to audit (e.g. cmf.tool_pre_invoke)",
                     config.name
                 ),

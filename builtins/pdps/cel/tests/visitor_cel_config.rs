@@ -30,7 +30,7 @@ use cpex_core::hooks::payload::Extensions;
 use cpex_core::manager::PluginManager;
 
 use apl_cpex::{register_apl, AplOptions, DispatchCache, MemorySessionStore};
-use apl_pdp_cel::CelPdpFactory;
+use cpex_pdp_cel::CelPdpFactory;
 
 // The config the visitor walks. A `cel:` step whose expression reads the
 // common attribute vocabulary (`subject.id`, `role.*`) the cmf BagBuilder

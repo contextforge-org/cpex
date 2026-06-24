@@ -131,7 +131,7 @@ impl JwtIdentityResolver {
         let raw_config = cfg.config.as_ref().ok_or_else(|| {
             Box::new(PluginError::Config {
                 message: format!(
-                    "plugin '{}' (apl-identity-jwt) requires a `config:` block — \
+                    "plugin '{}' (cpex-plugin-identity-jwt) requires a `config:` block — \
                      missing trusted_issuers etc.",
                     cfg.name
                 ),
@@ -142,7 +142,7 @@ impl JwtIdentityResolver {
             .map_err(|e| {
                 Box::new(PluginError::Config {
                     message: format!(
-                        "plugin '{}' (apl-identity-jwt) config parse failed: {e}",
+                        "plugin '{}' (cpex-plugin-identity-jwt) config parse failed: {e}",
                         cfg.name
                     ),
                 })
@@ -151,7 +151,7 @@ impl JwtIdentityResolver {
         if typed.trusted_issuers.is_empty() {
             return Err(Box::new(PluginError::Config {
                 message: format!(
-                    "plugin '{}' (apl-identity-jwt) requires at least one \
+                    "plugin '{}' (cpex-plugin-identity-jwt) requires at least one \
                      entry in `trusted_issuers`",
                     cfg.name
                 ),
@@ -171,7 +171,7 @@ impl JwtIdentityResolver {
             // rather than at the async initialize() boundary.
             raw.validate().map_err(|e| {
                 Box::new(PluginError::Config {
-                    message: format!("plugin '{}' (apl-identity-jwt): {e}", cfg.name),
+                    message: format!("plugin '{}' (cpex-plugin-identity-jwt): {e}", cfg.name),
                 })
             })?;
             if raw.decoding_key.needs_async() {
@@ -179,7 +179,7 @@ impl JwtIdentityResolver {
             } else {
                 let built = raw.build().map_err(|e| {
                     Box::new(PluginError::Config {
-                        message: format!("plugin '{}' (apl-identity-jwt): {e}", cfg.name),
+                        message: format!("plugin '{}' (cpex-plugin-identity-jwt): {e}", cfg.name),
                     })
                 })?;
                 trusted_issuers.push(built);
@@ -194,7 +194,7 @@ impl JwtIdentityResolver {
             Some(other) => {
                 return Err(Box::new(PluginError::Config {
                     message: format!(
-                        "plugin '{}' (apl-identity-jwt): unknown claim_mapper \
+                        "plugin '{}' (cpex-plugin-identity-jwt): unknown claim_mapper \
                          '{other}'; valid: [standard]",
                         cfg.name
                     ),
@@ -211,7 +211,7 @@ impl JwtIdentityResolver {
         if matches!(typed.role, TokenRole::Custom(_)) {
             return Err(Box::new(PluginError::Config {
                 message: format!(
-                    "plugin '{}' (apl-identity-jwt): role: Custom(...) is not \
+                    "plugin '{}' (cpex-plugin-identity-jwt): role: Custom(...) is not \
                      yet supported — pick one of `user`, `client`, `workload`",
                     cfg.name
                 ),
@@ -220,7 +220,7 @@ impl JwtIdentityResolver {
         if typed.header.trim().is_empty() {
             return Err(Box::new(PluginError::Config {
                 message: format!(
-                    "plugin '{}' (apl-identity-jwt): `header:` must be a \
+                    "plugin '{}' (cpex-plugin-identity-jwt): `header:` must be a \
                      non-empty HTTP header name",
                     cfg.name
                 ),

@@ -32,7 +32,7 @@ use cpex_core::hooks::payload::Extensions;
 use cpex_core::manager::PluginManager;
 
 use apl_cpex::{register_apl, AplOptions, DispatchCache, MemorySessionStore};
-use apl_pdp_cedar_direct::CedarDirectPdpFactory;
+use cpex_pdp_cedar_direct::CedarDirectPdpFactory;
 
 // The configuration the visitor walks. Single Cedar permit policy that
 // only fires for principals carrying the `reader` role; everything else

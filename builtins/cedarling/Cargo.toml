@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # Authors: Teryl Taylor
 #
-# apl-cedarling — Cedarling-backed IdentityResolveHandler and
+# cpex-cedarling — Cedarling-backed IdentityResolveHandler and
 # PdpResolver implementations.
 #
 # Two modules in one crate because they share the same heavy dep
@@ -18,11 +18,11 @@
 # sparkv, datalogic-rs, flate2, regex, ahash, time, vfs, zip, …). To
 # keep `cargo build` at the workspace root fast for the majority of
 # iteration, the workspace excludes this crate from `default-members`.
-# Build it explicitly with `cargo build -p apl-cedarling` or with
+# Build it explicitly with `cargo build -p cpex-cedarling` or with
 # `cargo build --workspace` for the full sweep.
 
 [package]
-name = "apl-cedarling"
+name = "cpex-cedarling"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

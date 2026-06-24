@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Authors: Teryl Taylor
 //
-// apl-pdp-cel — `PdpResolver` over the `cel` (Common Expression Language)
+// cpex-pdp-cel — `PdpResolver` over the `cel` (Common Expression Language)
 // interpreter.
 //
 // # Where this lives in the stack

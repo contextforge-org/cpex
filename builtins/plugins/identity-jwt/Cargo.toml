@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # Authors: Teryl Taylor
 #
-# apl-identity-jwt — JWT-based `IdentityResolveHandler`.
+# cpex-plugin-identity-jwt — JWT-based `IdentityResolveHandler`.
 #
 # Validates inbound JWTs against configured trusted issuers
 # (signature + exp + aud + iss claims) and maps the validated claims
@@ -12,7 +12,7 @@
 # `RawCredentialsExtension.inbound_tokens` for forwarding plugins
 # downstream.
 #
-# # Why this exists alongside `apl-cedarling`
+# # Why this exists alongside `cpex-cedarling`
 #
 # Cedarling's JWT validation is bundled with Cedar policy
 # evaluation — it doesn't expose validated identity as a separate
@@ -24,10 +24,10 @@
 #
 # This crate IS in the workspace's default-members — the dep tree
 # is small enough that it doesn't slow down default builds. Compare
-# to `apl-cedarling`, which is excluded.
+# to `cpex-cedarling`, which is excluded.
 
 [package]
-name = "apl-identity-jwt"
+name = "cpex-plugin-identity-jwt"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -63,7 +63,7 @@ tracing = { workspace = true }
 # Async HTTP — used by `DecodingKeySource::build_async()` to fetch
 # IdP JWKS during `Plugin::initialize()`. We default the rustls-tls
 # backend (no OpenSSL system dep) and turn off any features we don't
-# use to keep the dep tree lean. apl-delegator-oauth pulls reqwest
+# use to keep the dep tree lean. cpex-plugin-delegator-oauth pulls reqwest
 # too, so cargo dedups to one copy.
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 

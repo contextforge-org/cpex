@@ -68,37 +68,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
 
 [[package]]
-name = "apl-audit-logger"
-version = "0.2.0"
-dependencies = [
- "async-trait",
- "chrono",
- "cpex-core",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "apl-cedarling"
-version = "0.2.0"
-dependencies = [
- "apl-core",
- "async-trait",
- "cedar-policy",
- "cedarling",
- "cpex-core",
- "serde",
- "serde_json",
- "serde_yaml",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
-]
-
-[[package]]
 name = "apl-cmf"
 version = "0.2.0"
 dependencies = [
@@ -140,138 +109,6 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tracing",
-]
-
-[[package]]
-name = "apl-delegator-biscuit"
-version = "0.2.0"
-dependencies = [
- "apl-core",
- "async-trait",
- "biscuit-auth",
- "chrono",
- "cpex-core",
- "hex",
- "serde",
- "serde_json",
- "serde_yaml",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "apl-delegator-oauth"
-version = "0.2.0"
-dependencies = [
- "apl-core",
- "async-trait",
- "chrono",
- "cpex-core",
- "mockito",
- "reqwest 0.12.28",
- "serde",
- "serde_json",
- "serde_urlencoded",
- "serde_yaml",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
- "zeroize",
-]
-
-[[package]]
-name = "apl-identity-jwt"
-version = "0.2.0"
-dependencies = [
- "apl-core",
- "async-trait",
- "base64 0.22.1",
- "chrono",
- "cpex-core",
- "futures",
- "jsonwebtoken 9.3.1",
- "mockito",
- "rand 0.8.6",
- "reqwest 0.12.28",
- "rsa",
- "serde",
- "serde_json",
- "serde_yaml",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "apl-pdp-cedar-direct"
-version = "0.2.0"
-dependencies = [
- "apl-cmf",
- "apl-core",
- "apl-cpex",
- "async-trait",
- "cedar-policy",
- "cpex-core",
- "futures",
- "serde",
- "serde_json",
- "serde_yaml",
- "stacker",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "apl-pdp-cel"
-version = "0.2.0"
-dependencies = [
- "apl-cmf",
- "apl-core",
- "apl-cpex",
- "async-trait",
- "cel",
- "cpex-core",
- "serde",
- "serde_json",
- "serde_yaml",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "apl-pii-scanner"
-version = "0.2.0"
-dependencies = [
- "async-trait",
- "cpex-core",
- "regex",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "apl-session-valkey"
-version = "0.2.0"
-dependencies = [
- "apl-cpex",
- "async-trait",
- "deadpool-redis",
- "redis",
- "serde",
- "serde_yaml",
- "sha2 0.10.9",
- "testcontainers",
- "testcontainers-modules",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
- "url",
 ]
 
 [[package]]
@@ -1065,17 +902,34 @@ dependencies = [
 name = "cpex-builtins"
 version = "0.2.0"
 dependencies = [
- "apl-audit-logger",
  "apl-core",
  "apl-cpex",
- "apl-delegator-oauth",
- "apl-identity-jwt",
- "apl-pdp-cedar-direct",
- "apl-pdp-cel",
- "apl-pii-scanner",
- "apl-session-valkey",
  "cpex-core",
+ "cpex-pdp-cedar-direct",
+ "cpex-pdp-cel",
+ "cpex-plugin-audit-logger",
+ "cpex-plugin-delegator-oauth",
+ "cpex-plugin-identity-jwt",
+ "cpex-plugin-pii-scanner",
+ "cpex-session-valkey",
  "tokio",
+]
+
+[[package]]
+name = "cpex-cedarling"
+version = "0.2.0"
+dependencies = [
+ "apl-core",
+ "async-trait",
+ "cedar-policy",
+ "cedarling",
+ "cpex-core",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -1115,10 +969,10 @@ dependencies = [
 name = "cpex-ffi"
 version = "0.2.0"
 dependencies = [
- "apl-cedarling",
  "apl-cpex",
  "async-trait",
  "cpex-builtins",
+ "cpex-cedarling",
  "cpex-core",
  "rmp-serde",
  "serde",
@@ -1137,6 +991,133 @@ dependencies = [
 ]
 
 [[package]]
+name = "cpex-pdp-cedar-direct"
+version = "0.2.0"
+dependencies = [
+ "apl-cmf",
+ "apl-core",
+ "apl-cpex",
+ "async-trait",
+ "cedar-policy",
+ "cpex-core",
+ "futures",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "stacker",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "cpex-pdp-cel"
+version = "0.2.0"
+dependencies = [
+ "apl-cmf",
+ "apl-core",
+ "apl-cpex",
+ "async-trait",
+ "cel",
+ "cpex-core",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "cpex-plugin-audit-logger"
+version = "0.2.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "cpex-core",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "cpex-plugin-delegator-biscuit"
+version = "0.2.0"
+dependencies = [
+ "apl-core",
+ "async-trait",
+ "biscuit-auth",
+ "chrono",
+ "cpex-core",
+ "hex",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "cpex-plugin-delegator-oauth"
+version = "0.2.0"
+dependencies = [
+ "apl-core",
+ "async-trait",
+ "chrono",
+ "cpex-core",
+ "mockito",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "serde_urlencoded",
+ "serde_yaml",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "zeroize",
+]
+
+[[package]]
+name = "cpex-plugin-identity-jwt"
+version = "0.2.0"
+dependencies = [
+ "apl-core",
+ "async-trait",
+ "base64 0.22.1",
+ "chrono",
+ "cpex-core",
+ "futures",
+ "jsonwebtoken 9.3.1",
+ "mockito",
+ "rand 0.8.6",
+ "reqwest 0.12.28",
+ "rsa",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "cpex-plugin-pii-scanner"
+version = "0.2.0"
+dependencies = [
+ "async-trait",
+ "cpex-core",
+ "regex",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "cpex-sdk"
 version = "0.2.0"
 dependencies = [
@@ -1144,6 +1125,25 @@ dependencies = [
  "cpex-core",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "cpex-session-valkey"
+version = "0.2.0"
+dependencies = [
+ "apl-cpex",
+ "async-trait",
+ "deadpool-redis",
+ "redis",
+ "serde",
+ "serde_yaml",
+ "sha2 0.10.9",
+ "testcontainers",
+ "testcontainers-modules",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "url",
 ]
 
 [[package]]

@@ -3,12 +3,12 @@
 # SPDX-License-Identifier: Apache-2.0
 # Authors: Teryl Taylor
 #
-# apl-pii-scanner — CMF plugin that detects PII patterns (SSN,
+# cpex-plugin-pii-scanner — CMF plugin that detects PII patterns (SSN,
 # credit card, email) in tool/prompt/resource args and either denies
 # the call, taints the session, or redacts the matching values.
 
 [package]
-name = "apl-pii-scanner"
+name = "cpex-plugin-pii-scanner"
 version.workspace      = true
 edition.workspace      = true
 license.workspace      = true

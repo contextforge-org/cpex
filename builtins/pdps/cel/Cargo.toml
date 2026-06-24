@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # Authors: Teryl Taylor
 #
-# apl-pdp-cel — a `PdpResolver` that evaluates CEL (Common Expression
+# cpex-pdp-cel — a `PdpResolver` that evaluates CEL (Common Expression
 # Language) boolean predicates against the policy `AttributeBag`, authored
 # inline in route YAML (`cel: { expr: "..." }`).
 #
@@ -13,7 +13,7 @@
 # synchronous and side-effect-free.
 
 [package]
-name = "apl-pdp-cel"
+name = "cpex-pdp-cel"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

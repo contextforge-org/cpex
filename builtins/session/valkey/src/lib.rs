@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Authors: Fred Araujo
 //
-// apl-session-valkey — a Valkey-backed `apl_cpex::SessionStore` for
+// cpex-session-valkey — a Valkey-backed `apl_cpex::SessionStore` for
 // distributed, cross-restart persistence of session security labels.
 //
 // # Where this sits
@@ -11,7 +11,7 @@
 //   apl-cpex (SessionStore trait, SessionStoreFactory)
 //        ▲
 //        │ implements
-//   apl-session-valkey  ──uses──▶  redis-rs + deadpool-redis (rustls)
+//   cpex-session-valkey  ──uses──▶  redis-rs + deadpool-redis (rustls)
 //
 // The host registers `ValkeySessionStoreFactory` via
 // `AplOptions.session_store_factories`; a `global.apl.session_store:

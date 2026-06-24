@@ -77,7 +77,7 @@ impl BiscuitDelegator {
         let raw = cfg.config.as_ref().ok_or_else(|| {
             Box::new(PluginError::Config {
                 message: format!(
-                    "plugin '{}' (apl-delegator-biscuit) requires a `config:` block",
+                    "plugin '{}' (cpex-plugin-delegator-biscuit) requires a `config:` block",
                     cfg.name
                 ),
             })
@@ -86,7 +86,7 @@ impl BiscuitDelegator {
             .map_err(|e| {
                 Box::new(PluginError::Config {
                     message: format!(
-                        "plugin '{}' (apl-delegator-biscuit) config parse failed: {e}",
+                        "plugin '{}' (cpex-plugin-delegator-biscuit) config parse failed: {e}",
                         cfg.name
                     ),
                 })
@@ -95,7 +95,7 @@ impl BiscuitDelegator {
         let root_public_key = typed.root_public_key.resolve().map_err(|e| {
             Box::new(PluginError::Config {
                 message: format!(
-                    "plugin '{}' (apl-delegator-biscuit) root_public_key: {e}",
+                    "plugin '{}' (cpex-plugin-delegator-biscuit) root_public_key: {e}",
                     cfg.name
                 ),
             })

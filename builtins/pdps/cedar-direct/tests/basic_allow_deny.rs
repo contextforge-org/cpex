@@ -12,7 +12,7 @@ use apl_core::attributes::AttributeBag;
 use apl_core::evaluator::Decision;
 use apl_core::step::{PdpCall, PdpDialect, PdpResolver};
 
-use apl_pdp_cedar_direct::CedarDirectResolver;
+use cpex_pdp_cedar_direct::CedarDirectResolver;
 
 /// Build a `PdpCall` against `Action::"read"` on a `Document::"doc-1"`.
 /// Used across the test cases so the request side stays constant and

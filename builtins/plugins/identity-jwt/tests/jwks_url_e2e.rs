@@ -28,7 +28,7 @@ use cpex_core::identity::{IdentityHook, IdentityPayload, TokenSource, HOOK_IDENT
 use cpex_core::manager::PluginManager;
 use cpex_core::plugin::{OnError, PluginConfig, PluginMode};
 
-use apl_identity_jwt::{DecodingKeySource, JwtIdentityResolver};
+use cpex_plugin_identity_jwt::{DecodingKeySource, JwtIdentityResolver};
 
 use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
 use mockito::Server;

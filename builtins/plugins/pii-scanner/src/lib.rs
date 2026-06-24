@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Authors: Teryl Taylor
 //
-// apl-pii-scanner — CMF `HookHandler` that walks the message's
+// cpex-plugin-pii-scanner — CMF `HookHandler` that walks the message's
 // ToolCall / PromptRequest argument map and tests each string value
 // against configured PII patterns. Modes:
 //

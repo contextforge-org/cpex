@@ -6,7 +6,7 @@
 // Build-time errors for constructing Cedarling-backed resolvers and
 // handlers. Runtime errors flow through `PluginViolation` (for
 // hook handlers) or `PdpError::Dispatch` (for the PDP path) — same
-// pattern as `apl-pdp-cedar-direct`.
+// pattern as `cpex-pdp-cedar-direct`.
 
 use thiserror::Error;
 

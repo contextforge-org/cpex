@@ -151,7 +151,7 @@ pub struct PdpCall {
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum PdpDialect {
-    /// Bare Cedar policy evaluation (`apl-pdp-cedar-direct`).
+    /// Bare Cedar policy evaluation (`cpex-pdp-cedar-direct`).
     Cedar,
     /// Cedarling-mediated Cedar evaluation — same language but
     /// adds signed policy stores, multi-issuer JWT validation, and
@@ -163,7 +163,7 @@ pub enum PdpDialect {
     Opa,
     AuthZen,
     NeMo,
-    /// CEL (Common Expression Language) evaluation — `apl-pdp-cel`.
+    /// CEL (Common Expression Language) evaluation — `cpex-pdp-cel`.
     /// The `cel:` step carries an `expr:` string that must evaluate to a
     /// boolean against the policy `AttributeBag` (exposed to CEL as nested
     /// namespaces: `subject.id`, `delegation.depth`, `session.labels`, …).

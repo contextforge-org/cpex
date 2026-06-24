@@ -28,7 +28,7 @@
 use apl_core::attributes::AttributeBag;
 use apl_core::evaluator::Decision;
 use apl_core::step::{PdpCall, PdpDialect, PdpResolver};
-use apl_pdp_cedar_direct::CedarDirectResolver;
+use cpex_pdp_cedar_direct::CedarDirectResolver;
 
 /// musl's default thread stack size — below cedar's 100 KiB remaining-stack
 /// floor once evaluation is underway.

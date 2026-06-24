@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # Authors: Teryl Taylor
 #
-# apl-delegator-oauth — `TokenDelegateHandler` that performs RFC 8693
+# cpex-plugin-delegator-oauth — `TokenDelegateHandler` that performs RFC 8693
 # OAuth 2.0 token exchange against any compliant IdP.
 #
 # # Why this exists
@@ -15,14 +15,14 @@
 # endpoint with `grant_type=urn:ietf:params:oauth:grant-type:token-exchange`,
 # parse the JSON response, build a `RawDelegatedToken`.
 #
-# # When to reach for this vs `apl-delegator-biscuit`
+# # When to reach for this vs `cpex-plugin-delegator-biscuit`
 #
-# - **`apl-delegator-oauth`** (this crate) — IdP-mediated. Use when
+# - **`cpex-plugin-delegator-oauth`** (this crate) — IdP-mediated. Use when
 #   the deployment already runs an OAuth server (Keycloak, Auth0,
 #   Hydra, Zitadel, Janssen Jans Auth Server) and wants centralized
 #   audit/revocation. Every delegation costs an IdP roundtrip;
 #   gateway must hold IdP client credentials.
-# - **`apl-delegator-biscuit`** (slice 7) — decentralized capability
+# - **`cpex-plugin-delegator-biscuit`** (slice 7) — decentralized capability
 #   tokens via biscuit attenuation. No IdP roundtrip. Use for
 #   federated agent ecosystems where there's no shared IdP.
 #
@@ -30,7 +30,7 @@
 # swappable at config time.
 
 [package]
-name = "apl-delegator-oauth"
+name = "cpex-plugin-delegator-oauth"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

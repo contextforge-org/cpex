@@ -37,7 +37,7 @@ members = [
 #
 # To exercise Cedarling crates:
 #   cargo build --workspace                # all members
-#   cargo build -p apl-cedarling           # just this one
+#   cargo build -p cpex-cedarling           # just this one
 #   cargo test --workspace                 # full sweep (CI)
 default-members = [
     "crates/cpex",

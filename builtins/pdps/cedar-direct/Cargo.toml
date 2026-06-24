@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # Authors: Teryl Taylor
 #
-# apl-pdp-cedar-direct — a `PdpResolver` implementation that wraps the bare
+# cpex-pdp-cedar-direct — a `PdpResolver` implementation that wraps the bare
 # `cedar-policy` crate (Amazon's Cedar engine, no JWT validation, no policy
 # store loading, no Lock Server integration).
 #
@@ -22,7 +22,7 @@
 # Cedar engine.
 
 [package]
-name = "apl-pdp-cedar-direct"
+name = "cpex-pdp-cedar-direct"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

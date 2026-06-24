@@ -28,7 +28,7 @@ use cpex_core::hooks::payload::Extensions;
 use cpex_core::manager::PluginManager;
 use cpex_core::plugin::{OnError, PluginConfig, PluginMode};
 
-use apl_delegator_oauth::OAuthDelegator;
+use cpex_plugin_delegator_oauth::OAuthDelegator;
 
 use mockito::{Matcher, Server};
 use serde_json::json;

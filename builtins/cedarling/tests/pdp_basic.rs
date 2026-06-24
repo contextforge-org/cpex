@@ -21,7 +21,7 @@ use apl_core::attributes::AttributeBag;
 use apl_core::evaluator::Decision;
 use apl_core::step::{PdpCall, PdpDialect, PdpResolver};
 
-use apl_cedarling::pdp::CedarlingPdpResolver;
+use cpex_cedarling::pdp::CedarlingPdpResolver;
 use cedarling::{BootstrapConfig, Cedarling, PolicyStoreSource};
 
 /// Minimal policy store: one permit policy that fires for
@@ -69,7 +69,7 @@ policy_stores:
 /// path (no token validation involved).
 async fn build_cedarling() -> Arc<Cedarling> {
     let mut config = BootstrapConfig::default();
-    config.application_name = "apl-cedarling-test".to_string();
+    config.application_name = "cpex-cedarling-test".to_string();
     config.policy_store_config.source =
         PolicyStoreSource::Yaml(POLICY_STORE_YAML.to_string());
     let cedarling = Cedarling::new(&config)
@@ -96,7 +96,7 @@ fn bob_no_roles() -> AttributeBag {
 fn read_doc_call() -> PdpCall {
     PdpCall {
         // Route YAML `cedarling:(...)` produces this dialect.
-        // `apl-pdp-cedar-direct` registers under `PdpDialect::Cedar`
+        // `cpex-pdp-cedar-direct` registers under `PdpDialect::Cedar`
         // so both resolvers can coexist in one PdpRouter.
         dialect: PdpDialect::Cedarling,
         args: serde_yaml::from_str(

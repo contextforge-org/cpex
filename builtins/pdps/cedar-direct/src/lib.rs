@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Authors: Teryl Taylor
 //
-// apl-pdp-cedar-direct — `PdpResolver` over the bare `cedar-policy` crate.
+// cpex-pdp-cedar-direct — `PdpResolver` over the bare `cedar-policy` crate.
 //
 // # Where this lives in the stack
 //

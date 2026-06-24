@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Authors: Teryl Taylor
 //
-// apl-delegator-biscuit — `TokenDelegateHandler` backed by biscuit
+// cpex-plugin-delegator-biscuit — `TokenDelegateHandler` backed by biscuit
 // capability-token attenuation.
 //
 // The host registers this against `token.delegate`; outbound

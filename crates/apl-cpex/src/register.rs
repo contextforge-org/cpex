@@ -134,7 +134,7 @@ impl AplOptions {
 /// use std::sync::Arc;
 /// use cpex_core::manager::PluginManager;
 /// use apl_cpex::{register_apl, AplOptions};
-/// use apl_pdp_cedar_direct::CedarDirectPdpFactory;
+/// use cpex_pdp_cedar_direct::CedarDirectPdpFactory;
 ///
 /// let mgr = Arc::new(PluginManager::default());
 /// mgr.register_factory("scope-gate", Box::new(ScopeGateFactory));

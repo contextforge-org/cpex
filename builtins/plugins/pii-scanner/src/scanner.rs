@@ -35,7 +35,7 @@ impl PiiScanner {
         let raw = cfg.config.as_ref().ok_or_else(|| {
             Box::new(PluginError::Config {
                 message: format!(
-                    "plugin '{}' (apl-pii-scanner) requires a `config:` block",
+                    "plugin '{}' (cpex-plugin-pii-scanner) requires a `config:` block",
                     cfg.name
                 ),
             })
@@ -44,7 +44,7 @@ impl PiiScanner {
             serde_json::from_value(raw.clone()).map_err(|e| {
                 Box::new(PluginError::Config {
                     message: format!(
-                        "plugin '{}' (apl-pii-scanner) config parse failed: {e}",
+                        "plugin '{}' (cpex-plugin-pii-scanner) config parse failed: {e}",
                         cfg.name
                     ),
                 })
@@ -166,7 +166,7 @@ fn compile_patterns(
         let re = Regex::new(&re_str).map_err(|e| {
             Box::new(PluginError::Config {
                 message: format!(
-                    "plugin '{plugin_name}' (apl-pii-scanner): pattern '{name}' \
+                    "plugin '{plugin_name}' (cpex-plugin-pii-scanner): pattern '{name}' \
                      failed to compile: {e}"
                 ),
             })
