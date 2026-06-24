@@ -300,8 +300,14 @@ mod tests {
             bag.get_string("this_workload.spiffe_id"),
             Some("spiffe://corp.com/hr-tool")
         );
-        assert_eq!(bag.get_string("this_workload.trust_domain"), Some("corp.com"));
-        assert_eq!(bag.get_string("this_workload.attestor"), Some("spire-agent"));
+        assert_eq!(
+            bag.get_string("this_workload.trust_domain"),
+            Some("corp.com")
+        );
+        assert_eq!(
+            bag.get_string("this_workload.attestor"),
+            Some("spire-agent")
+        );
         assert!(bag.set_contains("this_workload.selectors", "k8s:ns:hr"));
     }
 
@@ -323,7 +329,10 @@ mod tests {
         extract_security(&sec, &mut bag);
         assert!(bag.set_contains("security.labels", "PII"));
         assert!(bag.set_contains("security.labels", "financial"));
-        assert_eq!(bag.get_string("security.classification"), Some("confidential"));
+        assert_eq!(
+            bag.get_string("security.classification"),
+            Some("confidential")
+        );
     }
 
     #[test]
@@ -405,10 +414,7 @@ mod tests {
         extract_client(&agent_client(), &mut bag);
         assert!(bag.set_contains("client.authorized_scopes", "read"));
         assert!(bag.set_contains("client.authorized_scopes", "write"));
-        assert!(bag.set_contains(
-            "client.authorized_audiences",
-            "https://api.example.com",
-        ));
+        assert!(bag.set_contains("client.authorized_audiences", "https://api.example.com",));
         assert!(bag.set_contains("client.teams", "acme"));
     }
 
@@ -479,7 +485,10 @@ mod tests {
             bag.get_string("this_workload.spiffe_id"),
             Some("spiffe://corp.com/svc/foo"),
         );
-        assert_eq!(bag.get_string("this_workload.attestor"), Some("spire-agent"));
+        assert_eq!(
+            bag.get_string("this_workload.attestor"),
+            Some("spire-agent")
+        );
         assert_eq!(bag.get_string("caller_workload.spiffe_id"), None);
     }
 

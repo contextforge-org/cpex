@@ -44,11 +44,31 @@ pub enum Literal {
     String(String),
 }
 
-impl From<bool> for Literal { fn from(v: bool) -> Self { Literal::Bool(v) } }
-impl From<i64>  for Literal { fn from(v: i64)  -> Self { Literal::Int(v)  } }
-impl From<f64>  for Literal { fn from(v: f64)  -> Self { Literal::Float(v) } }
-impl From<&str> for Literal { fn from(v: &str) -> Self { Literal::String(v.to_string()) } }
-impl From<String> for Literal { fn from(v: String) -> Self { Literal::String(v) } }
+impl From<bool> for Literal {
+    fn from(v: bool) -> Self {
+        Literal::Bool(v)
+    }
+}
+impl From<i64> for Literal {
+    fn from(v: i64) -> Self {
+        Literal::Int(v)
+    }
+}
+impl From<f64> for Literal {
+    fn from(v: f64) -> Self {
+        Literal::Float(v)
+    }
+}
+impl From<&str> for Literal {
+    fn from(v: &str) -> Self {
+        Literal::String(v.to_string())
+    }
+}
+impl From<String> for Literal {
+    fn from(v: String) -> Self {
+        Literal::String(v)
+    }
+}
 
 /// Leaf predicate.
 ///
@@ -62,19 +82,33 @@ impl From<String> for Literal { fn from(v: String) -> Self { Literal::String(v) 
 /// an `Action::Deny`. See DSL spec §8.1 desugarings.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Condition {
-    Comparison { key: String, op: CompareOp, value: Literal },
-    IsTrue { key: String },
-    IsFalse { key: String },
+    Comparison {
+        key: String,
+        op: CompareOp,
+        value: Literal,
+    },
+    IsTrue {
+        key: String,
+    },
+    IsFalse {
+        key: String,
+    },
     /// DSL `exists(key)` — true iff the key is present in the
     /// AttributeBag, regardless of its value. Distinct from `IsTrue`
     /// (which only succeeds for truthy values). Per DSL §2.2.
-    Exists { key: String },
+    Exists {
+        key: String,
+    },
     /// DSL `value_key in set_key` (negate=false) / `value_key not in set_key`
     /// (negate=true). Both operands are attribute keys, not literals — the
     /// scalar at `value_key` is checked for membership in the StringSet at
     /// `set_key`. Per DSL §2.4. Returns `false` if either key is missing or
     /// the types don't match (scalar must resolve to a string).
-    InSet { value_key: String, set_key: String, negate: bool },
+    InSet {
+        value_key: String,
+        set_key: String,
+        negate: bool,
+    },
 }
 
 /// Compound predicate.
@@ -219,16 +253,17 @@ impl Effect {
             Effect::FieldOp { .. } | Effect::Delegate(_) => true,
             Effect::Sequential(effects) | Effect::Parallel(effects) => {
                 effects.iter().any(Effect::contains_mutation)
-            }
+            },
             Effect::When { body, .. } => body.iter().any(Effect::contains_mutation),
-            Effect::Pdp { on_allow, on_deny, .. } => {
+            Effect::Pdp {
+                on_allow, on_deny, ..
+            } => {
                 on_allow.iter().any(Effect::contains_mutation)
                     || on_deny.iter().any(Effect::contains_mutation)
-            }
-            Effect::Allow
-            | Effect::Deny { .. }
-            | Effect::Plugin { .. }
-            | Effect::Taint { .. } => false,
+            },
+            Effect::Allow | Effect::Deny { .. } | Effect::Plugin { .. } | Effect::Taint { .. } => {
+                false
+            },
         }
     }
 
@@ -253,25 +288,27 @@ impl Effect {
                     e.validate_parallel_purity()?;
                 }
                 Ok(())
-            }
+            },
             Effect::Sequential(effects) => {
                 for e in effects {
                     e.validate_parallel_purity()?;
                 }
                 Ok(())
-            }
+            },
             Effect::When { body, .. } => {
                 for e in body {
                     e.validate_parallel_purity()?;
                 }
                 Ok(())
-            }
-            Effect::Pdp { on_allow, on_deny, .. } => {
+            },
+            Effect::Pdp {
+                on_allow, on_deny, ..
+            } => {
                 for e in on_allow.iter().chain(on_deny.iter()) {
                     e.validate_parallel_purity()?;
                 }
                 Ok(())
-            }
+            },
             _ => Ok(()),
         }
     }
@@ -342,7 +379,9 @@ pub enum Phase {
 pub struct PhaseSet(u8);
 
 impl PhaseSet {
-    pub fn new() -> Self { Self(0) }
+    pub fn new() -> Self {
+        Self(0)
+    }
 
     pub fn insert(&mut self, p: Phase) {
         self.0 |= Self::bit(p);
@@ -352,7 +391,9 @@ impl PhaseSet {
         self.0 & Self::bit(p) != 0
     }
 
-    pub fn is_empty(&self) -> bool { self.0 == 0 }
+    pub fn is_empty(&self) -> bool {
+        self.0 == 0
+    }
 
     fn bit(p: Phase) -> u8 {
         match p {
@@ -397,16 +438,27 @@ pub struct CompiledRoute {
 
 impl CompiledRoute {
     pub fn new(route_key: impl Into<String>) -> Self {
-        Self { route_key: route_key.into(), ..Default::default() }
+        Self {
+            route_key: route_key.into(),
+            ..Default::default()
+        }
     }
 
     /// Which phases this route uses. Empty phases are not declared.
     pub fn declared_phases(&self) -> PhaseSet {
         let mut set = PhaseSet::new();
-        if !self.args.is_empty() { set.insert(Phase::Args); }
-        if !self.policy.is_empty() { set.insert(Phase::Policy); }
-        if !self.result.is_empty() { set.insert(Phase::Result); }
-        if !self.post_policy.is_empty() { set.insert(Phase::PostPolicy); }
+        if !self.args.is_empty() {
+            set.insert(Phase::Args);
+        }
+        if !self.policy.is_empty() {
+            set.insert(Phase::Policy);
+        }
+        if !self.result.is_empty() {
+            set.insert(Phase::Result);
+        }
+        if !self.post_policy.is_empty() {
+            set.insert(Phase::PostPolicy);
+        }
         set
     }
 
@@ -452,8 +504,11 @@ impl CompiledRoute {
         self.args.extend(more_specific.args);
 
         // result: same shape as args.
-        let ms_result_fields: std::collections::HashSet<String> =
-            more_specific.result.iter().map(|f| f.field.clone()).collect();
+        let ms_result_fields: std::collections::HashSet<String> = more_specific
+            .result
+            .iter()
+            .map(|f| f.field.clone())
+            .collect();
         self.result.retain(|f| !ms_result_fields.contains(&f.field));
         self.result.extend(more_specific.result);
 
@@ -506,7 +561,10 @@ mod tests {
                 op: CompareOp::Gt,
                 value: 2_i64.into(),
             }),
-            effects: vec![Effect::Deny { reason: Some("too deep".into()), code: None }],
+            effects: vec![Effect::Deny {
+                reason: Some("too deep".into()),
+                code: None,
+            }],
             source: "policy[0]".into(),
         };
         if let Expression::Condition(Condition::Comparison { value, .. }) = r.condition {
@@ -520,7 +578,9 @@ mod tests {
     fn rule_serde_roundtrip() {
         let r = Rule {
             condition: Expression::And(vec![
-                Expression::Condition(Condition::IsTrue { key: "authenticated".into() }),
+                Expression::Condition(Condition::IsTrue {
+                    key: "authenticated".into(),
+                }),
                 Expression::Condition(Condition::Comparison {
                     key: "delegation.depth".into(),
                     op: CompareOp::LtEq,
@@ -604,12 +664,16 @@ mod tests {
         let mut effective = CompiledRoute::new("route.X");
         effective.args.push(FieldRule {
             field: "id".into(),
-            pipeline: Pipeline { stages: vec![Stage::Type(TypeCheck::Str)] },
+            pipeline: Pipeline {
+                stages: vec![Stage::Type(TypeCheck::Str)],
+            },
             source: "default.args.id".into(),
         });
         effective.args.push(FieldRule {
             field: "trace_id".into(),
-            pipeline: Pipeline { stages: vec![Stage::Type(TypeCheck::Str)] },
+            pipeline: Pipeline {
+                stages: vec![Stage::Type(TypeCheck::Str)],
+            },
             source: "default.args.trace_id".into(),
         });
 
@@ -617,7 +681,9 @@ mod tests {
         let mut route_layer = CompiledRoute::new("ignored");
         route_layer.args.push(FieldRule {
             field: "id".into(),
-            pipeline: Pipeline { stages: vec![Stage::Type(TypeCheck::Uuid)] },
+            pipeline: Pipeline {
+                stages: vec![Stage::Type(TypeCheck::Uuid)],
+            },
             source: "route.args.id".into(),
         });
 
@@ -626,10 +692,17 @@ mod tests {
         assert_eq!(effective.args.len(), 2);
         // `id` is now the route's (Uuid), not the default's (Str).
         let id_rule = effective.args.iter().find(|f| f.field == "id").unwrap();
-        assert!(matches!(id_rule.pipeline.stages[0], Stage::Type(TypeCheck::Uuid)));
+        assert!(matches!(
+            id_rule.pipeline.stages[0],
+            Stage::Type(TypeCheck::Uuid)
+        ));
         assert_eq!(id_rule.source, "route.args.id");
         // `trace_id` survives from the default — route didn't touch it.
-        let trace = effective.args.iter().find(|f| f.field == "trace_id").unwrap();
+        let trace = effective
+            .args
+            .iter()
+            .find(|f| f.field == "trace_id")
+            .unwrap();
         assert_eq!(trace.source, "default.args.trace_id");
     }
 
@@ -641,31 +714,44 @@ mod tests {
         let mut effective = CompiledRoute::new("route.X");
         effective.plugin_overrides.insert(
             "rate_limiter".into(),
-            PluginOverride { on_error: Some("ignore".into()), ..Default::default() },
+            PluginOverride {
+                on_error: Some("ignore".into()),
+                ..Default::default()
+            },
         );
         effective.plugin_overrides.insert(
             "audit_logger".into(),
-            PluginOverride { on_error: Some("ignore".into()), ..Default::default() },
+            PluginOverride {
+                on_error: Some("ignore".into()),
+                ..Default::default()
+            },
         );
 
         // Route (more specific) layer overrides rate_limiter.
         let mut route_layer = CompiledRoute::new("ignored");
         route_layer.plugin_overrides.insert(
             "rate_limiter".into(),
-            PluginOverride { on_error: Some("fail".into()), ..Default::default() },
+            PluginOverride {
+                on_error: Some("fail".into()),
+                ..Default::default()
+            },
         );
 
         effective.apply_layer(route_layer);
 
         assert_eq!(effective.plugin_overrides.len(), 2);
         assert_eq!(
-            effective.plugin_overrides["rate_limiter"].on_error.as_deref(),
+            effective.plugin_overrides["rate_limiter"]
+                .on_error
+                .as_deref(),
             Some("fail"),
             "route's override wins on collision",
         );
         // audit_logger untouched — route didn't redefine it.
         assert_eq!(
-            effective.plugin_overrides["audit_logger"].on_error.as_deref(),
+            effective.plugin_overrides["audit_logger"]
+                .on_error
+                .as_deref(),
             Some("ignore"),
         );
     }
@@ -736,8 +822,12 @@ mod tests {
     fn validate_parallel_pure_block_passes() {
         // A parallel block of read-only effects validates clean.
         let effect = Effect::Parallel(vec![
-            Effect::Plugin { name: "rate_limiter".into() },
-            Effect::Plugin { name: "audit".into() },
+            Effect::Plugin {
+                name: "rate_limiter".into(),
+            },
+            Effect::Plugin {
+                name: "audit".into(),
+            },
             Effect::Allow,
         ]);
         assert!(effect.validate_parallel_purity().is_ok());
@@ -748,7 +838,9 @@ mod tests {
         // FieldOp would silently lose its mutation in a discarded
         // branch — config-load surfaces this loudly.
         let effect = Effect::Parallel(vec![
-            Effect::Plugin { name: "audit".into() },
+            Effect::Plugin {
+                name: "audit".into(),
+            },
             Effect::FieldOp {
                 path: "args.ssn".into(),
                 stages: vec![],
@@ -782,9 +874,10 @@ mod tests {
             path: "args.x".into(),
             stages: vec![],
         }]);
-        let outer = Effect::Parallel(vec![
-            Effect::Sequential(vec![Effect::Allow, inner_parallel]),
-        ]);
+        let outer = Effect::Parallel(vec![Effect::Sequential(vec![
+            Effect::Allow,
+            inner_parallel,
+        ])]);
         assert!(outer.validate_parallel_purity().is_err());
     }
 
@@ -807,7 +900,11 @@ mod tests {
         // White-box check on the helper so future Effect additions
         // get flagged here when they should be classified.
         assert!(!Effect::Allow.contains_mutation());
-        assert!(!Effect::Deny { reason: None, code: None }.contains_mutation());
+        assert!(!Effect::Deny {
+            reason: None,
+            code: None
+        }
+        .contains_mutation());
         assert!(!Effect::Plugin { name: "x".into() }.contains_mutation());
         assert!(!Effect::Taint {
             label: "x".into(),

@@ -32,7 +32,10 @@ mod tests {
     fn custom_keys_flatten_under_custom_namespace() {
         let mut custom = HashMap::new();
         custom.insert("feature_flag".into(), json!(true));
-        custom.insert("tenant".into(), json!({ "id": "acme", "tier": "enterprise" }));
+        custom.insert(
+            "tenant".into(),
+            json!({ "id": "acme", "tier": "enterprise" }),
+        );
         let mut bag = AttributeBag::new();
         extract_custom(&custom, &mut bag);
         assert_eq!(bag.get_bool("custom.feature_flag"), Some(true));

@@ -106,7 +106,7 @@ impl SessionStore for ValkeySessionStore {
                     return Err(SessionStoreError::Backend(
                         "valkey SMEMBERS timed out".to_string(),
                     ))
-                }
+                },
             };
 
         // Sliding-TTL refresh is fail-open for the read: the labels were
@@ -160,7 +160,7 @@ impl SessionStore for ValkeySessionStore {
                 return Err(SessionStoreError::Backend(
                     "valkey append (SADD+EXPIRE) timed out".to_string(),
                 ))
-            }
+            },
         }
         Ok(())
     }

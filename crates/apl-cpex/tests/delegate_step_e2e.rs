@@ -484,7 +484,7 @@ routes:
                 rule_source, "delegation.idp_rejected",
                 "rule_source should carry the plugin's violation code",
             );
-        }
+        },
         d => panic!("expected Deny on plugin deny, got {d:?}"),
     }
     assert_eq!(

@@ -63,7 +63,10 @@ impl std::fmt::Debug for BiscuitDelegator {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("BiscuitDelegator")
             .field("cfg", &self.cfg.name)
-            .field("default_outbound_header", &self.typed.default_outbound_header)
+            .field(
+                "default_outbound_header",
+                &self.typed.default_outbound_header,
+            )
             .field("default_ttl_seconds", &self.typed.default_ttl_seconds)
             .field("root_public_key", &"<elided>")
             .finish()
@@ -82,15 +85,14 @@ impl BiscuitDelegator {
                 ),
             })
         })?;
-        let typed: BiscuitDelegatorConfig = serde_json::from_value(raw.clone())
-            .map_err(|e| {
-                Box::new(PluginError::Config {
-                    message: format!(
-                        "plugin '{}' (cpex-plugin-delegator-biscuit) config parse failed: {e}",
-                        cfg.name
-                    ),
-                })
-            })?;
+        let typed: BiscuitDelegatorConfig = serde_json::from_value(raw.clone()).map_err(|e| {
+            Box::new(PluginError::Config {
+                message: format!(
+                    "plugin '{}' (cpex-plugin-delegator-biscuit) config parse failed: {e}",
+                    cfg.name
+                ),
+            })
+        })?;
 
         let root_public_key = typed.root_public_key.resolve().map_err(|e| {
             Box::new(PluginError::Config {
@@ -161,14 +163,12 @@ impl HookHandler<TokenDelegateHook> for BiscuitDelegator {
                          root public key: {e}"
                     ),
                 ));
-            }
+            },
         };
 
         // 2. Build the delegation block.
         let ttl_secs = self.effective_ttl_seconds(payload);
-        let expires_at_unix = (Utc::now()
-            + chrono::Duration::seconds(ttl_secs as i64))
-        .timestamp();
+        let expires_at_unix = (Utc::now() + chrono::Duration::seconds(ttl_secs as i64)).timestamp();
 
         // Build the delegation block as a Datalog string. biscuit
         // parses + validates the Datalog at parse time. Building
@@ -194,9 +194,7 @@ impl HookHandler<TokenDelegateHook> for BiscuitDelegator {
             ));
         }
         // Time-bound check — token unusable past expires_at.
-        datalog.push_str(&format!(
-            "check if time($t), $t <= {expires_at_unix};"
-        ));
+        datalog.push_str(&format!("check if time($t), $t <= {expires_at_unix};"));
 
         // biscuit-auth 6's `BlockBuilder::code` consumes the
         // builder and returns a new one on success (or an error if
@@ -208,7 +206,7 @@ impl HookHandler<TokenDelegateHook> for BiscuitDelegator {
                     "delegation.attenuation_failed",
                     format!("delegation block Datalog parse failed: {e}"),
                 ));
-            }
+            },
         };
 
         // 3. Append the block. Biscuit generates an ephemeral
@@ -221,7 +219,7 @@ impl HookHandler<TokenDelegateHook> for BiscuitDelegator {
                     "delegation.attenuation_failed",
                     format!("biscuit append failed: {e}"),
                 ));
-            }
+            },
         };
 
         // 4. Serialize.
@@ -232,7 +230,7 @@ impl HookHandler<TokenDelegateHook> for BiscuitDelegator {
                     "delegation.attenuation_failed",
                     format!("could not serialize attenuated biscuit: {e}"),
                 ));
-            }
+            },
         };
 
         // 5. Build RawDelegatedToken.

@@ -228,7 +228,7 @@ impl<'a> MessageView<'a> {
             ContentPart::Text { text } | ContentPart::Thinking { text } => Some(text),
             ContentPart::ToolResult { content: tr } => {
                 tr.content.as_str().map(Some).unwrap_or(None)
-            }
+            },
             ContentPart::Resource { content: r } => r.content.as_deref(),
             ContentPart::PromptResult { content: pr } => pr.content.as_deref(),
             _ => None,

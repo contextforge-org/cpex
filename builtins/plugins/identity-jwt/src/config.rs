@@ -178,7 +178,7 @@ impl DecodingKeySource {
         match self {
             Self::JwksUrl { refresh_secs, .. } => {
                 Some(std::time::Duration::from_secs(*refresh_secs))
-            }
+            },
             _ => None,
         }
     }
@@ -199,16 +199,17 @@ impl DecodingKeySource {
         let key = match self {
             Self::Pem { pem } => build_from_pem_bytes(pem.as_bytes(), "inline PEM")?,
             Self::PemFile { path } => {
-                let bytes = std::fs::read(path)
-                    .map_err(|e| format!("decoding-key file '{}' unreadable: {e}", path.display()))?;
+                let bytes = std::fs::read(path).map_err(|e| {
+                    format!("decoding-key file '{}' unreadable: {e}", path.display())
+                })?;
                 build_from_pem_bytes(&bytes, &format!("file '{}'", path.display()))?
-            }
+            },
             Self::Jwk { jwk } => build_from_jwk_value(jwk)?,
             Self::JwksUrl { url, .. } => {
                 return Err(format!(
                     "JwksUrl source '{url}' requires async resolution — call build_async()"
                 ))
-            }
+            },
             Self::Secret { secret } => DecodingKey::from_secret(secret.as_bytes()),
         };
         Ok(KeyStore::single_fallback(key))
@@ -235,7 +236,9 @@ impl DecodingKeySource {
     ///   rolls don't require a gateway restart.
     pub async fn build_async(&self) -> Result<KeyStore, String> {
         match self {
-            Self::JwksUrl { url, insecure_http, .. } => {
+            Self::JwksUrl {
+                url, insecure_http, ..
+            } => {
                 // Reject http:// by default. Fetching JWKS over
                 // plaintext lets anyone on the network path swap the
                 // signing keys and forge JWTs the gateway accepts.
@@ -292,7 +295,7 @@ impl DecodingKeySource {
                         _ => {
                             skipped_no_kid += 1;
                             continue;
-                        }
+                        },
                     };
                     match DecodingKey::from_jwk(k) {
                         Ok(key) => entries.push((kid, key)),
@@ -309,7 +312,7 @@ impl DecodingKeySource {
                     ));
                 }
                 Ok(KeyStore::from_jwks_entries(entries))
-            }
+            },
             // Non-network variants delegate to the sync path; they
             // don't await anything, so the cost is zero vs. a direct
             // sync call.
@@ -339,8 +342,8 @@ fn build_from_pem_bytes(bytes: &[u8], origin: &str) -> Result<DecodingKey, Strin
 }
 
 fn build_from_jwk_value(jwk: &serde_json::Value) -> Result<DecodingKey, String> {
-    let parsed: jsonwebtoken::jwk::Jwk = serde_json::from_value(jwk.clone())
-        .map_err(|e| format!("JWK is not well-formed: {e}"))?;
+    let parsed: jsonwebtoken::jwk::Jwk =
+        serde_json::from_value(jwk.clone()).map_err(|e| format!("JWK is not well-formed: {e}"))?;
     DecodingKey::from_jwk(&parsed).map_err(|e| format!("JWK not usable: {e}"))
 }
 

@@ -380,14 +380,13 @@ where
     let (replace_inherited, raw_steps): (bool, Vec<serde_yaml::Value>) = match raw {
         serde_yaml::Value::Sequence(items) => (false, items),
         serde_yaml::Value::Mapping(map) => {
-            let replace_inherited = match map
-                .get(serde_yaml::Value::String("replace_inherited".to_string()))
-            {
-                Some(v) => v.as_bool().ok_or_else(|| {
-                    D::Error::custom("`identity.replace_inherited` must be a boolean")
-                })?,
-                None => false,
-            };
+            let replace_inherited =
+                match map.get(serde_yaml::Value::String("replace_inherited".to_string())) {
+                    Some(v) => v.as_bool().ok_or_else(|| {
+                        D::Error::custom("`identity.replace_inherited` must be a boolean")
+                    })?,
+                    None => false,
+                };
             let steps_val = map
                 .get(serde_yaml::Value::String("steps".to_string()))
                 .ok_or_else(|| {
@@ -401,13 +400,13 @@ where
                 .ok_or_else(|| D::Error::custom("`identity.steps` must be a list"))?
                 .clone();
             (replace_inherited, items)
-        }
+        },
         _ => {
             return Err(D::Error::custom(
                 "`identity:` must be a list of steps or an object with \
                  `steps:` (and optional `replace_inherited:`)",
             ));
-        }
+        },
     };
 
     let mut steps = Vec::with_capacity(raw_steps.len());
@@ -441,7 +440,7 @@ fn parse_identity_step(
                 name,
                 ..Default::default()
             })
-        }
+        },
         serde_yaml::Value::Mapping(_) => {
             // Lean on serde's derived Deserialize for the map shape —
             // `RouteIdentityStep` already handles `name` / `on_error` /
@@ -459,12 +458,10 @@ fn parse_identity_step(
                 #[serde(default, flatten)]
                 extra: std::collections::HashMap<String, serde_json::Value>,
             }
-            let parsed: StepYaml = serde_yaml::from_value(raw)
-                .map_err(|e| format!("identity step [{index}]: {e}"))?;
+            let parsed: StepYaml =
+                serde_yaml::from_value(raw).map_err(|e| format!("identity step [{index}]: {e}"))?;
             if parsed.name.is_empty() {
-                return Err(format!(
-                    "identity step [{index}] `name:` cannot be empty"
-                ));
+                return Err(format!("identity step [{index}] `name:` cannot be empty"));
             }
             Ok(RouteIdentityStep {
                 name: parsed.name,
@@ -472,7 +469,7 @@ fn parse_identity_step(
                 on_error: parsed.on_error,
                 extra: parsed.extra,
             })
-        }
+        },
         _ => Err(format!(
             "identity step [{index}] must be a plugin name (string) or a map \
              with `name:` (and optional `on_error:` / `config:`)"
@@ -1777,8 +1774,7 @@ routes:
       - corp-jwt
 "#;
         let cfg = parse_config(yaml).unwrap();
-        let resolved =
-            resolve_identity_plugins_for_route(&cfg, "tool", "unmatched_tool", None);
+        let resolved = resolve_identity_plugins_for_route(&cfg, "tool", "unmatched_tool", None);
         assert!(resolved.is_empty());
     }
 
@@ -1793,8 +1789,7 @@ routes:
       - rate_limiter
 "#;
         let cfg = parse_config(yaml).unwrap();
-        let resolved =
-            resolve_identity_plugins_for_route(&cfg, "tool", "get_weather", None);
+        let resolved = resolve_identity_plugins_for_route(&cfg, "tool", "get_weather", None);
         assert!(resolved.is_empty());
     }
 
@@ -1813,8 +1808,7 @@ routes:
       - agent-context
 "#;
         let cfg = parse_config(yaml).unwrap();
-        let resolved =
-            resolve_identity_plugins_for_route(&cfg, "tool", "get_weather", None);
+        let resolved = resolve_identity_plugins_for_route(&cfg, "tool", "get_weather", None);
         let names: Vec<&str> = resolved.iter().map(|r| r.name.as_str()).collect();
         assert_eq!(names, vec!["spiffe-attestor", "corp-jwt", "agent-context"]);
     }
@@ -1836,15 +1830,17 @@ routes:
           audience: my-tool
 "#;
         let cfg = parse_config(yaml).unwrap();
-        let resolved =
-            resolve_identity_plugins_for_route(&cfg, "tool", "get_weather", None);
+        let resolved = resolve_identity_plugins_for_route(&cfg, "tool", "get_weather", None);
         assert_eq!(resolved.len(), 1);
         let overrides = resolved[0]
             .config_overrides
             .as_ref()
             .expect("overrides wrapped");
         let config = overrides.get("config").expect("config key present");
-        assert_eq!(config.get("audience").and_then(|v| v.as_str()), Some("my-tool"));
+        assert_eq!(
+            config.get("audience").and_then(|v| v.as_str()),
+            Some("my-tool")
+        );
     }
 
     // ---- Slice C: global + tag-bundle inheritance ----
@@ -1865,8 +1861,7 @@ routes:
   - tool: get_weather
 "#;
         let cfg = parse_config(yaml).unwrap();
-        let resolved =
-            resolve_identity_plugins_for_route(&cfg, "tool", "get_weather", None);
+        let resolved = resolve_identity_plugins_for_route(&cfg, "tool", "get_weather", None);
         let names: Vec<&str> = resolved.iter().map(|r| r.name.as_str()).collect();
         assert_eq!(names, vec!["corp-jwt"]);
     }
@@ -1891,8 +1886,7 @@ routes:
       - agent-context
 "#;
         let cfg = parse_config(yaml).unwrap();
-        let resolved =
-            resolve_identity_plugins_for_route(&cfg, "tool", "get_weather", None);
+        let resolved = resolve_identity_plugins_for_route(&cfg, "tool", "get_weather", None);
         let names: Vec<&str> = resolved.iter().map(|r| r.name.as_str()).collect();
         assert_eq!(names, vec!["corp-jwt", "agent-context"]);
     }
@@ -1924,8 +1918,7 @@ routes:
       - agent-context
 "#;
         let cfg = parse_config(yaml).unwrap();
-        let resolved =
-            resolve_identity_plugins_for_route(&cfg, "tool", "get_compensation", None);
+        let resolved = resolve_identity_plugins_for_route(&cfg, "tool", "get_compensation", None);
         let names: Vec<&str> = resolved.iter().map(|r| r.name.as_str()).collect();
         assert_eq!(names, vec!["corp-jwt", "workday-saml", "agent-context"]);
     }
@@ -1958,8 +1951,7 @@ routes:
         - legacy-basic-auth
 "#;
         let cfg = parse_config(yaml).unwrap();
-        let resolved =
-            resolve_identity_plugins_for_route(&cfg, "tool", "legacy_endpoint", None);
+        let resolved = resolve_identity_plugins_for_route(&cfg, "tool", "legacy_endpoint", None);
         let names: Vec<&str> = resolved.iter().map(|r| r.name.as_str()).collect();
         assert_eq!(names, vec!["legacy-basic-auth"]);
     }
@@ -1984,8 +1976,7 @@ routes:
       steps: []
 "#;
         let cfg = parse_config(yaml).unwrap();
-        let resolved =
-            resolve_identity_plugins_for_route(&cfg, "tool", "anonymous_endpoint", None);
+        let resolved = resolve_identity_plugins_for_route(&cfg, "tool", "anonymous_endpoint", None);
         assert!(resolved.is_empty());
     }
 
@@ -2011,16 +2002,17 @@ routes:
 "#;
         let cfg = parse_config(yaml).unwrap();
 
-        let tagged =
-            resolve_identity_plugins_for_route(&cfg, "tool", "with_tag", None);
+        let tagged = resolve_identity_plugins_for_route(&cfg, "tool", "with_tag", None);
         assert_eq!(
             tagged.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(),
             vec!["workday-saml"],
         );
 
-        let untagged =
-            resolve_identity_plugins_for_route(&cfg, "tool", "without_tag", None);
-        assert!(untagged.is_empty(), "tag bundle should NOT apply to untagged routes");
+        let untagged = resolve_identity_plugins_for_route(&cfg, "tool", "without_tag", None);
+        assert!(
+            untagged.is_empty(),
+            "tag bundle should NOT apply to untagged routes"
+        );
     }
 
     #[test]
@@ -2040,20 +2032,12 @@ routes:
       - corp-jwt
 "#;
         let cfg = parse_config(yaml).unwrap();
-        let matching = resolve_identity_plugins_for_route(
-            &cfg,
-            "tool",
-            "get_weather",
-            Some("tenant-a"),
-        );
+        let matching =
+            resolve_identity_plugins_for_route(&cfg, "tool", "get_weather", Some("tenant-a"));
         assert_eq!(matching.len(), 1);
 
-        let non_matching = resolve_identity_plugins_for_route(
-            &cfg,
-            "tool",
-            "get_weather",
-            Some("tenant-b"),
-        );
+        let non_matching =
+            resolve_identity_plugins_for_route(&cfg, "tool", "get_weather", Some("tenant-b"));
         assert!(non_matching.is_empty());
     }
 

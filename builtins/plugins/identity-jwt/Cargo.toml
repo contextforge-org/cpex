@@ -21,10 +21,16 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
+description = "CPEX identity handler — JWT validation and claim mapping."
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+rust-version.workspace = true
 
 [dependencies]
-apl-core = { path = "../../../crates/apl-core" }
-cpex-core = { path = "../../../crates/cpex-core" }
+apl-core = { path = "../../../crates/apl-core", version = "0.2.0" }
+cpex-core = { path = "../../../crates/cpex-core", version = "0.2.0" }
 
 # `jsonwebtoken` is the de facto JWT library for Rust. ~5 transitive
 # deps (ring, base64, serde, pem). Supports RS256/RS384/RS512,
@@ -79,3 +85,6 @@ rsa = { version = "0.9", features = ["pem"] }
 # implementing `rand_core::CryptoRngCore` — `rand::thread_rng()`
 # satisfies that. Test-only dep.
 rand = "0.8"
+
+[lints]
+workspace = true

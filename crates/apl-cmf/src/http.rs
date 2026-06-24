@@ -18,10 +18,16 @@ use cpex_core::extensions::HttpExtension;
 
 pub fn extract_http(http: &HttpExtension, bag: &mut AttributeBag) {
     for (k, v) in &http.request_headers {
-        bag.set(format!("http.request_headers.{}", k.to_lowercase()), v.clone());
+        bag.set(
+            format!("http.request_headers.{}", k.to_lowercase()),
+            v.clone(),
+        );
     }
     for (k, v) in &http.response_headers {
-        bag.set(format!("http.response_headers.{}", k.to_lowercase()), v.clone());
+        bag.set(
+            format!("http.response_headers.{}", k.to_lowercase()),
+            v.clone(),
+        );
     }
 }
 
@@ -38,8 +44,17 @@ mod tests {
 
         let mut bag = AttributeBag::new();
         extract_http(&http, &mut bag);
-        assert_eq!(bag.get_string("http.request_headers.authorization"), Some("Bearer xyz"));
-        assert_eq!(bag.get_string("http.request_headers.x-trace-id"), Some("abc-123"));
-        assert_eq!(bag.get_string("http.response_headers.content-type"), Some("application/json"));
+        assert_eq!(
+            bag.get_string("http.request_headers.authorization"),
+            Some("Bearer xyz")
+        );
+        assert_eq!(
+            bag.get_string("http.request_headers.x-trace-id"),
+            Some("abc-123")
+        );
+        assert_eq!(
+            bag.get_string("http.response_headers.content-type"),
+            Some("application/json")
+        );
     }
 }

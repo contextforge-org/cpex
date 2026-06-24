@@ -40,10 +40,16 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
+description = "CPEX delegation handler — Biscuit capability-token attenuation."
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+rust-version.workspace = true
 
 [dependencies]
-apl-core = { path = "../../../crates/apl-core" }
-cpex-core = { path = "../../../crates/cpex-core" }
+apl-core = { path = "../../../crates/apl-core", version = "0.2.0" }
+cpex-core = { path = "../../../crates/cpex-core", version = "0.2.0" }
 
 # biscuit-auth v6 — current major. Maintained by Clever Cloud +
 # community. Ed25519 + Datalog. No default-features off needed; the
@@ -65,3 +71,6 @@ chrono = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }
+
+[lints]
+workspace = true

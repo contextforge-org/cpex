@@ -54,13 +54,18 @@ routes:
 struct AllowPdp;
 #[async_trait]
 impl PdpResolver for AllowPdp {
-    fn dialect(&self) -> PdpDialect { PdpDialect::Cedar }
+    fn dialect(&self) -> PdpDialect {
+        PdpDialect::Cedar
+    }
     async fn evaluate(
         &self,
         _call: &PdpCall,
         _bag: &AttributeBag,
     ) -> Result<PdpDecision, PdpError> {
-        Ok(PdpDecision { decision: Decision::Allow, diagnostics: vec![] })
+        Ok(PdpDecision {
+            decision: Decision::Allow,
+            diagnostics: vec![],
+        })
     }
 }
 
@@ -100,9 +105,20 @@ async fn alice_full_access_sees_unredacted_result_with_masked_id() {
         }),
     );
 
-    let r = evaluate_route(route, &mut bag, &mut payload, &pdp(), &plugins(), &delegations()).await;
+    let r = evaluate_route(
+        route,
+        &mut bag,
+        &mut payload,
+        &pdp(),
+        &plugins(),
+        &delegations(),
+    )
+    .await;
     assert_eq!(r.decision, Decision::Allow);
-    assert!(r.args_modified == false, "args has only a `str` validator, no mutation");
+    assert!(
+        r.args_modified == false,
+        "args has only a `str` validator, no mutation"
+    );
     assert!(r.result_modified, "result has mask + redact stages");
 
     let result = payload.result.as_ref().unwrap();
@@ -134,7 +150,15 @@ async fn mallory_no_perm_no_role_gets_both_fields_redacted() {
         }),
     );
 
-    let r = evaluate_route(route, &mut bag, &mut payload, &pdp(), &plugins(), &delegations()).await;
+    let r = evaluate_route(
+        route,
+        &mut bag,
+        &mut payload,
+        &pdp(),
+        &plugins(),
+        &delegations(),
+    )
+    .await;
     assert_eq!(r.decision, Decision::Allow);
 
     let result = payload.result.as_ref().unwrap();
@@ -160,17 +184,32 @@ async fn deep_delegation_denies_at_policy() {
         json!({ "ssn": "x", "salary": 1, "employee_id": "123-45-6789" }),
     );
 
-    let r = evaluate_route(route, &mut bag, &mut payload, &pdp(), &plugins(), &delegations()).await;
+    let r = evaluate_route(
+        route,
+        &mut bag,
+        &mut payload,
+        &pdp(),
+        &plugins(),
+        &delegations(),
+    )
+    .await;
     match r.decision {
         Decision::Deny { rule_source, .. } => {
-            assert!(rule_source.contains("policy"), "got source: {}", rule_source);
-        }
+            assert!(
+                rule_source.contains("policy"),
+                "got source: {}",
+                rule_source
+            );
+        },
         d => panic!("expected policy deny, got {:?}", d),
     }
     // Result phase never ran → no result mutation.
     assert!(!r.result_modified);
     assert_eq!(payload.result.as_ref().unwrap()["ssn"], json!("x"));
-    assert_eq!(payload.result.as_ref().unwrap()["employee_id"], json!("123-45-6789"));
+    assert_eq!(
+        payload.result.as_ref().unwrap()["employee_id"],
+        json!("123-45-6789")
+    );
 }
 
 #[tokio::test]
@@ -187,7 +226,15 @@ async fn unauthenticated_user_is_denied_before_args_mutate_result() {
         json!({ "ssn": "999-99-9999", "salary": 50000, "employee_id": "123-45-6789" }),
     );
 
-    let r = evaluate_route(route, &mut bag, &mut payload, &pdp(), &plugins(), &delegations()).await;
+    let r = evaluate_route(
+        route,
+        &mut bag,
+        &mut payload,
+        &pdp(),
+        &plugins(),
+        &delegations(),
+    )
+    .await;
     assert!(matches!(r.decision, Decision::Deny { .. }));
     assert!(!r.result_modified);
 }
@@ -208,7 +255,15 @@ async fn args_validator_rejects_wrong_type() {
         json!({ "ssn": "x", "salary": 1, "employee_id": "x" }),
     );
 
-    let r = evaluate_route(route, &mut bag, &mut payload, &pdp(), &plugins(), &delegations()).await;
+    let r = evaluate_route(
+        route,
+        &mut bag,
+        &mut payload,
+        &pdp(),
+        &plugins(),
+        &delegations(),
+    )
+    .await;
     match r.decision {
         Decision::Deny { rule_source, .. } => {
             assert!(
@@ -216,7 +271,7 @@ async fn args_validator_rejects_wrong_type() {
                 "expected args field source, got {}",
                 rule_source,
             );
-        }
+        },
         d => panic!("expected args-phase deny, got {:?}", d),
     }
     // Result phase didn't run.
@@ -235,7 +290,15 @@ async fn inbound_only_evaluation_skips_result_phase() {
     let route = routes.get("get_employee").unwrap();
 
     let mut payload = RoutePayload::new(json!({ "employee_id": "123-45-6789" }));
-    let r = evaluate_route(route, &mut bag, &mut payload, &pdp(), &plugins(), &delegations()).await;
+    let r = evaluate_route(
+        route,
+        &mut bag,
+        &mut payload,
+        &pdp(),
+        &plugins(),
+        &delegations(),
+    )
+    .await;
     assert_eq!(r.decision, Decision::Allow);
     assert!(!r.result_modified);
     assert!(payload.result.is_none());

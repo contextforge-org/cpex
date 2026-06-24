@@ -121,17 +121,19 @@ fn insert(level: &mut BTreeMap<String, Node>, full_key: &str, segments: &[&str],
                     "CEL activation: scalar key collides with an existing namespace; \
                      keeping the namespace and dropping the scalar"
                 );
-            }
+            },
             _ => {
                 level.insert(head, Node::Leaf(leaf));
-            }
+            },
         }
         return;
     }
 
     // Intermediate segment — descend, converting a leaf into a branch if
     // needed (namespace wins).
-    let entry = level.entry(head).or_insert_with(|| Node::Branch(BTreeMap::new()));
+    let entry = level
+        .entry(head)
+        .or_insert_with(|| Node::Branch(BTreeMap::new()));
     if let Node::Leaf(_) = entry {
         tracing::warn!(
             key = %full_key,
@@ -155,7 +157,7 @@ fn node_to_value(node: Node) -> Value {
                 .map(|(k, child)| (k, node_to_value(child)))
                 .collect();
             Value::from(map)
-        }
+        },
     }
 }
 
@@ -185,7 +187,7 @@ fn attr_to_value(attr: &AttributeValue) -> Value {
             sorted.sort();
             let items: Vec<Value> = sorted.into_iter().map(|s| Value::from(s.clone())).collect();
             Value::from(items)
-        }
+        },
     }
 }
 
@@ -216,12 +218,12 @@ fn yaml_to_value(v: &serde_yaml::Value) -> Value {
             } else {
                 float_to_value(n.as_f64().unwrap_or(f64::NAN))
             }
-        }
+        },
         serde_yaml::Value::String(s) => Value::from(s.clone()),
         serde_yaml::Value::Sequence(seq) => {
             let items: Vec<Value> = seq.iter().map(yaml_to_value).collect();
             Value::from(items)
-        }
+        },
         serde_yaml::Value::Mapping(map) => {
             let mut out: HashMap<String, Value> = HashMap::new();
             for (k, val) in map {
@@ -230,7 +232,7 @@ fn yaml_to_value(v: &serde_yaml::Value) -> Value {
                 }
             }
             Value::from(out)
-        }
+        },
         // serde_yaml's tagged values are not used in APL configs; treat as null.
         _ => Value::Null,
     }
@@ -347,7 +349,10 @@ mod tests {
         let ctx = bag_to_context(&bag, &args);
         // Author-supplied `resource` is visible.
         assert!(matches!(
-            run_cel("resource.kind == 'document' && resource.sensitivity == 3", &ctx),
+            run_cel(
+                "resource.kind == 'document' && resource.sensitivity == 3",
+                &ctx
+            ),
             Ok(Value::Bool(true))
         ));
         // `subject` from the bag wins over the args' `subject: shadowed`.

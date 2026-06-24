@@ -27,7 +27,7 @@
 use std::sync::Arc;
 
 use crate::attributes::AttributeBag;
-use crate::evaluator::{evaluate_pipeline, evaluate_effects, Decision, FieldOutcome};
+use crate::evaluator::{evaluate_effects, evaluate_pipeline, Decision, FieldOutcome};
 use crate::pipeline::TaintEvent;
 use crate::rules::CompiledRoute;
 use crate::step::{DelegationInvoker, DispatchPhase, PdpResolver, PluginInvoker};
@@ -47,7 +47,10 @@ impl RoutePayload {
     }
 
     pub fn with_result(args: serde_json::Value, result: serde_json::Value) -> Self {
-        Self { args, result: Some(result) }
+        Self {
+            args,
+            result: Some(result),
+        }
     }
 }
 
@@ -100,18 +103,21 @@ pub async fn evaluate_pre(
         .await;
         taints.extend(eval.taints);
         match eval.outcome {
-            FieldOutcome::Pass => {}
+            FieldOutcome::Pass => {},
             FieldOutcome::Replace(new_val) => {
                 if set_dotted(&mut payload.args, &rule.field, new_val) {
                     args_modified = true;
                 }
-            }
+            },
             FieldOutcome::Omit => {
                 if remove_dotted(&mut payload.args, &rule.field) {
                     args_modified = true;
                 }
-            }
-            FieldOutcome::Deny { reason, stage_index: _ } => {
+            },
+            FieldOutcome::Deny {
+                reason,
+                stage_index: _,
+            } => {
                 return RouteDecision {
                     decision: Decision::Deny {
                         reason: Some(reason),
@@ -121,7 +127,7 @@ pub async fn evaluate_pre(
                     args_modified,
                     result_modified: false,
                 };
-            }
+            },
         }
     }
 
@@ -183,18 +189,21 @@ pub async fn evaluate_post(
             .await;
             taints.extend(eval.taints);
             match eval.outcome {
-                FieldOutcome::Pass => {}
+                FieldOutcome::Pass => {},
                 FieldOutcome::Replace(new_val) => {
                     if set_dotted(result, &rule.field, new_val) {
                         result_modified = true;
                     }
-                }
+                },
                 FieldOutcome::Omit => {
                     if remove_dotted(result, &rule.field) {
                         result_modified = true;
                     }
-                }
-                FieldOutcome::Deny { reason, stage_index: _ } => {
+                },
+                FieldOutcome::Deny {
+                    reason,
+                    stage_index: _,
+                } => {
                     return RouteDecision {
                         decision: Decision::Deny {
                             reason: Some(reason),
@@ -204,7 +213,7 @@ pub async fn evaluate_post(
                         args_modified: false,
                         result_modified,
                     };
-                }
+                },
             }
         }
     }
@@ -272,7 +281,10 @@ pub async fn evaluate_route(
 
 /// Read `root.a.b.c` from a JSON value via dot-separated path. Returns
 /// `None` if any segment is missing or the path crosses a non-object.
-pub(crate) fn get_dotted<'a>(root: &'a serde_json::Value, path: &str) -> Option<&'a serde_json::Value> {
+pub(crate) fn get_dotted<'a>(
+    root: &'a serde_json::Value,
+    path: &str,
+) -> Option<&'a serde_json::Value> {
     let mut cur = root;
     for seg in path.split('.') {
         cur = cur.get(seg)?;
@@ -283,7 +295,11 @@ pub(crate) fn get_dotted<'a>(root: &'a serde_json::Value, path: &str) -> Option<
 /// Write to `root.a.b.c` via dot-separated path. Returns true on success;
 /// false if the parent path doesn't exist or doesn't resolve to an object.
 /// Does not create missing parent objects — that'd hide schema bugs.
-pub(crate) fn set_dotted(root: &mut serde_json::Value, path: &str, value: serde_json::Value) -> bool {
+pub(crate) fn set_dotted(
+    root: &mut serde_json::Value,
+    path: &str,
+    value: serde_json::Value,
+) -> bool {
     let parts: Vec<&str> = path.split('.').collect();
     let (leaf, parents) = match parts.split_last() {
         Some(x) => x,
@@ -291,8 +307,12 @@ pub(crate) fn set_dotted(root: &mut serde_json::Value, path: &str, value: serde_
     };
     let mut cur = root;
     for seg in parents {
-        let Some(next) = cur.get_mut(*seg) else { return false; };
-        if !next.is_object() { return false; }
+        let Some(next) = cur.get_mut(*seg) else {
+            return false;
+        };
+        if !next.is_object() {
+            return false;
+        }
         cur = next;
     }
     if let serde_json::Value::Object(map) = cur {
@@ -312,8 +332,12 @@ pub(crate) fn remove_dotted(root: &mut serde_json::Value, path: &str) -> bool {
     };
     let mut cur = root;
     for seg in parents {
-        let Some(next) = cur.get_mut(*seg) else { return false; };
-        if !next.is_object() { return false; }
+        let Some(next) = cur.get_mut(*seg) else {
+            return false;
+        };
+        if !next.is_object() {
+            return false;
+        }
         cur = next;
     }
     if let serde_json::Value::Object(map) = cur {
@@ -340,13 +364,18 @@ mod tests {
     struct AllowPdp;
     #[async_trait]
     impl PdpResolver for AllowPdp {
-        fn dialect(&self) -> PdpDialect { PdpDialect::Cedar }
+        fn dialect(&self) -> PdpDialect {
+            PdpDialect::Cedar
+        }
         async fn evaluate(
             &self,
             _call: &PdpCall,
             _bag: &AttributeBag,
         ) -> Result<PdpDecision, PdpError> {
-            Ok(PdpDecision { decision: Decision::Allow, diagnostics: vec![] })
+            Ok(PdpDecision {
+                decision: Decision::Allow,
+                diagnostics: vec![],
+            })
         }
     }
 
@@ -387,7 +416,10 @@ mod tests {
     fn deny_rule(source: &str, reason: &str) -> Rule {
         Rule::single(
             Expression::Always,
-            Effect::Deny { reason: Some(reason.into()), code: None },
+            Effect::Deny {
+                reason: Some(reason.into()),
+                code: None,
+            },
             source,
         )
     }
@@ -399,7 +431,15 @@ mod tests {
         let route = CompiledRoute::new("noop");
         let mut bag = AttributeBag::new();
         let mut payload = RoutePayload::new(json!({}));
-        let r = evaluate_route(&route, &mut bag, &mut payload, &pdp_arc(), &plugins(), &delegations()).await;
+        let r = evaluate_route(
+            &route,
+            &mut bag,
+            &mut payload,
+            &pdp_arc(),
+            &plugins(),
+            &delegations(),
+        )
+        .await;
         assert_eq!(r.decision, Decision::Allow);
         assert!(!r.args_modified);
         assert!(!r.result_modified);
@@ -409,10 +449,20 @@ mod tests {
     #[tokio::test]
     async fn args_pipeline_mutates_payload() {
         let mut route = CompiledRoute::new("ping");
-        route.args.push(field_rule("ssn", vec![Stage::Mask { keep_last: 4 }]));
+        route
+            .args
+            .push(field_rule("ssn", vec![Stage::Mask { keep_last: 4 }]));
         let mut bag = AttributeBag::new();
         let mut payload = RoutePayload::new(json!({ "ssn": "123-45-6789" }));
-        let r = evaluate_route(&route, &mut bag, &mut payload, &pdp_arc(), &plugins(), &delegations()).await;
+        let r = evaluate_route(
+            &route,
+            &mut bag,
+            &mut payload,
+            &pdp_arc(),
+            &plugins(),
+            &delegations(),
+        )
+        .await;
         assert_eq!(r.decision, Decision::Allow);
         assert!(r.args_modified);
         assert_eq!(payload.args["ssn"], json!("*******6789"));
@@ -425,21 +475,38 @@ mod tests {
             "amount",
             vec![
                 Stage::Type(TypeCheck::Int),
-                Stage::Range { min: Some(0), max: Some(100) },
+                Stage::Range {
+                    min: Some(0),
+                    max: Some(100),
+                },
             ],
         ));
         // Also has a policy rule that would deny — should NOT be reached
         // (args deny short-circuits). If reached, source would be "policy[0]"
         // instead of the args rule's source.
-        route.policy.push(Effect::from(deny_rule("policy[0]", "policy denied too")));
+        route
+            .policy
+            .push(Effect::from(deny_rule("policy[0]", "policy denied too")));
 
         let mut bag = AttributeBag::new();
         let mut payload = RoutePayload::new(json!({ "amount": 200 }));
-        let r = evaluate_route(&route, &mut bag, &mut payload, &pdp_arc(), &plugins(), &delegations()).await;
+        let r = evaluate_route(
+            &route,
+            &mut bag,
+            &mut payload,
+            &pdp_arc(),
+            &plugins(),
+            &delegations(),
+        )
+        .await;
         match r.decision {
             Decision::Deny { rule_source, .. } => {
-                assert!(rule_source.contains("amount"), "expected args rule source, got {}", rule_source);
-            }
+                assert!(
+                    rule_source.contains("amount"),
+                    "expected args rule source, got {}",
+                    rule_source
+                );
+            },
             d => panic!("expected Deny from args phase, got {:?}", d),
         }
     }
@@ -449,10 +516,21 @@ mod tests {
         // Pipeline references `compensation`, payload doesn't have it →
         // missing-field rule is skipped silently, route allows.
         let mut route = CompiledRoute::new("ping");
-        route.args.push(field_rule("compensation", vec![Stage::Type(TypeCheck::Int)]));
+        route.args.push(field_rule(
+            "compensation",
+            vec![Stage::Type(TypeCheck::Int)],
+        ));
         let mut bag = AttributeBag::new();
         let mut payload = RoutePayload::new(json!({ "other_field": 5 }));
-        let r = evaluate_route(&route, &mut bag, &mut payload, &pdp_arc(), &plugins(), &delegations()).await;
+        let r = evaluate_route(
+            &route,
+            &mut bag,
+            &mut payload,
+            &pdp_arc(),
+            &plugins(),
+            &delegations(),
+        )
+        .await;
         assert_eq!(r.decision, Decision::Allow);
         assert!(!r.args_modified);
     }
@@ -463,7 +541,15 @@ mod tests {
         route.args.push(field_rule("secret", vec![Stage::Omit]));
         let mut bag = AttributeBag::new();
         let mut payload = RoutePayload::new(json!({ "secret": "xyz", "keep": 1 }));
-        let r = evaluate_route(&route, &mut bag, &mut payload, &pdp_arc(), &plugins(), &delegations()).await;
+        let r = evaluate_route(
+            &route,
+            &mut bag,
+            &mut payload,
+            &pdp_arc(),
+            &plugins(),
+            &delegations(),
+        )
+        .await;
         assert_eq!(r.decision, Decision::Allow);
         assert!(r.args_modified);
         assert!(payload.args.get("secret").is_none());
@@ -473,13 +559,25 @@ mod tests {
     #[tokio::test]
     async fn policy_deny_halts_before_result() {
         let mut route = CompiledRoute::new("ping");
-        route.policy.push(Effect::from(deny_rule("policy[0]", "blocked")));
+        route
+            .policy
+            .push(Effect::from(deny_rule("policy[0]", "blocked")));
         // Result rule should never run.
-        route.result.push(field_rule("ssn", vec![Stage::Redact { condition: None }]));
+        route
+            .result
+            .push(field_rule("ssn", vec![Stage::Redact { condition: None }]));
 
         let mut bag = AttributeBag::new();
         let mut payload = RoutePayload::with_result(json!({}), json!({ "ssn": "123" }));
-        let r = evaluate_route(&route, &mut bag, &mut payload, &pdp_arc(), &plugins(), &delegations()).await;
+        let r = evaluate_route(
+            &route,
+            &mut bag,
+            &mut payload,
+            &pdp_arc(),
+            &plugins(),
+            &delegations(),
+        )
+        .await;
         match r.decision {
             Decision::Deny { rule_source, .. } => assert_eq!(rule_source, "policy[0]"),
             d => panic!("expected policy deny, got {:?}", d),
@@ -492,10 +590,20 @@ mod tests {
     #[tokio::test]
     async fn result_phase_skipped_when_no_response() {
         let mut route = CompiledRoute::new("ping");
-        route.result.push(field_rule("ssn", vec![Stage::Redact { condition: None }]));
+        route
+            .result
+            .push(field_rule("ssn", vec![Stage::Redact { condition: None }]));
         let mut bag = AttributeBag::new();
         let mut payload = RoutePayload::new(json!({})); // no result
-        let r = evaluate_route(&route, &mut bag, &mut payload, &pdp_arc(), &plugins(), &delegations()).await;
+        let r = evaluate_route(
+            &route,
+            &mut bag,
+            &mut payload,
+            &pdp_arc(),
+            &plugins(),
+            &delegations(),
+        )
+        .await;
         assert_eq!(r.decision, Decision::Allow);
         assert!(!r.result_modified);
     }
@@ -503,13 +611,21 @@ mod tests {
     #[tokio::test]
     async fn result_pipeline_redacts_field() {
         let mut route = CompiledRoute::new("ping");
-        route.result.push(field_rule("ssn", vec![Stage::Redact { condition: None }]));
+        route
+            .result
+            .push(field_rule("ssn", vec![Stage::Redact { condition: None }]));
         let mut bag = AttributeBag::new();
-        let mut payload = RoutePayload::with_result(
-            json!({}),
-            json!({ "ssn": "123-45-6789", "name": "alice" }),
-        );
-        let r = evaluate_route(&route, &mut bag, &mut payload, &pdp_arc(), &plugins(), &delegations()).await;
+        let mut payload =
+            RoutePayload::with_result(json!({}), json!({ "ssn": "123-45-6789", "name": "alice" }));
+        let r = evaluate_route(
+            &route,
+            &mut bag,
+            &mut payload,
+            &pdp_arc(),
+            &plugins(),
+            &delegations(),
+        )
+        .await;
         assert_eq!(r.decision, Decision::Allow);
         assert!(r.result_modified);
         let result = payload.result.as_ref().unwrap();
@@ -523,19 +639,31 @@ mod tests {
         // args emits a taint
         route.args.push(field_rule(
             "input",
-            vec![Stage::Taint { label: "args_seen".into(), scopes: vec![TaintScope::Session] }],
+            vec![Stage::Taint {
+                label: "args_seen".into(),
+                scopes: vec![TaintScope::Session],
+            }],
         ));
         // result emits a different taint
         route.result.push(field_rule(
             "output",
-            vec![Stage::Taint { label: "result_seen".into(), scopes: vec![TaintScope::Message] }],
+            vec![Stage::Taint {
+                label: "result_seen".into(),
+                scopes: vec![TaintScope::Message],
+            }],
         ));
         let mut bag = AttributeBag::new();
-        let mut payload = RoutePayload::with_result(
-            json!({ "input": "hello" }),
-            json!({ "output": "world" }),
-        );
-        let r = evaluate_route(&route, &mut bag, &mut payload, &pdp_arc(), &plugins(), &delegations()).await;
+        let mut payload =
+            RoutePayload::with_result(json!({ "input": "hello" }), json!({ "output": "world" }));
+        let r = evaluate_route(
+            &route,
+            &mut bag,
+            &mut payload,
+            &pdp_arc(),
+            &plugins(),
+            &delegations(),
+        )
+        .await;
         assert_eq!(r.decision, Decision::Allow);
         let labels: Vec<&str> = r.taints.iter().map(|t| t.label.as_str()).collect();
         assert_eq!(labels, vec!["args_seen", "result_seen"]);
@@ -552,7 +680,15 @@ mod tests {
         let mut payload = RoutePayload::new(json!({
             "user": { "profile": { "ssn": "123-45-6789", "name": "alice" } }
         }));
-        let r = evaluate_route(&route, &mut bag, &mut payload, &pdp_arc(), &plugins(), &delegations()).await;
+        let r = evaluate_route(
+            &route,
+            &mut bag,
+            &mut payload,
+            &pdp_arc(),
+            &plugins(),
+            &delegations(),
+        )
+        .await;
         assert_eq!(r.decision, Decision::Allow);
         assert!(r.args_modified);
         assert_eq!(payload.args["user"]["profile"]["ssn"], json!("*******6789"));
@@ -562,11 +698,22 @@ mod tests {
     #[tokio::test]
     async fn nested_field_missing_intermediate_is_skipped() {
         let mut route = CompiledRoute::new("ping");
-        route.args.push(field_rule("user.profile.ssn", vec![Stage::Mask { keep_last: 4 }]));
+        route.args.push(field_rule(
+            "user.profile.ssn",
+            vec![Stage::Mask { keep_last: 4 }],
+        ));
         let mut bag = AttributeBag::new();
         // `profile` segment is missing → get_dotted returns None → skip.
         let mut payload = RoutePayload::new(json!({ "user": { "name": "alice" } }));
-        let r = evaluate_route(&route, &mut bag, &mut payload, &pdp_arc(), &plugins(), &delegations()).await;
+        let r = evaluate_route(
+            &route,
+            &mut bag,
+            &mut payload,
+            &pdp_arc(),
+            &plugins(),
+            &delegations(),
+        )
+        .await;
         assert_eq!(r.decision, Decision::Allow);
         assert!(!r.args_modified);
     }
@@ -575,12 +722,24 @@ mod tests {
     async fn post_policy_runs_after_result() {
         let mut route = CompiledRoute::new("ping");
         // Result mutates a field, then post_policy denies.
-        route.result.push(field_rule("ssn", vec![Stage::Redact { condition: None }]));
-        route.post_policy.push(Effect::from(deny_rule("post_policy[0]", "after-the-fact")));
+        route
+            .result
+            .push(field_rule("ssn", vec![Stage::Redact { condition: None }]));
+        route
+            .post_policy
+            .push(Effect::from(deny_rule("post_policy[0]", "after-the-fact")));
 
         let mut bag = AttributeBag::new();
         let mut payload = RoutePayload::with_result(json!({}), json!({ "ssn": "123" }));
-        let r = evaluate_route(&route, &mut bag, &mut payload, &pdp_arc(), &plugins(), &delegations()).await;
+        let r = evaluate_route(
+            &route,
+            &mut bag,
+            &mut payload,
+            &pdp_arc(),
+            &plugins(),
+            &delegations(),
+        )
+        .await;
         match r.decision {
             Decision::Deny { rule_source, .. } => assert_eq!(rule_source, "post_policy[0]"),
             d => panic!("expected post_policy deny, got {:?}", d),
@@ -633,26 +792,38 @@ mod tests {
         // should run args (mutating payload.args), policy (allow here),
         // but NOT result — payload.result stays exactly as given.
         let mut route = CompiledRoute::new("test");
-        route.args.push(field_rule("id", vec![
-            Stage::Mask { keep_last: 2 },
-        ]));
-        route.result.push(field_rule("ssn", vec![
-            Stage::Redact { condition: None },
-        ]));
+        route
+            .args
+            .push(field_rule("id", vec![Stage::Mask { keep_last: 2 }]));
+        route
+            .result
+            .push(field_rule("ssn", vec![Stage::Redact { condition: None }]));
 
-        let mut payload = RoutePayload::with_result(
-            json!({ "id": "ABCDEFGH" }),
-            json!({ "ssn": "555-12-3456" }),
-        );
+        let mut payload =
+            RoutePayload::with_result(json!({ "id": "ABCDEFGH" }), json!({ "ssn": "555-12-3456" }));
         let mut bag = AttributeBag::new();
-        let r = evaluate_pre(&route, &mut bag, &mut payload, &pdp_arc(), &plugins(), &delegations()).await;
+        let r = evaluate_pre(
+            &route,
+            &mut bag,
+            &mut payload,
+            &pdp_arc(),
+            &plugins(),
+            &delegations(),
+        )
+        .await;
         assert_eq!(r.decision, Decision::Allow);
-        assert!(r.args_modified, "args mask stage should have rewritten the field");
+        assert!(
+            r.args_modified,
+            "args mask stage should have rewritten the field"
+        );
         assert!(!r.result_modified, "evaluate_pre must not touch result");
         // Args was rewritten by mask(2).
         assert_eq!(payload.args["id"], json!("******GH"));
         // Result is untouched — post hasn't run.
-        assert_eq!(payload.result.as_ref().unwrap()["ssn"], json!("555-12-3456"));
+        assert_eq!(
+            payload.result.as_ref().unwrap()["ssn"],
+            json!("555-12-3456")
+        );
     }
 
     #[tokio::test]
@@ -660,19 +831,25 @@ mod tests {
         // Route with args + result. evaluate_post skips args entirely
         // (no mutation), runs result + post_policy.
         let mut route = CompiledRoute::new("test");
-        route.args.push(field_rule("id", vec![
-            Stage::Mask { keep_last: 2 },
-        ]));
-        route.result.push(field_rule("ssn", vec![
-            Stage::Redact { condition: None },
-        ]));
+        route
+            .args
+            .push(field_rule("id", vec![Stage::Mask { keep_last: 2 }]));
+        route
+            .result
+            .push(field_rule("ssn", vec![Stage::Redact { condition: None }]));
 
-        let mut payload = RoutePayload::with_result(
-            json!({ "id": "ABCDEFGH" }),
-            json!({ "ssn": "555-12-3456" }),
-        );
+        let mut payload =
+            RoutePayload::with_result(json!({ "id": "ABCDEFGH" }), json!({ "ssn": "555-12-3456" }));
         let mut bag = AttributeBag::new();
-        let r = evaluate_post(&route, &mut bag, &mut payload, &pdp_arc(), &plugins(), &delegations()).await;
+        let r = evaluate_post(
+            &route,
+            &mut bag,
+            &mut payload,
+            &pdp_arc(),
+            &plugins(),
+            &delegations(),
+        )
+        .await;
         assert_eq!(r.decision, Decision::Allow);
         assert!(!r.args_modified, "evaluate_post must not touch args");
         assert!(r.result_modified, "result redact should have fired");
@@ -686,21 +863,38 @@ mod tests {
     async fn evaluate_pre_deny_halts_before_policy() {
         // Args has a type validator that fails → pre denies before policy runs.
         let mut route = CompiledRoute::new("test");
-        route.args.push(field_rule("id", vec![Stage::Type(TypeCheck::Uuid)]));
+        route
+            .args
+            .push(field_rule("id", vec![Stage::Type(TypeCheck::Uuid)]));
         // Policy that would always deny if it ran — assert it doesn't.
         route.policy.push(Effect::from(Rule::single(
             Expression::Always,
-            Effect::Deny { reason: Some("policy_should_not_run".into()), code: None },
+            Effect::Deny {
+                reason: Some("policy_should_not_run".into()),
+                code: None,
+            },
             "test.policy[0]",
         )));
 
         let mut payload = RoutePayload::new(json!({ "id": "not-a-uuid" }));
         let mut bag = AttributeBag::new();
-        let r = evaluate_pre(&route, &mut bag, &mut payload, &pdp_arc(), &plugins(), &delegations()).await;
+        let r = evaluate_pre(
+            &route,
+            &mut bag,
+            &mut payload,
+            &pdp_arc(),
+            &plugins(),
+            &delegations(),
+        )
+        .await;
         match r.decision {
             Decision::Deny { rule_source, .. } => {
-                assert!(rule_source.contains("test.id"), "args denial got source {}", rule_source);
-            }
+                assert!(
+                    rule_source.contains("test.id"),
+                    "args denial got source {}",
+                    rule_source
+                );
+            },
             d => panic!("expected args-side Deny, got {:?}", d),
         }
     }
@@ -712,28 +906,39 @@ mod tests {
         let mut route = CompiledRoute::new("test");
         route.policy.push(Effect::from(Rule::single(
             Expression::Always,
-            Effect::Deny { reason: Some("policy_deny".into()), code: None },
+            Effect::Deny {
+                reason: Some("policy_deny".into()),
+                code: None,
+            },
             "test.policy[0]",
         )));
-        route.result.push(field_rule("ssn", vec![
-            Stage::Redact { condition: None },
-        ]));
+        route
+            .result
+            .push(field_rule("ssn", vec![Stage::Redact { condition: None }]));
         route.post_policy.push(Effect::Taint {
             label: "should_not_emit".into(),
             scopes: vec![TaintScope::Session],
         });
 
-        let mut payload = RoutePayload::with_result(
-            json!({}),
-            json!({ "ssn": "555-12-3456" }),
-        );
+        let mut payload = RoutePayload::with_result(json!({}), json!({ "ssn": "555-12-3456" }));
         let mut bag = AttributeBag::new();
-        let r = evaluate_route(&route, &mut bag, &mut payload, &pdp_arc(), &plugins(), &delegations()).await;
+        let r = evaluate_route(
+            &route,
+            &mut bag,
+            &mut payload,
+            &pdp_arc(),
+            &plugins(),
+            &delegations(),
+        )
+        .await;
         assert!(matches!(r.decision, Decision::Deny { .. }));
         assert!(!r.result_modified, "post must be skipped on pre-side Deny");
         // post_policy never ran, so its taint never landed.
         assert!(r.taints.is_empty());
         // Result untouched.
-        assert_eq!(payload.result.as_ref().unwrap()["ssn"], json!("555-12-3456"));
+        assert_eq!(
+            payload.result.as_ref().unwrap()["ssn"],
+            json!("555-12-3456")
+        );
     }
 }

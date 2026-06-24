@@ -329,9 +329,8 @@ impl IdentityPayload {
     /// **not** copied into Extensions — they're the resolver's
     /// internal workspace, not request-wide state.
     pub fn apply_to_extensions(&self, mut ext: Extensions) -> Extensions {
-        let needs_security_update = self.subject.is_some()
-            || self.client.is_some()
-            || self.caller_workload.is_some();
+        let needs_security_update =
+            self.subject.is_some() || self.client.is_some() || self.caller_workload.is_some();
 
         if needs_security_update {
             // Clone-out the existing security extension (or default a
@@ -374,10 +373,7 @@ mod tests {
 
     #[test]
     fn raw_token_serializes_without_secret() {
-        let p = IdentityPayload::new(
-            "eyJhbGciOiJSUzI1NiJ9.payload.sig",
-            TokenSource::Bearer,
-        );
+        let p = IdentityPayload::new("eyJhbGciOiJSUzI1NiJ9.payload.sig", TokenSource::Bearer);
         let json = serde_json::to_string(&p).unwrap();
         assert!(
             !json.contains("eyJhbGciOiJSUzI1NiJ9"),
@@ -416,7 +412,10 @@ mod tests {
         assert_eq!(p.source_header(), Some("Authorization"));
         assert_eq!(p.client_host(), Some("10.0.0.1"));
         assert_eq!(p.client_port(), Some(443));
-        assert_eq!(p.headers().get("user-agent").map(String::as_str), Some("curl/8.0"));
+        assert_eq!(
+            p.headers().get("user-agent").map(String::as_str),
+            Some("curl/8.0")
+        );
     }
 
     #[test]
@@ -431,8 +430,11 @@ mod tests {
             id: Some("alice".into()),
             ..Default::default()
         });
-        assert_eq!(updated.raw_token(), "eyJ.tok");  // input preserved
-        assert_eq!(updated.subject.as_ref().unwrap().id.as_deref(), Some("alice"));
+        assert_eq!(updated.raw_token(), "eyJ.tok"); // input preserved
+        assert_eq!(
+            updated.subject.as_ref().unwrap().id.as_deref(),
+            Some("alice")
+        );
         // Original unchanged — the clone is a separate value.
         assert!(original.subject.is_none());
     }
@@ -456,5 +458,4 @@ mod tests {
         assert_eq!(base.subject.as_ref().unwrap().id.as_deref(), Some("alice"));
         assert!(base.caller_workload.is_some());
     }
-
 }

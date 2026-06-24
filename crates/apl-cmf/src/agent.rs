@@ -20,14 +20,28 @@ use cpex_core::extensions::AgentExtension;
 use std::collections::HashSet;
 
 pub fn extract_agent(agent: &AgentExtension, bag: &mut AttributeBag) {
-    if let Some(v) = &agent.input { bag.set("agent.input", v.clone()); }
-    if let Some(v) = &agent.session_id { bag.set("agent.session_id", v.clone()); }
-    if let Some(v) = &agent.conversation_id { bag.set("agent.conversation_id", v.clone()); }
-    if let Some(v) = agent.turn { bag.set("agent.turn", v as i64); }
-    if let Some(v) = &agent.agent_id { bag.set("agent.agent_id", v.clone()); }
-    if let Some(v) = &agent.parent_agent_id { bag.set("agent.parent_agent_id", v.clone()); }
+    if let Some(v) = &agent.input {
+        bag.set("agent.input", v.clone());
+    }
+    if let Some(v) = &agent.session_id {
+        bag.set("agent.session_id", v.clone());
+    }
+    if let Some(v) = &agent.conversation_id {
+        bag.set("agent.conversation_id", v.clone());
+    }
+    if let Some(v) = agent.turn {
+        bag.set("agent.turn", v as i64);
+    }
+    if let Some(v) = &agent.agent_id {
+        bag.set("agent.agent_id", v.clone());
+    }
+    if let Some(v) = &agent.parent_agent_id {
+        bag.set("agent.parent_agent_id", v.clone());
+    }
     if let Some(conv) = &agent.conversation {
-        if let Some(s) = &conv.summary { bag.set("agent.conversation.summary", s.clone()); }
+        if let Some(s) = &conv.summary {
+            bag.set("agent.conversation.summary", s.clone());
+        }
         if !conv.topics.is_empty() {
             let topics: HashSet<String> = conv.topics.iter().cloned().collect();
             bag.set("agent.conversation.topics", topics);
@@ -61,7 +75,10 @@ mod tests {
         extract_agent(&agent, &mut bag);
         assert_eq!(bag.get_string("agent.session_id"), Some("sess-1"));
         assert_eq!(bag.get_int("agent.turn"), Some(3));
-        assert_eq!(bag.get_string("agent.conversation.summary"), Some("hr inquiry"));
+        assert_eq!(
+            bag.get_string("agent.conversation.summary"),
+            Some("hr inquiry")
+        );
         assert!(bag.set_contains("agent.conversation.topics", "payroll"));
         assert!(!bag.contains("agent.parent_agent_id"));
     }

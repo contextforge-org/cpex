@@ -138,8 +138,8 @@ impl JwtIdentityResolver {
             })
         })?;
 
-        let typed: JwtIdentityResolverConfig = serde_json::from_value(raw_config.clone())
-            .map_err(|e| {
+        let typed: JwtIdentityResolverConfig =
+            serde_json::from_value(raw_config.clone()).map_err(|e| {
                 Box::new(PluginError::Config {
                     message: format!(
                         "plugin '{}' (cpex-plugin-identity-jwt) config parse failed: {e}",
@@ -199,7 +199,7 @@ impl JwtIdentityResolver {
                         cfg.name
                     ),
                 }));
-            }
+            },
         };
 
         // Reject `role: Custom(...)` at construction — the framework
@@ -336,7 +336,7 @@ impl Plugin for JwtIdentityResolver {
                         algorithms: cfg.algorithms.clone(),
                         leeway_seconds: cfg.leeway_seconds,
                     }
-                }
+                },
             };
 
             // Spawn refresh task. The closure owns:
@@ -374,7 +374,7 @@ impl Plugin for JwtIdentityResolver {
                                     issuer = %issuer_label,
                                     "JWKS refresh succeeded"
                                 );
-                            }
+                            },
                             Err(e) => {
                                 tracing::warn!(
                                     plugin = %plugin_label,
@@ -382,7 +382,7 @@ impl Plugin for JwtIdentityResolver {
                                     error = %e,
                                     "JWKS refresh failed; keeping previous KeyStore"
                                 );
-                            }
+                            },
                         }
                     }
                 });
@@ -395,10 +395,7 @@ impl Plugin for JwtIdentityResolver {
         // Park the handles so Drop can abort them. Held under a
         // std::sync::Mutex because the resolver's outer methods are
         // a mix of sync and async; we don't await while holding it.
-        let mut tasks = self
-            .refresh_tasks
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
+        let mut tasks = self.refresh_tasks.lock().unwrap_or_else(|p| p.into_inner());
         tasks.extend(new_tasks);
 
         Ok(())
@@ -432,7 +429,7 @@ impl HookHandler<IdentityHook> for JwtIdentityResolver {
                         self.header, self.cfg.name, self.role
                     ),
                 ));
-            }
+            },
         };
         if raw_token.is_empty() {
             return PluginResult::deny(PluginViolation::new(
@@ -449,7 +446,7 @@ impl HookHandler<IdentityHook> for JwtIdentityResolver {
                     "auth.malformed_header",
                     "JWT not well-formed or missing `iss` claim",
                 ));
-            }
+            },
         };
         // Read-lock the issuer list. After `initialize()` it's
         // immutable for the resolver's lifetime; reads are cheap.
@@ -466,7 +463,7 @@ impl HookHandler<IdentityHook> for JwtIdentityResolver {
                     "auth.untrusted_issuer",
                     format!("issuer '{iss}' is not in the trusted-issuer list"),
                 ));
-            }
+            },
         };
 
         // 2. Validate signature + standard claims, after kid-driven
@@ -491,7 +488,7 @@ impl HookHandler<IdentityHook> for JwtIdentityResolver {
                          yet succeeded; check upstream IdP reachability"
                     ),
                 ));
-            }
+            },
             Err(ValidateError::UnknownKid(kid)) => {
                 let reason = match kid {
                     Some(k) => format!(
@@ -501,11 +498,11 @@ impl HookHandler<IdentityHook> for JwtIdentityResolver {
                         .to_string(),
                 };
                 return PluginResult::deny(PluginViolation::new("auth.unknown_kid", reason));
-            }
+            },
             Err(ValidateError::Jwt(e)) => {
                 let (code, reason) = classify_jwt_error(&e);
                 return PluginResult::deny(PluginViolation::new(code, reason));
-            }
+            },
         };
 
         // 3. Build the updated payload by mapping claims into the
@@ -520,7 +517,7 @@ impl HookHandler<IdentityHook> for JwtIdentityResolver {
                         "claim mapper produced no subject — required `sub` \
                          claim missing or wrong shape",
                     ));
-                }
+                },
             },
             TokenRole::Client => match self.claim_mapper.map_client(&token_data.claims) {
                 Some(c) => updated.client = Some(c),
@@ -530,7 +527,7 @@ impl HookHandler<IdentityHook> for JwtIdentityResolver {
                         "claim mapper produced no client — required `client_id` \
                          / `azp` claim missing",
                     ));
-                }
+                },
             },
             TokenRole::Workload => match self.claim_mapper.map_workload(&token_data.claims) {
                 Some(w) => updated.caller_workload = Some(w),
@@ -540,7 +537,7 @@ impl HookHandler<IdentityHook> for JwtIdentityResolver {
                         "claim mapper produced no workload — token doesn't look \
                          like a SPIFFE-JWT-SVID (sub doesn't start with `spiffe://`)",
                     ));
-                }
+                },
             },
             TokenRole::Custom(_) => {
                 // Filtered out at construction; defense in depth.
@@ -548,7 +545,7 @@ impl HookHandler<IdentityHook> for JwtIdentityResolver {
                     "auth.misconfigured",
                     "role: Custom(...) is not supported",
                 ));
-            }
+            },
             // TokenRole is #[non_exhaustive]; future variants must be
             // explicitly handled. Until then, treat unknown roles the
             // same as Custom — surface as misconfigured rather than
@@ -558,7 +555,7 @@ impl HookHandler<IdentityHook> for JwtIdentityResolver {
                     "auth.misconfigured",
                     "unsupported TokenRole variant",
                 ));
-            }
+            },
         }
 
         // 4. Stash the raw token for forwarding plugins. Key the
@@ -703,9 +700,7 @@ fn classify_jwt_error(e: &jsonwebtoken::errors::Error) -> (&'static str, String)
         ErrorKind::ImmatureSignature => "auth.token_not_yet_valid",
         ErrorKind::InvalidAudience => "auth.audience_mismatch",
         ErrorKind::InvalidIssuer => "auth.untrusted_issuer",
-        ErrorKind::InvalidAlgorithm | ErrorKind::InvalidAlgorithmName => {
-            "auth.algorithm_mismatch"
-        }
+        ErrorKind::InvalidAlgorithm | ErrorKind::InvalidAlgorithmName => "auth.algorithm_mismatch",
         ErrorKind::Base64(_) | ErrorKind::Json(_) => "auth.malformed_header",
         _ => "auth.token_invalid",
     };
@@ -747,8 +742,7 @@ mod tests {
     #[test]
     fn new_rejects_empty_trusted_issuers() {
         let cfg = cfg_with_config("jwt", json!({ "trusted_issuers": [] }));
-        let err = JwtIdentityResolver::new(cfg)
-            .expect_err("empty trusted_issuers should fail");
+        let err = JwtIdentityResolver::new(cfg).expect_err("empty trusted_issuers should fail");
         assert!(format!("{err}").contains("trusted_issuers"));
     }
 
@@ -765,8 +759,7 @@ mod tests {
                 "claim_mapper": "made-up-mapper",
             }),
         );
-        let err = JwtIdentityResolver::new(cfg)
-            .expect_err("unknown mapper should fail");
+        let err = JwtIdentityResolver::new(cfg).expect_err("unknown mapper should fail");
         assert!(format!("{err}").contains("claim_mapper"));
     }
 

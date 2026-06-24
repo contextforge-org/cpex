@@ -179,10 +179,7 @@ fn config(name: &str, priority: i32) -> PluginConfig {
 /// downstream read these via the public accessors.
 fn build_payload(token: &str) -> IdentityPayload {
     let mut headers = std::collections::HashMap::new();
-    headers.insert(
-        "authorization".to_string(),
-        format!("Bearer {}", token),
-    );
+    headers.insert("authorization".to_string(), format!("Bearer {}", token));
     headers.insert(
         "x-spiffe-id".to_string(),
         "spiffe://example.com/agent-1".to_string(),
@@ -214,7 +211,8 @@ async fn single_resolver_populates_subject() {
         cfg: cfg.clone(),
         subject_id: "alice@corp.com".to_string(),
     });
-    mgr.register_handler::<IdentityHook, _>(plugin, cfg).unwrap();
+    mgr.register_handler::<IdentityHook, _>(plugin, cfg)
+        .unwrap();
     mgr.initialize().await.unwrap();
 
     let (result, _bg) = mgr
@@ -312,7 +310,8 @@ async fn rejecting_resolver_halts_pipeline() {
     let mgr = Arc::new(PluginManager::default());
     let cfg = config("rejecting-resolver", 10);
     let plugin = Arc::new(RejectingResolver { cfg: cfg.clone() });
-    mgr.register_handler::<IdentityHook, _>(plugin, cfg).unwrap();
+    mgr.register_handler::<IdentityHook, _>(plugin, cfg)
+        .unwrap();
     mgr.initialize().await.unwrap();
 
     let (result, _bg) = mgr
@@ -342,10 +341,10 @@ async fn rejecting_resolver_halts_pipeline() {
 /// landed.
 #[tokio::test]
 async fn apply_to_extensions_populates_security_and_preserves_existing_fields() {
-    use cpex_core::extensions::SecurityExtension;
     use cpex_core::extensions::raw_credentials::{
         RawCredentialsExtension, RawInboundToken, TokenKind, TokenRole,
     };
+    use cpex_core::extensions::SecurityExtension;
 
     // ----- Handler: produces a subject + a RawCredentialsExtension -----
     struct FullResolver {
@@ -385,7 +384,8 @@ async fn apply_to_extensions_populates_security_and_preserves_existing_fields() 
     let mgr = Arc::new(PluginManager::default());
     let cfg = config("full-resolver", 10);
     let plugin = Arc::new(FullResolver { cfg: cfg.clone() });
-    mgr.register_handler::<IdentityHook, _>(plugin, cfg).unwrap();
+    mgr.register_handler::<IdentityHook, _>(plugin, cfg)
+        .unwrap();
     mgr.initialize().await.unwrap();
 
     // ----- Host's initial Extensions carries a pre-existing label -----
@@ -416,7 +416,10 @@ async fn apply_to_extensions_populates_security_and_preserves_existing_fields() 
     let updated_ext = final_payload.apply_to_extensions(initial_ext);
 
     // Identity slots populated on security.
-    let sec = updated_ext.security.as_ref().expect("security slot present");
+    let sec = updated_ext
+        .security
+        .as_ref()
+        .expect("security slot present");
     assert_eq!(
         sec.subject.as_ref().unwrap().id.as_deref(),
         Some("alice@corp.com"),
@@ -452,7 +455,8 @@ async fn from_pipeline_result_returns_none_on_deny() {
     let mgr = Arc::new(PluginManager::default());
     let cfg = config("rejecter", 10);
     let plugin = Arc::new(RejectingResolver { cfg: cfg.clone() });
-    mgr.register_handler::<IdentityHook, _>(plugin, cfg).unwrap();
+    mgr.register_handler::<IdentityHook, _>(plugin, cfg)
+        .unwrap();
     mgr.initialize().await.unwrap();
 
     let (result, _bg) = mgr
@@ -694,8 +698,8 @@ async fn cap_gating_post_apply_through_cmf_dispatch() {
         )
         .await;
     assert!(id_result.continue_processing);
-    let identity = IdentityPayload::from_pipeline_result(&id_result)
-        .expect("identity should have resolved");
+    let identity =
+        IdentityPayload::from_pipeline_result(&id_result).expect("identity should have resolved");
 
     // 3. Apply.
     let updated_ext = identity.apply_to_extensions(initial_ext);
@@ -706,12 +710,7 @@ async fn cap_gating_post_apply_through_cmf_dispatch() {
         message: Message::text(Role::User, "fetch sensitive data"),
     };
     let (cmf_result, _bg) = mgr
-        .invoke_named::<CmfHook>(
-            "cmf.tool_pre_invoke",
-            cmf_payload,
-            updated_ext,
-            None,
-        )
+        .invoke_named::<CmfHook>("cmf.tool_pre_invoke", cmf_payload, updated_ext, None)
         .await;
     assert!(
         cmf_result.continue_processing,

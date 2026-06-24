@@ -68,12 +68,11 @@ impl PublicKeySource {
                 let bytes = hex::decode(hex.trim())
                     .map_err(|e| format!("public_key.hex isn't valid hex: {e}"))?;
                 Self::bytes_to_public_key(&bytes)
-            }
+            },
             Self::Bytes { bytes } => Self::bytes_to_public_key(bytes),
             Self::File { path } => {
-                let raw = std::fs::read(path).map_err(|e| {
-                    format!("public_key file '{}' unreadable: {e}", path.display())
-                })?;
+                let raw = std::fs::read(path)
+                    .map_err(|e| format!("public_key file '{}' unreadable: {e}", path.display()))?;
                 // File might be raw 32 bytes OR a hex string (with
                 // optional whitespace). Try raw first; fall back to
                 // hex if the length doesn't match.
@@ -90,14 +89,11 @@ impl PublicKeySource {
                     })?;
                     let trimmed = as_str.trim();
                     let bytes = hex::decode(trimmed).map_err(|e| {
-                        format!(
-                            "public_key file '{}' isn't valid hex: {e}",
-                            path.display()
-                        )
+                        format!("public_key file '{}' isn't valid hex: {e}", path.display())
                     })?;
                     Self::bytes_to_public_key(&bytes)
                 }
-            }
+            },
         }
     }
 

@@ -93,7 +93,12 @@ async fn build_manager() -> Arc<PluginManager> {
     mgr
 }
 
-fn build_payload(inbound: String, target: &str, audience: &str, perms: &[&str]) -> DelegationPayload {
+fn build_payload(
+    inbound: String,
+    target: &str,
+    audience: &str,
+    perms: &[&str],
+) -> DelegationPayload {
     DelegationPayload::new(inbound, target)
         .with_target_type(TargetType::Tool)
         .with_target_audience(audience)
@@ -173,8 +178,8 @@ async fn happy_path_attenuates_biscuit() {
         .expect("attenuated biscuit verifies against root");
 
     // The new biscuit should have one more block than the original.
-    let original = Biscuit::from_base64(&inbound, roots().keypair.public())
-        .expect("inbound verifies");
+    let original =
+        Biscuit::from_base64(&inbound, roots().keypair.public()).expect("inbound verifies");
     assert_eq!(attenuated.block_count(), original.block_count() + 1);
 
     // Authorize against the matching operation — should succeed
@@ -272,8 +277,8 @@ async fn wrong_root_key_rejects() {
 #[tokio::test]
 async fn empty_bearer_token_rejects() {
     let mgr = build_manager().await;
-    let payload = DelegationPayload::new("", "tool")
-        .with_target_audience("https://downstream.example.com");
+    let payload =
+        DelegationPayload::new("", "tool").with_target_audience("https://downstream.example.com");
 
     let result = invoke(&mgr, payload).await;
     assert!(!result.continue_processing);

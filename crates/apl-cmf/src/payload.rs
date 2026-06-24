@@ -41,10 +41,14 @@ pub(crate) fn walk(value: &Value, prefix: &str, bag: &mut AttributeBag) {
     match value {
         Value::Object(map) => {
             for (key, sub) in map {
-                let dotted = if prefix.is_empty() { key.clone() } else { format!("{}.{}", prefix, key) };
+                let dotted = if prefix.is_empty() {
+                    key.clone()
+                } else {
+                    format!("{}.{}", prefix, key)
+                };
                 walk(sub, &dotted, bag);
             }
-        }
+        },
         Value::Array(items) => {
             // Promote string-only arrays to StringSet — supports
             // `args.tags contains "urgent"` predicates.
@@ -63,7 +67,7 @@ pub(crate) fn walk(value: &Value, prefix: &str, bag: &mut AttributeBag) {
             }
             // Non-string arrays (mixed, numeric, nested): silently skipped
             // — no list scalar in the bag for those.
-        }
+        },
         Value::String(s) => bag.set(prefix, s.clone()),
         Value::Bool(b) => bag.set(prefix, *b),
         Value::Number(n) => {
@@ -72,8 +76,8 @@ pub(crate) fn walk(value: &Value, prefix: &str, bag: &mut AttributeBag) {
             } else if let Some(f) = n.as_f64() {
                 bag.set(prefix, f);
             }
-        }
-        Value::Null => {} // Skip — equivalent to "key not present."
+        },
+        Value::Null => {}, // Skip — equivalent to "key not present."
     }
 }
 

@@ -229,7 +229,7 @@ impl AnyHookHandler for AplRouteHandler {
                         "session state could not be loaded",
                     )),
                 }));
-            }
+            },
         };
 
         // Build the attribute bag. APL predicates read flat keys; the
@@ -263,7 +263,7 @@ impl AnyHookHandler for AplRouteHandler {
                 // fire on entities without a structured result).
                 let result_value = extract_result_from_message(&msg_payload.message);
                 RoutePayload::with_result(args_value, result_value)
-            }
+            },
         };
 
         // Flatten the call args into the bag under `args.<path>`. APL's
@@ -321,7 +321,7 @@ impl AnyHookHandler for AplRouteHandler {
                     &delegations_dyn,
                 )
                 .await
-            }
+            },
             Phase::Post => {
                 evaluate_post(
                     &self.route,
@@ -332,7 +332,7 @@ impl AnyHookHandler for AplRouteHandler {
                     &delegations_dyn,
                 )
                 .await
-            }
+            },
         };
 
         // Drain Session-scoped taints (from `taint(label, session)` /
@@ -421,7 +421,7 @@ impl AnyHookHandler for AplRouteHandler {
                 };
                 let reason = reason.unwrap_or_else(|| "access denied".to_string());
                 (false, Some(PluginViolation::new(code, reason)))
-            }
+            },
         };
 
         // Append fail-closed (R18) with merge precedence:
@@ -505,7 +505,7 @@ fn extract_args_from_message(msg: &cpex_core::cmf::Message) -> Value {
                         .map(|(k, v)| (k.clone(), v.clone()))
                         .collect(),
                 );
-            }
+            },
             ContentPart::PromptRequest { content } => {
                 return Value::Object(
                     content
@@ -514,8 +514,8 @@ fn extract_args_from_message(msg: &cpex_core::cmf::Message) -> Value {
                         .map(|(k, v)| (k.clone(), v.clone()))
                         .collect(),
                 );
-            }
-            _ => {}
+            },
+            _ => {},
         }
     }
     Value::String(msg.get_text_content())
@@ -539,14 +539,14 @@ fn write_args_back_to_message(msg: &mut cpex_core::cmf::Message, args: &Value) {
                     content.arguments = obj.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
                 }
                 return;
-            }
+            },
             ContentPart::PromptRequest { content } => {
                 if let Some(obj) = args.as_object() {
                     content.arguments = obj.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
                 }
                 return;
-            }
-            _ => {}
+            },
+            _ => {},
         }
     }
     // Fall through: no structured entity part — treat as text.

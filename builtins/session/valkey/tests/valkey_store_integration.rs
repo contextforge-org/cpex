@@ -53,7 +53,7 @@ async fn valkey_target() -> Option<Target> {
                 url: format!("redis://{host}:{port}"),
                 _container: Some(node),
             })
-        }
+        },
         Err(e) => {
             if std::env::var("REQUIRE_VALKEY_TESTS").as_deref() == Ok("1") {
                 panic!("REQUIRE_VALKEY_TESTS=1 but no Valkey available: {e} (set VALKEY_TEST_URL or start Docker)");
@@ -62,7 +62,7 @@ async fn valkey_target() -> Option<Target> {
                 "SKIPPED: no Valkey available ({e}); set VALKEY_TEST_URL or REQUIRE_VALKEY_TESTS=1"
             );
             None
-        }
+        },
     }
 }
 

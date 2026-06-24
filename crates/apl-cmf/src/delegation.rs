@@ -81,8 +81,14 @@ mod tests {
         assert_eq!(bag.get_int("delegation.depth"), Some(2));
         assert_eq!(bag.get_bool("delegation.delegated"), Some(true));
         assert_eq!(bag.get_bool("delegated"), Some(true));
-        assert_eq!(bag.get_string("delegation.origin_subject_id"), Some("alice"));
-        assert_eq!(bag.get_string("delegation.actor_subject_id"), Some("service-b"));
+        assert_eq!(
+            bag.get_string("delegation.origin_subject_id"),
+            Some("alice")
+        );
+        assert_eq!(
+            bag.get_string("delegation.actor_subject_id"),
+            Some("service-b")
+        );
         assert_eq!(bag.get_float("delegation.age_seconds"), Some(12.5));
     }
 }

@@ -215,11 +215,7 @@ async fn idp_rejection_surfaces_error_code() {
         .await;
 
     let mgr = build_manager(&format!("{}/oauth/token", server.url())).await;
-    let payload = build_payload(
-        "tool",
-        "https://downstream.example.com",
-        &["read"],
-    );
+    let payload = build_payload("tool", "https://downstream.example.com", &["read"]);
 
     let result = invoke(&mgr, payload).await;
     assert!(!result.continue_processing);
@@ -245,11 +241,7 @@ async fn idp_unreachable_surfaces_violation() {
     // on that port). The `127.0.0.1:1` port-1 trick: port 1 isn't
     // bound by typical systems and connection refusal is fast.
     let mgr = build_manager("http://127.0.0.1:1/oauth/token").await;
-    let payload = build_payload(
-        "tool",
-        "https://downstream.example.com",
-        &["read"],
-    );
+    let payload = build_payload("tool", "https://downstream.example.com", &["read"]);
 
     let result = invoke(&mgr, payload).await;
     assert!(!result.continue_processing);
@@ -270,8 +262,8 @@ async fn idp_unreachable_surfaces_violation() {
 #[tokio::test]
 async fn empty_bearer_token_rejects_without_network() {
     let mgr = build_manager("http://this-must-not-be-called/oauth/token").await;
-    let payload = DelegationPayload::new("", "tool")
-        .with_target_audience("https://downstream.example.com");
+    let payload =
+        DelegationPayload::new("", "tool").with_target_audience("https://downstream.example.com");
 
     let result = invoke(&mgr, payload).await;
     assert!(!result.continue_processing);
@@ -321,11 +313,7 @@ async fn idp_narrower_scope_surfaces_scope_too_broad() {
         .await;
 
     let mgr = build_manager(&format!("{}/oauth/token", server.url())).await;
-    let payload = build_payload(
-        "tool",
-        "https://downstream.example.com",
-        &["read", "write"],
-    );
+    let payload = build_payload("tool", "https://downstream.example.com", &["read", "write"]);
 
     let result = invoke(&mgr, payload).await;
     assert!(
@@ -366,11 +354,7 @@ async fn idp_exact_scope_match_succeeds() {
         .await;
 
     let mgr = build_manager(&format!("{}/oauth/token", server.url())).await;
-    let payload = build_payload(
-        "tool",
-        "https://downstream.example.com",
-        &["read", "write"],
-    );
+    let payload = build_payload("tool", "https://downstream.example.com", &["read", "write"]);
 
     let result = invoke(&mgr, payload).await;
     assert!(

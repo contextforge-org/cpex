@@ -105,7 +105,7 @@ impl AuditLogger {
                         }),
                     );
                     break;
-                }
+                },
                 ContentPart::PromptRequest { content } => {
                     record.insert(
                         "prompt_request".into(),
@@ -115,8 +115,8 @@ impl AuditLogger {
                         }),
                     );
                     break;
-                }
-                _ => {}
+                },
+                _ => {},
             }
         }
 
@@ -153,10 +153,10 @@ impl AuditLogger {
             AuditDestination::Stderr => {
                 // One JSON line — easy to grep / forward / jq through.
                 eprintln!("{}", record);
-            }
+            },
             AuditDestination::Tracing => {
                 tracing::info!(target: "apl.audit", record = %record, "audit");
-            }
+            },
         }
     }
 }

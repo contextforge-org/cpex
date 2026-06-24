@@ -110,11 +110,7 @@ impl PdpResolver for PdpRouter {
         PdpDialect::Custom("router".to_string())
     }
 
-    async fn evaluate(
-        &self,
-        call: &PdpCall,
-        bag: &AttributeBag,
-    ) -> Result<PdpDecision, PdpError> {
+    async fn evaluate(&self, call: &PdpCall, bag: &AttributeBag) -> Result<PdpDecision, PdpError> {
         let resolver = self
             .resolvers
             .get(&call.dialect)
@@ -213,7 +209,10 @@ mod tests {
             dialect: PdpDialect::Cedar,
             args: serde_yaml::Value::Null,
         };
-        let res = router.evaluate(&call, &AttributeBag::default()).await.unwrap();
+        let res = router
+            .evaluate(&call, &AttributeBag::default())
+            .await
+            .unwrap();
         assert!(matches!(res.decision, Decision::Allow));
     }
 }

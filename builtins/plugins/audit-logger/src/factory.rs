@@ -40,9 +40,8 @@ impl PluginFactory for AuditLoggerFactory {
             .iter()
             .map(|h| -> (&'static str, _) {
                 let leaked: &'static str = Box::leak(h.clone().into_boxed_str());
-                let adapter: Arc<dyn cpex_core::registry::AnyHookHandler> = Arc::new(
-                    TypedHandlerAdapter::<CmfHook, _>::new(Arc::clone(&logger)),
-                );
+                let adapter: Arc<dyn cpex_core::registry::AnyHookHandler> =
+                    Arc::new(TypedHandlerAdapter::<CmfHook, _>::new(Arc::clone(&logger)));
                 (leaked, adapter)
             })
             .collect();
