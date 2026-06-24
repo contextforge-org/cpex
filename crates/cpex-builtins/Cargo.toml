@@ -1,0 +1,58 @@
+# Location: ./crates/cpex-builtins/Cargo.toml
+# Copyright 2025
+# SPDX-License-Identifier: Apache-2.0
+# Authors: Fred Araujo
+#
+# cpex-builtins — the bundled CPEX extension set behind cargo features.
+#
+# A host depends on this one crate to get the built-in plugins, PDPs, and
+# session stores; the feature list picks exactly what compiles in and gets
+# registered. `register_builtins` / `builtin_pdps` /
+# `builtin_session_store_factories` are #[cfg]-gated to the selected
+# features, so there is no code change between configurations — only the
+# feature list. Both the `cpex` facade and `cpex-ffi` delegate here so the
+# registration set lives in one place.
+
+[package]
+name = "cpex-builtins"
+description = "CPEX built-in plugins, PDPs, and session stores with feature-gated registration."
+version.workspace      = true
+edition.workspace      = true
+license.workspace      = true
+authors.workspace      = true
+
+[features]
+# The common in-process set: the four hook plugins plus both PDPs. Heavier
+# / external-backend extensions (valkey) stay opt-in via `full`.
+default = ["pii-scanner", "audit-logger", "identity-jwt", "delegator-oauth", "cedar-direct", "cel"]
+
+# Each feature pulls exactly one builtin crate.
+pii-scanner     = ["dep:apl-pii-scanner"]
+audit-logger    = ["dep:apl-audit-logger"]
+identity-jwt    = ["dep:apl-identity-jwt"]
+delegator-oauth = ["dep:apl-delegator-oauth"]
+cedar-direct    = ["dep:apl-pdp-cedar-direct"]
+cel             = ["dep:apl-pdp-cel"]
+valkey          = ["dep:apl-session-valkey"]
+
+# Everything wired here, including the Valkey session store (redis client +
+# rustls TLS stack).
+full = ["default", "valkey"]
+
+[dependencies]
+# Registration targets — the manager, PDP factory trait, and APL options.
+cpex-core = { path = "../cpex-core" }
+apl-core = { path = "../apl-core" }
+apl-cpex = { path = "../apl-cpex" }
+
+# Builtin extension crates — each behind its feature.
+apl-pii-scanner = { path = "../apl-pii-scanner", optional = true }
+apl-audit-logger = { path = "../apl-audit-logger", optional = true }
+apl-identity-jwt = { path = "../apl-identity-jwt", optional = true }
+apl-delegator-oauth = { path = "../apl-delegator-oauth", optional = true }
+apl-pdp-cedar-direct = { path = "../apl-pdp-cedar-direct", optional = true }
+apl-pdp-cel = { path = "../apl-pdp-cel", optional = true }
+apl-session-valkey = { path = "../apl-session-valkey", optional = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }

@@ -1054,8 +1054,18 @@ checksum = "773648b94d0e5d620f64f280777445740e61fe701025087ec8b57f45c791888b"
 name = "cpex"
 version = "0.2.0"
 dependencies = [
- "apl-audit-logger",
  "apl-cmf",
+ "apl-core",
+ "apl-cpex",
+ "cpex-builtins",
+ "cpex-core",
+]
+
+[[package]]
+name = "cpex-builtins"
+version = "0.2.0"
+dependencies = [
+ "apl-audit-logger",
  "apl-core",
  "apl-cpex",
  "apl-delegator-oauth",
@@ -1065,6 +1075,7 @@ dependencies = [
  "apl-pii-scanner",
  "apl-session-valkey",
  "cpex-core",
+ "tokio",
 ]
 
 [[package]]
@@ -1104,15 +1115,10 @@ dependencies = [
 name = "cpex-ffi"
 version = "0.2.0"
 dependencies = [
- "apl-audit-logger",
  "apl-cedarling",
  "apl-cpex",
- "apl-delegator-oauth",
- "apl-identity-jwt",
- "apl-pdp-cedar-direct",
- "apl-pii-scanner",
- "apl-session-valkey",
  "async-trait",
+ "cpex-builtins",
  "cpex-core",
  "rmp-serde",
  "serde",
