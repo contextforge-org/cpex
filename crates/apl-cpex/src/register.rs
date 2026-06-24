@@ -69,7 +69,7 @@ pub struct AplOptions {
     /// PDP factories the visitor consults when it encounters a
     /// `global.apl.pdp[]` entry. Each factory advertises a `kind()`
     /// string that matches the YAML block's `kind:` field — e.g.
-    /// `cedar-direct`, `cedarling`, `opa`. An empty list disables
+    /// `cedar-direct`, `opa`. An empty list disables
     /// config-driven PDP wiring; hosts can still supply resolvers via
     /// `pdps`.
     pub pdp_factories: Vec<Arc<dyn PdpFactory>>,

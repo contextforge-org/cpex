@@ -25,20 +25,18 @@ members = [
     "builtins/pdps/cedar-direct",
     "builtins/pdps/cel",
     "builtins/session/valkey",
-    "builtins/cedarling",
     "examples/go-demo/ffi",
 ]
 
 # `default-members` controls what `cargo build` / `cargo test` (with no
-# `-p` or `--workspace` flag) picks up. Cedarling integration crates
-# pull ~200 transitive deps (jsonwebtoken, reqwest, sparkv, datalogic-rs,
-# flate2, etc.) and slow default builds significantly — excluding them
+# `-p` or `--workspace` flag) picks up. `cpex-session-valkey` pulls a redis
+# client + a rustls TLS stack, which slows default builds — excluding it
 # from default-members keeps everyday iteration fast.
 #
-# To exercise Cedarling crates:
-#   cargo build --workspace                # all members
-#   cargo build -p cpex-cedarling           # just this one
-#   cargo test --workspace                 # full sweep (CI)
+# To exercise the Valkey session store:
+#   cargo build --workspace                  # all members
+#   cargo build -p cpex-session-valkey       # just this one
+#   cargo test --workspace                   # full sweep (CI)
 default-members = [
     "crates/cpex",
     "crates/cpex-core",

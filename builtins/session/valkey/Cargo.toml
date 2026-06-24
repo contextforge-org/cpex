@@ -11,7 +11,7 @@
 # This crate is OPTIONAL and feature-gated into cpex-ffi (`valkey` feature)
 # and excluded from the workspace `default-members`, so the Valkey client +
 # its TLS/async stack never land in the default FFI artifact or everyday
-# `cargo build` (mirrors cpex-cedarling). The redis client is pinned with
+# `cargo build`. The redis client is pinned with
 # `default-features = false` and a rustls TLS path to stay openssl-free,
 # matching the `reqwest = { features = ["rustls-tls"] }` discipline in
 # cpex-plugin-identity-jwt / cpex-plugin-delegator-oauth.

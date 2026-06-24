@@ -11,8 +11,8 @@
 // The PDP backends that ship in this workspace, each its own crate
 // registered here by dialect:
 //
-//   - **cedar** (`cpex-pdp-cedar-direct`) / **cedarling** (`cpex-cedarling`)
-//     — Cedar policy-set evaluation, in-process and via Cedarling.
+//   - **cedar** (`cpex-pdp-cedar-direct`) — in-process Cedar policy-set
+//     evaluation.
 //   - **opa** — Open Policy Agent / Rego.
 //   - **authzen** — AuthZen-protocol external decision point.
 //   - **nemo** — NeMo reasoning backend.

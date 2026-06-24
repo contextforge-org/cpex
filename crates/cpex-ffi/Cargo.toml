@@ -36,9 +36,6 @@ cpex-builtins = { path = "../cpex-builtins", default-features = false, features 
     "delegator-oauth",
     "cedar-direct",
 ] }
-# Heavy (~200 transitive deps via the Cedarling git dep); kept out of the
-# default `.a` and behind the `cedarling` feature.
-cpex-cedarling = { path = "../../builtins/cedarling", optional = true }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -48,9 +45,6 @@ tracing = { workspace = true }
 
 [features]
 default = []
-# Opt-in Cedarling-backed identity + PDP. Build with
-# `cargo build -p cpex-ffi --features cedarling`.
-cedarling = ["dep:cpex-cedarling"]
 # Opt-in Valkey-backed SessionStore (redis client + rustls TLS stack).
 # Routed through cpex-builtins so the `.a` artifact size is unaffected
 # without the feature. Build with `cargo build -p cpex-ffi --features valkey`.

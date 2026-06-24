@@ -45,8 +45,7 @@ use crate::{CpexManagerInner, RC_INVALID_HANDLE, RC_OK, RC_PANIC};
 ///   - `cedar-direct`        → cedar-direct
 ///
 /// With the `valkey` cargo feature, the Valkey-backed session store factory
-/// is additionally wired. With the `cedarling` cargo feature, the
-/// Cedarling-backed identity and PDP seams are additionally wired.
+/// is additionally wired.
 ///
 /// Returns `RC_OK` on success, `RC_INVALID_HANDLE` if `mgr` is null, or
 /// `RC_PANIC` if registration panicked (caught at the FFI boundary).

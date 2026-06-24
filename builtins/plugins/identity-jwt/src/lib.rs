@@ -7,10 +7,9 @@
 //
 // Validates inbound JWTs against configured trusted issuers and
 // maps validated claims into the request's `IdentityPayload`
-// (subject / client / raw_credentials slots). Designed as the
-// lightweight identity path that pairs with `cpex-cedarling`'s
-// PDP role — operators wanting both run identity here, policy
-// gating through `cedarling:` steps.
+// (subject / client / raw_credentials slots). The lightweight
+// identity path: validate a Bearer token and extract identity,
+// independent of any PDP step that runs later in the route.
 //
 // Sub-step A scope: data shapes + module structure only. Actual
 // validation logic in sub-step B; multi-issuer + key rotation in
@@ -35,11 +34,6 @@
 // - **`cpex-plugin-identity-jwt`** (this crate) — JWT-only flow.
 //   Lightweight, ~5-15 transitive deps. The default choice for
 //   "validate a Bearer token, extract identity."
-// - **`cpex-cedarling`** as identity (deferred) — Cedarling's API
-//   doesn't expose validated entities to callers, so we deferred
-//   wiring it as an IdentityResolveHandler. Use this crate for
-//   validation + a `cedarling:` step early in the route policy
-//   block if you want policy-driven identity gating.
 // - **Custom resolver** — anyone with bespoke identity flows
 //   (mTLS-only, opaque tokens with introspection, capability
 //   tokens) writes their own `HookHandler<IdentityHook>`. This

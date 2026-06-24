@@ -93,7 +93,7 @@
 // Reach for **cel** when the decision is a self-contained boolean
 // predicate over the common attribute vocabulary, authored inline in the
 // route YAML, with no external policy store — relevance / consistency /
-// lightweight ABAC. Reach for **cedar / cedarling / opa** when policy
+// lightweight ABAC. Reach for **cedar / opa** when policy
 // lives outside the route (versioned/signed policy sets, central
 // management) or needs the full entity/relationship model. CEL trades
 // Cedar's policy-set machinery for zero-glue, in-line expressiveness.

@@ -125,7 +125,7 @@ struct VisitorState {
 ///    `kind`, and constructs the resolver during `visit_global`.
 ///
 /// Factories are registered up front by `kind` name (`"cedar-direct"`,
-/// `"cedarling"`, …). The visitor knows nothing about specific PDP
+/// `"opa"`, …). The visitor knows nothing about specific PDP
 /// backends; everything dispatches through `PdpFactory`.
 pub struct AplConfigVisitor {
     state: RwLock<VisitorState>,

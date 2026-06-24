@@ -12,19 +12,8 @@
 # `RawCredentialsExtension.inbound_tokens` for forwarding plugins
 # downstream.
 #
-# # Why this exists alongside `cpex-cedarling`
-#
-# Cedarling's JWT validation is bundled with Cedar policy
-# evaluation — it doesn't expose validated identity as a separate
-# data product. For deployments that want JWT validation without
-# (or before) the Cedar policy step, this crate fills the gap.
-# Lightweight (~5-15 transitive deps) vs Cedarling (~200).
-#
-# # Default-members
-#
-# This crate IS in the workspace's default-members — the dep tree
-# is small enough that it doesn't slow down default builds. Compare
-# to `cpex-cedarling`, which is excluded.
+# Lightweight (~5-15 transitive deps), so it stays in the workspace's
+# default-members.
 
 [package]
 name = "cpex-plugin-identity-jwt"
