@@ -38,16 +38,16 @@ use cpex_core::manager::PluginManager;
 // Feature-gated re-exports of each builtin's factory + KIND
 // -----------------------------------------------------------------------------
 
+#[cfg(feature = "cedar-direct")]
+pub use cpex_pdp_cedar_direct::CedarDirectPdpFactory;
+#[cfg(feature = "cel")]
+pub use cpex_pdp_cel::CelPdpFactory;
 #[cfg(feature = "audit-logger")]
 pub use cpex_plugin_audit_logger::{AuditLoggerFactory, KIND as AUDIT_KIND};
 #[cfg(feature = "delegator-oauth")]
 pub use cpex_plugin_delegator_oauth::{OAuthDelegatorFactory, KIND as OAUTH_KIND};
 #[cfg(feature = "identity-jwt")]
 pub use cpex_plugin_identity_jwt::{JwtIdentityFactory, KIND as JWT_KIND};
-#[cfg(feature = "cedar-direct")]
-pub use cpex_pdp_cedar_direct::CedarDirectPdpFactory;
-#[cfg(feature = "cel")]
-pub use cpex_pdp_cel::CelPdpFactory;
 #[cfg(feature = "pii-scanner")]
 pub use cpex_plugin_pii_scanner::{PiiScannerFactory, KIND as PII_KIND};
 #[cfg(feature = "valkey")]
@@ -121,7 +121,9 @@ pub fn builtin_pdps() -> Vec<Arc<dyn PdpFactory>> {
 pub fn builtin_session_store_factories() -> Vec<Arc<dyn SessionStoreFactory>> {
     let mut factories: Vec<Arc<dyn SessionStoreFactory>> = Vec::new();
     #[cfg(feature = "valkey")]
-    factories.push(Arc::new(cpex_session_valkey::ValkeySessionStoreFactory::new()));
+    factories.push(Arc::new(
+        cpex_session_valkey::ValkeySessionStoreFactory::new(),
+    ));
     factories
 }
 

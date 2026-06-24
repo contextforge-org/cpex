@@ -78,16 +78,16 @@ pub use cpex_builtins::{
 
 // Concrete factory types + KIND consts, each behind its facade feature
 // (which forwards to the matching cpex-builtins feature).
-#[cfg(feature = "audit")]
-pub use cpex_builtins::{AuditLoggerFactory, AUDIT_KIND};
 #[cfg(feature = "cedar")]
 pub use cpex_builtins::CedarDirectPdpFactory;
 #[cfg(feature = "cel")]
 pub use cpex_builtins::CelPdpFactory;
-#[cfg(feature = "oauth")]
-pub use cpex_builtins::{OAuthDelegatorFactory, OAUTH_KIND};
+#[cfg(feature = "audit")]
+pub use cpex_builtins::{AuditLoggerFactory, AUDIT_KIND};
 #[cfg(feature = "jwt")]
 pub use cpex_builtins::{JwtIdentityFactory, JWT_KIND};
+#[cfg(feature = "oauth")]
+pub use cpex_builtins::{OAuthDelegatorFactory, OAUTH_KIND};
 #[cfg(feature = "pii")]
 pub use cpex_builtins::{PiiScannerFactory, PII_KIND};
 #[cfg(feature = "valkey")]
