@@ -35,7 +35,7 @@ cpex-core = { path = "../../../crates/cpex-core", version = "0.2.0" }
 # deps (ring, base64, serde, pem). Supports RS256/RS384/RS512,
 # ES256/ES384, EdDSA, HS256/HS384/HS512. Default features include
 # `use_pem` (load DecodingKey from PEM strings) which we want.
-jsonwebtoken = "9"
+jsonwebtoken = "10"
 
 # `base64` for the peek-at-iss helper (split + URL_SAFE_NO_PAD decode
 # of the middle JWT segment). Pinned to 0.22 to match what
@@ -81,7 +81,7 @@ rsa = { version = "0.9", features = ["pem"] }
 # rsa 0.9's `RsaPrivateKey::new(&mut rng, bits)` takes an rng
 # implementing `rand_core::CryptoRngCore` — `rand::thread_rng()`
 # satisfies that. Test-only dep.
-rand = "0.8"
+rand = "0.9"
 
 [lints]
 workspace = true
