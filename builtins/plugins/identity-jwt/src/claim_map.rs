@@ -138,8 +138,8 @@ impl ClaimMapper for StandardClaimMap {
                         client.authorized_audiences.push(s.to_string());
                     }
                 }
-            }
-            _ => {}
+            },
+            _ => {},
         }
 
         // Platform-native roles.
@@ -388,7 +388,10 @@ mod tests {
             "iat": 1700000000,  // reserved, should be skipped
         }));
         let subject = StandardClaimMap.map_subject(&claims).unwrap();
-        assert_eq!(subject.claims.get("email"), Some(&"alice@corp.com".to_string()));
+        assert_eq!(
+            subject.claims.get("email"),
+            Some(&"alice@corp.com".to_string())
+        );
         assert_eq!(
             subject.claims.get("preferred_username"),
             Some(&"alice".to_string()),

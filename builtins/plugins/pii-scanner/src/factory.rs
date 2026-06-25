@@ -55,9 +55,8 @@ impl PluginFactory for PiiScannerFactory {
                 // bound is the number of plugin × hook pairs in
                 // config (small, bounded).
                 let leaked: &'static str = Box::leak(h.clone().into_boxed_str());
-                let adapter: Arc<dyn cpex_core::registry::AnyHookHandler> = Arc::new(
-                    TypedHandlerAdapter::<CmfHook, _>::new(Arc::clone(&scanner)),
-                );
+                let adapter: Arc<dyn cpex_core::registry::AnyHookHandler> =
+                    Arc::new(TypedHandlerAdapter::<CmfHook, _>::new(Arc::clone(&scanner)));
                 (leaked, adapter)
             })
             .collect();

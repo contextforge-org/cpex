@@ -109,13 +109,12 @@ impl ClientSecretSource {
     /// with context.
     pub fn resolve(&self) -> Result<String, String> {
         match self {
-            Self::EnvVar { name } => std::env::var(name)
-                .map_err(|e| format!("env var '{name}' unavailable: {e}")),
+            Self::EnvVar { name } => {
+                std::env::var(name).map_err(|e| format!("env var '{name}' unavailable: {e}"))
+            },
             Self::File { path } => std::fs::read_to_string(path)
                 .map(|s| s.trim().to_string())
-                .map_err(|e| {
-                    format!("secret file '{}' unreadable: {e}", path.display())
-                }),
+                .map_err(|e| format!("secret file '{}' unreadable: {e}", path.display())),
             Self::Literal { secret } => Ok(secret.clone()),
         }
     }

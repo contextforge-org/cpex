@@ -97,8 +97,7 @@ impl RoutePluginEntry {
         self.entries_by_hook
             .iter()
             .find(|(hook_name, _)| {
-                lookup_hook_metadata(hook_name)
-                    .matches(requested_entity_type, requested_phase)
+                lookup_hook_metadata(hook_name).matches(requested_entity_type, requested_phase)
             })
             .map(|(_, entry)| entry)
     }
@@ -148,7 +147,7 @@ impl RouteDispatchPlan {
                         "APL route references plugin not in `plugins:` block — skipping",
                     );
                     continue;
-                }
+                },
             };
 
             // Pull the three overrideable values off the effective view.
@@ -156,12 +155,14 @@ impl RouteDispatchPlan {
             // so the captures here are slice / Option<&Value> refs.
             let override_block = route.plugin_overrides.get(&name);
             let config_override = override_block.and_then(|o| o.config.as_ref());
-            let caps_override: Option<std::collections::HashSet<String>> =
-                if matches!(eff.capabilities, apl_core::plugin_decl::CapsView::Override(_)) {
-                    Some(eff.capabilities.as_slice().iter().cloned().collect())
-                } else {
-                    None
-                };
+            let caps_override: Option<std::collections::HashSet<String>> = if matches!(
+                eff.capabilities,
+                apl_core::plugin_decl::CapsView::Override(_)
+            ) {
+                Some(eff.capabilities.as_slice().iter().cloned().collect())
+            } else {
+                None
+            };
             let on_error_override = override_block
                 .and_then(|o| o.on_error.as_deref())
                 .and_then(parse_on_error);
@@ -256,10 +257,7 @@ impl RouteDispatchPlan {
     /// that wire the invoker without a `CompiledRoute` in scope (e.g.
     /// adapters that invoke a single plugin imperatively). Returns
     /// `None` if cpex-core has no entries for the plugin.
-    pub fn resolve_plugin(
-        manager: &PluginManager,
-        plugin_name: &str,
-    ) -> Option<RoutePluginEntry> {
+    pub fn resolve_plugin(manager: &PluginManager, plugin_name: &str) -> Option<RoutePluginEntry> {
         let base_entries = manager.find_plugin_entries(plugin_name);
         if base_entries.is_empty() {
             return None;
@@ -297,11 +295,13 @@ fn walk_effects<F: FnMut(&Effect)>(effects: &[Effect], visit: &mut F) {
         match e {
             Effect::When { body, .. } => walk_effects(body, visit),
             Effect::Sequential(inner) | Effect::Parallel(inner) => walk_effects(inner, visit),
-            Effect::Pdp { on_allow, on_deny, .. } => {
+            Effect::Pdp {
+                on_allow, on_deny, ..
+            } => {
                 walk_effects(on_allow, visit);
                 walk_effects(on_deny, visit);
-            }
-            _ => {}
+            },
+            _ => {},
         }
     }
 }

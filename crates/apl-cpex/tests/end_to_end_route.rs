@@ -314,7 +314,7 @@ routes:
                  PluginOutcome → evaluate_steps → RouteDecision"
             );
             assert_eq!(rule_source, "policy.forbidden");
-        }
+        },
         other => panic!("expected Decision::Deny, got {:?}", other),
     }
 }

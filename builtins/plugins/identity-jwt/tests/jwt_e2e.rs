@@ -166,8 +166,8 @@ async fn valid_jwt_resolves_subject() {
         result.violation,
     );
 
-    let identity = IdentityPayload::from_pipeline_result(&result)
-        .expect("payload should be present");
+    let identity =
+        IdentityPayload::from_pipeline_result(&result).expect("payload should be present");
     let subject = identity.subject.as_ref().expect("subject populated");
     assert_eq!(subject.id.as_deref(), Some("alice@corp.com"));
     assert!(subject.roles.contains("hr"));

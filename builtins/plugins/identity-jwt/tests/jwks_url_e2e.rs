@@ -46,10 +46,8 @@ const AUD: &str = "test-api";
 /// resolver picks it via the "first signing-use key" rule.
 fn build_jwks(public: &RsaPublicKey) -> Value {
     use base64::Engine;
-    let n_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .encode(public.n().to_bytes_be());
-    let e_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .encode(public.e().to_bytes_be());
+    let n_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(public.n().to_bytes_be());
+    let e_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(public.e().to_bytes_be());
     json!({
         "keys": [{
             "kty": "RSA",
@@ -68,8 +66,8 @@ fn mint_jwt(private_pem: &str, claims: Value) -> String {
     // ("test-key-1", see `jwks_body`).
     let mut header = Header::new(Algorithm::RS256);
     header.kid = Some("test-key-1".into());
-    let key = EncodingKey::from_rsa_pem(private_pem.as_bytes())
-        .expect("build EncodingKey from RSA PEM");
+    let key =
+        EncodingKey::from_rsa_pem(private_pem.as_bytes()).expect("build EncodingKey from RSA PEM");
     encode(&header, &claims, &key).expect("sign JWT")
 }
 
@@ -300,8 +298,8 @@ fn build_jwks_two_keys(
 fn mint_jwt_with_kid(private_pem: &str, kid: &str, claims: Value) -> String {
     let mut header = Header::new(Algorithm::RS256);
     header.kid = Some(kid.into());
-    let key = EncodingKey::from_rsa_pem(private_pem.as_bytes())
-        .expect("build EncodingKey from RSA PEM");
+    let key =
+        EncodingKey::from_rsa_pem(private_pem.as_bytes()).expect("build EncodingKey from RSA PEM");
     encode(&header, &claims, &key).expect("sign JWT")
 }
 
@@ -497,7 +495,7 @@ async fn jwks_fetch_times_out_when_endpoint_stalls() {
     // deadline). We accept any Err outcome and rely on elapsed
     // time as the contract.
     match outcome {
-        Err(_e) => {}
+        Err(_e) => {},
         Ok(_store) => panic!("stalled JWKS must not produce a KeyStore"),
     }
     // 5s overall timeout + 2s margin for setup / scheduler jitter.
@@ -544,7 +542,9 @@ async fn jwks_unreachable_at_initialize_soft_fails() {
 
     // The gateway boots — initialize returns Ok even though the
     // JWKS fetch failed. This is the soft-fail invariant.
-    mgr.initialize().await.expect("initialize must NOT propagate JWKS failure");
+    mgr.initialize()
+        .await
+        .expect("initialize must NOT propagate JWKS failure");
 
     // A token signed by the right key fails verify with
     // `auth.jwks_unavailable` rather than crashing or returning
@@ -715,7 +715,10 @@ async fn jwks_refresh_picks_up_rotated_key() {
             None,
         )
         .await;
-    assert!(!pre.continue_processing, "key-b token should not validate before refresh");
+    assert!(
+        !pre.continue_processing,
+        "key-b token should not validate before refresh"
+    );
     assert_eq!(
         pre.violation.expect("violation").code,
         "auth.unknown_kid",

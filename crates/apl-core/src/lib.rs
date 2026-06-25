@@ -24,7 +24,7 @@ pub mod step;
 
 pub use attributes::{AttributeBag, AttributeExtractor, AttributeValue};
 pub use evaluator::{
-    evaluate_pipeline, evaluate_rules, evaluate_effects, Decision, FieldOutcome, PipelineEvaluation,
+    evaluate_effects, evaluate_pipeline, evaluate_rules, Decision, FieldOutcome, PipelineEvaluation,
 };
 pub use parser::{
     compile_config, compile_policy_block_value, parse_pipeline, parse_predicate, parse_rule,

@@ -87,6 +87,6 @@ pub unsafe extern "C" fn cpex_apl_install(mgr: *const CpexManagerInner) -> c_int
         Err(_panic) => {
             tracing::error!("cpex_apl_install: panic caught at FFI boundary");
             RC_PANIC
-        }
+        },
     }
 }

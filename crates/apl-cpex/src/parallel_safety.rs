@@ -114,17 +114,17 @@ fn walk_effect<L: PluginModeLookup + ?Sized>(
     match effect {
         Effect::Plugin { name } if under_parallel => {
             check_plugin_mode(name, location, registry, errors);
-        }
+        },
         Effect::Parallel(inner) => {
             for e in inner {
                 walk_effect(e, location, true, registry, errors);
             }
-        }
+        },
         Effect::Sequential(inner) => {
             for e in inner {
                 walk_effect(e, location, under_parallel, registry, errors);
             }
-        }
+        },
         Effect::When { body, .. } => {
             // A `when:` body inherits the parallel context of its
             // enclosing scope. Plugin calls inside `when:` under a
@@ -132,18 +132,20 @@ fn walk_effect<L: PluginModeLookup + ?Sized>(
             for e in body {
                 walk_effect(e, location, under_parallel, registry, errors);
             }
-        }
-        Effect::Pdp { on_allow, on_deny, .. } => {
+        },
+        Effect::Pdp {
+            on_allow, on_deny, ..
+        } => {
             for e in on_allow.iter().chain(on_deny.iter()) {
                 walk_effect(e, location, under_parallel, registry, errors);
             }
-        }
+        },
         // Other variants (Allow/Deny/Plugin-not-in-parallel/Delegate/
         // Taint/FieldOp) don't carry nested effects today. Note that
         // `Delegate` / `FieldOp` inside Parallel was already rejected
         // by `apl-core::Effect::validate_parallel_purity` at parse
         // time — no need to re-check here.
-        _ => {}
+        _ => {},
     }
 }
 
@@ -161,7 +163,7 @@ fn check_plugin_mode<L: PluginModeLookup + ?Sized>(
                 location, name
             ));
             return;
-        }
+        },
     };
     if !is_safe_in_parallel(mode) {
         errors.push(format!(

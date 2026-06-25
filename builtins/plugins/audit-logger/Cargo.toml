@@ -14,9 +14,15 @@ version.workspace      = true
 edition.workspace      = true
 license.workspace      = true
 authors.workspace      = true
+description = "CPEX CMF plugin — structured per-request audit logging."
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+rust-version.workspace = true
 
 [dependencies]
-cpex-core = { path = "../../../crates/cpex-core" }
+cpex-core = { path = "../../../crates/cpex-core", version = "0.2.0" }
 
 async-trait = { workspace = true }
 chrono      = { workspace = true }
@@ -27,3 +33,6 @@ tracing     = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }
+
+[lints]
+workspace = true

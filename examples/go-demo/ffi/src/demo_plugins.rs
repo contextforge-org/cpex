@@ -79,14 +79,14 @@ impl HookHandler<GenericHook> for IdentityChecker {
             Some(u) if !u.is_empty() => {
                 tracing::info!("[identity-checker] OK: user '{}' identified", u);
                 PluginResult::allow()
-            }
+            },
             _ => {
                 tracing::warn!("[identity-checker] DENIED: no user identity");
                 PluginResult::deny(PluginViolation::new(
                     "no_identity",
                     "User identity is required",
                 ))
-            }
+            },
         }
     }
 }

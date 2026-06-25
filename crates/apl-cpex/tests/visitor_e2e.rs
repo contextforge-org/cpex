@@ -726,7 +726,9 @@ routes:
         .await;
 
     assert!(!result.continue_processing, "flat deny path should halt");
-    let violation = result.violation.expect("deny path must surface a violation");
+    let violation = result
+        .violation
+        .expect("deny path must surface a violation");
     assert_eq!(violation.reason, "deny-gate fired");
 }
 
@@ -774,7 +776,9 @@ routes:
         !result.continue_processing,
         "flat plugins-map route should still run its policy and deny"
     );
-    let violation = result.violation.expect("deny path must surface a violation");
+    let violation = result
+        .violation
+        .expect("deny path must surface a violation");
     assert_eq!(violation.reason, "deny-gate fired");
 }
 

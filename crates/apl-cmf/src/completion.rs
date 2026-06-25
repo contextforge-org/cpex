@@ -27,10 +27,18 @@ pub fn extract_completion(c: &CompletionExtension, bag: &mut AttributeBag) {
         bag.set("completion.tokens.output", tu.output_tokens as i64);
         bag.set("completion.tokens.total", tu.total_tokens as i64);
     }
-    if let Some(v) = &c.model { bag.set("completion.model", v.clone()); }
-    if let Some(v) = &c.raw_format { bag.set("completion.raw_format", v.clone()); }
-    if let Some(v) = &c.created_at { bag.set("completion.created_at", v.clone()); }
-    if let Some(ms) = c.latency_ms { bag.set("completion.latency_ms", ms as i64); }
+    if let Some(v) = &c.model {
+        bag.set("completion.model", v.clone());
+    }
+    if let Some(v) = &c.raw_format {
+        bag.set("completion.raw_format", v.clone());
+    }
+    if let Some(v) = &c.created_at {
+        bag.set("completion.created_at", v.clone());
+    }
+    if let Some(ms) = c.latency_ms {
+        bag.set("completion.latency_ms", ms as i64);
+    }
 }
 
 fn stop_reason_str(sr: StopReason) -> &'static str {
@@ -62,7 +70,11 @@ mod tests {
     #[test]
     fn tokens_flatten_to_nested_ints() {
         let c = CompletionExtension {
-            tokens: Some(TokenUsage { input_tokens: 100, output_tokens: 50, total_tokens: 150 }),
+            tokens: Some(TokenUsage {
+                input_tokens: 100,
+                output_tokens: 50,
+                total_tokens: 150,
+            }),
             latency_ms: Some(420),
             ..Default::default()
         };

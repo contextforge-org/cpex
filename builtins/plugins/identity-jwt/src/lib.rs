@@ -47,9 +47,7 @@ pub mod resolver;
 pub mod trusted_issuer;
 
 pub use claim_map::{ClaimMap, ClaimMapper, StandardClaimMap};
-pub use config::{
-    DecodingKeySource, JwtIdentityResolverConfig, TrustedIssuerConfig,
-};
+pub use config::{DecodingKeySource, JwtIdentityResolverConfig, TrustedIssuerConfig};
 pub use factory::{JwtIdentityFactory, KIND};
 pub use resolver::JwtIdentityResolver;
 pub use trusted_issuer::TrustedIssuer;

@@ -70,21 +70,21 @@ pub fn resolve_refs(
             } else {
                 Ok(value.clone())
             }
-        }
+        },
         serde_yaml::Value::Mapping(map) => {
             let mut out = serde_yaml::Mapping::new();
             for (k, v) in map {
                 out.insert(k.clone(), resolve_refs(v, bag)?);
             }
             Ok(serde_yaml::Value::Mapping(out))
-        }
+        },
         serde_yaml::Value::Sequence(items) => {
             let mut out = Vec::with_capacity(items.len());
             for item in items {
                 out.push(resolve_refs(item, bag)?);
             }
             Ok(serde_yaml::Value::Sequence(out))
-        }
+        },
         _ => Ok(value.clone()),
     }
 }
@@ -128,7 +128,7 @@ fn substitute(
                 .map(|s| serde_yaml::Value::String(s.clone()))
                 .collect();
             serde_yaml::Value::Sequence(items)
-        }
+        },
     })
 }
 
@@ -233,7 +233,11 @@ email: ${claim.email}
         let yaml = serde_yaml::Value::String("${args.missing}".into());
         let err = resolve_refs(&yaml, &bag).unwrap_err();
         let msg = format!("{:?}", err);
-        assert!(msg.contains("args.missing"), "error mentions the key: {}", msg);
+        assert!(
+            msg.contains("args.missing"),
+            "error mentions the key: {}",
+            msg
+        );
     }
 
     #[test]

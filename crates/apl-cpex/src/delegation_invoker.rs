@@ -93,10 +93,7 @@ impl DelegationPluginInvoker {
 
 #[async_trait]
 impl DelegationInvoker for DelegationPluginInvoker {
-    async fn delegate(
-        &self,
-        step: &DelegateStep,
-    ) -> Result<DelegationOutcome, DelegationError> {
+    async fn delegate(&self, step: &DelegateStep) -> Result<DelegationOutcome, DelegationError> {
         // 1. Resolve the plugin's token.delegate entry from the plan.
         //    Routes that don't reference this plugin in `policy:` /
         //    `post_policy:` at compile time won't have it in the plan
@@ -136,10 +133,7 @@ impl DelegationInvoker for DelegationPluginInvoker {
         //    downstream call is for); `audience`, `permissions`,
         //    `mode`, `auth_enforced_by` are recognized; everything
         //    else stays opaque.
-        let cfg = step
-            .config_override
-            .as_ref()
-            .and_then(|v| v.as_mapping());
+        let cfg = step.config_override.as_ref().and_then(|v| v.as_mapping());
 
         let target_name: String = cfg
             .and_then(|m| m.get(serde_yaml::Value::String("target".into())))

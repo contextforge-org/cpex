@@ -40,22 +40,34 @@ pub enum AttributeValue {
 }
 
 impl From<bool> for AttributeValue {
-    fn from(v: bool) -> Self { AttributeValue::Bool(v) }
+    fn from(v: bool) -> Self {
+        AttributeValue::Bool(v)
+    }
 }
 impl From<i64> for AttributeValue {
-    fn from(v: i64) -> Self { AttributeValue::Int(v) }
+    fn from(v: i64) -> Self {
+        AttributeValue::Int(v)
+    }
 }
 impl From<f64> for AttributeValue {
-    fn from(v: f64) -> Self { AttributeValue::Float(v) }
+    fn from(v: f64) -> Self {
+        AttributeValue::Float(v)
+    }
 }
 impl From<&str> for AttributeValue {
-    fn from(v: &str) -> Self { AttributeValue::String(v.to_string()) }
+    fn from(v: &str) -> Self {
+        AttributeValue::String(v.to_string())
+    }
 }
 impl From<String> for AttributeValue {
-    fn from(v: String) -> Self { AttributeValue::String(v) }
+    fn from(v: String) -> Self {
+        AttributeValue::String(v)
+    }
 }
 impl From<HashSet<String>> for AttributeValue {
-    fn from(v: HashSet<String>) -> Self { AttributeValue::StringSet(v) }
+    fn from(v: HashSet<String>) -> Self {
+        AttributeValue::StringSet(v)
+    }
 }
 
 /// Flat key→value namespace consumed by the evaluator.
@@ -71,7 +83,9 @@ pub struct AttributeBag {
 
 impl AttributeBag {
     pub fn new() -> Self {
-        Self { attrs: HashMap::new() }
+        Self {
+            attrs: HashMap::new(),
+        }
     }
 
     pub fn set(&mut self, key: impl Into<String>, value: impl Into<AttributeValue>) {

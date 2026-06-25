@@ -589,7 +589,10 @@ impl PluginManager {
         };
 
         let mgr: Arc<PluginManager> = Arc::clone(self);
-        let global_yaml = raw.get("global").cloned().unwrap_or(serde_yaml::Value::Null);
+        let global_yaml = raw
+            .get("global")
+            .cloned()
+            .unwrap_or(serde_yaml::Value::Null);
         let defaults_yaml = global_yaml
             .get("defaults")
             .and_then(serde_yaml::Value::as_mapping)
@@ -619,7 +622,9 @@ impl PluginManager {
 
             if let Some(defaults) = &defaults_yaml {
                 for (k, v) in defaults {
-                    let Some(entity_type) = k.as_str() else { continue };
+                    let Some(entity_type) = k.as_str() else {
+                        continue;
+                    };
                     visitor.visit_default(&mgr, entity_type, v).map_err(|e| {
                         Box::new(PluginError::Config {
                             message: format!(
@@ -1239,8 +1244,7 @@ impl PluginManager {
         hook_name: impl Into<String>,
         handler: Arc<H>,
         config: crate::plugin::PluginConfig,
-    )
-    where
+    ) where
         H: crate::plugin::Plugin + crate::registry::AnyHookHandler + 'static,
     {
         let key = AnnotationKey {
@@ -1356,7 +1360,7 @@ impl PluginManager {
                     .cloned()
                     .collect();
                 return Arc::new(filtered);
-            }
+            },
         };
 
         // Extract entity info from meta extension
@@ -1592,7 +1596,7 @@ impl PluginManager {
                     "build_override_entries: YAML→JSON config conversion failed",
                 );
                 return Vec::new();
-            }
+            },
         };
         merged_config.config = Some(cfg_json);
 
@@ -1608,7 +1612,7 @@ impl PluginManager {
                         "build_override_entries: no factory registered for kind",
                     );
                     return Vec::new();
-                }
+                },
             };
             match factory.create(&merged_config) {
                 Ok(i) => i,
@@ -1619,7 +1623,7 @@ impl PluginManager {
                         "build_override_entries: factory.create failed",
                     );
                     return Vec::new();
-                }
+                },
             }
         };
 
@@ -1723,7 +1727,7 @@ impl PluginManager {
                         base_config.name, e
                     );
                     return None; // fall back to base instance
-                }
+                },
             }
         };
 
@@ -1742,7 +1746,7 @@ impl PluginManager {
                     base_config.name, target_hook
                 );
                 return None;
-            }
+            },
         };
 
         // Initialize the new instance — without this, plugins that need to
@@ -1805,9 +1809,7 @@ impl PluginManager {
     /// fast-skip gate — silently dropping the route's policy for that phase.
     pub fn has_hooks_for(&self, hook_name: &str) -> bool {
         let snapshot = self.load_runtime();
-        snapshot
-            .registry
-            .has_hooks_for(&HookType::new(hook_name))
+        snapshot.registry.has_hooks_for(&HookType::new(hook_name))
             || snapshot
                 .route_annotations
                 .keys()

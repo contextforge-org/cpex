@@ -14,6 +14,11 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+rust-version.workspace = true
 
 [dependencies]
 tokio = { workspace = true }
@@ -37,4 +42,7 @@ chrono = { workspace = true }
 zeroize = { version = "1.8", features = ["zeroize_derive"] }
 # Shared concurrency primitive used by `executor::run_concurrent_phase`
 # (and apl-core's `Effect::Parallel`). Leaf crate, no cycles back here.
-cpex-orchestration = { path = "../cpex-orchestration" }
+cpex-orchestration = { path = "../cpex-orchestration", version = "0.2.0" }
+
+[lints]
+workspace = true

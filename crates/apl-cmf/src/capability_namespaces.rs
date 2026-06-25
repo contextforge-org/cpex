@@ -92,7 +92,6 @@ const TABLE: &[CapabilityEntry] = &[
             BAG_AUTHENTICATED,
         ],
     },
-
     // ----- Security extension (non-subject) -----
     CapabilityEntry {
         // Labels are not extracted into discrete bag keys today —
@@ -112,7 +111,6 @@ const TABLE: &[CapabilityEntry] = &[
         // Exposes both inbound caller workload AND this-host workload.
         prefixes: &[BAG_WORKLOAD_PREFIX, BAG_CALLER_WORKLOAD_PREFIX],
     },
-
     // ----- Credential material — payload-only, no bag prefixes -----
     CapabilityEntry {
         // Gates `Extensions.raw_credentials.inbound_tokens` — those
@@ -125,13 +123,11 @@ const TABLE: &[CapabilityEntry] = &[
         name: CAP_READ_DELEGATED_TOKENS,
         prefixes: &[],
     },
-
     // ----- Delegation chain -----
     CapabilityEntry {
         name: CAP_READ_DELEGATION,
         prefixes: &[BAG_DELEGATION_PREFIX, BAG_DELEGATED],
     },
-
     // ----- Other extensions -----
     CapabilityEntry {
         name: CAP_READ_AGENT,

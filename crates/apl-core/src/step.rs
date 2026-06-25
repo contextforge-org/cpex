@@ -69,7 +69,10 @@ pub(crate) enum Step {
 
     /// `taint(label[, scope])` — apply a taint label. Always succeeds;
     /// never produces a Deny. SessionStore dispatch happens in apl-cpex.
-    Taint { label: String, scopes: Vec<TaintScope> },
+    Taint {
+        label: String,
+        scopes: Vec<TaintScope>,
+    },
 }
 
 /// One delegation invocation inside `policy:` or `post_policy:`.
@@ -329,10 +332,7 @@ pub trait DelegationInvoker: Send + Sync {
     /// `step.config_override` is layered on top of the plugin's
     /// default config and threaded through the standard per-call
     /// override pathway.
-    async fn delegate(
-        &self,
-        step: &DelegateStep,
-    ) -> Result<DelegationOutcome, DelegationError>;
+    async fn delegate(&self, step: &DelegateStep) -> Result<DelegationOutcome, DelegationError>;
 }
 
 /// What a delegation invocation returned.
@@ -390,10 +390,7 @@ pub struct NoopDelegationInvoker;
 
 #[async_trait]
 impl DelegationInvoker for NoopDelegationInvoker {
-    async fn delegate(
-        &self,
-        step: &DelegateStep,
-    ) -> Result<DelegationOutcome, DelegationError> {
+    async fn delegate(&self, step: &DelegateStep) -> Result<DelegationOutcome, DelegationError> {
         Err(DelegationError::NotFound(step.plugin_name.clone()))
     }
 }
@@ -433,7 +430,11 @@ pub struct PluginOutcome {
 impl PluginOutcome {
     /// Convenience for the common "allow, no taints, no value change" case.
     pub fn allow() -> Self {
-        Self { decision: Decision::Allow, taints: vec![], modified_value: None }
+        Self {
+            decision: Decision::Allow,
+            taints: vec![],
+            modified_value: None,
+        }
     }
 }
 
@@ -465,10 +466,14 @@ pub enum PluginError {
 
 impl Step {
     /// Wrap a `Rule` as a `Step`. Saves typing in tests and parser code.
-    pub fn rule(r: Rule) -> Self { Step::Rule(r) }
+    pub fn rule(r: Rule) -> Self {
+        Step::Rule(r)
+    }
 
     /// Returns true if this step is a plain rule (no async dispatch needed).
-    pub fn is_rule(&self) -> bool { matches!(self, Step::Rule(_)) }
+    pub fn is_rule(&self) -> bool {
+        matches!(self, Step::Rule(_))
+    }
 }
 
 /// Bag keys the delegation step writes after a successful dispatch.

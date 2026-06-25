@@ -5,6 +5,5 @@ rules:
     level: warning      # keep it a warning (default); use "error" to fail
 ignore: |
   .cache/**
-  cpex/templates/**/*.yaml
-  cpex/templates/**/*.yml
+  target/**
 

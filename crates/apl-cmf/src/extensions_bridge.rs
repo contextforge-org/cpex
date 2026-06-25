@@ -23,18 +23,42 @@ use crate::{
 
 /// Flatten every present slot in `Extensions` into `bag`.
 pub fn extract_extensions(ext: &Extensions, bag: &mut AttributeBag) {
-    if let Some(v) = &ext.security { extract_security(v, bag); }
-    if let Some(v) = &ext.delegation { extract_delegation(v, bag); }
-    if let Some(v) = &ext.agent { extract_agent(v, bag); }
-    if let Some(v) = &ext.meta { extract_meta(v, bag); }
-    if let Some(v) = &ext.request { extract_request(v, bag); }
-    if let Some(v) = &ext.http { extract_http(v, bag); }
-    if let Some(v) = &ext.llm { extract_llm(v, bag); }
-    if let Some(v) = &ext.mcp { extract_mcp(v, bag); }
-    if let Some(v) = &ext.completion { extract_completion(v, bag); }
-    if let Some(v) = &ext.provenance { extract_provenance(v, bag); }
-    if let Some(v) = &ext.framework { extract_framework(v, bag); }
-    if let Some(v) = &ext.custom { extract_custom(v, bag); }
+    if let Some(v) = &ext.security {
+        extract_security(v, bag);
+    }
+    if let Some(v) = &ext.delegation {
+        extract_delegation(v, bag);
+    }
+    if let Some(v) = &ext.agent {
+        extract_agent(v, bag);
+    }
+    if let Some(v) = &ext.meta {
+        extract_meta(v, bag);
+    }
+    if let Some(v) = &ext.request {
+        extract_request(v, bag);
+    }
+    if let Some(v) = &ext.http {
+        extract_http(v, bag);
+    }
+    if let Some(v) = &ext.llm {
+        extract_llm(v, bag);
+    }
+    if let Some(v) = &ext.mcp {
+        extract_mcp(v, bag);
+    }
+    if let Some(v) = &ext.completion {
+        extract_completion(v, bag);
+    }
+    if let Some(v) = &ext.provenance {
+        extract_provenance(v, bag);
+    }
+    if let Some(v) = &ext.framework {
+        extract_framework(v, bag);
+    }
+    if let Some(v) = &ext.custom {
+        extract_custom(v, bag);
+    }
 }
 
 #[cfg(test)]

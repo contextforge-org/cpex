@@ -349,7 +349,10 @@ mod tests {
     fn password_without_username_uses_default_user() {
         let cfg = parse("kind: valkey\nendpoint: localhost:6379\npassword: s3cret\n").unwrap();
         let url = cfg.connection_url().unwrap();
-        assert!(url.starts_with("redis://:s3cret@localhost:6379"), "url: {url}");
+        assert!(
+            url.starts_with("redis://:s3cret@localhost:6379"),
+            "url: {url}"
+        );
     }
 
     #[test]

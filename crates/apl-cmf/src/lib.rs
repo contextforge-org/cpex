@@ -95,7 +95,9 @@ pub struct BagBuilder {
 }
 
 impl BagBuilder {
-    pub fn new() -> Self { Self::default() }
+    pub fn new() -> Self {
+        Self::default()
+    }
 
     pub fn with_security(mut self, sec: &SecurityExtension) -> Self {
         extract_security(sec, &mut self.bag);
@@ -133,5 +135,7 @@ impl BagBuilder {
         self
     }
 
-    pub fn build(self) -> AttributeBag { self.bag }
+    pub fn build(self) -> AttributeBag {
+        self.bag
+    }
 }

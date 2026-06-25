@@ -35,10 +35,16 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
+description = "CPEX delegation handler — RFC 8693 OAuth 2.0 token exchange."
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+rust-version.workspace = true
 
 [dependencies]
-apl-core = { path = "../../../crates/apl-core" }
-cpex-core = { path = "../../../crates/cpex-core" }
+apl-core = { path = "../../../crates/apl-core", version = "0.2.0" }
+cpex-core = { path = "../../../crates/cpex-core", version = "0.2.0" }
 
 # `reqwest` for the HTTP POST to the IdP token endpoint. Default
 # features pull `rustls` for TLS — we explicitly disable the
@@ -67,3 +73,6 @@ tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }
 # verify the request body shape + simulate IdP responses without
 # touching the network.
 mockito = "1"
+
+[lints]
+workspace = true

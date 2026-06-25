@@ -40,18 +40,21 @@ impl PiiScanner {
                 ),
             })
         })?;
-        let typed: PiiScannerConfig =
-            serde_json::from_value(raw.clone()).map_err(|e| {
-                Box::new(PluginError::Config {
-                    message: format!(
-                        "plugin '{}' (cpex-plugin-pii-scanner) config parse failed: {e}",
-                        cfg.name
-                    ),
-                })
-            })?;
+        let typed: PiiScannerConfig = serde_json::from_value(raw.clone()).map_err(|e| {
+            Box::new(PluginError::Config {
+                message: format!(
+                    "plugin '{}' (cpex-plugin-pii-scanner) config parse failed: {e}",
+                    cfg.name
+                ),
+            })
+        })?;
 
         let patterns = compile_patterns(&typed.detect, &cfg.name)?;
-        Ok(Self { cfg, typed, patterns })
+        Ok(Self {
+            cfg,
+            typed,
+            patterns,
+        })
     }
 
     /// Scan every string value in the message's structured content
@@ -69,20 +72,20 @@ impl PiiScanner {
                             return Some(name);
                         }
                     }
-                }
+                },
                 ContentPart::PromptRequest { content } => {
                     for v in content.arguments.values() {
                         if let Some(name) = self.match_value(v) {
                             return Some(name);
                         }
                     }
-                }
+                },
                 ContentPart::Text { text } => {
                     if let Some(name) = self.match_str(text) {
                         return Some(name);
                     }
-                }
-                _ => {} // images / video / audio / etc. — out of scope for v0
+                },
+                _ => {}, // images / video / audio / etc. — out of scope for v0
             }
         }
         None
@@ -117,18 +120,18 @@ impl PiiScanner {
                     for v in content.arguments.values_mut() {
                         self.redact_value(v);
                     }
-                }
+                },
                 ContentPart::PromptRequest { content } => {
                     for v in content.arguments.values_mut() {
                         self.redact_value(v);
                     }
-                }
+                },
                 ContentPart::Text { text } => {
                     if self.match_str(text).is_some() {
                         *text = "[PII]".to_string();
                     }
-                }
-                _ => {}
+                },
+                _ => {},
             }
         }
     }
@@ -193,20 +196,18 @@ impl HookHandler<CmfHook> for PiiScanner {
         let hit = self.first_match(&payload.message);
         match (hit, self.typed.mode) {
             (None, _) => PluginResult::allow(),
-            (Some(pattern_name), PiiScanMode::Deny) => {
-                PluginResult::deny(PluginViolation::new(
-                    "pii.detected",
-                    format!(
-                        "PII pattern '{pattern_name}' detected in request \
+            (Some(pattern_name), PiiScanMode::Deny) => PluginResult::deny(PluginViolation::new(
+                "pii.detected",
+                format!(
+                    "PII pattern '{pattern_name}' detected in request \
                          args — refusing to forward to downstream"
-                    ),
-                ))
-            }
+                ),
+            )),
             (Some(_), PiiScanMode::Redact) => {
                 let mut updated = payload.clone();
                 self.redact_message(&mut updated.message);
                 PluginResult::modify_payload(updated)
-            }
+            },
         }
     }
 }
@@ -257,9 +258,10 @@ mod tests {
     #[tokio::test]
     async fn ssn_in_args_denied() {
         let p = PiiScanner::new(cfg(vec![PiiPattern::Ssn], PiiScanMode::Deny)).unwrap();
-        let payload = message_with_args(HashMap::from([
-            ("body".to_string(), json!("Her SSN is 555-12-3456")),
-        ]));
+        let payload = message_with_args(HashMap::from([(
+            "body".to_string(),
+            json!("Her SSN is 555-12-3456"),
+        )]));
         let mut ctx = PluginContext::default();
         let r = p.handle(&payload, &Extensions::default(), &mut ctx).await;
         assert!(!r.continue_processing, "should deny");
@@ -271,9 +273,10 @@ mod tests {
     #[tokio::test]
     async fn clean_args_allowed() {
         let p = PiiScanner::new(cfg(vec![PiiPattern::Ssn], PiiScanMode::Deny)).unwrap();
-        let payload = message_with_args(HashMap::from([
-            ("body".to_string(), json!("Quarterly compensation review summary.")),
-        ]));
+        let payload = message_with_args(HashMap::from([(
+            "body".to_string(),
+            json!("Quarterly compensation review summary."),
+        )]));
         let mut ctx = PluginContext::default();
         let r = p.handle(&payload, &Extensions::default(), &mut ctx).await;
         assert!(r.continue_processing);
@@ -310,9 +313,7 @@ mod tests {
             PiiScanMode::Deny,
         ))
         .unwrap();
-        let payload = message_with_args(HashMap::from([
-            ("ref".to_string(), json!("INT-ABC123")),
-        ]));
+        let payload = message_with_args(HashMap::from([("ref".to_string(), json!("INT-ABC123"))]));
         let mut ctx = PluginContext::default();
         let r = p.handle(&payload, &Extensions::default(), &mut ctx).await;
         assert!(!r.continue_processing);

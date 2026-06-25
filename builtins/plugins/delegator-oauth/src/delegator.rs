@@ -58,14 +58,12 @@ use super::config::OAuthDelegatorConfig;
 
 /// RFC 8693 token-exchange grant type — the value of
 /// `grant_type` in the form-encoded request body.
-const GRANT_TYPE_TOKEN_EXCHANGE: &str =
-    "urn:ietf:params:oauth:grant-type:token-exchange";
+const GRANT_TYPE_TOKEN_EXCHANGE: &str = "urn:ietf:params:oauth:grant-type:token-exchange";
 
 /// Default issued-token-type RFC 8693 returns. We don't rely on it
 /// for behavior — it's reported back to operators in audit logs
 /// only.
-const DEFAULT_ISSUED_TOKEN_TYPE: &str =
-    "urn:ietf:params:oauth:token-type:access_token";
+const DEFAULT_ISSUED_TOKEN_TYPE: &str = "urn:ietf:params:oauth:token-type:access_token";
 
 /// OAuth-mediated `TokenDelegate` handler.
 pub struct OAuthDelegator {
@@ -102,15 +100,14 @@ impl OAuthDelegator {
                 ),
             })
         })?;
-        let typed: OAuthDelegatorConfig = serde_json::from_value(raw.clone())
-            .map_err(|e| {
-                Box::new(PluginError::Config {
-                    message: format!(
-                        "plugin '{}' (cpex-plugin-delegator-oauth) config parse failed: {e}",
-                        cfg.name
-                    ),
-                })
-            })?;
+        let typed: OAuthDelegatorConfig = serde_json::from_value(raw.clone()).map_err(|e| {
+            Box::new(PluginError::Config {
+                message: format!(
+                    "plugin '{}' (cpex-plugin-delegator-oauth) config parse failed: {e}",
+                    cfg.name
+                ),
+            })
+        })?;
 
         if typed.token_endpoint.trim().is_empty() {
             return Err(Box::new(PluginError::Config {
@@ -272,7 +269,7 @@ impl HookHandler<TokenDelegateHook> for OAuthDelegator {
                     "delegation.idp_timeout",
                     format!("token-exchange to {} timed out", self.typed.token_endpoint),
                 ));
-            }
+            },
             Err(e) => {
                 return PluginResult::deny(PluginViolation::new(
                     "delegation.idp_unreachable",
@@ -281,7 +278,7 @@ impl HookHandler<TokenDelegateHook> for OAuthDelegator {
                         self.typed.token_endpoint,
                     ),
                 ));
-            }
+            },
         };
 
         let status = response.status();
@@ -289,8 +286,7 @@ impl HookHandler<TokenDelegateHook> for OAuthDelegator {
             // Try to surface the standard `error` / `error_description`
             // fields from the IdP. Fall back to status code.
             let body = response.text().await.unwrap_or_default();
-            let (code, reason) = match serde_json::from_str::<TokenErrorResponse>(&body)
-            {
+            let (code, reason) = match serde_json::from_str::<TokenErrorResponse>(&body) {
                 Ok(err) => {
                     let mut reason = err.error.clone();
                     if let Some(desc) = err.error_description {
@@ -298,7 +294,7 @@ impl HookHandler<TokenDelegateHook> for OAuthDelegator {
                         reason.push_str(&desc);
                     }
                     ("delegation.idp_rejected", reason)
-                }
+                },
                 Err(_) => (
                     "delegation.idp_rejected",
                     format!("IdP returned {status}: {body}"),
@@ -314,7 +310,7 @@ impl HookHandler<TokenDelegateHook> for OAuthDelegator {
                     "delegation.bad_response",
                     format!("IdP response wasn't valid token-exchange JSON: {e}"),
                 ));
-            }
+            },
         };
 
         // Compute effective scopes. IdP's `scope` field wins (it

@@ -339,9 +339,11 @@ pub fn filter_extensions(extensions: &Extensions, capabilities: &HashSet<String>
         let allow_inbound = has_read_access(&inbound_policy, capabilities);
         let allow_delegated = has_read_access(&delegated_policy, capabilities);
         if allow_inbound || allow_delegated {
-            filtered.raw_credentials = Some(Arc::new(
-                build_filtered_raw_credentials(raw, allow_inbound, allow_delegated),
-            ));
+            filtered.raw_credentials = Some(Arc::new(build_filtered_raw_credentials(
+                raw,
+                allow_inbound,
+                allow_delegated,
+            )));
         }
     }
 
@@ -731,7 +733,10 @@ mod tests {
         let filtered = filter_extensions(&ext, &HashSet::new());
         let sec = filtered.security.as_ref().unwrap();
         assert!(sec.subject.is_none());
-        assert!(sec.client.is_none(), "client must be hidden without read_client");
+        assert!(
+            sec.client.is_none(),
+            "client must be hidden without read_client"
+        );
         assert!(
             sec.caller_workload.is_none(),
             "caller_workload must be hidden without read_workload",

@@ -14,22 +14,28 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
+publish = false
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+rust-version.workspace = true
 
 [lib]
 crate-type = ["lib", "cdylib", "staticlib"]
 
 [dependencies]
-cpex-core = { path = "../cpex-core" }
+cpex-core = { path = "../cpex-core", version = "0.2.0" }
 # APL governance layer — bundled so Go/Python hosts can enable APL
 # policies and route handlers via the `cpex_apl_install` FFI entry point.
-apl-cpex = { path = "../apl-cpex" }
+apl-cpex = { path = "../apl-cpex", version = "0.2.0" }
 # The builtin extension set. `cpex_apl_install` delegates registration to
 # cpex-builtins, whose `register_builtins` expands to explicit
 # `register_factory` calls — so the factory symbols survive in the
 # staticlib (no inventory/linkme link-section GC hazard). The feature set
 # below is the exact bundle the default `.a` ships: four hook plugins plus
 # the cedar-direct PDP (note: NOT `cel`, matching the prior footprint).
-cpex-builtins = { path = "../cpex-builtins", default-features = false, features = [
+cpex-builtins = { path = "../cpex-builtins", version = "0.2.0", default-features = false, features = [
     "pii-scanner",
     "audit-logger",
     "identity-jwt",
@@ -52,3 +58,6 @@ valkey = ["cpex-builtins/valkey"]
 
 [dev-dependencies]
 async-trait = { workspace = true }
+
+[lints]
+workspace = true

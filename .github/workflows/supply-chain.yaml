@@ -1,0 +1,42 @@
+# ===============================================================
+# Supply Chain - cargo-deny: advisories (RustSec), licenses, bans,
+# and crate sources. Single source of truth: deny.toml.
+#
+# (cargo-deny's advisory check covers the same RustSec database as
+# cargo-audit, plus license/ban/source policy, so we run just deny
+# and keep one ignore list.)
+# ===============================================================
+
+name: Supply Chain
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    types: [opened, synchronize, ready_for_review]
+    branches: ["main"]
+  schedule:
+    # Catch newly published advisories against the locked tree.
+    - cron: "27 6 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+
+jobs:
+  deny:
+    name: cargo deny
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install Rust 1.96.0
+        uses: dtolnay/rust-toolchain@1.96.0
+      - uses: Swatinem/rust-cache@v2
+      - name: Install cargo-deny
+        run: cargo install cargo-deny --locked
+      - run: cargo deny check
