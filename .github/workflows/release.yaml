@@ -27,7 +27,7 @@ jobs:
     name: Validate tag matches workspace version
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Install Rust 1.96.0
         uses: dtolnay/rust-toolchain@1.96.0
       - name: Check tag == workspace version
@@ -50,7 +50,7 @@ jobs:
     needs: [validate]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Install Rust 1.96.0
         uses: dtolnay/rust-toolchain@1.96.0
       - uses: Swatinem/rust-cache@v2
@@ -61,7 +61,7 @@ jobs:
     needs: [validate, test]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Install Rust 1.96.0
         uses: dtolnay/rust-toolchain@1.96.0
       - uses: Swatinem/rust-cache@v2
