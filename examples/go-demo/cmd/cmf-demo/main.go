@@ -25,7 +25,11 @@
 package main
 
 /*
-#cgo LDFLAGS: -L${SRCDIR}/../../../../target/release -lcpex_demo_ffi -lm -ldl -lpthread -framework CoreFoundation -framework Security
+#cgo LDFLAGS: -L${SRCDIR}/../../../../target/release -lcpex_demo_ffi -lm -ldl -lpthread
+// CoreFoundation/Security are macOS-only; the Rust staticlib pulls them
+// in transitively there. Linux gcc rejects `-framework`, so scope these
+// to darwin and leave Linux with the portable flags above.
+#cgo darwin LDFLAGS: -framework CoreFoundation -framework Security
 #include <stdlib.h>
 
 int cpex_demo_register_factories(void* mgr);
