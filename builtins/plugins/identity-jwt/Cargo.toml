@@ -31,11 +31,15 @@ rust-version.workspace = true
 [dependencies]
 cpex-core = { path = "../../../crates/cpex-core", version = "0.2.0" }
 
-# `jsonwebtoken` is the de facto JWT library for Rust. ~5 transitive
-# deps (ring, base64, serde, pem). Supports RS256/RS384/RS512,
-# ES256/ES384, EdDSA, HS256/HS384/HS512. Default features include
-# `use_pem` (load DecodingKey from PEM strings) which we want.
-jsonwebtoken = "10"
+# `jsonwebtoken` is the de facto JWT library for Rust. Supports
+# RS256/RS384/RS512, ES256/ES384, EdDSA, HS256/HS384/HS512. Default
+# features include `use_pem` (load DecodingKey from PEM strings) which
+# we want. v10 split out the crypto backend into a required feature
+# (neither `rust_crypto` nor `aws_lc_rs` is on by default) and panics
+# at first sign/verify if none is selected. We pick `rust_crypto`
+# (pure RustCrypto) to keep the tree openssl-free and avoid the
+# aws-lc-rs C/cmake build dependency.
+jsonwebtoken = { version = "10", features = ["rust_crypto"] }
 
 # `base64` for the peek-at-iss helper (split + URL_SAFE_NO_PAD decode
 # of the middle JWT segment). Pinned to 0.22 to match what
