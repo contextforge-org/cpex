@@ -34,6 +34,7 @@
 pub mod cmf_invoker;
 pub mod delegation_invoker;
 pub mod dispatch_plan;
+pub mod elicitation_invoker;
 pub mod parallel_safety;
 pub mod pdp_router;
 pub mod register;
@@ -44,6 +45,7 @@ pub mod visitor;
 
 pub use cmf_invoker::CmfPluginInvoker;
 pub use delegation_invoker::DelegationPluginInvoker;
+pub use elicitation_invoker::ElicitationPluginInvoker;
 pub use dispatch_plan::{DispatchCache, RouteDispatchPlan, RoutePluginEntry};
 pub use pdp_router::PdpRouter;
 pub use register::{register_apl, AplOptions};

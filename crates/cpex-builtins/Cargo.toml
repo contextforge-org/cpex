@@ -29,16 +29,17 @@ rust-version.workspace = true
 [features]
 # The common in-process set: the four hook plugins plus both PDPs. Heavier
 # / external-backend extensions (valkey) stay opt-in via `full`.
-default = ["pii-scanner", "audit-logger", "identity-jwt", "delegator-oauth", "cedar-direct", "cel"]
+default = ["pii-scanner", "audit-logger", "identity-jwt", "delegator-oauth", "elicitation-ciba", "cedar-direct", "cel"]
 
 # Each feature pulls exactly one builtin crate.
-pii-scanner     = ["dep:cpex-plugin-pii-scanner"]
-audit-logger    = ["dep:cpex-plugin-audit-logger"]
-identity-jwt    = ["dep:cpex-plugin-identity-jwt"]
-delegator-oauth = ["dep:cpex-plugin-delegator-oauth"]
-cedar-direct    = ["dep:cpex-pdp-cedar-direct"]
-cel             = ["dep:cpex-pdp-cel"]
-valkey          = ["dep:cpex-session-valkey"]
+pii-scanner      = ["dep:cpex-plugin-pii-scanner"]
+audit-logger     = ["dep:cpex-plugin-audit-logger"]
+identity-jwt     = ["dep:cpex-plugin-identity-jwt"]
+delegator-oauth  = ["dep:cpex-plugin-delegator-oauth"]
+elicitation-ciba = ["dep:cpex-plugin-elicitation-ciba"]
+cedar-direct     = ["dep:cpex-pdp-cedar-direct"]
+cel              = ["dep:cpex-pdp-cel"]
+valkey           = ["dep:cpex-session-valkey"]
 
 # Everything wired here, including the Valkey session store (redis client +
 # rustls TLS stack).
@@ -55,6 +56,7 @@ cpex-plugin-pii-scanner = { path = "../../builtins/plugins/pii-scanner", version
 cpex-plugin-audit-logger = { path = "../../builtins/plugins/audit-logger", version = "0.2.0", optional = true }
 cpex-plugin-identity-jwt = { path = "../../builtins/plugins/identity-jwt", version = "0.2.0", optional = true }
 cpex-plugin-delegator-oauth = { path = "../../builtins/plugins/delegator-oauth", version = "0.2.0", optional = true }
+cpex-plugin-elicitation-ciba = { path = "../../builtins/plugins/elicitation-ciba", version = "0.2.0", optional = true }
 cpex-pdp-cedar-direct = { path = "../../builtins/pdps/cedar-direct", version = "0.2.0", optional = true }
 cpex-pdp-cel = { path = "../../builtins/pdps/cel", version = "0.2.0", optional = true }
 cpex-session-valkey = { path = "../../builtins/session/valkey", version = "0.2.0", optional = true }

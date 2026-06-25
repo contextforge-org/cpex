@@ -51,6 +51,7 @@ fn plan_for(
     Arc::new(RouteDispatchPlan {
         plugins,
         delegation_entries: Default::default(),
+        elicitation_entries: Default::default(),
     })
 }
 
@@ -515,6 +516,7 @@ fn plan_with_narrowed_caps(
     Arc::new(apl_cpex::RouteDispatchPlan {
         plugins,
         delegation_entries: Default::default(),
+        elicitation_entries: Default::default(),
     })
 }
 

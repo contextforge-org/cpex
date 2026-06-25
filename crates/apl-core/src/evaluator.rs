@@ -197,12 +197,14 @@ pub async fn evaluate_effects(
     pdp: &Arc<dyn PdpResolver>,
     plugins: &Arc<dyn PluginInvoker>,
     delegations: &Arc<dyn crate::step::DelegationInvoker>,
+    elicitations: &Arc<dyn crate::step::ElicitationInvoker>,
     phase: crate::step::DispatchPhase,
     payload: &mut crate::route::RoutePayload,
 ) -> StepsEvaluation {
     let mut taints: Vec<crate::pipeline::TaintEvent> = Vec::new();
     let mut args_modified = false;
     let mut result_modified = false;
+    let mut pending: Option<crate::step::PendingElicitation> = None;
     for effect in effects {
         // Each top-level effect runs against the shared mutable state.
         // `Effect::When` / `Effect::Pdp` handle their own internal
@@ -218,6 +220,7 @@ pub async fn evaluate_effects(
             pdp,
             plugins,
             delegations,
+            elicitations,
             phase,
             &mut taints,
             &mut args_modified,
@@ -230,6 +233,13 @@ pub async fn evaluate_effects(
             EffectOutcome::Halt(decision) => {
                 return StepsEvaluation::deny(decision, taints, args_modified, result_modified);
             },
+            EffectOutcome::Pending(bundle) => {
+                // Suspend the phase: stop walking (sequential elicitation),
+                // carry the bundle out. Decision stays Allow — the host
+                // gates on `pending` being set, not on a deny.
+                pending = Some(bundle);
+                break;
+            },
         }
     }
     StepsEvaluation {
@@ -237,6 +247,7 @@ pub async fn evaluate_effects(
         taints,
         args_modified,
         result_modified,
+        pending,
     }
 }
 
@@ -256,6 +267,11 @@ pub struct StepsEvaluation {
     pub taints: Vec<crate::pipeline::TaintEvent>,
     pub args_modified: bool,
     pub result_modified: bool,
+    /// Set when a phase suspended on an unresolved elicitation. `Some`
+    /// means "do not forward — emit `-32120` with this bundle." `decision`
+    /// is `Allow` in that case (nothing denied); the host gates forwarding
+    /// on `pending.is_none()`. See [`crate::step::PendingElicitation`].
+    pub pending: Option<crate::step::PendingElicitation>,
 }
 
 impl StepsEvaluation {
@@ -270,6 +286,7 @@ impl StepsEvaluation {
             taints,
             args_modified,
             result_modified,
+            pending: None,
         }
     }
 }
@@ -286,6 +303,13 @@ enum EffectOutcome {
     /// Effect produced a Deny decision — caller halts the rest of the
     /// surrounding list, the rest of the phase, and the route.
     Halt(Decision),
+    /// Effect dispatched an elicitation that hasn't resolved yet — the
+    /// phase *suspends*. Like `Halt` it short-circuits the surrounding
+    /// list, but it is NOT a deny: the carried bundle propagates up to
+    /// the host, which emits `-32120` (retry) instead of forwarding. The
+    /// phase decision stays `Allow`; pending being non-empty is what
+    /// blocks the forward (see [`PendingElicitation`]).
+    Pending(crate::step::PendingElicitation),
 }
 
 /// Run a single effect against the evaluator's state. Called by both
@@ -307,6 +331,7 @@ async fn dispatch_effect(
     pdp: &Arc<dyn PdpResolver>,
     plugins: &Arc<dyn PluginInvoker>,
     delegations: &Arc<dyn crate::step::DelegationInvoker>,
+    elicitations: &Arc<dyn crate::step::ElicitationInvoker>,
     phase: crate::step::DispatchPhase,
     taints: &mut Vec<crate::pipeline::TaintEvent>,
     args_modified: &mut bool,
@@ -414,6 +439,10 @@ async fn dispatch_effect(
             }
         },
 
+        Effect::Elicit(elicit_step) => {
+            dispatch_elicitation(elicit_step, bag, elicitations).await
+        }
+
         Effect::Taint { label, scopes } => {
             // Emit the taint into the phase's accumulator so it flows
             // into `RouteDecision.taints`. Apl-cpex's invoker handles
@@ -456,6 +485,7 @@ async fn dispatch_effect(
                     pdp,
                     plugins,
                     delegations,
+                    elicitations,
                     phase,
                     taints,
                     args_modified,
@@ -465,7 +495,8 @@ async fn dispatch_effect(
                 .await
                 {
                     EffectOutcome::Continue => continue,
-                    halt @ EffectOutcome::Halt(_) => return halt,
+                    // Halt (deny) and Pending (suspend) both propagate up.
+                    other => return other,
                 }
             }
             EffectOutcome::Continue
@@ -483,6 +514,7 @@ async fn dispatch_effect(
                 pdp,
                 plugins,
                 delegations,
+                elicitations,
                 phase,
                 taints,
                 payload,
@@ -509,6 +541,7 @@ async fn dispatch_effect(
                     pdp,
                     plugins,
                     delegations,
+                    elicitations,
                     phase,
                     taints,
                     args_modified,
@@ -518,7 +551,8 @@ async fn dispatch_effect(
                 .await
                 {
                     EffectOutcome::Continue => continue,
-                    halt @ EffectOutcome::Halt(_) => return halt,
+                    // Halt (deny) and Pending (suspend) both propagate up.
+                    other => return other,
                 }
             }
             EffectOutcome::Continue
@@ -544,6 +578,7 @@ async fn dispatch_effect(
                                 pdp,
                                 plugins,
                                 delegations,
+                                elicitations,
                                 phase,
                                 taints,
                                 args_modified,
@@ -553,7 +588,8 @@ async fn dispatch_effect(
                             .await
                             {
                                 EffectOutcome::Continue => continue,
-                                halt @ EffectOutcome::Halt(_) => return halt,
+                                // Halt (deny) and Pending (suspend) propagate.
+                                other => return other,
                             }
                         }
                         EffectOutcome::Continue
@@ -564,23 +600,26 @@ async fn dispatch_effect(
                         // upgrade the deny to allow — if reactions
                         // walked clean, the PDP's original deny stands.
                         for inner in on_deny {
-                            if let EffectOutcome::Halt(reaction_decision) =
-                                Box::pin(dispatch_effect(
-                                    inner,
-                                    fallback_source,
-                                    bag,
-                                    pdp,
-                                    plugins,
-                                    delegations,
-                                    phase,
-                                    taints,
-                                    args_modified,
-                                    result_modified,
-                                    payload,
-                                ))
-                                .await
+                            match Box::pin(dispatch_effect(
+                                inner,
+                                fallback_source,
+                                bag,
+                                pdp,
+                                plugins,
+                                delegations,
+                                elicitations,
+                                phase,
+                                taints,
+                                args_modified,
+                                result_modified,
+                                payload,
+                            ))
+                            .await
                             {
-                                return EffectOutcome::Halt(reaction_decision);
+                                EffectOutcome::Continue => {}
+                                // A reaction can override the deny reason;
+                                // a suspended reaction (Pending) surfaces.
+                                other => return other,
                             }
                         }
                         EffectOutcome::Halt(deny)
@@ -592,6 +631,172 @@ async fn dispatch_effect(
                 }),
             }
         },
+    }
+}
+
+/// Drive one [`Effect::Elicit`] step: dispatch on first arrival, check
+/// status on every pass, and on an approved-and-genuine response apply
+/// the runtime's `scope`-over-args sufficiency check before allowing the
+/// phase to continue. See `docs/apl-manager-approval-ciba-design.md`.
+///
+/// Failure handling follows the step's `on_error` (default `deny`,
+/// fail-closed). An explicit human *denial* always halts regardless of
+/// `on_error` — `on_error` governs channel/validation *failures*, not a
+/// valid "no" from the approver.
+///
+/// Pending is currently fail-closed: until the `-32120` pending bundle
+/// side-channel lands, "the human hasn't answered yet" is treated as
+/// "not allowed." The bag still records `elicitation.status = pending`
+/// so the host/audit can see the in-flight state.
+async fn dispatch_elicitation(
+    step: &crate::step::ElicitStep,
+    bag: &mut AttributeBag,
+    elicitations: &Arc<dyn crate::step::ElicitationInvoker>,
+) -> EffectOutcome {
+    use crate::step::{elicitation_bag_keys as bk, ElicitationOutcome, ElicitationStatus};
+
+    // `on_error` applies to *failures* (channel error, invalid response,
+    // expiry, still-pending) — not to a genuine denial.
+    let on_error_continue = step
+        .on_error
+        .as_deref()
+        .unwrap_or("deny")
+        .eq_ignore_ascii_case("continue");
+    let fail = |reason: String| -> EffectOutcome {
+        if on_error_continue {
+            EffectOutcome::Continue
+        } else {
+            EffectOutcome::Halt(Decision::Deny {
+                reason: Some(reason),
+                rule_source: step.source.clone(),
+            })
+        }
+    };
+
+    // First arrival vs. retry: the agent echoes `elicitation.id` on
+    // retry. Absent → first arrival: dispatch and record the pending
+    // bundle in the bag.
+    //
+    // Resolve `from` against the bag (e.g. `claim.manager` → the
+    // manager's identity); fall back to the literal when it isn't a bag
+    // key (e.g. `from` written as a literal email). The attribute
+    // vocabulary lives here in the runtime, so the invoker receives the
+    // resolved identity rather than re-deriving it.
+    let resolved_from = bag
+        .get_string(&step.from)
+        .unwrap_or(step.from.as_str())
+        .to_string();
+    let id = match bag.get_string(bk::ID) {
+        Some(existing) => existing.to_string(),
+        None => match elicitations.dispatch(step, &resolved_from).await {
+            Ok(d) => {
+                bag.set(bk::ID, d.id.clone());
+                bag.set(bk::STATUS, "pending".to_string());
+                // Optional audit label — not a routing key.
+                if let Some(channel) = &step.channel {
+                    bag.set(bk::CHANNEL, channel.clone());
+                }
+                if let Some(approver) = &d.approver {
+                    bag.set(bk::APPROVER, approver.clone());
+                }
+                if let Some(intent) = &d.intent_id {
+                    bag.set(bk::INTENT_ID, intent.clone());
+                }
+                if let Some(exp) = &d.expires_at {
+                    bag.set(bk::EXPIRES_AT, exp.clone());
+                }
+                d.id
+            }
+            Err(e) => return fail(format!("elicitation dispatch failed: {e}")),
+        },
+    };
+
+    // Status check — non-blocking read of the channel's current state.
+    let status = match elicitations.check(step, &id).await {
+        Ok(s) => s,
+        Err(e) => return fail(format!("elicitation check failed: {e}")),
+    };
+
+    match status {
+        ElicitationStatus::Pending => {
+            // Suspend, don't deny: hand the host a pending bundle so it
+            // emits `-32120` (retry) instead of forwarding. Built from the
+            // bag, which dispatch populated — works the same on first
+            // arrival and on a later still-pending retry.
+            bag.set(bk::STATUS, "pending".to_string());
+            let approver = bag.get_string(bk::APPROVER).map(str::to_string);
+            let intent_id = bag.get_string(bk::INTENT_ID).map(str::to_string);
+            let expires_at = bag.get_string(bk::EXPIRES_AT).map(str::to_string);
+            EffectOutcome::Pending(crate::step::PendingElicitation {
+                id,
+                plugin_name: step.plugin_name.clone(),
+                approver,
+                intent_id,
+                channel: step.channel.clone(),
+                expires_at,
+                source: step.source.clone(),
+            })
+        }
+        ElicitationStatus::Expired => {
+            bag.set(bk::STATUS, "expired".to_string());
+            fail("elicitation expired before a response".to_string())
+        }
+        ElicitationStatus::Resolved { outcome: ElicitationOutcome::Denied } => {
+            bag.set(bk::STATUS, "resolved".to_string());
+            bag.set(bk::OUTCOME, "denied".to_string());
+            // A genuine "no" halts unconditionally — not subject to
+            // `on_error`.
+            EffectOutcome::Halt(Decision::Deny {
+                reason: Some("elicitation denied by approver".to_string()),
+                rule_source: step.source.clone(),
+            })
+        }
+        ElicitationStatus::Resolved { outcome: ElicitationOutcome::Approved } => {
+            // Genuineness (plugin): signature / intent binding /
+            // responder identity.
+            let validation = match elicitations.validate(step, &id).await {
+                Ok(v) => v,
+                Err(e) => return fail(format!("elicitation validation failed: {e}")),
+            };
+            if !validation.valid {
+                let why = validation
+                    .reason
+                    .unwrap_or_else(|| "response failed validation".to_string());
+                return fail(format!("elicitation invalid: {why}"));
+            }
+
+            // Sufficiency (runtime): evaluate `scope` against the live
+            // args. Kept in APL because the channel (Keycloak CIBA) can't
+            // bind args — no RFC 9396 RAR.
+            if let Some(scope_src) = &step.scope {
+                match crate::parser::parse_predicate(scope_src) {
+                    Ok(expr) => {
+                        if !eval_expression(&expr, bag) {
+                            return fail(format!(
+                                "elicitation scope not satisfied: `{scope_src}`"
+                            ));
+                        }
+                    }
+                    Err(e) => {
+                        return fail(format!(
+                            "elicitation scope `{scope_src}` failed to parse: {e}"
+                        ));
+                    }
+                }
+            }
+
+            // Approved + genuine + sufficient. Record resolved facts for
+            // downstream rules / audit, then continue.
+            bag.set(bk::STATUS, "resolved".to_string());
+            bag.set(bk::OUTCOME, "approved".to_string());
+            if let Some(approver) = validation.approver {
+                bag.set(bk::APPROVER, approver);
+            }
+            if let Some(intent) = validation.intent_id {
+                bag.set(bk::INTENT_ID, intent);
+            }
+            EffectOutcome::Continue
+        }
     }
 }
 
@@ -639,6 +844,7 @@ fn dispatch_parallel<'a>(
     pdp: &'a Arc<dyn PdpResolver>,
     plugins: &'a Arc<dyn PluginInvoker>,
     delegations: &'a Arc<dyn crate::step::DelegationInvoker>,
+    elicitations: &'a Arc<dyn crate::step::ElicitationInvoker>,
     phase: crate::step::DispatchPhase,
     taints: &'a mut Vec<crate::pipeline::TaintEvent>,
     payload: &'a crate::route::RoutePayload,
@@ -668,6 +874,7 @@ fn dispatch_parallel<'a>(
             let pdp = Arc::clone(pdp);
             let plugins = Arc::clone(plugins);
             let delegations = Arc::clone(delegations);
+            let elicitations = Arc::clone(elicitations);
             branches.push(Box::pin(async move {
                 let mut branch_taints: Vec<crate::pipeline::TaintEvent> = Vec::new();
                 let mut branch_args_modified = false;
@@ -679,6 +886,7 @@ fn dispatch_parallel<'a>(
                     &pdp,
                     &plugins,
                     &delegations,
+                    &elicitations,
                     phase,
                     &mut branch_taints,
                     &mut branch_args_modified,
@@ -1262,12 +1470,36 @@ mod tests {
     fn noop_delegations() -> Arc<dyn DelegationInvoker> {
         Arc::new(NoopDelegationInvoker)
     }
+    fn noop_elicitations() -> Arc<dyn crate::step::ElicitationInvoker> {
+        Arc::new(crate::step::NoopElicitationInvoker)
+    }
+    fn auto_elicitations() -> Arc<dyn crate::step::ElicitationInvoker> {
+        Arc::new(crate::step::AutoApprovingElicitor)
+    }
 
     fn deny(reason: &str) -> Effect {
         Effect::Deny {
             reason: Some(reason.into()),
             code: None,
         }
+    }
+
+    /// Build an `Effect::Elicit` with the given scope / on_error for the
+    /// elicitation-arm tests. Channel/kind are fixed — the arm doesn't
+    /// branch on them (that's the plugin's job, which the fakes stub).
+    fn elicit_effect(scope: Option<&str>, on_error: Option<&str>) -> Effect {
+        Effect::Elicit(crate::step::ElicitStep {
+            kind: crate::step::ElicitKind::Approval,
+            plugin_name: "manager-approver".into(),
+            channel: Some("ciba".into()),
+            from: "user.manager".into(),
+            purpose: Some("approve payroll adjustment".into()),
+            scope: scope.map(|s| s.to_string()),
+            timeout: None,
+            config_override: None,
+            on_error: on_error.map(|s| s.to_string()),
+            source: "route.test.policy[0]".into(),
+        })
     }
 
     fn cond(c: Condition) -> Expression {
@@ -2400,6 +2632,75 @@ mod tests {
         }
     }
 
+    /// Elicitation invoker that dispatches fine but resolves to a human
+    /// *denial* — exercises the "genuine no halts unconditionally" path.
+    struct DenyingElicitor;
+    #[async_trait]
+    impl crate::step::ElicitationInvoker for DenyingElicitor {
+        async fn dispatch(
+            &self,
+            _step: &crate::step::ElicitStep,
+            resolved_from: &str,
+        ) -> Result<crate::step::ElicitationDispatch, crate::step::ElicitationError> {
+            Ok(crate::step::ElicitationDispatch {
+                id: "deny-1".into(),
+                approver: Some(resolved_from.to_string()),
+                intent_id: None,
+                expires_at: None,
+            })
+        }
+        async fn check(
+            &self,
+            _step: &crate::step::ElicitStep,
+            _id: &str,
+        ) -> Result<crate::step::ElicitationStatus, crate::step::ElicitationError> {
+            Ok(crate::step::ElicitationStatus::Resolved {
+                outcome: crate::step::ElicitationOutcome::Denied,
+            })
+        }
+        async fn validate(
+            &self,
+            _step: &crate::step::ElicitStep,
+            _id: &str,
+        ) -> Result<crate::step::ElicitationValidation, crate::step::ElicitationError> {
+            // Never reached on a denial — the arm halts before validate.
+            unreachable!("validate must not run on a denied elicitation")
+        }
+    }
+
+    /// Elicitation invoker that dispatches fine but never resolves —
+    /// every `check` returns Pending. Exercises the suspend path.
+    struct StillPendingElicitor;
+    #[async_trait]
+    impl crate::step::ElicitationInvoker for StillPendingElicitor {
+        async fn dispatch(
+            &self,
+            _step: &crate::step::ElicitStep,
+            resolved_from: &str,
+        ) -> Result<crate::step::ElicitationDispatch, crate::step::ElicitationError> {
+            Ok(crate::step::ElicitationDispatch {
+                id: "pending-1".into(),
+                approver: Some(resolved_from.to_string()),
+                intent_id: Some("intent-xyz".into()),
+                expires_at: Some("2026-12-31T00:00:00Z".into()),
+            })
+        }
+        async fn check(
+            &self,
+            _step: &crate::step::ElicitStep,
+            _id: &str,
+        ) -> Result<crate::step::ElicitationStatus, crate::step::ElicitationError> {
+            Ok(crate::step::ElicitationStatus::Pending)
+        }
+        async fn validate(
+            &self,
+            _step: &crate::step::ElicitStep,
+            _id: &str,
+        ) -> Result<crate::step::ElicitationValidation, crate::step::ElicitationError> {
+            unreachable!("validate must not run while pending")
+        }
+    }
+
     /// Plugin invoker keyed by name → outcome.
     struct FakePlugin {
         decisions: std::collections::HashMap<String, Decision>,
@@ -2464,6 +2765,7 @@ mod tests {
             }) as Arc<dyn PdpResolver>),
             &null_plugins(),
             &noop_delegations(),
+            &noop_elicitations(),
             crate::step::DispatchPhase::Pre,
             &mut crate::route::RoutePayload::new(serde_json::Value::Null),
         )
@@ -2485,6 +2787,7 @@ mod tests {
                 &pdp,
                 &null_plugins(),
                 &noop_delegations(),
+                &noop_elicitations(),
                 crate::step::DispatchPhase::Pre,
                 &mut crate::route::RoutePayload::new(serde_json::Value::Null)
             )
@@ -2510,6 +2813,7 @@ mod tests {
             &pdp,
             &null_plugins(),
             &noop_delegations(),
+            &noop_elicitations(),
             crate::step::DispatchPhase::Pre,
             &mut crate::route::RoutePayload::new(serde_json::Value::Null),
         )
@@ -2553,6 +2857,7 @@ mod tests {
             &pdp,
             &null_plugins(),
             &noop_delegations(),
+            &noop_elicitations(),
             crate::step::DispatchPhase::Pre,
             &mut crate::route::RoutePayload::new(serde_json::Value::Null),
         )
@@ -2599,6 +2904,7 @@ mod tests {
             &pdp,
             &null_plugins(),
             &noop_delegations(),
+            &noop_elicitations(),
             crate::step::DispatchPhase::Pre,
             &mut crate::route::RoutePayload::new(serde_json::Value::Null),
         )
@@ -2620,6 +2926,7 @@ mod tests {
             &(Arc::new(ErroringPdp) as Arc<dyn PdpResolver>),
             &null_plugins(),
             &noop_delegations(),
+            &noop_elicitations(),
             crate::step::DispatchPhase::Pre,
             &mut crate::route::RoutePayload::new(serde_json::Value::Null),
         )
@@ -2661,6 +2968,7 @@ mod tests {
                 }) as Arc<dyn PdpResolver>),
                 &plugins,
                 &noop_delegations(),
+                &noop_elicitations(),
                 crate::step::DispatchPhase::Pre,
                 &mut crate::route::RoutePayload::new(serde_json::Value::Null)
             )
@@ -2685,6 +2993,7 @@ mod tests {
             }) as Arc<dyn PdpResolver>),
             &plugins,
             &noop_delegations(),
+            &noop_elicitations(),
             crate::step::DispatchPhase::Pre,
             &mut crate::route::RoutePayload::new(serde_json::Value::Null),
         )
@@ -2713,6 +3022,7 @@ mod tests {
             }) as Arc<dyn PdpResolver>),
             &plugins,
             &noop_delegations(),
+            &noop_elicitations(),
             crate::step::DispatchPhase::Pre,
             &mut crate::route::RoutePayload::new(serde_json::Value::Null),
         )
@@ -2756,6 +3066,7 @@ mod tests {
             }) as Arc<dyn PdpResolver>),
             &null_plugins(),
             &noop_delegations(),
+            &noop_elicitations(),
             crate::step::DispatchPhase::Pre,
             &mut crate::route::RoutePayload::new(serde_json::Value::Null),
         )
@@ -2807,6 +3118,7 @@ mod tests {
             }) as Arc<dyn PdpResolver>),
             &null_plugins(),
             &noop_delegations(),
+            &noop_elicitations(),
             crate::step::DispatchPhase::Pre,
             &mut payload,
         )
@@ -2851,6 +3163,7 @@ mod tests {
             }) as Arc<dyn PdpResolver>),
             &null_plugins(),
             &noop_delegations(),
+            &noop_elicitations(),
             crate::step::DispatchPhase::Pre,
             &mut payload,
         )
@@ -2884,6 +3197,7 @@ mod tests {
             }) as Arc<dyn PdpResolver>),
             &null_plugins(),
             &noop_delegations(),
+            &noop_elicitations(),
             crate::step::DispatchPhase::Pre,
             &mut payload,
         )
@@ -2931,6 +3245,7 @@ mod tests {
             }) as Arc<dyn PdpResolver>),
             &null_plugins(),
             &noop_delegations(),
+            &noop_elicitations(),
             crate::step::DispatchPhase::Pre,
             &mut payload,
         )
@@ -2976,6 +3291,7 @@ mod tests {
             }) as Arc<dyn PdpResolver>),
             &null_plugins(),
             &noop_delegations(),
+            &noop_elicitations(),
             crate::step::DispatchPhase::Pre,
             &mut payload,
         )
@@ -3013,6 +3329,7 @@ mod tests {
             }) as Arc<dyn PdpResolver>),
             &null_plugins(),
             &noop_delegations(),
+            &noop_elicitations(),
             crate::step::DispatchPhase::Pre,
             &mut payload,
         )
@@ -3057,6 +3374,7 @@ mod tests {
             }) as Arc<dyn PdpResolver>),
             &null_plugins(),
             &noop_delegations(),
+            &noop_elicitations(),
             crate::step::DispatchPhase::Pre,
             &mut payload,
         )
@@ -3068,5 +3386,177 @@ mod tests {
             },
             other => panic!("expected Deny, got {:?}", other),
         }
+    }
+
+    // ----- Effect::Elicit (human-in-the-loop) -----
+
+    /// Run a single `Effect::Elicit` against the given invoker + bag.
+    async fn run_elicit(
+        effect: Effect,
+        elicitations: &Arc<dyn crate::step::ElicitationInvoker>,
+        bag: &mut AttributeBag,
+    ) -> StepsEvaluation {
+        evaluate_effects(
+            &[effect],
+            bag,
+            &(Arc::new(FakePdp { decision: Decision::Allow }) as Arc<dyn PdpResolver>),
+            &null_plugins(),
+            &noop_delegations(),
+            elicitations,
+            crate::step::DispatchPhase::Pre,
+            &mut crate::route::RoutePayload::new(serde_json::Value::Null),
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn elicit_auto_approve_allows_and_records_facts() {
+        let mut bag = AttributeBag::new();
+        let eval = run_elicit(elicit_effect(None, None), &auto_elicitations(), &mut bag).await;
+        assert_eq!(eval.decision, Decision::Allow);
+        // Resolved facts land in the bag for downstream rules / audit.
+        assert_eq!(bag.get_string("elicitation.status"), Some("resolved"));
+        assert_eq!(bag.get_string("elicitation.outcome"), Some("approved"));
+        assert_eq!(bag.get_string("elicitation.approver"), Some("user.manager"));
+        assert_eq!(bag.get_string("elicitation.intent_id"), Some("auto-intent"));
+    }
+
+    #[tokio::test]
+    async fn elicit_scope_satisfied_allows() {
+        // Sufficiency check passes: amount within the approved bound.
+        let mut bag = AttributeBag::new();
+        bag.set("args.amount", 100_i64);
+        let eval = run_elicit(
+            elicit_effect(Some("args.amount <= 25000"), None),
+            &auto_elicitations(),
+            &mut bag,
+        )
+        .await;
+        assert_eq!(eval.decision, Decision::Allow);
+    }
+
+    #[tokio::test]
+    async fn elicit_scope_unsatisfied_denies_even_when_approved() {
+        // The human approved, but the live args exceed scope — the runtime
+        // sufficiency check fails closed regardless of the genuine approval.
+        let mut bag = AttributeBag::new();
+        bag.set("args.amount", 50_000_i64);
+        let eval = run_elicit(
+            elicit_effect(Some("args.amount <= 25000"), None),
+            &auto_elicitations(),
+            &mut bag,
+        )
+        .await;
+        match eval.decision {
+            Decision::Deny { reason, .. } => {
+                assert!(
+                    reason.as_deref().unwrap_or("").contains("scope not satisfied"),
+                    "got: {:?}",
+                    reason
+                );
+            }
+            d => panic!("expected scope Deny, got {:?}", d),
+        }
+    }
+
+    #[tokio::test]
+    async fn elicit_noop_dispatch_fails_closed() {
+        // No channel wired → dispatch errors → fail closed (default deny).
+        let mut bag = AttributeBag::new();
+        let eval = run_elicit(elicit_effect(None, None), &noop_elicitations(), &mut bag).await;
+        match eval.decision {
+            Decision::Deny { reason, rule_source } => {
+                assert!(reason.as_deref().unwrap_or("").contains("dispatch failed"));
+                assert_eq!(rule_source, "route.test.policy[0]");
+            }
+            d => panic!("expected fail-closed Deny, got {:?}", d),
+        }
+    }
+
+    #[tokio::test]
+    async fn elicit_on_error_continue_allows_on_dispatch_failure() {
+        // Same noop failure, but on_error=continue lets the pipeline pass.
+        let mut bag = AttributeBag::new();
+        let eval = run_elicit(
+            elicit_effect(None, Some("continue")),
+            &noop_elicitations(),
+            &mut bag,
+        )
+        .await;
+        assert_eq!(eval.decision, Decision::Allow);
+    }
+
+    #[tokio::test]
+    async fn elicit_denied_halts_regardless_of_on_error() {
+        // A genuine human "no" halts even with on_error=continue — on_error
+        // governs failures, not a valid denial.
+        let denier: Arc<dyn crate::step::ElicitationInvoker> = Arc::new(DenyingElicitor);
+        let mut bag = AttributeBag::new();
+        let eval = run_elicit(elicit_effect(None, Some("continue")), &denier, &mut bag).await;
+        match eval.decision {
+            Decision::Deny { reason, .. } => {
+                assert!(reason.as_deref().unwrap_or("").contains("denied by approver"));
+            }
+            d => panic!("expected denial Deny, got {:?}", d),
+        }
+        assert_eq!(bag.get_string("elicitation.outcome"), Some("denied"));
+    }
+
+    #[tokio::test]
+    async fn elicit_pending_suspends_not_denies() {
+        // Unresolved elicitation → the phase suspends: decision stays Allow
+        // and a pending bundle is carried out (the host emits -32120). This
+        // is the key difference from the fail-closed placeholder.
+        let pending: Arc<dyn crate::step::ElicitationInvoker> = Arc::new(StillPendingElicitor);
+        let mut bag = AttributeBag::new();
+        let eval = run_elicit(elicit_effect(None, None), &pending, &mut bag).await;
+
+        assert_eq!(eval.decision, Decision::Allow, "pending is not a deny");
+        let bundle = eval.pending.expect("pending bundle carried out");
+        assert_eq!(bundle.id, "pending-1");
+        assert_eq!(bundle.plugin_name, "manager-approver");
+        assert_eq!(bundle.approver.as_deref(), Some("user.manager"));
+        assert_eq!(bundle.intent_id.as_deref(), Some("intent-xyz"));
+        assert_eq!(bundle.channel.as_deref(), Some("ciba"));
+        assert_eq!(bundle.expires_at.as_deref(), Some("2026-12-31T00:00:00Z"));
+        assert_eq!(bundle.source, "route.test.policy[0]");
+        // Bag reflects the in-flight state for audit.
+        assert_eq!(bag.get_string("elicitation.status"), Some("pending"));
+    }
+
+    #[tokio::test]
+    async fn elicit_pending_even_with_on_error_continue() {
+        // on_error governs *failures*; a genuine pending is not a failure,
+        // so on_error=continue must NOT collapse it into a plain allow —
+        // the bundle still surfaces so the host suspends.
+        let pending: Arc<dyn crate::step::ElicitationInvoker> = Arc::new(StillPendingElicitor);
+        let mut bag = AttributeBag::new();
+        let eval =
+            run_elicit(elicit_effect(None, Some("continue")), &pending, &mut bag).await;
+        assert_eq!(eval.decision, Decision::Allow);
+        assert!(eval.pending.is_some(), "pending must survive on_error=continue");
+    }
+
+    #[tokio::test]
+    async fn elicit_pending_short_circuits_later_effects() {
+        // A pending elicitation suspends the phase: effects after it in the
+        // list do not run this pass. A trailing `deny` proves it — if the
+        // phase kept walking, the decision would be Deny, not Allow+pending.
+        let pending: Arc<dyn crate::step::ElicitationInvoker> = Arc::new(StillPendingElicitor);
+        let mut bag = AttributeBag::new();
+        let effects = vec![elicit_effect(None, None), deny("should not run")];
+        let eval = evaluate_effects(
+            &effects,
+            &mut bag,
+            &(Arc::new(FakePdp { decision: Decision::Allow }) as Arc<dyn PdpResolver>),
+            &null_plugins(),
+            &noop_delegations(),
+            &pending,
+            crate::step::DispatchPhase::Pre,
+            &mut crate::route::RoutePayload::new(serde_json::Value::Null),
+        )
+        .await;
+        assert_eq!(eval.decision, Decision::Allow, "trailing deny must not run");
+        assert!(eval.pending.is_some());
     }
 }

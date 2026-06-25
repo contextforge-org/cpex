@@ -351,6 +351,7 @@ routes:
         &(Arc::new(AllowPdp) as Arc<dyn apl_core::PdpResolver>),
         &(invoker.clone() as Arc<dyn apl_core::PluginInvoker>),
         &(delegations.clone() as Arc<dyn apl_core::DelegationInvoker>),
+        &(Arc::new(apl_core::NoopElicitationInvoker) as Arc<dyn apl_core::ElicitationInvoker>),
     )
     .await;
 
@@ -475,6 +476,7 @@ routes:
         &(Arc::new(AllowPdp) as Arc<dyn apl_core::PdpResolver>),
         &(invoker.clone() as Arc<dyn apl_core::PluginInvoker>),
         &(delegations.clone() as Arc<dyn apl_core::DelegationInvoker>),
+        &(Arc::new(apl_core::NoopElicitationInvoker) as Arc<dyn apl_core::ElicitationInvoker>),
     )
     .await;
 
@@ -567,6 +569,7 @@ routes:
         &(Arc::new(AllowPdp) as Arc<dyn apl_core::PdpResolver>),
         &(invoker.clone() as Arc<dyn apl_core::PluginInvoker>),
         &(delegations.clone() as Arc<dyn apl_core::DelegationInvoker>),
+        &(Arc::new(apl_core::NoopElicitationInvoker) as Arc<dyn apl_core::ElicitationInvoker>),
     )
     .await;
 
@@ -678,6 +681,7 @@ routes:
         &(Arc::new(AllowPdp) as Arc<dyn apl_core::PdpResolver>),
         &(invoker.clone() as Arc<dyn apl_core::PluginInvoker>),
         &(delegations.clone() as Arc<dyn apl_core::DelegationInvoker>),
+        &(Arc::new(apl_core::NoopElicitationInvoker) as Arc<dyn apl_core::ElicitationInvoker>),
     )
     .await;
 
@@ -799,6 +803,7 @@ routes:
         &(Arc::new(AllowPdp) as Arc<dyn apl_core::PdpResolver>),
         &(invoker.clone() as Arc<dyn apl_core::PluginInvoker>),
         &(delegations.clone() as Arc<dyn apl_core::DelegationInvoker>),
+        &(Arc::new(apl_core::NoopElicitationInvoker) as Arc<dyn apl_core::ElicitationInvoker>),
     )
     .await;
 
@@ -901,6 +906,7 @@ routes:
         &(Arc::new(AllowPdp) as Arc<dyn apl_core::PdpResolver>),
         &(invoker.clone() as Arc<dyn apl_core::PluginInvoker>),
         &(delegations.clone() as Arc<dyn apl_core::DelegationInvoker>),
+        &(Arc::new(apl_core::NoopElicitationInvoker) as Arc<dyn apl_core::ElicitationInvoker>),
     )
     .await;
 

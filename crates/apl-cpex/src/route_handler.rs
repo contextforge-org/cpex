@@ -49,6 +49,7 @@ use apl_core::step::PdpResolver;
 
 use crate::cmf_invoker::CmfPluginInvoker;
 use crate::delegation_invoker::DelegationPluginInvoker;
+use crate::elicitation_invoker::ElicitationPluginInvoker;
 use crate::dispatch_plan::DispatchCache;
 use crate::pdp_router::PdpRouter;
 use crate::session_store::SessionStore;
@@ -307,8 +308,21 @@ impl AnyHookHandler for AplRouteHandler {
         // erased forms get borrowed into `evaluate_pre`/`evaluate_post`;
         // `dispatch_parallel` can then `Arc::clone` an owned 'static
         // reference into each branch closure.
+        // Elicitation bridge — resolves `require_approval(...)` /
+        // `confirm(...)` steps to `ElicitationHook` plugins by name off
+        // the same plan, sharing the request's Extensions so the handler
+        // reads the same identity. Routes with no elicitation steps have
+        // an empty `elicitation_entries` map; an accidental `Effect::Elicit`
+        // then returns `NotFound`, handled by the step's `on_error`.
+        let elicitations = Arc::new(ElicitationPluginInvoker::new(
+            Arc::clone(&manager),
+            invoker.extensions_arc(),
+            invoker.plan_arc(),
+        ));
+
         let invoker_dyn: Arc<dyn apl_core::step::PluginInvoker> = invoker.clone();
         let delegations_dyn: Arc<dyn apl_core::step::DelegationInvoker> = delegations.clone();
+        let elicitations_dyn: Arc<dyn apl_core::step::ElicitationInvoker> = elicitations.clone();
 
         let decision = match self.phase {
             Phase::Pre => {
@@ -319,6 +333,7 @@ impl AnyHookHandler for AplRouteHandler {
                     &self.pdp,
                     &invoker_dyn,
                     &delegations_dyn,
+                    &elicitations_dyn,
                 )
                 .await
             },
@@ -330,6 +345,7 @@ impl AnyHookHandler for AplRouteHandler {
                     &self.pdp,
                     &invoker_dyn,
                     &delegations_dyn,
+                    &elicitations_dyn,
                 )
                 .await
             },
@@ -408,6 +424,13 @@ impl AnyHookHandler for AplRouteHandler {
             None
         };
 
+        // A suspended phase reports `Allow` with a pending bundle — it
+        // must NOT forward. The real JSON-RPC `-32120` retry protocol is
+        // Phase 5 host/SDK work; until then, fail closed with a
+        // distinguished violation that carries the elicitation id so the
+        // suspend is visible and the unapproved call never proceeds.
+        let pending_elicitation = decision.pending.clone();
+
         let (mut continue_processing, mut violation) = match decision.decision {
             Decision::Allow => (true, None),
             Decision::Deny {
@@ -423,6 +446,24 @@ impl AnyHookHandler for AplRouteHandler {
                 (false, Some(PluginViolation::new(code, reason)))
             },
         };
+
+        if let Some(p) = &pending_elicitation {
+            tracing::info!(
+                route = %self.route.route_key,
+                elicitation_id = %p.id,
+                plugin = %p.plugin_name,
+                "policy suspended on pending elicitation; holding request \
+                 (real -32120 retry protocol pending Phase 5)"
+            );
+            continue_processing = false;
+            violation = Some(PluginViolation::new(
+                "elicitation.pending",
+                format!(
+                    "awaiting elicitation `{}` via `{}`",
+                    p.id, p.plugin_name
+                ),
+            ));
+        }
 
         // Append fail-closed (R18) with merge precedence:
         //   - decision Allow + append Err → flip to Deny with a

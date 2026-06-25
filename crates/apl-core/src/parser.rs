@@ -29,7 +29,7 @@ use thiserror::Error;
 use crate::pipeline::{FieldRule, Pipeline, ScanKind, Stage, TaintScope, TypeCheck};
 use crate::plugin_decl::{PluginDeclaration, PluginOverride, PluginRegistry};
 use crate::rules::{CompareOp, CompiledRoute, Condition, Effect, Expression, Literal, Rule};
-use crate::step::{DelegateStep, PdpCall, PdpDialect, Step};
+use crate::step::{DelegateStep, ElicitKind, ElicitStep, PdpCall, PdpDialect, Step};
 
 // =====================================================================
 // Errors
@@ -908,6 +908,34 @@ fn parse_step_string(line: &str, source: &str) -> Result<Step, ParseError> {
         }));
     }
 
+    // Elicitation sugar verbs — each desugars to `Step::Elicit` with a
+    // fixed `ElicitKind`. All-kwarg form (`from:`, `channel:`, …), same
+    // `key: value` shape as `delegate(...)`. Verbs are matched with the
+    // trailing `(` so `require_approval` / `require_attestation` /
+    // `require_review` / `require_step_up` don't collide on the
+    // `require_` prefix.
+    for (verb, kind) in ELICIT_VERBS {
+        if trimmed.starts_with(&format!("{verb}(")) {
+            let inside = extract_call_args(trimmed, verb).ok_or_else(|| ParseError::Rule {
+                rule: trimmed.to_string(),
+                msg: format!("malformed `{verb}(...)`"),
+            })?;
+            let parsed = parse_elicit_call_args(verb, &inside, source)?;
+            return Ok(Step::Elicit(ElicitStep {
+                kind: *kind,
+                plugin_name: parsed.plugin_name,
+                channel: parsed.channel,
+                from: parsed.from,
+                purpose: parsed.purpose,
+                scope: parsed.scope,
+                timeout: parsed.timeout,
+                config_override: parsed.config_override,
+                on_error: parsed.on_error,
+                source: source.to_string(),
+            }));
+        }
+    }
+
     // Otherwise fall through to the rule parser — predicate-and-action.
     let rule = parse_rule(trimmed, source)?;
     Ok(Step::Rule(rule))
@@ -1032,6 +1060,157 @@ fn parse_delegate_call_args(inside: &str, source: &str) -> Result<ParsedDelegate
         plugin_name,
         config_override,
         on_error,
+    })
+}
+
+/// Sugar verb → [`ElicitKind`] table. Each verb desugars to the same
+/// `Step::Elicit` node with the kind fixed. See
+/// `docs/apl-elicitation-hook-design.md` for the per-kind contracts.
+const ELICIT_VERBS: &[(&str, ElicitKind)] = &[
+    ("require_approval", ElicitKind::Approval),
+    ("confirm", ElicitKind::Confirm),
+    ("require_step_up", ElicitKind::StepUp),
+    ("require_attestation", ElicitKind::Attestation),
+    ("request_info", ElicitKind::Info),
+    ("require_review", ElicitKind::Review),
+];
+
+/// Intermediate shape produced by [`parse_elicit_call_args`]. The
+/// caller fixes `kind` (from the verb) and `source`, then wraps into
+/// `Step::Elicit`.
+struct ParsedElicitCall {
+    plugin_name: String,
+    from: String,
+    channel: Option<String>,
+    purpose: Option<String>,
+    scope: Option<String>,
+    timeout: Option<String>,
+    on_error: Option<String>,
+    config_override: Option<serde_yaml::Value>,
+}
+
+/// Parse the inside-parens of an elicitation verb,
+/// `verb(plugin_name, from: ..., scope: ..., purpose: ..., timeout: ...)`.
+///
+/// Shape mirrors `delegate(...)`: the **first positional argument is the
+/// `ElicitationHandler` plugin name** (the routing key, resolved
+/// `name → entry`). `from` is a required kwarg (the approver, CIBA
+/// `login_hint`). `channel` is an OPTIONAL audit label — not a routing
+/// key. Recognized keys map to `ElicitStep` fields; `prompt` is an alias
+/// for `purpose` (the elicitation-hook doc uses `prompt` for
+/// `confirm`/`require_attestation`, `purpose` for `require_approval` —
+/// both are the human-readable message). Everything else lands in
+/// `config_override` (e.g. `details_link`) for the plugin.
+fn parse_elicit_call_args(
+    verb: &str,
+    inside: &str,
+    source: &str,
+) -> Result<ParsedElicitCall, ParseError> {
+    let parts = split_top_level_commas(inside).map_err(|msg| ParseError::Rule {
+        rule: format!("{verb}({inside})"),
+        msg: format!("{source}: {msg}"),
+    })?;
+    let mut parts_iter = parts.into_iter();
+
+    // First positional argument: the plugin name (same as delegate()).
+    let plugin_name = parts_iter
+        .next()
+        .map(|s| strip_wrapping_quotes(s.trim()).to_string())
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| ParseError::Rule {
+            rule: format!("{verb}({inside})"),
+            msg: format!(
+                "{source}: `{verb}(...)` requires an ElicitationHandler plugin name \
+                 as the first positional argument"
+            ),
+        })?;
+
+    let mut from: Option<String> = None;
+    let mut channel: Option<String> = None;
+    let mut purpose: Option<String> = None;
+    let mut scope: Option<String> = None;
+    let mut timeout: Option<String> = None;
+    let mut on_error: Option<String> = None;
+    let mut config_map = serde_yaml::Mapping::new();
+
+    // Coerce a parsed value to a string, erroring if it isn't one.
+    let as_string = |value: serde_yaml::Value, key: &str| -> Result<String, ParseError> {
+        match value {
+            serde_yaml::Value::String(s) => Ok(s),
+            other => Err(ParseError::Rule {
+                rule: format!("{verb}(...)"),
+                msg: format!("{source}: `{key}` must be a string, got {other:?}"),
+            }),
+        }
+    };
+
+    for raw_kwarg in parts_iter {
+        let kwarg = raw_kwarg.trim();
+        if kwarg.is_empty() {
+            continue;
+        }
+        let (key, value_str) = kwarg.split_once(':').ok_or_else(|| ParseError::Rule {
+            rule: kwarg.to_string(),
+            msg: format!(
+                "{source}: `{verb}(...)` argument `{kwarg}` must be `key: value` \
+                 (the plugin name is the first positional argument)"
+            ),
+        })?;
+        let key = key.trim();
+        let value_str = value_str.trim();
+        if key.is_empty() {
+            return Err(ParseError::Rule {
+                rule: kwarg.to_string(),
+                msg: format!("{source}: `{verb}(...)` argument has empty key"),
+            });
+        }
+        let value = parse_delegate_value(value_str).map_err(|msg| ParseError::Rule {
+            rule: kwarg.to_string(),
+            msg: format!("{source}: `{key}`: {msg}"),
+        })?;
+        match key {
+            "from" => from = Some(as_string(value, "from")?),
+            "channel" => channel = Some(as_string(value, "channel")?),
+            "scope" => scope = Some(as_string(value, "scope")?),
+            "purpose" | "prompt" => purpose = Some(as_string(value, key)?),
+            "timeout" => timeout = Some(as_string(value, "timeout")?),
+            "on_error" => on_error = Some(as_string(value, "on_error")?),
+            // Reject `plugin:` as a kwarg — it's the positional arg.
+            "plugin" => {
+                return Err(ParseError::Rule {
+                    rule: kwarg.to_string(),
+                    msg: format!(
+                        "{source}: the plugin name is the first positional argument \
+                         of `{verb}(...)`; don't pass it as a kwarg too"
+                    ),
+                });
+            }
+            _ => {
+                config_map.insert(serde_yaml::Value::String(key.to_string()), value);
+            }
+        }
+    }
+
+    let from = from.ok_or_else(|| ParseError::Rule {
+        rule: format!("{verb}({inside})"),
+        msg: format!("{source}: `{verb}(...)` requires `from` (the approver)"),
+    })?;
+
+    let config_override = if config_map.is_empty() {
+        None
+    } else {
+        Some(serde_yaml::Value::Mapping(config_map))
+    };
+
+    Ok(ParsedElicitCall {
+        plugin_name,
+        from,
+        channel,
+        purpose,
+        scope,
+        timeout,
+        on_error,
+        config_override,
     })
 }
 
@@ -1644,6 +1823,7 @@ pub(crate) fn step_to_top_level_effect(step: Step) -> Result<Effect, ParseError>
         },
         Step::Plugin { name } => Ok(Effect::Plugin { name }),
         Step::Delegate(d) => Ok(Effect::Delegate(d)),
+        Step::Elicit(e) => Ok(Effect::Elicit(e)),
         Step::Taint { label, scopes } => Ok(Effect::Taint { label, scopes }),
     }
 }
@@ -1652,6 +1832,7 @@ fn step_to_effect(step: Step, source: &str) -> Result<Effect, ParseError> {
     match step {
         Step::Plugin { name } => Ok(Effect::Plugin { name }),
         Step::Delegate(d) => Ok(Effect::Delegate(d)),
+        Step::Elicit(e) => Ok(Effect::Elicit(e)),
         Step::Taint { label, scopes } => Ok(Effect::Taint { label, scopes }),
         Step::Rule(rule) => {
             // Nested when/do inside a do: list isn't supported in E1
@@ -3573,6 +3754,8 @@ routes:
             std::sync::Arc::new(NullPluginInvoker);
         let delegations: std::sync::Arc<dyn crate::DelegationInvoker> =
             std::sync::Arc::new(crate::NoopDelegationInvoker);
+        let elicitations: std::sync::Arc<dyn crate::ElicitationInvoker> =
+            std::sync::Arc::new(crate::NoopElicitationInvoker);
 
         // Alice: authenticated, hr role, depth=1 → allow.
         let mut bag = AttributeBag::new();
@@ -3586,6 +3769,7 @@ routes:
                 &pdp,
                 &plugins,
                 &delegations,
+                &elicitations,
                 crate::DispatchPhase::Pre,
                 &mut crate::route::RoutePayload::new(serde_json::Value::Null)
             )
@@ -3602,6 +3786,7 @@ routes:
             &pdp,
             &plugins,
             &delegations,
+            &elicitations,
             crate::DispatchPhase::Pre,
             &mut crate::route::RoutePayload::new(serde_json::Value::Null),
         )
@@ -3628,6 +3813,7 @@ routes:
             &pdp,
             &plugins,
             &delegations,
+            &elicitations,
             crate::DispatchPhase::Pre,
             &mut crate::route::RoutePayload::new(serde_json::Value::Null),
         )
@@ -4361,6 +4547,171 @@ routes:
         assert_eq!(post_ds.plugin_name, "audit-biscuit");
         assert_eq!(post_ds.on_error.as_deref(), Some("continue"));
         assert_eq!(post_ds.source, "get_compensation.post_policy[0]");
+    }
+
+    // ----- elicitation sugar verbs (require_approval, confirm, …) -----
+
+    fn parse_elicit_str(s: &str) -> crate::step::ElicitStep {
+        let value = serde_yaml::Value::String(s.to_string());
+        let step = parse_step(&value, "test.policy[0]").expect("parse");
+        match step {
+            crate::step::Step::Elicit(e) => e,
+            other => panic!("expected Elicit, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_require_approval_full_kwargs() {
+        let e = parse_elicit_str(
+            "require_approval(manager-approver, from: user.manager, channel: \"ciba\", \
+             scope: \"args.amount <= 25000\", \
+             purpose: \"Approve salary change\", timeout: 24h)",
+        );
+        assert_eq!(e.kind, ElicitKind::Approval);
+        assert_eq!(e.plugin_name, "manager-approver");
+        assert_eq!(e.from, "user.manager");
+        assert_eq!(e.channel.as_deref(), Some("ciba"));
+        assert_eq!(e.scope.as_deref(), Some("args.amount <= 25000"));
+        assert_eq!(e.purpose.as_deref(), Some("Approve salary change"));
+        assert_eq!(e.timeout.as_deref(), Some("24h"));
+        assert!(e.on_error.is_none());
+        assert!(e.config_override.is_none());
+        assert_eq!(e.source, "test.policy[0]");
+    }
+
+    #[test]
+    fn parse_channel_is_optional() {
+        // No `channel:` — it's an audit label, not required for routing.
+        let e = parse_elicit_str("require_approval(manager-approver, from: user.manager)");
+        assert_eq!(e.plugin_name, "manager-approver");
+        assert!(e.channel.is_none());
+    }
+
+    #[test]
+    fn parse_each_verb_maps_to_its_kind() {
+        for (verb, want) in [
+            ("require_approval", ElicitKind::Approval),
+            ("confirm", ElicitKind::Confirm),
+            ("require_step_up", ElicitKind::StepUp),
+            ("require_attestation", ElicitKind::Attestation),
+            ("request_info", ElicitKind::Info),
+            ("require_review", ElicitKind::Review),
+        ] {
+            let e = parse_elicit_str(&format!("{verb}(inband-asker, from: user.sub)"));
+            assert_eq!(e.kind, want, "verb `{verb}`");
+            assert_eq!(e.plugin_name, "inband-asker");
+            assert_eq!(e.from, "user.sub");
+        }
+    }
+
+    #[test]
+    fn parse_confirm_prompt_aliases_purpose() {
+        // The elicitation-hook doc uses `prompt` for confirm; it maps to
+        // the same `purpose` field as `require_approval`.
+        let e = parse_elicit_str(
+            "confirm(inband-asker, from: user.sub, prompt: \"Drop the table?\")",
+        );
+        assert_eq!(e.kind, ElicitKind::Confirm);
+        assert_eq!(e.purpose.as_deref(), Some("Drop the table?"));
+    }
+
+    #[test]
+    fn parse_unknown_kwarg_goes_to_config_override() {
+        let e = parse_elicit_str(
+            "require_approval(slack-approver, from: user.manager, \
+             details_link: https://approvals.example.com/req)",
+        );
+        let cfg = e.config_override.as_ref().unwrap().as_mapping().unwrap();
+        assert_eq!(
+            cfg.get(serde_yaml::Value::String("details_link".into()))
+                .and_then(|v| v.as_str()),
+            Some("https://approvals.example.com/req"),
+        );
+        // Recognized keys must NOT leak into config_override.
+        assert!(cfg.get(serde_yaml::Value::String("from".into())).is_none());
+    }
+
+    #[test]
+    fn parse_on_error_pulled_out() {
+        let e = parse_elicit_str(
+            "require_approval(manager-approver, from: user.manager, on_error: continue)",
+        );
+        assert_eq!(e.on_error.as_deref(), Some("continue"));
+        assert!(e.config_override.is_none());
+    }
+
+    #[test]
+    fn parse_missing_plugin_name_errors() {
+        let value = serde_yaml::Value::String("require_approval(from: user.manager)".into());
+        let err = parse_step(&value, "test.policy[0]").expect_err("missing plugin name");
+        // `from: user.manager` parses as the positional first arg, so the
+        // missing piece surfaces as the required `from` kwarg.
+        assert!(format!("{err}").contains("requires `from`"), "got: {err}");
+    }
+
+    #[test]
+    fn parse_empty_args_errors() {
+        let value = serde_yaml::Value::String("require_approval()".into());
+        let err = parse_step(&value, "test.policy[0]").expect_err("empty args");
+        assert!(format!("{err}").contains("plugin name"), "got: {err}");
+    }
+
+    #[test]
+    fn parse_plugin_kwarg_rejected() {
+        // Passing `plugin:` as a kwarg is ambiguous with the positional.
+        let value = serde_yaml::Value::String(
+            "require_approval(manager-approver, plugin: other, from: user.manager)".into(),
+        );
+        let err = parse_step(&value, "test.policy[0]").expect_err("plugin kwarg");
+        assert!(format!("{err}").contains("first positional"), "got: {err}");
+    }
+
+    #[test]
+    fn parse_missing_from_errors() {
+        let value =
+            serde_yaml::Value::String("require_approval(manager-approver)".into());
+        let err = parse_step(&value, "test.policy[0]").expect_err("missing from");
+        assert!(format!("{err}").contains("requires `from`"));
+    }
+
+    #[test]
+    fn parse_require_prefixed_verbs_do_not_collide() {
+        // `require_attestation` must not be swallowed by a `require_a*`
+        // partial match — each verb is matched with its trailing `(`.
+        let e = parse_elicit_str("require_attestation(inband-asker, from: user.sub)");
+        assert_eq!(e.kind, ElicitKind::Attestation);
+    }
+
+    #[test]
+    fn compile_route_with_require_approval_in_policy() {
+        // End-to-end: the sugar verb survives compile_config and lands as
+        // an Effect::Elicit at the right phase/source. The `when`-gated
+        // form mirrors the manager-approval design doc.
+        let yaml = r#"
+routes:
+  payroll_adjust:
+    policy:
+      - "require(authenticated)"
+      - when: "args.amount > 10000"
+        do:
+          - "require_approval(manager-approver, from: user.manager, channel: \"ciba\", scope: \"args.amount <= 25000\", purpose: \"Approve salary change\", timeout: 24h)"
+"#;
+        let cfg = compile_config(yaml).expect("compile");
+        let route = cfg.routes.get("payroll_adjust").expect("route present");
+        assert_eq!(route.policy.len(), 2);
+
+        // policy[1] is the `when` wrapper; its body[0] is the elicitation.
+        let crate::rules::Effect::When { body, .. } = &route.policy[1] else {
+            panic!("expected When at policy[1], got {:?}", route.policy[1]);
+        };
+        let crate::rules::Effect::Elicit(e) = &body[0] else {
+            panic!("expected Elicit in when-body, got {:?}", body[0]);
+        };
+        assert_eq!(e.kind, ElicitKind::Approval);
+        assert_eq!(e.plugin_name, "manager-approver");
+        assert_eq!(e.from, "user.manager");
+        assert_eq!(e.channel.as_deref(), Some("ciba"));
+        assert_eq!(e.scope.as_deref(), Some("args.amount <= 25000"));
     }
 
     // ----- validate(name) compile-time rejection (DSL spec §4.2) -----

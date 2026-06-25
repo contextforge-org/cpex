@@ -12,8 +12,8 @@ use std::sync::Arc;
 
 use apl_cmf::BagBuilder;
 use apl_core::{
-    compile_config, evaluate_route, AttributeBag, Decision, DelegationInvoker,
-    NoopDelegationInvoker, PdpCall, PdpDecision, PdpDialect, PdpError, PdpResolver, PluginError,
+    compile_config, evaluate_route, AttributeBag, Decision, DelegationInvoker, ElicitationInvoker,
+    NoopDelegationInvoker, NoopElicitationInvoker, PdpCall, PdpDecision, PdpDialect, PdpError, PdpResolver, PluginError,
     PluginInvocation, PluginInvoker, PluginOutcome, RoutePayload,
 };
 use async_trait::async_trait;
@@ -34,6 +34,9 @@ fn plugins() -> Arc<dyn PluginInvoker> {
 }
 fn delegations() -> Arc<dyn DelegationInvoker> {
     Arc::new(NoopDelegationInvoker)
+}
+fn elicitations() -> Arc<dyn ElicitationInvoker> {
+    Arc::new(NoopElicitationInvoker)
 }
 
 // HR route from unified-config-proposal.md §Example 1.
@@ -175,6 +178,7 @@ async fn alice_full_route_through_cmf_bridge() {
         &pdp(),
         &plugins(),
         &delegations(),
+        &elicitations(),
     )
     .await;
     assert_eq!(r.decision, Decision::Allow);
@@ -211,6 +215,7 @@ async fn mallory_gets_both_fields_redacted_through_cmf_bridge() {
         &pdp(),
         &plugins(),
         &delegations(),
+        &elicitations(),
     )
     .await;
     assert_eq!(r.decision, Decision::Allow);
@@ -244,6 +249,7 @@ async fn deep_delegation_denies_through_cmf_bridge() {
         &pdp(),
         &plugins(),
         &delegations(),
+        &elicitations(),
     )
     .await;
     assert!(matches!(r.decision, Decision::Deny { .. }));
@@ -281,6 +287,7 @@ routes:
         &pdp(),
         &plugins(),
         &delegations(),
+        &elicitations(),
     )
     .await;
     match r.decision {
@@ -314,6 +321,7 @@ async fn anonymous_user_denied_at_authenticated_check() {
         &pdp(),
         &plugins(),
         &delegations(),
+        &elicitations(),
     )
     .await;
     assert!(matches!(r.decision, Decision::Deny { .. }));
