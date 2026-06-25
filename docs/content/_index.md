@@ -28,7 +28,7 @@ The plugin pipeline underneath (hooks, the plugin manager, execution modes) is t
 
 ---
 
-{{< columns >}}
+{{% columns %}}
 - ### Get started
 
   Stand up CPEX as an enforcement point and run your first policy.
@@ -47,4 +47,4 @@ The plugin pipeline underneath (hooks, the plugin manager, execution modes) is t
 
   [Vision &rarr;]({{< relref "/docs/vision" >}})
 
-{{< /columns >}}
+{{% /columns %}}
