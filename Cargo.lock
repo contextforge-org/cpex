@@ -730,6 +730,7 @@ dependencies = [
  "cpex-pdp-cel",
  "cpex-plugin-audit-logger",
  "cpex-plugin-delegator-oauth",
+ "cpex-plugin-elicitation-ciba",
  "cpex-plugin-identity-jwt",
  "cpex-plugin-pii-scanner",
  "cpex-session-valkey",
@@ -864,6 +865,24 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "zeroize",
+]
+
+[[package]]
+name = "cpex-plugin-elicitation-ciba"
+version = "0.2.0"
+dependencies = [
+ "async-trait",
+ "base64 0.22.1",
+ "chrono",
+ "cpex-core",
+ "mockito",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
  "zeroize",
 ]
 

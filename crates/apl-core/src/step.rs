@@ -69,10 +69,14 @@ pub(crate) enum Step {
 
     /// `taint(label[, scope])` — apply a taint label. Always succeeds;
     /// never produces a Deny. SessionStore dispatch happens in apl-cpex.
-    Taint {
-        label: String,
-        scopes: Vec<TaintScope>,
-    },
+    Taint { label: String, scopes: Vec<TaintScope> },
+
+    /// `require_approval(...)` / `confirm(...)` / … — dispatch an
+    /// elicitation to a human and resume once resolved. The elicitation
+    /// analogue of `Delegate`; resolution is dispatched to an
+    /// `ElicitationHandler` plugin via apl-cpex. See
+    /// `docs/apl-manager-approval-ciba-design.md`.
+    Elicit(ElicitStep),
 }
 
 /// One delegation invocation inside `pre_invocation:` or `post_invocation:`.
@@ -133,6 +137,144 @@ pub struct DelegateStep {
 
     /// Human-readable source path (e.g.
     /// `"route.get_compensation.policy[2]"`) — used in audit and
+    /// `Decision::Deny.rule_source` when the step denies.
+    pub source: String,
+}
+
+/// The kind of elicitation — selects which validation contract the
+/// runtime applies to the human's response. A single AST node
+/// ([`Step::Elicit`]) covers every kind; the DSL exposes each via a
+/// sugar verb (`require_approval` → `Approval`, `confirm` → `Confirm`,
+/// …) that all parse to the same node. See
+/// `docs/apl-elicitation-hook-design.md` for the per-kind contracts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ElicitKind {
+    /// Yes/no decision from a designated approver (manager approval).
+    /// The approver MAY differ from the request subject; the response is
+    /// bound to the request's args via `scope`.
+    Approval,
+    /// Cheap yes/no from the originating user ("yes, really do this").
+    Confirm,
+    /// Re-auth / second factor by the originating user (fresh token,
+    /// elevated `acr`).
+    StepUp,
+    /// Signed statement from a designated party ("I confirm I reviewed X").
+    Attestation,
+    /// Free-form clarification from the originating user.
+    Info,
+    /// Peer review of an action by a colleague.
+    Review,
+}
+
+impl ElicitKind {
+    /// The snake_case wire name (matches the serde representation). Used
+    /// by the apl-cpex bridge to pass `kind` to channel plugins as a
+    /// string, since cpex-core can't depend on this enum.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ElicitKind::Approval => "approval",
+            ElicitKind::Confirm => "confirm",
+            ElicitKind::StepUp => "step_up",
+            ElicitKind::Attestation => "attestation",
+            ElicitKind::Info => "info",
+            ElicitKind::Review => "review",
+        }
+    }
+}
+
+/// One elicitation invocation inside `policy:` or `post_policy:` — the
+/// runtime dispatches a question to a human (approval, confirmation,
+/// step-up, …) through a channel plugin, holds a pending state across
+/// the agent's retries, validates the response, and resumes.
+///
+/// Structurally the elicitation analogue of [`DelegateStep`]: the DSL
+/// carries the verb; apl-cpex dispatches resolution to the named
+/// `ElicitationHandler` plugin (`plugin_name`, resolved exactly like
+/// `delegate(...)`). The key
+/// difference from delegation — which completes within one request — is
+/// that an elicitation spans the gap between *dispatch* (the first
+/// request that hits this step) and *resolution* (a later retry). That
+/// gap is owned by the channel (e.g. Keycloak CIBA), never by a plugin
+/// call: each of dispatch/check/validate is short and synchronous to the
+/// request it runs in. See `docs/apl-manager-approval-ciba-design.md`.
+///
+/// # First arrival vs. retry
+///
+/// On the first request that reaches this step, the runtime *dispatches*
+/// the elicitation and the phase yields a pending entry (the host emits
+/// JSON-RPC `-32120`). On a later retry carrying the elicitation id, the
+/// runtime *checks* status and, once resolved, *validates* the response
+/// against `scope` before the phase may proceed.
+///
+/// `config_override` is a free-form map for channel-specific params
+/// (e.g. CIBA `details_link`, Slack block-kit options); apl-core treats
+/// it as opaque and hands it to the plugin via the same per-call
+/// config-override pathway delegation uses.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ElicitStep {
+    /// Which elicitation contract applies (selects runtime validation).
+    pub kind: ElicitKind,
+
+    /// Name of the `ElicitationHandler` plugin to invoke — the routing
+    /// key, resolved `name → entry` exactly like `delegate(...)` resolves
+    /// its plugin. The first positional argument of the sugar verb (e.g.
+    /// `require_approval(manager-approver, ...)`). Which backend it speaks
+    /// (CIBA / Slack / in-band) is the plugin's own opaque config, not
+    /// something apl-core interprets.
+    pub plugin_name: String,
+
+    /// Optional channel label for audit/observability only (e.g.
+    /// `"ciba"`, `"slack"`). NOT a routing key — the framework never
+    /// dispatches on it. Surfaced into the bag as `elicitation.channel`
+    /// so the audit record can show how the human was reached. `None`
+    /// when the author doesn't declare one (a Phase 2 plugin may report
+    /// its own channel instead).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub channel: Option<String>,
+
+    /// Who is being asked — an attribute reference resolved against the
+    /// policy bag at dispatch (e.g. `"user.manager"`, `"user.sub"`). For
+    /// CIBA this becomes `login_hint`; the resolved identity is
+    /// cross-checked against the responder at `validate()`.
+    pub from: String,
+
+    /// Canonical, human-readable description of what's being asked, with
+    /// request-arg substitution. Audited verbatim and shown to the
+    /// responder (CIBA `binding_message`) — the source of truth for
+    /// "what was approved," never an LLM summary. `None` for kinds that
+    /// carry their prompt elsewhere.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub purpose: Option<String>,
+
+    /// APL boolean expression the runtime evaluates against the actual
+    /// request args at `validate()` to confirm the response covers what
+    /// was requested (e.g. `"args.amount <= 25000"`). This is the
+    /// args-binding layer — kept in APL because Keycloak does not support
+    /// RFC 9396 RAR. `None` for kinds without arg binding (e.g. a bare
+    /// `confirm`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
+
+    /// How long the elicitation stays valid before expiring (e.g.
+    /// `"24h"`). Surfaces as CIBA `requested_expiry`. `None` defers to
+    /// the channel plugin's configured default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout: Option<String>,
+
+    /// Per-call config overrides for channel-specific params, layered on
+    /// the plugin's default config. Opaque to apl-core.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_override: Option<serde_yaml::Value>,
+
+    /// `deny | continue` — what to do when dispatch or validation fails
+    /// (channel error, invalid response). `None` defaults to `"deny"`
+    /// (fail-closed; matches delegation/PDP step semantics).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_error: Option<String>,
+
+    /// Human-readable source path (e.g.
+    /// `"route.payroll_adjust.policy[0]"`) — used in audit and
     /// `Decision::Deny.rule_source` when the step denies.
     pub source: String,
 }
@@ -396,6 +538,279 @@ impl DelegationInvoker for NoopDelegationInvoker {
 }
 
 // =====================================================================
+// Elicitation dispatch
+// =====================================================================
+
+/// Elicitation dispatch — drives a human-in-the-loop step (approval,
+/// confirmation, step-up, …) through a channel plugin. apl-cpex
+/// implements this against the named `ElicitationHandler` plugin
+/// (`step.plugin_name`, resolved `name → entry` like delegation); tests
+/// and un-wired hosts pass [`NoopElicitationInvoker`].
+///
+/// Three short, synchronous touchpoints span the human's (possibly
+/// hours-long) decision. The wait itself lives in the channel (e.g.
+/// Keycloak CIBA), never inside a trait call:
+///
+/// * [`dispatch`](ElicitationInvoker::dispatch) — once, on the first
+///   request that reaches the step: register the intent, open the
+///   backchannel, and return the id the agent echoes on retry.
+/// * [`check`](ElicitationInvoker::check) — on every retry: read the
+///   current status (pending / resolved / expired) without blocking.
+/// * [`validate`](ElicitationInvoker::validate) — once status is
+///   resolved: confirm the response is *genuine* (signature, intent
+///   binding, responder identity). The *sufficiency* check —
+///   [`ElicitStep::scope`] against the live request args — is the
+///   runtime's job, not the plugin's, because `scope` is an APL
+///   expression the plugin cannot evaluate.
+///
+/// Like [`DelegationInvoker`], the invoker holds the request-scoped
+/// `Extensions` internally, so the trait methods take only the step / id
+/// and never the request context.
+#[async_trait]
+pub trait ElicitationInvoker: Send + Sync {
+    /// First arrival. Register the intent and open the channel
+    /// backchannel for `step`, returning the correlation id plus the
+    /// pending metadata the evaluator writes into the bag
+    /// (`elicitation.id` / `.approver` / `.intent_id`). Short and
+    /// synchronous — the human's decision happens *after* this returns,
+    /// inside the channel.
+    ///
+    /// `resolved_from` is `step.from` already resolved against the request
+    /// bag by the runtime (e.g. `claim.manager` → the manager's actual
+    /// identity), or the literal `step.from` when it isn't a bag key. The
+    /// attribute vocabulary lives in the runtime, so the invoker receives
+    /// the resolved identity rather than re-resolving it — for CIBA this
+    /// becomes the `login_hint`.
+    async fn dispatch(
+        &self,
+        step: &ElicitStep,
+        resolved_from: &str,
+    ) -> Result<ElicitationDispatch, ElicitationError>;
+
+    /// Retry. Read the current status of a dispatched elicitation by
+    /// `id` without blocking — `Pending` until the human acts, then
+    /// `Resolved` (carrying approved/denied) or `Expired`. `step` is
+    /// passed (the same step that dispatched) so the invoker can resolve
+    /// which handler plugin owns this elicitation — on a retry only the
+    /// id is in the bag, but the step is still in scope.
+    async fn check(
+        &self,
+        step: &ElicitStep,
+        id: &str,
+    ) -> Result<ElicitationStatus, ElicitationError>;
+
+    /// Resolution. Verify that the resolved response is *genuine* — the
+    /// signed token validates, its intent binding matches this `id`, and
+    /// the responder is the resolved approver. Returns the verdict plus
+    /// the facts the evaluator records for audit. The runtime applies the
+    /// `scope`-over-args check separately before honoring an approval.
+    /// `step` resolves the owning handler plugin (see [`check`]).
+    ///
+    /// [`check`]: ElicitationInvoker::check
+    async fn validate(
+        &self,
+        step: &ElicitStep,
+        id: &str,
+    ) -> Result<ElicitationValidation, ElicitationError>;
+}
+
+/// What [`ElicitationInvoker::dispatch`] returns — the correlation id
+/// plus the pending metadata the evaluator surfaces into the bag
+/// (`elicitation.*`) and the host echoes in the JSON-RPC `-32120`
+/// pending entry.
+#[derive(Debug, Clone)]
+pub struct ElicitationDispatch {
+    /// Server-side id the agent echoes on retry. Keys the
+    /// `{requester, args, scope, original_request_id}` record.
+    pub id: String,
+    /// Resolved approver identity (the `from` attr resolved at dispatch,
+    /// e.g. the manager's `sub`). `None` when the channel resolves the
+    /// responder only at validation time. Surfaced as
+    /// `elicitation.approver`.
+    pub approver: Option<String>,
+    /// Registered intent id (lodging-intent binding) when the channel
+    /// supports it. Surfaced as `elicitation.intent_id`.
+    pub intent_id: Option<String>,
+    /// When the elicitation expires (RFC 3339). `None` defers to the
+    /// channel plugin's configured default.
+    pub expires_at: Option<String>,
+}
+
+/// Current state of a dispatched elicitation, read by
+/// [`ElicitationInvoker::check`] on each retry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ElicitationStatus {
+    /// The human has not responded yet — the phase stays pending and the
+    /// host re-emits `-32120`.
+    Pending,
+    /// The human responded. `outcome` carries approved/denied; the
+    /// runtime still calls `validate` before honoring an `Approved`.
+    Resolved { outcome: ElicitationOutcome },
+    /// The elicitation timed out before a response — the runtime fails
+    /// closed (subject to the step's `on_error`).
+    Expired,
+}
+
+/// The human's decision once an elicitation resolves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ElicitationOutcome {
+    Approved,
+    Denied,
+}
+
+/// What [`ElicitationInvoker::validate`] returns — the *genuineness*
+/// verdict plus the resolved facts the runtime records for audit. The
+/// runtime layers the `scope`-over-args check on top before allowing the
+/// phase to proceed.
+#[derive(Debug, Clone)]
+pub struct ElicitationValidation {
+    /// `true` when the response is genuine: the signed token validates,
+    /// its intent binding matches this elicitation, and the responder is
+    /// the resolved approver.
+    pub valid: bool,
+    /// Who actually consented — cross-checked against the dispatch-time
+    /// approver. Recorded as `elicitation.approver`.
+    pub approver: Option<String>,
+    /// Intent id carried in the signed response, for audit
+    /// reconciliation against the registered intent.
+    pub intent_id: Option<String>,
+    /// Why validation failed, when `valid` is `false`. `None` on success.
+    pub reason: Option<String>,
+}
+
+/// The "ask again later" bundle — produced when an elicitation has been
+/// dispatched but the human hasn't responded yet. It carries everything
+/// the host needs to emit a JSON-RPC `-32120` ("request not complete,
+/// retry echoing this id") to the agent instead of forwarding the call.
+///
+/// This is the tri-state channel that lets `Decision` stay binary: a
+/// suspended phase reports `Decision::Allow` (nothing was *denied*) with a
+/// `Some(PendingElicitation)` alongside it. The host rule is one clause —
+/// **forward iff `Allow` AND `pending.is_none()`**; otherwise emit
+/// `-32120`. The agent re-sends with `elicitation.id`, the runtime takes
+/// the "id present → check, don't re-dispatch" path, and once the human
+/// resolves, the phase proceeds past the elicitation.
+///
+/// Pending **short-circuits** the phase (sequential elicitation): at most
+/// one pending per pass. Multiple concurrent pendings are deferred (would
+/// turn this into a `Vec` on `StepsEvaluation`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct PendingElicitation {
+    /// Server-side id the agent echoes on retry (`elicitation.id`).
+    pub id: String,
+    /// Which `ElicitationHandler` plugin owns this elicitation.
+    pub plugin_name: String,
+    /// Resolved approver identity, when known at dispatch.
+    pub approver: Option<String>,
+    /// Registered intent id (lodging-intent binding), when the channel
+    /// supports it.
+    pub intent_id: Option<String>,
+    /// Optional channel label for the agent-facing `-32120` / audit.
+    pub channel: Option<String>,
+    /// When the elicitation expires (RFC 3339), when known.
+    pub expires_at: Option<String>,
+    /// Rule source path of the originating `Elicit` step, for audit.
+    pub source: String,
+}
+
+#[derive(Debug, Error)]
+pub enum ElicitationError {
+    #[error("no elicitation invoker available for plugin `{0}`")]
+    NotFound(String),
+
+    #[error("elicitation dispatch failed: {0}")]
+    Dispatch(String),
+}
+
+/// [`ElicitationInvoker`] impl that returns `NotFound` for every call.
+/// The default for evaluator callers that run no elicitation steps —
+/// they must pass *something* implementing the trait, but the noop never
+/// actually gets invoked. Mirrors [`NoopDelegationInvoker`]; tests and
+/// hosts that haven't wired a real channel backend pass this.
+pub struct NoopElicitationInvoker;
+
+#[async_trait]
+impl ElicitationInvoker for NoopElicitationInvoker {
+    async fn dispatch(
+        &self,
+        step: &ElicitStep,
+        _resolved_from: &str,
+    ) -> Result<ElicitationDispatch, ElicitationError> {
+        Err(ElicitationError::NotFound(step.plugin_name.clone()))
+    }
+
+    async fn check(
+        &self,
+        _step: &ElicitStep,
+        id: &str,
+    ) -> Result<ElicitationStatus, ElicitationError> {
+        Err(ElicitationError::NotFound(id.to_string()))
+    }
+
+    async fn validate(
+        &self,
+        _step: &ElicitStep,
+        id: &str,
+    ) -> Result<ElicitationValidation, ElicitationError> {
+        Err(ElicitationError::NotFound(id.to_string()))
+    }
+}
+
+/// `ElicitationInvoker` that immediately approves every elicitation:
+/// `dispatch` returns a synthetic id (echoing the requested `from` as the
+/// resolved approver), `check` reports `Resolved { Approved }` on the
+/// first pass, and `validate` returns a genuine verdict. This lets a
+/// single request flow dispatch → check → validate → allow without a real
+/// channel — for evaluator tests and offline demos.
+///
+/// NOT for production: it makes no actual approval decision. Hosts wire a
+/// real channel invoker (e.g. the apl-cpex `ElicitationHandler` bridge).
+#[derive(Default)]
+pub struct AutoApprovingElicitor;
+
+#[async_trait]
+impl ElicitationInvoker for AutoApprovingElicitor {
+    async fn dispatch(
+        &self,
+        step: &ElicitStep,
+        resolved_from: &str,
+    ) -> Result<ElicitationDispatch, ElicitationError> {
+        Ok(ElicitationDispatch {
+            id: format!("auto-{}", step.plugin_name),
+            // Echo the *resolved* approver, as a real channel would.
+            approver: Some(resolved_from.to_string()),
+            intent_id: Some("auto-intent".to_string()),
+            expires_at: None,
+        })
+    }
+
+    async fn check(
+        &self,
+        _step: &ElicitStep,
+        _id: &str,
+    ) -> Result<ElicitationStatus, ElicitationError> {
+        Ok(ElicitationStatus::Resolved {
+            outcome: ElicitationOutcome::Approved,
+        })
+    }
+
+    async fn validate(
+        &self,
+        _step: &ElicitStep,
+        _id: &str,
+    ) -> Result<ElicitationValidation, ElicitationError> {
+        Ok(ElicitationValidation {
+            valid: true,
+            // Leave approver/intent unset — the dispatch-time values
+            // already recorded in the bag stand.
+            approver: None,
+            intent_id: Some("auto-intent".to_string()),
+            reason: None,
+        })
+    }
+}
+
+// =====================================================================
 // Resolver results
 // =====================================================================
 
@@ -511,6 +926,37 @@ pub mod delegation_bag_keys {
     pub const GRANTED: &str = "delegation.granted";
 }
 
+/// Bag keys an elicitation step writes so downstream rules in the same
+/// phase — and the audit plugin — can read its state. Centralized here
+/// (like [`delegation_bag_keys`]) so the evaluator/invoker (writers) and
+/// policy authors (readers, via `require(elicitation.*)`) agree on the
+/// canonical names.
+///
+/// On *dispatch* the runtime writes `id` + `status = "pending"` (plus
+/// `approver` / `intent_id` when known). On *resolution* it updates
+/// `status` and sets `outcome`. A phase with a pending elicitation does
+/// not forward (see `docs/apl-manager-approval-ciba-design.md`).
+pub mod elicitation_bag_keys {
+    /// `String` — the elicitation id the agent echoes on retry. Server-side
+    /// key into `{requester, args, scope, original_request_id}`.
+    pub const ID: &str = "elicitation.id";
+    /// `String` — `pending | resolved | expired`.
+    pub const STATUS: &str = "elicitation.status";
+    /// `String` — resolved approver identity, cross-checked against `from`.
+    pub const APPROVER: &str = "elicitation.approver";
+    /// `String` — `approved | denied` once resolved.
+    pub const OUTCOME: &str = "elicitation.outcome";
+    /// `String` — registered intent id (lodging-intent binding), echoed in
+    /// the OP-signed token for `validate()` and audit reconciliation.
+    pub const INTENT_ID: &str = "elicitation.intent_id";
+    /// `String` — optional channel label (`ciba` / `slack` / …) for
+    /// audit/observability. Not a routing key.
+    pub const CHANNEL: &str = "elicitation.channel";
+    /// `String` — when the elicitation expires (RFC 3339), when the
+    /// channel reported one at dispatch.
+    pub const EXPIRES_AT: &str = "elicitation.expires_at";
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -530,6 +976,51 @@ mod tests {
             PdpDialect::from_key("rego-remote"),
             PdpDialect::Custom("rego-remote".to_string())
         );
+    }
+
+    #[tokio::test]
+    async fn noop_elicitation_invoker_is_not_found_for_every_method() {
+        // The noop must never silently succeed — every method reports
+        // NotFound so an un-wired host fails closed rather than treating
+        // an elicitation step as approved.
+        let inv = NoopElicitationInvoker;
+        let step = ElicitStep {
+            kind: ElicitKind::Approval,
+            plugin_name: "manager-approver".to_string(),
+            channel: Some("ciba".to_string()),
+            from: "user.manager".to_string(),
+            purpose: None,
+            scope: None,
+            timeout: None,
+            config_override: None,
+            on_error: None,
+            source: "route.test.policy[0]".to_string(),
+        };
+
+        let d = inv.dispatch(&step, "alice@example.com").await;
+        assert!(matches!(d, Err(ElicitationError::NotFound(c)) if c == "manager-approver"));
+
+        let c = inv.check(&step, "elic-123").await;
+        assert!(matches!(c, Err(ElicitationError::NotFound(id)) if id == "elic-123"));
+
+        let v = inv.validate(&step, "elic-123").await;
+        assert!(matches!(v, Err(ElicitationError::NotFound(id)) if id == "elic-123"));
+    }
+
+    #[test]
+    fn elicitation_status_resolved_carries_outcome() {
+        // Resolved is distinct from its outcome — a denied resolution is
+        // still "resolved" (the runtime stops retrying) but must not be
+        // confused with Pending/Expired.
+        let approved = ElicitationStatus::Resolved {
+            outcome: ElicitationOutcome::Approved,
+        };
+        let denied = ElicitationStatus::Resolved {
+            outcome: ElicitationOutcome::Denied,
+        };
+        assert_ne!(approved, denied);
+        assert_ne!(approved, ElicitationStatus::Pending);
+        assert_ne!(denied, ElicitationStatus::Expired);
     }
 
     #[test]
