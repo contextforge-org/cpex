@@ -44,6 +44,17 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/).
 
 - Cedar evaluation no longer fails with "recursion limit reached" on hosts that give the FFI a small thread stack (notably musl, whose default is 128 KiB). `cedar-policy` aborts when `stacker::remaining_stack()` is below its 100 KiB floor; the cedar dispatch in `apl-pdp-cedar-direct` is now wrapped in `stacker::maybe_grow`, so it runs on an adequately sized stack regardless of the host (a no-op when there is already headroom, e.g. glibc's 8 MiB threads). Regression test exercises a real evaluation on a 128 KiB stack. (#69)
 
+## [0.1.1] - 2026-06-04
+
+### Added
+
+- Plugin bundling, catalog, installation and versioning ([#31](https://github.com/contextforge-org/cpex/pull/31))
+
+### Fixed
+
+- Implement `__eq__` and `__ne__` for CopyOnWriteDict ([#55](https://github.com/contextforge-org/cpex/pull/55))
+- Respect `PLUGINS_LOG_LEVEL` environment variable in all runtime.py files ([#48](https://github.com/contextforge-org/cpex/pull/48))
+
 ## [0.1.0] - 2026-05-05
 
 ### Added
