@@ -7,9 +7,9 @@ weight: 140
 
 CPEX is the enforcement point, but where that point sits is your choice. The same APL policy enforces whether CPEX runs as a gateway in front of a tool server, as an egress sidecar beside an agent, or inside an agent framework. You move the boundary; the policy does not change.
 
-## The same policy, two placements
+## The same policy, any enforcement point
 
-Take the `get_compensation` route. It is identical whether CPEX fronts the backend or guards the agent's egress:
+Take the `get_compensation` route. It is identical whether CPEX fronts the backend, guards the agent's egress, or runs inside the agent runtime:
 
 ```yaml
 routes:
@@ -22,19 +22,9 @@ routes:
       ssn: "str | redact(!perm.view_ssn)"
 ```
 
-```mermaid
-flowchart TB
-  subgraph gw["gateway (inbound)"]
-    direction LR
-    A1["agent"] --> C1["CPEX gateway"] --> T1["hr tool server"]
-  end
-  subgraph sc["egress sidecar (outbound)"]
-    direction LR
-    A2["agent + sidecar"] --> C2["CPEX sidecar"] --> T2["hr tool server"]
-  end
-```
+![CPEX enforcing the same policy at three settings: as a gateway in front of the tool server, as an egress sidecar beside the agent, and in-framework inside the agent runtime](/cpex/images/deployment.png)
 
-As a **gateway**, CPEX sits in front of the tool server and enforces on inbound calls: every request to the backend passes through it. As an **egress sidecar**, CPEX sits beside the agent and enforces on the agent's outbound calls: the agent's tool invocations leave through the sidecar's proxy. The enforcement point moved from the backend's door to the agent's. The route above runs unchanged in both.
+As a **gateway**, CPEX sits in front of the tool server and enforces on inbound calls: every request to the backend passes through it. As an **egress sidecar**, CPEX sits beside the agent and enforces on the agent's outbound calls: the agent's tool invocations leave through the sidecar's proxy. **In-framework**, CPEX runs inside the agent runtime and enforces operations as the runtime issues them. The enforcement point moves; the route above runs unchanged in all three.
 
 ## Route forms
 

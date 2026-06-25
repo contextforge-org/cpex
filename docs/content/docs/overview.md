@@ -70,19 +70,6 @@ An email with no sensitive content in its body is still blocked if the session p
 
 CPEX is the boundary, but the boundary can be placed in more than one spot. The policy does not change; the enforcement point does.
 
-```mermaid
-flowchart TB
-  subgraph gw["as a gateway"]
-    A1["agent"] --> C1["CPEX"] --> T1["tool servers"]
-  end
-  subgraph sc["as an egress sidecar"]
-    A2["agent"] --> C2["CPEX sidecar"] --> T2["tool servers"]
-  end
-  subgraph fw["in-framework"]
-    A3["agent runtime<br>+ CPEX"] --> T3["tool servers"]
-  end
-```
-
 A gateway in front of a tool server controls inbound calls. A sidecar on the agent controls its outbound calls. An in-framework integration controls operations as the runtime issues them. The same APL policy enforces in all three. [Deployment]({{< relref "/docs/deployment" >}}) walks through each.
 
 ## What to read next
