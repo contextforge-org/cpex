@@ -11,17 +11,7 @@ Picture one agent serving several people. It answers questions by calling tools 
 
 The agent's LLM decides which operation to run. It is untrusted. CPEX sits between it and every capability, and decides what actually happens.
 
-```mermaid
-flowchart LR
-  LLM["untrusted LLM<br>(user-space)"] -->|"tool call / A2A method<br>inference / prompt / resource"| CPEX
-  subgraph CPEX["CPEX reference monitor"]
-    direction TB
-    ID["resolve identity"] --> POL["evaluate APL policy"]
-    POL --> EFF["apply effects"]
-  end
-  CPEX -->|"forward or block"| CAP["tools · agents · models · resources"]
-  STATE["identity · delegation<br>taint · audit"] -.->|"state the LLM cannot forge"| POL
-```
+![CPEX mediates every operation an untrusted LLM triggers, evaluating APL policy against identity, delegation, taint, and audit state the model cannot forge](/cpex/images/cpex_overview.png)
 
 For each operation, CPEX resolves the caller's identity, evaluates the APL policy attached to that operation, and applies the resulting effects before anything reaches the backend. The same four phases run every time: validate arguments, evaluate policy, transform the result, run post-policy checks.
 
