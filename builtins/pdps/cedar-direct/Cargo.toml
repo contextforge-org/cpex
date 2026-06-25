@@ -42,11 +42,9 @@ cedar-policy = "4"
 # onto a fresh segment before calling in. See `evaluate`.
 stacker = "0.1"
 async-trait = { workspace = true }
-serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }
 thiserror = { workspace = true }
-tracing = { workspace = true }
 
 [dev-dependencies]
 # End-to-end integration tests wire the cedar-direct factory through the

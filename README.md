@@ -25,7 +25,7 @@ AI agents can be steered by injected content, confused by tool output, or simply
   <img alt="CPEX mediates every operation an untrusted LLM triggers, evaluating APL policy against identity, delegation, taint, and audit state the model cannot forge" src="https://github.com/contextforge-org/cpex/blob/main/docs/static/images/cpex_overview.png?raw=true" />
 </div>
 
-You write policy as declarative, attribute-based rules with explicit effects. CPEX evaluates that policy at the boundary and enforces the result, allowing, denying, redacting, delegating, or tainting before the operation proceeds.
+You write policy in APL (Authorization Policy Language): declarative, attribute-based rules with explicit effects. CPEX evaluates that policy at the boundary and enforces the result, allowing, denying, redacting, delegating, or tainting before the operation proceeds.
 
 ## Same request, different data
 
@@ -48,7 +48,7 @@ No application code changed between the three outcomes. The policy did.
 
 ## What you can express
 
-CPEX composes the controls an agent stack needs, evaluated against identity claims, relationships, roles, and attributes (ReBAC, RBAC, ABAC). A few sketches:
+APL composes the controls an agent stack needs, evaluated against identity claims, relationships, roles, and attributes (ReBAC, RBAC, ABAC). A few sketches:
 
 **Authorization** on both request inputs and response outputs, for tools, resources, prompts, A2A methods, and other agent interfaces:
 

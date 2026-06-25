@@ -45,8 +45,6 @@ apl-core = { path = "../../../crates/apl-core", version = "0.2.0" }
 # own layer, and CEL bytes ops aren't needed for ABAC predicates.
 cel = { version = "0.13", default-features = false, features = ["regex", "chrono"] }
 async-trait = { workspace = true }
-serde = { workspace = true }
-serde_json = { workspace = true }
 serde_yaml = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
