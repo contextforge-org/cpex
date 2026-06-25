@@ -29,27 +29,22 @@ The plugin pipeline underneath (hooks, the plugin manager, execution modes) is t
 ---
 
 {{< columns >}}
+- ### Get started
 
-### Get started
+  Stand up CPEX as an enforcement point and run your first policy.
 
-Stand up CPEX as an enforcement point and run your first policy.
+  [Quick Start &rarr;]({{< relref "/docs/quickstart" >}})
 
-[Quick Start &rarr;]({{< relref "/docs/quickstart" >}})
+- ### Write policy
 
-<--->
+  Learn APL: predicates, effects, sequencing, PDPs, delegation, and tainting.
 
-### Write policy
+  [APL &rarr;]({{< relref "/docs/apl" >}})
 
-Learn APL: predicates, effects, sequencing, PDPs, delegation, and tainting.
+- ### Why CPEX
 
-[APL &rarr;]({{< relref "/docs/apl" >}})
+  The reference-monitor model and where CPEX sits in an agent stack.
 
-<--->
-
-### Why CPEX
-
-The reference-monitor model and where CPEX sits in an agent stack.
-
-[Vision &rarr;]({{< relref "/docs/vision" >}})
+  [Vision &rarr;]({{< relref "/docs/vision" >}})
 
 {{< /columns >}}

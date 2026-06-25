@@ -21,17 +21,9 @@ CPEX is a deterministic reference monitor between an untrusted LLM and the capab
 
 An agent's LLM is user-space. It can be steered by injected content, confused by tool output, or simply wrong. So CPEX mediates every operation the model triggers (tool calls, A2A methods, inference calls, prompt and resource fetches) against state the model cannot see or forge: identity, delegation chains, taint labels, and an append-only audit log.
 
-```mermaid
-flowchart LR
-  LLM["untrusted LLM<br>(user-space)"] -->|"tool call / A2A method<br>inference / prompt / resource"| CPEX
-  subgraph CPEX["CPEX reference monitor"]
-    direction TB
-    ID["identity / IdP"] --> POL["APL policy"]
-    POL --> EFF["effects:<br>allow · deny · redact<br>delegate · taint"]
-  end
-  CPEX -->|"forward or block"| CAP["tools · agents · models · resources"]
-  STATE["state the LLM cannot forge:<br>identity · delegation · taint · audit"] -.->|feeds| POL
-```
+<div>
+  <img alt="CPEX mediates every operation an untrusted LLM triggers, evaluating APL policy against identity, delegation, taint, and audit state the model cannot forge" src="https://github.com/contextforge-org/cpex/blob/main/docs/static/images/cpex_overview.png?raw=true" />
+</div>
 
 You write policy in **APL** (Authorization Policy Language): declarative, attribute-based rules with explicit effects, attached to the operations they govern. CPEX evaluates that policy at the boundary and enforces the result.
 

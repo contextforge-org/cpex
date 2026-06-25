@@ -3,12 +3,6 @@ languageCode = "en-us"
 title = "CPEX Documentation"
 theme = "hugo-book"
 
-# TEMPORARY (docs reposition, restore to "error" in U9): the new tree is written
-# across several commits and pages cross-link forward, so an unwritten target
-# should warn, not fail the build. U9 restores the default hard-fail and confirms
-# zero unresolved refs.
-refLinksErrorLevel = "warning"
-
 [params]
   BookTheme = "auto"
   BookToC = true
