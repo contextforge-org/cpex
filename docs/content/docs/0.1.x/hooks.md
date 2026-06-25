@@ -1,6 +1,8 @@
 ---
 title: "Hooks"
 weight: 30
+aliases:
+  - /docs/hooks/
 ---
 
 # Hooks
@@ -31,7 +33,7 @@ class MyPlugin(Plugin):
 The framework validates the signature at registration time. It checks that the method:
 
 1. Is `async` (not a regular function)
-2. Accepts exactly 2 parameters (`payload`, `context`) — or 3 if the plugin uses [Extensions]({{< relref "/docs/extensions" >}})
+2. Accepts exactly 2 parameters (`payload`, `context`) — or 3 if the plugin uses [Extensions]({{< relref "/docs/0.1.x/extensions" >}})
 
 ---
 
@@ -118,7 +120,7 @@ async def tool_pre_invoke(self, payload, context):
 
 When a plugin blocks, the manager skips remaining plugins (in the current phase), fires any `fire_and_forget` tasks, and returns the violation to the caller.
 
-Whether a plugin *can* block depends on its [execution mode]({{< relref "/docs/execution-modes" >}}). `sequential` and `concurrent` plugins can block; `transform`, `audit`, and `fire_and_forget` plugins cannot.
+Whether a plugin *can* block depends on its [execution mode]({{< relref "/docs/0.1.x/execution-modes" >}}). `sequential` and `concurrent` plugins can block; `transform`, `audit`, and `fire_and_forget` plugins cannot.
 
 ---
 
@@ -225,4 +227,4 @@ if not result.continue_processing:
 
 ## Next Steps
 
-Now that you understand hooks, explore the [built-in hook types]({{< relref "/docs/hook-types" >}}) or learn how [execution modes]({{< relref "/docs/execution-modes" >}}) control plugin behavior.
+Now that you understand hooks, explore the [built-in hook types]({{< relref "/docs/0.1.x/hook-types" >}}) or learn how [execution modes]({{< relref "/docs/0.1.x/execution-modes" >}}) control plugin behavior.

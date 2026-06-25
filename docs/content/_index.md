@@ -1,54 +1,55 @@
 ---
-title: "CPEX — ContextForge Plugin Extensibility Framework"
+title: "CPEX"
 type: docs
+weight: 0
 ---
 
 # CPEX
 
-**A composable enforcement framework for AI agents and toolchains**
+**A policy and authorization framework for agentic applications.**
 
-CPEX lets you intercept, enforce, and extend application behavior through plugins — without modifying core logic. Define hook points in your application, write plugins that attach to them, and compose enforcement pipelines that run automatically.
+CPEX is a deterministic reference monitor between an untrusted LLM and the capabilities it invokes. The LLM is user-space. CPEX mediates every operation it triggers (tool calls, A2A methods, inference calls, prompt and resource fetches) against state the model cannot see or forge: identity, delegation chains, taint labels, and an append-only audit log.
 
-```python
-from cpex.framework import hook, Plugin, PluginResult, PluginViolation
+You write policy in **APL** (Authorization Policy Language): declarative, attribute-based rules with explicit effects. CPEX evaluates that policy at the boundary and enforces the result, allowing, denying, redacting, delegating, or tainting before the operation proceeds.
 
-class RateLimitPlugin(Plugin):
-    @hook("tool_pre_invoke")
-    async def check_rate_limit(self, payload, context):
-        if self.is_over_limit(context):
-            return PluginResult(
-                continue_processing=False,
-                violation=PluginViolation(reason="Rate limit exceeded", code="RATE_LIMIT")
-            )
-        return PluginResult(continue_processing=True)
+```mermaid
+flowchart LR
+  LLM["untrusted LLM<br>(user-space)"] -->|"tool call / A2A method<br>inference / prompt / resource"| CPEX
+  subgraph CPEX["CPEX reference monitor"]
+    direction TB
+    ID["identity / IdP"] --> POL["APL policy"]
+    POL --> EFF["effects:<br>allow · deny · redact<br>delegate · taint"]
+  end
+  CPEX -->|"forward or block"| CAP["tools · agents · models · resources"]
+  STATE["state the LLM cannot forge:<br>identity · delegation · taint · audit"] -.->|feeds| POL
 ```
 
-Register the plugin, and it runs at every hook invocation. No changes to your application logic.
-
-### What you can build with CPEX
-
-- **Security** — access control, prompt injection detection, data loss prevention
-- **Observability** — request tracing, audit logging, metrics collection
-- **Governance** — policy enforcement, compliance validation, approval workflows
-- **Reliability** — rate limiting, circuit breakers, response validation
+The plugin pipeline underneath (hooks, the plugin manager, execution modes) is the mechanism that runs policy effects. It is the supporting layer, not the headline. APL is how you express intent; the pipeline is how that intent executes.
 
 ---
 
-{{% columns %}}
+{{< columns >}}
 
-- ### Get Started
-  Install CPEX and build your first plugin in five minutes.
+### Get started
 
-  [Quick Start &rarr;]({{< relref "/docs/quickstart" >}})
+Stand up CPEX as an enforcement point and run your first policy.
 
-- ### Learn the Concepts
-  Understand hooks, execution modes, and the plugin pipeline.
+[Quick Start &rarr;]({{< relref "/docs/quickstart" >}})
 
-  [Overview &rarr;]({{< relref "/docs/overview" >}})
+<--->
 
-- ### Project Vision
-  Why hooks, plugins, and policy are the path to agent security.
+### Write policy
 
-  [Vision &rarr;]({{< relref "/docs/vision" >}})
+Learn APL: predicates, effects, sequencing, PDPs, delegation, and tainting.
 
-{{% /columns %}}
+[APL &rarr;]({{< relref "/docs/apl" >}})
+
+<--->
+
+### Why CPEX
+
+The reference-monitor model and where CPEX sits in an agent stack.
+
+[Vision &rarr;]({{< relref "/docs/vision" >}})
+
+{{< /columns >}}

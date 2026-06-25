@@ -1,11 +1,13 @@
 ---
 title: "Hook Types Reference"
 weight: 40
+aliases:
+  - /docs/hook-types/
 ---
 
 # Hook Types Reference
 
-CPEX ships with built-in hooks for common AI and application operations. Each hook defines a typed payload (the data your plugin receives) and a result type (what you return). You can also [register custom hooks]({{< relref "/docs/hooks#custom-hooks" >}}).
+CPEX ships with built-in hooks for common AI and application operations. Each hook defines a typed payload (the data your plugin receives) and a result type (what you return). You can also [register custom hooks]({{< relref "/docs/0.1.x/hooks#custom-hooks" >}}).
 
 ---
 
@@ -255,7 +257,7 @@ The result carries a `DelegationResult` as `modified_payload`, containing the de
 
 ## CMF Message Hooks
 
-Unified hooks that use the [Common Message Format]({{< relref "/docs/cmf" >}}) for cross-cutting policy evaluation. These parallel the typed hooks above but accept a single `MessagePayload` wrapping a CMF `Message`.
+Unified hooks that use the [Common Message Format]({{< relref "/docs/0.1.x/cmf" >}}) for cross-cutting policy evaluation. These parallel the typed hooks above but accept a single `MessagePayload` wrapping a CMF `Message`.
 
 | Hook | Fires at |
 |------|----------|
@@ -270,7 +272,7 @@ Unified hooks that use the [Common Message Format]({{< relref "/docs/cmf" >}}) f
 
 **Payload:** `MessagePayload(message: Message, hook: MessageHookType)` | **Result:** `MessageResult`
 
-CMF hooks let you write a single plugin that evaluates content at every interception point using one unified interface. See [Common Message Format]({{< relref "/docs/cmf" >}}) for details.
+CMF hooks let you write a single plugin that evaluates content at every interception point using one unified interface. See [Common Message Format]({{< relref "/docs/0.1.x/cmf" >}}) for details.
 
 ---
 

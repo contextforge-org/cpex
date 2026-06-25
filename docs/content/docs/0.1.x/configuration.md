@@ -62,14 +62,14 @@ plugins:
 | `author` | `str` | — | Plugin author |
 | `hooks` | `list[str]` | `[]` | Hook types this plugin handles |
 | `tags` | `list[str]` | `[]` | Searchable tags |
-| `mode` | `str` | `sequential` | Execution mode — see [Execution Modes]({{< relref "/docs/execution-modes" >}}) |
+| `mode` | `str` | `sequential` | Execution mode — see [Execution Modes]({{< relref "/docs/0.1.x/execution-modes" >}}) |
 | `on_error` | `str` | `fail` | Error behavior: `fail`, `ignore`, `disable` |
 | `priority` | `int` | `100` | Execution order within mode (lower = higher priority) |
 | `conditions` | `list` | `[]` | When the plugin should execute |
-| `capabilities` | `list[str]` | `[]` | Declared capabilities for [extension access]({{< relref "/docs/extensions" >}}) |
+| `capabilities` | `list[str]` | `[]` | Declared capabilities for [extension access]({{< relref "/docs/0.1.x/extensions" >}}) |
 | `config` | `dict` | — | Plugin-specific settings passed to the constructor |
 | `max_content_size` | `int` | `10000000` | Maximum payload size in bytes |
-| `mcp` | `object` | — | MCP client config (for [external plugins]({{< relref "/docs/external-plugins" >}})) |
+| `mcp` | `object` | — | MCP client config (for [external plugins]({{< relref "/docs/0.1.x/external-plugins" >}})) |
 | `grpc` | `object` | — | gRPC client config (for external plugins) |
 | `unix_socket` | `object` | — | Unix socket client config (for external plugins) |
 

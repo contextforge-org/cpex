@@ -1,6 +1,8 @@
 ---
 title: "Isolated Plugins"
 weight: 80
+aliases:
+  - /docs/isolated-plugins/
 ---
 
 # Isolated Plugins (venv)
@@ -111,4 +113,4 @@ The process boundary means the plugin has full access to its own dependency tree
 | Language support | Python only | Python only | Any (via protocol) |
 | Scaling | In-process | In-process | Independent |
 
-Use **native** when you control the dependencies. Use **isolated** when you need Python-level isolation without the operational complexity of running a separate service. Use **[external]({{< relref "/docs/external-plugins" >}})** when you need full process isolation, independent scaling, or non-Python implementations.
+Use **native** when you control the dependencies. Use **isolated** when you need Python-level isolation without the operational complexity of running a separate service. Use **[external]({{< relref "/docs/0.1.x/external-plugins" >}})** when you need full process isolation, independent scaling, or non-Python implementations.

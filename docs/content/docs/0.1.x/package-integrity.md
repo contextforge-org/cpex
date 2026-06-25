@@ -1,6 +1,8 @@
 ---
 title: "Package Integrity Verification"
 weight: 150
+aliases:
+  - /docs/package-integrity/
 ---
 
 # Package Integrity Verification

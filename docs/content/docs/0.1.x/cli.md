@@ -1,6 +1,8 @@
 ---
 title: "CLI Tools"
 weight: 130
+aliases:
+  - /docs/cli/
 ---
 
 # CLI Tools

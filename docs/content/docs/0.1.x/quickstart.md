@@ -164,4 +164,4 @@ if manager:
 
 ## Next Steps
 
-Now that you have a working plugin, learn how hooks work in detail: [Hooks]({{< relref "/docs/hooks" >}}).
+Now that you have a working plugin, learn how hooks work in detail: [Hooks]({{< relref "/docs/0.1.x/hooks" >}}).

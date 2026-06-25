@@ -1,6 +1,8 @@
 ---
 title: "External Plugins"
 weight: 70
+aliases:
+  - /docs/external-plugins/
 ---
 
 # External Plugins

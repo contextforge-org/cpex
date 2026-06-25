@@ -1,11 +1,13 @@
 ---
 title: "Execution Modes"
 weight: 45
+aliases:
+  - /docs/execution-modes/
 ---
 
 # Execution Modes
 
-Every plugin has an execution **mode** that controls whether it can block the pipeline, modify payloads, and how it runs relative to other plugins. Modes are set in the plugin's [YAML configuration]({{< relref "/docs/configuration" >}}).
+Every plugin has an execution **mode** that controls whether it can block the pipeline, modify payloads, and how it runs relative to other plugins. Modes are set in the plugin's [YAML configuration]({{< relref "/docs/0.1.x/configuration" >}}).
 
 ## Phase Order
 
