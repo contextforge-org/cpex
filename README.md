@@ -65,7 +65,10 @@ result:
 
 ```yaml
 policy:
-  - cel: { expr: "subject.department == 'compliance' || 'admin' in subject.roles" }
+  - cel:
+      expr: "subject.department == 'compliance' || 'admin' in subject.roles"
+    on_deny:
+      - "deny('not permitted by policy', 'pdp_denied')"
 ```
 
 **Delegation** as an explicit effect: RFC 8693 token exchange that scopes and reduces privilege before downstream calls, verified after the exchange:
