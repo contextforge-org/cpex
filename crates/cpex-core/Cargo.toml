@@ -30,7 +30,6 @@ async-trait = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true }
-futures = { workspace = true }
 hashbrown = { workspace = true }
 arc-swap = { workspace = true }
 wildmatch = { workspace = true }

@@ -65,7 +65,7 @@ tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }
 # Spins a real `valkey/valkey` container for integration tests; these are
 # `#[ignore]`d by default and run via a dedicated job (see tests/).
 testcontainers-modules = { version = "0.14", features = ["valkey"] }
-testcontainers = "0.25"
+testcontainers = "0.26"
 
 [lints]
 workspace = true
