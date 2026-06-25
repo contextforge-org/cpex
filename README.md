@@ -48,12 +48,44 @@ No application code changed between the three outcomes. The policy did.
 
 ## What you can express
 
-APL composes the controls an agent stack needs, evaluated against identity claims, relationships, roles, and attributes (ReBAC, RBAC, ABAC):
+APL composes the controls an agent stack needs, evaluated against identity claims, relationships, roles, and attributes (ReBAC, RBAC, ABAC). A few sketches:
 
-- **Authorization** for tools, resources, prompts, A2A methods, and other agent interfaces, on both request inputs and response outputs.
-- **PDP composition**: gate with your preferred policy engine (CEL and Cedar ship as builtins; OPA, AuthZEN, and NeMo are recognized dialects you wire to a host resolver).
-- **Delegation** as an explicit effect: RFC 8693 token exchange that scopes and reduces privilege before downstream calls.
-- **Information-flow control**: session tainting that detects and blocks write-down (for example, refusing an external send after the session touched secret data).
+**Authorization** on both request inputs and response outputs, for tools, resources, prompts, A2A methods, and other agent interfaces:
+
+```yaml
+policy:
+  - "require(role.hr | role.security)"
+args:
+  region: "enum(us, eu, apac)"        # validate inputs
+result:
+  salary: "int | redact(!perm.view_comp)"   # redact outputs by permission
+```
+
+**PDP composition**: gate with your preferred policy engine (CEL and Cedar ship as builtins; OPA, AuthZEN, and NeMo are recognized dialects you wire to a host resolver):
+
+```yaml
+policy:
+  - cel: { expr: "subject.department == 'compliance' || 'admin' in subject.roles" }
+```
+
+**Delegation** as an explicit effect: RFC 8693 token exchange that scopes and reduces privilege before downstream calls, verified after the exchange:
+
+```yaml
+policy:
+  - "delegate(workday-oauth, target: workday-api, permissions: [read_compensation])"
+  - "delegation.granted.permissions contains 'read_compensation': allow"
+```
+
+**Information-flow control**: session tainting that detects and blocks write-down, for example refusing an external send after the session touched secret data:
+
+```yaml
+# get_compensation taints the session
+policy: ["require(role.hr)", "taint(secret, session)"]
+# send_email, later in the same session, refuses even with a clean body
+policy:
+  - "require(perm.email_send)"
+  - "security.labels contains \"secret\": deny('write-down blocked', 'session_tainted')"
+```
 
 The pipeline underneath (hooks, the plugin manager, execution modes) is the mechanism that runs policy effects. It is the supporting layer. APL is how you express intent; the pipeline is how that intent executes. Plugins are capability-gated, so an effect only sees the context it declares.
 

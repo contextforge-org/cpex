@@ -1,7 +1,7 @@
 ---
 title: "refactor: Reposition CPEX README and docs around APL and agent authorization"
 type: refactor
-status: active
+status: completed
 date: 2026-06-24
 origin: docs/brainstorms/cpex-docs-reposition-requirements.md
 ---
