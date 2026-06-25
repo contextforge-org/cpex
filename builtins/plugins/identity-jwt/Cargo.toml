@@ -29,7 +29,6 @@ categories.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-apl-core = { path = "../../../crates/apl-core", version = "0.2.0" }
 cpex-core = { path = "../../../crates/cpex-core", version = "0.2.0" }
 
 # `jsonwebtoken` is the de facto JWT library for Rust. ~5 transitive
@@ -51,8 +50,6 @@ chrono = { workspace = true }
 async-trait = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-serde_yaml = { workspace = true }
-thiserror = { workspace = true }
 tracing = { workspace = true }
 
 # Async HTTP — used by `DecodingKeySource::build_async()` to fetch

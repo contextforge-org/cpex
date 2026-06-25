@@ -710,7 +710,6 @@ dependencies = [
  "async-trait",
  "chrono",
  "cpex-orchestration",
- "futures",
  "hashbrown 0.15.5",
  "serde",
  "serde_json",
@@ -731,7 +730,6 @@ dependencies = [
  "async-trait",
  "cpex-core",
  "cpex-ffi",
- "serde_json",
  "tracing",
 ]
 
@@ -770,13 +768,11 @@ dependencies = [
  "cedar-policy",
  "cpex-core",
  "futures",
- "serde",
  "serde_json",
  "serde_yaml",
  "stacker",
  "thiserror 2.0.18",
  "tokio",
- "tracing",
 ]
 
 [[package]]
@@ -789,8 +785,6 @@ dependencies = [
  "async-trait",
  "cel",
  "cpex-core",
- "serde",
- "serde_json",
  "serde_yaml",
  "thiserror 2.0.18",
  "tokio",
@@ -806,7 +800,6 @@ dependencies = [
  "cpex-core",
  "serde",
  "serde_json",
- "thiserror 2.0.18",
  "tokio",
  "tracing",
 ]
@@ -815,7 +808,6 @@ dependencies = [
 name = "cpex-plugin-delegator-biscuit"
 version = "0.2.0"
 dependencies = [
- "apl-core",
  "async-trait",
  "biscuit-auth",
  "chrono",
@@ -823,17 +815,13 @@ dependencies = [
  "hex",
  "serde",
  "serde_json",
- "serde_yaml",
- "thiserror 2.0.18",
  "tokio",
- "tracing",
 ]
 
 [[package]]
 name = "cpex-plugin-delegator-oauth"
 version = "0.2.0"
 dependencies = [
- "apl-core",
  "async-trait",
  "chrono",
  "cpex-core",
@@ -841,11 +829,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
- "serde_urlencoded",
- "serde_yaml",
- "thiserror 2.0.18",
  "tokio",
- "tracing",
  "zeroize",
 ]
 
@@ -853,7 +837,6 @@ dependencies = [
 name = "cpex-plugin-identity-jwt"
 version = "0.2.0"
 dependencies = [
- "apl-core",
  "async-trait",
  "base64 0.22.1",
  "chrono",
@@ -866,8 +849,6 @@ dependencies = [
  "rsa",
  "serde",
  "serde_json",
- "serde_yaml",
- "thiserror 2.0.18",
  "tokio",
  "tracing",
 ]
@@ -881,19 +862,14 @@ dependencies = [
  "regex",
  "serde",
  "serde_json",
- "thiserror 2.0.18",
  "tokio",
- "tracing",
 ]
 
 [[package]]
 name = "cpex-sdk"
 version = "0.2.0"
 dependencies = [
- "async-trait",
  "cpex-core",
- "serde",
- "serde_json",
 ]
 
 [[package]]
