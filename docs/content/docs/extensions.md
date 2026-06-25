@@ -1,6 +1,6 @@
 ---
 title: "Extensions & Capability-Gating"
-weight: 100
+weight: 50
 ---
 
 # Extensions and Capability-Gating
@@ -99,4 +99,4 @@ So a plugin cannot clear a taint label or rewrite a verified identity even if it
 
 ## How it connects to policy
 
-Capability-gating runs at the boundary between the manager and each plugin (`filter_extensions` in cpex-core decides which extension slots a plugin sees; the CMF extractors then flatten those slots into the bag). The same filtered, tier-enforced view feeds the attribute bag APL evaluates, so a policy and the plugins it invokes operate on a consistent, least-privilege picture of the request. See [Identity]({{< relref "/docs/identity" >}}) for how the subject is populated and [Session Tainting]({{< relref "/docs/tainting" >}}) for the monotonic label tier in action.
+Capability-gating runs at the boundary between the manager and each plugin (`filter_extensions` in cpex-core decides which extension slots a plugin sees; the CMF extractors then flatten those slots into the bag). The same filtered, tier-enforced view feeds the attribute bag APL evaluates, so a policy and the plugins it invokes operate on a consistent, least-privilege picture of the request. See [Identity]({{< relref "/docs/apl/identity" >}}) for how the subject is populated and [Session Tainting]({{< relref "/docs/apl/tainting" >}}) for the monotonic label tier in action.

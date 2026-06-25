@@ -1,6 +1,6 @@
 ---
 title: "Plugins & Pipeline"
-weight: 110
+weight: 60
 ---
 
 # Plugins and the Execution Pipeline

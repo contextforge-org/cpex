@@ -1,6 +1,6 @@
 ---
 title: "Effects & Sequencing"
-weight: 40
+weight: 10
 ---
 
 # Effects and Sequencing
@@ -14,10 +14,10 @@ An APL rule does something. That something is an **effect**. Effects are the bui
 | `allow` | No-op. Continue to the next effect. |
 | `deny` / `deny('reason')` / `deny('reason', 'code')` | Halt the phase and all later phases with a violation. |
 | `plugin(name)` (alias `run(name)`) | Invoke a registered plugin (PII scan, audit log, custom check). |
-| `delegate(name, ...)` | Mint a downstream credential via a delegator plugin. See [Delegation]({{< relref "/docs/delegation" >}}). |
-| `taint(label[, scope])` | Attach a label to the session or message. See [Session Tainting]({{< relref "/docs/tainting" >}}). |
+| `delegate(name, ...)` | Mint a downstream credential via a delegator plugin. See [Delegation]({{< relref "/docs/apl/delegation" >}}). |
+| `taint(label[, scope])` | Attach a label to the session or message. See [Session Tainting]({{< relref "/docs/apl/tainting" >}}). |
 | field pipelines | Validate or transform `args`/`result` fields. See [APL]({{< relref "/docs/apl" >}}). |
-| PDP call (`cedar:`, `cel:`, `opa(...)`) | Delegate the decision to a policy engine. See [PDP Integration]({{< relref "/docs/pdp" >}}). |
+| PDP call (`cedar:`, `cel:`, `opa(...)`) | Delegate the decision to a policy engine. See [PDP Integration]({{< relref "/docs/apl/pdp" >}}). |
 
 ## Sequencing and halt-on-deny
 

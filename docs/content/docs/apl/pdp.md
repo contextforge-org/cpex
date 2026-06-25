@@ -1,6 +1,6 @@
 ---
 title: "PDP Integration"
-weight: 60
+weight: 20
 ---
 
 # PDP Integration
@@ -71,4 +71,4 @@ policy:
 
 ## How it connects to the pipeline
 
-A PDP resolver is registered with the manager like any other capability. When the evaluator hits a PDP effect, it dispatches to the resolver for that dialect, passing the attribute bag and the call's arguments, and routes the `Allow` / `Deny` decision through `on_allow` / `on_deny`. The decision and its diagnostics are recorded in the audit log. See [Effects]({{< relref "/docs/effects" >}}) for how PDP reactions sequence with the rest of a policy.
+A PDP resolver is registered with the manager like any other capability. When the evaluator hits a PDP effect, it dispatches to the resolver for that dialect, passing the attribute bag and the call's arguments, and routes the `Allow` / `Deny` decision through `on_allow` / `on_deny`. The decision and its diagnostics are recorded in the audit log. See [Effects]({{< relref "/docs/apl/effects" >}}) for how PDP reactions sequence with the rest of a policy.

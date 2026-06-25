@@ -47,7 +47,7 @@ routes:
       employee_id: "str | mask(4)"
 ```
 
-The `require(authenticated)` and `require(role.hr)` predicates read attributes resolved from the caller's verified token. How those attributes get populated is covered in [Identity]({{< relref "/docs/identity" >}}); for now, an identity plugin (for example `identity/jwt`) resolves the subject and roles before policy runs.
+The `require(authenticated)` and `require(role.hr)` predicates read attributes resolved from the caller's verified token. How those attributes get populated is covered in [Identity]({{< relref "/docs/apl/identity" >}}); for now, an identity plugin (for example `identity/jwt`) resolves the subject and roles before policy runs.
 
 ## 4. Run it
 
@@ -62,6 +62,6 @@ The outcome matches the scenario:
 ## Next
 
 - [APL]({{< relref "/docs/apl" >}}): the full language: predicates, effects, field pipelines, phases.
-- [Identity]({{< relref "/docs/identity" >}}): resolving callers into the attributes policy reads.
-- [PDP Integration]({{< relref "/docs/pdp" >}}): delegating decisions to Cedar, CEL, or an external engine.
-- [Delegation]({{< relref "/docs/delegation" >}}): minting scoped downstream credentials.
+- [Identity]({{< relref "/docs/apl/identity" >}}): resolving callers into the attributes policy reads.
+- [PDP Integration]({{< relref "/docs/apl/pdp" >}}): delegating decisions to Cedar, CEL, or an external engine.
+- [Delegation]({{< relref "/docs/apl/delegation" >}}): minting scoped downstream credentials.

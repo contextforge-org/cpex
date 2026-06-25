@@ -64,7 +64,7 @@ routes:
       - "security.labels contains \"secret\": deny('session touched secret data', 'session_tainted')"
 ```
 
-An email with no sensitive content in its body is still blocked if the session previously read secret data. This is a write-down control, and the LLM cannot route around it because the taint lives in CPEX, not in the conversation. See [Session Tainting]({{< relref "/docs/tainting" >}}) for how labels propagate and persist.
+An email with no sensitive content in its body is still blocked if the session previously read secret data. This is a write-down control, and the LLM cannot route around it because the taint lives in CPEX, not in the conversation. See [Session Tainting]({{< relref "/docs/apl/tainting" >}}) for how labels propagate and persist.
 
 ## Where the boundary sits
 
@@ -75,5 +75,5 @@ A gateway in front of a tool server controls inbound calls. A sidecar on the age
 ## What to read next
 
 - [APL]({{< relref "/docs/apl" >}}): the policy language, end to end.
-- [Identity]({{< relref "/docs/identity" >}}): how callers are resolved into the attributes policy reads.
+- [Identity]({{< relref "/docs/apl/identity" >}}): how callers are resolved into the attributes policy reads.
 - [Quick Start]({{< relref "/docs/quickstart" >}}): stand up CPEX and run this scenario.

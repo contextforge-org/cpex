@@ -7,7 +7,13 @@ weight: 30
 
 APL is how you express policy in CPEX. A policy is declarative: you describe the conditions and the effects, attached to the operation they govern, and CPEX evaluates them at the boundary. You do not write enforcement logic in application code.
 
-This page covers the language. [Effects]({{< relref "/docs/effects" >}}) covers how effects compose and sequence.
+This page covers the language: routes, phases, predicates, rules, and field pipelines. The rest of this section goes deeper on each kind of policy:
+
+- [Effects & Sequencing]({{< relref "/docs/apl/effects" >}}): the effects a rule can run, halt-on-deny ordering, and composition.
+- [PDP Integration]({{< relref "/docs/apl/pdp" >}}): hand a decision to Cedar, CEL, or an external engine.
+- [Identity & IdP]({{< relref "/docs/apl/identity" >}}): how callers are resolved into the attributes predicates read.
+- [Delegation]({{< relref "/docs/apl/delegation" >}}): mint scoped downstream credentials via token exchange.
+- [Session Tainting]({{< relref "/docs/apl/tainting" >}}): information-flow control across requests.
 
 ## Routes and phases
 
@@ -41,7 +47,7 @@ routes:
 
 ## Predicates
 
-A predicate reads attributes resolved from the caller's identity and request context (see [Identity]({{< relref "/docs/identity" >}}) for where attributes come from). The forms:
+A predicate reads attributes resolved from the caller's identity and request context (see [Identity]({{< relref "/docs/apl/identity" >}}) for where attributes come from). The forms:
 
 - **Truthiness**: a bare attribute is true when present and truthy. `authenticated`, `role.hr`, `perm.view_ssn`.
 - **Comparison**: `delegation.depth > 2`, `client.trust_level == 'trusted'`. Operators: `==`, `!=`, `>`, `>=`, `<`, `<=`.
@@ -111,6 +117,6 @@ Named-validator dispatch (`validate(name)`) is not implemented in the current bu
 
 ## Effects beyond predicates
 
-A `policy:` rule can also call a PDP, mint a delegated token, or invoke a plugin. Those effects and how they sequence are covered in [Effects]({{< relref "/docs/effects" >}}).
+A `policy:` rule can also call a PDP, mint a delegated token, or invoke a plugin. Those effects and how they sequence are covered in [Effects]({{< relref "/docs/apl/effects" >}}).
 
 Every fragment on this page is drawn from the `apl-core` parser tests and the reference deployments, so the forms shown here parse as written.

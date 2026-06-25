@@ -1,6 +1,6 @@
 ---
 title: "Session Tainting"
-weight: 80
+weight: 50
 ---
 
 # Session Tainting and Information Flow
@@ -72,4 +72,4 @@ Labels are scoped per subject. Two callers sharing a session identifier do not s
 
 `taint` is an effect; reading labels is an attribute check (`security.labels contains ...`) like any other predicate. The session store is a registered capability the runtime writes to after a tainting effect and reads from when building the attribute bag. Because both the write and the read happen inside CPEX, the taint history is part of the state the untrusted model cannot forge, which is what makes write-down enforcement reliable rather than advisory.
 
-See [Effects]({{< relref "/docs/effects" >}}) for how `taint` sequences with other effects, and [Configuration]({{< relref "/docs/configuration" >}}) for session-store options.
+See [Effects]({{< relref "/docs/apl/effects" >}}) for how `taint` sequences with other effects, and [Configuration]({{< relref "/docs/configuration" >}}) for session-store options.

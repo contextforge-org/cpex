@@ -1,6 +1,6 @@
 ---
 title: "Common Message Format"
-weight: 90
+weight: 40
 ---
 
 # Common Message Format

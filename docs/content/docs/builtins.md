@@ -1,6 +1,6 @@
 ---
 title: "Builtins"
-weight: 120
+weight: 70
 ---
 
 # Builtins
@@ -11,13 +11,13 @@ CPEX ships a set of builtin plugins, PDP resolvers, and a session store, each be
 
 | Kind | Type | Feature | Purpose |
 |------|------|---------|---------|
-| `identity/jwt` | identity | `jwt` | Resolve a subject from a verified JWT (see [Identity]({{< relref "/docs/identity" >}})). |
-| `delegator/oauth` | delegator | `oauth` | RFC 8693 token exchange (see [Delegation]({{< relref "/docs/delegation" >}})). |
+| `identity/jwt` | identity | `jwt` | Resolve a subject from a verified JWT (see [Identity]({{< relref "/docs/apl/identity" >}})). |
+| `delegator/oauth` | delegator | `oauth` | RFC 8693 token exchange (see [Delegation]({{< relref "/docs/apl/delegation" >}})). |
 | `validator/pii-scan` | validator | `pii` | Detect and redact PII in content. |
 | `audit/logger` | audit | `audit` | Append-only decision logging. |
 | `cedar-direct` | PDP resolver | `cedar` | Evaluate Cedar policy (dialect `cedar`). |
 | `cel` | PDP resolver | `cel` | Evaluate CEL expressions (dialect `cel`). |
-| `valkey` | session store | `valkey` | Persist taint labels across processes (see [Session Tainting]({{< relref "/docs/tainting" >}})). |
+| `valkey` | session store | `valkey` | Persist taint labels across processes (see [Session Tainting]({{< relref "/docs/apl/tainting" >}})). |
 
 The default session store is in-process memory; no feature or `kind` is needed for it.
 

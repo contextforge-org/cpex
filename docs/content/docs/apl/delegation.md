@@ -1,6 +1,6 @@
 ---
 title: "Delegation"
-weight: 70
+weight: 40
 ---
 
 # Delegation and Token Exchange

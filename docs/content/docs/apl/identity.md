@@ -1,6 +1,6 @@
 ---
 title: "Identity & IdP"
-weight: 25
+weight: 30
 ---
 
 # Identity and IdP Integration
@@ -56,4 +56,4 @@ A request often carries more than one identity: the end user and the calling app
 
 Identity resolution is a hook (`identity.resolve`) that runs ahead of the route's policy phase. The resolved subject is filtered by each downstream plugin's declared capabilities (see [Extensions & Capability-Gating]({{< relref "/docs/extensions" >}})): a plugin only sees the identity fields it is entitled to. APL predicates read the same bag, gated the same way.
 
-Once identity is resolved, policy can authorize ([APL]({{< relref "/docs/apl" >}})), delegate downstream ([Delegation]({{< relref "/docs/delegation" >}})), or hand a relationship decision to a PDP ([PDP Integration]({{< relref "/docs/pdp" >}})).
+Once identity is resolved, policy can authorize ([APL]({{< relref "/docs/apl" >}})), delegate downstream ([Delegation]({{< relref "/docs/apl/delegation" >}})), or hand a relationship decision to a PDP ([PDP Integration]({{< relref "/docs/apl/pdp" >}})).

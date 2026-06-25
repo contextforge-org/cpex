@@ -1,6 +1,6 @@
 ---
 title: "Deployment"
-weight: 140
+weight: 90
 ---
 
 # Deployment
@@ -48,4 +48,4 @@ When CPEX guards an agent's egress, route inference calls directly to the model 
 
 - [Configuration]({{< relref "/docs/configuration" >}}): the full config structure for a deployment.
 - [Patterns]({{< relref "/docs/patterns" >}}): production patterns for rollout and layered enforcement.
-- [Identity]({{< relref "/docs/identity" >}}) and [Delegation]({{< relref "/docs/delegation" >}}): wiring IdP verification and token exchange in a real stack.
+- [Identity]({{< relref "/docs/apl/identity" >}}) and [Delegation]({{< relref "/docs/apl/delegation" >}}): wiring IdP verification and token exchange in a real stack.

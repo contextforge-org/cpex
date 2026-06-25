@@ -1,6 +1,6 @@
 ---
 title: "Patterns"
-weight: 150
+weight: 100
 ---
 
 # Patterns
@@ -47,7 +47,7 @@ routes:
 
 ## Cross-request information flow
 
-Taint a session when it touches sensitive data, then gate later operations on the label. The control spans requests and the model cannot route around it (see [Session Tainting]({{< relref "/docs/tainting" >}})):
+Taint a session when it touches sensitive data, then gate later operations on the label. The control spans requests and the model cannot route around it (see [Session Tainting]({{< relref "/docs/apl/tainting" >}})):
 
 ```yaml
 routes:
