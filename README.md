@@ -1,10 +1,10 @@
 <div>
-  <img alt="ContextForge Plugin Extensibility Framework (CPEX) logo" src="https://github.com/contextforge-org/cpex/blob/main/docs/images/cpex_v1.png?raw=true" height=100">
+  <img alt="CPEX logo" src="https://github.com/contextforge-org/cpex/blob/main/docs/images/cpex_v1.png?raw=true" height=100">
 </div>
 
-# CPEX — ContextForge Plugin Extensibility Framework
+# CPEX
 
-<i>A composable enforcement framework for AI agents and toolchains.</i>
+<i>A policy and authorization framework for agentic applications.</i>
 
 [![CI](https://github.com/contextforge-org/cpex/actions/workflows/ci.yml/badge.svg)](https://github.com/contextforge-org/cpex/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
@@ -13,17 +13,61 @@
 [![MSRV](https://img.shields.io/badge/MSRV-1.96-blue.svg)](rust-toolchain.toml)
 
 > [!NOTE]
-> **Looking for CPEX Python?** It now lives on the [`0.1.x` branch](https://github.com/contextforge-org/cpex/tree/0.1.x), maintained for backwards compatibility. `main` (`0.2`+) is the **Rust** substrate. Python bindings (PyO3) over the Rust core are coming in separate PRs.
-
-> [**Read the project vision**](https://contextforge-org.github.io/cpex/docs/vision/) to learn why hooks, plugins, and policy are the path to agent security.
+> **Looking for CPEX Python?** It now lives on the [`0.1.x` branch](https://github.com/contextforge-org/cpex/tree/0.1.x), maintained for backwards compatibility. `main` (`0.2`+) is the **Rust** framework, re-architected around policy and authorization. The reposition is a re-architecture, not an abandonment. Python bindings (PyO3) over the Rust core are coming.
 
 ## What's CPEX?
 
-CPEX lets you intercept, enforce, and extend application behavior through plugins without modifying core logic.
+CPEX is a deterministic reference monitor between an untrusted LLM and the capabilities it invokes.
 
-Define hook points in your application, write plugins that attach to them, and compose enforcement pipelines that run automatically.
+An agent's LLM is user-space. It can be steered by injected content, confused by tool output, or simply wrong. So CPEX mediates every operation the model triggers (tool calls, A2A methods, inference calls, prompt and resource fetches) against state the model cannot see or forge: identity, delegation chains, taint labels, and an append-only audit log.
 
-Register your plugins once, and they run at every hook invocation — no changes to your application logic.
+```mermaid
+flowchart LR
+  LLM["untrusted LLM<br>(user-space)"] -->|"tool call / A2A method<br>inference / prompt / resource"| CPEX
+  subgraph CPEX["CPEX reference monitor"]
+    direction TB
+    ID["identity / IdP"] --> POL["APL policy"]
+    POL --> EFF["effects:<br>allow · deny · redact<br>delegate · taint"]
+  end
+  CPEX -->|"forward or block"| CAP["tools · agents · models · resources"]
+  STATE["state the LLM cannot forge:<br>identity · delegation · taint · audit"] -.->|feeds| POL
+```
+
+You write policy in **APL** (Authorization Policy Language): declarative, attribute-based rules with explicit effects, attached to the operations they govern. CPEX evaluates that policy at the boundary and enforces the result.
+
+## Same request, different data
+
+Three callers issue the identical `get_compensation` request. The backend returns the same record. What each receives differs, because policy decides per identity.
+
+```yaml
+routes:
+  - tool: get_compensation
+    policy:
+      - "require(role.hr)"
+    result:
+      ssn: "str | redact(!perm.view_ssn)"
+```
+
+- An HR analyst with `view_ssn` gets the full record.
+- An HR analyst without `view_ssn` gets the record with the SSN redacted before it leaves CPEX. The backend never sees the difference.
+- An engineer is denied at `require(role.hr)`. The call never reaches the backend.
+
+No application code changed between the three outcomes. The policy did.
+
+## What you can express
+
+APL composes the controls an agent stack needs, evaluated against identity claims, relationships, roles, and attributes (ReBAC, RBAC, ABAC):
+
+- **Authorization** for tools, resources, prompts, A2A methods, and other agent interfaces, on both request inputs and response outputs.
+- **PDP composition**: gate with your preferred policy engine (CEL and Cedar ship as builtins; OPA, AuthZEN, and NeMo are recognized dialects you wire to a host resolver).
+- **Delegation** as an explicit effect: RFC 8693 token exchange that scopes and reduces privilege before downstream calls.
+- **Information-flow control**: session tainting that detects and blocks write-down (for example, refusing an external send after the session touched secret data).
+
+The pipeline underneath (hooks, the plugin manager, execution modes) is the mechanism that runs policy effects. It is the supporting layer. APL is how you express intent; the pipeline is how that intent executes. Plugins are capability-gated, so an effect only sees the context it declares.
+
+## Where it runs
+
+CPEX is direction-agnostic. The same policy enforces whether CPEX sits in front of a tool server as a gateway, beside an agent as an egress sidecar, or inside an agent framework. Move the enforcement point; keep the policy.
 
 ## Install
 
@@ -35,7 +79,7 @@ cargo add cpex
 cargo add cpex --features builtins
 ```
 
-The default `cpex = "0.2"` is the **engine alone** — no builtin plugins are compiled in. Opt into the bundled extension set with the `builtins` feature, everything (incl. the Valkey session store) with `full`, or a granular subset: `jwt`, `oauth`, `pii`, `audit`, `cedar`, `cel`, `valkey`.
+The default `cpex = "0.2"` is the **engine alone**. Opt into the bundled extension set with the `builtins` feature, everything (incl. the Valkey session store) with `full`, or a granular subset: `jwt`, `oauth`, `pii`, `audit`, `cedar`, `cel`, `valkey`.
 
 ```rust
 use std::sync::Arc;
@@ -46,60 +90,17 @@ let mgr = Arc::new(PluginManager::default());
 // With a builtins feature enabled, register every enabled builtin factory
 // and install the APL config visitor in one call:
 cpex::install_builtins(&mgr);
-// ... then load a config that references the enabled plugin `kind`s.
+// ... then load an APL config that references the enabled plugin `kind`s.
 ```
 
-Authoring plugins? Depend on the lean [`cpex-sdk`](crates/cpex-sdk) crate (the `Plugin`/`HookHandler` traits, payloads, and result types) instead of the full runtime. See [`crates/cpex-core/examples`](crates/cpex-core/examples) for runnable examples.
+Authoring plugins or PDP resolvers? Depend on the lean [`cpex-sdk`](crates/cpex-sdk) crate instead of the full runtime. See [`crates/cpex-core/examples`](crates/cpex-core/examples) for runnable examples.
 
-## Why CPEX?
+## Documentation
 
-AI agents execute across trust domains, calling tools, accessing data, and delegating to other agents. Adding security, governance, or policy enforcement typically means embedding that logic directly into application code, leading to duplication, tight coupling, and drift.
-
-CPEX introduces **standardized interception hooks** between your application and its operations. Plugins attach to these hooks and run automatically, keeping enforcement logic separate from business logic.
-
-**What you can build with CPEX:**
-
-- **Security** — access control, prompt injection detection, data loss prevention
-- **Observability** — request tracing, audit logging, metrics collection
-- **Governance** — policy enforcement, compliance validation, approval workflows
-- **Reliability** — rate limiting, circuit breakers, response validation
-
-CPEX is designed for modern **AI and agent systems**, but works equally well for any application that needs **safe, modular extensibility**.
-
-## How It Works
-
-Your application defines **hooks** — named interception points before and after critical operations. Plugins register against these hooks and execute automatically when triggered.
-
-```
-Application  →  Hook Point  →  Plugin Manager  →  Application (remaining processing)  →  Result
-                                     │
-                              ┌──────┼──────┐
-                              ▼      ▼      ▼
-                          Plugin  Plugin  Plugin
-```
-
-The plugin manager handles registration, ordering, execution, timeouts, and error isolation. You get a deterministic pipeline with no surprises.
-
-A plugin can **allow** execution to continue, **block** it with a violation, or **modify** the payload (with copy-on-write isolation).
-
-### Execution Modes
-
-Plugins run in phases in this order:
-
-```
-sequential → transform → audit → concurrent → fire_and_forget
-```
-
-| Mode | Execution | Can block? | Can modify? | Use case |
-|------|-----------|:----------:|:-----------:|----------|
-| `sequential` | Serial, chained | Yes | Yes | Policy enforcement + transformation |
-| `transform` | Serial, chained | No | Yes | Data transformation (redaction, rewriting) |
-| `audit` | Serial | No | No | Logging, monitoring, metrics |
-| `concurrent` | Parallel, fail-fast | Yes | No | Independent policy gates |
-| `fire_and_forget` | Background, after all phases | No | No | Telemetry, audit logs |
-| `disabled` | Not loaded | — | — | Plugin off |
-
-Error handling is configured separately with `on_error` (`fail` / `ignore` / `disable`), independent of mode.
+- [**Vision**](https://contextforge-org.github.io/cpex/docs/vision/): the reference-monitor model and where CPEX sits.
+- [**Overview**](https://contextforge-org.github.io/cpex/docs/overview/): the model in motion, with the scenario above end to end.
+- [**APL**](https://contextforge-org.github.io/cpex/docs/apl/): the policy language: predicates, effects, sequencing, field pipelines.
+- [**Quick Start**](https://contextforge-org.github.io/cpex/docs/quickstart/): stand up CPEX as an enforcement point.
 
 ## Workspace layout
 
@@ -107,16 +108,16 @@ CPEX is a Cargo workspace of focused crates:
 
 | Crate | Description |
 |-------|-------------|
-| [`cpex`](crates/cpex) | Host facade — re-exports the runtime and (optionally) the builtins |
-| [`cpex-core`](crates/cpex-core) | Plugin runtime — `PluginManager`, executor, hooks, config |
-| [`cpex-sdk`](crates/cpex-sdk) | Plugin author SDK — `Plugin`/`HookHandler` traits, payloads, results |
+| [`cpex`](crates/cpex) | Host facade, re-exports the runtime and (optionally) the builtins |
+| [`cpex-core`](crates/cpex-core) | Plugin runtime: `PluginManager`, executor, hooks, config |
+| [`cpex-sdk`](crates/cpex-sdk) | Plugin author SDK: `Plugin`/`HookHandler` traits, payloads, results |
 | [`cpex-orchestration`](crates/cpex-orchestration) | Async concurrency primitives shared by the runtime |
 | [`cpex-builtins`](crates/cpex-builtins) | Feature-gated bundle of builtin plugins, PDPs, session stores |
 | [`cpex-ffi`](crates/cpex-ffi) | C FFI (`cdylib`/`staticlib`) for Go / Python / WASM host bindings |
-| [`apl-core`](crates/apl-core) · [`apl-cmf`](crates/apl-cmf) · [`apl-cpex`](crates/apl-cpex) | APL — Attribute Policy Language: compiler/evaluator, CMF bridge, CPEX integration |
+| [`apl-core`](crates/apl-core) · [`apl-cmf`](crates/apl-cmf) · [`apl-cpex`](crates/apl-cpex) | APL (Authorization Policy Language): compiler/evaluator, CMF bridge, CPEX integration |
 | `builtins/*` | Bundled plugins (PII scanner, audit logger, JWT identity, OAuth/Biscuit delegation), PDPs (Cedar, CEL), and the Valkey session store |
 
-The C FFI is distributed as signed prebuilt artifacts — see [`crates/cpex-ffi/RELEASE.md`](crates/cpex-ffi/RELEASE.md). Go bindings live in [`go/cpex`](go/cpex).
+The C FFI is distributed as signed prebuilt artifacts. See [`crates/cpex-ffi/RELEASE.md`](crates/cpex-ffi/RELEASE.md). Go bindings live in [`go/cpex`](go/cpex).
 
 ## Development
 
@@ -134,7 +135,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the full workflow and [SECURITY.md](S
 
 ## Project Status
 
-CPEX is under active development as part of the [ContextForge](https://github.com/contextforge-org) ecosystem. The framework is designed to work across AI gateways, agent frameworks, LLM proxies, and tool servers.
+CPEX is under active development as part of the [ContextForge](https://github.com/contextforge-org) ecosystem. It is designed to work across AI gateways, agent frameworks, LLM proxies, and tool servers.
 
 ## License
 
