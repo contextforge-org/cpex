@@ -84,7 +84,7 @@ rsa = { version = "0.9", features = ["pem"] }
 # rsa 0.9's `RsaPrivateKey::new(&mut rng, bits)` takes an rng
 # implementing `rand_core::CryptoRngCore` — `rand::thread_rng()`
 # satisfies that. Test-only dep.
-rand = "0.8"
+rand = "0.9"
 
 [lints]
 workspace = true
