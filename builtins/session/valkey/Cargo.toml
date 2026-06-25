@@ -64,7 +64,7 @@ deadpool-redis = { version = "0.23", default-features = false, features = [
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }
 # Spins a real `valkey/valkey` container for integration tests; these are
 # `#[ignore]`d by default and run via a dedicated job (see tests/).
-testcontainers-modules = { version = "0.13", features = ["valkey"] }
+testcontainers-modules = { version = "0.14", features = ["valkey"] }
 testcontainers = "0.26"
 
 [lints]
