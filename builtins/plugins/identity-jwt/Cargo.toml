@@ -80,8 +80,10 @@ mockito = "1"
 rsa = { version = "0.9", features = ["pem"] }
 # rsa 0.9's `RsaPrivateKey::new(&mut rng, bits)` takes an rng
 # implementing `rand_core::CryptoRngCore` — `rand::thread_rng()`
-# satisfies that. Test-only dep.
-rand = "0.9"
+# satisfies that. Pinned to 0.8: rsa 0.9 (latest stable) depends on
+# rand_core 0.6, which rand 0.9 (rand_core 0.9) no longer implements,
+# so the two are incompatible until rsa 0.10 ships. Test-only dep.
+rand = "0.8"
 
 [lints]
 workspace = true

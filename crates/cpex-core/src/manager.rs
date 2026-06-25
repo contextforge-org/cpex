@@ -374,7 +374,7 @@ impl PluginManager {
         Self {
             runtime: arc_swap::ArcSwap::from_pointee(snapshot),
             factories: RwLock::new(PluginFactoryRegistry::new()),
-            route_cache: RwLock::new(HashMap::with_hasher(cache_hasher)),
+            route_cache: RwLock::new(HashMap::with_hasher(cache_hasher.clone())),
             cache_hasher,
             route_cache_full_warned: AtomicBool::new(false),
             initialized: AtomicBool::new(false),
