@@ -17,15 +17,15 @@
 
 ## What's CPEX?
 
-CPEX is a deterministic reference monitor between an untrusted LLM and the capabilities it invokes.
+CPEX is a deterministic reference monitor between an untrusted agent and the capabilities it invokes.
 
-An agent's LLM is user-space. It can be steered by injected content, confused by tool output, or simply wrong. So CPEX mediates every operation the model triggers (tool calls, A2A methods, inference calls, prompt and resource fetches) against state the model cannot see or forge: identity, delegation chains, taint labels, and an append-only audit log.
+AI agents can be steered by injected content, confused by tool output, or simply make mistakes. CPEX mediates every operation an agent triggers (tool calls, A2A methods, inference calls, prompt and resource fetches) against state the agent cannot see or forge: identity, delegation chains, taint labels, and an append-only audit log.
 
 <div>
   <img alt="CPEX mediates every operation an untrusted LLM triggers, evaluating APL policy against identity, delegation, taint, and audit state the model cannot forge" src="https://github.com/contextforge-org/cpex/blob/main/docs/static/images/cpex_overview.png?raw=true" />
 </div>
 
-You write policy in **APL** (Authorization Policy Language): declarative, attribute-based rules with explicit effects, attached to the operations they govern. CPEX evaluates that policy at the boundary and enforces the result.
+You write policy as declarative, attribute-based rules with explicit effects. CPEX evaluates that policy at the boundary and enforces the result, allowing, denying, redacting, delegating, or tainting before the operation proceeds.
 
 ## Same request, different data
 
@@ -48,7 +48,7 @@ No application code changed between the three outcomes. The policy did.
 
 ## What you can express
 
-APL composes the controls an agent stack needs, evaluated against identity claims, relationships, roles, and attributes (ReBAC, RBAC, ABAC). A few sketches:
+CPEX composes the controls an agent stack needs, evaluated against identity claims, relationships, roles, and attributes (ReBAC, RBAC, ABAC). A few sketches:
 
 **Authorization** on both request inputs and response outputs, for tools, resources, prompts, A2A methods, and other agent interfaces:
 
