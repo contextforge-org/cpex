@@ -457,12 +457,21 @@ pub(crate) fn route_capability_union(
     // as delegation: an elicitation handler that declares e.g.
     // `read_subject` (to read the approver identity) must not have it
     // stripped at the AplRouteHandler boundary.
-    for name in collect_elicit_plugin_names(route) {
-        if let Some(eff) = EffectivePlugin::resolve(&name, registry, &route.plugin_overrides) {
+    let elicit_plugins = collect_elicit_plugin_names(route);
+    for name in &elicit_plugins {
+        if let Some(eff) = EffectivePlugin::resolve(name, registry, &route.plugin_overrides) {
             for cap in eff.capabilities.as_slice() {
                 caps.insert(cap.clone());
             }
         }
+    }
+    // A route with an elicitation step needs `read_headers` on the synthetic
+    // handler so the `X-CPEX-Elicitation-Id` retry header survives the
+    // capability filter and reaches the bag (Phase 5 retry-seeding). Without
+    // it, the `http` extension is stripped before the handler reads it and
+    // every retry re-dispatches a fresh elicitation instead of checking.
+    if !elicit_plugins.is_empty() {
+        caps.insert("read_headers".to_string());
     }
     caps
 }
