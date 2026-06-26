@@ -26,7 +26,7 @@ categories.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-apl-core = { path = "../../../crates/apl-core", version = "0.2.0" }
+apl-core = { workspace = true }
 # The CEL interpreter from cel-rust/cel-rust (formerly
 # clarkmcc/cel-rust). Sync eval, comprehension macros (`has`, `all`,
 # `exists`, `map`, `filter`), custom functions. Caret spec tracks 0.x
@@ -55,9 +55,9 @@ tracing = { workspace = true }
 # edges only exist for tests — the crate itself stays apl-core-only at
 # compile time so it can be used standalone (e.g. in a custom orchestrator
 # that doesn't go through apl-cpex at all).
-apl-cmf = { path = "../../../crates/apl-cmf", version = "0.2.0" }
-apl-cpex = { path = "../../../crates/apl-cpex", version = "0.2.0" }
-cpex-core = { path = "../../../crates/cpex-core", version = "0.2.0" }
+apl-cmf = { workspace = true }
+apl-cpex = { workspace = true }
+cpex-core = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }
 
 [lints]

@@ -30,9 +30,9 @@ categories.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-apl-core = { path = "../apl-core", version = "0.2.0" }
-apl-cmf = { path = "../apl-cmf", version = "0.2.0" }
-cpex-core = { path = "../cpex-core", version = "0.2.0" }
+apl-core = { workspace = true }
+apl-cmf = { workspace = true }
+cpex-core = { workspace = true }
 async-trait = { workspace = true }
 chrono = { workspace = true }
 thiserror = { workspace = true }

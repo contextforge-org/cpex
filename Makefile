@@ -63,6 +63,13 @@ help:
 	@echo ""
 	@echo "End-to-end:"
 	@echo "  ci                Lint + tests + examples-build (CI gate)"
+	@echo ""
+	@echo "Release (version bump + tag locally; CI publishes on tag push):"
+	@echo "  release-dry       Preview the release (no changes)"
+	@echo "  release-version   Set the version everywhere (no commit/tag)"
+	@echo "  release           Bump + commit + tag (then: git push origin vX.Y.Z)"
+	@echo "  publish-dry       Local packaging dry-run (mirrors CI dry-run)"
+	@echo "                    Pass LEVEL=alpha|patch|minor|major|rc|release or VERSION=X.Y.Z"
 
 # =============================================================================
 # Build
@@ -253,3 +260,56 @@ examples-run: examples-build
 .PHONY: ci
 ci: lint test examples-build
 	@echo "✅  CI gate passed (lint + tests + examples)"
+
+# =============================================================================
+# Release
+# =============================================================================
+#
+# This workspace versions and releases every publishable crate together. The
+# version lives in ONE place — `[workspace.package] version` plus the
+# `[workspace.dependencies]` table in the root Cargo.toml — and cargo-release
+# keeps both in sync. Config (shared-version, tag name, publish=false) lives in
+# release.toml; the actual crates.io publish runs in CI on the pushed tag.
+#
+# Bump level (LEVEL) or explicit VERSION:
+#   make release-dry                 # preview, no changes (default LEVEL=alpha)
+#   make release LEVEL=patch         # 0.2.0 -> 0.2.1
+#   make release VERSION=0.2.0       # drop the pre-release suffix
+#   git push origin "v$(...)"        # push the tag to let CI publish
+
+LEVEL   ?= alpha
+VERSION ?=
+# Explicit VERSION wins over LEVEL when set.
+RELEASE_ARG = $(if $(VERSION),$(VERSION),$(LEVEL))
+
+.PHONY: release-tool
+release-tool:
+	@command -v cargo-release >/dev/null 2>&1 || $(CARGO) install cargo-release --locked
+
+# Preview only — cargo-release makes NO changes without --execute.
+.PHONY: release-dry
+release-dry: release-tool
+	@$(CARGO) release $(RELEASE_ARG) --workspace
+
+# Rewrite the version in [workspace.package] + [workspace.dependencies] only;
+# no commit, no tag. Useful for a manual, reviewed bump.
+.PHONY: release-version
+release-version: release-tool
+	@$(CARGO) release version $(RELEASE_ARG) --workspace --execute --no-confirm
+
+# Bump + commit + tag, then stop. --no-publish/--no-push enforce the
+# "CI publishes on tag push" model at the CLI level too (release.toml already
+# sets publish=false/push=false; this makes the guarantee not depend on config
+# parsing). Afterwards: `git push origin vX.Y.Z` to trigger the CI publish.
+.PHONY: release
+release: release-tool
+	@$(CARGO) release $(RELEASE_ARG) --workspace --no-publish --no-push --execute
+
+# Build + verify a .crate for every crates.io-published member without
+# uploading — the same check the release workflow's dry-run runs. The two
+# `publish = false` FFI crates are excluded (cpex-ffi ships as signed prebuilt
+# artifacts; cpex-demo-ffi is an example). CI runs this on a clean checkout;
+# --allow-dirty lets you run it locally with work in progress.
+.PHONY: publish-dry
+publish-dry:
+	@$(CARGO) package --workspace --locked --allow-dirty --exclude cpex-ffi --exclude cpex-demo-ffi

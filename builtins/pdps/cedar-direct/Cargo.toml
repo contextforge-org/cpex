@@ -26,7 +26,7 @@ categories.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-apl-core = { path = "../../../crates/apl-core", version = "0.2.0" }
+apl-core = { workspace = true }
 # Permissive caret spec — `"4"` means "any 4.x that Cargo can find."
 #
 # Code-side note: we use `Request::new(...)` (added in 4.11 alongside
@@ -52,9 +52,9 @@ thiserror = { workspace = true }
 # dev-dep edges only exist for tests — the crate itself stays
 # apl-core-only at compile time so it can be used standalone (e.g. in a
 # custom orchestrator that doesn't go through apl-cpex at all).
-apl-cmf = { path = "../../../crates/apl-cmf", version = "0.2.0" }
-apl-cpex = { path = "../../../crates/apl-cpex", version = "0.2.0" }
-cpex-core = { path = "../../../crates/cpex-core", version = "0.2.0" }
+apl-cmf = { workspace = true }
+apl-cpex = { workspace = true }
+cpex-core = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }
 # Minimal executor for the small-stack regression test (tests/small_stack_eval.rs):
 # drives the async `evaluate` without tokio's larger per-call stack footprint, so

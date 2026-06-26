@@ -11,8 +11,8 @@
 # `builtins` / `full` feature (or a granular plugin feature) is enabled — so
 # the default `cpex = "0.2"` is the engine alone, no plugins compiled.
 #
-#   cpex = { version = "0.2.0", features = ["builtins"] }            # default builtin set
-#   cpex = { version = "0.2.0", features = ["jwt", "cedar"] }        # a minimal subset
+#   cpex = { version = "0.2.0-alpha.5", features = ["builtins"] }            # default builtin set
+#   cpex = { version = "0.2.0-alpha.5", features = ["jwt", "cedar"] }        # a minimal subset
 #
 # then `cpex::install_builtins(&mgr)` registers every enabled factory and
 # installs the APL config visitor in one call.
@@ -52,15 +52,15 @@ valkey = ["cpex-builtins/valkey"]
 
 [dependencies]
 # Host runtime — always present, this is the point of the facade.
-cpex-core = { path = "../cpex-core", version = "0.2.0" }
-apl-core = { path = "../apl-core", version = "0.2.0" }
-apl-cmf = { path = "../apl-cmf", version = "0.2.0" }
-apl-cpex = { path = "../apl-cpex", version = "0.2.0" }
+cpex-core = { workspace = true }
+apl-core = { workspace = true }
+apl-cmf = { workspace = true }
+apl-cpex = { workspace = true }
 
 # Bundled extension set — present only when a builtins feature is enabled.
 # `default-features = false` so the granular plugin features compose; an
 # enabling feature turns on exactly the cpex-builtins features it names.
-cpex-builtins = { path = "../cpex-builtins", version = "0.2.0", optional = true, default-features = false }
+cpex-builtins = { workspace = true, optional = true, default-features = false }
 
 [lints]
 workspace = true

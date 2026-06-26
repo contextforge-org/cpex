@@ -46,18 +46,18 @@ full = ["default", "valkey"]
 
 [dependencies]
 # Registration targets — the manager, PDP factory trait, and APL options.
-cpex-core = { path = "../cpex-core", version = "0.2.0" }
-apl-core = { path = "../apl-core", version = "0.2.0" }
-apl-cpex = { path = "../apl-cpex", version = "0.2.0" }
+cpex-core = { workspace = true }
+apl-core = { workspace = true }
+apl-cpex = { workspace = true }
 
 # Builtin extension crates — each behind its feature.
-cpex-plugin-pii-scanner = { path = "../../builtins/plugins/pii-scanner", version = "0.2.0", optional = true }
-cpex-plugin-audit-logger = { path = "../../builtins/plugins/audit-logger", version = "0.2.0", optional = true }
-cpex-plugin-identity-jwt = { path = "../../builtins/plugins/identity-jwt", version = "0.2.0", optional = true }
-cpex-plugin-delegator-oauth = { path = "../../builtins/plugins/delegator-oauth", version = "0.2.0", optional = true }
-cpex-pdp-cedar-direct = { path = "../../builtins/pdps/cedar-direct", version = "0.2.0", optional = true }
-cpex-pdp-cel = { path = "../../builtins/pdps/cel", version = "0.2.0", optional = true }
-cpex-session-valkey = { path = "../../builtins/session/valkey", version = "0.2.0", optional = true }
+cpex-plugin-pii-scanner = { workspace = true, optional = true }
+cpex-plugin-audit-logger = { workspace = true, optional = true }
+cpex-plugin-identity-jwt = { workspace = true, optional = true }
+cpex-plugin-delegator-oauth = { workspace = true, optional = true }
+cpex-pdp-cedar-direct = { workspace = true, optional = true }
+cpex-pdp-cel = { workspace = true, optional = true }
+cpex-session-valkey = { workspace = true, optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }

@@ -31,7 +31,7 @@ thiserror = { workspace = true }
 async-trait = { workspace = true }
 regex = { workspace = true }
 futures = { workspace = true }
-cpex-orchestration = { path = "../cpex-orchestration", version = "0.2.0" }
+cpex-orchestration = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }

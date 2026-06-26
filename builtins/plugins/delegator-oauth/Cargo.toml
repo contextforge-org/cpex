@@ -43,7 +43,7 @@ categories.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-cpex-core = { path = "../../../crates/cpex-core", version = "0.2.0" }
+cpex-core = { workspace = true }
 
 # `reqwest` for the HTTP POST to the IdP token endpoint. Default
 # features pull `rustls` for TLS — we explicitly disable the

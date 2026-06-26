@@ -16,6 +16,12 @@ edition = "2021"
 license = "Apache-2.0"
 publish = false
 
+# Demo example crate: not part of the released workspace. Pinned to its own
+# version and skipped by `cargo release` (which otherwise bumps every member
+# to the shared workspace version).
+[package.metadata.release]
+release = false
+
 [lib]
 crate-type = ["staticlib", "cdylib"]
 

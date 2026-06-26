@@ -17,7 +17,13 @@ on:
   push:
     tags:
       - "v[0-9]+.[0-9]+.[0-9]+"
+      - "v[0-9]+.[0-9]+.[0-9]+-*"   # pre-releases: v0.2.0-alpha.5, v1.0.0-rc.1, …
   workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Package + verify all crates without uploading to crates.io"
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -68,8 +74,23 @@ jobs:
       - name: cargo publish (dependency order)
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          # true only for a manual workflow_dispatch with dry_run left on.
+          # A real version-tag push has empty DRY_RUN → publishes for real.
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
         run: |
           set -euo pipefail
+          # Dry run: build + verify a .crate for every publishable member
+          # (cargo skips `publish = false` crates and resolves inter-member
+          # deps against each other's packaged versions) without uploading.
+          # This is how the workflow is exercised without a real release.
+          if [ "$DRY_RUN" = "true" ]; then
+            echo "::group::dry run — cargo package (no upload)"
+            # Verify the crates.io-published set only; the two publish=false
+            # FFI crates are not part of the registry release.
+            cargo package --workspace --locked --exclude cpex-ffi --exclude cpex-demo-ffi
+            echo "::endgroup::"
+            exit 0
+          fi
           # Leaf-first topological order. Each `cargo publish` blocks until the
           # crate is visible in the index before returning, so the next crate's
           # dependency resolves; the short sleep is extra slack for propagation.

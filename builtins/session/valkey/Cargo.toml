@@ -30,7 +30,7 @@ categories.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-apl-cpex = { path = "../../../crates/apl-cpex", version = "0.2.0" }
+apl-cpex = { workspace = true }
 async-trait = { workspace = true }
 serde = { workspace = true }
 serde_yaml = { workspace = true }

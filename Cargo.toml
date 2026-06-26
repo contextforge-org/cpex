@@ -1,7 +1,7 @@
 # Location: ./Cargo.toml
 # Copyright 2025
 # SPDX-License-Identifier: Apache-2.0
-# Authors: Teryl Taylor
+# Authors: Teryl Taylor, Fred Araujo
 #
 # Workspace root for the CPEX Rust crates.
 
@@ -58,7 +58,7 @@ default-members = [
 ]
 
 [workspace.package]
-version = "0.2.0"
+version = "0.2.0-alpha.5"
 edition = "2021"
 # MSRV — keep in sync with rust-toolchain.toml `channel` and clippy.toml `msrv`.
 rust-version = "1.96"
@@ -94,6 +94,29 @@ rmp-serde = "1"
 serde_bytes = "0.11"
 chrono = { version = "0.4", features = ["serde"] }
 regex = "1"
+
+# Internal workspace crates — single source of truth for their path + version
+# requirement. Members depend on these via `{ workspace = true }` so a version
+# bump touches only this table (plus `[workspace.package] version`). The
+# `version` is required because these crates publish to crates.io: at publish
+# time cargo substitutes it for the `path`. `cargo release` keeps these in sync
+# with the workspace version. Keys are package names (builtins differ from their
+# directory names), paths are workspace-root-relative.
+cpex-core                     = { path = "crates/cpex-core",                   version = "0.2.0-alpha.5" }
+cpex-orchestration            = { path = "crates/cpex-orchestration",          version = "0.2.0-alpha.5" }
+cpex-sdk                      = { path = "crates/cpex-sdk",                     version = "0.2.0-alpha.5" }
+cpex-builtins                 = { path = "crates/cpex-builtins",               version = "0.2.0-alpha.5" }
+apl-core                      = { path = "crates/apl-core",                    version = "0.2.0-alpha.5" }
+apl-cmf                       = { path = "crates/apl-cmf",                      version = "0.2.0-alpha.5" }
+apl-cpex                      = { path = "crates/apl-cpex",                     version = "0.2.0-alpha.5" }
+cpex-plugin-pii-scanner       = { path = "builtins/plugins/pii-scanner",       version = "0.2.0-alpha.5" }
+cpex-plugin-audit-logger      = { path = "builtins/plugins/audit-logger",      version = "0.2.0-alpha.5" }
+cpex-plugin-identity-jwt      = { path = "builtins/plugins/identity-jwt",      version = "0.2.0-alpha.5" }
+cpex-plugin-delegator-oauth   = { path = "builtins/plugins/delegator-oauth",   version = "0.2.0-alpha.5" }
+cpex-plugin-delegator-biscuit = { path = "builtins/plugins/delegator-biscuit", version = "0.2.0-alpha.5" }
+cpex-pdp-cedar-direct         = { path = "builtins/pdps/cedar-direct",         version = "0.2.0-alpha.5" }
+cpex-pdp-cel                  = { path = "builtins/pdps/cel",                   version = "0.2.0-alpha.5" }
+cpex-session-valkey           = { path = "builtins/session/valkey",            version = "0.2.0-alpha.5" }
 
 # Size-first release profile. The FFI artifact (libcpex_ffi.a) is linked
 # statically into host binaries, so its compiled size flows straight into

@@ -48,7 +48,7 @@ categories.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-cpex-core = { path = "../../../crates/cpex-core", version = "0.2.0" }
+cpex-core = { workspace = true }
 
 # biscuit-auth v6 — current major. Maintained by Clever Cloud +
 # community. Ed25519 + Datalog. No default-features off needed; the

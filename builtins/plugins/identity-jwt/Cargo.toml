@@ -29,7 +29,7 @@ categories.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-cpex-core = { path = "../../../crates/cpex-core", version = "0.2.0" }
+cpex-core = { workspace = true }
 
 # `jsonwebtoken` is the de facto JWT library for Rust. Supports
 # RS256/RS384/RS512, ES256/ES384, EdDSA, HS256/HS384/HS512. Default

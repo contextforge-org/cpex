@@ -41,7 +41,7 @@ chrono = { workspace = true }
 zeroize = { version = "1.8", features = ["zeroize_derive"] }
 # Shared concurrency primitive used by `executor::run_concurrent_phase`
 # (and apl-core's `Effect::Parallel`). Leaf crate, no cycles back here.
-cpex-orchestration = { path = "../cpex-orchestration", version = "0.2.0" }
+cpex-orchestration = { workspace = true }
 
 [lints]
 workspace = true
