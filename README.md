@@ -4,7 +4,7 @@
 
 # CPEX
 
-<i>A policy and authorization framework for agentic applications.</i>
+<i>A policy enforcement runtime for AI agents.</i>
 
 [![CI](https://github.com/contextforge-org/cpex/actions/workflows/ci.yml/badge.svg)](https://github.com/contextforge-org/cpex/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
@@ -17,84 +17,98 @@
 
 ## What's CPEX?
 
-CPEX is a deterministic reference monitor between an untrusted agent and the capabilities it invokes.
+CPEX is a policy enforcement runtime for AI agents.
 
-AI agents can be steered by injected content, confused by tool output, or simply make mistakes. CPEX mediates every operation an agent triggers (tool calls, A2A methods, inference calls, prompt and resource fetches) against state the agent cannot see or forge: identity, delegation chains, taint labels, and an append-only audit log.
+It acts as a deterministic reference monitor between an agent and every capability it invokes: tools, prompts, resources, inference providers, and A2A methods. Every operation is evaluated against security state the model cannot observe or influence—identity, delegation chains, information-flow labels, and an append-only audit log.
+
+Instead of scattering authorization, delegation, redaction, auditing, and information-flow controls across application code, CPEX executes them as a single policy-defined pipeline. Identity can be resolved, an external PDP consulted, credentials exchanged, inputs or outputs transformed, session state updated, and the operation audited—all within one deterministic flow.
 
 <div>
   <img alt="CPEX mediates every operation an untrusted LLM triggers, evaluating APL policy against identity, delegation, taint, and audit state the model cannot forge" src="https://github.com/contextforge-org/cpex/blob/main/docs/static/images/cpex_overview.png?raw=true" />
 </div>
 
-You write policy in APL (Authorization Policy Language): declarative, attribute-based rules with explicit effects. CPEX evaluates that policy at the boundary and enforces the result, allowing, denying, redacting, delegating, or tainting before the operation proceeds.
+## Policy lives on the entity
 
-## Same request, different data
+APL is a declarative policy language designed around capabilities rather than requests.
 
-Three callers issue the identical `get_compensation` request. The backend returns the same record. What each receives differs, because policy decides per identity.
+Every entity an agent can invoke—a tool, resource, prompt, or A2A method—owns its own policy. Each policy executes in two phases: before invocation and after the result. Most policies fit comfortably on a single screen.
+
+A route identifies an entity and defines the enforcement pipeline. Predicates decide whether execution may continue (`require`). PDPs evaluate external authorization (`cel`, `cedar`, or custom resolvers). Effects perform enforcement (`delegate`, `redact`, `taint`, `run`). Steps execute deterministically, in order, with only the context they explicitly declare.
+
+## End-to-end enforcement, multiple security contexts
+
+The example below places CPEX between a single agent and three backends: HR records, source repositories, and email. The agent remains unchanged. Policy adapts each operation to the caller's identity, permissions, and session state.
+
+<div>
+  <img alt="One agent serves three users across HR, repo, and email backends; CPEX policy produces a different outcome per identity" src="https://github.com/contextforge-org/cpex/blob/main/docs/static/images/demo_scenario.png?raw=true" />
+</div>
+
+One policy defines three distinct enforcement pipelines, one for each entity.
 
 ```yaml
 routes:
+  # HR lookup: gate on role, scope a downstream token, redact by permission, taint the session.
   - tool: get_compensation
     policy:
       - "require(role.hr)"
+      - "delegate(workday-oauth, target: workday-api, permissions: [read_compensation])"
+      - "taint(secret, session)"
+      - "run(audit-log)"
     result:
       ssn: "str | redact(!perm.view_ssn)"
+
+  # Repo search: gate on team, decide with CEL (or Cedar), require the scoped grant.
+  - tool: search_repos
+    policy:
+      - "require(team.engineering | team.security)"
+      - cel:
+          expr: "(role.engineer && args.visibility == 'internal') || role.security"
+          on_deny: ["deny('engineers read internal only; security reads any', 'cel.policy_denied')"]
+      - "delegate(github-oauth, target: github-api, permissions: [repo:read:internal])"
+      - "run(audit-log)"
+
+  # Outbound email: refuse if the session already touched secret data.
+  - tool: send_email
+    policy:
+      - "require(perm.email_send)"
+      - "run(pii-scan)"
+      - "security.labels contains \"secret\": deny('write-down blocked', 'session_tainted')"
+      - "run(audit-log)"
 ```
 
-- An HR analyst with `view_ssn` gets the full record.
-- An HR analyst without `view_ssn` gets the record with the SSN redacted before it leaves CPEX. The backend never sees the difference.
-- An engineer is denied at `require(role.hr)`. The call never reaches the backend.
+Two examples illustrate the behavior:
 
-No application code changed between the three outcomes. The policy did.
+- **Same request, different result.** An HR analyst with `view_ssn` receives the full record. Without that permission, the SSN is redacted before the response leaves CPEX. Engineers never reach the backend because the request is rejected by `require(role.hr)`.
 
-## What you can express
+- **Information follows the session.** Reading compensation data taints the session. Later attempts to send external email are blocked—even if the email itself contains no sensitive content.
 
-APL composes the controls an agent stack needs, evaluated against identity claims, relationships, roles, and attributes (ReBAC, RBAC, ABAC). A few sketches:
+The application stays the same. Only the policy changes.
 
-**Authorization** on both request inputs and response outputs, for tools, resources, prompts, A2A methods, and other agent interfaces:
+## Beyond request-level authorization
 
-```yaml
-policy:
-  - "require(role.hr | role.security)"
-args:
-  region: "enum(us, eu, apac)"        # validate inputs
-result:
-  salary: "int | redact(!perm.view_comp)"   # redact outputs by permission
-```
+RBAC, ABAC, Cedar, OPA, AuthZEN, and similar systems answer an important question:
 
-**PDP composition**: gate with your preferred policy engine (CEL and Cedar ship as builtins; OPA, AuthZEN, and NeMo are recognized dialects you wire to a host resolver):
+> Should this request be allowed?
 
-```yaml
-policy:
-  - cel:
-      expr: "subject.department == 'compliance' || 'admin' in subject.roles"
-    on_deny:
-      - "deny('not permitted by policy', 'pdp_denied')"
-```
+CPEX answers a broader one:
 
-**Delegation** as an explicit effect: RFC 8693 token exchange that scopes and reduces privilege before downstream calls, verified after the exchange:
+> What security pipeline should execute for this agent operation?
 
-```yaml
-policy:
-  - "delegate(workday-oauth, target: workday-api, permissions: [read_compensation])"
-  - "delegation.granted.permissions contains 'read_compensation': allow"
-```
+That pipeline can combine request authorization with credential delegation, response transformation, information-flow tracking, auditing, and session state into a single deterministic policy.
 
-**Information-flow control**: session tainting that detects and blocks write-down, for example refusing an external send after the session touched secret data:
+Three capabilities distinguish this model:
 
-```yaml
-# get_compensation taints the session
-policy: ["require(role.hr)", "taint(secret, session)"]
-# send_email, later in the same session, refuses even with a clean body
-policy:
-  - "require(perm.email_send)"
-  - "security.labels contains \"secret\": deny('write-down blocked', 'session_tainted')"
-```
+- **Information flow across operations.** Policy can carry security state across an entire agent session, preventing write-down and other cross-call attacks rather than evaluating each request in isolation.
 
-The pipeline underneath (hooks, the plugin manager, execution modes) is the mechanism that runs policy effects. It is the supporting layer. APL is how you express intent; the pipeline is how that intent executes. Plugins are capability-gated, so an effect only sees the context it declares.
+- **Delegation as policy.** OAuth token exchange (RFC 8693), capability reduction, and downstream credential verification become ordinary policy steps instead of bespoke integration code.
+
+- **Decision orchestration.** Existing authorization systems remain the source of truth. APL invokes Cedar, CEL, OPA, AuthZEN, or custom resolvers wherever a decision is needed, while CPEX enforces the resulting security pipeline.
 
 ## Where it runs
 
-CPEX is direction-agnostic. The same policy enforces whether CPEX sits in front of a tool server as a gateway, beside an agent as an egress sidecar, or inside an agent framework. Move the enforcement point; keep the policy.
+CPEX enforces policy wherever an agent crosses a trust boundary.
+
+It can run in front of tool servers, beside an agent as an egress sidecar, inside an agent framework, or as middleware between components. The enforcement point can move without changing policy, allowing the same APL configuration to span gateways, agents, and services.
 
 ## Install
 
@@ -162,7 +176,9 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the full workflow and [SECURITY.md](S
 
 ## Project Status
 
-CPEX is under active development as part of the [ContextForge](https://github.com/contextforge-org) ecosystem. It is designed to work across AI gateways, agent frameworks, LLM proxies, and tool servers.
+CPEX is under active development as part of the ContextForge ecosystem.
+
+The project is designed as a reusable enforcement layer for agentic systems, integrating with AI gateways, agent frameworks, LLM proxies, MCP servers, and other capability providers through a common policy model.
 
 ## License
 

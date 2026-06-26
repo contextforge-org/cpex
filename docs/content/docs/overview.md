@@ -9,6 +9,8 @@ weight: 10
 
 Picture one agent serving several people. It answers questions by calling tools (an HR records service, a code repository, an email sender), invoking other agents over A2A, running inference, and fetching prompts and resources. The backends are shared. The callers are not: an HR analyst, an engineer, and a support rep each drive the same agent with different identities and different entitlements.
 
+![One agent serves three users across HR, repo, and email backends; CPEX policy produces a different outcome per identity](/cpex/images/demo_scenario.png)
+
 The agent's LLM decides which operation to run. It is untrusted. CPEX sits between it and every capability, and decides what actually happens.
 
 ![CPEX mediates every operation an untrusted LLM triggers, evaluating APL policy against identity, delegation, taint, and audit state the model cannot forge](/cpex/images/cpex_overview.png)

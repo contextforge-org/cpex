@@ -5,7 +5,9 @@ weight: 30
 
 # Authorization Policy Language
 
-APL is how you express policy in CPEX. A policy is declarative: you describe the conditions and the effects, attached to the operation they govern, and CPEX evaluates them at the boundary. You do not write enforcement logic in application code.
+APL is how you express policy in CPEX. It is declarative and designed around capabilities rather than requests: every entity an agent can invoke owns its own policy, attached to the operation it governs and evaluated at the boundary. You describe the conditions and the effects; you do not write enforcement logic in application code.
+
+![An APL config: plugins and global settings, then per-entity routes with a pre-invocation flow (require, PDP, delegate, run) and post-invocation result handling (taint, redact), plus session tainting across entities](/cpex/images/apl_overview.png)
 
 This page covers the language: routes, phases, predicates, rules, and field pipelines. The rest of this section goes deeper on each kind of policy:
 
