@@ -143,13 +143,19 @@ fn values_eq(attr: &AttributeValue, lit: &Literal) -> bool {
 }
 
 fn numeric_compare(attr: &AttributeValue, lit: &Literal, op: CompareOp) -> bool {
-    let (a, b) = match (attr, lit) {
-        (AttributeValue::Int(a), Literal::Int(b)) => (*a as f64, *b as f64),
-        (AttributeValue::Int(a), Literal::Float(b)) => (*a as f64, *b),
-        (AttributeValue::Float(a), Literal::Int(b)) => (*a, *b as f64),
-        (AttributeValue::Float(a), Literal::Float(b)) => (*a, *b),
-        // Non-numeric operands: order operators don't apply → false (spec §2.3).
-        _ => return false,
+    // Coerce both operands to f64 for the order comparison. Numeric-looking
+    // strings are coerced — LLM tool arguments routinely arrive as strings
+    // (e.g. `"amount": "25000"`), and a policy author writing
+    // `args.amount > 10000` plainly means a numeric comparison. A string
+    // that doesn't parse as a number is genuinely non-numeric → false
+    // (order operators don't apply, spec §2.3).
+    let a = match coerce_f64_attr(attr) {
+        Some(a) => a,
+        None => return false,
+    };
+    let b = match coerce_f64_lit(lit) {
+        Some(b) => b,
+        None => return false,
     };
     match op {
         CompareOp::Gt => a > b,
@@ -157,6 +163,29 @@ fn numeric_compare(attr: &AttributeValue, lit: &Literal, op: CompareOp) -> bool 
         CompareOp::Lt => a < b,
         CompareOp::LtEq => a <= b,
         _ => unreachable!("numeric_compare called with non-numeric op"),
+    }
+}
+
+/// Coerce a bag attribute to `f64` for an order comparison: numbers pass
+/// through; a string is parsed (numeric-looking strings only); anything
+/// else is non-numeric.
+fn coerce_f64_attr(attr: &AttributeValue) -> Option<f64> {
+    match attr {
+        AttributeValue::Int(a) => Some(*a as f64),
+        AttributeValue::Float(a) => Some(*a),
+        AttributeValue::String(s) => s.trim().parse::<f64>().ok(),
+        _ => None,
+    }
+}
+
+/// Coerce a literal to `f64` for an order comparison. Same rules as
+/// [`coerce_f64_attr`] so `args.x > "10"` works symmetrically.
+fn coerce_f64_lit(lit: &Literal) -> Option<f64> {
+    match lit {
+        Literal::Int(b) => Some(*b as f64),
+        Literal::Float(b) => Some(*b),
+        Literal::String(s) => s.trim().parse::<f64>().ok(),
+        _ => None,
     }
 }
 
@@ -1680,6 +1709,29 @@ mod tests {
             },
             &bag,
         ));
+    }
+
+    #[test]
+    fn numeric_string_args_coerce_for_order_comparison() {
+        // LLMs routinely send numeric tool-args as strings, e.g.
+        // `args.amount = "25000"`. An order comparison must still fire so a
+        // gate like `when: args.amount > 10000` (and the elicitation
+        // `scope: args.amount <= 25000`) work. Regression for the demo bug
+        // where a string amount slipped past the approval threshold.
+        let mut bag = AttributeBag::new();
+        bag.set("args.amount", "25000");
+        let cmp = |op, v: i64| Condition::Comparison {
+            key: "args.amount".into(),
+            op,
+            value: v.into(),
+        };
+        assert!(eval_condition(&cmp(CompareOp::Gt, 10000), &bag), "\"25000\" > 10000");
+        assert!(eval_condition(&cmp(CompareOp::LtEq, 25000), &bag), "\"25000\" <= 25000");
+        assert!(!eval_condition(&cmp(CompareOp::Gt, 25000), &bag), "\"25000\" > 25000 is false");
+
+        // A genuinely non-numeric string still doesn't order-compare.
+        bag.set("args.amount", "lots");
+        assert!(!eval_condition(&cmp(CompareOp::Gt, 10000), &bag), "\"lots\" > 10000 is false");
     }
 
     #[test]

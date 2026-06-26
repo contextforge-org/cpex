@@ -11,9 +11,11 @@
 //   * dispatch → backchannel auth POST (`login_hint` / `binding_message`
 //                / `scope`) → `auth_req_id` (used as the elicitation id).
 //   * check    → token-endpoint poll (`grant_type=...:ciba` +
-//                `auth_req_id`) → pending / approved / denied / expired.
-//   * validate → cross-check the resolved token's approver claim against
-//                the `login_hint`.
+//                `auth_req_id`) → pending / approved / denied / expired. On
+//                approval, extract the approver claim from the OP token and
+//                store *that* (never the token — see store.rs).
+//   * validate → cross-check the resolved approver (stored at check)
+//                against the expected `login_hint`.
 //
 // # Error handling
 //
@@ -199,7 +201,7 @@ impl CibaApprover {
         let id = parsed.auth_req_id;
         self.store.put(
             &id,
-            Correlation { expected_approver: login_hint.to_string(), resolved_token: None },
+            Correlation { expected_approver: login_hint.to_string(), resolved_approver: None },
         );
 
         let expires_at = parsed
@@ -248,8 +250,10 @@ impl CibaApprover {
         let body = response.text().await.unwrap_or_default();
 
         if status.is_success() {
-            // Approved — the OP handed back tokens. Cache the token that
-            // carries user claims (prefer id_token) for `validate`.
+            // Approved — the OP handed back tokens (once). Extract the
+            // approver claim NOW and store just that string; we never keep
+            // the token at rest (see store.rs). `validate` then compares
+            // the stored expected vs resolved approver.
             let parsed: TokenResponse = match serde_json::from_str(&body) {
                 Ok(p) => p,
                 Err(e) => {
@@ -259,9 +263,13 @@ impl CibaApprover {
                     );
                 }
             };
-            let token = parsed.id_token.or(parsed.access_token);
-            if let Some(tok) = token {
-                self.store.set_token(id, tok);
+            // Prefer the id_token (carries user claims); fall back to the
+            // access_token. Extract the approver claim and drop the token.
+            if let Some(token) = parsed.id_token.or(parsed.access_token) {
+                if let Some(approver) = decode_jwt_claim(&token, &self.typed.approver_claim) {
+                    self.store.set_resolved_approver(id, approver);
+                }
+                // token dropped here — never persisted.
             }
             let mut out = payload.clone();
             out.status = Some(ElicitationStatusKind::Resolved);
@@ -311,23 +319,18 @@ impl CibaApprover {
             Some(c) => c,
             None => return invalid(payload, "unknown elicitation id"),
         };
-        let token = match &correlation.resolved_token {
-            Some(t) => t,
-            None => return invalid(payload, "elicitation has no resolved token to validate"),
-        };
-
-        // Provenance is the channel: this token came straight from the OP
-        // over our authenticated TLS poll. Genuineness here = the token
-        // names the approver we asked for. (JWKS signature verification is
-        // available hardening — see crate notes — but not required when
-        // the token came directly from the OP, not from an untrusted party.)
-        let claimed = match decode_jwt_claim(token, &self.typed.approver_claim) {
-            Some(c) => c,
+        // The approver claim was extracted from the OP token at `check`
+        // (provenance: it came straight from the OP over our authenticated
+        // TLS poll). Genuineness here = who actually approved matches who we
+        // asked for — a stored-vs-stored comparison, no token at rest.
+        let resolved = match &correlation.resolved_approver {
+            Some(a) => a,
             None => {
                 return invalid(
                     payload,
                     &format!(
-                        "resolved token has no `{}` claim to identify the approver",
+                        "elicitation has no resolved approver (no `{}` claim was \
+                         extracted at check, or it hasn't resolved)",
                         self.typed.approver_claim
                     ),
                 )
@@ -335,13 +338,13 @@ impl CibaApprover {
         };
 
         let mut out = payload.clone();
-        out.approver = Some(claimed.clone());
-        if claimed == correlation.expected_approver {
+        out.approver = Some(resolved.clone());
+        if *resolved == correlation.expected_approver {
             out.valid = Some(true);
         } else {
             out.valid = Some(false);
             out.reason = Some(format!(
-                "approver mismatch: token names `{claimed}`, expected `{}`",
+                "approver mismatch: token names `{resolved}`, expected `{}`",
                 correlation.expected_approver
             ));
         }
