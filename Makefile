@@ -70,6 +70,7 @@ help:
 	@echo "  release           Bump + commit + tag (then: git push origin vX.Y.Z)"
 	@echo "  publish-dry       Local packaging dry-run (mirrors CI dry-run)"
 	@echo "                    Pass LEVEL=alpha|patch|minor|major|rc|release or VERSION=X.Y.Z"
+	@echo "  tag               Tag + push all 3 release tags: make tag VERSION=X.Y.Z"
 
 # =============================================================================
 # Build
@@ -313,3 +314,21 @@ release: release-tool
 .PHONY: publish-dry
 publish-dry:
 	@$(CARGO) package --workspace --locked --allow-dirty --exclude cpex-ffi --exclude cpex-demo-ffi
+
+# Tag the current commit across the three namespaces the project releases on,
+# then push all three. The `v<version>` tag is what the CI release workflow
+# triggers on; `go/cpex/v<version>` is the Go module tag; the bare `<version>`
+# is the crates.io-style tag. VERSION must be semver (e.g. 0.2.0 or
+# 0.2.0-alpha.5), with no leading `v`.
+#   make tag VERSION=0.2.0-alpha.5
+.PHONY: tag
+tag:
+	@test -n "$(VERSION)" || { echo "usage: make tag VERSION=X.Y.Z[-prerelease]"; exit 1; }
+	@echo "$(VERSION)" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$$' \
+		|| { echo "error: VERSION '$(VERSION)' is not semver (e.g. 0.2.0 or 0.2.0-alpha.5; no leading 'v')"; exit 1; }
+	git tag v$(VERSION)
+	git tag go/cpex/v$(VERSION)
+	git tag $(VERSION)
+	git push origin v$(VERSION)
+	git push origin go/cpex/v$(VERSION)
+	git push origin $(VERSION)
