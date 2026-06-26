@@ -105,7 +105,7 @@ regex = "1"
 cpex-core                     = { path = "crates/cpex-core",                   version = "0.2.0-alpha.5" }
 cpex-orchestration            = { path = "crates/cpex-orchestration",          version = "0.2.0-alpha.5" }
 cpex-sdk                      = { path = "crates/cpex-sdk",                     version = "0.2.0-alpha.5" }
-cpex-builtins                 = { path = "crates/cpex-builtins",               version = "0.2.0-alpha.5" }
+cpex-builtins                 = { path = "crates/cpex-builtins",               version = "0.2.0-alpha.5", default-features = false }
 apl-core                      = { path = "crates/apl-core",                    version = "0.2.0-alpha.5" }
 apl-cmf                       = { path = "crates/apl-cmf",                      version = "0.2.0-alpha.5" }
 apl-cpex                      = { path = "crates/apl-cpex",                     version = "0.2.0-alpha.5" }

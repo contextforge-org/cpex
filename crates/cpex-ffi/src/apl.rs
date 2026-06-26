@@ -41,11 +41,15 @@ use crate::{CpexManagerInner, RC_INVALID_HANDLE, RC_OK, RC_PANIC};
 ///   - `identity/jwt`        → identity-jwt
 ///   - `delegator/oauth`     → delegator-oauth
 ///
-/// Bundled PDP factory (consulted for `global.apl.pdp[]` entries):
+/// Bundled PDP factories (consulted for `global.apl.pdp[]` entries):
 ///   - `cedar-direct`        → cedar-direct
+///   - `cel`                 → cel
 ///
-/// With the `valkey` cargo feature, the Valkey-backed session store factory
-/// is additionally wired.
+/// Bundled session store factory (consulted for `global.apl.session_store`):
+///   - `valkey`              → Valkey-backed SessionStore
+///
+/// The default in-process `MemorySessionStore` stays active unless the config
+/// selects a `session_store`.
 ///
 /// Returns `RC_OK` on success, `RC_INVALID_HANDLE` if `mgr` is null, or
 /// `RC_PANIC` if registration panicked (caught at the FFI boundary).
@@ -69,10 +73,10 @@ pub unsafe extern "C" fn cpex_apl_install(mgr: *const CpexManagerInner) -> c_int
 
         // APL config visitor + PDP / session-store factories. The factory
         // sets are consulted for `global.apl.pdp[]` and
-        // `global.apl.session_store` entries; cedar-direct is the bundled
-        // PDP default and the Valkey store is wired when the `valkey`
-        // feature is on (otherwise the lists are empty and the in-process
-        // MemorySessionStore default stays active). The visitor keeps a
+        // `global.apl.session_store` entries; cedar-direct and cel are the
+        // bundled PDPs and the Valkey session-store factory is bundled too.
+        // Unless the config selects a `session_store`, the in-process
+        // MemorySessionStore default stays active. The visitor keeps a
         // Weak<PluginManager> (see CpexManagerInner) that upgrades during
         // load_config_yaml.
         let mut opts = apl_cpex::AplOptions::in_process();

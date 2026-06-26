@@ -63,9 +63,13 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Install Rust toolchain
-        # dtolnay/rust-toolchain is the de-facto rustup action.
-        # `stable` picks the latest stable; pin if we need a floor.
-        uses: dtolnay/rust-toolchain@stable
+        # Pin to the same toolchain as rust-toolchain.toml (1.96.0). Using
+        # @stable here installs the matrix target onto `stable`, but the
+        # repo's rust-toolchain.toml overrides cargo to 1.96.0 at build time,
+        # so the cross (musl) target ends up missing on the toolchain actually
+        # used (E0463: can't find crate for `core`). Pinning installs the
+        # target onto 1.96.0 directly. Mirrors the other workflows.
+        uses: dtolnay/rust-toolchain@1.96.0
         with:
           targets: ${{ matrix.target }}
 

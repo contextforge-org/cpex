@@ -33,14 +33,18 @@ apl-cpex = { workspace = true }
 # cpex-builtins, whose `register_builtins` expands to explicit
 # `register_factory` calls — so the factory symbols survive in the
 # staticlib (no inventory/linkme link-section GC hazard). The feature set
-# below is the exact bundle the default `.a` ships: four hook plugins plus
-# the cedar-direct PDP (note: NOT `cel`, matching the prior footprint).
+# below is the exact bundle the default `.a` ships: four hook plugins, both
+# bundled PDPs (cedar-direct and cel), and the Valkey session store. Valkey
+# pulls a redis client + rustls TLS stack, so it adds materially to the `.a`
+# size and to the musl cross-build surface.
 cpex-builtins = { workspace = true, default-features = false, features = [
     "pii-scanner",
     "audit-logger",
     "identity-jwt",
     "delegator-oauth",
     "cedar-direct",
+    "cel",
+    "valkey",
 ] }
 tokio = { workspace = true }
 serde = { workspace = true }
@@ -50,11 +54,9 @@ serde_bytes = { workspace = true }
 tracing = { workspace = true }
 
 [features]
+# No opt-in features: the bundled set (including the Valkey session store) is
+# fixed in the cpex-builtins dependency above.
 default = []
-# Opt-in Valkey-backed SessionStore (redis client + rustls TLS stack).
-# Routed through cpex-builtins so the `.a` artifact size is unaffected
-# without the feature. Build with `cargo build -p cpex-ffi --features valkey`.
-valkey = ["cpex-builtins/valkey"]
 
 [dev-dependencies]
 async-trait = { workspace = true }
