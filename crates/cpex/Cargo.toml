@@ -30,6 +30,13 @@ keywords.workspace = true
 categories.workspace = true
 rust-version.workspace = true
 
+# Build docs.rs with every extension enabled. The default build is engine-only
+# (`default = []`), which omits cpex-builtins entirely — so without this the
+# builtins re-exports and `install_builtins` are absent and the intra-doc link
+# to `cpex-builtins` does not resolve on docs.rs.
+[package.metadata.docs.rs]
+all-features = true
+
 [features]
 # Engine only by default: no builtin plugins are compiled in. Opt into the
 # bundled extensions with `builtins` (the common in-process set), `full`

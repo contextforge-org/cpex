@@ -3,15 +3,30 @@
 // SPDX-License-Identifier: Apache-2.0
 // Authors: Fred Araujo
 
-//! CPEX host facade.
+//! **CPEX is a policy enforcement runtime for AI agents.**
 //!
-//! A single dependency that re-exports the CPEX host runtime, so hosts
-//! depend on this crate instead of pinning `apl-cmf`, `apl-cpex`, and
-//! `cpex-core` one by one.
+//! It is a deterministic reference monitor between an agent and every
+//! capability it invokes: tools, prompts, resources, inference providers, and
+//! A2A methods. Each operation runs through a policy-defined pipeline that can
+//! resolve identity, make an authorization decision (delegated to an engine
+//! like Cedar or CEL), exchange and reduce credentials before a downstream
+//! call, redact inputs and outputs, track information flow across calls, and
+//! audit. You write that policy declaratively in APL (Authorization Policy
+//! Language); CPEX evaluates and enforces it at the boundary, against state
+//! the model cannot observe or forge.
 //!
-//! By default this is the **engine only** — no builtin plugins are compiled
-//! in. The bundled extension set lives in [`cpex-builtins`](cpex_builtins)
-//! and is pulled in only when a builtins feature is enabled.
+//! - Guide and concepts: <https://contextforge-org.github.io/cpex/>
+//! - Source and issues: <https://github.com/contextforge-org/cpex>
+//!
+//! # This crate
+//!
+//! `cpex` is the **host facade**: one dependency that re-exports the CPEX
+//! runtime (`cpex-core`, `apl-core`, `apl-cmf`, `apl-cpex`), so a host depends
+//! on this crate instead of pinning each of them separately.
+//!
+//! By default it is the **engine only**: no builtin plugins are compiled in.
+//! The bundled extension set lives in [`cpex-builtins`](cpex_builtins) and is
+//! pulled in only when a builtins feature is enabled.
 //!
 //! # Usage
 //!
