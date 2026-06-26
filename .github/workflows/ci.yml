@@ -6,10 +6,10 @@ name: CI
 
 on:
   push:
-    branches: ["main"]
+    branches: ["main", "dev"]
   pull_request:
     types: [opened, synchronize, ready_for_review]
-    branches: ["main"]
+    branches: ["main", "dev"]
   workflow_dispatch:
 
 concurrency:
@@ -97,6 +97,27 @@ jobs:
       # cpex-ffi cdylib) — the cheapest guard against stale public-API usage.
       - name: make examples-build
         run: make examples-build
+
+  package:
+    name: Package (publish dry-run)
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+      - name: Install Rust 1.96.0
+        uses: dtolnay/rust-toolchain@1.96.0
+      - uses: Swatinem/rust-cache@v2
+      # Continuous dry-run of the crates.io release: build + verify a .crate for
+      # every publishable member without uploading. Catches publishability
+      # regressions (missing version reqs, packaging-excluded files, broken
+      # inter-crate deps) on every push/PR, long before a release tag. Mirrors
+      # `make publish-dry` and the release workflow's dry-run. The two
+      # `publish = false` FFI crates are excluded (not part of the registry set).
+      - name: cargo package (no upload)
+        run: cargo package --workspace --locked --exclude cpex-ffi --exclude cpex-demo-ffi
 
   docs:
     name: Docs Build

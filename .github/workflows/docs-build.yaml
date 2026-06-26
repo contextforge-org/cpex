@@ -7,13 +7,13 @@ name: Docs Build
 on:
   workflow_call:
   push:
-    branches: ["main"]
+    branches: ["main", "dev"]
     paths:
       - "docs/**"
       - ".github/workflows/docs-build.yaml"
   pull_request:
     types: [opened, synchronize, ready_for_review]
-    branches: ["main"]
+    branches: ["main", "dev"]
     paths:
       - "docs/**"
       - ".github/workflows/docs-build.yaml"

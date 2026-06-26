@@ -11,10 +11,10 @@ name: Supply Chain
 
 on:
   push:
-    branches: ["main"]
+    branches: ["main", "dev"]
   pull_request:
     types: [opened, synchronize, ready_for_review]
-    branches: ["main"]
+    branches: ["main", "dev"]
   schedule:
     # Catch newly published advisories against the locked tree.
     - cron: "27 6 * * 1"
