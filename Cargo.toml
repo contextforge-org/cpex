@@ -68,6 +68,10 @@ repository = "https://github.com/contextforge-org/cpex"
 homepage = "https://contextforge-org.github.io/cpex/"
 keywords = ["ai", "agent", "security", "policy", "plugin"]
 categories = ["development-tools"]
+# Shared crate README, resolved relative to this workspace root. Members opt in
+# with `readme.workspace = true` (cpex does, for its crates.io page) so the one
+# root README is the single source — no per-crate copy.
+readme = "README.md"
 
 [workspace.dependencies]
 # Minimal tokio feature floor for crates that take `tokio = { workspace = true }`

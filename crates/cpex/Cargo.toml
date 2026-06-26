@@ -29,6 +29,9 @@ homepage.workspace = true
 keywords.workspace = true
 categories.workspace = true
 rust-version.workspace = true
+# Use the project's root README as this crate's crates.io page (inherited path
+# is workspace-root-relative; cargo bundles it into the published .crate).
+readme.workspace = true
 
 # Build docs.rs with every extension enabled. The default build is engine-only
 # (`default = []`), which omits cpex-builtins entirely — so without this the
