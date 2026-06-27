@@ -11,9 +11,9 @@
 //! resolve identity, make an authorization decision (delegated to an engine
 //! like Cedar or CEL), exchange and reduce credentials before a downstream
 //! call, redact inputs and outputs, track information flow across calls, and
-//! audit. You write that policy declaratively in APL (Authorization Policy
-//! Language); CPEX evaluates and enforces it at the boundary, against state
-//! the model cannot observe or forge.
+//! audit. You write that policy declaratively in APL, the configuration that
+//! defines each operation's pipeline; CPEX evaluates and enforces it at the
+//! boundary, against state the model cannot observe or forge.
 //!
 //! - Guide and concepts: <https://contextforge-org.github.io/cpex/>
 //! - Source and issues: <https://github.com/contextforge-org/cpex>

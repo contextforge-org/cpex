@@ -13,29 +13,29 @@
 [![MSRV](https://img.shields.io/badge/MSRV-1.96-blue.svg)](rust-toolchain.toml)
 
 > [!NOTE]
-> **Looking for CPEX Python?** It now lives on the [`0.1.x` branch](https://github.com/contextforge-org/cpex/tree/0.1.x), maintained for backwards compatibility. `main` (`0.2`+) is the **Rust** framework, re-architected around policy and authorization. The reposition is a re-architecture, not an abandonment. Python bindings (PyO3) over the Rust core are coming.
+> **Looking for CPEX Python?** It now lives on the [`0.1.x` branch](https://github.com/contextforge-org/cpex/tree/0.1.x), maintained for backwards compatibility. `main` (`0.2`+) is the **Rust** framework, re-architected around policy and authorization. Python bindings (PyO3) over the Rust core are coming.
 
 ## What's CPEX?
 
 CPEX is a policy enforcement runtime for AI agents.
 
-It acts as a deterministic reference monitor between an agent and every capability it invokes: tools, prompts, resources, inference providers, and A2A methods. Every operation is evaluated against security state the model cannot observe or influence—identity, delegation chains, information-flow labels, and an append-only audit log.
+It acts as a deterministic reference monitor between an agent and every capability it invokes: tools, prompts, resources, inference providers, and A2A methods. Every operation is evaluated against security state the model cannot observe or influence, including identity, delegation and escalation chains, information-flow labels, and audit log.
 
-Instead of scattering authorization, delegation, redaction, auditing, and information-flow controls across application code, CPEX executes them as a single policy-defined pipeline. Identity can be resolved, an external PDP consulted, credentials exchanged, inputs or outputs transformed, session state updated, and the operation audited—all within one deterministic flow.
+CPEX composes authorization, delegation, redaction, information-flow tracking, and auditing into a single policy-defined pipeline. Every operation executes the same deterministic sequence, from identity resolution and policy evaluation through credential delegation, data transformation, session updates, out-of-band approvals, and auditing.
 
 <div>
   <img alt="CPEX mediates every operation an untrusted LLM triggers, evaluating APL policy against identity, delegation, taint, and audit state the model cannot forge" src="https://github.com/contextforge-org/cpex/blob/main/docs/static/images/cpex_overview.png?raw=true" />
 </div>
 
-## Policy lives on the entity
+## Enforcement pipelines
 
-APL is a declarative policy language designed around capabilities rather than requests.
+Each capability exposed to an agent defines its own enforcement pipeline, whether it's a tool, resource, prompt, or A2A method.
 
-Every entity an agent can invoke—a tool, resource, prompt, or A2A method—owns its own policy. Each policy executes in two phases: before invocation and after the result. Most policies fit comfortably on a single screen.
+APL is the configuration that defines that pipeline. A _route_ identifies an entity and sequences the controls that protect it: resolve identity, consult an external PDP, exchange credentials, invoke plugins, redact results, propagate taint, and audit the operation. Each step executes deterministically, in order, with only the context it explicitly declares.
 
-A route identifies an entity and defines the enforcement pipeline. Predicates decide whether execution may continue (`require`). PDPs evaluate external authorization (`cel`, `cedar`, or custom resolvers). Effects perform enforcement (`delegate`, `redact`, `taint`, `run`). Steps execute deterministically, in order, with only the context they explicitly declare.
+Policies execute in two phases—before the operation and after its result—making the complete enforcement pipeline easy to inspect and reason about.
 
-## End-to-end enforcement, multiple security contexts
+## Context-aware enforcement
 
 The example below places CPEX between a single agent and three backends: HR records, source repositories, and email. The agent remains unchanged. Policy adapts each operation to the caller's identity, permissions, and session state.
 
