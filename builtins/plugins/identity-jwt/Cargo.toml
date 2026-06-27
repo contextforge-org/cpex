@@ -36,10 +36,13 @@ cpex-core = { workspace = true }
 # features include `use_pem` (load DecodingKey from PEM strings) which
 # we want. v10 split out the crypto backend into a required feature
 # (neither `rust_crypto` nor `aws_lc_rs` is on by default) and panics
-# at first sign/verify if none is selected. We pick `rust_crypto`
-# (pure RustCrypto) to keep the tree openssl-free and avoid the
-# aws-lc-rs C/cmake build dependency.
-jsonwebtoken = { version = "10", features = ["rust_crypto"] }
+# at first sign/verify if none is selected. We pick `aws_lc_rs`: the
+# alternative, `rust_crypto`, pulls the pure-Rust `rsa` crate as a
+# runtime dependency, and that crate carries RUSTSEC-2023-0071 (Marvin
+# timing sidechannel) with no fixed release — which then propagates the
+# advisory to every downstream consumer of this plugin. aws-lc-rs keeps
+# `rsa` out of the runtime tree at the cost of a C/cmake build step.
+jsonwebtoken = { version = "10", features = ["aws_lc_rs"] }
 
 # `base64` for the peek-at-iss helper (split + URL_SAFE_NO_PAD decode
 # of the middle JWT segment). Pinned to 0.22 to match what

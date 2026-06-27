@@ -20,8 +20,10 @@ ignore = [
     # rustls-pemfile unmaintained, via bollard -> testcontainers (dev-only).
     "RUSTSEC-2025-0134",
     # --- Dev-only: RSA keypair generation in cpex-plugin-identity-jwt tests ---
-    # Marvin timing sidechannel in `rsa`; no safe upgrade available. Test-only
-    # (fixture keygen); the crate validates JWTs, it does not generate RSA keys.
+    # Marvin timing sidechannel in `rsa`; no fixed release exists. `rsa` is a
+    # dev-dependency only (fixture keygen for the JWT tests): the runtime uses
+    # jsonwebtoken's `aws_lc_rs` backend, not the `rust_crypto` backend that
+    # would pull `rsa` into the shipped tree. So it never reaches consumers.
     "RUSTSEC-2023-0071",
     # --- Build-time proc-macro: biscuit-quote -> biscuit-auth ---
     # proc-macro-error2 unmaintained; runs only at compile time, never shipped.
