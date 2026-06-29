@@ -28,19 +28,21 @@ name = "_lib"
 crate-type = ["cdylib"]
 
 [dependencies]
-cpex-core = { path = "../../crates/cpex-core" }
+cpex-core = { workspace = true }
 
 # APL governance layer — same set as cpex-ffi so bundled factories are
 # available to Python callers. Keep in sync with crates/cpex-ffi/Cargo.toml.
-apl-cpex = { path = "../../crates/apl-cpex" }
-apl-pii-scanner = { path = "../../crates/apl-pii-scanner" }
-apl-audit-logger = { path = "../../crates/apl-audit-logger" }
-apl-identity-jwt = { path = "../../crates/apl-identity-jwt" }
-apl-delegator-oauth = { path = "../../crates/apl-delegator-oauth" }
-apl-pdp-cedar-direct = { path = "../../crates/apl-pdp-cedar-direct" }
-
-# Heavy Cedarling deps behind an opt-in feature — off by default.
-apl-cedarling = { path = "../../crates/apl-cedarling", optional = true }
+apl-cpex = { workspace = true }
+# The builtin extension set — mirrors the feature set shipped by cpex-ffi.
+cpex-builtins = { workspace = true, default-features = false, features = [
+    "pii-scanner",
+    "audit-logger",
+    "identity-jwt",
+    "delegator-oauth",
+    "cedar-direct",
+    "cel",
+    "valkey",
+] }
 
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -56,4 +58,3 @@ pyo3-async-runtimes = { version = "0.29", features = ["tokio-runtime"] }
 
 [features]
 default = []
-cedarling = ["dep:apl-cedarling"]

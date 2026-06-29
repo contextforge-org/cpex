@@ -36,7 +36,7 @@ fn worker_threads_from_env() -> Option<usize> {
                 ENV_WORKER_THREADS,
             );
             Some(n)
-        }
+        },
         _ => {
             tracing::warn!(
                 "cpex-python: {}={:?} is not a positive integer; using num_cpus default",
@@ -44,7 +44,7 @@ fn worker_threads_from_env() -> Option<usize> {
                 raw,
             );
             None
-        }
+        },
     }
 }
 

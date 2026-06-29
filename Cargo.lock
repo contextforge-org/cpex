@@ -741,10 +741,9 @@ dependencies = [
  "async-trait",
  "cpex-builtins",
  "cpex-core",
- "futures",
- "pyo3",
- "pyo3-async-runtimes",
+ "rmp-serde",
  "serde",
+ "serde_bytes",
  "serde_json",
  "tokio",
  "tracing",
@@ -754,17 +753,7 @@ dependencies = [
 name = "cpex-orchestration"
 version = "0.2.0-alpha.6"
 dependencies = [
- "apl-cmf",
- "apl-core",
- "apl-cpex",
- "async-trait",
- "cedar-policy",
- "cpex-core",
  "futures",
- "serde_json",
- "serde_yaml",
- "stacker",
- "thiserror 2.0.18",
  "tokio",
 ]
 
@@ -874,6 +863,22 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+]
+
+[[package]]
+name = "cpex-python"
+version = "0.2.0-alpha.6"
+dependencies = [
+ "apl-cpex",
+ "cpex-builtins",
+ "cpex-core",
+ "futures",
+ "pyo3",
+ "pyo3-async-runtimes",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -3697,6 +3702,12 @@ dependencies = [
  "quote",
  "syn 2.0.117",
 ]
+
+[[package]]
+name = "target-lexicon"
+version = "0.13.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "adb6935a6f5c20170eeceb1a3835a49e12e19d792f6dd344ccc76a985ca5a6ca"
 
 [[package]]
 name = "term"

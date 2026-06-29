@@ -15,8 +15,8 @@
 
 use std::collections::HashMap;
 
-use cpex_core::executor::PipelineResult;
 use cpex_core::error::PluginErrorRecord;
+use cpex_core::executor::PipelineResult;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use serde_json::Value;
@@ -52,7 +52,7 @@ impl PyPipelineResult {
                         "cpex: modified_payload is not a dict",
                     )
                 })?))
-            }
+            },
         }
     }
 
@@ -67,7 +67,7 @@ impl PyPipelineResult {
                         "cpex: modified_extensions is not a dict",
                     )
                 })?))
-            }
+            },
         }
     }
 
@@ -78,11 +78,9 @@ impl PyPipelineResult {
             Some(v) => {
                 let obj = json_value_to_pyobj(py, v)?;
                 Ok(Some(obj.cast_into::<PyDict>().map_err(|_| {
-                    pyo3::exceptions::PyRuntimeError::new_err(
-                        "cpex: violation is not a dict",
-                    )
+                    pyo3::exceptions::PyRuntimeError::new_err("cpex: violation is not a dict")
                 })?))
-            }
+            },
         }
     }
 
@@ -93,9 +91,7 @@ impl PyPipelineResult {
             .map(|v| {
                 let obj = json_value_to_pyobj(py, v)?;
                 obj.cast_into::<PyDict>().map_err(|_| {
-                    pyo3::exceptions::PyRuntimeError::new_err(
-                        "cpex: error entry is not a dict",
-                    )
+                    pyo3::exceptions::PyRuntimeError::new_err("cpex: error entry is not a dict")
                 })
             })
             .collect()
@@ -108,11 +104,9 @@ impl PyPipelineResult {
             Some(v) => {
                 let obj = json_value_to_pyobj(py, v)?;
                 Ok(Some(obj.cast_into::<PyDict>().map_err(|_| {
-                    pyo3::exceptions::PyRuntimeError::new_err(
-                        "cpex: metadata is not a dict",
-                    )
+                    pyo3::exceptions::PyRuntimeError::new_err("cpex: metadata is not a dict")
                 })?))
-            }
+            },
         }
     }
 
@@ -128,7 +122,11 @@ impl PyPipelineResult {
         format!(
             "PipelineResult(continue_processing={}, violation={}, errors={})",
             self.continue_processing,
-            if self.violation.is_some() { "Some(...)" } else { "None" },
+            if self.violation.is_some() {
+                "Some(...)"
+            } else {
+                "None"
+            },
             self.errors.len(),
         )
     }
@@ -150,9 +148,7 @@ pub fn pipeline_result_to_py(mut result: PipelineResult) -> PyResult<PyPipelineR
         Some(p) => match serialize_payload(p.as_ref()) {
             Some(v) => Some(v),
             None => {
-                tracing::warn!(
-                    "cpex-python: modified payload could not be serialised; dropping"
-                );
+                tracing::warn!("cpex-python: modified payload could not be serialised; dropping");
                 result.errors.push(PluginErrorRecord {
                     plugin_name: "<py>".to_string(),
                     message: "modified payload could not be serialised across the PyO3 boundary"
@@ -162,7 +158,7 @@ pub fn pipeline_result_to_py(mut result: PipelineResult) -> PyResult<PyPipelineR
                     proto_error_code: None,
                 });
                 None
-            }
+            },
         },
     };
 

@@ -43,7 +43,11 @@ cpex_core::impl_plugin_payload!(GenericPayload);
 /// (with `str` keys). Any other type raises `ValueError` naming the type.
 ///
 /// Recursion is capped at 128 levels (R3). `depth` starts at 0.
-pub fn pyobj_to_json_value(py: Python<'_>, obj: &Bound<'_, PyAny>, depth: usize) -> PyResult<Value> {
+pub fn pyobj_to_json_value(
+    _py: Python<'_>,
+    obj: &Bound<'_, PyAny>,
+    depth: usize,
+) -> PyResult<Value> {
     if depth > 128 {
         return Err(PyValueError::new_err(
             "cpex: value nesting exceeds maximum depth of 128 levels",
@@ -75,7 +79,7 @@ pub fn pyobj_to_json_value(py: Python<'_>, obj: &Bound<'_, PyAny>, depth: usize)
     if let Ok(lst) = obj.cast::<PyList>() {
         let mut out = Vec::with_capacity(lst.len());
         for item in lst.iter() {
-            out.push(pyobj_to_json_value(py, &item, depth + 1)?);
+            out.push(pyobj_to_json_value(_py, &item, depth + 1)?);
         }
         return Ok(Value::Array(out));
     }
@@ -83,11 +87,9 @@ pub fn pyobj_to_json_value(py: Python<'_>, obj: &Bound<'_, PyAny>, depth: usize)
         let mut map = Map::with_capacity(d.len());
         for (k, v) in d.iter() {
             let key: String = k.extract().map_err(|_| {
-                PyValueError::new_err(
-                    "cpex: dict keys must be strings; got a non-string key",
-                )
+                PyValueError::new_err("cpex: dict keys must be strings; got a non-string key")
             })?;
-            map.insert(key, pyobj_to_json_value(py, &v, depth + 1)?);
+            map.insert(key, pyobj_to_json_value(_py, &v, depth + 1)?);
         }
         return Ok(Value::Object(map));
     }
@@ -124,7 +126,7 @@ pub fn json_value_to_pyobj<'py>(py: Python<'py>, v: &Value) -> PyResult<Bound<'p
                     "cpex: JSON number {n} is out of range for Python"
                 )))
             }
-        }
+        },
         Value::String(s) => Ok(s.into_pyobject(py)?.into_any()),
         Value::Array(arr) => {
             let lst = PyList::empty(py);
@@ -132,14 +134,14 @@ pub fn json_value_to_pyobj<'py>(py: Python<'py>, v: &Value) -> PyResult<Bound<'p
                 lst.append(json_value_to_pyobj(py, item)?)?;
             }
             Ok(lst.into_any())
-        }
+        },
         Value::Object(map) => {
             let d = PyDict::new(py);
             for (k, val) in map {
                 d.set_item(k, json_value_to_pyobj(py, val)?)?;
             }
             Ok(d.into_any())
-        }
+        },
     }
 }
 
@@ -198,9 +200,8 @@ pub fn serialize_payload(payload: &dyn PluginPayload) -> Option<Value> {
 ///
 /// An empty dict yields `Extensions::default()` (all fields `#[serde(default)]`).
 pub fn extensions_from_value(value: Value) -> PyResult<Extensions> {
-    serde_json::from_value(value).map_err(|e| {
-        PyValueError::new_err(format!("cpex: extensions conversion failed: {e}"))
-    })
+    serde_json::from_value(value)
+        .map_err(|e| PyValueError::new_err(format!("cpex: extensions conversion failed: {e}")))
 }
 
 /// Deserialize Python dict → `Option<PluginContextTable>` via serde.

@@ -67,7 +67,9 @@ impl PyPluginManager {
 
         let manager = Arc::new(PluginManager::default());
         register_builtin_factories(&manager);
-        manager.load_config_yaml(&yaml).map_err(plugin_error_to_pyerr)?;
+        manager
+            .load_config_yaml(&yaml)
+            .map_err(plugin_error_to_pyerr)?;
 
         Ok(Self { inner: manager })
     }
@@ -164,8 +166,9 @@ impl PyPluginManager {
         // runtime — the outer timeout ensures we never block indefinitely.
         future_into_py(py, async move {
             let result = tokio::time::timeout(PY_WALL_CLOCK_TIMEOUT, async move {
-                let (pipeline_result, _bg_tasks) =
-                    manager.invoke_by_name(&hook_name, rust_payload, rust_extensions, rust_context).await;
+                let (pipeline_result, _bg_tasks) = manager
+                    .invoke_by_name(&hook_name, rust_payload, rust_extensions, rust_context)
+                    .await;
                 // _bg_tasks dropped here; fire-and-forget tasks keep running
                 // on the manager's TaskTracker and are drained by shutdown() (KD4).
                 pipeline_result_to_py(pipeline_result)

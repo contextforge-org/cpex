@@ -20,14 +20,15 @@ use pyo3::PyErr;
 /// path — denials surface as `PipelineResult { continue_processing: false,
 /// violation: Some(...) }`, never as an `Err`. Kept here as a defensive
 /// catch-all that maps to `RuntimeError`.
+#[allow(clippy::boxed_local)]
 pub fn plugin_error_to_pyerr(e: Box<PluginError>) -> PyErr {
     match *e {
         PluginError::Config { message } => {
             PyValueError::new_err(format!("cpex config error: {message}"))
-        }
+        },
         PluginError::UnknownHook { hook_type } => {
             PyValueError::new_err(format!("cpex unknown hook type: {hook_type}"))
-        }
+        },
         PluginError::Timeout {
             plugin_name,
             timeout_ms,
