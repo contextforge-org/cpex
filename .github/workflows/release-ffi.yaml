@@ -69,7 +69,7 @@ jobs:
         # so the cross (musl) target ends up missing on the toolchain actually
         # used (E0463: can't find crate for `core`). Pinning installs the
         # target onto 1.96.0 directly. Mirrors the other workflows.
-        uses: dtolnay/rust-toolchain@1.96.0
+        uses: dtolnay/rust-toolchain@1.100.0
         with:
           targets: ${{ matrix.target }}
 
