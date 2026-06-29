@@ -110,8 +110,16 @@ impl PluginFactoryRegistry {
     }
 
     /// Register a factory for a given `kind` name.
+    ///
+    /// Registration is last-writer-wins: re-registering an existing `kind`
+    /// overrides it (this is intentional — a host can swap a builtin's impl).
+    /// Because silent override is a footgun, a warning is logged when an
+    /// existing registration is replaced.
     pub fn register(&mut self, kind: impl Into<String>, factory: Box<dyn PluginFactory>) {
-        self.factories.insert(kind.into(), factory);
+        let kind = kind.into();
+        if self.factories.insert(kind.clone(), factory).is_some() {
+            tracing::warn!(kind = %kind, "plugin factory overrides an existing registration");
+        }
     }
 
     /// Look up a factory by `kind` name.

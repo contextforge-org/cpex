@@ -125,7 +125,7 @@ struct VisitorState {
 ///    `kind`, and constructs the resolver during `visit_global`.
 ///
 /// Factories are registered up front by `kind` name (`"cedar-direct"`,
-/// `"cedarling"`, …). The visitor knows nothing about specific PDP
+/// `"opa"`, …). The visitor knows nothing about specific PDP
 /// backends; everything dispatches through `PdpFactory`.
 pub struct AplConfigVisitor {
     state: RwLock<VisitorState>,
@@ -454,7 +454,7 @@ impl ConfigVisitor for AplConfigVisitor {
                     "APL visitor: route has no tool/resource/prompt/llm match — skipping",
                 );
                 return Ok(());
-            }
+            },
         };
         if let Some(block) = &route_apl {
             warn_if_global_only_key_at_nonglobal_scope(&format!("routes.{entity_type}"), block);
@@ -569,7 +569,7 @@ impl ConfigVisitor for AplConfigVisitor {
                         "APL visitor: no CMF hook pair for entity_type — skipping route",
                     );
                     continue;
-                }
+                },
             };
 
             // Snapshot the active session store (a `global.apl.session_store`
@@ -757,7 +757,9 @@ fn warn_unreferenced_plugin_overrides(route: &CompiledRoute) {
         return;
     }
     let mut referenced: std::collections::HashSet<String> =
-        crate::dispatch_plan::collect_plugin_names(route).into_iter().collect();
+        crate::dispatch_plan::collect_plugin_names(route)
+            .into_iter()
+            .collect();
     referenced.extend(crate::dispatch_plan::collect_delegate_plugin_names(route));
     for name in route.plugin_overrides.keys() {
         if !referenced.contains(name) {
@@ -890,20 +892,29 @@ mod tests {
     fn apl_wrapper_is_returned_as_is() {
         let v = yaml("apl:\n  policy:\n    - \"deny\"\n");
         let block = apl_subblock(&v).expect("wrapper present");
-        assert!(block.get("policy").is_some(), "wrapper block exposes policy");
+        assert!(
+            block.get("policy").is_some(),
+            "wrapper block exposes policy"
+        );
     }
 
     #[test]
     fn null_apl_wrapper_is_none() {
         let v = yaml("apl: null\n");
-        assert!(apl_subblock(&v).is_none(), "explicit null apl => no contribution");
+        assert!(
+            apl_subblock(&v).is_none(),
+            "explicit null apl => no contribution"
+        );
     }
 
     #[test]
     fn flat_policy_without_wrapper_is_collected() {
         let v = yaml("tool: get_weather\npolicy:\n  - \"deny\"\n");
         let block = apl_subblock(&v).expect("flat policy recognized");
-        assert!(block.get("policy").is_some(), "flat policy lifted into the block");
+        assert!(
+            block.get("policy").is_some(),
+            "flat policy lifted into the block"
+        );
         assert!(
             block.get("tool").is_none(),
             "structural keys must not leak into the apl block",
@@ -917,7 +928,9 @@ mod tests {
         // on it — symmetric with the `apl:`-wrapped form and with `pdp:`.
         let v = yaml("session_store:\n  kind: valkey\n  endpoint: localhost:6379\n");
         let block = apl_subblock(&v).expect("flat session_store recognized");
-        let ss = block.get("session_store").expect("session_store lifted into the block");
+        let ss = block
+            .get("session_store")
+            .expect("session_store lifted into the block");
         assert_eq!(
             ss.get("kind").and_then(|k| k.as_str()),
             Some("valkey"),
@@ -944,7 +957,10 @@ mod tests {
     #[test]
     fn section_without_apl_terms_is_none() {
         let v = yaml("tool: get_weather\n");
-        assert!(apl_subblock(&v).is_none(), "no APL terms => no contribution");
+        assert!(
+            apl_subblock(&v).is_none(),
+            "no APL terms => no contribution"
+        );
     }
 
     #[test]
@@ -992,12 +1008,18 @@ mod tests {
         let route = compile_policy_block_value("test", &block).expect("compiles");
 
         let referenced = crate::dispatch_plan::collect_plugin_names(&route);
-        assert!(referenced.contains(&"used".to_string()), "policy step is referenced");
+        assert!(
+            referenced.contains(&"used".to_string()),
+            "policy step is referenced"
+        );
         assert!(
             !referenced.contains(&"unused".to_string()),
             "config-only override is not a reference",
         );
-        assert!(route.plugin_overrides.contains_key("unused"), "override was compiled in");
+        assert!(
+            route.plugin_overrides.contains_key("unused"),
+            "override was compiled in"
+        );
 
         // Must not panic; it warns on `unused` and stays silent on `used`.
         warn_unreferenced_plugin_overrides(&route);

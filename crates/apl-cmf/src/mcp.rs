@@ -30,22 +30,42 @@ use cpex_core::extensions::MCPExtension;
 pub fn extract_mcp(mcp: &MCPExtension, bag: &mut AttributeBag) {
     if let Some(tool) = &mcp.tool {
         bag.set("mcp.tool.name", tool.name.clone());
-        if let Some(v) = &tool.title { bag.set("mcp.tool.title", v.clone()); }
-        if let Some(v) = &tool.description { bag.set("mcp.tool.description", v.clone()); }
-        if let Some(v) = &tool.server_id { bag.set("mcp.tool.server_id", v.clone()); }
-        if let Some(v) = &tool.namespace { bag.set("mcp.tool.namespace", v.clone()); }
+        if let Some(v) = &tool.title {
+            bag.set("mcp.tool.title", v.clone());
+        }
+        if let Some(v) = &tool.description {
+            bag.set("mcp.tool.description", v.clone());
+        }
+        if let Some(v) = &tool.server_id {
+            bag.set("mcp.tool.server_id", v.clone());
+        }
+        if let Some(v) = &tool.namespace {
+            bag.set("mcp.tool.namespace", v.clone());
+        }
     }
     if let Some(res) = &mcp.resource {
         bag.set("mcp.resource.uri", res.uri.clone());
-        if let Some(v) = &res.name { bag.set("mcp.resource.name", v.clone()); }
-        if let Some(v) = &res.description { bag.set("mcp.resource.description", v.clone()); }
-        if let Some(v) = &res.mime_type { bag.set("mcp.resource.mime_type", v.clone()); }
-        if let Some(v) = &res.server_id { bag.set("mcp.resource.server_id", v.clone()); }
+        if let Some(v) = &res.name {
+            bag.set("mcp.resource.name", v.clone());
+        }
+        if let Some(v) = &res.description {
+            bag.set("mcp.resource.description", v.clone());
+        }
+        if let Some(v) = &res.mime_type {
+            bag.set("mcp.resource.mime_type", v.clone());
+        }
+        if let Some(v) = &res.server_id {
+            bag.set("mcp.resource.server_id", v.clone());
+        }
     }
     if let Some(prompt) = &mcp.prompt {
         bag.set("mcp.prompt.name", prompt.name.clone());
-        if let Some(v) = &prompt.description { bag.set("mcp.prompt.description", v.clone()); }
-        if let Some(v) = &prompt.server_id { bag.set("mcp.prompt.server_id", v.clone()); }
+        if let Some(v) = &prompt.description {
+            bag.set("mcp.prompt.description", v.clone());
+        }
+        if let Some(v) = &prompt.server_id {
+            bag.set("mcp.prompt.server_id", v.clone());
+        }
     }
 }
 
@@ -68,7 +88,10 @@ mod tests {
         let mut bag = AttributeBag::new();
         extract_mcp(&mcp, &mut bag);
         assert_eq!(bag.get_string("mcp.tool.name"), Some("get_compensation"));
-        assert_eq!(bag.get_string("mcp.tool.description"), Some("HR comp lookup"));
+        assert_eq!(
+            bag.get_string("mcp.tool.description"),
+            Some("HR comp lookup")
+        );
         assert_eq!(bag.get_string("mcp.tool.server_id"), Some("hr-srv"));
         // Schemas are deliberately not in the bag.
         assert!(!bag.contains("mcp.tool.input_schema"));
@@ -86,7 +109,13 @@ mod tests {
         };
         let mut bag = AttributeBag::new();
         extract_mcp(&mcp, &mut bag);
-        assert_eq!(bag.get_string("mcp.resource.uri"), Some("hr://employees/123"));
-        assert_eq!(bag.get_string("mcp.resource.mime_type"), Some("application/json"));
+        assert_eq!(
+            bag.get_string("mcp.resource.uri"),
+            Some("hr://employees/123")
+        );
+        assert_eq!(
+            bag.get_string("mcp.resource.mime_type"),
+            Some("application/json")
+        );
     }
 }

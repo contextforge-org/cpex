@@ -14,30 +14,38 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
+publish = false
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+rust-version.workspace = true
 
 [lib]
 crate-type = ["lib", "cdylib", "staticlib"]
 
 [dependencies]
-cpex-core = { path = "../cpex-core" }
+cpex-core = { workspace = true }
 # APL governance layer — bundled so Go/Python hosts can enable APL
-# policies, route handlers, and the standard plugin/PDP factories via
-# the `cpex_apl_install` FFI entry point. Symbols survive in the
-# staticlib because that entry point references each factory.
-apl-cpex = { path = "../apl-cpex" }
-apl-pii-scanner = { path = "../apl-pii-scanner" }
-apl-audit-logger = { path = "../apl-audit-logger" }
-apl-identity-jwt = { path = "../apl-identity-jwt" }
-apl-delegator-oauth = { path = "../apl-delegator-oauth" }
-apl-pdp-cedar-direct = { path = "../apl-pdp-cedar-direct" }
-# Heavy (~200 transitive deps via the Cedarling git dep); kept out of the
-# default `.a` and behind the `cedarling` feature.
-apl-cedarling = { path = "../apl-cedarling", optional = true }
-# Valkey-backed SessionStore (redis client + rustls TLS stack). Optional
-# and behind the `valkey` feature so the default `.a` artifact size is
-# unaffected; default-members exclusion alone does NOT keep its object
-# code out of a `-p cpex-ffi` build — the feature gate does.
-apl-session-valkey = { path = "../apl-session-valkey", optional = true }
+# policies and route handlers via the `cpex_apl_install` FFI entry point.
+apl-cpex = { workspace = true }
+# The builtin extension set. `cpex_apl_install` delegates registration to
+# cpex-builtins, whose `register_builtins` expands to explicit
+# `register_factory` calls — so the factory symbols survive in the
+# staticlib (no inventory/linkme link-section GC hazard). The feature set
+# below is the exact bundle the default `.a` ships: four hook plugins, both
+# bundled PDPs (cedar-direct and cel), and the Valkey session store. Valkey
+# pulls a redis client + rustls TLS stack, so it adds materially to the `.a`
+# size and to the musl cross-build surface.
+cpex-builtins = { workspace = true, default-features = false, features = [
+    "pii-scanner",
+    "audit-logger",
+    "identity-jwt",
+    "delegator-oauth",
+    "cedar-direct",
+    "cel",
+    "valkey",
+] }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -46,13 +54,12 @@ serde_bytes = { workspace = true }
 tracing = { workspace = true }
 
 [features]
+# No opt-in features: the bundled set (including the Valkey session store) is
+# fixed in the cpex-builtins dependency above.
 default = []
-# Opt-in Cedarling-backed identity + PDP. Build with
-# `cargo build -p cpex-ffi --features cedarling`.
-cedarling = ["dep:apl-cedarling"]
-# Opt-in Valkey-backed SessionStore. Build with
-# `cargo build -p cpex-ffi --features valkey`.
-valkey = ["dep:apl-session-valkey"]
 
 [dev-dependencies]
 async-trait = { workspace = true }
+
+[lints]
+workspace = true

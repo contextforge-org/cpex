@@ -75,7 +75,13 @@ mod tests {
         }"#;
         let detail: AuthorizationDetail = serde_json::from_str(json).unwrap();
         assert_eq!(detail.detail_type, "payment");
-        assert_eq!(detail.extra.get("amount").and_then(|v| v.as_str()), Some("100.00"));
-        assert_eq!(detail.extra.get("currency").and_then(|v| v.as_str()), Some("USD"));
+        assert_eq!(
+            detail.extra.get("amount").and_then(|v| v.as_str()),
+            Some("100.00")
+        );
+        assert_eq!(
+            detail.extra.get("currency").and_then(|v| v.as_str()),
+            Some("USD")
+        );
     }
 }

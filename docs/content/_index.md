@@ -1,53 +1,39 @@
 ---
-title: "CPEX — ContextForge Plugin Extensibility Framework"
+title: "CPEX"
 type: docs
+weight: 0
 ---
 
 # CPEX
 
-**A composable enforcement framework for AI agents and toolchains**
+**A policy enforcement runtime for AI agents.**
 
-CPEX lets you intercept, enforce, and extend application behavior through plugins — without modifying core logic. Define hook points in your application, write plugins that attach to them, and compose enforcement pipelines that run automatically.
+CPEX is a deterministic reference monitor between an agent and every capability it invokes: tools, prompts, resources, inference providers, and A2A methods. Every operation is evaluated against security state the model cannot observe or influence: identity, delegation chains, information-flow labels, and an append-only audit log.
 
-```python
-from cpex.framework import hook, Plugin, PluginResult, PluginViolation
+Instead of scattering authorization, delegation, redaction, auditing, and information-flow controls across application code, CPEX executes them as a single policy-defined pipeline. APL attaches that pipeline to each entity an agent can invoke and runs it in two phases: before invocation and after the result.
 
-class RateLimitPlugin(Plugin):
-    @hook("tool_pre_invoke")
-    async def check_rate_limit(self, payload, context):
-        if self.is_over_limit(context):
-            return PluginResult(
-                continue_processing=False,
-                violation=PluginViolation(reason="Rate limit exceeded", code="RATE_LIMIT")
-            )
-        return PluginResult(continue_processing=True)
-```
+![CPEX mediates every operation an untrusted LLM triggers, evaluating APL policy against identity, delegation, taint, and audit state the model cannot forge](/cpex/images/cpex_overview.png)
 
-Register the plugin, and it runs at every hook invocation. No changes to your application logic.
-
-### What you can build with CPEX
-
-- **Security** — access control, prompt injection detection, data loss prevention
-- **Observability** — request tracing, audit logging, metrics collection
-- **Governance** — policy enforcement, compliance validation, approval workflows
-- **Reliability** — rate limiting, circuit breakers, response validation
+Existing authorization systems (RBAC, ABAC, Cedar, OPA, AuthZEN) answer whether a request should be allowed. CPEX answers a broader question: what security pipeline should execute for this agent operation. It invokes those engines for the decision and enforces the result.
 
 ---
 
 {{% columns %}}
+- ### Get started
 
-- ### Get Started
-  Install CPEX and build your first plugin in five minutes.
+  Stand up CPEX as an enforcement point and run your first policy.
 
   [Quick Start &rarr;]({{< relref "/docs/quickstart" >}})
 
-- ### Learn the Concepts
-  Understand hooks, execution modes, and the plugin pipeline.
+- ### Write policy
 
-  [Overview &rarr;]({{< relref "/docs/overview" >}})
+  Learn APL: predicates, effects, sequencing, PDPs, delegation, and tainting.
 
-- ### Project Vision
-  Why hooks, plugins, and policy are the path to agent security.
+  [APL &rarr;]({{< relref "/docs/apl" >}})
+
+- ### Why CPEX
+
+  The reference-monitor model and where CPEX sits in an agent stack.
 
   [Vision &rarr;]({{< relref "/docs/vision" >}})
 

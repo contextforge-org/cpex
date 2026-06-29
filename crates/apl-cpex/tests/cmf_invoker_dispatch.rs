@@ -288,7 +288,7 @@ async fn step_invocation_deny_surfaces_violation_reason_and_code() {
         } => {
             assert_eq!(reason.as_deref(), Some("test-fixture denied this call"));
             assert_eq!(rule_source, "policy.forbidden");
-        }
+        },
         other => panic!("expected Decision::Deny, got {:?}", other),
     }
 }
@@ -732,7 +732,7 @@ async fn multi_hook_plugin_dispatches_per_phase_via_routing_table() {
                 rule_source, "test.multi_hook.post_fired",
                 "Post phase should dispatch to the post-side handler",
             );
-        }
+        },
         d => panic!("expected Deny from post handler, got {d:?}"),
     }
 }

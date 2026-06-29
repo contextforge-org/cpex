@@ -14,9 +14,15 @@ use apl_core::AttributeBag;
 use cpex_core::extensions::ProvenanceExtension;
 
 pub fn extract_provenance(p: &ProvenanceExtension, bag: &mut AttributeBag) {
-    if let Some(v) = &p.source { bag.set("provenance.source", v.clone()); }
-    if let Some(v) = &p.message_id { bag.set("provenance.message_id", v.clone()); }
-    if let Some(v) = &p.parent_id { bag.set("provenance.parent_id", v.clone()); }
+    if let Some(v) = &p.source {
+        bag.set("provenance.source", v.clone());
+    }
+    if let Some(v) = &p.message_id {
+        bag.set("provenance.message_id", v.clone());
+    }
+    if let Some(v) = &p.parent_id {
+        bag.set("provenance.parent_id", v.clone());
+    }
 }
 
 #[cfg(test)]

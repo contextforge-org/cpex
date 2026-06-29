@@ -339,7 +339,7 @@ impl PluginInvoker for CmfPluginInvoker {
                         )),
                         PluginInvocation::Step { .. } => None,
                     }
-                }
+                },
                 None => {
                     tracing::warn!(
                         plugin = %plugin_name,
@@ -347,7 +347,7 @@ impl PluginInvoker for CmfPluginInvoker {
                          (downcast failed) — dropping the mutation"
                     );
                     None
-                }
+                },
             }
         } else {
             None

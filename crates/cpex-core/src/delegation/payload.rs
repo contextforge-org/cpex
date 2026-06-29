@@ -242,10 +242,7 @@ impl DelegationPayload {
     /// proxies, etc.) build this once per delegation point. Optional
     /// input slots are set via the `.with_*` builders below; output
     /// fields start as `None` / empty and accumulate as handlers run.
-    pub fn new(
-        bearer_token: impl Into<String>,
-        target_name: impl Into<String>,
-    ) -> Self {
+    pub fn new(bearer_token: impl Into<String>, target_name: impl Into<String>) -> Self {
         Self {
             bearer_token: Zeroizing::new(bearer_token.into()),
             target_name: target_name.into(),
@@ -534,8 +531,7 @@ mod tests {
     #[test]
     fn merge_overlays_outputs() {
         let mut base = DelegationPayload::new("tok", "tool");
-        base.metadata
-            .insert("attempt".into(), serde_json::json!(1));
+        base.metadata.insert("attempt".into(), serde_json::json!(1));
         let mut overlay = DelegationPayload::new("", "");
         overlay.delegated_token = Some(RawDelegatedToken::new(
             "x",
@@ -608,9 +604,7 @@ mod tests {
             vec!["service:call".into()],
             Utc::now(),
         ));
-        p.delegation_mode = Some(
-            crate::extensions::raw_credentials::DelegationMode::AsGateway,
-        );
+        p.delegation_mode = Some(crate::extensions::raw_credentials::DelegationMode::AsGateway);
 
         let updated = p.apply_to_extensions(Extensions::default());
         let raw = updated.raw_credentials.as_ref().unwrap();
@@ -650,9 +644,8 @@ mod tests {
         let mut base = DelegationPayload::new("tok", "tool");
         // base.delegation_mode = None
         let mut overlay = DelegationPayload::new("", "");
-        overlay.delegation_mode = Some(
-            crate::extensions::raw_credentials::DelegationMode::AsGateway,
-        );
+        overlay.delegation_mode =
+            Some(crate::extensions::raw_credentials::DelegationMode::AsGateway);
         base.merge(overlay);
         assert!(matches!(
             base.delegation_mode,

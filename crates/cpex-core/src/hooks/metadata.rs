@@ -74,10 +74,10 @@ use std::collections::HashMap;
 use std::sync::{OnceLock, RwLock};
 
 use crate::cmf::constants::{
-    ENTITY_LLM, ENTITY_PROMPT, ENTITY_RESOURCE, ENTITY_TOOL,
-    HOOK_CMF_LLM_INPUT, HOOK_CMF_LLM_OUTPUT, HOOK_CMF_PROMPT_POST_INVOKE,
-    HOOK_CMF_PROMPT_PRE_INVOKE, HOOK_CMF_RESOURCE_POST_FETCH, HOOK_CMF_RESOURCE_PRE_FETCH,
-    HOOK_CMF_TOOL_POST_INVOKE, HOOK_CMF_TOOL_PRE_INVOKE,
+    ENTITY_LLM, ENTITY_PROMPT, ENTITY_RESOURCE, ENTITY_TOOL, HOOK_CMF_LLM_INPUT,
+    HOOK_CMF_LLM_OUTPUT, HOOK_CMF_PROMPT_POST_INVOKE, HOOK_CMF_PROMPT_PRE_INVOKE,
+    HOOK_CMF_RESOURCE_POST_FETCH, HOOK_CMF_RESOURCE_PRE_FETCH, HOOK_CMF_TOOL_POST_INVOKE,
+    HOOK_CMF_TOOL_PRE_INVOKE,
 };
 use crate::delegation::HOOK_TOKEN_DELEGATE;
 use crate::identity::HOOK_IDENTITY_RESOLVE;
@@ -174,47 +174,77 @@ const BUILTIN_METADATA: &[(&str, HookMetadata)] = &[
     // CMF tool
     (
         HOOK_CMF_TOOL_PRE_INVOKE,
-        HookMetadata { entity_type: Some(ENTITY_TOOL), phase: HookPhase::Pre },
+        HookMetadata {
+            entity_type: Some(ENTITY_TOOL),
+            phase: HookPhase::Pre,
+        },
     ),
     (
         HOOK_CMF_TOOL_POST_INVOKE,
-        HookMetadata { entity_type: Some(ENTITY_TOOL), phase: HookPhase::Post },
+        HookMetadata {
+            entity_type: Some(ENTITY_TOOL),
+            phase: HookPhase::Post,
+        },
     ),
     // CMF llm
     (
         HOOK_CMF_LLM_INPUT,
-        HookMetadata { entity_type: Some(ENTITY_LLM), phase: HookPhase::Pre },
+        HookMetadata {
+            entity_type: Some(ENTITY_LLM),
+            phase: HookPhase::Pre,
+        },
     ),
     (
         HOOK_CMF_LLM_OUTPUT,
-        HookMetadata { entity_type: Some(ENTITY_LLM), phase: HookPhase::Post },
+        HookMetadata {
+            entity_type: Some(ENTITY_LLM),
+            phase: HookPhase::Post,
+        },
     ),
     // CMF prompt
     (
         HOOK_CMF_PROMPT_PRE_INVOKE,
-        HookMetadata { entity_type: Some(ENTITY_PROMPT), phase: HookPhase::Pre },
+        HookMetadata {
+            entity_type: Some(ENTITY_PROMPT),
+            phase: HookPhase::Pre,
+        },
     ),
     (
         HOOK_CMF_PROMPT_POST_INVOKE,
-        HookMetadata { entity_type: Some(ENTITY_PROMPT), phase: HookPhase::Post },
+        HookMetadata {
+            entity_type: Some(ENTITY_PROMPT),
+            phase: HookPhase::Post,
+        },
     ),
     // CMF resource
     (
         HOOK_CMF_RESOURCE_PRE_FETCH,
-        HookMetadata { entity_type: Some(ENTITY_RESOURCE), phase: HookPhase::Pre },
+        HookMetadata {
+            entity_type: Some(ENTITY_RESOURCE),
+            phase: HookPhase::Pre,
+        },
     ),
     (
         HOOK_CMF_RESOURCE_POST_FETCH,
-        HookMetadata { entity_type: Some(ENTITY_RESOURCE), phase: HookPhase::Post },
+        HookMetadata {
+            entity_type: Some(ENTITY_RESOURCE),
+            phase: HookPhase::Post,
+        },
     ),
     // Non-CMF families (entity-agnostic, not phase-bound).
     (
         HOOK_IDENTITY_RESOLVE,
-        HookMetadata { entity_type: None, phase: HookPhase::Unphased },
+        HookMetadata {
+            entity_type: None,
+            phase: HookPhase::Unphased,
+        },
     ),
     (
         HOOK_TOKEN_DELEGATE,
-        HookMetadata { entity_type: None, phase: HookPhase::Unphased },
+        HookMetadata {
+            entity_type: None,
+            phase: HookPhase::Unphased,
+        },
     ),
 ];
 

@@ -69,7 +69,7 @@ pub struct AplOptions {
     /// PDP factories the visitor consults when it encounters a
     /// `global.apl.pdp[]` entry. Each factory advertises a `kind()`
     /// string that matches the YAML block's `kind:` field — e.g.
-    /// `cedar-direct`, `cedarling`, `opa`. An empty list disables
+    /// `cedar-direct`, `opa`. An empty list disables
     /// config-driven PDP wiring; hosts can still supply resolvers via
     /// `pdps`.
     pub pdp_factories: Vec<Arc<dyn PdpFactory>>,
@@ -134,7 +134,7 @@ impl AplOptions {
 /// use std::sync::Arc;
 /// use cpex_core::manager::PluginManager;
 /// use apl_cpex::{register_apl, AplOptions};
-/// use apl_pdp_cedar_direct::CedarDirectPdpFactory;
+/// use cpex_pdp_cedar_direct::CedarDirectPdpFactory;
 ///
 /// let mgr = Arc::new(PluginManager::default());
 /// mgr.register_factory("scope-gate", Box::new(ScopeGateFactory));

@@ -56,27 +56,27 @@ pub enum ParseError {
 
 #[derive(Debug, Clone, PartialEq)]
 enum Tok {
-    Ident(String),     // dotted: subject.id, role.hr, authenticated
+    Ident(String), // dotted: subject.id, role.hr, authenticated
     StringLit(String),
     IntLit(i64),
     FloatLit(f64),
     BoolLit(bool),
-    Eq,                // ==
-    NotEq,             // !=
-    Gt,                // >
-    GtEq,              // >=
-    Lt,                // <
-    LtEq,              // <=
-    And,               // &  (must have surrounding spaces — caller enforces)
-    Or,                // |
-    Not,               // !
+    Eq,    // ==
+    NotEq, // !=
+    Gt,    // >
+    GtEq,  // >=
+    Lt,    // <
+    LtEq,  // <=
+    And,   // &  (must have surrounding spaces — caller enforces)
+    Or,    // |
+    Not,   // !
     LParen,
     RParen,
     Comma,
-    Contains,          // keyword
-    Require,           // keyword
-    Exists,            // keyword
-    In,                // keyword — set membership operator
+    Contains, // keyword
+    Require,  // keyword
+    Exists,   // keyword
+    In,       // keyword — set membership operator
 }
 
 struct Lexer<'a> {
@@ -87,7 +87,11 @@ struct Lexer<'a> {
 
 impl<'a> Lexer<'a> {
     fn new(src: &'a str) -> Self {
-        Self { src, bytes: src.as_bytes(), pos: 0 }
+        Self {
+            src,
+            bytes: src.as_bytes(),
+            pos: 0,
+        }
     }
 
     fn peek(&self) -> Option<u8> {
@@ -102,7 +106,11 @@ impl<'a> Lexer<'a> {
 
     fn skip_ws(&mut self) {
         while let Some(b) = self.peek() {
-            if b.is_ascii_whitespace() { self.pos += 1; } else { break; }
+            if b.is_ascii_whitespace() {
+                self.pos += 1;
+            } else {
+                break;
+            }
         }
     }
 
@@ -110,38 +118,67 @@ impl<'a> Lexer<'a> {
         let mut out = Vec::new();
         loop {
             self.skip_ws();
-            let Some(b) = self.peek() else { return Ok(out); };
+            let Some(b) = self.peek() else {
+                return Ok(out);
+            };
 
             let tok = match b {
-                b'(' => { self.pos += 1; Tok::LParen }
-                b')' => { self.pos += 1; Tok::RParen }
-                b',' => { self.pos += 1; Tok::Comma }
-                b'&' => { self.pos += 1; Tok::And }
-                b'|' => { self.pos += 1; Tok::Or }
+                b'(' => {
+                    self.pos += 1;
+                    Tok::LParen
+                },
+                b')' => {
+                    self.pos += 1;
+                    Tok::RParen
+                },
+                b',' => {
+                    self.pos += 1;
+                    Tok::Comma
+                },
+                b'&' => {
+                    self.pos += 1;
+                    Tok::And
+                },
+                b'|' => {
+                    self.pos += 1;
+                    Tok::Or
+                },
                 b'=' => {
                     self.pos += 1;
                     if self.peek() == Some(b'=') {
-                        self.pos += 1; Tok::Eq
+                        self.pos += 1;
+                        Tok::Eq
                     } else {
                         return Err(self.err("expected `==`, saw `=`"));
                     }
-                }
+                },
                 b'!' => {
                     self.pos += 1;
                     if self.peek() == Some(b'=') {
-                        self.pos += 1; Tok::NotEq
+                        self.pos += 1;
+                        Tok::NotEq
                     } else {
                         Tok::Not
                     }
-                }
+                },
                 b'>' => {
                     self.pos += 1;
-                    if self.peek() == Some(b'=') { self.pos += 1; Tok::GtEq } else { Tok::Gt }
-                }
+                    if self.peek() == Some(b'=') {
+                        self.pos += 1;
+                        Tok::GtEq
+                    } else {
+                        Tok::Gt
+                    }
+                },
                 b'<' => {
                     self.pos += 1;
-                    if self.peek() == Some(b'=') { self.pos += 1; Tok::LtEq } else { Tok::Lt }
-                }
+                    if self.peek() == Some(b'=') {
+                        self.pos += 1;
+                        Tok::LtEq
+                    } else {
+                        Tok::Lt
+                    }
+                },
                 b'"' | b'\'' => self.lex_string(b)?,
                 b'-' | b'0'..=b'9' => self.lex_number()?,
                 b if is_ident_start(b) => self.lex_ident_or_keyword(),
@@ -155,7 +192,9 @@ impl<'a> Lexer<'a> {
         self.bump(); // opening quote
         let start = self.pos;
         while let Some(b) = self.peek() {
-            if b == quote { break; }
+            if b == quote {
+                break;
+            }
             self.pos += 1;
         }
         if self.peek() != Some(quote) {
@@ -170,24 +209,36 @@ impl<'a> Lexer<'a> {
 
     fn lex_number(&mut self) -> Result<Tok, ParseError> {
         let start = self.pos;
-        if self.peek() == Some(b'-') { self.pos += 1; }
+        if self.peek() == Some(b'-') {
+            self.pos += 1;
+        }
         while let Some(b) = self.peek() {
-            if b.is_ascii_digit() { self.pos += 1; } else { break; }
+            if b.is_ascii_digit() {
+                self.pos += 1;
+            } else {
+                break;
+            }
         }
         let mut is_float = false;
         if self.peek() == Some(b'.') {
             is_float = true;
             self.pos += 1;
             while let Some(b) = self.peek() {
-                if b.is_ascii_digit() { self.pos += 1; } else { break; }
+                if b.is_ascii_digit() {
+                    self.pos += 1;
+                } else {
+                    break;
+                }
             }
         }
         let text = &self.src[start..self.pos];
         if is_float {
-            text.parse::<f64>().map(Tok::FloatLit)
+            text.parse::<f64>()
+                .map(Tok::FloatLit)
                 .map_err(|_| self.err(&format!("bad float `{}`", text)))
         } else {
-            text.parse::<i64>().map(Tok::IntLit)
+            text.parse::<i64>()
+                .map(Tok::IntLit)
                 .map_err(|_| self.err(&format!("bad int `{}`", text)))
         }
     }
@@ -195,7 +246,11 @@ impl<'a> Lexer<'a> {
     fn lex_ident_or_keyword(&mut self) -> Tok {
         let start = self.pos;
         while let Some(b) = self.peek() {
-            if is_ident_cont(b) { self.pos += 1; } else { break; }
+            if is_ident_cont(b) {
+                self.pos += 1;
+            } else {
+                break;
+            }
         }
         let s = &self.src[start..self.pos];
         match s {
@@ -244,12 +299,17 @@ impl<'a> PredParser<'a> {
         let mut p = Self { src, toks, pos: 0 };
         let expr = p.parse_or()?;
         if p.pos < p.toks.len() {
-            return Err(p.err(&format!("trailing tokens after expression: {:?}", &p.toks[p.pos..])));
+            return Err(p.err(&format!(
+                "trailing tokens after expression: {:?}",
+                &p.toks[p.pos..]
+            )));
         }
         Ok(expr)
     }
 
-    fn peek(&self) -> Option<&Tok> { self.toks.get(self.pos) }
+    fn peek(&self) -> Option<&Tok> {
+        self.toks.get(self.pos)
+    }
     fn bump(&mut self) -> Option<Tok> {
         let t = self.toks.get(self.pos).cloned()?;
         self.pos += 1;
@@ -268,7 +328,11 @@ impl<'a> PredParser<'a> {
             self.bump();
             parts.push(self.parse_and()?);
         }
-        Ok(if parts.len() == 1 { parts.pop().unwrap() } else { Expression::Or(parts) })
+        Ok(if parts.len() == 1 {
+            parts.pop().unwrap()
+        } else {
+            Expression::Or(parts)
+        })
     }
 
     fn parse_and(&mut self) -> Result<Expression, ParseError> {
@@ -277,7 +341,11 @@ impl<'a> PredParser<'a> {
             self.bump();
             parts.push(self.parse_unary()?);
         }
-        Ok(if parts.len() == 1 { parts.pop().unwrap() } else { Expression::And(parts) })
+        Ok(if parts.len() == 1 {
+            parts.pop().unwrap()
+        } else {
+            Expression::And(parts)
+        })
     }
 
     fn parse_unary(&mut self) -> Result<Expression, ParseError> {
@@ -298,7 +366,7 @@ impl<'a> PredParser<'a> {
                     Some(Tok::RParen) => Ok(inner),
                     _ => Err(self.err("expected `)`")),
                 }
-            }
+            },
             // `require(...)` is a rule-level shorthand per DSL §8 grammar
             // (`rule = require_call | predicate ...`), not a sub-predicate.
             // Trying to nest it inside `&` / `|` is a grammar error.
@@ -317,20 +385,26 @@ impl<'a> PredParser<'a> {
     fn parse_exists(&mut self) -> Result<Expression, ParseError> {
         self.bump(); // exists
         match self.bump() {
-            Some(Tok::LParen) => {}
+            Some(Tok::LParen) => {},
             _ => return Err(self.err("expected `(` after `exists`")),
         }
         let key = match self.bump() {
             Some(Tok::Ident(s)) => s,
-            other => return Err(self.err(&format!(
-                "exists(...) expects an attribute key, got {:?}", other,
-            ))),
+            other => {
+                return Err(self.err(&format!(
+                    "exists(...) expects an attribute key, got {:?}",
+                    other,
+                )))
+            },
         };
         match self.bump() {
-            Some(Tok::RParen) => {}
-            other => return Err(self.err(&format!(
-                "expected `)` after exists() argument, got {:?}", other,
-            ))),
+            Some(Tok::RParen) => {},
+            other => {
+                return Err(self.err(&format!(
+                    "expected `)` after exists() argument, got {:?}",
+                    other,
+                )))
+            },
         }
         Ok(Expression::Condition(Condition::Exists { key }))
     }
@@ -396,23 +470,33 @@ impl<'a> PredParser<'a> {
                     "RHS-as-identifier on comparison operators not supported — \
                      for set membership use `value_key in set_key`",
                 ));
-            }
+            },
             other => return Err(self.err(&format!("expected literal RHS, got {:?}", other))),
         };
 
-        Ok(Expression::Condition(Condition::Comparison { key, op, value }))
+        Ok(Expression::Condition(Condition::Comparison {
+            key,
+            op,
+            value,
+        }))
     }
 
     fn finish_in_set(&mut self, value_key: String, negate: bool) -> Result<Expression, ParseError> {
         let set_key = match self.bump() {
             Some(Tok::Ident(s)) => s,
-            other => return Err(self.err(&format!(
-                "expected set-attribute identifier after `{}in`, got {:?}",
-                if negate { "not " } else { "" },
-                other,
-            ))),
+            other => {
+                return Err(self.err(&format!(
+                    "expected set-attribute identifier after `{}in`, got {:?}",
+                    if negate { "not " } else { "" },
+                    other,
+                )))
+            },
         };
-        Ok(Expression::Condition(Condition::InSet { value_key, set_key, negate }))
+        Ok(Expression::Condition(Condition::InSet {
+            value_key,
+            set_key,
+            negate,
+        }))
     }
 }
 
@@ -449,7 +533,10 @@ pub fn parse_rule(line: &str, source: &str) -> Result<Rule, ParseError> {
         let condition = parse_require_rule(trimmed)?;
         return Ok(Rule::single(
             condition,
-            Effect::Deny { reason: None, code: None },
+            Effect::Deny {
+                reason: None,
+                code: None,
+            },
             source,
         ));
     }
@@ -488,17 +575,26 @@ pub fn parse_rule(line: &str, source: &str) -> Result<Rule, ParseError> {
                 });
             }
             // DSL §2 default: bare predicate denies.
-            (trimmed, vec![Effect::Deny { reason: None, code: None }])
-        }
+            (
+                trimmed,
+                vec![Effect::Deny {
+                    reason: None,
+                    code: None,
+                }],
+            )
+        },
     };
 
-    let condition = parse_predicate(predicate_str)
-        .map_err(|e| ParseError::Rule {
-            rule: trimmed.to_string(),
-            msg: format!("{}", e),
-        })?;
+    let condition = parse_predicate(predicate_str).map_err(|e| ParseError::Rule {
+        rule: trimmed.to_string(),
+        msg: format!("{}", e),
+    })?;
 
-    Ok(Rule { condition, effects, source: source.to_string() })
+    Ok(Rule {
+        condition,
+        effects,
+        source: source.to_string(),
+    })
 }
 
 fn is_require_call(s: &str) -> bool {
@@ -523,11 +619,11 @@ fn parse_require_rule(line: &str) -> Result<Expression, ParseError> {
     };
 
     match iter.next() {
-        Some(Tok::Require) => {}
+        Some(Tok::Require) => {},
         _ => return Err(bad("expected `require`")),
     }
     match iter.next() {
-        Some(Tok::LParen) => {}
+        Some(Tok::LParen) => {},
         _ => return Err(bad("expected `(` after `require`")),
     }
 
@@ -545,25 +641,32 @@ fn parse_require_rule(line: &str) -> Result<Expression, ParseError> {
             Some(t @ Tok::Comma) | Some(t @ Tok::Or) => {
                 match &sep {
                     None => sep = Some(t),
-                    Some(prev) if std::mem::discriminant(prev) == std::mem::discriminant(&t) => {}
-                    _ => return Err(bad(
-                        "require(...) cannot mix `,` (AND) and `|` (OR) — use one or the other",
-                    )),
+                    Some(prev) if std::mem::discriminant(prev) == std::mem::discriminant(&t) => {},
+                    _ => {
+                        return Err(bad(
+                            "require(...) cannot mix `,` (AND) and `|` (OR) — use one or the other",
+                        ))
+                    },
                 }
                 match iter.next() {
                     Some(Tok::Ident(s)) => keys.push(s),
                     _ => return Err(bad("expected identifier after `,` or `|` in require(...)")),
                 }
-            }
-            Some(other) => return Err(bad(&format!(
-                "expected `,`, `|`, or `)` in require(...), got {:?}", other,
-            ))),
+            },
+            Some(other) => {
+                return Err(bad(&format!(
+                    "expected `,`, `|`, or `)` in require(...), got {:?}",
+                    other,
+                )))
+            },
             None => return Err(bad("unexpected end of require(...) — missing `)`")),
         }
     }
 
     if iter.peek().is_some() {
-        return Err(bad("trailing tokens after `require(...)` — require is a complete rule"));
+        return Err(bad(
+            "trailing tokens after `require(...)` — require is a complete rule",
+        ));
     }
 
     let falses: Vec<Expression> = keys
@@ -574,15 +677,26 @@ fn parse_require_rule(line: &str) -> Result<Expression, ParseError> {
         return Ok(falses.into_iter().next().unwrap());
     }
     Ok(match sep {
-        Some(Tok::Or) => Expression::And(falses),    // require(X | Y) → !X & !Y
-        _ => Expression::Or(falses),                 // require(X, Y)  → !X | !Y
+        Some(Tok::Or) => Expression::And(falses), // require(X | Y) → !X & !Y
+        _ => Expression::Or(falses),              // require(X, Y)  → !X | !Y
     })
 }
 
-/// Detect `taint(...)` / `plugin(...)` / `run(...)` / `cedar:` / `cedarling:` / `opa(` / `authzen(` / `nemo(` / `cel:`.
+/// Detect `taint(...)` / `plugin(...)` / `run(...)` / `cedar:` / `opa(` / `authzen(` / `nemo(` / `cel:`.
 fn detect_step_kind(s: &str) -> Option<&'static str> {
     let s = s.trim_start();
-    for prefix in ["taint(", "plugin(", "run(", "cedar:", "cedarling:", "opa(", "authzen(", "nemo(", "cel:", "sequential:", "parallel:"] {
+    for prefix in [
+        "taint(",
+        "plugin(",
+        "run(",
+        "cedar:",
+        "opa(",
+        "authzen(",
+        "nemo(",
+        "cel:",
+        "sequential:",
+        "parallel:",
+    ] {
         if s.starts_with(prefix) {
             return Some(prefix.trim_end_matches('(').trim_end_matches(':'));
         }
@@ -602,12 +716,12 @@ fn split_predicate_action(s: &str) -> Option<(&str, &str)> {
     for (i, &b) in bytes.iter().enumerate() {
         match (in_quote, b) {
             (Some(q), c) if c == q => in_quote = None,
-            (Some(_), _) => {}
+            (Some(_), _) => {},
             (None, b'"') | (None, b'\'') => in_quote = Some(b),
             (None, b'(') => depth += 1,
             (None, b')') => depth -= 1,
             (None, b':') if depth == 0 => last_colon = Some(i),
-            _ => {}
+            _ => {},
         }
     }
     last_colon.map(|i| (s[..i].trim(), s[i + 1..].trim()))
@@ -643,7 +757,10 @@ fn parse_action(s: &str, rule: &str) -> Result<Vec<Effect>, ParseError> {
 
 fn try_bare_action(s: &str) -> Option<Vec<Effect>> {
     match s.trim() {
-        "deny" => Some(vec![Effect::Deny { reason: None, code: None }]),
+        "deny" => Some(vec![Effect::Deny {
+            reason: None,
+            code: None,
+        }]),
         "allow" => Some(vec![Effect::Allow]),
         _ => None,
     }
@@ -701,7 +818,6 @@ fn strip_string_literal(s: &str, rule: &str) -> Result<String, ParseError> {
     }
 }
 
-
 // =====================================================================
 // Step parser (policy: / post_policy: entries — supports steps + rules)
 // =====================================================================
@@ -734,11 +850,10 @@ fn parse_step_string(line: &str, source: &str) -> Result<Step, ParseError> {
     // taint(...) — emit as Step::Taint, reusing the pipeline parser's logic
     // so the shape stays consistent with field-level taint.
     if trimmed.starts_with("taint(") {
-        let inside = extract_call_args(trimmed, "taint")
-            .ok_or_else(|| ParseError::Rule {
-                rule: trimmed.to_string(),
-                msg: "malformed `taint(...)`".into(),
-            })?;
+        let inside = extract_call_args(trimmed, "taint").ok_or_else(|| ParseError::Rule {
+            rule: trimmed.to_string(),
+            msg: "malformed `taint(...)`".into(),
+        })?;
         let taint_stage = parse_taint(&inside, trimmed)?;
         // parse_taint produces Stage::Taint; lift to Step::Taint.
         if let Stage::Taint { label, scopes } = taint_stage {
@@ -768,7 +883,9 @@ fn parse_step_string(line: &str, source: &str) -> Result<Step, ParseError> {
                 msg: format!("`{verb}(...)`: plugin name must not be empty"),
             });
         }
-        return Ok(Step::Plugin { name: name.to_string() });
+        return Ok(Step::Plugin {
+            name: name.to_string(),
+        });
     }
 
     // delegate(name, key: value, key: [a, b], ...) — emit as Step::Delegate.
@@ -778,11 +895,10 @@ fn parse_step_string(line: &str, source: &str) -> Result<Step, ParseError> {
     // is reserved). Use the map form for nested configs the kwarg
     // parser doesn't handle.
     if trimmed.starts_with("delegate(") {
-        let inside = extract_call_args(trimmed, "delegate")
-            .ok_or_else(|| ParseError::Rule {
-                rule: trimmed.to_string(),
-                msg: "malformed `delegate(...)`".into(),
-            })?;
+        let inside = extract_call_args(trimmed, "delegate").ok_or_else(|| ParseError::Rule {
+            rule: trimmed.to_string(),
+            msg: "malformed `delegate(...)`".into(),
+        })?;
         let parsed = parse_delegate_call_args(&inside, source)?;
         return Ok(Step::Delegate(DelegateStep {
             plugin_name: parsed.plugin_name,
@@ -823,10 +939,7 @@ struct ParsedDelegateCall {
 /// Everything else lands in `config_override` as a yaml mapping. Use
 /// the map form (`- delegate: { plugin: ..., config: { ... }, ... }`)
 /// for nested config shapes the flat kwarg parser doesn't handle.
-fn parse_delegate_call_args(
-    inside: &str,
-    source: &str,
-) -> Result<ParsedDelegateCall, ParseError> {
+fn parse_delegate_call_args(inside: &str, source: &str) -> Result<ParsedDelegateCall, ParseError> {
     let parts = split_top_level_commas(inside).map_err(|msg| ParseError::Rule {
         rule: format!("delegate({inside})"),
         msg: format!("{source}: {msg}"),
@@ -861,15 +974,13 @@ fn parse_delegate_call_args(
         if kwarg.is_empty() {
             continue;
         }
-        let (key, value_str) = kwarg
-            .split_once(':')
-            .ok_or_else(|| ParseError::Rule {
-                rule: kwarg.to_string(),
-                msg: format!(
-                    "{source}: `delegate(...)` kwarg `{kwarg}` must be `key: value` \
+        let (key, value_str) = kwarg.split_once(':').ok_or_else(|| ParseError::Rule {
+            rule: kwarg.to_string(),
+            msg: format!(
+                "{source}: `delegate(...)` kwarg `{kwarg}` must be `key: value` \
                      (use the map form for richer config)"
-                ),
-            })?;
+            ),
+        })?;
         let key = key.trim();
         let value_str = value_str.trim();
         if key.is_empty() {
@@ -904,11 +1015,10 @@ fn parse_delegate_call_args(
                 ),
             });
         }
-        let value =
-            parse_delegate_value(value_str).map_err(|msg| ParseError::Rule {
-                rule: kwarg.to_string(),
-                msg: format!("{source}: `{key}`: {msg}"),
-            })?;
+        let value = parse_delegate_value(value_str).map_err(|msg| ParseError::Rule {
+            rule: kwarg.to_string(),
+            msg: format!("{source}: `{key}`: {msg}"),
+        })?;
         config_map.insert(serde_yaml::Value::String(key.to_string()), value);
     }
 
@@ -958,20 +1068,20 @@ fn split_top_level_commas(input: &str) -> Result<Vec<String>, String> {
             '"' | '\'' => {
                 quote = Some(ch);
                 current.push(ch);
-            }
+            },
             '[' | '(' | '{' => {
                 bracket_depth += 1;
                 current.push(ch);
-            }
+            },
             ']' | ')' | '}' => {
-                bracket_depth = bracket_depth.checked_sub(1).ok_or_else(|| {
-                    format!("unmatched `{ch}` in delegate(...) args")
-                })?;
+                bracket_depth = bracket_depth
+                    .checked_sub(1)
+                    .ok_or_else(|| format!("unmatched `{ch}` in delegate(...) args"))?;
                 current.push(ch);
-            }
+            },
             ',' if bracket_depth == 0 => {
                 parts.push(std::mem::take(&mut current));
-            }
+            },
             _ => current.push(ch),
         }
     }
@@ -994,8 +1104,7 @@ fn parse_delegate_value(s: &str) -> Result<serde_yaml::Value, String> {
         return Err("empty value".to_string());
     }
     // List literal — recursive scalar parse on each element.
-    if let Some(stripped) = trimmed.strip_prefix('[').and_then(|s| s.strip_suffix(']'))
-    {
+    if let Some(stripped) = trimmed.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
         let items = split_top_level_commas(stripped)?;
         let mut out = Vec::with_capacity(items.len());
         for item in items {
@@ -1049,10 +1158,7 @@ fn strip_wrapping_quotes(s: &str) -> &str {
     s
 }
 
-fn parse_step_map(
-    m: &serde_yaml::Mapping,
-    source: &str,
-) -> Result<Step, ParseError> {
+fn parse_step_map(m: &serde_yaml::Mapping, source: &str) -> Result<Step, ParseError> {
     // Canonical structured rule: `- when: X\n  do: Y` (DSL §3.2).
     // Detected by the presence of *both* `when` and `do` keys — order
     // doesn't matter, and the map can carry extra keys for future
@@ -1116,7 +1222,7 @@ fn parse_step_map(
                 effects: vec![effect],
                 source: source.to_string(),
             }));
-        }
+        },
         "parallel" => {
             let effect = parse_parallel_effect(body_val, source)?;
             return Ok(Step::Rule(Rule {
@@ -1124,8 +1230,8 @@ fn parse_step_map(
                 effects: vec![effect],
                 source: source.to_string(),
             }));
-        }
-        _ => {}
+        },
+        _ => {},
     }
 
     // Split the key into "dialect" + optional "(args)" portion.
@@ -1147,7 +1253,10 @@ fn parse_step_map(
     // Others: paren_args carries the call signature; body map is reactions only.
     let body = body_val.as_mapping().ok_or_else(|| ParseError::Rule {
         rule: format!("{:?}", body_val),
-        msg: format!("`{}:` body must be a map (with on_deny / on_allow / args)", key),
+        msg: format!(
+            "`{}:` body must be a map (with on_deny / on_allow / args)",
+            key
+        ),
     })?;
 
     let (args, on_deny, on_allow) = extract_pdp_body(body, paren_args.as_deref(), source)?;
@@ -1186,10 +1295,7 @@ fn has_key(m: &serde_yaml::Mapping, key: &str) -> bool {
 /// reaction list as a predicate-with-effects map.
 fn is_known_pdp_dialect(key: &str) -> bool {
     let base = key.find('(').map(|i| &key[..i]).unwrap_or(key);
-    matches!(
-        base.trim(),
-        "cedar" | "cedarling" | "opa" | "authzen" | "nemo" | "cel"
-    )
+    matches!(base.trim(), "cedar" | "opa" | "authzen" | "nemo" | "cel")
 }
 
 /// Parse the canonical `- when: X` `do: Y` rule form (DSL §3.2). `Y`
@@ -1197,10 +1303,7 @@ fn is_known_pdp_dialect(key: &str) -> bool {
 /// entries (`do: [plugin(audit), taint(X), deny('msg')]`). Map-form
 /// effects (like a nested `delegate:` block) are allowed inside `do:`
 /// via the same dispatch as top-level steps.
-fn parse_when_do_rule(
-    m: &serde_yaml::Mapping,
-    source: &str,
-) -> Result<Step, ParseError> {
+fn parse_when_do_rule(m: &serde_yaml::Mapping, source: &str) -> Result<Step, ParseError> {
     // Validate keys — surface a useful error if there's stray content
     // beyond `when:` / `do:` (e.g. typo'd `whens:`). `id:` is reserved
     // for a future rule-identifier extension; tolerate it as a
@@ -1281,10 +1384,7 @@ fn parse_shorthand_multi_effect(
 /// Parse a `do:` body — single effect string, list of effects, or a
 /// single map-shaped effect (`do: { parallel: [...] }`,
 /// `do: { delegate: {...} }`, etc.).
-fn parse_do_body(
-    val: &serde_yaml::Value,
-    source: &str,
-) -> Result<Vec<Effect>, ParseError> {
+fn parse_do_body(val: &serde_yaml::Value, source: &str) -> Result<Vec<Effect>, ParseError> {
     match val {
         serde_yaml::Value::String(s) => Ok(vec![parse_effect_string(s, source)?]),
         serde_yaml::Value::Sequence(items) => items
@@ -1295,7 +1395,7 @@ fn parse_do_body(
             // Single map-form effect — delegate, sequential, parallel.
             // Route through parse_effect_value which dispatches by key.
             Ok(vec![parse_effect_value(val, source)?])
-        }
+        },
         other => Err(ParseError::Rule {
             rule: format!("{:?}", other),
             msg: "`do:` value must be a string, a list of effects, or an effect map".into(),
@@ -1306,10 +1406,7 @@ fn parse_do_body(
 /// Parse one effect entry from a YAML value — string form or map form
 /// (the latter for `delegate:` configs nested inside `do:`,
 /// `sequential:`, and `parallel:`).
-fn parse_effect_value(
-    val: &serde_yaml::Value,
-    source: &str,
-) -> Result<Effect, ParseError> {
+fn parse_effect_value(val: &serde_yaml::Value, source: &str) -> Result<Effect, ParseError> {
     match val {
         serde_yaml::Value::String(s) => parse_effect_string(s, source),
         serde_yaml::Value::Mapping(m) => {
@@ -1322,7 +1419,7 @@ fn parse_effect_value(
                     match key_str.trim() {
                         "sequential" => return parse_sequential_effect(v, source),
                         "parallel" => return parse_parallel_effect(v, source),
-                        _ => {}
+                        _ => {},
                     }
                 }
             }
@@ -1330,7 +1427,7 @@ fn parse_effect_value(
             // `delegate:`, `cedar:` etc. and collapse the Step.
             let step = parse_step(val, source)?;
             step_to_effect(step, source)
-        }
+        },
         other => Err(ParseError::Rule {
             rule: format!("{:?}", other),
             msg: "effect entry must be a string or a map".into(),
@@ -1340,10 +1437,7 @@ fn parse_effect_value(
 
 /// Parse a `sequential: [list]` effect value. The body MUST be a list
 /// (a single effect would defeat the purpose of explicit grouping).
-fn parse_sequential_effect(
-    body: &serde_yaml::Value,
-    source: &str,
-) -> Result<Effect, ParseError> {
+fn parse_sequential_effect(body: &serde_yaml::Value, source: &str) -> Result<Effect, ParseError> {
     let items = body.as_sequence().ok_or_else(|| ParseError::Rule {
         rule: format!("{:?}", body),
         msg: "`sequential:` body must be a list of effects".into(),
@@ -1364,10 +1458,7 @@ fn parse_sequential_effect(
 /// Parse a `parallel: [list]` effect value. The body MUST be a list,
 /// and the parsed Effect is validated for parallel-purity (rejects
 /// `FieldOp` / `Delegate` nested anywhere underneath).
-fn parse_parallel_effect(
-    body: &serde_yaml::Value,
-    source: &str,
-) -> Result<Effect, ParseError> {
+fn parse_parallel_effect(body: &serde_yaml::Value, source: &str) -> Result<Effect, ParseError> {
     let items = body.as_sequence().ok_or_else(|| ParseError::Rule {
         rule: format!("{:?}", body),
         msg: "`parallel:` body must be a list of effects".into(),
@@ -1491,8 +1582,8 @@ fn find_top_level_pipe(s: &str) -> Option<usize> {
                     continue;
                 }
                 return Some(i);
-            }
-            _ => {}
+            },
+            _ => {},
         }
         i += 1;
     }
@@ -1503,7 +1594,10 @@ fn find_top_level_pipe(s: &str) -> Option<usize> {
 /// `result.`. Reject anything else early so a stray `role.hr | …` in
 /// effect position fails fast.
 fn is_valid_field_path(s: &str) -> bool {
-    let Some(rest) = s.strip_prefix("args.").or_else(|| s.strip_prefix("result.")) else {
+    let Some(rest) = s
+        .strip_prefix("args.")
+        .or_else(|| s.strip_prefix("result."))
+    else {
         return false;
     };
     !rest.is_empty()
@@ -1529,7 +1623,11 @@ pub(crate) fn step_to_top_level_effect(step: Step) -> Result<Effect, ParseError>
             body: rule.effects,
             source: rule.source,
         }),
-        Step::Pdp { call, on_allow, on_deny } => {
+        Step::Pdp {
+            call,
+            on_allow,
+            on_deny,
+        } => {
             let on_allow = on_allow
                 .into_iter()
                 .map(step_to_top_level_effect)
@@ -1538,8 +1636,12 @@ pub(crate) fn step_to_top_level_effect(step: Step) -> Result<Effect, ParseError>
                 .into_iter()
                 .map(step_to_top_level_effect)
                 .collect::<Result<Vec<_>, _>>()?;
-            Ok(Effect::Pdp { call, on_allow, on_deny })
-        }
+            Ok(Effect::Pdp {
+                call,
+                on_allow,
+                on_deny,
+            })
+        },
         Step::Plugin { name } => Ok(Effect::Plugin { name }),
         Step::Delegate(d) => Ok(Effect::Delegate(d)),
         Step::Taint { label, scopes } => Ok(Effect::Taint { label, scopes }),
@@ -1573,7 +1675,7 @@ fn step_to_effect(step: Step, source: &str) -> Result<Effect, ParseError> {
                 });
             }
             Ok(rule.effects.into_iter().next().unwrap())
-        }
+        },
         Step::Pdp { .. } => Err(ParseError::Rule {
             rule: source.to_string(),
             msg: "PDP calls inside `do:` are not supported in E1 (use a sibling \
@@ -1587,10 +1689,7 @@ fn step_to_effect(step: Step, source: &str) -> Result<Effect, ParseError> {
 /// via the existing per-call config-override pathway. The plugin
 /// owns the typed schema (target / audience / permissions / mode /
 /// attenuation are conventions, not parser-enforced).
-fn parse_delegate_step(
-    body_val: &serde_yaml::Value,
-    source: &str,
-) -> Result<Step, ParseError> {
+fn parse_delegate_step(body_val: &serde_yaml::Value, source: &str) -> Result<Step, ParseError> {
     let body = body_val.as_mapping().ok_or_else(|| ParseError::Rule {
         rule: source.to_string(),
         msg: "`delegate:` body must be a map with `plugin:` and optional \
@@ -1665,14 +1764,14 @@ fn extract_pdp_body(
         match k.as_str() {
             Some("on_deny") => {
                 on_deny = parse_reaction_list(v, source, "on_deny")?;
-            }
+            },
             Some("on_allow") => {
                 on_allow = parse_reaction_list(v, source, "on_allow")?;
-            }
+            },
             _ => {
                 // Non-reaction key — part of args (Cedar-style).
                 args_map.insert(k.clone(), v.clone());
-            }
+            },
         }
     }
 
@@ -1725,8 +1824,8 @@ fn extract_call_args(line: &str, name: &str) -> Option<String> {
                     }
                     return None;
                 }
-            }
-            _ => {}
+            },
+            _ => {},
         }
     }
     None
@@ -1763,15 +1862,15 @@ fn split_top_level(s: &str, delim: u8) -> Vec<&str> {
     for (i, &b) in bytes.iter().enumerate() {
         match (in_quote, b) {
             (Some(q), c) if c == q => in_quote = None,
-            (Some(_), _) => {}
+            (Some(_), _) => {},
             (None, b'"') | (None, b'\'') => in_quote = Some(b),
             (None, b'(') | (None, b'[') => depth += 1,
             (None, b')') | (None, b']') => depth -= 1,
             (None, c) if c == delim && depth == 0 => {
                 out.push(&s[start..i]);
                 start = i + 1;
-            }
-            _ => {}
+            },
+            _ => {},
         }
     }
     out.push(&s[start..]);
@@ -1792,8 +1891,7 @@ fn parse_stage(src: &str) -> Result<Stage, ParseError> {
 
     // Otherwise the stage starts with an identifier (keyword) optionally
     // followed by `(args)`.
-    let (head, args) = split_head_args(s)
-        .ok_or_else(|| bad("expected stage identifier"))?;
+    let (head, args) = split_head_args(s).ok_or_else(|| bad("expected stage identifier"))?;
 
     match (head, args.as_deref()) {
         // ----- Bare validators / transforms / effects -----
@@ -1808,24 +1906,34 @@ fn parse_stage(src: &str) -> Result<Stage, ParseError> {
         ("omit", None) => Ok(Stage::Omit),
         ("hash", None) => Ok(Stage::Hash),
         // Scan placeholders parse as bare identifiers (DSL §4.5).
-        ("pii.redact", None) => Ok(Stage::Scan { kind: ScanKind::PiiRedact }),
-        ("pii.detect", None) => Ok(Stage::Scan { kind: ScanKind::PiiDetect }),
-        ("injection.scan", None) => Ok(Stage::Scan { kind: ScanKind::InjectionScan }),
+        ("pii.redact", None) => Ok(Stage::Scan {
+            kind: ScanKind::PiiRedact,
+        }),
+        ("pii.detect", None) => Ok(Stage::Scan {
+            kind: ScanKind::PiiDetect,
+        }),
+        ("injection.scan", None) => Ok(Stage::Scan {
+            kind: ScanKind::InjectionScan,
+        }),
 
         // ----- Parameterized -----
         ("mask", Some(a)) => {
-            let n: usize = a.trim().parse()
+            let n: usize = a
+                .trim()
+                .parse()
                 .map_err(|_| bad(&format!("mask(N) expects integer, got `{}`", a)))?;
             Ok(Stage::Mask { keep_last: n })
-        }
+        },
         ("redact", Some(a)) => {
             // redact(!perm.view_ssn) — argument is a predicate expression.
             let cond = parse_predicate(a).map_err(|e| ParseError::Predicate {
                 predicate: src.to_string(),
                 msg: format!("invalid redact() condition: {}", e),
             })?;
-            Ok(Stage::Redact { condition: Some(cond) })
-        }
+            Ok(Stage::Redact {
+                condition: Some(cond),
+            })
+        },
         ("hash", Some(_)) => Err(bad("hash takes no arguments")),
         ("omit", Some(_)) => Err(bad(
             "omit takes no arguments — for conditional omit, use a policy rule predicate",
@@ -1834,14 +1942,17 @@ fn parse_stage(src: &str) -> Result<Stage, ParseError> {
             let (min, max) = parse_range_inner(a)
                 .ok_or_else(|| bad(&format!("len(...) expects N..M range, got `{}`", a)))?;
             let to_usize = |v: i64| -> Result<usize, ParseError> {
-                if v < 0 { Err(bad("len bounds must be non-negative")) }
-                else { Ok(v as usize) }
+                if v < 0 {
+                    Err(bad("len bounds must be non-negative"))
+                } else {
+                    Ok(v as usize)
+                }
             };
             Ok(Stage::Length {
                 min: min.map(to_usize).transpose()?,
                 max: max.map(to_usize).transpose()?,
             })
-        }
+        },
         ("enum", Some(a)) => {
             let values = split_top_level(a, b',')
                 .into_iter()
@@ -1862,7 +1973,7 @@ fn parse_stage(src: &str) -> Result<Stage, ParseError> {
                 return Err(bad("enum() requires at least one value"));
             }
             Ok(Stage::Enum { values })
-        }
+        },
         ("regex", Some(a)) => {
             let pattern = a.trim();
             let pat = if (pattern.starts_with('"') && pattern.ends_with('"'))
@@ -1873,7 +1984,7 @@ fn parse_stage(src: &str) -> Result<Stage, ParseError> {
                 pattern.to_string()
             };
             Ok(Stage::Regex { pattern: pat })
-        }
+        },
         ("validate", Some(a)) => {
             // Named-validator dispatch (`validate(name)`) is in the
             // spec (DSL §4.2) but not implemented in this build —
@@ -1895,7 +2006,7 @@ fn parse_stage(src: &str) -> Result<Stage, ParseError> {
                 a.trim(),
                 a.trim(),
             )))
-        }
+        },
         // `run` is an alias for `plugin` (mirrors the policy-step alias).
         ("plugin" | "run", Some(a)) => {
             let name = a.trim();
@@ -1903,10 +2014,14 @@ fn parse_stage(src: &str) -> Result<Stage, ParseError> {
                 // Mirror the empty-name guard in `parse_step_string` so
                 // both the policy-step and field-stage paths reject a
                 // nameless `plugin()` / `run()` with the same diagnostic.
-                return Err(bad(&format!("`{head}(...)`: plugin name must not be empty")));
+                return Err(bad(&format!(
+                    "`{head}(...)`: plugin name must not be empty"
+                )));
             }
-            Ok(Stage::Plugin { name: name.to_string() })
-        }
+            Ok(Stage::Plugin {
+                name: name.to_string(),
+            })
+        },
         ("taint", Some(a)) => parse_taint(a, src),
 
         (other, _) => Err(bad(&format!("unknown stage `{}`", other))),
@@ -1933,8 +2048,16 @@ fn parse_range_inner(s: &str) -> Option<(Option<i64>, Option<i64>)> {
     let dotdot = s.find("..")?;
     let left = s[..dotdot].trim();
     let right = s[dotdot + 2..].trim();
-    let min = if left.is_empty() { None } else { Some(parse_numeric_with_suffix(left)?) };
-    let max = if right.is_empty() { None } else { Some(parse_numeric_with_suffix(right)?) };
+    let min = if left.is_empty() {
+        None
+    } else {
+        Some(parse_numeric_with_suffix(left)?)
+    };
+    let max = if right.is_empty() {
+        None
+    } else {
+        Some(parse_numeric_with_suffix(right)?)
+    };
     if min.is_none() && max.is_none() {
         return None; // `..` alone isn't a useful range
     }
@@ -1969,14 +2092,19 @@ fn split_head_args(s: &str) -> Option<(&str, Option<String>)> {
                 b'(' => depth += 1,
                 b')' => {
                     depth -= 1;
-                    if depth == 0 { close = Some(i); break; }
-                }
-                _ => {}
+                    if depth == 0 {
+                        close = Some(i);
+                        break;
+                    }
+                },
+                _ => {},
             }
         }
         let close = close?;
         let head = s[..open].trim();
-        if head.is_empty() { return None; }
+        if head.is_empty() {
+            return None;
+        }
         let args = s[open + 1..close].to_string();
         // Reject trailing garbage after the closing paren.
         if s[close + 1..].trim().is_empty() {
@@ -1986,7 +2114,11 @@ fn split_head_args(s: &str) -> Option<(&str, Option<String>)> {
         }
     } else {
         let head = s.trim();
-        if head.is_empty() { None } else { Some((head, None)) }
+        if head.is_empty() {
+            None
+        } else {
+            Some((head, None))
+        }
     }
 }
 
@@ -2031,7 +2163,10 @@ fn parse_taint_scope(s: &str, src: &str) -> Result<TaintScope, ParseError> {
         "message" => Ok(TaintScope::Message),
         other => Err(ParseError::Predicate {
             predicate: src.to_string(),
-            msg: format!("unknown taint scope `{}` (expected `session` or `message`)", other),
+            msg: format!(
+                "unknown taint scope `{}` (expected `session` or `message`)",
+                other
+            ),
         }),
     }
 }
@@ -2228,11 +2363,14 @@ mod tests {
     #[test]
     fn lex_basic() {
         let toks = Lexer::new("delegation.depth > 2").tokenize_all().unwrap();
-        assert_eq!(toks, vec![
-            Tok::Ident("delegation.depth".into()),
-            Tok::Gt,
-            Tok::IntLit(2),
-        ]);
+        assert_eq!(
+            toks,
+            vec![
+                Tok::Ident("delegation.depth".into()),
+                Tok::Gt,
+                Tok::IntLit(2),
+            ]
+        );
     }
 
     #[test]
@@ -2245,13 +2383,20 @@ mod tests {
 
     #[test]
     fn lex_keywords_vs_idents() {
-        let toks = Lexer::new("require(role.hr) & authenticated").tokenize_all().unwrap();
-        assert_eq!(toks, vec![
-            Tok::Require, Tok::LParen,
-            Tok::Ident("role.hr".into()),
-            Tok::RParen, Tok::And,
-            Tok::Ident("authenticated".into()),
-        ]);
+        let toks = Lexer::new("require(role.hr) & authenticated")
+            .tokenize_all()
+            .unwrap();
+        assert_eq!(
+            toks,
+            vec![
+                Tok::Require,
+                Tok::LParen,
+                Tok::Ident("role.hr".into()),
+                Tok::RParen,
+                Tok::And,
+                Tok::Ident("authenticated".into()),
+            ]
+        );
     }
 
     #[test]
@@ -2265,7 +2410,12 @@ mod tests {
     #[test]
     fn pred_bare_identifier() {
         let e = parse_predicate("authenticated").unwrap();
-        assert_eq!(e, Expression::Condition(Condition::IsTrue { key: "authenticated".into() }));
+        assert_eq!(
+            e,
+            Expression::Condition(Condition::IsTrue {
+                key: "authenticated".into()
+            })
+        );
     }
 
     #[test]
@@ -2302,10 +2452,10 @@ mod tests {
             Expression::Or(parts) => {
                 assert_eq!(parts.len(), 2);
                 match &parts[0] {
-                    Expression::And(_) => {}
+                    Expression::And(_) => {},
                     other => panic!("first OR branch should be AND, got {:?}", other),
                 }
-            }
+            },
             other => panic!("top-level should be OR, got {:?}", other),
         }
     }
@@ -2319,7 +2469,7 @@ mod tests {
                 assert_eq!(parts.len(), 2);
                 matches!(parts[0], Expression::Or(_));
                 matches!(parts[1], Expression::Not(_));
-            }
+            },
             other => panic!("expected top-level AND, got {:?}", other),
         }
     }
@@ -2336,10 +2486,18 @@ mod tests {
     fn rule_require_single_arg_desugars_to_isfalse_and_deny() {
         // require(X)  →  Rule { condition: IsFalse(X), action: Deny }   (DSL §8.1)
         let r = parse_rule("require(authenticated)", "test").unwrap();
-        assert!(matches!(r.effects.as_slice(), [Effect::Deny { reason: None, code: None }]));
+        assert!(matches!(
+            r.effects.as_slice(),
+            [Effect::Deny {
+                reason: None,
+                code: None
+            }]
+        ));
         assert_eq!(
             r.condition,
-            Expression::Condition(Condition::IsFalse { key: "authenticated".into() }),
+            Expression::Condition(Condition::IsFalse {
+                key: "authenticated".into()
+            }),
         );
     }
 
@@ -2351,8 +2509,12 @@ mod tests {
         assert_eq!(
             r.condition,
             Expression::Or(vec![
-                Expression::Condition(Condition::IsFalse { key: "role.hr".into() }),
-                Expression::Condition(Condition::IsFalse { key: "perm.view_ssn".into() }),
+                Expression::Condition(Condition::IsFalse {
+                    key: "role.hr".into()
+                }),
+                Expression::Condition(Condition::IsFalse {
+                    key: "perm.view_ssn".into()
+                }),
             ]),
         );
     }
@@ -2365,8 +2527,12 @@ mod tests {
         assert_eq!(
             r.condition,
             Expression::And(vec![
-                Expression::Condition(Condition::IsFalse { key: "role.finance".into() }),
-                Expression::Condition(Condition::IsFalse { key: "role.admin".into() }),
+                Expression::Condition(Condition::IsFalse {
+                    key: "role.finance".into()
+                }),
+                Expression::Condition(Condition::IsFalse {
+                    key: "role.admin".into()
+                }),
             ]),
         );
     }
@@ -2418,7 +2584,9 @@ mod tests {
         let e = parse_predicate("exists(args.amount)").unwrap();
         assert_eq!(
             e,
-            Expression::Condition(Condition::Exists { key: "args.amount".into() }),
+            Expression::Condition(Condition::Exists {
+                key: "args.amount".into()
+            }),
         );
     }
 
@@ -2431,9 +2599,11 @@ mod tests {
                 assert_eq!(parts.len(), 2);
                 assert_eq!(
                     parts[0],
-                    Expression::Condition(Condition::Exists { key: "args.amount".into() }),
+                    Expression::Condition(Condition::Exists {
+                        key: "args.amount".into()
+                    }),
                 );
-            }
+            },
             other => panic!("expected And, got {:?}", other),
         }
     }
@@ -2457,11 +2627,11 @@ mod tests {
     fn rule_predicate_action_form() {
         let r = parse_rule("delegation.depth > 2: deny", "test").unwrap();
         match r.effects.as_slice() {
-            [Effect::Deny { .. }] => {}
+            [Effect::Deny { .. }] => {},
             other => panic!("expected [Deny], got {:?}", other),
         }
         match r.condition {
-            Expression::Condition(Condition::Comparison { .. }) => {}
+            Expression::Condition(Condition::Comparison { .. }) => {},
             other => panic!("expected Comparison, got {:?}", other),
         }
     }
@@ -2485,7 +2655,13 @@ mod tests {
         // Expression::Always as the predicate (DSL §3.1).
         let r = parse_rule("deny", "test").unwrap();
         assert_eq!(r.condition, Expression::Always);
-        assert!(matches!(r.effects.as_slice(), [Effect::Deny { reason: None, code: None }]));
+        assert!(matches!(
+            r.effects.as_slice(),
+            [Effect::Deny {
+                reason: None,
+                code: None
+            }]
+        ));
 
         let r = parse_rule("allow", "test").unwrap();
         assert_eq!(r.condition, Expression::Always);
@@ -2500,17 +2676,26 @@ mod tests {
         let r = parse_rule("deny('nope')", "test").unwrap();
         assert_eq!(r.condition, Expression::Always);
         match r.effects.as_slice() {
-            [Effect::Deny { reason: Some(reason), code: None }] => assert_eq!(reason, "nope"),
-            other => panic!("expected [Deny{{reason: Some, code: None}}], got {:?}", other),
+            [Effect::Deny {
+                reason: Some(reason),
+                code: None,
+            }] => assert_eq!(reason, "nope"),
+            other => panic!(
+                "expected [Deny{{reason: Some, code: None}}], got {:?}",
+                other
+            ),
         }
 
         let r = parse_rule("deny('nope', 'cel.policy')", "test").unwrap();
         assert_eq!(r.condition, Expression::Always);
         match r.effects.as_slice() {
-            [Effect::Deny { reason: Some(reason), code: Some(code) }] => {
+            [Effect::Deny {
+                reason: Some(reason),
+                code: Some(code),
+            }] => {
                 assert_eq!(reason, "nope");
                 assert_eq!(code, "cel.policy");
-            }
+            },
             other => panic!("expected [Deny{{reason, code}}], got {:?}", other),
         }
     }
@@ -2522,17 +2707,25 @@ mod tests {
         let err = parse_rule("deny(unquoted)", "test").unwrap_err();
         assert!(
             matches!(err, ParseError::Rule { .. }),
-            "expected ParseError::Rule, got {:?}", err
+            "expected ParseError::Rule, got {:?}",
+            err
         );
     }
 
     #[test]
     fn rule_step_kinds_rejected_clearly() {
-        for s in ["plugin(rate_limiter)", "cedar:(action: read)", "opa(path)", "taint(audit)"] {
+        for s in [
+            "plugin(rate_limiter)",
+            "cedar:(action: read)",
+            "opa(path)",
+            "taint(audit)",
+        ] {
             let err = parse_rule(s, "test").unwrap_err();
             assert!(
                 matches!(err, ParseError::UnsupportedStep { .. }),
-                "expected UnsupportedStep for `{}`, got {:?}", s, err
+                "expected UnsupportedStep for `{}`, got {:?}",
+                s,
+                err
             );
         }
     }
@@ -2568,10 +2761,13 @@ mod tests {
         )
         .unwrap();
         match r.effects.as_slice() {
-            [Effect::Deny { reason: Some(reason), code: Some(code) }] => {
+            [Effect::Deny {
+                reason: Some(reason),
+                code: Some(code),
+            }] => {
                 assert_eq!(reason, "too deep");
                 assert_eq!(code, "delegation.depth_exceeded");
-            }
+            },
             other => panic!("expected Deny with reason+code, got {:?}", other),
         }
     }
@@ -2609,9 +2805,12 @@ mod tests {
                 ));
                 assert!(matches!(
                     rule.effects.as_slice(),
-                    [Effect::Deny { reason: None, code: None }]
+                    [Effect::Deny {
+                        reason: None,
+                        code: None
+                    }]
                 ));
-            }
+            },
             other => panic!("expected Step::Rule, got {:?}", other),
         }
     }
@@ -2627,10 +2826,13 @@ mod tests {
             panic!("expected Step::Rule");
         };
         match rule.effects.as_slice() {
-            [Effect::Deny { reason: Some(r), code: Some(c) }] => {
+            [Effect::Deny {
+                reason: Some(r),
+                code: Some(c),
+            }] => {
                 assert_eq!(r, "too deep");
                 assert_eq!(c, "delegation.depth_exceeded");
-            }
+            },
             other => panic!("expected Deny+reason+code, got {:?}", other),
         }
     }
@@ -2657,10 +2859,13 @@ do:
             Effect::Taint { ref label, .. } if label == "unauth"
         ));
         match &rule.effects[2] {
-            Effect::Deny { reason: Some(r), code: Some(c) } => {
+            Effect::Deny {
+                reason: Some(r),
+                code: Some(c),
+            } => {
                 assert_eq!(r, "refused");
                 assert_eq!(c, "role.hr_required");
-            }
+            },
             other => panic!("expected Deny+reason+code, got {:?}", other),
         }
     }
@@ -2668,8 +2873,7 @@ do:
     #[test]
     fn when_do_key_order_does_not_matter() {
         // YAML maps are unordered; `do:` first should parse the same.
-        let step =
-            parse_step_yaml("do: deny\nwhen: delegation.depth > 2").unwrap();
+        let step = parse_step_yaml("do: deny\nwhen: delegation.depth > 2").unwrap();
         assert!(matches!(step, Step::Rule(_)));
     }
 
@@ -2778,7 +2982,7 @@ do:
             Effect::FieldOp { path, stages } => {
                 assert_eq!(path, "result.salary");
                 assert_eq!(stages.len(), 1, "single `redact` stage");
-            }
+            },
             other => panic!("expected FieldOp, got {:?}", other),
         }
     }
@@ -2798,7 +3002,7 @@ do: "args.card_number | mask(4)"
             [Effect::FieldOp { path, stages }] => {
                 assert_eq!(path, "args.card_number");
                 assert_eq!(stages.len(), 1);
-            }
+            },
             other => panic!("expected single FieldOp, got {:?}", other),
         }
     }
@@ -2819,7 +3023,7 @@ do: "args.card_number | str | mask(4)"
             [Effect::FieldOp { path, stages }] => {
                 assert_eq!(path, "args.card_number");
                 assert_eq!(stages.len(), 2, "two-stage chain");
-            }
+            },
             other => panic!("expected single FieldOp, got {:?}", other),
         }
     }
@@ -2843,7 +3047,7 @@ do: "args.card_number | run(luhn)"
                     [Stage::Plugin { name }] => assert_eq!(name, "luhn"),
                     other => panic!("expected [Stage::Plugin], got {:?}", other),
                 }
-            }
+            },
             other => panic!("expected single FieldOp, got {:?}", other),
         }
     }
@@ -2883,8 +3087,8 @@ do: "args.card_number | run(luhn)"
                     !matches!(rule.effects.as_slice(), [Effect::FieldOp { .. }]),
                     "bare `role.hr` must NOT parse as a FieldOp path"
                 );
-            }
-            Err(_) => {} // also fine
+            },
+            Err(_) => {}, // also fine
             other => panic!("unexpected: {:?}", other),
         }
     }
@@ -2944,7 +3148,7 @@ sequential:
                 assert_eq!(inner.len(), 2);
                 assert!(matches!(inner[0], Effect::Plugin { .. }));
                 assert!(matches!(inner[1], Effect::Plugin { .. }));
-            }
+            },
             other => panic!("expected single Sequential effect, got {:?}", other),
         }
     }
@@ -2963,7 +3167,7 @@ parallel:
         match rule.effects.as_slice() {
             [Effect::Parallel(inner)] => {
                 assert_eq!(inner.len(), 2);
-            }
+            },
             other => panic!("expected single Parallel effect, got {:?}", other),
         }
     }
@@ -3021,12 +3225,14 @@ sequential:
   - "plugin(audit)"
 "#;
         let step = parse_step_yaml(yaml).unwrap();
-        let Step::Rule(rule) = step else { panic!("expected Rule") };
+        let Step::Rule(rule) = step else {
+            panic!("expected Rule")
+        };
         match rule.effects.as_slice() {
             [Effect::Sequential(inner)] => {
                 assert!(matches!(inner[0], Effect::FieldOp { .. }));
                 assert!(matches!(inner[1], Effect::Plugin { .. }));
-            }
+            },
             other => panic!("got {:?}", other),
         }
     }
@@ -3055,7 +3261,9 @@ sequential:
       - "plugin(nemo)"
 "#;
         let step = parse_step_yaml(yaml).unwrap();
-        let Step::Rule(rule) = step else { panic!("expected Rule") };
+        let Step::Rule(rule) = step else {
+            panic!("expected Rule")
+        };
         let Effect::Sequential(outer) = &rule.effects[0] else {
             panic!("expected Sequential");
         };
@@ -3072,10 +3280,7 @@ sequential:
     #[test]
     fn split_respects_quotes_and_parens() {
         // The `:` inside parens / quotes shouldn't be the separator.
-        let r = parse_rule(
-            r#"session.labels contains "a:b": deny"#,
-            "test",
-        ).unwrap();
+        let r = parse_rule(r#"session.labels contains "a:b": deny"#, "test").unwrap();
         assert!(matches!(r.effects.as_slice(), [Effect::Deny { .. }]));
         if let Expression::Condition(Condition::Comparison { value, .. }) = r.condition {
             assert_eq!(value, Literal::String("a:b".into()));
@@ -3099,7 +3304,9 @@ routes:
         let routes = compile_config(yaml).unwrap().routes;
         let route = routes.get("get_compensation").expect("route missing");
         assert_eq!(route.policy.len(), 3);
-        assert!(route.declared_phases().contains(crate::rules::Phase::Policy));
+        assert!(route
+            .declared_phases()
+            .contains(crate::rules::Phase::Policy));
     }
 
     #[test]
@@ -3118,7 +3325,10 @@ routes:
 "#;
         let routes = compile_config(yaml).unwrap().routes;
         assert!(routes.contains_key("apl_route"));
-        assert!(!routes.contains_key("legacy"), "legacy route should be omitted, not compiled");
+        assert!(
+            !routes.contains_key("legacy"),
+            "legacy route should be omitted, not compiled"
+        );
     }
 
     #[test]
@@ -3154,7 +3364,8 @@ routes:
         let msg = format!("{}", err);
         assert!(
             msg.contains("RHS-as-identifier") || msg.contains("garbage_ident"),
-            "error message should reference the failure: {}", msg,
+            "error message should reference the failure: {}",
+            msg,
         );
     }
 
@@ -3205,7 +3416,10 @@ routes:
         }
         // Empty / malformed `run(...)` surfaces a clear, verb-named error.
         let err = parse_step(&serde_yaml::Value::String("run()".to_string()), "test").unwrap_err();
-        assert!(format!("{err}").contains("run("), "error should name `run(...)`: {err}");
+        assert!(
+            format!("{err}").contains("run("),
+            "error should name `run(...)`: {err}"
+        );
     }
 
     #[test]
@@ -3222,7 +3436,7 @@ routes:
             Effect::Taint { label, scopes } => {
                 assert_eq!(label, "audit");
                 assert_eq!(scopes, &vec![TaintScope::Session]);
-            }
+            },
             other => panic!("expected Effect::Taint, got {:?}", other),
         }
     }
@@ -3245,7 +3459,11 @@ routes:
         let routes = compile_config(yaml).unwrap().routes;
         let route = routes.get("authz_check").unwrap();
         match &route.policy[0] {
-            Effect::Pdp { call, on_deny, on_allow } => {
+            Effect::Pdp {
+                call,
+                on_deny,
+                on_allow,
+            } => {
                 assert_eq!(call.dialect, PdpDialect::Cedar);
                 // Cedar args are a map: action + resource (with reaction
                 // keys stripped out).
@@ -3255,7 +3473,7 @@ routes:
                 assert!(!args_map.contains_key(serde_yaml::Value::String("on_deny".into())));
                 assert_eq!(on_deny.len(), 1);
                 assert_eq!(on_allow.len(), 1);
-            }
+            },
             other => panic!("expected Effect::Pdp, got {:?}", other),
         }
     }
@@ -3276,7 +3494,11 @@ routes:
         let routes = compile_config(yaml).unwrap().routes;
         let route = routes.get("authz_check").unwrap();
         match &route.policy[0] {
-            Effect::Pdp { call, on_deny, on_allow } => {
+            Effect::Pdp {
+                call,
+                on_deny,
+                on_allow,
+            } => {
                 assert_eq!(call.dialect, PdpDialect::Cel);
                 let args_map = call.args.as_mapping().expect("cel args should be a map");
                 assert!(args_map.contains_key(serde_yaml::Value::String("expr".into())));
@@ -3284,37 +3506,7 @@ routes:
                 assert!(!args_map.contains_key(serde_yaml::Value::String("on_deny".into())));
                 assert_eq!(on_deny.len(), 1);
                 assert_eq!(on_allow.len(), 0);
-            }
-            other => panic!("expected Effect::Pdp, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn compile_pdp_call_cedarling_map_form() {
-        // `cedarling:` is its own dialect — same map shape as `cedar:`
-        // but routes to the Cedarling-backed resolver in the
-        // PdpRouter, letting cedar-direct and cedarling coexist.
-        let yaml = r#"
-routes:
-  authz_check:
-    policy:
-      - cedarling:
-          action: read
-          resource: employee
-          on_deny:
-            - deny
-"#;
-        let routes = compile_config(yaml).unwrap().routes;
-        let route = routes.get("authz_check").unwrap();
-        match &route.policy[0] {
-            Effect::Pdp { call, on_deny, .. } => {
-                assert_eq!(call.dialect, PdpDialect::Cedarling);
-                let args_map = call.args.as_mapping().expect("cedarling args should be a map");
-                assert!(args_map.contains_key(serde_yaml::Value::String("action".into())));
-                assert!(args_map.contains_key(serde_yaml::Value::String("resource".into())));
-                assert!(!args_map.contains_key(serde_yaml::Value::String("on_deny".into())));
-                assert_eq!(on_deny.len(), 1);
-            }
+            },
             other => panic!("expected Effect::Pdp, got {:?}", other),
         }
     }
@@ -3338,7 +3530,7 @@ routes:
                 // OPA args are a string (the path).
                 assert!(call.args.as_str().unwrap().contains("hr/compensation/deny"));
                 assert_eq!(on_deny.len(), 1);
-            }
+            },
             other => panic!("expected Effect::Pdp, got {:?}", other),
         }
     }
@@ -3356,7 +3548,7 @@ routes:
         match &routes.get("custom_pdp").unwrap().policy[0] {
             Effect::Pdp { call, .. } => {
                 assert_eq!(call.dialect, PdpDialect::Custom("my_engine".into()));
-            }
+            },
             other => panic!("expected Pdp, got {:?}", other),
         }
     }
@@ -3376,8 +3568,7 @@ routes:
         let routes = compile_config(yaml).unwrap().routes;
         let route = routes.get("get_compensation").unwrap();
 
-        let pdp: std::sync::Arc<dyn crate::PdpResolver> =
-            std::sync::Arc::new(NullPdpResolver);
+        let pdp: std::sync::Arc<dyn crate::PdpResolver> = std::sync::Arc::new(NullPdpResolver);
         let plugins: std::sync::Arc<dyn crate::PluginInvoker> =
             std::sync::Arc::new(NullPluginInvoker);
         let delegations: std::sync::Arc<dyn crate::DelegationInvoker> =
@@ -3389,16 +3580,41 @@ routes:
         bag.set("role.hr", true);
         bag.set("delegation.depth", 1_i64);
         assert_eq!(
-            crate::evaluate_effects(&route.policy, &mut bag, &pdp, &plugins, &delegations, crate::DispatchPhase::Pre, &mut crate::route::RoutePayload::new(serde_json::Value::Null)).await.decision,
+            crate::evaluate_effects(
+                &route.policy,
+                &mut bag,
+                &pdp,
+                &plugins,
+                &delegations,
+                crate::DispatchPhase::Pre,
+                &mut crate::route::RoutePayload::new(serde_json::Value::Null)
+            )
+            .await
+            .decision,
             Decision::Allow,
         );
 
         // Same Alice but depth=3 → deny (third rule fires).
         bag.set("delegation.depth", 3_i64);
-        match crate::evaluate_effects(&route.policy, &mut bag, &pdp, &plugins, &delegations, crate::DispatchPhase::Pre, &mut crate::route::RoutePayload::new(serde_json::Value::Null)).await.decision {
+        match crate::evaluate_effects(
+            &route.policy,
+            &mut bag,
+            &pdp,
+            &plugins,
+            &delegations,
+            crate::DispatchPhase::Pre,
+            &mut crate::route::RoutePayload::new(serde_json::Value::Null),
+        )
+        .await
+        .decision
+        {
             Decision::Deny { rule_source, .. } => {
-                assert!(rule_source.contains("policy[2]"), "expected policy[2], got {}", rule_source);
-            }
+                assert!(
+                    rule_source.contains("policy[2]"),
+                    "expected policy[2], got {}",
+                    rule_source
+                );
+            },
             d => panic!("expected Deny, got {:?}", d),
         }
 
@@ -3406,10 +3622,25 @@ routes:
         let mut bag = AttributeBag::new();
         bag.set("authenticated", true);
         bag.set("delegation.depth", 1_i64);
-        match crate::evaluate_effects(&route.policy, &mut bag, &pdp, &plugins, &delegations, crate::DispatchPhase::Pre, &mut crate::route::RoutePayload::new(serde_json::Value::Null)).await.decision {
+        match crate::evaluate_effects(
+            &route.policy,
+            &mut bag,
+            &pdp,
+            &plugins,
+            &delegations,
+            crate::DispatchPhase::Pre,
+            &mut crate::route::RoutePayload::new(serde_json::Value::Null),
+        )
+        .await
+        .decision
+        {
             Decision::Deny { rule_source, .. } => {
-                assert!(rule_source.contains("policy[1]"), "expected policy[1], got {}", rule_source);
-            }
+                assert!(
+                    rule_source.contains("policy[1]"),
+                    "expected policy[1], got {}",
+                    rule_source
+                );
+            },
             d => panic!("expected Deny, got {:?}", d),
         }
     }
@@ -3419,7 +3650,9 @@ routes:
     struct NullPdpResolver;
     #[async_trait::async_trait]
     impl crate::PdpResolver for NullPdpResolver {
-        fn dialect(&self) -> crate::PdpDialect { crate::PdpDialect::Cedar }
+        fn dialect(&self) -> crate::PdpDialect {
+            crate::PdpDialect::Cedar
+        }
         async fn evaluate(
             &self,
             _call: &crate::PdpCall,
@@ -3459,16 +3692,22 @@ routes:
     #[test]
     fn pipeline_chains_split_on_pipe() {
         let p = parse_pipeline("str | mask(4)").unwrap();
-        assert_eq!(p.stages, vec![
-            Stage::Type(TypeCheck::Str),
-            Stage::Mask { keep_last: 4 },
-        ]);
+        assert_eq!(
+            p.stages,
+            vec![Stage::Type(TypeCheck::Str), Stage::Mask { keep_last: 4 },]
+        );
 
         let p = parse_pipeline("int | 0..1M").unwrap();
-        assert_eq!(p.stages, vec![
-            Stage::Type(TypeCheck::Int),
-            Stage::Range { min: Some(0), max: Some(1_000_000) },
-        ]);
+        assert_eq!(
+            p.stages,
+            vec![
+                Stage::Type(TypeCheck::Int),
+                Stage::Range {
+                    min: Some(0),
+                    max: Some(1_000_000)
+                },
+            ]
+        );
     }
 
     #[test]
@@ -3478,7 +3717,7 @@ routes:
         let p = parse_pipeline("str | redact(!perm.view_ssn | role.admin)").unwrap();
         assert_eq!(p.stages.len(), 2);
         match &p.stages[1] {
-            Stage::Redact { condition: Some(_) } => {}
+            Stage::Redact { condition: Some(_) } => {},
             other => panic!("expected Redact with condition, got {:?}", other),
         }
     }
@@ -3486,33 +3725,75 @@ routes:
     #[test]
     fn pipeline_length_constraints() {
         let p = parse_pipeline("len(..500)").unwrap();
-        assert_eq!(p.stages, vec![Stage::Length { min: None, max: Some(500) }]);
+        assert_eq!(
+            p.stages,
+            vec![Stage::Length {
+                min: None,
+                max: Some(500)
+            }]
+        );
         let p = parse_pipeline("len(10..50)").unwrap();
-        assert_eq!(p.stages, vec![Stage::Length { min: Some(10), max: Some(50) }]);
+        assert_eq!(
+            p.stages,
+            vec![Stage::Length {
+                min: Some(10),
+                max: Some(50)
+            }]
+        );
         let p = parse_pipeline("len(8..)").unwrap();
-        assert_eq!(p.stages, vec![Stage::Length { min: Some(8), max: None }]);
+        assert_eq!(
+            p.stages,
+            vec![Stage::Length {
+                min: Some(8),
+                max: None
+            }]
+        );
     }
 
     #[test]
     fn pipeline_range_with_suffixes() {
         let p = parse_pipeline("0..10k").unwrap();
-        assert_eq!(p.stages, vec![Stage::Range { min: Some(0), max: Some(10_000) }]);
+        assert_eq!(
+            p.stages,
+            vec![Stage::Range {
+                min: Some(0),
+                max: Some(10_000)
+            }]
+        );
         let p = parse_pipeline("0..1M").unwrap();
-        assert_eq!(p.stages, vec![Stage::Range { min: Some(0), max: Some(1_000_000) }]);
+        assert_eq!(
+            p.stages,
+            vec![Stage::Range {
+                min: Some(0),
+                max: Some(1_000_000)
+            }]
+        );
         let p = parse_pipeline("..500").unwrap();
-        assert_eq!(p.stages, vec![Stage::Range { min: None, max: Some(500) }]);
+        assert_eq!(
+            p.stages,
+            vec![Stage::Range {
+                min: None,
+                max: Some(500)
+            }]
+        );
     }
 
     #[test]
     fn pipeline_enum_unquoted_and_quoted() {
         let p = parse_pipeline("enum(low, medium, high)").unwrap();
-        assert_eq!(p.stages, vec![Stage::Enum {
-            values: vec!["low".into(), "medium".into(), "high".into()],
-        }]);
+        assert_eq!(
+            p.stages,
+            vec![Stage::Enum {
+                values: vec!["low".into(), "medium".into(), "high".into()],
+            }]
+        );
         let p = parse_pipeline(r#"enum("a", "b")"#).unwrap();
-        assert_eq!(p.stages, vec![Stage::Enum {
-            values: vec!["a".into(), "b".into()],
-        }]);
+        assert_eq!(
+            p.stages,
+            vec![Stage::Enum {
+                values: vec!["a".into(), "b".into()],
+            }]
+        );
     }
 
     #[test]
@@ -3520,14 +3801,14 @@ routes:
         let p = parse_pipeline("str | redact(!perm.view_ssn)").unwrap();
         assert_eq!(p.stages.len(), 2);
         match &p.stages[1] {
-            Stage::Redact { condition: Some(Expression::Not(inner)) } => {
-                match inner.as_ref() {
-                    Expression::Condition(Condition::IsTrue { key }) => {
-                        assert_eq!(key, "perm.view_ssn");
-                    }
-                    other => panic!("expected IsTrue(perm.view_ssn), got {:?}", other),
-                }
-            }
+            Stage::Redact {
+                condition: Some(Expression::Not(inner)),
+            } => match inner.as_ref() {
+                Expression::Condition(Condition::IsTrue { key }) => {
+                    assert_eq!(key, "perm.view_ssn");
+                },
+                other => panic!("expected IsTrue(perm.view_ssn), got {:?}", other),
+            },
             other => panic!("expected Redact with Not condition, got {:?}", other),
         }
     }
@@ -3535,20 +3816,29 @@ routes:
     #[test]
     fn pipeline_taint_scopes() {
         let p = parse_pipeline("taint(PII)").unwrap();
-        assert_eq!(p.stages, vec![Stage::Taint {
-            label: "PII".into(),
-            scopes: vec![TaintScope::Session],
-        }]);
+        assert_eq!(
+            p.stages,
+            vec![Stage::Taint {
+                label: "PII".into(),
+                scopes: vec![TaintScope::Session],
+            }]
+        );
         let p = parse_pipeline("taint(PII, message)").unwrap();
-        assert_eq!(p.stages, vec![Stage::Taint {
-            label: "PII".into(),
-            scopes: vec![TaintScope::Message],
-        }]);
+        assert_eq!(
+            p.stages,
+            vec![Stage::Taint {
+                label: "PII".into(),
+                scopes: vec![TaintScope::Message],
+            }]
+        );
         let p = parse_pipeline("taint(PII, [session, message])").unwrap();
-        assert_eq!(p.stages, vec![Stage::Taint {
-            label: "PII".into(),
-            scopes: vec![TaintScope::Session, TaintScope::Message],
-        }]);
+        assert_eq!(
+            p.stages,
+            vec![Stage::Taint {
+                label: "PII".into(),
+                scopes: vec![TaintScope::Session, TaintScope::Message],
+            }]
+        );
     }
 
     #[test]
@@ -3587,8 +3877,14 @@ routes:
         // Pull out the ssn pipeline and confirm shape.
         let ssn = route.result.iter().find(|f| f.field == "ssn").unwrap();
         assert_eq!(ssn.pipeline.stages.len(), 2);
-        assert!(matches!(ssn.pipeline.stages[0], Stage::Type(TypeCheck::Str)));
-        assert!(matches!(ssn.pipeline.stages[1], Stage::Redact { condition: Some(_) }));
+        assert!(matches!(
+            ssn.pipeline.stages[0],
+            Stage::Type(TypeCheck::Str)
+        ));
+        assert!(matches!(
+            ssn.pipeline.stages[1],
+            Stage::Redact { condition: Some(_) }
+        ));
 
         // declared_phases should include Result and Args now.
         let phases = route.declared_phases();
@@ -3676,7 +3972,10 @@ routes:
         let ovr = route.plugin_overrides.get("rate_limiter").unwrap();
         assert_eq!(ovr.on_error.as_deref(), Some("ignore"));
         let cfg_yaml = ovr.config.as_ref().unwrap();
-        assert_eq!(cfg_yaml["max_requests"], serde_yaml::from_str::<serde_yaml::Value>("10").unwrap());
+        assert_eq!(
+            cfg_yaml["max_requests"],
+            serde_yaml::from_str::<serde_yaml::Value>("10").unwrap()
+        );
 
         // Verify EffectivePlugin::resolve sees the override.
         let eff = crate::plugin_decl::EffectivePlugin::resolve(
@@ -3725,12 +4024,11 @@ policy:
   - "require(authenticated)"
 "#;
         let value: serde_yaml::Value = serde_yaml::from_str(yaml).unwrap();
-        let compiled =
-            compile_policy_block_value("global.policies.hr", &value).expect("compile");
+        let compiled = compile_policy_block_value("global.policies.hr", &value).expect("compile");
         match &compiled.policy[0] {
             crate::rules::Effect::When { source, .. } => {
                 assert_eq!(source, "global.policies.hr.policy[0]");
-            }
+            },
             other => panic!("expected When, got {:?}", other),
         }
     }
@@ -3852,7 +4150,8 @@ policy:
 
     #[test]
     fn parse_delegate_string_with_string_kwargs() {
-        let yaml = r#"- "delegate(workday-oauth, target: workday-api, audience: https://workday.com)""#;
+        let yaml =
+            r#"- "delegate(workday-oauth, target: workday-api, audience: https://workday.com)""#;
         let value: serde_yaml::Value = serde_yaml::from_str(yaml).unwrap();
         let entry = &value.as_sequence().unwrap()[0];
         let step = parse_step(entry, "test.policy[0]").expect("parse");
@@ -3904,7 +4203,8 @@ policy:
         // on_error must NOT also leak into config_override.
         let cfg = ds.config_override.as_ref().unwrap().as_mapping().unwrap();
         assert!(
-            cfg.get(serde_yaml::Value::String("on_error".into())).is_none(),
+            cfg.get(serde_yaml::Value::String("on_error".into()))
+                .is_none(),
             "on_error must not appear in config_override"
         );
     }
@@ -3926,7 +4226,8 @@ policy:
 
     #[test]
     fn parse_delegate_string_quoted_value_preserves_internal_commas() {
-        let yaml = r#"- 'delegate(workday-oauth, audience: "https://workday.com,backup.workday.com")'"#;
+        let yaml =
+            r#"- 'delegate(workday-oauth, audience: "https://workday.com,backup.workday.com")'"#;
         let value: serde_yaml::Value = serde_yaml::from_str(yaml).unwrap();
         let entry = &value.as_sequence().unwrap()[0];
         let step = parse_step(entry, "test.policy[0]").expect("parse");
@@ -3980,7 +4281,10 @@ policy:
         let entry = &value.as_sequence().unwrap()[0];
         let err = parse_step(entry, "test.policy[0]").expect_err("unbalanced");
         let msg = format!("{err}");
-        assert!(msg.contains("unmatched") || msg.contains("unbalanced"), "got: {msg}");
+        assert!(
+            msg.contains("unmatched") || msg.contains("unbalanced"),
+            "got: {msg}"
+        );
     }
 
     #[test]

@@ -13,9 +13,7 @@ an artifact, and the FFI ABI policy that makes the contract durable.
 > (`validator/pii-scan`, `audit/logger`, `identity/jwt`,
 > `delegator/oauth`, `cedar-direct`). Enable it on a manager via
 > `cpex_apl_install` (Go: `PluginManager.EnableAPL()`) after
-> `cpex_manager_new_default` and before `cpex_load_config`. The
-> Cedarling-backed seams are **not** in the default `.a` — build with
-> `cargo build -p cpex-ffi --features cedarling` to include them.
+> `cpex_manager_new_default` and before `cpex_load_config`.
 
 ## What is published
 

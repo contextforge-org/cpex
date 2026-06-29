@@ -15,8 +15,12 @@ use cpex_core::extensions::LLMExtension;
 use std::collections::HashSet;
 
 pub fn extract_llm(llm: &LLMExtension, bag: &mut AttributeBag) {
-    if let Some(v) = &llm.model_id { bag.set("llm.model_id", v.clone()); }
-    if let Some(v) = &llm.provider { bag.set("llm.provider", v.clone()); }
+    if let Some(v) = &llm.model_id {
+        bag.set("llm.model_id", v.clone());
+    }
+    if let Some(v) = &llm.provider {
+        bag.set("llm.provider", v.clone());
+    }
     if !llm.capabilities.is_empty() {
         let caps: HashSet<String> = llm.capabilities.iter().cloned().collect();
         bag.set("llm.capabilities", caps);

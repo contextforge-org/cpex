@@ -17,11 +17,21 @@ use apl_core::AttributeBag;
 use cpex_core::extensions::RequestExtension;
 
 pub fn extract_request(req: &RequestExtension, bag: &mut AttributeBag) {
-    if let Some(v) = &req.environment { bag.set("request.environment", v.clone()); }
-    if let Some(v) = &req.request_id { bag.set("request.request_id", v.clone()); }
-    if let Some(v) = &req.timestamp { bag.set("request.timestamp", v.clone()); }
-    if let Some(v) = &req.trace_id { bag.set("request.trace_id", v.clone()); }
-    if let Some(v) = &req.span_id { bag.set("request.span_id", v.clone()); }
+    if let Some(v) = &req.environment {
+        bag.set("request.environment", v.clone());
+    }
+    if let Some(v) = &req.request_id {
+        bag.set("request.request_id", v.clone());
+    }
+    if let Some(v) = &req.timestamp {
+        bag.set("request.timestamp", v.clone());
+    }
+    if let Some(v) = &req.trace_id {
+        bag.set("request.trace_id", v.clone());
+    }
+    if let Some(v) = &req.span_id {
+        bag.set("request.span_id", v.clone());
+    }
 }
 
 #[cfg(test)]

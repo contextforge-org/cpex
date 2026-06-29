@@ -1,364 +1,184 @@
 <div>
-  <img alt="ContextForge Plugin Extensibility Framework (CPEX) logo" src="https://github.com/contextforge-org/cpex/blob/main/docs/images/cpex_v1.png?raw=true" height=100">
+  <img alt="CPEX logo" src="https://github.com/contextforge-org/cpex/blob/main/docs/images/cpex_v1.png?raw=true" height=100">
 </div>
 
-# CPEX — ContextForge Plugin Extensibility Framework
+# CPEX
 
-<i>A composable enforcement framework for AI agents and toolchains.</i>
+<i>A policy enforcement runtime for AI agents.</i>
 
 [![CI](https://github.com/contextforge-org/cpex/actions/workflows/ci.yml/badge.svg)](https://github.com/contextforge-org/cpex/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
-[![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
-[![PyPI](https://img.shields.io/pypi/v/cpex.svg?color=blue)](https://pypi.org/project/cpex)
+[![crates.io](https://img.shields.io/crates/v/cpex.svg)](https://crates.io/crates/cpex)
+[![docs.rs](https://img.shields.io/docsrs/cpex)](https://docs.rs/cpex)
+[![MSRV](https://img.shields.io/badge/MSRV-1.96-blue.svg)](rust-toolchain.toml)
 
-> [**Read the project vision**](https://contextforge-org.github.io/cpex/docs/vision/) to learn why hooks, plugins, and policy are the path to agent security.
+> [!NOTE]
+> **Looking for CPEX Python?** It now lives on the [`0.1.x` branch](https://github.com/contextforge-org/cpex/tree/0.1.x), maintained for backwards compatibility. `main` (`0.2`+) is the **Rust** framework, re-architected around policy and authorization. The reposition is a re-architecture, not an abandonment. Python bindings (PyO3) over the Rust core are coming.
 
 ## What's CPEX?
 
-CPEX lets you intercept, enforce, and extend application behavior through plugins without modifying core logic.
+CPEX is a policy enforcement runtime for AI agents.
 
-Define hook points in your application, write plugins that attach to them, and compose enforcement pipelines that run automatically.
+It acts as a deterministic reference monitor between an agent and every capability it invokes: tools, prompts, resources, inference providers, and A2A methods. Every operation is evaluated against security state the model cannot observe or influence—identity, delegation chains, information-flow labels, and an append-only audit log.
 
-```python
-from cpex.framework import hook, Plugin, PluginResult
+Instead of scattering authorization, delegation, redaction, auditing, and information-flow controls across application code, CPEX executes them as a single policy-defined pipeline. Identity can be resolved, an external PDP consulted, credentials exchanged, inputs or outputs transformed, session state updated, and the operation audited—all within one deterministic flow.
 
-class RateLimitPlugin(Plugin):
-    @hook("tool_pre_invoke")
-    async def check_rate_limit(self, payload, context):
-        if self.is_over_limit(context):
-            return PluginResult(
-                continue_processing=False,
-                violation=PluginViolation(reason="Rate limit exceeded", code="RATE_LIMIT")
-            )
-        return PluginResult(continue_processing=True)
+<div>
+  <img alt="CPEX mediates every operation an untrusted LLM triggers, evaluating APL policy against identity, delegation, taint, and audit state the model cannot forge" src="https://github.com/contextforge-org/cpex/blob/main/docs/static/images/cpex_overview.png?raw=true" />
+</div>
+
+## Policy lives on the entity
+
+APL is a declarative policy language designed around capabilities rather than requests.
+
+Every entity an agent can invoke—a tool, resource, prompt, or A2A method—owns its own policy. Each policy executes in two phases: before invocation and after the result. Most policies fit comfortably on a single screen.
+
+A route identifies an entity and defines the enforcement pipeline. Predicates decide whether execution may continue (`require`). PDPs evaluate external authorization (`cel`, `cedar`, or custom resolvers). Effects perform enforcement (`delegate`, `redact`, `taint`, `run`). Steps execute deterministically, in order, with only the context they explicitly declare.
+
+## End-to-end enforcement, multiple security contexts
+
+The example below places CPEX between a single agent and three backends: HR records, source repositories, and email. The agent remains unchanged. Policy adapts each operation to the caller's identity, permissions, and session state.
+
+<div>
+  <img alt="One agent serves three users across HR, repo, and email backends; CPEX policy produces a different outcome per identity" src="https://github.com/contextforge-org/cpex/blob/main/docs/static/images/demo_scenario.png?raw=true" />
+</div>
+
+One policy defines three distinct enforcement pipelines, one for each entity.
+
+```yaml
+routes:
+  # HR lookup: gate on role, scope a downstream token, redact by permission, taint the session.
+  - tool: get_compensation
+    policy:
+      - "require(role.hr)"
+      - "delegate(workday-oauth, target: workday-api, permissions: [read_compensation])"
+      - "taint(secret, session)"
+      - "run(audit-log)"
+    result:
+      ssn: "str | redact(!perm.view_ssn)"
+
+  # Repo search: gate on team, decide with CEL (or Cedar), require the scoped grant.
+  - tool: search_repos
+    policy:
+      - "require(team.engineering | team.security)"
+      - cel:
+          expr: "(role.engineer && args.visibility == 'internal') || role.security"
+          on_deny: ["deny('engineers read internal only; security reads any', 'cel.policy_denied')"]
+      - "delegate(github-oauth, target: github-api, permissions: [repo:read:internal])"
+      - "run(audit-log)"
+
+  # Outbound email: refuse if the session already touched secret data.
+  - tool: send_email
+    policy:
+      - "require(perm.email_send)"
+      - "run(pii-scan)"
+      - "security.labels contains \"secret\": deny('write-down blocked', 'session_tainted')"
+      - "run(audit-log)"
 ```
 
-Register the plugin, and it runs at every hook invocation. No changes to your application logic.
+Two examples illustrate the behavior:
+
+- **Same request, different result.** An HR analyst with `view_ssn` receives the full record. Without that permission, the SSN is redacted before the response leaves CPEX. Engineers never reach the backend because the request is rejected by `require(role.hr)`.
+
+- **Information follows the session.** Reading compensation data taints the session. Later attempts to send external email are blocked—even if the email itself contains no sensitive content.
+
+The application stays the same. Only the policy changes.
+
+## Beyond request-level authorization
+
+RBAC, ABAC, Cedar, OPA, AuthZEN, and similar systems answer an important question:
+
+> Should this request be allowed?
+
+CPEX answers a broader one:
+
+> What security pipeline should execute for this agent operation?
+
+That pipeline can combine request authorization with credential delegation, response transformation, information-flow tracking, auditing, and session state into a single deterministic policy.
+
+Three capabilities distinguish this model:
+
+- **Information flow across operations.** Policy can carry security state across an entire agent session, preventing write-down and other cross-call attacks rather than evaluating each request in isolation.
+
+- **Delegation as policy.** OAuth token exchange (RFC 8693), capability reduction, and downstream credential verification become ordinary policy steps instead of bespoke integration code.
+
+- **Decision orchestration.** Existing authorization systems remain the source of truth. APL invokes Cedar, CEL, OPA, AuthZEN, or custom resolvers wherever a decision is needed, while CPEX enforces the resulting security pipeline.
+
+## Where it runs
+
+CPEX enforces policy wherever an agent crosses a trust boundary.
+
+It can run in front of tool servers, beside an agent as an egress sidecar, inside an agent framework, or as middleware between components. The enforcement point can move without changing policy, allowing the same APL configuration to span gateways, agents, and services.
 
 ## Install
 
 ```bash
-pip install cpex
+# Engine only (bring your own plugins):
+cargo add cpex
+
+# With the bundled builtin plugins/PDPs:
+cargo add cpex --features builtins
 ```
 
-## Why CPEX?
+The default `cpex = "0.2"` is the **engine alone**. Opt into the bundled extension set with the `builtins` feature, everything (incl. the Valkey session store) with `full`, or a granular subset: `jwt`, `oauth`, `pii`, `audit`, `cedar`, `cel`, `valkey`.
 
-AI agents execute across trust domains, calling tools, accessing data, and delegating to other agents. Adding security, governance, or policy enforcement typically means embedding that logic directly into application code, leading to duplication, tight coupling, and drift.
+```rust
+use std::sync::Arc;
+use cpex::PluginManager;
 
-CPEX introduces **standardized interception hooks** between your application and its operations. Plugins attach to these hooks and run automatically, keeping enforcement logic separate from business logic.
+let mgr = Arc::new(PluginManager::default());
 
-**What you can build with CPEX:**
-
-- **Security** — access control, prompt injection detection, data loss prevention
-- **Observability** — request tracing, audit logging, metrics collection
-- **Governance** — policy enforcement, compliance validation, approval workflows
-- **Reliability** — rate limiting, circuit breakers, response validation
-
-CPEX is designed for modern **AI and agent systems**, but works equally well for any application that needs **safe, modular extensibility**.
-
-## How It Works
-
-Your application defines **hooks** — named interception points before and after critical operations. Plugins register against these hooks and execute automatically when triggered.
-
-```
-Application  →  Hook Point  →  Plugin Manager  →  Application (remaining processing)  →  Result
-                                     │
-                              ┌──────┼──────┐
-                              ▼      ▼      ▼
-                          Plugin  Plugin  Plugin
+// With a builtins feature enabled, register every enabled builtin factory
+// and install the APL config visitor in one call:
+cpex::install_builtins(&mgr);
+// ... then load an APL config that references the enabled plugin `kind`s.
 ```
 
-The plugin manager handles registration, ordering, execution, timeouts, and error isolation. You get a deterministic pipeline with no surprises.
+Authoring plugins or PDP resolvers? Depend on the lean [`cpex-sdk`](crates/cpex-sdk) crate instead of the full runtime. See [`crates/cpex-core/examples`](crates/cpex-core/examples) for runnable examples.
 
-## Core Concepts
+## Documentation
 
-### Hooks
+- [**Vision**](https://contextforge-org.github.io/cpex/docs/vision/): the reference-monitor model and where CPEX sits.
+- [**Overview**](https://contextforge-org.github.io/cpex/docs/overview/): the model in motion, with the scenario above end to end.
+- [**APL**](https://contextforge-org.github.io/cpex/docs/apl/): the policy language: predicates, effects, sequencing, field pipelines.
+- [**Quick Start**](https://contextforge-org.github.io/cpex/docs/quickstart/): stand up CPEX as an enforcement point.
 
-A hook is a named interception point in your application. You define a hook where you want plugins to be able to run, then call it there.
+## Workspace layout
 
-**Define hook models:**
+CPEX is a Cargo workspace of focused crates:
 
-```python
-from cpex.framework import PluginPayload, PluginResult
+| Crate | Description |
+|-------|-------------|
+| [`cpex`](crates/cpex) | Host facade, re-exports the runtime and (optionally) the builtins |
+| [`cpex-core`](crates/cpex-core) | Plugin runtime: `PluginManager`, executor, hooks, config |
+| [`cpex-sdk`](crates/cpex-sdk) | Plugin author SDK: `Plugin`/`HookHandler` traits, payloads, results |
+| [`cpex-orchestration`](crates/cpex-orchestration) | Async concurrency primitives shared by the runtime |
+| [`cpex-builtins`](crates/cpex-builtins) | Feature-gated bundle of builtin plugins, PDPs, session stores |
+| [`cpex-ffi`](crates/cpex-ffi) | C FFI (`cdylib`/`staticlib`) for Go / Python / WASM host bindings |
+| [`apl-core`](crates/apl-core) · [`apl-cmf`](crates/apl-cmf) · [`apl-cpex`](crates/apl-cpex) | APL (Authorization Policy Language): compiler/evaluator, CMF bridge, CPEX integration |
+| `builtins/*` | Bundled plugins (PII scanner, audit logger, JWT identity, OAuth/Biscuit delegation), PDPs (Cedar, CEL), and the Valkey session store |
 
-class EmailPayload(PluginPayload):
-    recipient: str
-    subject: str
-    body: str
+The C FFI is distributed as signed prebuilt artifacts. See [`crates/cpex-ffi/RELEASE.md`](crates/cpex-ffi/RELEASE.md). Go bindings live in [`go/cpex`](go/cpex).
 
-EmailResult = PluginResult[EmailPayload]
+## Development
+
+CPEX targets Rust **1.96** (pinned in [`rust-toolchain.toml`](rust-toolchain.toml)). Common tasks:
+
+```bash
+make lint        # rustfmt --check + clippy -D warnings
+make test        # cargo test --workspace
+make audit       # cargo deny check (advisories, licenses, bans, sources)
+make examples-build   # build all Rust + Go examples
+make ci          # the full local gate (lint + test + examples)
 ```
 
-**Register it:**
-
-```python
-from cpex.framework.hooks.registry import get_hook_registry
-
-registry = get_hook_registry()
-registry.register_hook("email_pre_send", EmailPayload, EmailResult)
-```
-
-**Call the hook in your application:**
-
-```python
-async def send_email(recipient: str, subject: str, body: str):
-    payload = EmailPayload(recipient=recipient, subject=subject, body=body)
-    context = GlobalContext(request_id="req-123")
-
-    result, _ = await manager.invoke_hook("email_pre_send", payload, context)
-
-    if not result.continue_processing:
-        raise PolicyError(result.violation.reason)
-
-    # proceed with sending
-    await smtp.send(payload.recipient, payload.subject, payload.body)
-```
-
-CPEX also ships with built-in hooks for common AI operations (`tool_pre_invoke`, `tool_post_invoke`, `prompt_pre_fetch`, `prompt_post_fetch`, `resource_pre_fetch`, `resource_post_fetch`, `agent_pre_invoke`, `agent_post_invoke`). These follow the same pattern and are ready to use without registration.
-
-### Plugins
-
-A plugin is a class that implements one or more hook handlers. Use the `@hook` decorator to attach a method to any hook by name:
-
-```python
-from cpex.framework import hook, Plugin, PluginViolation, PluginResult
-
-class EmailFilterPlugin(Plugin):
-    @hook("email_pre_send")
-    async def block_external_domains(self, payload: EmailPayload, context) -> PluginResult:
-        allowed = self.config.config.get("allowed_domains", [])
-        domain = payload.recipient.split("@")[-1]
-
-        if allowed and domain not in allowed:
-            return PluginResult(
-                continue_processing=False,
-                violation=PluginViolation(
-                    reason="Domain not allowed",
-                    code="DOMAIN_BLOCKED",
-                    details={"domain": domain}
-                )
-            )
-
-        return PluginResult(continue_processing=True)
-```
-
-The `@hook` decorator decouples method names from hook names, which is useful when a plugin handles multiple hooks or when names would otherwise conflict.
-
-For built-in hooks, you can also use the naming convention directly (method name matches hook name) without a decorator:
-
-```python
-class ContentFilterPlugin(Plugin):
-    async def tool_pre_invoke(self, payload: ToolPreInvokePayload, context: PluginContext) -> ToolPreInvokeResult:
-        blocked = self.config.config.get("blocked_tools", [])
-        if payload.name in blocked:
-            return ToolPreInvokeResult(
-                continue_processing=False,
-                violation=PluginViolation(reason="Tool blocked by policy", code="TOOL_BLOCKED")
-            )
-        return ToolPreInvokeResult(continue_processing=True)
-```
-
-A plugin method can:
-
-- **Allow** execution to continue
-- **Block** execution with a violation
-- **Modify** the payload (using copy-on-write isolation)
-
-### Execution Modes
-
-Plugins run in phases in this order:
-
-```
-sequential → transform → audit → concurrent → fire_and_forget
-```
-
-| Mode | Execution | Can block? | Can modify? | State merged? | Use case |
-|------|-----------|:-----------:|:-----------:|:-------------:|---------|
-| `sequential` | Serial, chained | Yes | Yes | Yes | Policy enforcement + transformation |
-| `transform` | Serial, chained | No | Yes | Yes | Data transformation (redaction, rewriting) |
-| `audit` | Serial | No | No | No | Logging, monitoring, metrics |
-| `concurrent` | Parallel, fail-fast | Yes | No | Yes | Independent policy gates |
-| `fire_and_forget` | Background, after all phases | No | No | No | Telemetry, audit logs |
-| `disabled` | Not loaded | — | — | — | Plugin off |
-
-- **`sequential`** plugins are awaited one at a time in priority order. Each receives the chained output of the previous plugin. Can halt the pipeline and modify payloads. Use for enforcement + transformation.
-- **`transform`** plugins are awaited one at a time after all sequential plugins. Can modify payloads but blocking attempts are suppressed. Use for data transformation pipelines (PII redaction, prompt rewriting) that should not have policy-enforcement power.
-- **`audit`** plugins are awaited one at a time after transform. Observe-only: payload modifications are discarded and violations are logged but do not block. Use for monitoring, auditing, and gradual rollout of policies.
-- **`concurrent`** plugins are dispatched in parallel after audit. Can halt the pipeline (fail-fast on first blocking result) but payload modifications are discarded to avoid non-deterministic last-writer-wins races. Use for independent policy gates.
-- **`fire_and_forget`** plugins are dispatched as background tasks after all other phases. They receive an isolated snapshot. Cannot block or modify. Use for telemetry and async side effects.
-
-Error handling is configured separately with `on_error`, independent of mode:
-
-| `on_error` | Behavior |
-|-----------|---------|
-| `fail` | Pipeline halts, error propagates (default) |
-| `ignore` | Error logged; pipeline continues |
-| `disable` | Error logged; plugin auto-disabled; pipeline continues |
-
-### Plugin Manager
-
-The `PluginManager` orchestrates everything:
-
-```python
-from cpex.framework import PluginManager, GlobalContext
-from cpex.framework.hooks.tools import ToolPreInvokePayload
-
-manager = PluginManager("plugins/config.yaml")
-await manager.initialize()
-
-context = GlobalContext(request_id="req-123", user="alice")
-payload = ToolPreInvokePayload(name="web_search", args={"query": "CPEX framework"})
-
-result, plugin_contexts = await manager.invoke_hook("tool_pre_invoke", payload, context)
-
-if result.continue_processing:
-    # Proceed — use result.modified_payload if a plugin transformed it
-    pass
-else:
-    # A plugin blocked execution
-    print(f"Blocked: {result.violation.reason}")
-```
-
-## Configuration
-
-Plugins are configured in YAML:
-
-```yaml
-plugin_dirs:
-  - ./plugins
-
-plugins:
-  - name: email_filter
-    kind: my_app.plugins.EmailFilterPlugin
-    version: 1.0.0
-    hooks:
-      - email_pre_send
-    mode: sequential
-    priority: 10
-    config:
-      allowed_domains:
-        - company.com
-        - partner.org
-```
-
-### Priority
-
-Plugins are scheduled by mode, and execute in priority order within each phase (lower number = higher priority). Use this to ensure enforcement runs before transformation, and transformation runs before logging.
-
-**Plugin Scheduling**
-
-At each hook invocation, plugins are grouped and scheduled by execution mode, following a strict phase order:
-
-```
-sequential → transform → audit → concurrent → fire_and_forget
-```
-
-Within `sequential`, `transform`, and `audit` phases, plugins execute in **priority order** (lower number = higher priority, e.g., `10` runs before `20`).
-
-### Conditions
-
-Restrict plugins to specific contexts:
-
-```yaml
-plugins:
-  - name: tenant_plugin
-    kind: my_app.plugins.TenantPlugin
-    hooks:
-      - tool_pre_invoke
-    mode: sequential
-    conditions:
-      - tenant_ids: [tenant-1, tenant-2]
-        server_ids: [server-prod]
-```
-
-## Testing
-
-Plugins are plain async classes — test them directly:
-
-```python
-import pytest
-from cpex.framework import PluginConfig, GlobalContext, PluginContext
-
-@pytest.mark.asyncio
-async def test_email_filter_blocks_external_domain():
-    config = PluginConfig(
-        name="test_filter",
-        kind="my_app.plugins.EmailFilterPlugin",
-        version="1.0.0",
-        hooks=["email_pre_send"],
-        config={"allowed_domains": ["company.com"]}
-    )
-    plugin = EmailFilterPlugin(config)
-
-    payload = EmailPayload(recipient="user@external.com", subject="Hello", body="...")
-    context = PluginContext(global_context=GlobalContext(request_id="test-1"))
-
-    result = await plugin.block_external_domains(payload, context)
-    assert result.continue_processing is False
-    assert result.violation.code == "DOMAIN_BLOCKED"
-```
-
-## External Plugins
-
-Plugins can run as standalone services, connected over MCP (Streamable HTTP), gRPC, or Unix domain sockets.
-
-```yaml
-plugins:
-  - name: remote_validator
-    kind: external
-    hooks:
-      - tool_pre_invoke
-    mode: sequential
-    mcp:
-      proto: STREAMABLEHTTP
-      url: https://plugin-server.example.com
-      tls:
-        certfile: /path/to/client-cert.pem
-        keyfile: /path/to/client-key.pem
-        ca_bundle: /path/to/ca-bundle.pem
-```
-
-Build an external plugin server with the built-in `ExternalPluginServer`:
-
-```python
-from cpex.framework import ExternalPluginServer
-
-server = ExternalPluginServer(plugins=[MyPlugin(config)])
-server.run()
-```
-
-## Isolated plugins
-
-Native plugins can be run in a separate python virtual environment (venv) to prevent them from interfering with the host environment.  Plugin specific packages are automatically installed based on the contents of the supplied requirements_file.  
-
-```yaml
-  - name: "test_plugin"
-    kind: "isolated_venv"
-    version: "0.1.0"
-    hooks: ["prompt_pre_fetch", "prompt_post_fetch", "tool_pre_invoke", "tool_post_invoke"]
-    tags: ["plugin"]
-    mode: "sequential"
-    priority: 150
-    conditions:
-      # Apply to specific tools/servers
-      - server_ids: []  # Apply to all servers
-        tenant_ids: []  # Apply to all tenants
-    config:
-      # Plugin config dict passed to the plugin constructor
-      class_name: "test_plugin.plugin.TestPlugin"
-      requirements_file: "requirements.txt"
-      # essentially the plugin folder hosting the plugin relative to the project root
-      script_path: "plugins"
-```
-
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the full workflow and [SECURITY.md](SECURITY.md) to report vulnerabilities.
 
 ## Project Status
 
-CPEX is under active development as part of the [ContextForge](https://github.com/contextforge-org) ecosystem. The framework is designed to work across AI gateways, agent frameworks, LLM proxies, and tool servers.
+CPEX is under active development as part of the ContextForge ecosystem.
 
-## Contributing
-
-Contributions are welcome. Open an issue, propose a plugin, or submit a pull request.
+The project is designed as a reusable enforcement layer for agentic systems, integrating with AI gateways, agent frameworks, LLM proxies, MCP servers, and other capability providers through a common policy model.
 
 ## License
 

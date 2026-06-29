@@ -90,19 +90,18 @@ impl HookHandler<IdentityHook> for RecordingResolver {
         // `filter_extensions(&ext, &caps)` BEFORE handing us `ext`,
         // so this snapshot reflects exactly what our declared
         // capabilities expose.
-        *self.extensions_observation.lock().unwrap() =
-            Some(IdentityExtensionsObservation {
-                saw_subject_id: ext
-                    .security
-                    .as_ref()
-                    .and_then(|s| s.subject.as_ref())
-                    .and_then(|s| s.id.clone()),
-                saw_labels: ext
-                    .security
-                    .as_ref()
-                    .map(|s| s.labels.iter().cloned().collect())
-                    .unwrap_or_default(),
-            });
+        *self.extensions_observation.lock().unwrap() = Some(IdentityExtensionsObservation {
+            saw_subject_id: ext
+                .security
+                .as_ref()
+                .and_then(|s| s.subject.as_ref())
+                .and_then(|s| s.id.clone()),
+            saw_labels: ext
+                .security
+                .as_ref()
+                .map(|s| s.labels.iter().cloned().collect())
+                .unwrap_or_default(),
+        });
 
         let mut updated = payload.clone();
         updated.subject = Some(SubjectExtension {
@@ -149,8 +148,9 @@ impl PluginFactory for RecordingFactory {
                 .clone()
                 .unwrap_or_else(|| Arc::new(Mutex::new(None))),
         });
-        let adapter: Arc<dyn AnyHookHandler> =
-            Arc::new(TypedHandlerAdapter::<IdentityHook, _>::new(Arc::clone(&plugin)));
+        let adapter: Arc<dyn AnyHookHandler> = Arc::new(
+            TypedHandlerAdapter::<IdentityHook, _>::new(Arc::clone(&plugin)),
+        );
         Ok(PluginInstance {
             plugin: plugin as Arc<dyn Plugin>,
             handlers: vec![(HOOK_IDENTITY_RESOLVE, adapter)],
@@ -631,10 +631,7 @@ routes:
 
     // Only the route's step ran — global and tag-bundle layers
     // were dropped because `replace_inherited: true`.
-    assert_eq!(
-        ledger.lock().unwrap().clone(),
-        vec!["legacy-basic-auth"],
-    );
+    assert_eq!(ledger.lock().unwrap().clone(), vec!["legacy-basic-auth"],);
 }
 
 /// `replace_inherited: true` + `steps: []` — the explicit

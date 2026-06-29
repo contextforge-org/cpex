@@ -3,165 +3,65 @@ title: "Quick Start"
 weight: 20
 ---
 
-# Your First Plugin in 5 Minutes
+# Quick Start
 
-This guide walks you through installing CPEX, writing a plugin, configuring it, and running it.
+This walks through standing up CPEX as an enforcement point and running the [scenario]({{< relref "/docs/overview" >}}): the `get_employee` route that authorizes by role and redacts a field by permission.
 
-## Install
+## 1. Add CPEX
 
 ```bash
-pip install cpex
+cargo add cpex --features builtins
 ```
 
-## What Are Plugins?
+The `builtins` feature compiles in the bundled plugins and PDPs (JWT identity, OAuth delegation, PII scanner, audit logger, Cedar, CEL). For a smaller build, opt into a granular subset: `jwt`, `cedar`, `pii`, and so on (see [Builtins]({{< relref "/docs/builtins" >}})).
 
-Plugins let you intercept and modify execution at well-defined points — without changing the targeted application code.
+## 2. Register the runtime
 
-You define **hooks** in your application where you want extensibility. Plugins attach to those hooks and run automatically whenever they fire.
+Create a `PluginManager`, register the enabled builtin factories, and install the APL config visitor in one call:
 
-## 1. Write a Plugin
+```rust
+use std::sync::Arc;
+use cpex::PluginManager;
 
-A plugin is a class that subclasses `Plugin` and implements one or more hook handlers. Here you will create a plugin that blocks specific tools by name.
-
-Create a file `plugins/tool_blocker.py`:
-
-```python
-import logging
-
-from cpex.framework import (
-    Plugin,
-    PluginConfig,
-    PluginContext,
-    PluginViolation,
-    ToolPreInvokePayload,
-    ToolPreInvokeResult,
-)
-
-log = logging.getLogger(__name__)
-
-
-class ToolBlockerPlugin(Plugin):
-    def __init__(self, config: PluginConfig):
-        super().__init__(config)
-        self._blocked = set(config.config.get("blocked_tools", []))
-
-    async def tool_pre_invoke(
-        self, payload: ToolPreInvokePayload, context: PluginContext
-    ) -> ToolPreInvokeResult:
-        if payload.name in self._blocked:
-            log.warning("Blocked tool: %s", payload.name)
-            return ToolPreInvokeResult(
-                continue_processing=False,
-                violation=PluginViolation(
-                    reason=f"Tool '{payload.name}' is not allowed",
-                    description="This tool has been blocked by policy.",
-                    code="TOOL_BLOCKED",
-                ),
-            )
-        return ToolPreInvokeResult(continue_processing=True)
+let mgr = Arc::new(PluginManager::default());
+cpex::install_builtins(&mgr);
 ```
 
-The method name `tool_pre_invoke` matches the hook name — CPEX discovers it automatically. No decorator needed.
+After this, the manager knows every builtin `kind` your features enabled, and APL routes can reference them.
 
-## 2. Configure the Plugin
+## 3. Write the policy
 
-Create `plugins/config.yaml`:
+APL configs loaded into the manager use the map-keyed `routes:` form, keyed by route name. This route authorizes by role and redacts on the wire by permission:
 
 ```yaml
-plugin_dirs:
-  - ./plugins
-
-plugins:
-  - name: tool_blocker
-    kind: plugins.tool_blocker.ToolBlockerPlugin
-    version: "1.0.0"
-    hooks:
-      - tool_pre_invoke
-    mode: sequential
-    priority: 10
-    config:
-      blocked_tools:
-        - dangerous_tool
-        - admin_delete
+routes:
+  get_employee:
+    args:
+      employee_id: "str"
+    policy:
+      - "require(authenticated)"
+      - "require(role.hr)"
+    result:
+      ssn: "str | redact(!perm.view_ssn)"
+      salary: "int | redact(!role.hr)"
+      employee_id: "str | mask(4)"
 ```
 
-Key fields:
+The `require(authenticated)` and `require(role.hr)` predicates read attributes resolved from the caller's verified token. How those attributes get populated is covered in [Identity]({{< relref "/docs/apl/identity" >}}); for now, an identity plugin (for example `identity/jwt`) resolves the subject and roles before policy runs.
 
-- **`kind`** — fully qualified class path to your plugin
-- **`hooks`** — which hook points this plugin handles
-- **`mode`** — execution mode (`sequential` lets you block *and* modify)
-- **`priority`** — lower numbers run first (10 runs before 100)
-- **`config`** — plugin-specific settings passed to your constructor
+## 4. Run it
 
-## 3. Run the Pipeline
+Load the config into the manager and dispatch operations through it. The four phases run automatically: `args` validates `employee_id`, `policy` authorizes, `result` redacts. See [`crates/cpex-core/examples`](https://github.com/contextforge-org/cpex/tree/main/crates/cpex-core/examples) for runnable end-to-end programs that load a config and invoke a route.
 
-```python
-import asyncio
-from cpex.framework import (
-    GlobalContext,
-    PluginManager,
-    ToolPreInvokePayload,
-)
+The outcome matches the scenario:
 
+- An HR caller with `view_ssn` receives the full record.
+- An HR caller without `view_ssn` receives the record with `ssn` redacted before it leaves CPEX.
+- A non-HR caller is denied at `require(role.hr)`; the call never reaches the backend.
 
-async def main():
-    manager = PluginManager("plugins/config.yaml")
-    await manager.initialize()
+## Next
 
-    payload = ToolPreInvokePayload(name="dangerous_tool", args={"target": "production"})
-    context = GlobalContext(request_id="req-001", user="alice")
-
-    result, _ = await manager.invoke_hook("tool_pre_invoke", payload, context)
-
-    if result.continue_processing:
-        print("Allowed — proceed with tool call")
-    else:
-        print(f"Blocked: {result.violation.reason}")
-        # Output: Blocked: Tool 'dangerous_tool' is not allowed
-
-    await manager.shutdown()
-
-
-asyncio.run(main())
-```
-
-That's it. Three files — a plugin, a config, and a driver — and you have a working enforcement pipeline.
-
----
-
-## Alternative: The `@hook` Decorator
-
-If you want the method name to differ from the hook name, use the `@hook` decorator:
-
-```python
-from cpex.framework import hook, Plugin, PluginContext, ToolPreInvokePayload, ToolPreInvokeResult
-
-
-class ToolBlockerPlugin(Plugin):
-    @hook("tool_pre_invoke")
-    async def check_tool_access(
-        self, payload: ToolPreInvokePayload, context: PluginContext
-    ) -> ToolPreInvokeResult:
-        # same logic as before
-        return ToolPreInvokeResult(continue_processing=True)
-```
-
-The decorator is also useful when a single plugin handles multiple hooks — you can give each method a descriptive name without worrying about naming collisions.
-
----
-
-## Using `get_plugin_manager`
-
-For applications that configure CPEX through environment variables (`PLUGINS_ENABLED=true`, `PLUGINS_CONFIG_FILE=plugins/config.yaml`), you can use the singleton helper instead of constructing the manager directly:
-
-```python
-from cpex.framework import get_plugin_manager
-
-manager = get_plugin_manager()
-if manager:
-    await manager.initialize()
-```
-
-## Next Steps
-
-Now that you have a working plugin, learn how hooks work in detail: [Hooks]({{< relref "/docs/hooks" >}}).
+- [APL]({{< relref "/docs/apl" >}}): the full language: predicates, effects, field pipelines, phases.
+- [Identity]({{< relref "/docs/apl/identity" >}}): resolving callers into the attributes policy reads.
+- [PDP Integration]({{< relref "/docs/apl/pdp" >}}): delegating decisions to Cedar, CEL, or an external engine.
+- [Delegation]({{< relref "/docs/apl/delegation" >}}): minting scoped downstream credentials.

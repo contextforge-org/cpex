@@ -38,7 +38,7 @@
 //
 //   2. `identity`   — derived: sha256(sub : caller_workload : this_workload)[:16].
 //      No special infrastructure needed; the triple is already populated
-//      by `apl-identity-jwt`'s claim mapping. Same user + same agent +
+//      by `cpex-plugin-identity-jwt`'s claim mapping. Same user + same agent +
 //      same gateway = same session, stable across token refresh (the
 //      claims are stable even when the token string isn't).
 //
@@ -49,7 +49,7 @@
 //
 // Each tier reads from a typed `Extensions` field, not raw JWT/HTTP
 // payloads — those have already been mapped by upstream identity
-// plugins (apl-identity-jwt). The resolver stays free of crypto /
+// plugins (cpex-plugin-identity-jwt). The resolver stays free of crypto /
 // parsing logic.
 
 use cpex_core::extensions::Extensions;
@@ -121,7 +121,7 @@ fn subject_scoped(subject_id: Option<&str>, raw: &str) -> Option<String> {
 /// a single gateway and single agent.
 pub fn resolve_session(ext: &Extensions) -> Option<(String, SessionSource)> {
     // The authenticated subject, populated by the identity resolvers
-    // (apl-identity-jwt) before this runs. Every client/upstream-supplied
+    // (cpex-plugin-identity-jwt) before this runs. Every client/upstream-supplied
     // session value below is bound to it so one principal can't address
     // another's session bucket.
     let subject_id = ext

@@ -192,7 +192,7 @@ where
                     // (vs. being silently lost). The drain loop
                     // continues until JoinSet is empty.
                 }
-            }
+            },
             Err(e) => {
                 // A task either panicked or was cancelled by
                 // `abort_all`. JoinError exposes the task `Id`, which
@@ -206,7 +206,7 @@ where
                         slots[idx] = Some(BranchOutcome::Panicked(payload));
                     }
                 }
-            }
+            },
         }
     }
 
@@ -245,8 +245,8 @@ pub type ErasedBranch<T> = BoxFuture<'static, T>;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
 
     fn no_deny<T>(_: &T) -> bool {
         false
@@ -269,7 +269,10 @@ mod tests {
 
         let out = run_branches(
             branches,
-            BranchConfig { timeout_per_branch: None, short_circuit_on_deny: false },
+            BranchConfig {
+                timeout_per_branch: None,
+                short_circuit_on_deny: false,
+            },
             no_deny::<usize>,
         )
         .await;
@@ -399,10 +402,8 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn panic_inside_branch_does_not_take_down_orchestrator() {
-        let branches: Vec<BoxFuture<'static, i32>> = vec![
-            Box::pin(async { panic!("boom") }),
-            Box::pin(async { 42 }),
-        ];
+        let branches: Vec<BoxFuture<'static, i32>> =
+            vec![Box::pin(async { panic!("boom") }), Box::pin(async { 42 })];
         let out = run_branches(
             branches,
             BranchConfig {
@@ -413,7 +414,9 @@ mod tests {
         )
         .await;
         // Branch 1 must complete despite branch 0's panic.
-        assert!(out.iter().any(|o| matches!(o, BranchOutcome::Completed(42))));
+        assert!(out
+            .iter()
+            .any(|o| matches!(o, BranchOutcome::Completed(42))));
         assert!(out.iter().any(|o| matches!(o, BranchOutcome::Panicked(_))));
     }
 

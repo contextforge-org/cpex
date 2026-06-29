@@ -16,10 +16,18 @@ use apl_core::AttributeBag;
 use cpex_core::extensions::FrameworkExtension;
 
 pub fn extract_framework(f: &FrameworkExtension, bag: &mut AttributeBag) {
-    if let Some(v) = &f.framework { bag.set("framework.framework", v.clone()); }
-    if let Some(v) = &f.framework_version { bag.set("framework.framework_version", v.clone()); }
-    if let Some(v) = &f.node_id { bag.set("framework.node_id", v.clone()); }
-    if let Some(v) = &f.graph_id { bag.set("framework.graph_id", v.clone()); }
+    if let Some(v) = &f.framework {
+        bag.set("framework.framework", v.clone());
+    }
+    if let Some(v) = &f.framework_version {
+        bag.set("framework.framework_version", v.clone());
+    }
+    if let Some(v) = &f.node_id {
+        bag.set("framework.node_id", v.clone());
+    }
+    if let Some(v) = &f.graph_id {
+        bag.set("framework.graph_id", v.clone());
+    }
     // metadata is a HashMap<String, Value> — flatten the same way args/result do.
     for (k, v) in &f.metadata {
         crate::payload::walk(v, &format!("framework.metadata.{}", k), bag);

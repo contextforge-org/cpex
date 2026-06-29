@@ -23,6 +23,11 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+rust-version.workspace = true
 
 [lib]
 
@@ -32,3 +37,6 @@ futures = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
+
+[lints]
+workspace = true

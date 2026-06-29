@@ -1,0 +1,65 @@
+# Location: ./builtins/pdps/cedar-direct/Cargo.toml
+# Copyright 2025
+# SPDX-License-Identifier: Apache-2.0
+# Authors: Teryl Taylor
+#
+# cpex-pdp-cedar-direct — a `PdpResolver` implementation that wraps the bare
+# `cedar-policy` crate (Amazon's Cedar engine, no JWT validation, no policy
+# store loading, no Lock Server integration).
+#
+# Use when the host already has identity validated (via gateway, SPIFFE,
+# prior plugin, or JWT validation) and policies are loaded as text/files at
+# startup and don't change at runtime. Smallest dep tree; ~5 transitive
+# crates.
+
+[package]
+name = "cpex-pdp-cedar-direct"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "CPEX PDP — Amazon Cedar policy evaluation."
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+apl-core = { workspace = true }
+# Permissive caret spec — `"4"` means "any 4.x that Cargo can find."
+#
+# Code-side note: we use `Request::new(...)` (added in 4.11 alongside
+# the deprecated builder; still available in older 4.x via the
+# constructor form). Tracked separately if we ever need to support
+# pre-4.x or post-5.x.
+cedar-policy = "4"
+# Stack-growth guard for the cedar evaluation path. cedar-policy-core aborts
+# with "recursion limit reached" when `stacker::remaining_stack()` is below
+# ~100 KiB; hosts that hand the FFI a small thread stack (musl defaults to
+# 128 KiB) trip that on inputs glibc's 8 MiB stack handles fine. We use the
+# same crate cedar does — 0.1.x dedups with cedar's transitive pin — to grow
+# onto a fresh segment before calling in. See `evaluate`.
+stacker = "0.1"
+async-trait = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+# End-to-end integration tests wire the cedar-direct factory through the
+# apl-cpex visitor and exercise it against a real `PluginManager`. These
+# dev-dep edges only exist for tests — the crate itself stays
+# apl-core-only at compile time so it can be used standalone (e.g. in a
+# custom orchestrator that doesn't go through apl-cpex at all).
+apl-cmf = { workspace = true }
+apl-cpex = { workspace = true }
+cpex-core = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }
+# Minimal executor for the small-stack regression test (tests/small_stack_eval.rs):
+# drives the async `evaluate` without tokio's larger per-call stack footprint, so
+# the 128 KiB test thread exercises the maybe_grow path, not the runtime.
+futures = { workspace = true }
+
+[lints]
+workspace = true

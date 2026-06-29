@@ -16,6 +16,12 @@ edition = "2021"
 license = "Apache-2.0"
 publish = false
 
+# Demo example crate: not part of the released workspace. Pinned to its own
+# version and skipped by `cargo release` (which otherwise bumps every member
+# to the shared workspace version).
+[package.metadata.release]
+release = false
+
 [lib]
 crate-type = ["staticlib", "cdylib"]
 
@@ -23,5 +29,7 @@ crate-type = ["staticlib", "cdylib"]
 cpex-core = { path = "../../../crates/cpex-core" }
 cpex-ffi = { path = "../../../crates/cpex-ffi" }
 async-trait = "0.1"
-serde_json = "1"
 tracing = "0.1"
+
+[lints]
+workspace = true
