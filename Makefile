@@ -197,18 +197,19 @@ docs-clean:
 # paths stay libpython-independent (KD3).
 
 PYTHON_BINDINGS_DIR = bindings/python
+VENV_BIN = .venv/bin
 MATURIN ?= maturin
 
 .PHONY: bindings-python-build
 bindings-python-build:
 	@echo "🐍 Building Python bindings (debug)..."
-	@cd $(PYTHON_BINDINGS_DIR) && $(MATURIN) develop
+	@cd $(PYTHON_BINDINGS_DIR) && python -m venv .venv && source .venv/bin/activate && pip install maturin pytest pytest-asyncio && $(MATURIN) develop
 	@echo "✅  Python bindings built (debug)"
 
 .PHONY: bindings-python-build-release
 bindings-python-build-release:
 	@echo "🐍 Building Python bindings (release)..."
-	@cd $(PYTHON_BINDINGS_DIR) && $(MATURIN) build --release
+	@cd $(PYTHON_BINDINGS_DIR) && python -m venv .venv && source .venv/bin/activate && pip install maturin pytest pytest-asyncio && $(MATURIN) build --release
 	@echo "✅  Python bindings built (release)"
 
 .PHONY: bindings-python-test
@@ -294,8 +295,8 @@ examples-run: examples-build
 # Canonical local gate: read-only lint, full test suite, example builds. If
 # this passes locally, the same checks pass in CI.
 .PHONY: ci
-ci: lint test examples-build
-	@echo "✅  CI gate passed (lint + tests + examples)"
+ci: lint test examples-build bindings-python-build-release bindings-python-test
+	@echo "✅  CI gate passed (lint + tests + examples + bindings/python)"
 
 # =============================================================================
 # Release
