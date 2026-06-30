@@ -405,6 +405,25 @@ impl PhaseSet {
     }
 }
 
+/// Custom response to attach when a route's policy denies — the
+/// transpiled form of a Kuadrant `AuthPolicy` `response.unauthorized`
+/// `denyWith`. Carried on the route and surfaced on the deny outcome's
+/// `details` map by the host (apl-cpex), so a host can render a custom
+/// HTTP response. All fields optional; an absent block leaves the host's
+/// default denial response unchanged.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct DenyResponse {
+    /// HTTP status to use for the denial (e.g. 403, 302).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<u16>,
+    /// Response body.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body: Option<String>,
+    /// Response headers (e.g. `Location` for a redirect, `WWW-Authenticate`).
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub headers: std::collections::BTreeMap<String, String>,
+}
+
 /// Compiler output for a single route.
 ///
 /// One `CompiledRoute` per route_key. The compiler merges global / default /
@@ -434,6 +453,11 @@ pub struct CompiledRoute {
     /// hooks/kind/source always come from the global declaration.
     #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
     pub plugin_overrides: std::collections::HashMap<String, crate::plugin_decl::PluginOverride>,
+
+    /// Custom denial response (transpiled `denyWith`). Most-specific layer
+    /// wins on collision. `None` leaves the host's default denial behavior.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response: Option<DenyResponse>,
 }
 
 impl CompiledRoute {
@@ -515,12 +539,43 @@ impl CompiledRoute {
         // plugin_overrides: HashMap::extend overwrites on key collision,
         // which is exactly the more_specific-wins semantic.
         self.plugin_overrides.extend(more_specific.plugin_overrides);
+
+        // response: most-specific declared block wins; absent leaves self's.
+        if more_specific.response.is_some() {
+            self.response = more_specific.response;
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn apply_layer_response_most_specific_wins() {
+        let mut base = CompiledRoute::new("tool:x");
+        base.response = Some(DenyResponse {
+            status: Some(401),
+            ..Default::default()
+        });
+
+        let mut layer = CompiledRoute::new("tool:x");
+        layer.response = Some(DenyResponse {
+            status: Some(403),
+            body: Some("forbidden".to_string()),
+            ..Default::default()
+        });
+        base.apply_layer(layer);
+        assert_eq!(base.response.as_ref().unwrap().status, Some(403));
+        assert_eq!(
+            base.response.as_ref().unwrap().body.as_deref(),
+            Some("forbidden")
+        );
+
+        // A layer without a response leaves the existing one intact.
+        base.apply_layer(CompiledRoute::new("tool:x"));
+        assert_eq!(base.response.as_ref().unwrap().status, Some(403));
+    }
 
     #[test]
     fn phase_set_basic() {

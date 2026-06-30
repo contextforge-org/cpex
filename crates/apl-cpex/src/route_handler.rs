@@ -424,6 +424,25 @@ impl AnyHookHandler for AplRouteHandler {
             },
         };
 
+        // Attach the route's transpiled `denyWith` (status/body/headers) to
+        // the violation's `details` map so the host can render a custom HTTP
+        // denial response. Carried via `details` (not new violation fields)
+        // to keep the violation type stable. Absent → host default response.
+        if let (Some(v), Some(resp)) = (violation.as_mut(), self.route.response.as_ref()) {
+            if let Some(status) = resp.status {
+                v.details
+                    .insert("http.status".to_string(), serde_json::json!(status));
+            }
+            if let Some(body) = &resp.body {
+                v.details
+                    .insert("http.body".to_string(), serde_json::json!(body));
+            }
+            if !resp.headers.is_empty() {
+                v.details
+                    .insert("http.headers".to_string(), serde_json::json!(resp.headers));
+            }
+        }
+
         // Append fail-closed (R18) with merge precedence:
         //   - decision Allow + append Err → flip to Deny with a
         //     distinguished `session.persist_failed` violation.

@@ -63,7 +63,7 @@ use cpex_core::visitor::{ConfigVisitor, VisitorError};
 
 use apl_core::parser::compile_policy_block_value;
 use apl_core::plugin_decl::{PluginDeclaration, PluginRegistry};
-use apl_core::rules::CompiledRoute;
+use apl_core::rules::{CompiledRoute, DenyResponse};
 use apl_core::step::{PdpFactory, PdpResolver};
 
 use crate::dispatch_plan::DispatchCache;
@@ -518,6 +518,13 @@ impl ConfigVisitor for AplConfigVisitor {
                 effective.apply_layer(route_layer);
             }
 
+            // Route-level denial response (transpiled `denyWith`). Read from
+            // the route YAML alongside the APL block; cpex-core tolerates the
+            // out-of-band key. Route scope is most-specific, so set directly.
+            if let Some(resp) = response_subblock(yaml, &route_key) {
+                effective.response = Some(resp);
+            }
+
             // Load-time lint, once per route: flag any APL `plugins:`
             // override declared for a plugin that no policy / delegate step
             // references. Checked on the fully-stacked `effective` route so
@@ -880,12 +887,50 @@ fn apl_subblock(yaml: &serde_yaml::Value) -> Option<serde_yaml::Value> {
     }
 }
 
+/// Extract a route-level `response:` block — the transpiled `denyWith`.
+/// cpex-core tolerates this out-of-band key on the route; here we
+/// deserialize it into a [`DenyResponse`]. A malformed block is logged
+/// and skipped (best-effort) rather than failing the whole config.
+fn response_subblock(yaml: &serde_yaml::Value, route_key: &str) -> Option<DenyResponse> {
+    let block = yaml.get("response")?;
+    if block.is_null() {
+        return None;
+    }
+    match serde_yaml::from_value::<DenyResponse>(block.clone()) {
+        Ok(resp) => Some(resp),
+        Err(e) => {
+            tracing::warn!(route = route_key, error = %e, "APL visitor: ignoring malformed route `response:` block");
+            None
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::apl_subblock;
+    use super::{apl_subblock, response_subblock};
 
     fn yaml(s: &str) -> serde_yaml::Value {
         serde_yaml::from_str(s).expect("valid yaml")
+    }
+
+    #[test]
+    fn response_subblock_parses_denywith() {
+        let v = yaml(
+            "tool: \"*\"\nresponse:\n  status: 403\n  body: \"{\\\"error\\\":\\\"forbidden\\\"}\"\n  headers:\n    WWW-Authenticate: \"Bearer\"\n",
+        );
+        let resp = response_subblock(&v, "tool:*").expect("response present");
+        assert_eq!(resp.status, Some(403));
+        assert_eq!(resp.body.as_deref(), Some("{\"error\":\"forbidden\"}"));
+        assert_eq!(
+            resp.headers.get("WWW-Authenticate").map(String::as_str),
+            Some("Bearer")
+        );
+    }
+
+    #[test]
+    fn response_subblock_absent_is_none() {
+        let v = yaml("tool: \"*\"\npolicy:\n  - \"deny\"\n");
+        assert!(response_subblock(&v, "tool:*").is_none());
     }
 
     #[test]
