@@ -68,6 +68,18 @@ pub const ELICITATION_PENDING_CODE: i64 = -32120;
 /// one. Mirrors how `X-User-Token` carries request-scoped context.
 pub const ELICITATION_ID_HEADER: &str = "X-CPEX-Elicitation-Id";
 
+/// JSON-RPC error code emitted when an agent re-checks an approval in
+/// *peek* mode and it has resolved approved: "approved — confirm to apply."
+/// The phase does NOT forward to the tool; the agent confirms with the
+/// requester and re-sends *without* the peek header to actually run it.
+/// Lets a human authorize while the requester separately commits execution.
+pub const ELICITATION_APPROVED_CODE: i64 = -32121;
+
+/// Header an agent sets (alongside `X-CPEX-Elicitation-Id`) to *peek* at an
+/// approval — resolve its status without committing the action. Truthy
+/// value ("1"/"true"/anything non-empty) enables it.
+pub const ELICITATION_PEEK_HEADER: &str = "X-CPEX-Elicitation-Peek";
+
 /// Which APL phase this handler runs. Pre covers `args` + `policy`; Post
 /// covers `result` + `post_invocation`. Set once at construction and never
 /// changes.
@@ -486,6 +498,20 @@ impl AnyHookHandler for AplRouteHandler {
             violation = Some(pending_violation(p));
         }
 
+        // Peek (confirm-then-apply): the agent re-checked an approval but
+        // asked NOT to commit yet (the `X-CPEX-Elicitation-Peek` header). If
+        // the elicitation resolved approved (Allow, not pending), report
+        // "approved — confirm to apply" (-32121) and do NOT forward. The
+        // agent then asks the requester, who re-sends without the peek header
+        // to actually run the tool (the plugin replays the cached approval).
+        if continue_processing
+            && elicitation_peek_from_headers(&post_extensions)
+            && bag.get_string(apl_core::step::elicitation_bag_keys::OUTCOME) == Some("approved")
+        {
+            continue_processing = false;
+            violation = Some(approved_peek_violation(&bag));
+        }
+
         // Append fail-closed (R18) with merge precedence:
         //   - decision Allow + append Err → flip to Deny with a
         //     distinguished `session.persist_failed` violation.
@@ -697,6 +723,36 @@ fn elicitation_id_from_headers(ext: &Extensions) -> Option<String> {
         .and_then(|h| h.get_request_header(ELICITATION_ID_HEADER))
         .filter(|v| !v.is_empty())
         .map(str::to_string)
+}
+
+/// True when the agent set `X-CPEX-Elicitation-Peek` to a truthy value —
+/// it wants to resolve the approval's status without committing the action.
+fn elicitation_peek_from_headers(ext: &Extensions) -> bool {
+    ext.http
+        .as_ref()
+        .and_then(|h| h.get_request_header(ELICITATION_PEEK_HEADER))
+        .is_some_and(|v| !v.is_empty() && !v.eq_ignore_ascii_case("false") && v != "0")
+}
+
+/// Build the `-32121` "approved — confirm to apply" violation for a peek
+/// that resolved approved. Carries the elicitation id + approver in
+/// `details` so the agent can ask the requester and then re-send (without
+/// the peek header) to actually run the tool.
+fn approved_peek_violation(bag: &apl_core::attributes::AttributeBag) -> PluginViolation {
+    use apl_core::step::elicitation_bag_keys as bk;
+    let mut details: std::collections::HashMap<String, Value> = std::collections::HashMap::new();
+    if let Some(id) = bag.get_string(bk::ID) {
+        details.insert("elicitation_id".into(), Value::String(id.to_string()));
+    }
+    if let Some(approver) = bag.get_string(bk::APPROVER) {
+        details.insert("approver".into(), Value::String(approver.to_string()));
+    }
+    PluginViolation::new(
+        "elicitation.approved",
+        "approved — confirm to apply (re-send without the peek header)".to_string(),
+    )
+    .with_proto_error_code(ELICITATION_APPROVED_CODE)
+    .with_details(details)
 }
 
 /// Build the `-32120` violation for a suspended phase: a distinguished

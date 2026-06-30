@@ -224,6 +224,21 @@ impl CibaApprover {
             None => return deny("elicitation.bad_request", "CIBA check requires an elicitation id"),
         };
 
+        // Cache short-circuit. The OP's `auth_req_id` is single-use: once a
+        // poll succeeds we exchange it for tokens (consuming it) and cache
+        // just the approver. A later check — e.g. the confirm-then-apply
+        // retry after a `peek` already resolved approval — must NOT re-poll
+        // (the spent id would come back `invalid_grant`). Replay the cached
+        // approved result instead; `validate` re-compares the approver.
+        if let Some(corr) = self.store.get(id) {
+            if corr.resolved_approver.is_some() {
+                let mut out = payload.clone();
+                out.status = Some(ElicitationStatusKind::Resolved);
+                out.outcome = Some(ElicitationOutcomeKind::Approved);
+                return PluginResult::modify_payload(out);
+            }
+        }
+
         let form: Vec<(&str, &str)> = vec![("grant_type", GRANT_TYPE_CIBA), ("auth_req_id", id)];
 
         let response = match self
