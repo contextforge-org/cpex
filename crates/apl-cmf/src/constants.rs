@@ -105,6 +105,13 @@ pub const BAG_META_PREFIX: &str = "meta.";
 pub const BAG_REQUEST_PREFIX: &str = "request.";
 pub const BAG_HTTP_REQUEST_HEADERS_PREFIX: &str = "http.request_headers.";
 pub const BAG_HTTP_RESPONSE_HEADERS_PREFIX: &str = "http.response_headers.";
+// HTTP request line — exact keys. These ride the same `read_headers`
+// capability as headers (the whole `http` slot is gated together in
+// `cpex-core::extensions::filter`).
+pub const BAG_HTTP_METHOD: &str = "http.method";
+pub const BAG_HTTP_PATH: &str = "http.path";
+pub const BAG_HTTP_HOST: &str = "http.host";
+pub const BAG_HTTP_SCHEME: &str = "http.scheme";
 pub const BAG_LLM_PREFIX: &str = "llm.";
 pub const BAG_MCP_PREFIX: &str = "mcp.";
 pub const BAG_COMPLETION_PREFIX: &str = "completion.";
