@@ -30,9 +30,6 @@ crate-type = ["cdylib"]
 [dependencies]
 cpex-core = { workspace = true }
 
-# APL governance layer — same set as cpex-ffi so bundled factories are
-# available to Python callers. Keep in sync with crates/cpex-ffi/Cargo.toml.
-apl-cpex = { workspace = true }
 # The builtin extension set — mirrors the feature set shipped by cpex-ffi.
 cpex-builtins = { workspace = true, default-features = false, features = [
     "pii-scanner",
@@ -47,7 +44,6 @@ cpex-builtins = { workspace = true, default-features = false, features = [
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
-futures = { workspace = true }
 tracing = { workspace = true }
 
 # PyO3 — extension-module is non-default; maturin enables it via pyproject.toml.
