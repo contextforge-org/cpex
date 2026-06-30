@@ -51,10 +51,10 @@ use std::collections::HashMap;
 use std::sync::{Arc, RwLock, Weak};
 
 use cpex_core::cmf::constants::{
-    ENTITY_LLM, ENTITY_PROMPT, ENTITY_RESOURCE, ENTITY_TOOL, HOOK_CMF_LLM_INPUT,
-    HOOK_CMF_LLM_OUTPUT, HOOK_CMF_PROMPT_POST_INVOKE, HOOK_CMF_PROMPT_PRE_INVOKE,
-    HOOK_CMF_RESOURCE_POST_FETCH, HOOK_CMF_RESOURCE_PRE_FETCH, HOOK_CMF_TOOL_POST_INVOKE,
-    HOOK_CMF_TOOL_PRE_INVOKE,
+    ENTITY_HTTP, ENTITY_LLM, ENTITY_NAME_GLOBAL, ENTITY_PROMPT, ENTITY_RESOURCE, ENTITY_TOOL,
+    HOOK_CMF_HTTP_REQUEST, HOOK_CMF_LLM_INPUT, HOOK_CMF_LLM_OUTPUT, HOOK_CMF_PROMPT_POST_INVOKE,
+    HOOK_CMF_PROMPT_PRE_INVOKE, HOOK_CMF_RESOURCE_POST_FETCH, HOOK_CMF_RESOURCE_PRE_FETCH,
+    HOOK_CMF_TOOL_POST_INVOKE, HOOK_CMF_TOOL_PRE_INVOKE,
 };
 use cpex_core::config::RouteEntry;
 use cpex_core::manager::PluginManager;
@@ -357,7 +357,7 @@ impl ConfigVisitor for AplConfigVisitor {
 
     fn visit_global(
         &self,
-        _mgr: &Arc<PluginManager>,
+        mgr: &Arc<PluginManager>,
         yaml: &serde_yaml::Value,
     ) -> Result<(), VisitorError> {
         let Some(apl_block) = apl_subblock(yaml) else {
@@ -386,8 +386,50 @@ impl ConfigVisitor for AplConfigVisitor {
         // `post_policy:` / `args:` / `result:` / `plugins:` (and inert
         // fields it ignores), so a shallow strip on a clone is enough.
         let policy_only = strip_non_dsl_keys(&apl_block);
-        let compiled = compile_policy_block_value("global.apl", &policy_only)
+        let mut compiled = compile_policy_block_value("global.apl", &policy_only)
             .map_err(|e| Box::new(e) as VisitorError)?;
+        // A `response:` block at the global scope is the catch-all denyWith.
+        compiled.response = response_subblock(yaml, "global");
+
+        // Install a catch-all handler so the global policy also evaluates for
+        // generic (non-MCP/A2A) HTTP requests, which carry no entity (U3).
+        // Entity routes still stack `global` via apply_layer in visit_route;
+        // this is the *entity-less* evaluation path. Pre-phase only —
+        // authorization is an admission check, so there is no post handler.
+        if !compiled.policy.is_empty() {
+            let (plugin_registry, pdp_router_arc) = {
+                let state = self.state.read().unwrap_or_else(|p| p.into_inner());
+                (
+                    Arc::new(state.plugin_registry.clone()),
+                    Arc::new(state.pdp_router.clone()) as Arc<dyn PdpResolver>,
+                )
+            };
+            let session_store = self
+                .session_store
+                .read()
+                .unwrap_or_else(|p| p.into_inner())
+                .clone();
+            // The global HTTP policy reads the request line / headers, so
+            // grant `read_headers` on top of the visitor baseline.
+            let mut caps = self.base_capabilities.clone();
+            caps.insert("read_headers".to_string());
+            install_handler(
+                mgr,
+                ENTITY_HTTP,
+                ENTITY_NAME_GLOBAL,
+                None,
+                HOOK_CMF_HTTP_REQUEST,
+                Phase::Pre,
+                Arc::new(compiled.clone()),
+                &plugin_registry,
+                &self.dispatch_cache,
+                &session_store,
+                &self.manager,
+                Some(pdp_router_arc),
+                &caps,
+            );
+        }
+
         self.state
             .write()
             .unwrap_or_else(|p| p.into_inner())
