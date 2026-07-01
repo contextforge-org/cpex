@@ -20,9 +20,9 @@ A policy decision is only as trustworthy as the state it reads. CPEX evaluates e
 
 The LLM never sees these and cannot rewrite them. That is what makes CPEX a reference monitor rather than a suggestion.
 
-## APL is how you express policy
+## Policy is configuration
 
-You do not write enforcement logic in application code. You write **APL** (Authorization Policy Language): declarative, attribute-based rules with explicit effects, attached to the operations they govern.
+You do not write enforcement logic in application code. You write **APL**: the declarative configuration that defines each operation's enforcement pipeline, attaching its conditions and effects to the operation they govern.
 
 ```yaml
 routes:
@@ -43,7 +43,7 @@ Enforcement is three concerns, separated cleanly:
 
 | Layer | Role |
 |-------|------|
-| **APL** (Authorization Policy Language) | How you define policy. Declarative, attribute-based rules with explicit effects. |
+| **APL** | How you define policy: declarative configuration that sequences the controls in an operation's enforcement pipeline. |
 | **CMF** (Common Message Format) | What you evaluate. A protocol-agnostic envelope carrying identity, labels, delegation, and content. |
 | **Pipeline** (hooks, plugins, execution) | How effects run. The mechanism that executes a policy's effects at the boundary. |
 

@@ -3,13 +3,13 @@ title: "APL"
 weight: 30
 ---
 
-# Authorization Policy Language
+# APL: configuring enforcement pipelines
 
-APL is how you express policy in CPEX. It is declarative and designed around capabilities rather than requests: every entity an agent can invoke owns its own policy, attached to the operation it governs and evaluated at the boundary. You describe the conditions and the effects; you do not write enforcement logic in application code.
+APL is the declarative configuration that defines a CPEX enforcement pipeline. Each capability an agent can invoke (a tool, resource, prompt, or A2A method) defines its own pipeline through a **route** that sequences the controls protecting it, evaluated at the boundary. You describe the conditions and the effects; you do not write enforcement logic in application code.
 
 ![An APL config: plugins and global settings, then per-entity routes with a pre-invocation flow (require, PDP, delegate, run) and post-invocation result handling (taint, redact), plus session tainting across entities](/cpex/images/apl_overview.png)
 
-This page covers the language: routes, phases, predicates, rules, and field pipelines. The rest of this section goes deeper on each kind of policy:
+This page covers the configuration: routes, phases, predicates, rules, and field pipelines. The rest of this section goes deeper on each kind of policy:
 
 - [Effects & Sequencing]({{< relref "/docs/apl/effects" >}}): the effects a rule can run, halt-on-deny ordering, and composition.
 - [PDP Integration]({{< relref "/docs/apl/pdp" >}}): hand a decision to Cedar, CEL, or an external engine.

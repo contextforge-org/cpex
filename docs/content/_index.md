@@ -8,9 +8,9 @@ weight: 0
 
 **A policy enforcement runtime for AI agents.**
 
-CPEX is a deterministic reference monitor between an agent and every capability it invokes: tools, prompts, resources, inference providers, and A2A methods. Every operation is evaluated against security state the model cannot observe or influence: identity, delegation chains, information-flow labels, and an append-only audit log.
+CPEX is a deterministic reference monitor between an agent and every capability it invokes: tools, prompts, resources, inference providers, and A2A methods. Every operation is evaluated against security state the model cannot observe or influence, including identity, delegation and escalation chains, information-flow labels, and an audit log.
 
-Instead of scattering authorization, delegation, redaction, auditing, and information-flow controls across application code, CPEX executes them as a single policy-defined pipeline. APL attaches that pipeline to each entity an agent can invoke and runs it in two phases: before invocation and after the result.
+CPEX composes authorization, delegation, redaction, information-flow tracking, and auditing into a single policy-defined pipeline. Each capability an agent can invoke defines its own enforcement pipeline; APL is the configuration that defines it, executed in two phases: before the operation and after its result.
 
 ![CPEX mediates every operation an untrusted LLM triggers, evaluating APL policy against identity, delegation, taint, and audit state the model cannot forge](/cpex/images/cpex_overview.png)
 

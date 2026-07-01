@@ -50,7 +50,7 @@ global:
 
 ## Supported dialects
 
-APL recognizes a fixed set of PDP dialects. Two ship as builtin resolvers; the rest are recognized by the language and dispatched to a resolver you provide on the host.
+APL recognizes a fixed set of PDP dialects. Two ship as builtin resolvers; the rest are recognized by APL and dispatched to a resolver you provide on the host.
 
 | Dialect | Status |
 |---------|--------|

@@ -66,6 +66,6 @@ A gateway in front of a tool server controls inbound calls. A sidecar on the age
 
 ## What to read next
 
-- [APL]({{< relref "/docs/apl" >}}): the policy language, end to end.
+- [APL]({{< relref "/docs/apl" >}}): the enforcement-pipeline configuration.
 - [Identity]({{< relref "/docs/apl/identity" >}}): how callers are resolved into the attributes policy reads.
 - [Quick Start]({{< relref "/docs/quickstart" >}}): stand up CPEX and run this scenario.
