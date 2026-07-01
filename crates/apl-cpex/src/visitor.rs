@@ -51,10 +51,10 @@ use std::collections::HashMap;
 use std::sync::{Arc, RwLock, Weak};
 
 use cpex_core::cmf::constants::{
-    ENTITY_LLM, ENTITY_PROMPT, ENTITY_RESOURCE, ENTITY_TOOL, HOOK_CMF_LLM_INPUT,
-    HOOK_CMF_LLM_OUTPUT, HOOK_CMF_PROMPT_POST_INVOKE, HOOK_CMF_PROMPT_PRE_INVOKE,
-    HOOK_CMF_RESOURCE_POST_FETCH, HOOK_CMF_RESOURCE_PRE_FETCH, HOOK_CMF_TOOL_POST_INVOKE,
-    HOOK_CMF_TOOL_PRE_INVOKE,
+    ENTITY_HTTP, ENTITY_LLM, ENTITY_NAME_GLOBAL, ENTITY_PROMPT, ENTITY_RESOURCE, ENTITY_TOOL,
+    HOOK_CMF_HTTP_REQUEST, HOOK_CMF_LLM_INPUT, HOOK_CMF_LLM_OUTPUT, HOOK_CMF_PROMPT_POST_INVOKE,
+    HOOK_CMF_PROMPT_PRE_INVOKE, HOOK_CMF_RESOURCE_POST_FETCH, HOOK_CMF_RESOURCE_PRE_FETCH,
+    HOOK_CMF_TOOL_POST_INVOKE, HOOK_CMF_TOOL_PRE_INVOKE,
 };
 use cpex_core::config::RouteEntry;
 use cpex_core::manager::PluginManager;
@@ -63,7 +63,7 @@ use cpex_core::visitor::{ConfigVisitor, VisitorError};
 
 use apl_core::parser::compile_policy_block_value;
 use apl_core::plugin_decl::{PluginDeclaration, PluginRegistry};
-use apl_core::rules::CompiledRoute;
+use apl_core::rules::{CompiledRoute, DenyResponse};
 use apl_core::step::{PdpFactory, PdpResolver};
 
 use crate::dispatch_plan::DispatchCache;
@@ -357,7 +357,7 @@ impl ConfigVisitor for AplConfigVisitor {
 
     fn visit_global(
         &self,
-        _mgr: &Arc<PluginManager>,
+        mgr: &Arc<PluginManager>,
         yaml: &serde_yaml::Value,
     ) -> Result<(), VisitorError> {
         let Some(apl_block) = apl_subblock(yaml) else {
@@ -386,8 +386,50 @@ impl ConfigVisitor for AplConfigVisitor {
         // `post_policy:` / `args:` / `result:` / `plugins:` (and inert
         // fields it ignores), so a shallow strip on a clone is enough.
         let policy_only = strip_non_dsl_keys(&apl_block);
-        let compiled = compile_policy_block_value("global.apl", &policy_only)
+        let mut compiled = compile_policy_block_value("global.apl", &policy_only)
             .map_err(|e| Box::new(e) as VisitorError)?;
+        // A `response:` block at the global scope is the catch-all denyWith.
+        compiled.response = response_subblock(yaml, "global");
+
+        // Install a catch-all handler so the global policy also evaluates for
+        // generic (non-MCP/A2A) HTTP requests, which carry no entity (U3).
+        // Entity routes still stack `global` via apply_layer in visit_route;
+        // this is the *entity-less* evaluation path. Pre-phase only —
+        // authorization is an admission check, so there is no post handler.
+        if !compiled.policy.is_empty() {
+            let (plugin_registry, pdp_router_arc) = {
+                let state = self.state.read().unwrap_or_else(|p| p.into_inner());
+                (
+                    Arc::new(state.plugin_registry.clone()),
+                    Arc::new(state.pdp_router.clone()) as Arc<dyn PdpResolver>,
+                )
+            };
+            let session_store = self
+                .session_store
+                .read()
+                .unwrap_or_else(|p| p.into_inner())
+                .clone();
+            // The global HTTP policy reads the request line / headers, so
+            // grant `read_headers` on top of the visitor baseline.
+            let mut caps = self.base_capabilities.clone();
+            caps.insert("read_headers".to_string());
+            install_handler(
+                mgr,
+                ENTITY_HTTP,
+                ENTITY_NAME_GLOBAL,
+                None,
+                HOOK_CMF_HTTP_REQUEST,
+                Phase::Pre,
+                Arc::new(compiled.clone()),
+                &plugin_registry,
+                &self.dispatch_cache,
+                &session_store,
+                &self.manager,
+                Some(pdp_router_arc),
+                &caps,
+            );
+        }
+
         self.state
             .write()
             .unwrap_or_else(|p| p.into_inner())
@@ -516,6 +558,13 @@ impl ConfigVisitor for AplConfigVisitor {
                 let route_layer = compile_policy_block_value(&source, block)
                     .map_err(|e| Box::new(e) as VisitorError)?;
                 effective.apply_layer(route_layer);
+            }
+
+            // Route-level denial response (transpiled `denyWith`). Read from
+            // the route YAML alongside the APL block; cpex-core tolerates the
+            // out-of-band key. Route scope is most-specific, so set directly.
+            if let Some(resp) = response_subblock(yaml, &route_key) {
+                effective.response = Some(resp);
             }
 
             // Load-time lint, once per route: flag any APL `plugins:`
@@ -880,12 +929,50 @@ fn apl_subblock(yaml: &serde_yaml::Value) -> Option<serde_yaml::Value> {
     }
 }
 
+/// Extract a route-level `response:` block — the transpiled `denyWith`.
+/// cpex-core tolerates this out-of-band key on the route; here we
+/// deserialize it into a [`DenyResponse`]. A malformed block is logged
+/// and skipped (best-effort) rather than failing the whole config.
+fn response_subblock(yaml: &serde_yaml::Value, route_key: &str) -> Option<DenyResponse> {
+    let block = yaml.get("response")?;
+    if block.is_null() {
+        return None;
+    }
+    match serde_yaml::from_value::<DenyResponse>(block.clone()) {
+        Ok(resp) => Some(resp),
+        Err(e) => {
+            tracing::warn!(route = route_key, error = %e, "APL visitor: ignoring malformed route `response:` block");
+            None
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::apl_subblock;
+    use super::{apl_subblock, response_subblock};
 
     fn yaml(s: &str) -> serde_yaml::Value {
         serde_yaml::from_str(s).expect("valid yaml")
+    }
+
+    #[test]
+    fn response_subblock_parses_denywith() {
+        let v = yaml(
+            "tool: \"*\"\nresponse:\n  status: 403\n  body: \"{\\\"error\\\":\\\"forbidden\\\"}\"\n  headers:\n    WWW-Authenticate: \"Bearer\"\n",
+        );
+        let resp = response_subblock(&v, "tool:*").expect("response present");
+        assert_eq!(resp.status, Some(403));
+        assert_eq!(resp.body.as_deref(), Some("{\"error\":\"forbidden\"}"));
+        assert_eq!(
+            resp.headers.get("WWW-Authenticate").map(String::as_str),
+            Some("Bearer")
+        );
+    }
+
+    #[test]
+    fn response_subblock_absent_is_none() {
+        let v = yaml("tool: \"*\"\npolicy:\n  - \"deny\"\n");
+        assert!(response_subblock(&v, "tool:*").is_none());
     }
 
     #[test]

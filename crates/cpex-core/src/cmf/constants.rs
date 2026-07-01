@@ -76,6 +76,15 @@ pub const ENTITY_LLM: &str = "llm";
 pub const ENTITY_PROMPT: &str = "prompt";
 pub const ENTITY_RESOURCE: &str = "resource";
 
+/// Reserved entity type for generic (non-MCP/A2A) HTTP requests. The
+/// catch-all `global` policy is dispatched under this entity so an
+/// entity-less request can be authorized; hosts set `meta.entity_type` to
+/// this and `meta.entity_name` to [`ENTITY_NAME_GLOBAL`].
+pub const ENTITY_HTTP: &str = "http";
+
+/// Reserved entity name for the global catch-all policy annotation.
+pub const ENTITY_NAME_GLOBAL: &str = "*";
+
 // ---------------------------------------------------------------------------
 // CMF hook names — the canonical names plugins register under and hosts
 // pass to `PluginManager::invoke_named::<CmfHook>(...)`. Two per entity
@@ -94,3 +103,9 @@ pub const HOOK_CMF_PROMPT_PRE_INVOKE: &str = "cmf.prompt_pre_invoke";
 pub const HOOK_CMF_PROMPT_POST_INVOKE: &str = "cmf.prompt_post_invoke";
 pub const HOOK_CMF_RESOURCE_PRE_FETCH: &str = "cmf.resource_pre_fetch";
 pub const HOOK_CMF_RESOURCE_POST_FETCH: &str = "cmf.resource_post_fetch";
+
+/// Generic HTTP request hook. Hosts fire this for non-MCP/A2A HTTP
+/// requests; the catch-all `global` policy (if any) is annotated under
+/// it via [`ENTITY_HTTP`] / [`ENTITY_NAME_GLOBAL`]. Pre-invocation only —
+/// authorization is an admission check, so there is no post counterpart.
+pub const HOOK_CMF_HTTP_REQUEST: &str = "cmf.http_request";
