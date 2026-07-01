@@ -29,7 +29,7 @@ Enforcement is a three-layer problem.
 |-------|------|
 | **Hooks** | Where enforcement happens. Interception, decision, transformation. |
 | **CMF** (Common Message Format) | What you evaluate. A protocol-agnostic context envelope carrying identity, security labels, delegation chains, and content. |
-| **APL** (Attribute Policy Language) | How you define policy. Declarative, attribute-based rules with explicit effects. |
+| **APL** (Authorization Policy Language) | How you define policy. Declarative, attribute-based rules with explicit effects. |
 
 ![Hooks, CMF, and APL form a unified enforcement stack](/cpex/images/overview_vision.png)
 
