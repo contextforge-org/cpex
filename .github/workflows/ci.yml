@@ -109,7 +109,13 @@ jobs:
           fetch-depth: 1
       - name: Install Rust 1.96.0
         uses: dtolnay/rust-toolchain@1.96.0
-      - uses: Swatinem/rust-cache@v2
+      # NOTE: intentionally NO Swatinem/rust-cache here. rust-cache restores a
+      # partial `~/.cargo/registry` index ("full match: false"); with the sparse
+      # protocol, `cargo package --locked` consults that stale local index, finds
+      # it can't satisfy the committed lock, and aborts with "cannot update the
+      # lock file" (fails ~1.4s in — too fast for a real network fetch) even
+      # though Cargo.lock resolves cleanly against a fresh index. Fetching the
+      # index fresh each run keeps this dry-run deterministic.
       # Continuous dry-run of the crates.io release: build + verify a .crate for
       # every publishable member without uploading. Catches publishability
       # regressions (missing version reqs, packaging-excluded files, broken
