@@ -12,7 +12,7 @@
 //
 // The apl-core evaluator calls
 // `DelegationInvoker::delegate(&DelegateStep)` once per `Step::Delegate`
-// it encounters in a `policy:` / `post_policy:` block. The invoker:
+// it encounters in a `pre_invocation:` / `post_invocation:` block. The invoker:
 //
 //   1. Looks up the resolved `token.delegate` entry for the step's
 //      plugin name in the dispatch plan.
@@ -95,8 +95,8 @@ impl DelegationPluginInvoker {
 impl DelegationInvoker for DelegationPluginInvoker {
     async fn delegate(&self, step: &DelegateStep) -> Result<DelegationOutcome, DelegationError> {
         // 1. Resolve the plugin's token.delegate entry from the plan.
-        //    Routes that don't reference this plugin in `policy:` /
-        //    `post_policy:` at compile time won't have it in the plan
+        //    Routes that don't reference this plugin in `pre_invocation:` /
+        //    `post_invocation:` at compile time won't have it in the plan
         //    — surface that as NotFound so the evaluator's on_error
         //    semantics kick in.
         let entry = self

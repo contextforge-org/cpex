@@ -15,7 +15,8 @@
 //   ✓ Predicate grammar: identifiers, literals, comparisons, contains,
 //     & | ! parens, require(...)
 //   ✓ Actions: deny / allow / (default deny on missing)
-//   ✓ YAML top-level routes: keyed map, policy: / post_policy: blocks
+//   ✓ YAML top-level routes: keyed map, authorization.pre_invocation /
+//     post_invocation blocks (flat pre_invocation:/post_invocation: too)
 //   ✗ Steps (cedar:(), opa(), plugin(), taint()) — rejected with clear errors
 //   ✗ Pipe chains in args:/result: — fields parsed, values stashed as opaque
 //   ✗ `in` / `not in` / `exists()` — need IR variants first; rejected
@@ -48,6 +49,13 @@ pub enum ParseError {
 
     #[error("predicate '{predicate}': {msg}")]
     Predicate { predicate: String, msg: String },
+
+    #[error("in `{location}`: config field `{old}` was renamed to `{new}` — update your config")]
+    RenamedField {
+        location: String,
+        old: String,
+        new: String,
+    },
 }
 
 // =====================================================================
@@ -819,10 +827,10 @@ fn strip_string_literal(s: &str, rule: &str) -> Result<String, ParseError> {
 }
 
 // =====================================================================
-// Step parser (policy: / post_policy: entries — supports steps + rules)
+// Step parser (pre_invocation / post_invocation entries — steps + rules)
 // =====================================================================
 
-/// Parse a single YAML entry from a `policy:` / `post_policy:` list.
+/// Parse a single YAML entry from a `pre_invocation` / `post_invocation` list.
 ///
 /// Two YAML shapes (DSL §3.2 + §7):
 /// - **String entry** — a rule line, taint effect, or plugin call.
@@ -2200,13 +2208,22 @@ pub struct ConfigYaml {
 
 #[derive(Debug, Default, Deserialize)]
 pub struct RouteYaml {
-    /// Each entry is either a string (rule / plugin / taint) or a
-    /// single-key map (PDP call with reactions). See `parse_step`.
+    /// Flat pre-invocation authorization effects (was `policy:`). Each
+    /// entry is either a string (rule / plugin / taint) or a single-key
+    /// map (PDP call with reactions). See `parse_step`. Merged with any
+    /// `authorization.pre_invocation` entries.
     #[serde(default)]
-    pub policy: Vec<serde_yaml::Value>,
+    pub pre_invocation: Vec<serde_yaml::Value>,
 
+    /// Flat post-invocation authorization effects (was `post_policy:`).
+    /// Merged with any `authorization.post_invocation` entries.
     #[serde(default)]
-    pub post_policy: Vec<serde_yaml::Value>,
+    pub post_invocation: Vec<serde_yaml::Value>,
+
+    /// Nested `authorization:` block — `{ pre_invocation, post_invocation }`.
+    /// Equivalent to the flat forms; entries from both are concatenated.
+    #[serde(default)]
+    pub authorization: Option<AuthorizationYaml>,
 
     /// `args:` field → pipe-chain string. Compiled to per-field pipelines.
     #[serde(default)]
@@ -2222,9 +2239,23 @@ pub struct RouteYaml {
     #[serde(default)]
     pub plugins: HashMap<String, PluginOverride>,
 
-    /// Anything else on the route (meta, taint, when) — stashed.
+    /// Anything else on the route (meta, taint, when) — stashed. Also
+    /// where renamed legacy keys land; `reject_legacy_keys` fails loudly
+    /// on them so a dropped authz block never fails open.
     #[serde(flatten)]
     pub other: HashMap<String, serde_yaml::Value>,
+}
+
+/// Nested `authorization:` block. Both sub-lists are optional and default
+/// to empty; each is compiled the same way as the flat `pre_invocation:` /
+/// `post_invocation:` forms.
+#[derive(Debug, Default, Deserialize)]
+pub struct AuthorizationYaml {
+    #[serde(default)]
+    pub pre_invocation: Vec<serde_yaml::Value>,
+
+    #[serde(default)]
+    pub post_invocation: Vec<serde_yaml::Value>,
 }
 
 /// Output of [`compile_config`] — the routes that have APL blocks plus
@@ -2242,8 +2273,9 @@ pub struct CompiledConfig {
 /// Compile a YAML config into a [`CompiledConfig`] (routes + plugin
 /// registry).
 ///
-/// Routes with no APL fields populated (no `policy:` / `post_policy:` /
-/// `args:` / `result:`) are **omitted from `routes`**, per apl-design §5
+/// Routes with no APL fields populated (no `authorization:` /
+/// `pre_invocation:` / `post_invocation:` / `args:` / `result:`) are
+/// **omitted from `routes`**, per apl-design §5
 /// "Routes without APL blocks fall back to legacy plugin-chain execution."
 /// A route-level `plugins:` override block alone is not enough — overrides
 /// only have meaning when the route actually dispatches plugins via APL
@@ -2265,9 +2297,51 @@ pub fn compile_config(yaml: &str) -> Result<CompiledConfig, ParseError> {
     Ok(CompiledConfig { routes, plugins })
 }
 
+/// Legacy field names, mapped to their replacements. Because unknown keys
+/// land in `RouteYaml.other` via `#[serde(flatten)]`, a config still using
+/// an old name would otherwise be *silently dropped* — dropping a `policy:`
+/// block fails open (no authorization enforced). We reject them loudly
+/// instead. `identity` is renamed in cpex-core config, not here.
+const RENAMED_FIELDS: [(&str, &str); 2] = [
+    (
+        "policy",
+        "authorization.pre_invocation (or flat pre_invocation)",
+    ),
+    (
+        "post_policy",
+        "authorization.post_invocation (or flat post_invocation)",
+    ),
+];
+
+/// Fail loudly if a stashed key is a renamed legacy field, so a dropped
+/// authz block never fails open. Run before the has-APL gate.
+fn reject_legacy_keys(
+    location: &str,
+    other: &HashMap<String, serde_yaml::Value>,
+) -> Result<(), ParseError> {
+    for (old, new) in RENAMED_FIELDS {
+        if other.contains_key(old) {
+            return Err(ParseError::RenamedField {
+                location: location.to_string(),
+                old: old.to_string(),
+                new: new.to_string(),
+            });
+        }
+    }
+    Ok(())
+}
+
 fn compile_route(route_key: &str, raw: RouteYaml) -> Result<Option<CompiledRoute>, ParseError> {
-    let has_apl = !raw.policy.is_empty()
-        || !raw.post_policy.is_empty()
+    // Reject legacy keys *before* the gate: a legacy-only route would
+    // otherwise look empty and be silently omitted (fail open).
+    reject_legacy_keys(route_key, &raw.other)?;
+    let has_authz = raw
+        .authorization
+        .as_ref()
+        .is_some_and(|a| !a.pre_invocation.is_empty() || !a.post_invocation.is_empty());
+    let has_apl = !raw.pre_invocation.is_empty()
+        || !raw.post_invocation.is_empty()
+        || has_authz
         || !raw.args.is_empty()
         || !raw.result.is_empty();
     if !has_apl {
@@ -2276,19 +2350,32 @@ fn compile_route(route_key: &str, raw: RouteYaml) -> Result<Option<CompiledRoute
     Ok(Some(compile_apl_blocks(route_key, raw)?))
 }
 
-/// Compile the APL bodies (policy/post_policy/args/result/plugins) of a
+/// Compile the APL bodies (authorization/args/result/plugins) of a
 /// single block into a `CompiledRoute`. Doesn't gate on "has any APL
 /// fields" — callers that need the gate (compile_config) check first.
 /// `source` is the path prefix baked into rule/pipeline diagnostics
 /// (e.g. `"global.policy.all"`, `"route.get_compensation"`).
+///
+/// The nested `authorization:` block and the flat `pre_invocation:` /
+/// `post_invocation:` forms are equivalent: entries from the nested block
+/// are compiled first, then the flat entries, preserving declared order.
 fn compile_apl_blocks(source: &str, raw: RouteYaml) -> Result<CompiledRoute, ParseError> {
+    reject_legacy_keys(source, &raw.other)?;
     let mut route = CompiledRoute::new(source);
-    for (i, entry) in raw.policy.iter().enumerate() {
-        let step = parse_step(entry, &format!("{}.policy[{}]", source, i))?;
+    let (auth_pre, auth_post) = raw
+        .authorization
+        .map(|a| (a.pre_invocation, a.post_invocation))
+        .unwrap_or_default();
+    for (i, entry) in auth_pre.iter().chain(raw.pre_invocation.iter()).enumerate() {
+        let step = parse_step(entry, &format!("{}.pre_invocation[{}]", source, i))?;
         route.policy.push(step_to_top_level_effect(step)?);
     }
-    for (i, entry) in raw.post_policy.iter().enumerate() {
-        let step = parse_step(entry, &format!("{}.post_policy[{}]", source, i))?;
+    for (i, entry) in auth_post
+        .iter()
+        .chain(raw.post_invocation.iter())
+        .enumerate()
+    {
+        let step = parse_step(entry, &format!("{}.post_invocation[{}]", source, i))?;
         route.post_policy.push(step_to_top_level_effect(step)?);
     }
     for (field, chain) in &raw.args {
@@ -2323,12 +2410,13 @@ fn compile_apl_blocks(source: &str, raw: RouteYaml) -> Result<CompiledRoute, Par
 /// ```yaml
 /// args:
 ///   employee_id: "str"
-/// policy:
-///   - "require(authenticated)"
+/// authorization:
+///   pre_invocation:
+///     - "require(authenticated)"
+///   post_invocation:
+///     - "taint(forward)"
 /// result:
 ///   ssn: "redact(!perm.view_ssn)"
-/// post_policy:
-///   - "taint(forward)"
 /// ```
 ///
 /// Used by external orchestrators (apl-cpex's `AplConfigVisitor`) that
@@ -3296,7 +3384,7 @@ sequential:
         let yaml = r#"
 routes:
   get_compensation:
-    policy:
+    pre_invocation:
       - "require(authenticated)"
       - "require(role.hr | role.finance)"
       - "delegation.depth > 2 & include_ssn: deny"
@@ -3310,9 +3398,110 @@ routes:
     }
 
     #[test]
+    fn authorization_nested_and_flat_forms_are_equivalent() {
+        // The nested `authorization:` block and the flat
+        // `pre_invocation:` / `post_invocation:` forms must compile to
+        // the same route.
+        let nested = r#"
+routes:
+  r:
+    authorization:
+      pre_invocation:
+        - "require(authenticated)"
+      post_invocation:
+        - "taint(audit, session)"
+"#;
+        let flat = r#"
+routes:
+  r:
+    pre_invocation:
+      - "require(authenticated)"
+    post_invocation:
+      - "taint(audit, session)"
+"#;
+        let a = compile_config(nested).unwrap().routes;
+        let b = compile_config(flat).unwrap().routes;
+        let ra = a.get("r").expect("nested route");
+        let rb = b.get("r").expect("flat route");
+        assert_eq!(ra.policy.len(), rb.policy.len());
+        assert_eq!(ra.post_policy.len(), rb.post_policy.len());
+        assert_eq!(ra.policy.len(), 1);
+        assert_eq!(ra.post_policy.len(), 1);
+    }
+
+    #[test]
+    fn authorization_nested_and_flat_entries_concatenate() {
+        // When both the nested block and the flat lists are present,
+        // entries are concatenated (nested first, then flat).
+        let yaml = r#"
+routes:
+  r:
+    authorization:
+      pre_invocation:
+        - "require(authenticated)"
+    pre_invocation:
+      - "require(role.hr)"
+"#;
+        let routes = compile_config(yaml).unwrap().routes;
+        let route = routes.get("r").expect("route");
+        assert_eq!(route.policy.len(), 2);
+    }
+
+    #[test]
+    fn field_pipeline_error_names_field_path() {
+        // A malformed pipeline under `result:` names `result.<field>` in
+        // the diagnostic so the operator can locate the offending field.
+        let yaml = r#"
+routes:
+  r:
+    result:
+      x: "nonsense"
+"#;
+        let err = compile_config(yaml).unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("result.x"), "expected result.x in: {msg}");
+    }
+
+    #[test]
+    fn legacy_policy_field_names_are_rejected() {
+        // Breaking rename: the old authorization-phase keys must fail
+        // loudly, never be silently dropped (which would fail open).
+        for (old, hint) in [
+            ("policy", "pre_invocation"),
+            ("post_policy", "post_invocation"),
+        ] {
+            let yaml = format!("routes:\n  r:\n    {old}:\n      - \"require(authenticated)\"\n");
+            let err = compile_config(&yaml).expect_err(&format!("legacy `{old}` must be rejected"));
+            let msg = format!("{err}");
+            assert!(
+                msg.contains(old) && msg.contains(hint),
+                "`{old}` rejection should name the replacement `{hint}`: {msg}"
+            );
+        }
+    }
+
+    #[test]
+    fn legacy_only_route_is_not_silently_omitted() {
+        // A route whose *only* APL-ish key is a legacy name would look
+        // empty to the has-APL gate and be dropped — a fail-open. It must
+        // error instead.
+        let yaml = r#"
+routes:
+  ghost:
+    policy:
+      - "require(authenticated)"
+"#;
+        assert!(
+            matches!(compile_config(yaml), Err(ParseError::RenamedField { .. })),
+            "legacy-only route must be rejected, not omitted"
+        );
+    }
+
+    #[test]
     fn compile_omits_routes_without_apl_blocks() {
-        // A route with no APL blocks (no policy / post_policy / args /
-        // result) is a "legacy" route per apl-design §5 and must be
+        // A route with no APL blocks (no authorization / pre_invocation /
+        // post_invocation / args / result) is a "legacy" route per
+        // apl-design §5 and must be
         // omitted from the compiled output. Unknown route keys (e.g.
         // legacy CPEX `priority`) are stashed in `other`, not errored.
         let yaml = r#"
@@ -3320,7 +3509,7 @@ routes:
   legacy:
     priority: 50
   apl_route:
-    policy:
+    pre_invocation:
       - "require(authenticated)"
 "#;
         let routes = compile_config(yaml).unwrap().routes;
@@ -3344,7 +3533,7 @@ imports:
   - "./shared.yaml"
 routes:
   ping:
-    policy:
+    pre_invocation:
       - "require(authenticated)"
 "#;
         let routes = compile_config(yaml).unwrap().routes;
@@ -3356,7 +3545,7 @@ routes:
         let yaml = r#"
 routes:
   bad:
-    policy:
+    pre_invocation:
       - "subject.id == garbage_ident"
 "#;
         let err = compile_config(yaml).unwrap_err();
@@ -3374,7 +3563,7 @@ routes:
         let yaml = r#"
 routes:
   rate_limited:
-    policy:
+    pre_invocation:
       - "plugin(rate_limiter)"
 "#;
         let routes = compile_config(yaml).unwrap().routes;
@@ -3393,7 +3582,7 @@ routes:
         let yaml = r#"
 routes:
   rate_limited:
-    policy:
+    pre_invocation:
       - "run(rate_limiter)"
 "#;
         let routes = compile_config(yaml).unwrap().routes;
@@ -3427,7 +3616,7 @@ routes:
         let yaml = r#"
 routes:
   audit_marked:
-    policy:
+    pre_invocation:
       - "taint(audit, session)"
 "#;
         let routes = compile_config(yaml).unwrap().routes;
@@ -3447,7 +3636,7 @@ routes:
         let yaml = r#"
 routes:
   authz_check:
-    policy:
+    pre_invocation:
       - cedar:
           action: read
           resource: employee
@@ -3485,7 +3674,7 @@ routes:
         let yaml = r#"
 routes:
   authz_check:
-    policy:
+    pre_invocation:
       - cel:
           expr: "subject.id == 'alice' && delegation.depth <= 2"
           on_deny:
@@ -3517,7 +3706,7 @@ routes:
         let yaml = r#"
 routes:
   opa_check:
-    policy:
+    pre_invocation:
       - 'opa("hr/compensation/deny"):':
           on_deny:
             - deny
@@ -3540,7 +3729,7 @@ routes:
         let yaml = r#"
 routes:
   custom_pdp:
-    policy:
+    pre_invocation:
       - my_engine:
           on_deny: [deny]
 "#;
@@ -3560,7 +3749,7 @@ routes:
         let yaml = r#"
 routes:
   get_compensation:
-    policy:
+    pre_invocation:
       - "require(authenticated)"
       - "require(role.hr | role.finance)"
       - "delegation.depth > 2: deny"
@@ -3610,8 +3799,8 @@ routes:
         {
             Decision::Deny { rule_source, .. } => {
                 assert!(
-                    rule_source.contains("policy[2]"),
-                    "expected policy[2], got {}",
+                    rule_source.contains("pre_invocation[2]"),
+                    "expected pre_invocation[2], got {}",
                     rule_source
                 );
             },
@@ -3636,8 +3825,8 @@ routes:
         {
             Decision::Deny { rule_source, .. } => {
                 assert!(
-                    rule_source.contains("policy[1]"),
-                    "expected policy[1], got {}",
+                    rule_source.contains("pre_invocation[1]"),
+                    "expected pre_invocation[1], got {}",
                     rule_source
                 );
             },
@@ -3894,8 +4083,8 @@ routes:
 
     #[test]
     fn compile_route_with_only_args_still_compiles() {
-        // A route with no `policy:` but with `args:` validators is still
-        // an APL route (declared_phases is non-empty).
+        // A route with no authorization block but with `args:`
+        // validators is still an APL route (declared_phases non-empty).
         let yaml = r#"
 routes:
   validate_only:
@@ -3935,7 +4124,7 @@ plugins:
     hooks: [tool_post_invoke]
 routes:
   get_compensation:
-    policy:
+    pre_invocation:
       - "plugin(rate_limiter)"
 "#;
         let cfg = compile_config(yaml).unwrap();
@@ -3959,7 +4148,7 @@ plugins:
       max_requests: 100
 routes:
   hot_path:
-    policy:
+    pre_invocation:
       - "plugin(rate_limiter)"
     plugins:
       rate_limiter:
@@ -3994,7 +4183,7 @@ routes:
     #[test]
     fn compile_policy_block_value_parses_apl_body() {
         let yaml = r#"
-policy:
+pre_invocation:
   - "require(authenticated)"
 result:
   ssn: "redact(!perm.view_ssn)"
@@ -4020,14 +4209,14 @@ result:
     #[test]
     fn compile_policy_block_value_threads_source_into_rule_paths() {
         let yaml = r#"
-policy:
+pre_invocation:
   - "require(authenticated)"
 "#;
         let value: serde_yaml::Value = serde_yaml::from_str(yaml).unwrap();
         let compiled = compile_policy_block_value("global.policies.hr", &value).expect("compile");
         match &compiled.policy[0] {
             crate::rules::Effect::When { source, .. } => {
-                assert_eq!(source, "global.policies.hr.policy[0]");
+                assert_eq!(source, "global.policies.hr.pre_invocation[0]");
             },
             other => panic!("expected When, got {:?}", other),
         }
@@ -4294,7 +4483,7 @@ policy:
         let yaml = r#"
 routes:
   get_compensation:
-    policy:
+    pre_invocation:
       - "require(role.hr)"
       - "delegate(workday-oauth, target: workday-api, permissions: [read_compensation])"
       - delegate:
@@ -4330,7 +4519,7 @@ routes:
         let yaml = r#"
 routes:
   get_compensation:
-    policy:
+    pre_invocation:
       - "require(role.hr)"
       - delegate:
           plugin: workday-oauth
@@ -4338,7 +4527,7 @@ routes:
             target: workday-api
             permissions: [read_compensation]
       - "require(authenticated)"
-    post_policy:
+    post_invocation:
       - delegate:
           plugin: audit-biscuit
           on_error: continue
@@ -4352,7 +4541,7 @@ routes:
             panic!("expected Delegate at policy[1], got {:?}", route.policy[1]);
         };
         assert_eq!(ds.plugin_name, "workday-oauth");
-        assert_eq!(ds.source, "get_compensation.policy[1]");
+        assert_eq!(ds.source, "get_compensation.pre_invocation[1]");
 
         // post_policy[0] is the audit-biscuit delegate.
         let crate::rules::Effect::Delegate(post_ds) = &route.post_policy[0] else {
@@ -4360,7 +4549,7 @@ routes:
         };
         assert_eq!(post_ds.plugin_name, "audit-biscuit");
         assert_eq!(post_ds.on_error.as_deref(), Some("continue"));
-        assert_eq!(post_ds.source, "get_compensation.post_policy[0]");
+        assert_eq!(post_ds.source, "get_compensation.post_invocation[0]");
     }
 
     // ----- validate(name) compile-time rejection (DSL spec §4.2) -----

@@ -75,7 +75,7 @@ pub(crate) enum Step {
     },
 }
 
-/// One delegation invocation inside `policy:` or `post_policy:`.
+/// One delegation invocation inside `pre_invocation:` or `post_invocation:`.
 ///
 /// At runtime the apl-cpex `DelegationInvoker` constructs a
 /// `cpex_core::delegation::DelegationPayload` from
@@ -107,7 +107,7 @@ pub(crate) enum Step {
 /// rules.
 ///
 /// For fan-out flows that need multiple independently-queryable
-/// grants, split into `policy:` + `post_policy:` or reach for a
+/// grants, split into `pre_invocation:` + `post_invocation:` or reach for a
 /// future per-step `as:` alias (not in v0; see the design doc's
 /// "Open design questions" section).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -245,10 +245,10 @@ pub trait PdpFactory: Send + Sync {
 /// post phases (e.g. `cmf.tool_pre_invoke` AND `cmf.tool_post_invoke`).
 ///
 /// APL's four phases map to two dispatch phases:
-///   * `args:` field stages    → `Pre`
-///   * `policy:` steps         → `Pre`
-///   * `result:` field stages  → `Post`
-///   * `post_policy:` steps    → `Post`
+///   * `args:` field stages          → `Pre`
+///   * `pre_invocation:` steps        → `Pre`
+///   * `result:` field stages        → `Post`
+///   * `post_invocation:` steps       → `Post`
 ///
 /// Plugins that need to discriminate `args` vs `policy` (same `Pre`
 /// from the dispatcher's perspective) inspect `PluginContext::hook_name()`
@@ -275,7 +275,7 @@ pub enum DispatchPhase {
 /// plugin registered for multiple hooks.
 #[derive(Debug, Clone, Copy)]
 pub enum PluginInvocation<'a> {
-    /// Called from a `policy:` or `post_policy:` step. The plugin operates
+    /// Called from a `pre_invocation:` or `post_invocation:` step. The plugin operates
     /// on whatever typed payload the invoker was bound to.
     Step { phase: DispatchPhase },
     /// Called inside an `args:` / `result:` pipe chain on one field.

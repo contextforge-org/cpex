@@ -187,7 +187,7 @@ plugins:
 routes:
   - tool: get_weather
     apl:
-      policy:
+      pre_invocation:
         - "plugin(label-reader)"
 "#;
 
@@ -248,7 +248,7 @@ plugins:
 routes:
   - tool: get_weather
     apl:
-      policy:
+      pre_invocation:
         - "plugin(label-reader)"
 "#;
 
@@ -308,7 +308,7 @@ plugins:
 routes:
   - tool: get_weather
     apl:
-      policy:
+      pre_invocation:
         - "plugin(label-writer)"
 "#;
 
@@ -364,7 +364,7 @@ plugins: []
 routes:
   - tool: get_weather
     apl:
-      policy:
+      pre_invocation:
         - "require(authenticated)"
 "#;
     let mgr = Arc::new(PluginManager::default());
@@ -406,7 +406,7 @@ plugins: []
 routes:
   - tool: get_weather
     apl:
-      policy:
+      pre_invocation:
         - "require(authenticated)"
 "#;
     let mgr = Arc::new(PluginManager::default());

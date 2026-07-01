@@ -218,7 +218,7 @@ plugins:
     hooks: [cmf.tool_pre_invoke]
 routes:
   get_weather:
-    policy:
+    pre_invocation:
       - "plugin(scope-gate)"
 "#;
 
@@ -269,7 +269,7 @@ plugins:
     hooks: [cmf.tool_pre_invoke]
 routes:
   get_weather:
-    policy:
+    pre_invocation:
       - "plugin(scope-gate)"
 "#;
 
@@ -395,7 +395,7 @@ plugins:
     capabilities: [append_labels, read_labels]
 routes:
   classify:
-    policy:
+    pre_invocation:
       - "plugin(tagger)"
 "#;
 
@@ -482,7 +482,7 @@ plugins:
     capabilities: [append_labels, read_labels]
 routes:
   classify:
-    policy:
+    pre_invocation:
       - "plugin(tagger)"
 "#;
     let cfg = compile_config(yaml).expect("compile_config");
@@ -548,7 +548,7 @@ async fn apl_taint_step_lands_in_security_labels_and_persists() {
     const YAML: &str = r#"
 routes:
   classify:
-    policy:
+    pre_invocation:
       - "taint(audit, session)"
 "#;
 
@@ -664,7 +664,7 @@ plugins:
 routes:
   - tool: get_weather
     apl:
-      policy:
+      pre_invocation:
         - "plugin(tagger)"
 "#;
 
@@ -770,7 +770,7 @@ plugins:
 routes:
   - tool: get_weather
     apl:
-      policy:
+      pre_invocation:
         - "plugin(tagger)"
         - "plugin(scope-gate)"
 "#;
@@ -905,7 +905,7 @@ global:
 routes:
   - tool: get_weather
     apl:
-      policy:
+      pre_invocation:
         - "plugin(tagger)"
 "#;
 
