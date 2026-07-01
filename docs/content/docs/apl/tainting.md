@@ -18,7 +18,7 @@ A `taint` effect attaches a label. The scenario marks the session when compensat
 ```yaml
 routes:
   - tool: get_compensation
-    policy:
+    pre_invocation:
       - "require(role.hr)"
       - "taint(secret, session)"
     result:
@@ -39,7 +39,7 @@ A different route, later in the same session, refuses based on the label, even w
 ```yaml
 routes:
   - tool: send_email
-    policy:
+    pre_invocation:
       - "require(perm.email_send)"
       - "security.labels contains \"secret\": deny('session touched secret data', 'session_tainted')"
 ```

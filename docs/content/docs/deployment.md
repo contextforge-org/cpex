@@ -14,7 +14,7 @@ Take the `get_compensation` route. It is identical whether CPEX fronts the backe
 ```yaml
 routes:
   - tool: get_compensation
-    policy:
+    pre_invocation:
       - "require(role.hr)"
       - "delegate(workday-oauth, target: workday-api, audience: workday-api, permissions: [read_compensation])"
       - "taint(secret, session)"
@@ -28,7 +28,7 @@ As a **gateway**, CPEX sits in front of the tool server and enforces on inbound 
 
 ## Route forms
 
-A deployment integration usually expresses routes as a list of `- tool:` entries, with the `policy`, `args`, and `result` blocks directly under each. This is the same policy you would write in the map-keyed form (see [Configuration]({{< relref "/docs/configuration" >}})); the wrapping differs, the rules do not. Pick one form per deployment and keep it consistent.
+A deployment integration usually expresses routes as a list of `- tool:` entries, with the `authorization`, `args`, and `result` blocks directly under each. This is the same policy you would write in the map-keyed form (see [Configuration]({{< relref "/docs/configuration" >}})); the wrapping differs, the rules do not. Pick one form per deployment and keep it consistent.
 
 ## Placement guidance
 

@@ -13,10 +13,10 @@ The scenario's repository search must allow a read when the caller is an enginee
 
 ## Calling a PDP from policy
 
-A PDP call is an effect in the `policy` phase. It names a dialect and passes the request; `on_allow` and `on_deny` react to the decision:
+A PDP call is an effect in the `authorization.pre_invocation` phase. It names a dialect and passes the request; `on_allow` and `on_deny` react to the decision:
 
 ```yaml
-policy:
+pre_invocation:
   - "require(team.engineering | team.security)"
   - cedar:
       action: 'Action::"read"'
@@ -65,7 +65,7 @@ This is a deliberate pluggable-resolver surface, not a maturity checklist. APL s
 CEL is the lightest option for inline boolean policy:
 
 ```yaml
-policy:
+pre_invocation:
   - cel: { expr: "subject.department == 'compliance' || 'admin' in subject.roles" }
 ```
 

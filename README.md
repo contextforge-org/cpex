@@ -49,7 +49,7 @@ One policy defines three distinct enforcement pipelines, one for each entity.
 routes:
   # HR lookup: gate on role, scope a downstream token, redact by permission, taint the session.
   - tool: get_compensation
-    policy:
+    pre_invocation:
       - "require(role.hr)"
       - "delegate(workday-oauth, target: workday-api, permissions: [read_compensation])"
       - "taint(secret, session)"
@@ -59,7 +59,7 @@ routes:
 
   # Repo search: gate on team, decide with CEL (or Cedar), require the scoped grant.
   - tool: search_repos
-    policy:
+    pre_invocation:
       - "require(team.engineering | team.security)"
       - cel:
           expr: "(role.engineer && args.visibility == 'internal') || role.security"
@@ -69,7 +69,7 @@ routes:
 
   # Outbound email: refuse if the session already touched secret data.
   - tool: send_email
-    policy:
+    pre_invocation:
       - "require(perm.email_send)"
       - "run(pii-scan)"
       - "security.labels contains \"secret\": deny('write-down blocked', 'session_tainted')"

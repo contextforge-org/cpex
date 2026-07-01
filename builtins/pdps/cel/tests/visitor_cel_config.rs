@@ -45,7 +45,7 @@ global:
 routes:
   - tool: get_document
     apl:
-      policy:
+      pre_invocation:
         - cel:
             expr: |
               subject.id == "alice" && has(role.reader) && role.reader
@@ -177,7 +177,7 @@ global:
 routes:
   - tool: get_document
     apl:
-      policy:
+      pre_invocation:
         - cel:
             expr: |
               subject.id == "alice"
@@ -208,7 +208,7 @@ global:
 routes:
   - tool: get_document
     apl:
-      policy:
+      pre_invocation:
         - cel:
             expr: |
               nonexistent.field == "value"
@@ -250,7 +250,7 @@ global:
 routes:
   - tool: get_document
     apl:
-      policy:
+      pre_invocation:
         - cel:
             on_deny:
               - deny
@@ -294,7 +294,7 @@ global:
 routes:
   - tool: get_document
     apl:
-      policy:
+      pre_invocation:
         - cel:
             expr: |
               meta.entity_name == "get_document"

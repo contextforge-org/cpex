@@ -1718,8 +1718,9 @@ plugins:
 routes:
   - tool: get_weather
     apl:
-      policy:
-        - "plugin(auditor)"
+      authorization:
+        pre_invocation:
+          - "plugin(auditor)"
 "#;
         unsafe {
             let mgr = build_test_manager();

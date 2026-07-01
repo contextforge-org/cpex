@@ -24,7 +24,7 @@ The clearest demonstration is redaction on the wire. Three callers issue the ide
 ```yaml
 routes:
   - tool: get_compensation
-    policy:
+    pre_invocation:
       - "require(role.hr)"
     result:
       ssn: "str | redact(!perm.view_ssn)"
@@ -51,7 +51,7 @@ Some controls depend on what already happened. When a caller reads compensation 
 ```yaml
 routes:
   - tool: send_email
-    policy:
+    pre_invocation:
       - "require(perm.email_send)"
       - "security.labels contains \"secret\": deny('session touched secret data', 'session_tainted')"
 ```

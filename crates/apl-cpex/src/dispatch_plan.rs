@@ -82,8 +82,8 @@ impl RoutePluginEntry {
     /// `MetaExtension.entity_type` (or `None` if the dispatcher
     /// doesn't have one — in which case any hook's entity_type
     /// matches). `requested_phase` comes from the APL invocation
-    /// context — `Pre` for `args:` / `policy:`, `Post` for
-    /// `result:` / `post_policy:`, `Unphased` for unphased
+    /// context — `Pre` for `args:` / `pre_invocation:`, `Post` for
+    /// `result:` / `post_invocation:`, `Unphased` for unphased
     /// dispatchers (rare in APL).
     ///
     /// Returns `None` when the plugin has no hook matching the

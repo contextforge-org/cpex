@@ -13,10 +13,10 @@ The scenario's `get_compensation` reads from a backend HR system that expects it
 
 ## Delegation as an effect
 
-`delegate` is an effect in the `policy` phase. It names a delegator plugin and the target it mints for:
+`delegate` is an effect in the `authorization.pre_invocation` phase. It names a delegator plugin and the target it mints for:
 
 ```yaml
-policy:
+pre_invocation:
   - "require(role.hr)"
   - "delegate(workday-oauth, target: workday-api, audience: workday-api, permissions: [read_compensation])"
   - "delegation.granted.permissions contains 'read_compensation': allow"

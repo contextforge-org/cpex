@@ -42,7 +42,7 @@ routes:
   get_employee:
     args:
       employee_id: "str"
-    policy:
+    pre_invocation:
       - "require(authenticated)"
       - "delegation.depth > 2: deny"
     result:
@@ -196,7 +196,7 @@ async fn deep_delegation_denies_at_policy() {
     match r.decision {
         Decision::Deny { rule_source, .. } => {
             assert!(
-                rule_source.contains("policy"),
+                rule_source.contains("pre_invocation"),
                 "got source: {}",
                 rule_source
             );

@@ -296,7 +296,7 @@ plugins:
     hooks: [token.delegate]
 routes:
   get_compensation:
-    policy:
+    pre_invocation:
       - "delegate(workday-oauth, target: workday-api, permissions: [read_compensation])"
       - "!delegation.granted: deny"
       - "!(delegation.granted.permissions contains 'read_compensation'): deny"
@@ -422,7 +422,7 @@ plugins:
     hooks: [token.delegate]
 routes:
   get_compensation:
-    policy:
+    pre_invocation:
       - "delegate(workday-oauth, target: workday-api, permissions: [write_everything])"
 "#;
     let (mgr, cfg, cache) = build_setup(
@@ -517,7 +517,7 @@ plugins:
     hooks: [token.delegate]
 routes:
   any:
-    policy:
+    pre_invocation:
       - "delegate(audit-receipt, target: audit, on_error: continue)"
 "#;
     let (mgr, cfg, cache) = build_setup(
@@ -619,7 +619,7 @@ plugins:
     hooks: [token.delegate]
 routes:
   fanout:
-    policy:
+    pre_invocation:
       - "delegate(workday-oauth, target: workday-api, permissions: [read_compensation])"
       - "delegate(payroll-oauth, target: payroll-api, permissions: [read_salary])"
       - "!(delegation.granted.permissions contains 'read_salary'): deny"
@@ -744,7 +744,7 @@ plugins:
     hooks: [token.delegate]
 routes:
   get_compensation:
-    policy:
+    pre_invocation:
       - "delegate(scoped-delegate, target: workday-api, permissions: [read_compensation])"
 "#;
     let (mgr, cfg, cache) = build_setup(
@@ -851,7 +851,7 @@ plugins:
     hooks: [token.delegate]
 routes:
   any:
-    policy:
+    pre_invocation:
       - "delegate(capless-delegate, target: workday-api)"
 "#;
     let (mgr, cfg, cache) = build_setup(
