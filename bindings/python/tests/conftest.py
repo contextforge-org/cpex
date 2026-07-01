@@ -16,6 +16,7 @@ from cpex import PluginManager
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 PII_DENY_CONFIG = str(FIXTURES_DIR / "pii_deny.yaml")
+PII_REDACT_CONFIG = str(FIXTURES_DIR / "pii_redact.yaml")
 
 
 @pytest.fixture
@@ -34,3 +35,9 @@ async def manager():
 def pii_deny_config_path() -> str:
     """Return the absolute path to the pii_deny fixture config."""
     return PII_DENY_CONFIG
+
+
+@pytest.fixture
+def pii_redact_config_path() -> str:
+    """Return the absolute path to the pii_redact fixture config."""
+    return PII_REDACT_CONFIG

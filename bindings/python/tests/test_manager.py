@@ -96,3 +96,51 @@ async def test_generic_hook_does_not_raise(manager: PluginManager):
     result = await manager.invoke_hook("custom.arbitrary.hook", {"data": "value"})
     assert isinstance(result, PipelineResult)
     assert result.continue_processing is True
+
+
+# ---------------------------------------------------------------------------
+# Modified-payload round-trip
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_pii_redact_returns_modified_payload(pii_redact_config_path: str):
+    """Redact mode: plugin mutates payload → modified_payload round-trips through PyO3.
+
+    Asserts:
+    - continue_processing is True (redact allows, unlike deny)
+    - modified_payload is not None (the plugin produced a mutation)
+    - the SSN argument value is replaced with [PII] in the returned dict
+    - an unrelated argument field is preserved verbatim
+    """
+    mgr = PluginManager(pii_redact_config_path)
+    await mgr.initialize()
+
+    payload = {
+        "message": {
+            "role": "assistant",
+            "content": [
+                {
+                    "content_type": "tool_call",
+                    "content": {
+                        "tool_call_id": "tc_001",
+                        "name": "lookup_person",
+                        "arguments": {
+                            "ssn": "123-45-6789",
+                            "name": "Alice",
+                        },
+                    },
+                }
+            ],
+        }
+    }
+    result = await mgr.invoke_hook("cmf.tool_pre_invoke", payload)
+
+    assert result.continue_processing is True, "redact mode should allow processing"
+    assert result.modified_payload is not None, "pii-scan redact must set modified_payload"
+
+    args = result.modified_payload["message"]["content"][0]["content"]["arguments"]
+    assert args["ssn"] == "[PII]", f"SSN should be redacted, got: {args['ssn']!r}"
+    assert args["name"] == "Alice", "unrelated field must be preserved"
+
+    await mgr.shutdown()

@@ -52,5 +52,9 @@ tracing = { workspace = true }
 pyo3 = { version = "0.29", features = [] }
 pyo3-async-runtimes = { version = "0.29", features = ["tokio-runtime"] }
 
+[dev-dependencies]
+async-trait = { workspace = true }
+tokio = { workspace = true, features = ["rt", "macros"] }
+
 [features]
 default = []

@@ -869,6 +869,7 @@ dependencies = [
 name = "cpex-python"
 version = "0.2.0-alpha.6"
 dependencies = [
+ "async-trait",
  "cpex-builtins",
  "cpex-core",
  "pyo3",
