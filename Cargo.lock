@@ -901,7 +901,7 @@ dependencies = [
 
 [[package]]
 name = "cpex-python"
-version = "0.2.0-alpha.6"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "cpex-builtins",
