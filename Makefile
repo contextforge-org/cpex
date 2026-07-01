@@ -57,6 +57,11 @@ help:
 	@echo "Go bindings (go/cpex):"
 	@echo "  go-build go-test go-test-race go-fmt go-vet go-lint-check go-lint-fix"
 	@echo ""
+	@echo "Python bindings (bindings/python — requires maturin):"
+	@echo "  bindings-python-build          Build and install Python bindings (debug)"
+	@echo "  bindings-python-build-release  Build Python bindings wheel (release)"
+	@echo "  bindings-python-test           Build + run Python binding tests"
+	@echo ""
 	@echo "Examples:"
 	@echo "  examples-build    Build all Rust + Go examples (catches stale APIs)"
 	@echo "  examples-run      Run all examples end-to-end"
@@ -183,6 +188,37 @@ docs-clean:
 	@rm -rf $(DOCS_DIR)/public $(DOCS_DIR)/resources
 
 # =============================================================================
+# Python bindings (bindings/python)
+# =============================================================================
+#
+# cpex-python is built via maturin, not plain cargo. The targets below
+# require maturin to be installed (`pip install maturin`). The crate is
+# excluded from the pure-Rust `rust-build` / `rust-test` targets so those
+# paths stay libpython-independent (KD3).
+
+PYTHON_BINDINGS_DIR = bindings/python
+VENV_BIN = .venv/bin
+MATURIN ?= maturin
+
+.PHONY: bindings-python-build
+bindings-python-build:
+	@echo "🐍 Building Python bindings (debug)..."
+	@cd $(PYTHON_BINDINGS_DIR) && python -m venv .venv && source .venv/bin/activate && pip install maturin pytest pytest-asyncio && $(MATURIN) develop
+	@echo "✅  Python bindings built (debug)"
+
+.PHONY: bindings-python-build-release
+bindings-python-build-release:
+	@echo "🐍 Building Python bindings (release)..."
+	@cd $(PYTHON_BINDINGS_DIR) && python -m venv .venv && source .venv/bin/activate && pip install maturin pytest pytest-asyncio && $(MATURIN) build --release
+	@echo "✅  Python bindings built (release)"
+
+.PHONY: bindings-python-test
+bindings-python-test: bindings-python-build
+	@echo "🧪 Running Python binding tests..."
+	@cd $(PYTHON_BINDINGS_DIR) && $(VENV_BIN)/pytest tests/ -v
+	@echo "✅  Python binding tests passed"
+
+# =============================================================================
 # Go bindings (go/cpex)
 # =============================================================================
 #
@@ -259,8 +295,8 @@ examples-run: examples-build
 # Canonical local gate: read-only lint, full test suite, example builds. If
 # this passes locally, the same checks pass in CI.
 .PHONY: ci
-ci: lint test examples-build
-	@echo "✅  CI gate passed (lint + tests + examples)"
+ci: lint test examples-build bindings-python-build-release bindings-python-test
+	@echo "✅  CI gate passed (lint + tests + examples + bindings/python)"
 
 # =============================================================================
 # Release
