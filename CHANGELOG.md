@@ -15,12 +15,21 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **BREAKING — APL authz/authn config keys renamed** for clarity. The old key names no longer parse; a config using them fails to load with an error naming the replacement (a dropped authorization or authentication block would otherwise fail open, so the rejection is deliberate). Migration:
+  - `identity:` → `authentication:` (at `global`, per-route, and policy-group scope)
+  - `policy:` → `authorization.pre_invocation:` (or flat `pre_invocation:`)
+  - `post_policy:` → `authorization.post_invocation:` (or flat `post_invocation:`)
+
+  The two authorization phases may be written either nested under an `authorization:` block or flat directly on the section; the forms are equivalent. The field-pipeline keys `args:` / `result:` are unchanged (they stay aligned with the `args.*` / `result.*` attribute namespaces that predicates and interpolation read). Internal APL IR is unchanged. (#105)
+
 ## [0.2.0] - 2026-06-26
 
 ### Added
 
 - CPEX redesign as a Rust framework with Go bindings
-- APL (Attribute Policy Language) governance is now bundled into `libcpex_ffi.a`. New `cpex_apl_install` extern C entry point registers the standard APL plugin/PDP factories (`validator/pii-scan`, `audit/logger`, `identity/jwt`, `delegator/oauth`, `cedar-direct`) and installs the APL config visitor on a manager. Call it after `cpex_manager_new_default` and before `cpex_load_config`. Go hosts use `PluginManager.EnableAPL()`. (#60)
+- APL (Authorization Policy Language) governance is now bundled into `libcpex_ffi.a`. New `cpex_apl_install` extern C entry point registers the standard APL plugin/PDP factories (`validator/pii-scan`, `audit/logger`, `identity/jwt`, `delegator/oauth`, `cedar-direct`) and installs the APL config visitor on a manager. Call it after `cpex_manager_new_default` and before `cpex_load_config`. Go hosts use `PluginManager.EnableAPL()`. (#60)
 - Publish `libcpex_ffi.a` as signed GitHub Release artifacts on every semver tag push (`linux-amd64-gnu`, `linux-arm64-gnu`, `linux-amd64-musl`, `linux-arm64-musl`, `darwin-arm64`). Cosign keyless signatures + SHA256 checksums; see `crates/cpex-ffi/RELEASE.md` for the schema and the verify-and-consume recipe. (#60)
 - FFI ABI versioning: `cpex_ffi_abi_version()` extern C accessor exposes `FFI_ABI_VERSION`. The Go binding checks this in `init()` and panics on mismatch. Other language bindings must replicate the check. (#60)
 - CEL (Common Expression Language) policy decision backend. A new `apl-pdp-cel` crate registers `kind: cel`, letting authors write inline boolean predicates (`cel: { expr: ... }`) over the common attribute vocabulary (`subject.id`, `delegation.depth`, `session.labels`, ...), evaluated through the existing `PdpResolver` seam alongside Cedar, OPA, and AuthZen. Expressions compile once and cache by source; compile errors, undeclared-variable references, and non-boolean results fail closed (deny), overridable with `on_error: allow`. No change to APL evaluation semantics. (#68)
