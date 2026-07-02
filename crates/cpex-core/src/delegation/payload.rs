@@ -56,6 +56,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
+#[cfg(feature = "runtime")]
 use crate::executor::PipelineResult;
 use crate::extensions::raw_credentials::DelegationMode;
 use crate::extensions::{
@@ -358,6 +359,7 @@ impl DelegationPayload {
 
     // -------- Host-side application helpers --------
 
+    #[cfg(feature = "runtime")]
     /// Pull the resolved `DelegationPayload` out of a `PipelineResult`
     /// returned by `mgr.invoke_named::<TokenDelegateHook>(...)`.
     /// Returns `None` when the pipeline was denied or when the result's

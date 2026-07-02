@@ -63,6 +63,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
+#[cfg(feature = "runtime")]
 use crate::executor::PipelineResult;
 use crate::extensions::{
     ClientExtension, DelegationExtension, Extensions, RawCredentialsExtension, SecurityExtension,
@@ -285,6 +286,7 @@ impl IdentityPayload {
 
     // -------- Host-side application helpers --------
 
+    #[cfg(feature = "runtime")]
     /// Pull the resolved `IdentityPayload` out of a `PipelineResult`
     /// returned by `mgr.invoke_named::<IdentityHook>(...)`. Returns
     /// `None` when the pipeline was denied (no `modified_payload`)

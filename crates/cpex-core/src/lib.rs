@@ -31,12 +31,20 @@ pub mod config;
 pub mod context;
 pub mod delegation;
 pub mod error;
-pub mod executor;
 pub mod extensions;
-pub mod factory;
 pub mod hooks;
 pub mod identity;
-pub mod manager;
 pub mod plugin;
+
+// Runtime-only modules — require tokio, task spawning, orchestration.
+// Excluded when building for WASM targets (use `default-features = false`).
+#[cfg(feature = "runtime")]
+pub mod executor;
+#[cfg(feature = "runtime")]
+pub mod factory;
+#[cfg(feature = "runtime")]
+pub mod manager;
+#[cfg(feature = "runtime")]
 pub mod registry;
+#[cfg(feature = "runtime")]
 pub mod visitor;

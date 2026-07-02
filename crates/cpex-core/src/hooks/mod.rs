@@ -16,14 +16,17 @@
 //
 // Hook types are open — hosts define their own using define_hook! alongside the built-ins.
 
-pub mod adapter;
 pub mod macros;
 pub mod metadata;
 pub mod payload;
 pub mod trait_def;
 pub mod types;
 
+#[cfg(feature = "runtime")]
+pub mod adapter;
+
 // Re-export core types at the hooks level
+#[cfg(feature = "runtime")]
 pub use adapter::TypedHandlerAdapter;
 pub use metadata::{
     lookup as lookup_hook_metadata, register_hook_metadata, HookMetadata, HookPhase,
