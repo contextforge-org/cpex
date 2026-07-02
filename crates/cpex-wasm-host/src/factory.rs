@@ -23,7 +23,8 @@ use cpex_core::hooks::payload::PluginPayload;
 use cpex_core::plugin::{Plugin, PluginConfig};
 use cpex_core::registry::AnyHookHandler;
 
-use crate::conversions::{native_context_to_wit, native_extensions_to_wit, native_payload_to_wit, wit_result_to_native};
+use crate::conversions::{native_context_to_wit, native_extensions_to_wit, native_payload_to_wit, wit_hook_result_to_native};
+use crate::payload_registry::PayloadSerializerRegistry;
 use crate::sandbox_manager::SandboxManager;
 
 // ---------------------------------------------------------------------------
@@ -34,11 +35,22 @@ use crate::sandbox_manager::SandboxManager;
 /// Every plugin gets an isolated wasmtime engine and store — no contention between plugins.
 pub struct WasmPluginFactory {
     wasm_dir: PathBuf,
+    registry: Arc<PayloadSerializerRegistry>,
 }
 
 impl WasmPluginFactory {
-    pub fn new(wasm_dir: PathBuf) -> Self {
-        Self { wasm_dir }
+    /// Create a factory with a pre-built payload registry.
+    /// Register all payload types the host wants to route through WASM before
+    /// calling this, then pass the registry here.
+    pub fn new(wasm_dir: PathBuf, registry: Arc<PayloadSerializerRegistry>) -> Self {
+        Self { wasm_dir, registry }
+    }
+
+    /// Convenience constructor that pre-registers `MessagePayload` only.
+    pub fn with_cmf_only(wasm_dir: PathBuf) -> Self {
+        let mut registry = PayloadSerializerRegistry::new();
+        registry.register::<MessagePayload>();
+        Self::new(wasm_dir, Arc::new(registry))
     }
 }
 
@@ -90,18 +102,19 @@ impl PluginFactory for WasmPluginFactory {
             config: config.clone(),
         });
 
-        let handler: Arc<dyn AnyHookHandler> = Arc::new(WasmBridgeHandler {
-            plugin_name: config.name.clone(),
-            sandbox,
-        });
-
-        // Register handler for each hook the plugin declares
+        // Register a separate handler per hook so each carries its own hook_name
         let hooks: Vec<(&'static str, Arc<dyn AnyHookHandler>)> = config
             .hooks
             .iter()
             .map(|hook_name| {
                 let leaked: &'static str = Box::leak(hook_name.clone().into_boxed_str());
-                (leaked, handler.clone())
+                let handler: Arc<dyn AnyHookHandler> = Arc::new(WasmBridgeHandler {
+                    plugin_name: config.name.clone(),
+                    hook_name: hook_name.clone(),
+                    sandbox: sandbox.clone(),
+                    registry: self.registry.clone(),
+                });
+                (leaked, handler)
             })
             .collect();
 
@@ -145,7 +158,9 @@ impl Plugin for WasmBridgePlugin {
 /// Each handler owns its own SandboxManager — no contention with other plugins.
 struct WasmBridgeHandler {
     plugin_name: String,
+    hook_name: String,
     sandbox: Arc<Mutex<SandboxManager>>,
+    registry: Arc<PayloadSerializerRegistry>,
 }
 
 #[async_trait]
@@ -156,28 +171,37 @@ impl AnyHookHandler for WasmBridgeHandler {
         extensions: &Extensions,
         ctx: &mut PluginContext,
     ) -> Result<Box<dyn std::any::Any + Send + Sync>, Box<PluginError>> {
-        // Downcast the type-erased payload to MessagePayload
-        let native_payload = payload
-            .as_any()
-            .downcast_ref::<MessagePayload>()
-            .ok_or_else(|| {
+        // Build the WIT payload: CMF fast-path, generic fallback via registry
+        let wit_hook_payload = if let Some(cmf) = payload.as_any().downcast_ref::<MessagePayload>() {
+            crate::sandbox_manager::types::HookPayload::Cmf(native_payload_to_wit(cmf))
+        } else if self.registry.contains_type_id(payload.as_any().type_id()) {
+            let (type_name, bytes) = self.registry.serialize(payload).map_err(|e| {
                 Box::new(PluginError::Config {
-                    message: format!(
-                        "plugin '{}': payload type mismatch, expected MessagePayload",
-                        self.plugin_name
-                    ),
+                    message: format!("plugin '{}': payload serialization failed: {}", self.plugin_name, e),
                 })
             })?;
+            crate::sandbox_manager::types::HookPayload::Generic(
+                crate::sandbox_manager::types::GenericPayload {
+                    payload_type: type_name.to_string(),
+                    payload_data: bytes,
+                },
+            )
+        } else {
+            return Err(Box::new(PluginError::Config {
+                message: format!(
+                    "plugin '{}': payload type not registered in PayloadSerializerRegistry",
+                    self.plugin_name,
+                ),
+            }));
+        };
 
-        // Convert native types → WIT types
-        let wit_payload = native_payload_to_wit(native_payload);
         let wit_extensions = native_extensions_to_wit(extensions);
         let wit_ctx = native_context_to_wit(ctx);
 
         // Invoke the WASM plugin through its dedicated sandbox
         let wit_result = {
             let mut mgr = self.sandbox.lock().await;
-            mgr.invoke(wit_payload, wit_extensions, wit_ctx)
+            mgr.invoke(&self.hook_name, wit_hook_payload, wit_extensions, wit_ctx)
                 .await
                 .map_err(|e| {
                     Box::new(PluginError::Config {
@@ -189,8 +213,14 @@ impl AnyHookHandler for WasmBridgeHandler {
                 })?
         };
 
-        // Convert WIT result → native PluginResult, then erase for the executor
-        let native_result = wit_result_to_native(wit_result);
+        // Convert WIT HookResult → native PluginResult + optional context writeback
+        let (native_result, modified_ctx) = wit_hook_result_to_native(wit_result, &self.registry);
+
+        if let Some(new_ctx) = modified_ctx {
+            ctx.local_state = new_ctx.local_state;
+            ctx.global_state = new_ctx.global_state;
+        }
+
         Ok(cpex_core::executor::erase_result(native_result))
     }
 

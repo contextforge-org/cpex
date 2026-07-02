@@ -219,10 +219,11 @@ impl SandboxManager {
     /// Epoch deadline is per-invocation (reset each call so no single call hangs).
     pub async fn invoke(
         &mut self,
-        payload: types::MessagePayload,
+        hook_name: &str,
+        payload: types::HookPayload,
         extensions: types::Extensions,
         ctx: types::PluginContext,
-    ) -> Result<types::PluginResult> {
+    ) -> Result<types::HookResult> {
         eprintln!("[SANDBOX] invoke() called, plugin loaded: {}", self.is_loaded());
         let instance = self
             .instance
@@ -235,7 +236,7 @@ impl SandboxManager {
         eprintln!("[SANDBOX] Calling handle_hook on WASM component...");
         let result = instance
             .plugin
-            .call_handle_hook(&mut instance.store, &payload, &extensions, &ctx)
+            .call_handle_hook(&mut instance.store, hook_name, &payload, &extensions, &ctx)
             .await;
 
         match &result {

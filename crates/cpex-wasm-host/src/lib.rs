@@ -5,5 +5,6 @@
 
 pub mod conversions;
 pub mod factory;
+pub mod payload_registry;
 pub mod policy_loader;
 pub mod sandbox_manager;

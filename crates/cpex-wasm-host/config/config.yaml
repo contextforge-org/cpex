@@ -15,7 +15,7 @@ global:
 plugins:
   - name: identity-checker
     kind: wasm://plugin.wasm
-    hooks: [cmf.tool_pre_invoke, cmf.tool_post_invoke]
+    hooks: [cmf.tool_pre_invoke, cmf.tool_post_invoke, tool_pre_invoke]
     mode: sequential
     priority: 10
     on_error: fail

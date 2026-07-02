@@ -227,6 +227,7 @@ pub struct MessagePayload {
 }
 
 crate::impl_plugin_payload!(MessagePayload);
+crate::impl_wasm_payload!(MessagePayload, "cmf.message");
 
 // ---------------------------------------------------------------------------
 // CmfHook — Hook Type Definition

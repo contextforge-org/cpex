@@ -14,7 +14,6 @@ members = [
     "crates/cpex-sdk",
     "crates/cpex-builtins",
     "crates/cpex-ffi",
-    "crates/cpex-payload",
     "crates/cpex-wasm-host",
     "crates/apl-core",
     "crates/apl-cmf",

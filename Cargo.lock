@@ -938,21 +938,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "cpex-payload"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "serde",
- "serde_json",
- "serde_yaml",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
- "uuid",
- "wildmatch",
-]
-
-[[package]]
 name = "cpex-sdk"
 version = "0.1.0"
 dependencies = [
@@ -968,6 +953,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "chrono",
  "cpex-core",
  "hyper",
  "serde",
