@@ -109,7 +109,16 @@ jobs:
           fetch-depth: 1
       - name: Install Rust 1.96.0
         uses: dtolnay/rust-toolchain@1.96.0
-      - uses: Swatinem/rust-cache@v2
+      # NOTE: intentionally NO Swatinem/rust-cache here, AND we wipe the registry
+      # index before packaging. The committed Cargo.lock is byte-identical to a
+      # fresh x86_64 resolution (verified in an amd64 container), so the lock is
+      # not the problem. The failure comes from stale `~/.cargo/registry` state
+      # the hosted runner carries: under the sparse protocol `cargo package
+      # --locked` consults that partial local index, decides it can't satisfy the
+      # committed lock, and aborts with "cannot update the lock file ... --locked"
+      # ~1.4s in (too fast for a real network fetch). Removing the index forces a
+      # clean fetch, against which Cargo.lock resolves cleanly — keeping this
+      # dry-run deterministic.
       # Continuous dry-run of the crates.io release: build + verify a .crate for
       # every publishable member without uploading. Catches publishability
       # regressions (missing version reqs, packaging-excluded files, broken
@@ -117,7 +126,11 @@ jobs:
       # `make publish-dry` and the release workflow's dry-run. The two
       # `publish = false` FFI crates are excluded (not part of the registry set).
       - name: cargo package (no upload)
-        run: cargo package --workspace --locked --exclude cpex-ffi --exclude cpex-demo-ffi
+        run: |
+          # Drop any pre-seeded registry index/cache so cargo fetches fresh and
+          # --locked resolves against a clean index (see note above).
+          rm -rf ~/.cargo/registry/index ~/.cargo/registry/cache
+          cargo package --workspace --locked --exclude cpex-ffi --exclude cpex-demo-ffi
 
   docs:
     name: Docs Build

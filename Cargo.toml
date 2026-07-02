@@ -26,6 +26,10 @@ members = [
     "builtins/pdps/cel",
     "builtins/session/valkey",
     "examples/go-demo/ffi",
+    # PyO3 bindings — excluded from default-members so plain `cargo build`
+    # stays libpython-independent (KD3). Use `cargo build -p cpex-python`
+    # or `maturin develop` to build this crate explicitly.
+    "bindings/python",
 ]
 
 # `default-members` controls what `cargo build` / `cargo test` (with no
