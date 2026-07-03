@@ -21,10 +21,10 @@ from typing import Any, Awaitable, Callable, Optional
 # Third-Party
 import httpx
 import orjson
-from mcp import ClientSession, McpError, StdioServerParameters
+from mcp import ClientSession, MCPError, StdioServerParameters
 from mcp.client.stdio import stdio_client
-from mcp.client.streamable_http import streamablehttp_client
-from mcp.types import TextContent
+from mcp.client.streamable_http import streamable_http_client
+from mcp_types import TextContent
 
 # First-Party
 from cpex.framework.base import HookRef, Plugin, PluginRef
@@ -82,9 +82,6 @@ class ExternalPlugin(Plugin):
         self._stdio_ready: Optional[asyncio.Event] = None
         self._stdio_stop: Optional[asyncio.Event] = None
         self._stdio_error: Optional[BaseException] = None
-        self._get_session_id: Optional[Callable[[], str | None]] = None
-        self._session_id: Optional[str] = None
-        self._http_client_factory: Optional[Callable[..., httpx.AsyncClient]] = None
         self._reconnect_attempts: int = 3
         self._reconnect_delay: float = 0.1
         self._reconnect_lock: asyncio.Lock = asyncio.Lock()
@@ -373,23 +370,20 @@ class ExternalPlugin(Plugin):
 
             return httpx.AsyncClient(**kwargs)
 
-        self._http_client_factory = _tls_httpx_client_factory
         max_retries = 3
         base_delay = 1.0
 
         for attempt in range(max_retries):
             try:
-                client_factory = _tls_httpx_client_factory
-                streamable_client = streamablehttp_client(
-                    uri, httpx_client_factory=client_factory, terminate_on_close=False
+                http_client_instance = _tls_httpx_client_factory()
+                streamable_client = streamable_http_client(
+                    uri, http_client=http_client_instance, terminate_on_close=True
                 )
                 http_transport = await self._exit_stack.enter_async_context(streamable_client)
-                self._http, self._write, get_session_id = http_transport
-                self._get_session_id = get_session_id
+                self._http, self._write = http_transport
                 self._session = await self._exit_stack.enter_async_context(ClientSession(self._http, self._write))
 
                 await self._session.initialize()
-                self._session_id = self._get_session_id() if self._get_session_id else None
                 response = await self._session.list_tools()
                 tools = response.tools
                 logger.info(
@@ -446,8 +440,6 @@ class ExternalPlugin(Plugin):
         self._http = None
         self._write = None
         self._stdio = None
-        self._get_session_id = None
-        self._session_id = None
 
     async def _reconnect_session(self) -> None:
         """Tear down old session and reconnect to MCP server with linear backoff.
@@ -570,8 +562,8 @@ class ExternalPlugin(Plugin):
                     ) from reconn_err
             logger.exception(pe)
             raise
-        except McpError as e:
-            logger.warning("McpError for plugin %s: %s", self.name, e)
+        except MCPError as e:
+            logger.warning("MCPError for plugin %s: %s", self.name, e)
             try:
                 async with self._reconnect_lock:
                     await self._reconnect_session()
@@ -637,30 +629,6 @@ class ExternalPlugin(Plugin):
 
         if self._exit_stack:
             await self._exit_stack.aclose()
-        if self._config and self._config.mcp and self._config.mcp.proto == TransportType.STREAMABLEHTTP:
-            await self.__terminate_http_session()
-        self._get_session_id = None
-        self._session_id = None
-        self._http_client_factory = None
-
-    async def __terminate_http_session(self) -> None:
-        """Terminate streamable HTTP session explicitly to avoid lingering server state."""
-        if not self._session_id or not self._config or not self._config.mcp or not self._config.mcp.url:
-            return
-        # Third-Party
-        from mcp.server.streamable_http import MCP_SESSION_ID_HEADER  # pylint: disable=import-outside-toplevel
-
-        client_factory = self._http_client_factory
-        try:
-            if client_factory:
-                client = client_factory()
-            else:
-                client = httpx.AsyncClient(follow_redirects=True)
-            async with client:
-                headers = {MCP_SESSION_ID_HEADER: self._session_id}
-                await client.delete(self._config.mcp.url, headers=headers)
-        except Exception as exc:
-            logger.debug("Failed to terminate streamable HTTP session: %s", exc)
 
 
 class ExternalHookRef(HookRef):
