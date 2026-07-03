@@ -56,6 +56,12 @@ pub enum ParseError {
         old: String,
         new: String,
     },
+
+    #[error(
+        "in `{location}`: `{phase}` is declared both nested under `authorization:` and flat on \
+         the section — use one form, not both (declaring both runs the effects twice)"
+    )]
+    ConflictingAuthorizationForms { location: String, phase: String },
 }
 
 // =====================================================================
@@ -2249,7 +2255,17 @@ pub struct RouteYaml {
 /// Nested `authorization:` block. Both sub-lists are optional and default
 /// to empty; each is compiled the same way as the flat `pre_invocation:` /
 /// `post_invocation:` forms.
+///
+/// `deny_unknown_fields` is load-bearing: without it a legacy key nested
+/// under the wrapper (`authorization: { policy: [...] }`) would be silently
+/// dropped by serde — both lists empty, no error, no authorization enforced
+/// (a fail-open). The top-level `reject_legacy_keys` can't catch it because
+/// the key is consumed as part of the `authorization` value and never lands
+/// in `RouteYaml.other`. Denying unknown fields turns that into a load error
+/// and also catches typos like `pre_invocaton:`. Safe here because the struct
+/// has no `#[serde(flatten)]`.
 #[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AuthorizationYaml {
     #[serde(default)]
     pub pre_invocation: Vec<serde_yaml::Value>,
@@ -2357,8 +2373,9 @@ fn compile_route(route_key: &str, raw: RouteYaml) -> Result<Option<CompiledRoute
 /// (e.g. `"global.policy.all"`, `"route.get_compensation"`).
 ///
 /// The nested `authorization:` block and the flat `pre_invocation:` /
-/// `post_invocation:` forms are equivalent: entries from the nested block
-/// are compiled first, then the flat entries, preserving declared order.
+/// `post_invocation:` forms are equivalent alternatives. Declaring the same
+/// phase in both forms on one section is rejected (it would run the effects
+/// twice); only one form may carry a given phase per section.
 fn compile_apl_blocks(source: &str, raw: RouteYaml) -> Result<CompiledRoute, ParseError> {
     reject_legacy_keys(source, &raw.other)?;
     let mut route = CompiledRoute::new(source);
@@ -2366,6 +2383,23 @@ fn compile_apl_blocks(source: &str, raw: RouteYaml) -> Result<CompiledRoute, Par
         .authorization
         .map(|a| (a.pre_invocation, a.post_invocation))
         .unwrap_or_default();
+    // Reject declaring the same phase both nested and flat on one section:
+    // the two forms are alternatives, not additive, so merging them would
+    // run each effect twice (a `run(...)` / `delegate(...)` double-fire).
+    // Stacking across *different* scopes (e.g. global nested + route flat)
+    // is fine — those are separate `compile_apl_blocks` calls.
+    if !auth_pre.is_empty() && !raw.pre_invocation.is_empty() {
+        return Err(ParseError::ConflictingAuthorizationForms {
+            location: source.to_string(),
+            phase: "pre_invocation".to_string(),
+        });
+    }
+    if !auth_post.is_empty() && !raw.post_invocation.is_empty() {
+        return Err(ParseError::ConflictingAuthorizationForms {
+            location: source.to_string(),
+            phase: "post_invocation".to_string(),
+        });
+    }
     for (i, entry) in auth_pre.iter().chain(raw.pre_invocation.iter()).enumerate() {
         let step = parse_step(entry, &format!("{}.pre_invocation[{}]", source, i))?;
         route.policy.push(step_to_top_level_effect(step)?);
@@ -3430,9 +3464,47 @@ routes:
     }
 
     #[test]
-    fn authorization_nested_and_flat_entries_concatenate() {
-        // When both the nested block and the flat lists are present,
-        // entries are concatenated (nested first, then flat).
+    fn legacy_key_nested_under_authorization_is_rejected() {
+        // Fail-closed: a legacy key nested inside the new `authorization:`
+        // wrapper must error, not be silently dropped (which would load a
+        // route with no authorization enforced). Guarded by
+        // `deny_unknown_fields` on `AuthorizationYaml`.
+        let yaml = r#"
+routes:
+  r:
+    authorization:
+      policy:
+        - "require(authenticated)"
+"#;
+        let err = compile_config(yaml).expect_err("nested legacy `policy:` must be rejected");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("policy") || msg.contains("unknown field"),
+            "error should flag the unknown/legacy nested key: {msg}"
+        );
+    }
+
+    #[test]
+    fn authorization_typo_under_wrapper_is_rejected() {
+        // `deny_unknown_fields` also catches typos so they don't silently
+        // no-op the phase.
+        let yaml = r#"
+routes:
+  r:
+    authorization:
+      pre_invocaton:
+        - "require(authenticated)"
+"#;
+        assert!(
+            compile_config(yaml).is_err(),
+            "a typo'd sub-key under `authorization:` must be rejected, not ignored"
+        );
+    }
+
+    #[test]
+    fn same_phase_declared_nested_and_flat_is_rejected() {
+        // The two forms are alternatives, not additive: declaring a phase
+        // both nested and flat on one section would run its effects twice.
         let yaml = r#"
 routes:
   r:
@@ -3442,9 +3514,11 @@ routes:
     pre_invocation:
       - "require(role.hr)"
 "#;
-        let routes = compile_config(yaml).unwrap().routes;
-        let route = routes.get("r").expect("route");
-        assert_eq!(route.policy.len(), 2);
+        let err = compile_config(yaml).expect_err("both-forms-same-section must be rejected");
+        assert!(
+            matches!(err, ParseError::ConflictingAuthorizationForms { ref phase, .. } if phase == "pre_invocation"),
+            "expected ConflictingAuthorizationForms for pre_invocation, got {err:?}"
+        );
     }
 
     #[test]

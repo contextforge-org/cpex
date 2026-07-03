@@ -33,6 +33,8 @@ flowchart LR
 
 The first `deny` in any phase halts that phase and every later phase. Nothing reaches the backend after a deny in `args` or `authorization.pre_invocation`.
 
+`authorization` names *when* the phase runs, not a pure allow/deny gate: alongside the decision, `pre_invocation` (and `post_invocation`) can carry obligations and effects — `taint(...)`, `delegate(...)`, and `plugin(...)` (which may transform the payload) — that run as part of the phase. If you find the `authorization:` label too narrow, the equivalent flat `pre_invocation:` / `post_invocation:` keys name the phase by timing instead.
+
 ```yaml
 routes:
   - tool: get_employee
