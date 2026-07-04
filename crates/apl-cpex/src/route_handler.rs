@@ -40,11 +40,12 @@ use cpex_core::manager::PluginManager;
 use cpex_core::plugin::{Plugin, PluginConfig};
 use cpex_core::registry::AnyHookHandler;
 
+use apl_cmf::constants::{DETAIL_HTTP_BODY, DETAIL_HTTP_HEADERS, DETAIL_HTTP_STATUS};
 use apl_cmf::{extract_args, extract_result, BagBuilder};
 use apl_core::evaluator::Decision;
 use apl_core::plugin_decl::PluginRegistry;
 use apl_core::route::{evaluate_post, evaluate_pre, RoutePayload};
-use apl_core::rules::CompiledRoute;
+use apl_core::rules::{CompiledRoute, DenyResponse};
 use apl_core::step::PdpResolver;
 
 use crate::cmf_invoker::CmfPluginInvoker;
@@ -220,14 +221,16 @@ impl AnyHookHandler for AplRouteHandler {
                     error = %e,
                     "session label load failed; failing request closed"
                 );
+                let mut v = PluginViolation::new(
+                    "session.load_failed",
+                    "session state could not be loaded",
+                );
+                decorate_denial_response(&mut v, self.route.response.as_ref());
                 return Ok(Box::new(ErasedResultFields {
                     continue_processing: false,
                     modified_payload: None,
                     modified_extensions: None,
-                    violation: Some(PluginViolation::new(
-                        "session.load_failed",
-                        "session state could not be loaded",
-                    )),
+                    violation: Some(v),
                 }));
             },
         };
@@ -408,6 +411,12 @@ impl AnyHookHandler for AplRouteHandler {
             None
         };
 
+        // Attach the route's transpiled `denyWith` to a violation at each
+        // genuine-denial site (below) via `decorate_denial_response`, rather
+        // than blanket-decorating whatever `violation` is set. This keeps the
+        // custom response off any future non-denial signal (e.g. an
+        // elicitation/retry/confirm violation) that must reach the host with
+        // its own wire shape intact.
         let (mut continue_processing, mut violation) = match decision.decision {
             Decision::Allow => (true, None),
             Decision::Deny {
@@ -420,28 +429,11 @@ impl AnyHookHandler for AplRouteHandler {
                     rule_source
                 };
                 let reason = reason.unwrap_or_else(|| "access denied".to_string());
-                (false, Some(PluginViolation::new(code, reason)))
+                let mut v = PluginViolation::new(code, reason);
+                decorate_denial_response(&mut v, self.route.response.as_ref());
+                (false, Some(v))
             },
         };
-
-        // Attach the route's transpiled `denyWith` (status/body/headers) to
-        // the violation's `details` map so the host can render a custom HTTP
-        // denial response. Carried via `details` (not new violation fields)
-        // to keep the violation type stable. Absent → host default response.
-        if let (Some(v), Some(resp)) = (violation.as_mut(), self.route.response.as_ref()) {
-            if let Some(status) = resp.status {
-                v.details
-                    .insert("http.status".to_string(), serde_json::json!(status));
-            }
-            if let Some(body) = &resp.body {
-                v.details
-                    .insert("http.body".to_string(), serde_json::json!(body));
-            }
-            if !resp.headers.is_empty() {
-                v.details
-                    .insert("http.headers".to_string(), serde_json::json!(resp.headers));
-            }
-        }
 
         // Append fail-closed (R18) with merge precedence:
         //   - decision Allow + append Err → flip to Deny with a
@@ -463,10 +455,12 @@ impl AnyHookHandler for AplRouteHandler {
             );
             if continue_processing {
                 continue_processing = false;
-                violation = Some(PluginViolation::new(
+                let mut v = PluginViolation::new(
                     "session.persist_failed",
                     "session state could not be persisted",
-                ));
+                );
+                decorate_denial_response(&mut v, self.route.response.as_ref());
+                violation = Some(v);
             }
         }
 
@@ -488,6 +482,36 @@ impl AnyHookHandler for AplRouteHandler {
 // =====================================================================
 // Helpers
 // =====================================================================
+
+/// Attach a route's transpiled `denyWith` (status/body/headers) to a
+/// denial `violation`'s `details` map so the host can render a custom HTTP
+/// denial response. Carried via `details` (not new violation fields) to
+/// keep the violation type stable. `None` response leaves the host default.
+///
+/// Call this only from genuine-denial sites — never blanket-apply it to
+/// whatever violation happens to be set, or a non-denial signal (e.g. an
+/// elicitation/retry/confirm) would get stamped with a `403`-shaped
+/// response the host would render instead of the intended wire signal.
+fn decorate_denial_response(violation: &mut PluginViolation, response: Option<&DenyResponse>) {
+    let Some(resp) = response else {
+        return;
+    };
+    if let Some(status) = resp.status {
+        violation
+            .details
+            .insert(DETAIL_HTTP_STATUS.to_string(), serde_json::json!(status));
+    }
+    if let Some(body) = &resp.body {
+        violation
+            .details
+            .insert(DETAIL_HTTP_BODY.to_string(), serde_json::json!(body));
+    }
+    if !resp.headers.is_empty() {
+        violation
+            .details
+            .insert(DETAIL_HTTP_HEADERS.to_string(), serde_json::json!(resp.headers));
+    }
+}
 
 /// Rewrite the first text part of `msg` with `new_text`. If there is no
 /// text part, append one. Mirrors what `MessagePayload`'s normal

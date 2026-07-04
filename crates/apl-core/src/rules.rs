@@ -540,10 +540,13 @@ impl CompiledRoute {
         // which is exactly the more_specific-wins semantic.
         self.plugin_overrides.extend(more_specific.plugin_overrides);
 
-        // response: most-specific declared block wins; absent leaves self's.
-        if more_specific.response.is_some() {
-            self.response = more_specific.response;
-        }
+        // response: deliberately NOT layered. A custom denial response is
+        // scope-local — the entity-less HTTP handler carries the `global`
+        // block directly, and an entity route carries only its own
+        // `response:`. Propagating it here let a `global` catch-all
+        // `denyWith` leak onto every inherited entity (MCP tool / llm /
+        // prompt / resource) denial with no way to opt back out. Callers
+        // set `response` explicitly at the scope that owns it.
     }
 }
 
@@ -552,7 +555,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn apply_layer_response_most_specific_wins() {
+    fn apply_layer_does_not_propagate_response() {
+        // `response` is scope-local and must never cross a layer boundary —
+        // a `global` catch-all denyWith must not leak onto entity routes.
         let mut base = CompiledRoute::new("tool:x");
         base.response = Some(DenyResponse {
             status: Some(401),
@@ -566,15 +571,18 @@ mod tests {
             ..Default::default()
         });
         base.apply_layer(layer);
-        assert_eq!(base.response.as_ref().unwrap().status, Some(403));
-        assert_eq!(
-            base.response.as_ref().unwrap().body.as_deref(),
-            Some("forbidden")
-        );
+        // base keeps its own response; the layer's is dropped.
+        assert_eq!(base.response.as_ref().unwrap().status, Some(401));
 
-        // A layer without a response leaves the existing one intact.
-        base.apply_layer(CompiledRoute::new("tool:x"));
-        assert_eq!(base.response.as_ref().unwrap().status, Some(403));
+        // A layer's response never populates an empty base either.
+        let mut empty = CompiledRoute::new("tool:x");
+        let mut with_resp = CompiledRoute::new("tool:x");
+        with_resp.response = Some(DenyResponse {
+            status: Some(418),
+            ..Default::default()
+        });
+        empty.apply_layer(with_resp);
+        assert!(empty.response.is_none());
     }
 
     #[test]

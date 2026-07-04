@@ -286,6 +286,34 @@ impl AplConfigVisitor {
         state.pdp_router.register(resolver);
         Ok(())
     }
+
+    /// Snapshot the request-time dispatch state — plugin registry, PDP
+    /// router, and active session store — each `Arc`-wrapped for a handler
+    /// to capture. Reads the visitor's `RwLock`s once through a single
+    /// poison-recovery path shared by both handler-install sites
+    /// (`visit_global`'s entity-less HTTP handler and `visit_route`'s
+    /// per-entity handlers) so the policy can't diverge between them.
+    fn snapshot_dispatch_state(
+        &self,
+    ) -> (
+        Arc<PluginRegistry>,
+        Arc<dyn PdpResolver>,
+        Arc<dyn SessionStore>,
+    ) {
+        let (plugin_registry, pdp_router_arc) = {
+            let state = self.state.read().unwrap_or_else(|p| p.into_inner());
+            (
+                Arc::new(state.plugin_registry.clone()),
+                Arc::new(state.pdp_router.clone()) as Arc<dyn PdpResolver>,
+            )
+        };
+        let session_store = self
+            .session_store
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
+        (plugin_registry, pdp_router_arc, session_store)
+    }
 }
 
 /// Read-only baseline for APL predicates: enough to make
@@ -397,18 +425,7 @@ impl ConfigVisitor for AplConfigVisitor {
         // this is the *entity-less* evaluation path. Pre-phase only —
         // authorization is an admission check, so there is no post handler.
         if !compiled.policy.is_empty() {
-            let (plugin_registry, pdp_router_arc) = {
-                let state = self.state.read().unwrap_or_else(|p| p.into_inner());
-                (
-                    Arc::new(state.plugin_registry.clone()),
-                    Arc::new(state.pdp_router.clone()) as Arc<dyn PdpResolver>,
-                )
-            };
-            let session_store = self
-                .session_store
-                .read()
-                .unwrap_or_else(|p| p.into_inner())
-                .clone();
+            let (plugin_registry, pdp_router_arc, session_store) = self.snapshot_dispatch_state();
             // The global HTTP policy reads the request line / headers, so
             // grant `read_headers` on top of the visitor baseline.
             let mut caps = self.base_capabilities.clone();
@@ -443,6 +460,7 @@ impl ConfigVisitor for AplConfigVisitor {
         entity_type: &str,
         yaml: &serde_yaml::Value,
     ) -> Result<(), VisitorError> {
+        warn_if_response_at_unsupported_scope(yaml, &format!("global.defaults.{entity_type}"));
         let Some(apl_block) = apl_subblock(yaml) else {
             return Ok(());
         };
@@ -464,6 +482,7 @@ impl ConfigVisitor for AplConfigVisitor {
         tag: &str,
         yaml: &serde_yaml::Value,
     ) -> Result<(), VisitorError> {
+        warn_if_response_at_unsupported_scope(yaml, &format!("global.policies.{tag}"));
         let Some(apl_block) = apl_subblock(yaml) else {
             return Ok(());
         };
@@ -508,21 +527,21 @@ impl ConfigVisitor for AplConfigVisitor {
             .map(|m| m.tags.clone())
             .unwrap_or_default();
 
-        // Snapshot the plugin registry + PDP router once outside the
-        // per-entity loop. `visit_plugins` populated the registry
-        // before any `visit_route` call; the router has been populated
-        // by code-supplied `register_pdp` calls + `visit_global`
-        // factory dispatch. Routes share both, so cloning each into an
-        // `Arc` once and handing clones to each handler is cheaper than
-        // re-reading the RwLock per entity. Cloning `PdpRouter` is
-        // refcount bumps on each inner resolver — cheap.
-        let (plugin_registry, pdp_router_arc) = {
-            let state = self.state.read().unwrap_or_else(|p| p.into_inner());
-            (
-                Arc::new(state.plugin_registry.clone()),
-                Arc::new(state.pdp_router.clone()) as Arc<dyn PdpResolver>,
-            )
-        };
+        // Snapshot the dispatch state once outside the per-entity loop.
+        // `visit_plugins` populated the registry before any `visit_route`
+        // call; the router + session store were finalized in `visit_global`.
+        // Routes share all three, so cloning each into an `Arc` once and
+        // handing clones to each handler is cheaper than re-reading the
+        // RwLocks per entity. Cloning `PdpRouter` is refcount bumps on each
+        // inner resolver — cheap.
+        let (plugin_registry, pdp_router_arc, session_store) = self.snapshot_dispatch_state();
+
+        // Route-level denial response (transpiled `denyWith`) — parsed once;
+        // its input (`yaml`) is loop-invariant across the entity names this
+        // route matches, so hoisting avoids re-deserializing (and
+        // re-warning) once per entity. `response` is scope-local: an entity
+        // route carries only its own block, never an inherited `global` one.
+        let route_response = response_subblock(yaml, &format!("routes.{entity_type}"));
 
         for (idx, entity_name) in entity_names.iter().enumerate() {
             // route_key is what `DispatchCache` keys on, so it must
@@ -560,12 +579,12 @@ impl ConfigVisitor for AplConfigVisitor {
                 effective.apply_layer(route_layer);
             }
 
-            // Route-level denial response (transpiled `denyWith`). Read from
-            // the route YAML alongside the APL block; cpex-core tolerates the
-            // out-of-band key. Route scope is most-specific, so set directly.
-            if let Some(resp) = response_subblock(yaml, &route_key) {
-                effective.response = Some(resp);
-            }
+            // Route-level denial response (transpiled `denyWith`), parsed
+            // above the loop. Route scope is most-specific and inheritance
+            // was removed, so this is the only source of `response` for an
+            // entity route — a malformed or absent block leaves it `None`
+            // (host default denial), never a leaked `global` response.
+            effective.response = route_response.clone();
 
             // Load-time lint, once per route: flag any APL `plugins:`
             // override declared for a plugin that no policy / delegate step
@@ -620,16 +639,6 @@ impl ConfigVisitor for AplConfigVisitor {
                     continue;
                 },
             };
-
-            // Snapshot the active session store (a `global.apl.session_store`
-            // block in `visit_global` may have swapped it). Each handler
-            // captures its own clone, so request-time dispatch never touches
-            // the visitor's lock.
-            let session_store = self
-                .session_store
-                .read()
-                .unwrap_or_else(|p| p.into_inner())
-                .clone();
 
             // Install Pre + Post handlers. Each handler instance is bound to
             // ONE phase so the executor can pick the right entry-point off
@@ -933,6 +942,20 @@ fn apl_subblock(yaml: &serde_yaml::Value) -> Option<serde_yaml::Value> {
 /// cpex-core tolerates this out-of-band key on the route; here we
 /// deserialize it into a [`DenyResponse`]. A malformed block is logged
 /// and skipped (best-effort) rather than failing the whole config.
+/// Warn when a `response:` block appears at a scope that never renders it.
+/// A custom denial response is honored only at `global` (the entity-less
+/// HTTP path) or on a route; at `default` / policy-bundle scope it is inert
+/// — there is no propagation path to a handler. Mirrors the existing
+/// global-only-key lint so a misplaced `response:` fails loud, not silent.
+fn warn_if_response_at_unsupported_scope(yaml: &serde_yaml::Value, scope: &str) {
+    if yaml.get("response").is_some_and(|v| !v.is_null()) {
+        tracing::warn!(
+            scope,
+            "APL visitor: `response:` is honored only at `global` or route scope; ignoring here",
+        );
+    }
+}
+
 fn response_subblock(yaml: &serde_yaml::Value, route_key: &str) -> Option<DenyResponse> {
     let block = yaml.get("response")?;
     if block.is_null() {

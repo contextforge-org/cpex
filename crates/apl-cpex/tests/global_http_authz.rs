@@ -21,6 +21,7 @@ use cpex_core::cmf::{CmfHook, Message, MessagePayload};
 use cpex_core::extensions::{Extensions, HttpExtension, MetaExtension};
 use cpex_core::manager::PluginManager;
 
+use apl_cmf::constants::{DETAIL_HTTP_BODY, DETAIL_HTTP_HEADERS, DETAIL_HTTP_STATUS};
 use apl_cpex::{register_apl, AplOptions};
 
 async fn manager_with(yaml: &str) -> Arc<PluginManager> {
@@ -51,6 +52,17 @@ fn http_request(method: &str) -> Extensions {
 fn payload() -> MessagePayload {
     MessagePayload {
         message: Message::text(Role::User, "hi"),
+    }
+}
+
+/// An MCP tool-call request: `meta` naming a `tool` entity, no `http` ext.
+fn tool_request(name: &str) -> Extensions {
+    let mut meta = MetaExtension::default();
+    meta.entity_type = Some("tool".to_string());
+    meta.entity_name = Some(name.to_string());
+    Extensions {
+        meta: Some(Arc::new(meta)),
+        ..Default::default()
     }
 }
 
@@ -119,13 +131,81 @@ global:
         .await;
     assert!(!res.continue_processing, "DELETE must be denied");
     let v = res.violation.expect("deny must surface a violation");
-    assert_eq!(v.details.get("http.status"), Some(&serde_json::json!(403)));
     assert_eq!(
-        v.details.get("http.body"),
+        v.details.get(DETAIL_HTTP_STATUS),
+        Some(&serde_json::json!(403))
+    );
+    assert_eq!(
+        v.details.get(DETAIL_HTTP_BODY),
         Some(&serde_json::json!("{\"error\":\"forbidden\"}"))
     );
     assert_eq!(
-        v.details.get("http.headers"),
+        v.details.get(DETAIL_HTTP_HEADERS),
         Some(&serde_json::json!({ "X-Reason": "method-not-allowed" }))
     );
+}
+
+/// A `global` `response:` (the entity-less HTTP catch-all denyWith) must NOT
+/// be inherited by an entity route. A denied MCP tool call gets the plain
+/// violation shape — no `http.*` details leaked from the global block.
+#[tokio::test]
+async fn global_response_does_not_leak_onto_entity_denial() {
+    const YAML: &str = r#"
+plugin_settings:
+  routing_enabled: true
+global:
+  apl:
+    policy:
+      - "require(authenticated)"
+  response:
+    status: 403
+    body: "{\"error\":\"global\"}"
+routes:
+  - tool: locked
+    apl:
+      policy:
+        - "require(authenticated)"
+"#;
+    let mgr = manager_with(YAML).await;
+    let (res, _bg) = mgr
+        .invoke_named::<CmfHook>("cmf.tool_pre_invoke", payload(), tool_request("locked"), None)
+        .await;
+    assert!(!res.continue_processing, "tool policy must deny");
+    let v = res.violation.expect("deny must surface a violation");
+    assert!(
+        v.details.get(DETAIL_HTTP_STATUS).is_none()
+            && v.details.get(DETAIL_HTTP_BODY).is_none()
+            && v.details.get(DETAIL_HTTP_HEADERS).is_none(),
+        "global response leaked onto entity denial: {:?}",
+        v.details
+    );
+}
+
+/// A route-scoped `response:` still decorates that route's own denial — the
+/// feature works per-route; only silent inheritance was removed.
+#[tokio::test]
+async fn route_scoped_response_still_decorates_entity_denial() {
+    const YAML: &str = r#"
+plugin_settings:
+  routing_enabled: true
+routes:
+  - tool: locked
+    apl:
+      policy:
+        - "require(authenticated)"
+    response:
+      status: 401
+      body: "route"
+"#;
+    let mgr = manager_with(YAML).await;
+    let (res, _bg) = mgr
+        .invoke_named::<CmfHook>("cmf.tool_pre_invoke", payload(), tool_request("locked"), None)
+        .await;
+    assert!(!res.continue_processing, "tool policy must deny");
+    let v = res.violation.expect("deny must surface a violation");
+    assert_eq!(
+        v.details.get(DETAIL_HTTP_STATUS),
+        Some(&serde_json::json!(401))
+    );
+    assert_eq!(v.details.get(DETAIL_HTTP_BODY), Some(&serde_json::json!("route")));
 }

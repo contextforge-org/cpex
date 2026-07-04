@@ -112,6 +112,13 @@ pub const BAG_HTTP_METHOD: &str = "http.method";
 pub const BAG_HTTP_PATH: &str = "http.path";
 pub const BAG_HTTP_HOST: &str = "http.host";
 pub const BAG_HTTP_SCHEME: &str = "http.scheme";
+// Violation `details` keys carrying a transpiled `denyWith` (custom HTTP
+// denial response). Shared between the producer (apl-cpex route handler)
+// and any consumer (host renderer / tests) so the stringly-typed contract
+// stays coupled to one definition.
+pub const DETAIL_HTTP_STATUS: &str = "http.status";
+pub const DETAIL_HTTP_BODY: &str = "http.body";
+pub const DETAIL_HTTP_HEADERS: &str = "http.headers";
 pub const BAG_LLM_PREFIX: &str = "llm.";
 pub const BAG_MCP_PREFIX: &str = "mcp.";
 pub const BAG_COMPLETION_PREFIX: &str = "completion.";
