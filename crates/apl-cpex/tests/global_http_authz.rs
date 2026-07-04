@@ -168,14 +168,19 @@ routes:
 "#;
     let mgr = manager_with(YAML).await;
     let (res, _bg) = mgr
-        .invoke_named::<CmfHook>("cmf.tool_pre_invoke", payload(), tool_request("locked"), None)
+        .invoke_named::<CmfHook>(
+            "cmf.tool_pre_invoke",
+            payload(),
+            tool_request("locked"),
+            None,
+        )
         .await;
     assert!(!res.continue_processing, "tool policy must deny");
     let v = res.violation.expect("deny must surface a violation");
     assert!(
-        v.details.get(DETAIL_HTTP_STATUS).is_none()
-            && v.details.get(DETAIL_HTTP_BODY).is_none()
-            && v.details.get(DETAIL_HTTP_HEADERS).is_none(),
+        !v.details.contains_key(DETAIL_HTTP_STATUS)
+            && !v.details.contains_key(DETAIL_HTTP_BODY)
+            && !v.details.contains_key(DETAIL_HTTP_HEADERS),
         "global response leaked onto entity denial: {:?}",
         v.details
     );
@@ -199,7 +204,12 @@ routes:
 "#;
     let mgr = manager_with(YAML).await;
     let (res, _bg) = mgr
-        .invoke_named::<CmfHook>("cmf.tool_pre_invoke", payload(), tool_request("locked"), None)
+        .invoke_named::<CmfHook>(
+            "cmf.tool_pre_invoke",
+            payload(),
+            tool_request("locked"),
+            None,
+        )
         .await;
     assert!(!res.continue_processing, "tool policy must deny");
     let v = res.violation.expect("deny must surface a violation");
@@ -207,5 +217,8 @@ routes:
         v.details.get(DETAIL_HTTP_STATUS),
         Some(&serde_json::json!(401))
     );
-    assert_eq!(v.details.get(DETAIL_HTTP_BODY), Some(&serde_json::json!("route")));
+    assert_eq!(
+        v.details.get(DETAIL_HTTP_BODY),
+        Some(&serde_json::json!("route"))
+    );
 }

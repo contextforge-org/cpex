@@ -507,9 +507,10 @@ fn decorate_denial_response(violation: &mut PluginViolation, response: Option<&D
             .insert(DETAIL_HTTP_BODY.to_string(), serde_json::json!(body));
     }
     if !resp.headers.is_empty() {
-        violation
-            .details
-            .insert(DETAIL_HTTP_HEADERS.to_string(), serde_json::json!(resp.headers));
+        violation.details.insert(
+            DETAIL_HTTP_HEADERS.to_string(),
+            serde_json::json!(resp.headers),
+        );
     }
 }
 
