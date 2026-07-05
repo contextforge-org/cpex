@@ -8,10 +8,9 @@
 // a catch-all handler under (ENTITY_HTTP, ENTITY_NAME_GLOBAL,
 // HOOK_CMF_HTTP_REQUEST); the host fires that hook with `meta` set to the
 // reserved coordinates and an `http` extension carrying the request line.
-// This is the entity-less authorization path the Praxis AuthPolicy
-// transpiler targets (spike Phase B / U3). It also exercises U1
-// (http.method in the bag) and U2 (custom denyWith via the route
-// `response:` block surfaced on the violation details).
+// This is the entity-less authorization path for an L7 proxy. It also exercises
+// (http.method in the bag) and custom denyWith via the route
+// `response:` block surfaced on the violation details.
 
 use std::sync::Arc;
 
@@ -103,7 +102,7 @@ async fn global_policy_denies_nonmatching_http_request() {
 }
 
 /// A route-level `response:` block (transpiled `denyWith`) surfaces custom
-/// status/body/headers on the violation `details` map (U2) when the global
+/// status/body/headers on the violation `details` map when the global
 /// policy denies.
 #[tokio::test]
 async fn global_policy_deny_carries_custom_response() {

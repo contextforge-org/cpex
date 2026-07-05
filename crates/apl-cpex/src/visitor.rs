@@ -433,7 +433,7 @@ impl ConfigVisitor for AplConfigVisitor {
         compiled.response = response_subblock(yaml, "global");
 
         // Install a catch-all handler so the global policy also evaluates for
-        // generic (non-MCP/A2A) HTTP requests, which carry no entity (U3).
+        // generic (non-MCP/A2A) HTTP requests, which carry no entity.
         // Entity routes still stack `global` via apply_layer in visit_route;
         // this is the *entity-less* evaluation path. Pre-phase only —
         // authorization is an admission check, so there is no post handler.

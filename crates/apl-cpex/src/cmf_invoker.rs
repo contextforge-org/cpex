@@ -225,7 +225,7 @@ impl CmfPluginInvoker {
     /// this exactly once after route evaluation completes.
     ///
     /// An append error is returned so the caller can fail the request
-    /// closed (R18). Because this runs after the policy decision is
+    /// closed. Because this runs after the policy decision is
     /// computed, the route handler converts an append error into a Deny
     /// outcome rather than dropping the accumulated taint silently.
     pub async fn persist_session(&self) -> Result<(), SessionStoreError> {

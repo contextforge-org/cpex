@@ -94,7 +94,7 @@ fn store_key(session_id: &str) -> String {
     format!("taint:v1:{hex}")
 }
 
-/// AE4 / R16: concurrent appends from two "nodes" (separate store
+/// Concurrent appends from two "nodes" (separate store
 /// instances against one Valkey) union without loss; a third reader sees
 /// the full set.
 #[tokio::test]
@@ -122,7 +122,7 @@ async fn cross_node_concurrent_append_unions() {
     assert_eq!(labels, vec!["INTERNAL".to_string(), "PII".to_string()]);
 }
 
-/// R15: an unknown session is a confirmed key-miss → Ok(empty), not Err.
+/// An unknown session is a confirmed key-miss → Ok(empty), not Err.
 #[tokio::test]
 #[ignore]
 async fn unknown_session_returns_empty_ok() {
@@ -137,7 +137,7 @@ async fn unknown_session_returns_empty_ok() {
     assert!(labels.is_empty());
 }
 
-/// R5: a reachable but undecodable reply (key holds a string, not a SET)
+/// A reachable but undecodable reply (key holds a string, not a SET)
 /// fails closed (Err) rather than returning Ok(empty).
 #[tokio::test]
 #[ignore]
@@ -164,7 +164,7 @@ async fn wrongtype_reply_fails_closed() {
     );
 }
 
-/// R5: an unreachable endpoint fails closed quickly (bounded by the
+/// An unreachable endpoint fails closed quickly (bounded by the
 /// command timeout). No container needed, but kept with the suite.
 #[tokio::test]
 #[ignore]
@@ -183,7 +183,7 @@ async fn unreachable_endpoint_fails_closed() {
     );
 }
 
-/// AE2 / R7: a configured TTL is set on append and refreshed on load.
+/// A configured TTL is set on append and refreshed on load.
 #[tokio::test]
 #[ignore]
 async fn ttl_set_on_append_and_refreshed_on_load() {

@@ -405,9 +405,9 @@ impl PhaseSet {
     }
 }
 
-/// Custom response to attach when a route's policy denies — the
-/// transpiled form of a Kuadrant `AuthPolicy` `response.unauthorized`
-/// `denyWith`. Carried on the route and surfaced on the deny outcome's
+/// Custom response to attach when a route's policy denies (e.g., equivalent
+/// to a Kuadrant `AuthPolicy` `response.unauthorized` `denyWith`).
+/// Carried on the route and surfaced on the deny outcome's
 /// `details` map by the host (apl-cpex), so a host can render a custom
 /// HTTP response. All fields optional; an absent block leaves the host's
 /// default denial response unchanged.

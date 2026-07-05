@@ -615,7 +615,7 @@ routes:
 }
 
 // ---------------------------------------------------------------------
-// Fail-closed semantics (U2 / R4, R5, R18; AE1, AE6).
+// Fail-closed semantics.
 //
 // A distributed SessionStore can fail. These tests use an erroring
 // test-double to prove the request fails *closed* — a store error
@@ -697,7 +697,7 @@ async fn tagger_manager_with_store(store: Arc<dyn SessionStore>) -> Arc<PluginMa
     mgr
 }
 
-/// AE1: a load failure during hydration fails the request closed *before*
+/// A load failure during hydration fails the request closed *before*
 /// any decision, with the distinguished `session.load_failed` violation.
 #[tokio::test]
 async fn load_failure_fails_request_closed() {
@@ -723,7 +723,7 @@ async fn load_failure_fails_request_closed() {
     );
 }
 
-/// AE6: an append failure after the (Allow) decision flips the request to
+/// An append failure after the (Allow) decision flips the request to
 /// Deny with the distinguished `session.persist_failed` violation — the
 /// accumulated taint is never silently dropped.
 #[tokio::test]
@@ -795,7 +795,7 @@ async fn tagger_manager_with_store_and_yaml(
     mgr
 }
 
-/// A `session.load_failed` denial (AE1) still carries the route's custom
+/// A `session.load_failed` denial still carries the route's custom
 /// `response:` (denyWith) on its `details` map — the fix that closed prior
 /// review gap #3 must hold for the load-failure fail-closed path, not just
 /// `Decision::Deny`.
@@ -827,7 +827,7 @@ async fn load_failure_carries_route_response() {
     );
 }
 
-/// A `session.persist_failed` denial (AE6, R18) still carries the route's
+/// A `session.persist_failed` denial still carries the route's
 /// custom `response:` (denyWith) on its `details` map.
 #[tokio::test]
 async fn persist_failure_carries_route_response() {
@@ -857,7 +857,7 @@ async fn persist_failure_carries_route_response() {
     );
 }
 
-/// R18 merge precedence: when the policy already Denies AND the append
+/// When the policy already Denies AND the append
 /// fails, the original policy violation is preserved (not overwritten by
 /// `session.persist_failed`) — the request is already denied, so the
 /// append failure surfaces only as the alarm.
@@ -945,7 +945,7 @@ async fn sessionless_request_unaffected_by_store_failure() {
 }
 
 // ---------------------------------------------------------------------
-// Config-driven backend selection (U3 / R2, R3; AE3, AE5).
+// Config-driven backend selection.
 // ---------------------------------------------------------------------
 
 /// Records every load/append so a test can prove which store was active.
@@ -992,7 +992,7 @@ impl apl_cpex::SessionStoreFactory for RecordingFactory {
     }
 }
 
-/// AE5: a `global.apl.session_store { kind: recording-fake }` block makes
+/// A `global.apl.session_store { kind: recording-fake }` block makes
 /// the factory-built store the active one — the default `MemorySessionStore`
 /// passed to `AplOptions` is overridden by config.
 #[tokio::test]

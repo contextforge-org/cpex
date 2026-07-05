@@ -199,7 +199,7 @@ impl AnyHookHandler for AplRouteHandler {
         // (e.g. `extensions_arc`, `persist_session`) deref through the Arc.
         // Hydration loads accumulated session labels. A store failure
         // here happens *before* any policy decision, so we fail the
-        // request closed immediately (R5/R18, F2): deny with a
+        // request closed immediately: deny with a
         // distinguished violation rather than proceeding as if the
         // session carried no taint. Sessionless traffic never reaches
         // the store, so this only denies session-bearing requests.
@@ -348,7 +348,7 @@ impl AnyHookHandler for AplRouteHandler {
 
         // Commit any session-scoped labels accumulated during this
         // request. No-op when there was no session id. The result is
-        // folded into the decision below (R18) — captured here because
+        // folded into the decision below — captured here because
         // `continue_processing`/`violation` are computed after persist.
         let persist_result = invoker.persist_session().await;
 
@@ -435,7 +435,7 @@ impl AnyHookHandler for AplRouteHandler {
             },
         };
 
-        // Append fail-closed (R18) with merge precedence:
+        // Append fail-closed with merge precedence:
         //   - decision Allow + append Err → flip to Deny with a
         //     distinguished `session.persist_failed` violation.
         //   - decision Deny + append Err → keep the original policy
