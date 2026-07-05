@@ -94,6 +94,42 @@ For richer conditionals, use the `when` / `do` form, where `do` is a single effe
     - "plugin(audit-log)"
 ```
 
+## Custom denial response
+
+By default a deny surfaces a reason and code, and the host renders its own denial. A route can instead attach a custom HTTP response — status, body, headers — through a `response:` block, a sibling of the route's `apl:` block:
+
+```yaml
+routes:
+  - tool: locked
+    apl:
+      policy:
+        - "require(authenticated)"
+    response:
+      status: 403
+      body: "{\"error\":\"forbidden\"}"
+      headers:
+        WWW-Authenticate: "Bearer"
+```
+
+All three fields are optional; an absent block leaves the host's default denial unchanged. When the route denies, the status/body/headers are carried on the violation for the host to render on the wire. `response:` is honored at route scope and at `global` scope (below); it is inert — and warns at load time — under `defaults` or a policy bundle. It is scope-local: a `global` `response:` is not inherited by entity routes.
+
+## Authorizing HTTP requests without an entity
+
+Routes key on an MCP / A2A entity — a tool, prompt, resource, or LLM. A generic HTTP request that carries no such entity is authorized by the `global` policy instead: when `global.apl` declares an `args:` or `policy:` block, CPEX evaluates it for these requests, reading the request line (`http.method`, `http.path`, `http.host`, `http.scheme`) and headers. Pair it with a `global` `response:` to return a custom denial.
+
+```yaml
+global:
+  apl:
+    policy:
+      - "http.method != 'GET': deny"
+  response:
+    status: 405
+    headers:
+      Allow: "GET"
+```
+
+The host must populate `http.host` from a validated request authority, never a raw client `Host` header, so host-based predicates cannot be spoofed by the caller.
+
 ## Field pipelines
 
 `args:` and `result:` map a field to a pipeline of stages separated by `|`. Stages run left to right; a failed validator denies the phase.
