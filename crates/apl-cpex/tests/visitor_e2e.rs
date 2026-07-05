@@ -435,6 +435,42 @@ routes:
     assert!(result.violation.is_none());
 }
 
+/// A bare `global: { response: {...} }` — a denyWith with no accompanying
+/// `apl:` policy/args block — must load cleanly (the visitor warns and moves
+/// on) rather than panicking or erroring. `visit_global` returns early when
+/// `apl_subblock` finds no APL terms; this guards that the stranded
+/// `response:` on that early-return path is handled, not silently exploded.
+#[tokio::test]
+async fn global_response_without_apl_block_loads_without_error() {
+    const YAML: &str = r#"
+plugins:
+  - name: allow-gate
+    kind: allow-gate
+    hooks: [cmf.tool_pre_invoke]
+global:
+  response:
+    status: 403
+    body: "forbidden"
+routes:
+  - tool: anything
+"#;
+    // The load must not panic or return Err despite the response-only global
+    // block having no installable policy. A request still flows through the
+    // legacy chain (no catch-all handler was installed for the entity-less
+    // path, which is the documented behavior this warns about).
+    let mgr = build_manager_with_visitor(YAML).await;
+
+    let ext = Extensions {
+        meta: Some(Arc::new(meta_for_tool("anything"))),
+        ..Default::default()
+    };
+    let (result, _bg) = mgr
+        .invoke_named::<CmfHook>("cmf.tool_pre_invoke", cmf_payload("hi"), ext, None)
+        .await;
+    assert!(result.continue_processing);
+    assert!(result.violation.is_none());
+}
+
 /// Smoke test that the visitor surfaces a compile error from a malformed
 /// APL block as a `PluginError::Config` out of `load_config_yaml`. Catches
 /// regressions where visitor errors swallow into Ok(_) or panic.

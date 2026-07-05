@@ -389,6 +389,19 @@ impl ConfigVisitor for AplConfigVisitor {
         yaml: &serde_yaml::Value,
     ) -> Result<(), VisitorError> {
         let Some(apl_block) = apl_subblock(yaml) else {
+            // No `apl:` wrapper and no flat DSL keys — there is nothing to
+            // compile or install. But a bare `global: { response: {...} }`
+            // (a denyWith with no accompanying policy) would otherwise be
+            // dropped here silently, before the `response_subblock` read
+            // below ever runs. Warn so this fail-open-by-omission case gets
+            // the same signal as the args/policy-empty case handled further
+            // down, rather than vanishing without a trace.
+            if response_yaml_block(yaml).is_some_and(|v| !v.is_null()) {
+                tracing::warn!(
+                    "APL visitor: global.response is set but global.apl has no policy/args block \
+                     — the entity-less HTTP catch-all handler will not install, so this response can never fire",
+                );
+            }
             return Ok(());
         };
 
@@ -424,7 +437,14 @@ impl ConfigVisitor for AplConfigVisitor {
         // Entity routes still stack `global` via apply_layer in visit_route;
         // this is the *entity-less* evaluation path. Pre-phase only —
         // authorization is an admission check, so there is no post handler.
-        if !compiled.policy.is_empty() {
+        let installs_pre_handler = http_catchall_should_install(&compiled);
+        if !installs_pre_handler && compiled.response.is_some() {
+            tracing::warn!(
+                "APL visitor: global.response is set but global.apl has no `args:`/`policy:` steps \
+                 — the entity-less HTTP catch-all handler will not install, so this response can never fire",
+            );
+        }
+        if installs_pre_handler {
             let (plugin_registry, pdp_router_arc, session_store) = self.snapshot_dispatch_state();
             // The global HTTP policy reads the request line / headers, so
             // grant `read_headers` on top of the visitor baseline.
@@ -938,17 +958,48 @@ fn apl_subblock(yaml: &serde_yaml::Value) -> Option<serde_yaml::Value> {
     }
 }
 
-/// Extract a route-level `response:` block — the transpiled `denyWith`.
-/// cpex-core tolerates this out-of-band key on the route; here we
-/// deserialize it into a [`DenyResponse`]. A malformed block is logged
-/// and skipped (best-effort) rather than failing the whole config.
+/// Whether the entity-less HTTP catch-all handler (Pre-phase only) should
+/// install for a compiled `global` layer. Gate on both Pre-phase steps
+/// (`args` + `policy`, via [`CompiledRoute::declared_phases`]), not
+/// `policy` alone — an operator whose `global.apl` has only an `args:`
+/// admission block (no `policy:`) must still get the catch-all installed,
+/// or entity-less HTTP traffic silently bypasses it entirely (fail-open by
+/// omission).
+fn http_catchall_should_install(compiled: &CompiledRoute) -> bool {
+    let declared = compiled.declared_phases();
+    declared.contains(apl_core::rules::Phase::Args)
+        || declared.contains(apl_core::rules::Phase::Policy)
+}
+
+/// `response:` is not an APL DSL term (it never enters [`apl_subblock`]'s
+/// [`FLAT_APL_KEYS`]) — it is documented and tested as a sibling of `apl:`
+/// (`global: { apl: {...}, response: {...} }`). But an operator who mirrors
+/// the `pdp:` / `session_store:` convention (which *do* work identically
+/// whether flat or nested under `apl:`) may reasonably nest `response:`
+/// inside `apl:` too. Accept both spellings so that mistake degrades to
+/// "the other spelling wins," not "silently dropped."
+///
+/// PRECEDENCE — deliberately the INVERSE of [`apl_subblock`]. `apl_subblock`
+/// makes an explicit `apl:` wrapper win *entirely* over flat top-level keys
+/// (for `policy:`/`pdp:`/`session_store:`); here the top-level sibling
+/// `response:` wins over an `apl:`-nested one. This is intentional, not an
+/// oversight: the top-level sibling is the documented, already-shipped,
+/// tested form, so preferring it preserves backward compatibility, and the
+/// choice can only affect the *rendered denial shape* (status/body/headers)
+/// — never an Allow/Deny outcome. Do NOT "align" this with `apl_subblock`'s
+/// wrapper-wins rule without a deliberate compatibility decision.
+fn response_yaml_block(yaml: &serde_yaml::Value) -> Option<&serde_yaml::Value> {
+    yaml.get("response")
+        .or_else(|| yaml.get("apl").and_then(|apl| apl.get("response")))
+}
+
 /// Warn when a `response:` block appears at a scope that never renders it.
 /// A custom denial response is honored only at `global` (the entity-less
 /// HTTP path) or on a route; at `default` / policy-bundle scope it is inert
 /// — there is no propagation path to a handler. Mirrors the existing
 /// global-only-key lint so a misplaced `response:` fails loud, not silent.
 fn warn_if_response_at_unsupported_scope(yaml: &serde_yaml::Value, scope: &str) {
-    if yaml.get("response").is_some_and(|v| !v.is_null()) {
+    if response_yaml_block(yaml).is_some_and(|v| !v.is_null()) {
         tracing::warn!(
             scope,
             "APL visitor: `response:` is honored only at `global` or route scope; ignoring here",
@@ -956,8 +1007,12 @@ fn warn_if_response_at_unsupported_scope(yaml: &serde_yaml::Value, scope: &str) 
     }
 }
 
+/// Extract a route-level `response:` block — the transpiled `denyWith`.
+/// cpex-core tolerates this out-of-band key on the route; here we
+/// deserialize it into a [`DenyResponse`]. A malformed block is logged
+/// and skipped (best-effort) rather than failing the whole config.
 fn response_subblock(yaml: &serde_yaml::Value, route_key: &str) -> Option<DenyResponse> {
-    let block = yaml.get("response")?;
+    let block = response_yaml_block(yaml)?;
     if block.is_null() {
         return None;
     }
@@ -972,10 +1027,68 @@ fn response_subblock(yaml: &serde_yaml::Value, route_key: &str) -> Option<DenyRe
 
 #[cfg(test)]
 mod tests {
-    use super::{apl_subblock, response_subblock};
+    use super::{apl_subblock, http_catchall_should_install, response_subblock};
+    use apl_core::pipeline::{FieldRule, Pipeline, Stage, TypeCheck};
+    use apl_core::rules::{CompiledRoute, Effect};
 
     fn yaml(s: &str) -> serde_yaml::Value {
         serde_yaml::from_str(s).expect("valid yaml")
+    }
+
+    fn deny_effect() -> Effect {
+        Effect::Deny {
+            reason: None,
+            code: None,
+        }
+    }
+
+    fn field_rule(field: &str) -> FieldRule {
+        FieldRule {
+            field: field.to_string(),
+            pipeline: Pipeline {
+                stages: vec![Stage::Type(TypeCheck::Str)],
+            },
+            source: "test".to_string(),
+        }
+    }
+
+    #[test]
+    fn http_catchall_installs_for_args_only_global_block() {
+        // Regression for the fail-open-by-omission gap: a `global.apl` with
+        // only `args:` (no `policy:`) must still get the entity-less HTTP
+        // catch-all installed. Before the fix this gated on
+        // `!compiled.policy.is_empty()` alone, so an args-only admission
+        // block silently disabled authorization for all entity-less HTTP
+        // traffic.
+        let mut route = CompiledRoute::new("global");
+        route.args.push(field_rule("http.method"));
+        assert!(
+            http_catchall_should_install(&route),
+            "an args-only global block must still install the catch-all handler"
+        );
+    }
+
+    #[test]
+    fn http_catchall_installs_for_policy_only_global_block() {
+        let mut route = CompiledRoute::new("global");
+        route.policy.push(deny_effect());
+        assert!(http_catchall_should_install(&route));
+    }
+
+    #[test]
+    fn http_catchall_does_not_install_for_empty_or_post_only_global_block() {
+        let empty = CompiledRoute::new("global");
+        assert!(
+            !http_catchall_should_install(&empty),
+            "an empty global block has nothing to evaluate; installing would be a no-op handler"
+        );
+
+        let mut post_only = CompiledRoute::new("global");
+        post_only.post_policy.push(deny_effect());
+        assert!(
+            !http_catchall_should_install(&post_only),
+            "post_policy never runs on the Pre-phase-only catch-all, so it must not gate installation"
+        );
     }
 
     #[test]
@@ -996,6 +1109,54 @@ mod tests {
     fn response_subblock_absent_is_none() {
         let v = yaml("tool: \"*\"\npolicy:\n  - \"deny\"\n");
         assert!(response_subblock(&v, "tool:*").is_none());
+    }
+
+    #[test]
+    fn response_subblock_nested_under_apl_wrapper_is_read() {
+        // An operator mirroring the pdp:/session_store: convention (which
+        // work identically flat or nested under `apl:`) may nest `response:`
+        // under `apl:` too. It must not be silently absorbed.
+        let v =
+            yaml("tool: \"*\"\napl:\n  policy:\n    - \"deny\"\n  response:\n    status: 401\n");
+        let resp = response_subblock(&v, "tool:*").expect("nested response present");
+        assert_eq!(resp.status, Some(401));
+    }
+
+    #[test]
+    fn response_subblock_top_level_wins_over_nested_apl_form() {
+        let v = yaml(
+            "tool: \"*\"\napl:\n  policy:\n    - \"deny\"\n  response:\n    status: 401\nresponse:\n  status: 403\n",
+        );
+        let resp = response_subblock(&v, "tool:*").expect("response present");
+        assert_eq!(
+            resp.status,
+            Some(403),
+            "top-level sibling response takes precedence over the nested apl: form"
+        );
+    }
+
+    #[test]
+    fn response_subblock_malformed_is_none_not_propagated() {
+        // `status` must deserialize as a u16; a string value fails to parse.
+        // A malformed block must be dropped (warn-only), never bubble up an
+        // error that fails the whole config load.
+        let v = yaml("tool: \"*\"\nresponse:\n  status: \"not-a-number\"\n");
+        assert!(
+            response_subblock(&v, "tool:*").is_none(),
+            "malformed response: block must be ignored, not panic or propagate an error"
+        );
+    }
+
+    #[test]
+    fn warn_if_response_at_unsupported_scope_is_a_safe_noop() {
+        use super::warn_if_response_at_unsupported_scope;
+        // The helper only emits a tracing event; it must never panic whether
+        // `response:` is present or absent at a scope that can't render it.
+        let with_response = yaml("policy:\n  - \"deny\"\nresponse:\n  status: 403\n");
+        let without = yaml("policy:\n  - \"deny\"\n");
+        warn_if_response_at_unsupported_scope(&with_response, "global.defaults.tool");
+        warn_if_response_at_unsupported_scope(&with_response, "global.policies.some-tag");
+        warn_if_response_at_unsupported_scope(&without, "global.defaults.tool");
     }
 
     #[test]
