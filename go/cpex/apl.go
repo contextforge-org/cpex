@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Authors: Fred Araujo
 //
-// APL (Attribute Policy Language) wiring.
+// APL (Authorization Policy Language) wiring.
 //
 // EnableAPL registers the bundled APL plugin/PDP factories and installs
 // the APL config visitor on the manager via the cpex_apl_install FFI

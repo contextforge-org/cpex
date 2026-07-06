@@ -5,7 +5,7 @@ weight: 10
 
 # Effects and Sequencing
 
-An APL rule does something. That something is an **effect**. Effects are the building blocks of policy: a `policy:` block is an ordered list of them, and they run in sequence until one denies.
+An APL rule does something. That something is an **effect**. Effects are the building blocks of policy: a `pre_invocation:` block is an ordered list of them, and they run in sequence until one denies.
 
 ## The effects
 
@@ -21,10 +21,10 @@ An APL rule does something. That something is an **effect**. Effects are the bui
 
 ## Sequencing and halt-on-deny
 
-Effects in a `policy:` block run top to bottom. The first `deny` halts the phase and skips every later phase, so order is a tool: put cheap gates first and expensive effects last.
+Effects in a `pre_invocation:` block run top to bottom. The first `deny` halts the phase and skips every later phase, so order is a tool: put cheap gates first and expensive effects last.
 
 ```yaml
-policy:
+pre_invocation:
   - "require(role.hr)"                                  # cheap attribute gate
   - cedar:                                              # relationship decision
       action: 'Action::"read"'
@@ -39,7 +39,7 @@ If `require(role.hr)` denies, the Cedar call and the token exchange never run. T
 A PDP call can carry reaction blocks that run depending on the decision:
 
 ```yaml
-policy:
+pre_invocation:
   - cedar:
       action: 'Action::"read"'
       resource: { type: Document, id: ${args.doc_id} }
@@ -56,14 +56,14 @@ policy:
 Effects can be grouped. `sequential` runs its members in order and halts on the first deny. `parallel` runs independent gates concurrently; any deny fails the group, and taints from the branches accumulate.
 
 ```yaml
-policy:
+pre_invocation:
   - parallel:
       - "require(perm.read_pii)"
       - cel: { expr: "subject.department == 'compliance'" }
 ```
 
-`parallel` is for independent decisions only. It rejects field operations and delegation, because a discarded branch would silently lose those effects. Use `sequential` (the default for a `policy:` list) whenever one effect depends on another.
+`parallel` is for independent decisions only. It rejects field operations and delegation, because a discarded branch would silently lose those effects. Use `sequential` (the default for a `pre_invocation:` list) whenever one effect depends on another.
 
 ## Phases recap
 
-Effects run within the four route phases: `args`, `policy`, `result`, `post_policy` (see [APL]({{< relref "/docs/apl" >}})). `delegate` and PDP calls belong in `policy` or `post_policy`; field pipelines belong in `args` and `result`. A deny anywhere halts the rest.
+Effects run within the four route phases: `args`, `authorization.pre_invocation`, `result`, `authorization.post_invocation` (see [APL]({{< relref "/docs/apl" >}})). `delegate` and PDP calls belong in `pre_invocation` or `post_invocation`; field pipelines belong in `args` and `result`. A deny anywhere halts the rest.

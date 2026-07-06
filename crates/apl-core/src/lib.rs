@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Authors: Teryl Taylor
 //
-// APL core — Attribute Policy Language compiler + evaluator.
+// APL core — Authorization Policy Language compiler + evaluator.
 //
 // This crate is the language nucleus. It does not depend on CPEX directly;
 // the bridge from cpex-core extensions into the AttributeBag lives in
@@ -11,7 +11,7 @@
 //
 // See docs/specs/apl-design.md for the full design.
 
-#![doc = "APL — Attribute Policy Language. See docs/specs/apl-design.md."]
+#![doc = "APL — Authorization Policy Language. See docs/specs/apl-design.md."]
 
 pub mod attributes;
 pub mod evaluator;

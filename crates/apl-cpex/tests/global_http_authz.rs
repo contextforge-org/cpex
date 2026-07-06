@@ -72,7 +72,7 @@ plugin_settings:
   routing_enabled: true
 global:
   apl:
-    policy:
+    pre_invocation:
       - "http.method != 'GET': deny"
 "#;
 
@@ -111,7 +111,7 @@ plugin_settings:
   routing_enabled: true
 global:
   apl:
-    policy:
+    pre_invocation:
       - "http.method != 'GET': deny"
   response:
     status: 403
@@ -154,7 +154,7 @@ plugin_settings:
   routing_enabled: true
 global:
   apl:
-    policy:
+    pre_invocation:
       - "require(authenticated)"
   response:
     status: 403
@@ -162,7 +162,7 @@ global:
 routes:
   - tool: locked
     apl:
-      policy:
+      pre_invocation:
         - "require(authenticated)"
 "#;
     let mgr = manager_with(YAML).await;
@@ -195,7 +195,7 @@ plugin_settings:
 routes:
   - tool: locked
     apl:
-      policy:
+      pre_invocation:
         - "require(authenticated)"
     response:
       status: 401

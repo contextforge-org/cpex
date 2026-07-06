@@ -22,8 +22,8 @@
 //
 //   1. **Multi-hook bug.** Two step-context hooks on the same plugin
 //      (pre + post) collapsed to "first non-field wins" — silent
-//      wrong dispatch when policy and post_policy needed different
-//      entries.
+//      wrong dispatch when pre_invocation and post_invocation needed
+//      different entries.
 //   2. **The "field-hook" classification didn't match any real hook.**
 //      No CMF hook actually carries `field` / `redact` / `scan` /
 //      `validate` in its name — the heuristic was anticipating a
@@ -51,13 +51,13 @@
 //
 // APL phases map to hook phases:
 //
-//   * `args:` field stage   → looks for `Pre` hooks
-//   * `policy:` step        → looks for `Pre` hooks
-//   * `result:` field stage → looks for `Post` hooks
-//   * `post_policy:` step   → looks for `Post` hooks
+//   * `args:` field stage     → looks for `Pre` hooks
+//   * `pre_invocation:` step       → looks for `Pre` hooks
+//   * `result:` field stage   → looks for `Post` hooks
+//   * `post_invocation:` step      → looks for `Post` hooks
 //
 // A plugin that wants to discriminate "args field stage" from
-// "policy step" — both Pre context — inspects `PluginContext::hook_name()`
+// "pre_invocation step" — both Pre context — inspects `PluginContext::hook_name()`
 // itself. The hook-routing layer doesn't slice phase finer than
 // Pre/Post.
 //
@@ -84,20 +84,20 @@ use crate::identity::HOOK_IDENTITY_RESOLVE;
 
 /// Lifecycle position a hook occupies for dispatcher purposes.
 ///
-/// APL's args/policy phases dispatch to `Pre` hooks; APL's
-/// result/post_policy phases dispatch to `Post` hooks. Hook families
+/// APL's args/pre_invocation phases dispatch to `Pre` hooks; APL's
+/// result/post_invocation phases dispatch to `Post` hooks. Hook families
 /// outside the request-lifecycle model (identity at request entry,
-/// token-delegate inside policy) use `Unphased` and match any
+/// token-delegate inside authorization) use `Unphased` and match any
 /// requested phase.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum HookPhase {
     /// Pre-invocation hook — e.g. `cmf.tool_pre_invoke`,
     /// `cmf.llm_input`. Dispatched from APL's `args:` field stages
-    /// and `policy:` steps.
+    /// and `pre_invocation:` steps.
     Pre,
     /// Post-invocation hook — e.g. `cmf.tool_post_invoke`,
     /// `cmf.llm_output`. Dispatched from APL's `result:` field stages
-    /// and `post_policy:` steps.
+    /// and `post_invocation:` steps.
     Post,
     /// Not phase-bound. Covers hook families that fire once per
     /// request without an APL phase concept (`identity.resolve`,

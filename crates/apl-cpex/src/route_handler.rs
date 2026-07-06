@@ -55,7 +55,7 @@ use crate::pdp_router::PdpRouter;
 use crate::session_store::SessionStore;
 
 /// Which APL phase this handler runs. Pre covers `args` + `policy`; Post
-/// covers `result` + `post_policy`. Set once at construction and never
+/// covers `result` + `post_invocation`. Set once at construction and never
 /// changes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Phase {
@@ -397,7 +397,7 @@ impl AnyHookHandler for AplRouteHandler {
             Some(Box::new(updated) as Box<dyn PluginPayload>)
         } else if msg_payload.message.get_text_content() != final_payload.message.get_text_content()
         {
-            // A `policy:` plugin mutated the message directly via
+            // A `pre_invocation:` plugin mutated the message directly via
             // `modify_payload` (not through a field pipeline). Pass
             // the invoker's view through unchanged.
             Some(Box::new(final_payload) as Box<dyn PluginPayload>)

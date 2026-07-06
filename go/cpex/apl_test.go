@@ -39,8 +39,9 @@ plugins:
 routes:
   - tool: get_weather
     apl:
-      policy:
-        - "plugin(auditor)"
+      authorization:
+        pre_invocation:
+          - "plugin(auditor)"
 `
 	if err := mgr.LoadConfig(yaml); err != nil {
 		t.Fatalf("LoadConfig failed: %v", err)

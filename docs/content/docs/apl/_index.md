@@ -23,29 +23,34 @@ Policy is organized by **route**: an operation CPEX mediates, identified by the 
 
 ```mermaid
 flowchart LR
-  ARGS["args<br>validate / transform input"] --> POL["policy<br>authorize"] --> RES["result<br>transform output"] --> POST["post_policy<br>audit / final checks"]
+  ARGS["args<br>validate / transform input"] --> POL["authorization.pre_invocation<br>authorize"] --> RES["result<br>transform output"] --> POST["authorization.post_invocation<br>audit / final checks"]
 ```
 
 - **args**: validate and transform request inputs before the operation runs.
-- **policy**: authorize the operation. Predicates, PDP calls, delegation, tainting.
+- **authorization.pre_invocation**: authorize the operation. Predicates, PDP calls, delegation, tainting.
 - **result**: transform the response. Redaction and masking on the wire.
-- **post_policy**: checks after the result is known. Audit, post-delegation verification.
+- **authorization.post_invocation**: checks after the result is known. Audit, post-delegation verification.
 
-The first `deny` in any phase halts that phase and every later phase. Nothing reaches the backend after a deny in `args` or `policy`.
+The first `deny` in any phase halts that phase and every later phase. Nothing reaches the backend after a deny in `args` or `authorization.pre_invocation`.
+
+`authorization` names *when* the phase runs, not a pure allow/deny gate: alongside the decision, `pre_invocation` (and `post_invocation`) can carry obligations and effects — `taint(...)`, `delegate(...)`, and `plugin(...)` (which may transform the payload) — that run as part of the phase. If you find the `authorization:` label too narrow, the equivalent flat `pre_invocation:` / `post_invocation:` keys name the phase by timing instead.
 
 ```yaml
 routes:
   - tool: get_employee
     args:
       employee_id: "str"
-    policy:
-      - "require(authenticated)"
-      - "delegation.depth > 2: deny"
+    authorization:
+      pre_invocation:
+        - "require(authenticated)"
+        - "delegation.depth > 2: deny"
     result:
       ssn: "str | redact(!perm.view_ssn)"
       salary: "int | redact(!role.hr)"
       employee_id: "str | mask(4)"
 ```
+
+The `pre_invocation:` / `post_invocation:` lists may also be written flat on the route (without the `authorization:` wrapper); both forms are equivalent.
 
 ## Predicates
 
@@ -64,7 +69,7 @@ A predicate reads attributes resolved from the caller's identity and request con
 
 ## Rules
 
-A `policy:` (or `post_policy:`) entry is a rule. Two forms:
+A `pre_invocation:` (or `post_invocation:`) entry is a rule. Two forms:
 
 **`require(...)`** denies unless the predicate holds:
 
@@ -102,7 +107,7 @@ By default a deny surfaces a reason and code, and the host renders its own denia
 routes:
   - tool: locked
     apl:
-      policy:
+      pre_invocation:
         - "require(authenticated)"
     response:
       status: 403
@@ -115,12 +120,12 @@ All three fields are optional; an absent block leaves the host's default denial 
 
 ## Authorizing HTTP requests without an entity
 
-Routes key on an MCP / A2A entity — a tool, prompt, resource, or LLM. A generic HTTP request that carries no such entity is authorized by the `global` policy instead: when `global.apl` declares an `args:` or `policy:` block, CPEX evaluates it for these requests, reading the request line (`http.method`, `http.path`, `http.host`, `http.scheme`) and headers. Pair it with a `global` `response:` to return a custom denial.
+Routes key on an MCP / A2A entity — a tool, prompt, resource, or LLM. A generic HTTP request that carries no such entity is authorized by the `global` policy instead: when `global.apl` declares an `args:` or `pre_invocation:` block, CPEX evaluates it for these requests, reading the request line (`http.method`, `http.path`, `http.host`, `http.scheme`) and headers. Pair it with a `global` `response:` to return a custom denial.
 
 ```yaml
 global:
   apl:
-    policy:
+    pre_invocation:
       - "http.method != 'GET': deny"
   response:
     status: 405
@@ -155,6 +160,6 @@ Named-validator dispatch (`validate(name)`) is not implemented in the current bu
 
 ## Effects beyond predicates
 
-A `policy:` rule can also call a PDP, mint a delegated token, or invoke a plugin. Those effects and how they sequence are covered in [Effects]({{< relref "/docs/apl/effects" >}}).
+A `pre_invocation:` rule can also call a PDP, mint a delegated token, or invoke a plugin. Those effects and how they sequence are covered in [Effects]({{< relref "/docs/apl/effects" >}}).
 
 Every fragment on this page is drawn from the `apl-core` parser tests and the reference deployments, so the forms shown here parse as written.
