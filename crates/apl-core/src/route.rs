@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Authors: Teryl Taylor
 //
-// Phase orchestration: runs `inputs → pre_invocation → outputs → post_invocation` against a
+// Phase orchestration: runs `args → pre_invocation → result → post_invocation` against a
 // `CompiledRoute` and a mutable payload, returning a unified decision plus
 // accumulated taints.
 //
