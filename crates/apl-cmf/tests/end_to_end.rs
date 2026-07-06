@@ -42,7 +42,7 @@ routes:
   get_employee:
     args:
       employee_id: "str"
-    policy:
+    pre_invocation:
       - "require(authenticated)"
       - "delegation.depth > 2: deny"
     result:
@@ -260,7 +260,7 @@ async fn args_attributes_flow_into_bag_for_policy_use() {
     let yaml = r#"
 routes:
   guarded_route:
-    policy:
+    pre_invocation:
       - "args.include_ssn == true: deny"
 "#;
     let routes = compile_config(yaml).unwrap().routes;
@@ -285,7 +285,11 @@ routes:
     .await;
     match r.decision {
         Decision::Deny { rule_source, .. } => {
-            assert!(rule_source.contains("policy"), "got source {}", rule_source);
+            assert!(
+                rule_source.contains("pre_invocation"),
+                "got source {}",
+                rule_source
+            );
         },
         d => panic!("expected Deny on include_ssn, got {:?}", d),
     }

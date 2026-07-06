@@ -3,16 +3,16 @@
 // SPDX-License-Identifier: Apache-2.0
 // Authors: Teryl Taylor
 //
-// End-to-end tests for the route-level `identity:` block (Slice A).
+// End-to-end tests for the route-level `authentication:` block (Slice A).
 //
 // Verifies the hook-specific binding semantics:
-//   * A route's `identity:` block is the authoritative dispatch list
+//   * A route's `authentication:` block is the authoritative dispatch list
 //     for the `identity.resolve` hook on that route.
 //   * The route's `plugins:` block (which means "per-route overrides"
 //     in APL-driven routes, "per-route binding" otherwise) does NOT
 //     bind plugins for the `identity.resolve` hook.
 //   * Dispatch order matches the order steps are declared in
-//     `identity:`, NOT the plugins' chain-priority values.
+//     `authentication:`, NOT the plugins' chain-priority values.
 //   * Per-step config overrides flow through the existing
 //     `create_override_instance` pathway.
 //
@@ -233,7 +233,7 @@ fn manager_with_observing_factory() -> (
 // Scenarios
 // =====================================================================
 
-/// Baseline: route's `identity:` block dispatches the listed plugins,
+/// Baseline: route's `authentication:` block dispatches the listed plugins,
 /// in declared order, for `identity.resolve`. The ledger should
 /// reflect the YAML order verbatim — proves the per-route binding +
 /// preserved order story end-to-end.
@@ -243,7 +243,7 @@ async fn route_identity_block_dispatches_in_declared_order() {
 
     // Three identity plugins, all registered under `identity.resolve`.
     // Route declares them in REVERSE priority order to prove that
-    // routing follows the `identity:` declaration, not chain priority.
+    // routing follows the `authentication:` declaration, not chain priority.
     let yaml = r#"
 plugin_settings:
   routing_enabled: true
@@ -263,7 +263,7 @@ plugins:
 
 routes:
   - tool: get_weather
-    identity:
+    authentication:
       - jwt-c       # priority 30 — would naturally run LAST in chain order
       - jwt-a       # priority 10 — would naturally run FIRST
       - jwt-b       # priority 20
@@ -287,25 +287,25 @@ routes:
         result.violation,
     );
 
-    // Order matches the YAML's `identity:` declaration, NOT plugin priority.
+    // Order matches the YAML's `authentication:` declaration, NOT plugin priority.
     let firings = ledger.lock().unwrap().clone();
     assert_eq!(firings, vec!["jwt-c", "jwt-a", "jwt-b"]);
 }
 
-/// `identity:` is hook-specific. Plugins in the route's `plugins:`
+/// `authentication:` is hook-specific. Plugins in the route's `plugins:`
 /// block (which means "per-route overrides" in APL-driven routes
 /// and "per-route binding" otherwise) must NOT fire for the
 /// identity.resolve hook. This is the load-bearing test for
-/// Option 1 — the design decision that `identity:` is its own
+/// Option 1 — the design decision that `authentication:` is its own
 /// dispatch list, independent of `plugins:`.
 #[tokio::test]
 async fn route_plugins_block_does_not_bind_identity_resolve() {
     let (mgr, ledger, _) = manager_with_recording_factory();
 
-    // The route declares `identity:` with corp-jwt, and `plugins:`
+    // The route declares `authentication:` with corp-jwt, and `plugins:`
     // with rogue-jwt. rogue-jwt also registers under identity.resolve
     // — but should NOT fire for the identity.resolve hook on this
-    // route because it's listed in `plugins:`, not `identity:`.
+    // route because it's listed in `plugins:`, not `authentication:`.
     let yaml = r#"
 plugin_settings:
   routing_enabled: true
@@ -319,7 +319,7 @@ plugins:
 
 routes:
   - tool: get_weather
-    identity:
+    authentication:
       - corp-jwt
     plugins:
       - rogue-jwt
@@ -339,11 +339,11 @@ routes:
     assert!(result.continue_processing);
 
     // Only corp-jwt fired — rogue-jwt was in `plugins:`, not
-    // `identity:`, so it's NOT bound for this hook on this route.
+    // `authentication:`, so it's NOT bound for this hook on this route.
     assert_eq!(ledger.lock().unwrap().clone(), vec!["corp-jwt"]);
 }
 
-/// A route with no `identity:` block produces zero identity
+/// A route with no `authentication:` block produces zero identity
 /// dispatches even when the entity_type / entity_name match. The
 /// plugins ARE registered under identity.resolve, but no route
 /// binds them, so the route-filter returns an empty entry list.
@@ -379,7 +379,7 @@ routes:
         .await;
     assert!(result.continue_processing);
 
-    // No identity plugins fired — `identity:` was absent, so the
+    // No identity plugins fired — `authentication:` was absent, so the
     // route binds nothing for the identity.resolve hook even though
     // corp-jwt is in `plugins:`.
     assert!(ledger.lock().unwrap().is_empty());
@@ -402,7 +402,7 @@ plugins:
 
 routes:
   - tool: get_compensation
-    identity:
+    authentication:
       - corp-jwt
 "#;
     let parsed = config::parse_config(yaml).expect("parse");
@@ -447,7 +447,7 @@ plugins:
 
 routes:
   - tool: get_weather
-    identity:
+    authentication:
       - name: corp-jwt
         config:
           audience: route-specific-aud
@@ -494,7 +494,7 @@ plugins:
     hooks: [identity.resolve]
 
 global:
-  identity:
+  authentication:
     - corp-jwt
 
 routes:
@@ -542,18 +542,18 @@ plugins:
     hooks: [identity.resolve]
 
 global:
-  identity:
+  authentication:
     - corp-jwt
   policies:
     finance:
-      identity:
+      authentication:
         - workday-saml
 
 routes:
   - tool: get_compensation
     meta:
       tags: [finance]
-    identity:
+    authentication:
       - agent-context
 "#;
     let parsed = cpex_core::config::parse_config(yaml).expect("parse");
@@ -599,18 +599,18 @@ plugins:
     hooks: [identity.resolve]
 
 global:
-  identity:
+  authentication:
     - corp-jwt
   policies:
     finance:
-      identity:
+      authentication:
         - workday-saml
 
 routes:
   - tool: legacy_endpoint
     meta:
       tags: [finance]
-    identity:
+    authentication:
       replace_inherited: true
       steps:
         - legacy-basic-auth
@@ -650,12 +650,12 @@ plugins:
     hooks: [identity.resolve]
 
 global:
-  identity:
+  authentication:
     - corp-jwt
 
 routes:
   - tool: public_endpoint
-    identity:
+    authentication:
       replace_inherited: true
       steps: []
 "#;
@@ -696,7 +696,7 @@ plugins:
 
 routes:
   - tool: get_weather
-    identity:
+    authentication:
       replace_inherited: true
       steps: []
 "#;
@@ -774,7 +774,7 @@ plugins:
 
 routes:
   - tool: get_weather
-    identity:
+    authentication:
       - scoped-jwt
 "#;
     let parsed = cpex_core::config::parse_config(yaml).expect("parse");
@@ -829,7 +829,7 @@ plugins:
 
 routes:
   - tool: get_weather
-    identity:
+    authentication:
       - capless-jwt
 "#;
     let parsed = cpex_core::config::parse_config(yaml).expect("parse");

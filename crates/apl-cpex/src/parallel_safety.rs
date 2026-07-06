@@ -79,8 +79,8 @@ pub fn validate_parallel_plugin_modes<L: PluginModeLookup + ?Sized>(
 ) -> Result<(), String> {
     let mut errors: Vec<String> = Vec::new();
     for (phase_name, effects) in [
-        ("policy", route.policy.as_slice()),
-        ("post_policy", route.post_policy.as_slice()),
+        ("pre_invocation", route.policy.as_slice()),
+        ("post_invocation", route.post_policy.as_slice()),
     ] {
         for (idx, effect) in effects.iter().enumerate() {
             walk_effect(
@@ -340,6 +340,6 @@ mod tests {
         let mut route = CompiledRoute::new("test_route");
         route.post_policy = vec![rule(vec![parallel_plugin("mutator")])];
         let err = validate_parallel_plugin_modes(&route, &reg).unwrap_err();
-        assert!(err.contains("post_policy"));
+        assert!(err.contains("post_invocation"));
     }
 }

@@ -49,7 +49,7 @@ global:
 routes:
   - tool: get_document
     apl:
-      policy:
+      pre_invocation:
         - cedar:
             action: 'Action::"read"'
             resource:

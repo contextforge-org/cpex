@@ -38,7 +38,7 @@ routes:
   get_employee:
     args:
       employee_id: "str"
-    policy:
+    pre_invocation:
       - "require(authenticated)"
       - "require(role.hr)"
     result:
@@ -51,7 +51,7 @@ The `require(authenticated)` and `require(role.hr)` predicates read attributes r
 
 ## 4. Run it
 
-Load the config into the manager and dispatch operations through it. The four phases run automatically: `args` validates `employee_id`, `policy` authorizes, `result` redacts. See [`crates/cpex-core/examples`](https://github.com/contextforge-org/cpex/tree/main/crates/cpex-core/examples) for runnable end-to-end programs that load a config and invoke a route.
+Load the config into the manager and dispatch operations through it. The four phases run automatically: `args` validates `employee_id`, `authorization.pre_invocation` authorizes, `result` redacts. See [`crates/cpex-core/examples`](https://github.com/contextforge-org/cpex/tree/main/crates/cpex-core/examples) for runnable end-to-end programs that load a config and invoke a route.
 
 The outcome matches the scenario:
 

@@ -25,10 +25,12 @@ global:         # cross-cutting resolvers and stores
 
 routes:         # APL policy, keyed by operation
   <route>:
+    authentication: [ ... ]   # identity-resolution plugins
     args: { ... }
-    policy: [ ... ]
+    authorization:
+      pre_invocation: [ ... ]
+      post_invocation: [ ... ]
     result: { ... }
-    post_policy: [ ... ]
 ```
 
 ## Plugins
@@ -91,15 +93,18 @@ Routes carry the APL policy. The map-keyed form (keyed by route name) is the can
 ```yaml
 routes:
   get_compensation:
-    policy:
-      - "require(role.hr)"
-      - "delegate(workday-oauth, target: workday-api, audience: workday-api, permissions: [read_compensation])"
-      - "taint(secret, session)"
-      - "plugin(audit-log)"
+    authorization:
+      pre_invocation:
+        - "require(role.hr)"
+        - "delegate(workday-oauth, target: workday-api, audience: workday-api, permissions: [read_compensation])"
+        - "taint(secret, session)"
+        - "plugin(audit-log)"
     result:
       ssn: "str | redact(!perm.view_ssn)"
 ```
 
-Deployment integrations that wrap CPEX (a gateway or sidecar) often express routes as a list of `- tool:` entries instead; that form carries the same `policy`/`args`/`result` blocks. See [Deployment]({{< relref "/docs/deployment" >}}) for that variant, and [APL]({{< relref "/docs/apl" >}}) for the policy syntax itself.
+The two authorization phases may also be written flat — `pre_invocation:` / `post_invocation:` directly on the route — which is equivalent to nesting them under `authorization:`.
+
+Deployment integrations that wrap CPEX (a gateway or sidecar) often express routes as a list of `- tool:` entries instead; that form carries the same `authorization`/`args`/`result` blocks. See [Deployment]({{< relref "/docs/deployment" >}}) for that variant, and [APL]({{< relref "/docs/apl" >}}) for the policy syntax itself.
 
 Route-level overrides can adjust a plugin's `capabilities` or `config` for a specific operation, so a scanner can be granted `read_labels` on one sensitive route without widening its access everywhere.
