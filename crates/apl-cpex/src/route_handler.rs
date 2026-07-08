@@ -42,7 +42,10 @@ use cpex_core::registry::AnyHookHandler;
 
 use apl_cmf::{extract_args, extract_result, BagBuilder};
 use apl_core::evaluator::Decision;
+use apl_core::AttributeTree;
 use apl_core::plugin_decl::PluginRegistry;
+
+use crate::candidate_constraint::fold_candidate_constraints;
 use apl_core::route::{evaluate_post, evaluate_pre, RoutePayload};
 use apl_core::rules::CompiledRoute;
 use apl_core::step::PdpResolver;
@@ -86,6 +89,10 @@ pub struct AplRouteHandler {
     /// install resolvers via [`Self::with_pdp`] or
     /// [`Self::with_pdp_router`].
     pdp: Arc<dyn PdpResolver>,
+    /// Static `data.*` attribute tree, flattened into every request's
+    /// bag. Shared `Arc` (the visitor hands the same tree to every
+    /// handler); empty by default when no source was configured.
+    attribute_tree: Arc<AttributeTree>,
 }
 
 impl AplRouteHandler {
@@ -109,7 +116,16 @@ impl AplRouteHandler {
             session_store,
             manager,
             pdp: Arc::new(PdpRouter::new()),
+            attribute_tree: Arc::new(apl_core::AttributeTree::empty()),
         }
+    }
+
+    /// Install the static `data.*` attribute tree flattened into every
+    /// request's bag. Defaults to empty; the visitor sets it from the
+    /// configured [`AttributeSource`](apl_core::AttributeSource).
+    pub fn with_attribute_tree(mut self, tree: Arc<AttributeTree>) -> Self {
+        self.attribute_tree = tree;
+        self
     }
 
     /// Install a `PdpResolver`. Pass a [`PdpRouter`] when the host needs
@@ -240,6 +256,7 @@ impl AnyHookHandler for AplRouteHandler {
         let mut bag = BagBuilder::new()
             .with_extensions(&post_extensions)
             .with_route_key(&self.route.route_key)
+            .with_data(&self.attribute_tree)
             .build();
 
         // Build `RoutePayload.args` from the message. Per-content shape:
@@ -343,6 +360,17 @@ impl AnyHookHandler for AplRouteHandler {
         // (see TS2). No-op when no taints emitted.
         invoker.apply_session_taints(&decision.taints).await;
 
+        // R2: fold this request's `restrict` constraints into one typed
+        // `CandidateConstraintExtension`. A custom-label contradiction
+        // (two restricts requiring the same label to differ) cannot be
+        // honored by any backend, so it fails closed below (mirrors the
+        // persist-failure handling). `Ok(None)` = no restrict fired.
+        let (folded_constraint, constraint_conflict) =
+            match fold_candidate_constraints(&decision.constraints) {
+                Ok(folded) => (folded, None),
+                Err(e) => (None, Some(e)),
+            };
+
         // Commit any session-scoped labels accumulated during this
         // request. No-op when there was no session id. The result is
         // folded into the decision below (R18) — captured here because
@@ -402,11 +430,26 @@ impl AnyHookHandler for AplRouteHandler {
             None
         };
 
-        let modified_extensions = if extensions_changed(extensions, &final_extensions) {
+        let mut modified_extensions = if extensions_changed(extensions, &final_extensions) {
             Some(final_extensions.cow_copy())
         } else {
             None
         };
+
+        // R2: write the folded constraint into the typed
+        // `candidate_constraint` extension slot so the host router reads
+        // it TYPED off `PipelineResult.modified_extensions` — the same
+        // in-process, type-shared channel `raw_credentials.delegated_tokens`
+        // rides (design §2.5). `extensions_changed` doesn't track this
+        // slot, so we force `modified_extensions` to `Some` here to
+        // guarantee the constraint reaches the executor's merge.
+        if let Some(constraint) = folded_constraint {
+            let mut owned = modified_extensions
+                .take()
+                .unwrap_or_else(|| final_extensions.cow_copy());
+            owned.candidate_constraint = Some(constraint);
+            modified_extensions = Some(owned);
+        }
 
         let (mut continue_processing, mut violation) = match decision.decision {
             Decision::Allow => (true, None),
@@ -447,6 +490,26 @@ impl AnyHookHandler for AplRouteHandler {
                 violation = Some(PluginViolation::new(
                     "session.persist_failed",
                     "session state could not be persisted",
+                ));
+            }
+        }
+
+        // R2 fail-closed: a `restrict` custom-label contradiction means no
+        // backend can satisfy the request's routing constraints. Deny
+        // rather than emit an unhonorable constraint. On an already-denied
+        // request, keep the original policy attribution (same precedence
+        // as the persist-failure block above).
+        if let Some(conflict) = constraint_conflict {
+            tracing::warn!(
+                route = %self.route.route_key,
+                error = %conflict,
+                "restrict constraints conflict; failing request closed"
+            );
+            if continue_processing {
+                continue_processing = false;
+                violation = Some(PluginViolation::new(
+                    "policy.restrict_conflict",
+                    conflict.to_string(),
                 ));
             }
         }

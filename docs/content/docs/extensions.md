@@ -31,8 +31,11 @@ Each extension flattens into bag attributes under its namespace, gated by a read
 | Framework | agentic framework name and version, node and graph ids, metadata | `framework.*` | `read_framework` |
 | Custom | free-form host-defined namespace | `custom.*` | `read_custom` |
 | Raw credentials | inbound tokens and minted delegated tokens | flow through plugin payloads, not the bag | `read_inbound_credentials`, `read_delegated_tokens` |
+| Candidate constraint | folded backend routing constraint from `restrict` effects | not a bag namespace — read by the host router | written by the policy engine |
 
-The request arguments and response body are also flattened, under `args.*` and `result.*`, and the route name is available as `route.key`. APL field pipelines (`args:` / `result:`) operate on those.
+The request arguments and response body are also flattened, under `args.*` and `result.*`, and the route name is available as `route.key`. APL field pipelines (`args:` / `result:`) operate on those. Operator-maintained static attributes are flattened under `data.*` — these come from config files, not the request, and need no capability (see [Static Attributes]({{< relref "/docs/apl/attributes" >}})).
+
+Most extensions are **inputs** — resolved before policy runs and flattened into the bag for predicates to read. The **candidate constraint** is the exception: it is an **output**. APL `restrict` effects fold into it (see [Backend Restriction]({{< relref "/docs/apl/restrict" >}})), it rides the returned extensions the same way minted delegation tokens do, and the host router reads it typed to prune its candidate set. Because CPEX links the router in-process, this is a typed value, not a serialized blob. Capability-gating the write is not yet applied — the policy engine is its only writer today.
 
 ## Capabilities
 

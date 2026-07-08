@@ -195,7 +195,7 @@ impl<'a> Lexer<'a> {
                 },
                 b'"' | b'\'' => self.lex_string(b)?,
                 b'-' | b'0'..=b'9' => self.lex_number()?,
-                b if is_ident_start(b) => self.lex_ident_or_keyword(),
+                b if is_ident_start(b) => self.lex_ident_or_keyword()?,
                 _ => return Err(self.err(&format!("unexpected char `{}`", b as char))),
             };
             out.push(tok);
@@ -257,17 +257,50 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    fn lex_ident_or_keyword(&mut self) -> Tok {
+    fn lex_ident_or_keyword(&mut self) -> Result<Tok, ParseError> {
         let start = self.pos;
-        while let Some(b) = self.peek() {
-            if is_ident_cont(b) {
-                self.pos += 1;
+        // An attribute path is ident-cont runs interleaved with `[...]`
+        // interpolation groups: `data.tenants[subject.tenant].data_region`.
+        // The bracket content is a nested attribute key the evaluator
+        // resolves at eval time (R3b) — the lexer only delimits it.
+        let mut has_bracket = false;
+        loop {
+            while let Some(b) = self.peek() {
+                if is_ident_cont(b) {
+                    self.pos += 1;
+                } else {
+                    break;
+                }
+            }
+            if self.peek() == Some(b'[') {
+                has_bracket = true;
+                self.pos += 1; // consume `[`
+                let mut closed = false;
+                while let Some(b) = self.peek() {
+                    self.pos += 1;
+                    match b {
+                        b']' => {
+                            closed = true;
+                            break;
+                        },
+                        b'[' => return Err(self.err("nested `[` in attribute path")),
+                        _ => {},
+                    }
+                }
+                if !closed {
+                    return Err(self.err("unterminated `[` in attribute path"));
+                }
+                // Continue: more ident-cont chars or another `[...]` may follow.
             } else {
                 break;
             }
         }
         let s = &self.src[start..self.pos];
-        match s {
+        // A path with an interpolation group is never a keyword.
+        if has_bracket {
+            return Ok(Tok::Ident(s.to_string()));
+        }
+        Ok(match s {
             "true" => Tok::BoolLit(true),
             "false" => Tok::BoolLit(false),
             "contains" => Tok::Contains,
@@ -278,7 +311,7 @@ impl<'a> Lexer<'a> {
             // phrase. The parser handles that as an Ident("not") + Tok::In
             // sequence in parse_identifier_predicate.
             _ => Tok::Ident(s.to_string()),
-        }
+        })
     }
 
     fn err(&self, msg: &str) -> ParseError {
@@ -1225,6 +1258,15 @@ fn parse_step_map(m: &serde_yaml::Mapping, source: &str) -> Result<Step, ParseEr
         return parse_delegate_step(body_val, source);
     }
 
+    // `restrict:` — the backend candidate constraint (accumulating
+    // effect, `Taint` family). Body is a map of typed fields + a
+    // `custom` label map; branch before the PDP-dialect logic since
+    // `restrict` is not a PDP call.
+    if key.trim() == "restrict" {
+        let spec = parse_restrict_spec(body_val, source)?;
+        return Ok(Step::Restrict { spec });
+    }
+
     // E3: top-level `sequential:` / `parallel:` orchestration —
     // wrap the resulting Effect into an unconditional Rule so the
     // top-level Vec<Step> stays uniform.
@@ -1433,6 +1475,7 @@ fn parse_effect_value(val: &serde_yaml::Value, source: &str) -> Result<Effect, P
                     match key_str.trim() {
                         "sequential" => return parse_sequential_effect(v, source),
                         "parallel" => return parse_parallel_effect(v, source),
+                        "restrict" => return parse_restrict_effect(v, source),
                         _ => {},
                     }
                 }
@@ -1495,6 +1538,208 @@ fn parse_parallel_effect(body: &serde_yaml::Value, source: &str) -> Result<Effec
             msg,
         })?;
     Ok(parallel)
+}
+
+/// Parse a `restrict: { ... }` map into an `Effect::Restrict`. Thin
+/// wrapper over [`parse_restrict_spec`] — the effect form (inside `do:` /
+/// `sequential:` / `parallel:` / a PDP reaction) and the top-level step
+/// form share the same body shape.
+fn parse_restrict_effect(body: &serde_yaml::Value, source: &str) -> Result<Effect, ParseError> {
+    let spec = parse_restrict_spec(body, source)?;
+    Ok(Effect::Restrict { spec })
+}
+
+/// Parse a `restrict:` body map into a [`RestrictSpec`]
+/// (`docs/apl-restrict-effect-design.md` §2.3, §4.3). Every field is
+/// optional, but an entirely empty `restrict:` is rejected — it would
+/// constrain nothing, so it's an author error. Unknown keys are a hard
+/// error: the constraint is a fixed contract we ask the host's router to
+/// honor, and a typo'd field must never silently widen the eligible set.
+///
+/// The string-set fields (`allow_models` / `deny_models` / `allow_regions`
+/// / `allow_sites`) accept either a literal YAML list **or** a bare
+/// scalar `data.*` reference resolved per request (§4.3).
+fn parse_restrict_spec(
+    body_val: &serde_yaml::Value,
+    source: &str,
+) -> Result<crate::constraint::RestrictSpec, ParseError> {
+    use crate::constraint::{OnEmpty, RestrictSpec};
+
+    let body = body_val.as_mapping().ok_or_else(|| ParseError::Rule {
+        rule: source.to_string(),
+        msg: "`restrict:` body must be a map of constraint fields (allow_models / \
+              deny_models / allow_regions / allow_sites / max_cost_tier / custom / \
+              on_empty)"
+            .to_string(),
+    })?;
+
+    let mut spec = RestrictSpec::default();
+
+    for (k, v) in body.iter() {
+        let key = k.as_str().ok_or_else(|| ParseError::Rule {
+            rule: source.to_string(),
+            msg: "`restrict:` field keys must be strings".to_string(),
+        })?;
+        // Field-scoped error so authors see e.g. `restrict.allow_models: ...`.
+        let field_err = |msg: String| ParseError::Rule {
+            rule: source.to_string(),
+            msg: format!("`restrict.{}`: {}", key.trim(), msg),
+        };
+        match key.trim() {
+            "allow_models" => {
+                spec.allow_models = Some(parse_string_set_spec(v).map_err(&field_err)?);
+            },
+            "deny_models" => {
+                spec.deny_models = Some(parse_string_set_spec(v).map_err(&field_err)?);
+            },
+            "allow_regions" => {
+                spec.allow_regions = Some(parse_string_set_spec(v).map_err(&field_err)?);
+            },
+            "allow_sites" => {
+                spec.allow_sites = Some(parse_string_set_spec(v).map_err(&field_err)?);
+            },
+            "max_cost_tier" => {
+                let tier = v
+                    .as_str()
+                    .ok_or_else(|| field_err("must be a string tier".to_string()))?;
+                if tier.trim().is_empty() {
+                    return Err(field_err("tier must not be empty".to_string()));
+                }
+                spec.max_cost_tier = Some(tier.trim().to_string());
+            },
+            "custom" => {
+                spec.custom = parse_label_map(v).map_err(&field_err)?;
+            },
+            "on_empty" => {
+                let s = v
+                    .as_str()
+                    .ok_or_else(|| field_err("must be `deny` or `fallback`".to_string()))?;
+                spec.on_empty = match s.trim() {
+                    "deny" => OnEmpty::Deny,
+                    "fallback" => OnEmpty::Fallback,
+                    other => {
+                        return Err(field_err(format!(
+                            "unknown value `{}` (expected `deny` or `fallback`)",
+                            other
+                        )))
+                    },
+                };
+            },
+            other => {
+                return Err(ParseError::Rule {
+                    rule: source.to_string(),
+                    msg: format!(
+                        "unknown `restrict:` field `{}` (allowed: allow_models, \
+                         deny_models, allow_regions, allow_sites, max_cost_tier, \
+                         custom, on_empty)",
+                        other
+                    ),
+                });
+            },
+        }
+    }
+
+    // `is_empty()` ignores `on_empty` (a bare `on_empty:` constrains
+    // nothing), so this also rejects `restrict: { on_empty: deny }`.
+    if spec.is_empty() {
+        return Err(ParseError::Rule {
+            rule: source.to_string(),
+            msg: "`restrict:` declares no constraint fields — it would restrict nothing; \
+                  remove it or add at least one of allow_models / deny_models / \
+                  allow_regions / allow_sites / max_cost_tier / custom"
+                .to_string(),
+        });
+    }
+
+    Ok(spec)
+}
+
+/// Parse a `restrict` string-set field. A YAML **sequence** is a literal
+/// set of strings; a bare **scalar string** is a `data.*` reference
+/// resolved per request (design §4.3) — e.g.
+/// `allow_models: data.agents[subject.id].allowed_models`.
+fn parse_string_set_spec(
+    v: &serde_yaml::Value,
+) -> Result<crate::constraint::StringSetSpec, String> {
+    use crate::constraint::StringSetSpec;
+    match v {
+        serde_yaml::Value::Sequence(_) => Ok(StringSetSpec::Literal(parse_string_list(v)?)),
+        serde_yaml::Value::String(s) => {
+            let s = s.trim();
+            if s.is_empty() {
+                return Err("reference path must not be empty".to_string());
+            }
+            Ok(StringSetSpec::Ref(s.to_string()))
+        },
+        _ => Err("must be a list of strings or a `data.*` reference string".to_string()),
+    }
+}
+
+/// Parse a YAML value expected to be a non-empty list of non-empty
+/// strings (the `allow_*` / `deny_*` constraint fields). Surrounding
+/// whitespace is trimmed; interior characters (e.g. a `*` glob or a `/`
+/// in a model id) are preserved.
+fn parse_string_list(v: &serde_yaml::Value) -> Result<Vec<String>, String> {
+    let seq = v
+        .as_sequence()
+        .ok_or_else(|| "must be a list of strings".to_string())?;
+    let mut out = Vec::with_capacity(seq.len());
+    for item in seq {
+        let s = item
+            .as_str()
+            .ok_or_else(|| "list entries must be strings".to_string())?;
+        if s.trim().is_empty() {
+            return Err("list entries must not be empty".to_string());
+        }
+        out.push(s.trim().to_string());
+    }
+    if out.is_empty() {
+        return Err("list must not be empty".to_string());
+    }
+    Ok(out)
+}
+
+/// Parse a YAML value expected to be a flat map of `label: value`
+/// pairs (the `custom` field). Scalar values (string / bool / number)
+/// are coerced to their string form, matching the label-map contract
+/// (design §2.3.1) — `custom` is equality-matched labels, not typed
+/// values.
+fn parse_label_map(v: &serde_yaml::Value) -> Result<std::collections::BTreeMap<String, String>, String> {
+    let map = v
+        .as_mapping()
+        .ok_or_else(|| "must be a map of `label: value` pairs".to_string())?;
+    let mut out = std::collections::BTreeMap::new();
+    for (k, val) in map {
+        let key = k
+            .as_str()
+            .ok_or_else(|| "label keys must be strings".to_string())?;
+        if key.trim().is_empty() {
+            return Err("label keys must not be empty".to_string());
+        }
+        let value = scalar_to_string(val).ok_or_else(|| {
+            format!(
+                "label `{}` must be a scalar (string / bool / number)",
+                key.trim()
+            )
+        })?;
+        out.insert(key.trim().to_string(), value);
+    }
+    if out.is_empty() {
+        return Err("`custom` map must not be empty".to_string());
+    }
+    Ok(out)
+}
+
+/// Coerce a scalar YAML value to its string form for a `custom` label.
+/// Non-scalars (sequences, maps, null) return `None` — a label value
+/// must be a single comparable token.
+fn scalar_to_string(v: &serde_yaml::Value) -> Option<String> {
+    match v {
+        serde_yaml::Value::String(s) => Some(s.clone()),
+        serde_yaml::Value::Bool(b) => Some(b.to_string()),
+        serde_yaml::Value::Number(n) => Some(n.to_string()),
+        _ => None,
+    }
 }
 
 /// Parse one effect string. Reuses [`parse_step_string`] for forms
@@ -1659,6 +1904,7 @@ pub(crate) fn step_to_top_level_effect(step: Step) -> Result<Effect, ParseError>
         Step::Plugin { name } => Ok(Effect::Plugin { name }),
         Step::Delegate(d) => Ok(Effect::Delegate(d)),
         Step::Taint { label, scopes } => Ok(Effect::Taint { label, scopes }),
+        Step::Restrict { spec } => Ok(Effect::Restrict { spec }),
     }
 }
 
@@ -1667,6 +1913,7 @@ fn step_to_effect(step: Step, source: &str) -> Result<Effect, ParseError> {
         Step::Plugin { name } => Ok(Effect::Plugin { name }),
         Step::Delegate(d) => Ok(Effect::Delegate(d)),
         Step::Taint { label, scopes } => Ok(Effect::Taint { label, scopes }),
+        Step::Restrict { spec } => Ok(Effect::Restrict { spec }),
         Step::Rule(rule) => {
             // Nested when/do inside a do: list isn't supported in E1
             // — only control effects (allow/deny) flatten cleanly.
@@ -2527,6 +2774,59 @@ mod tests {
         assert!(format!("{}", err).contains("expected `==`"));
     }
 
+    // ----- R3b: interpolated attribute paths -----
+
+    #[test]
+    fn lex_interpolated_path_is_one_ident() {
+        let toks = Lexer::new("data.tenants[subject.tenant].data_region")
+            .tokenize_all()
+            .unwrap();
+        assert_eq!(
+            toks,
+            vec![Tok::Ident("data.tenants[subject.tenant].data_region".into())]
+        );
+    }
+
+    #[test]
+    fn lex_interpolated_path_in_comparison() {
+        let toks = Lexer::new("data.tenants[subject.tenant].data_region == 'eu'")
+            .tokenize_all()
+            .unwrap();
+        assert_eq!(
+            toks,
+            vec![
+                Tok::Ident("data.tenants[subject.tenant].data_region".into()),
+                Tok::Eq,
+                Tok::StringLit("eu".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn lex_rejects_unterminated_bracket() {
+        let err = Lexer::new("data.tenants[subject.tenant").tokenize_all().unwrap_err();
+        assert!(format!("{}", err).contains("unterminated"), "got: {}", err);
+    }
+
+    #[test]
+    fn lex_rejects_nested_bracket() {
+        let err = Lexer::new("data.x[a[b]]").tokenize_all().unwrap_err();
+        assert!(format!("{}", err).contains("nested"), "got: {}", err);
+    }
+
+    #[test]
+    fn interpolated_predicate_parses_to_comparison() {
+        let e = parse_predicate("data.tenants[subject.tenant].data_region == 'eu'").unwrap();
+        assert_eq!(
+            e,
+            Expression::Condition(Condition::Comparison {
+                key: "data.tenants[subject.tenant].data_region".into(),
+                op: CompareOp::Eq,
+                value: Literal::String("eu".into()),
+            })
+        );
+    }
+
     // ----- Predicate parser -----
 
     #[test]
@@ -3369,6 +3669,199 @@ sequential:
     fn sequential_empty_list_rejected() {
         let err = parse_step_yaml("sequential: []").unwrap_err();
         assert!(format!("{}", err).contains("empty"));
+    }
+
+    // ----- R1: restrict effect -----
+
+    /// A literal `StringSetSpec` for terse assertions.
+    fn lit(items: &[&str]) -> Option<crate::constraint::StringSetSpec> {
+        Some(crate::constraint::StringSetSpec::Literal(
+            items.iter().map(|s| s.to_string()).collect(),
+        ))
+    }
+
+    #[test]
+    fn top_level_restrict_full_shape() {
+        // Every field exercised at once, including `custom` scalar
+        // coercion and an explicit `on_empty`.
+        let yaml = r#"
+restrict:
+  allow_models: ["vllm/*", "anthropic/claude-sonnet-*"]
+  deny_models:  ["openai/*"]
+  allow_regions: [eu]
+  allow_sites: [site-a]
+  max_cost_tier: cheap
+  custom: { gpu: h100, dedicated: true }
+  on_empty: fallback
+"#;
+        let step = parse_step_yaml(yaml).unwrap();
+        let Step::Restrict { spec } = step else {
+            panic!("expected Step::Restrict, got {:?}", step);
+        };
+        use crate::constraint::OnEmpty;
+        assert_eq!(spec.allow_models, lit(&["vllm/*", "anthropic/claude-sonnet-*"]));
+        assert_eq!(spec.deny_models, lit(&["openai/*"]));
+        assert_eq!(spec.allow_regions, lit(&["eu"]));
+        assert_eq!(spec.allow_sites, lit(&["site-a"]));
+        assert_eq!(spec.max_cost_tier.as_deref(), Some("cheap"));
+        // `custom` coerces the bool `true` to the string "true".
+        assert_eq!(spec.custom.get("gpu"), Some(&"h100".to_string()));
+        assert_eq!(spec.custom.get("dedicated"), Some(&"true".to_string()));
+        assert_eq!(spec.on_empty, OnEmpty::Fallback);
+    }
+
+    #[test]
+    fn restrict_on_empty_defaults_to_deny() {
+        let step = parse_step_yaml("restrict: { deny_models: [\"openai/*\"] }").unwrap();
+        let Step::Restrict { spec } = step else {
+            panic!("expected Step::Restrict");
+        };
+        assert_eq!(spec.on_empty, crate::constraint::OnEmpty::Deny);
+    }
+
+    #[test]
+    fn restrict_field_reference_parses_as_ref() {
+        // A scalar `data.*` path is a reference, not a literal. A path
+        // containing `[...]` must be quoted so YAML doesn't read the
+        // brackets as a flow sequence (block form works unquoted too).
+        let yaml = r#"
+restrict:
+  allow_models: "data.agents[subject.id].allowed_models"
+"#;
+        let step = parse_step_yaml(yaml).unwrap();
+        let Step::Restrict { spec } = step else {
+            panic!("expected Step::Restrict");
+        };
+        assert_eq!(
+            spec.allow_models,
+            Some(crate::constraint::StringSetSpec::Ref(
+                "data.agents[subject.id].allowed_models".to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn restrict_bracketless_reference_parses_unquoted() {
+        // A reference with no `[...]` is a clean plain scalar — no quoting
+        // needed even in flow form.
+        let step =
+            parse_step_yaml("restrict: { allow_regions: data.tenant_regions }").unwrap();
+        let Step::Restrict { spec } = step else {
+            panic!("expected Step::Restrict");
+        };
+        assert_eq!(
+            spec.allow_regions,
+            Some(crate::constraint::StringSetSpec::Ref("data.tenant_regions".to_string()))
+        );
+    }
+
+    #[test]
+    fn restrict_inside_when_do_body() {
+        // The EU-sovereignty shape: gate at the composition layer,
+        // restrict in the `do:` body.
+        let yaml = r#"
+when: session.labels contains 'eu_resident'
+do:
+  - restrict: { allow_regions: [eu] }
+"#;
+        let step = parse_step_yaml(yaml).unwrap();
+        let Step::Rule(rule) = step else {
+            panic!("expected Rule");
+        };
+        match rule.effects.as_slice() {
+            [Effect::Restrict { spec }] => {
+                assert_eq!(spec.allow_regions, lit(&["eu"]));
+            },
+            other => panic!("expected single Restrict effect, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn restrict_inside_pdp_on_allow() {
+        // `restrict` composes in a PDP reaction — authz says yes, then
+        // pin routing (design §2.1).
+        let yaml = r#"
+cedar:
+  action: read
+  resource: eu_data
+  on_allow:
+    - restrict: { allow_regions: [eu] }
+"#;
+        let step = parse_step_yaml(yaml).unwrap();
+        let Step::Pdp { on_allow, .. } = step else {
+            panic!("expected Step::Pdp, got {:?}", step);
+        };
+        match on_allow.as_slice() {
+            [Step::Restrict { spec }] => {
+                assert_eq!(spec.allow_regions, lit(&["eu"]));
+            },
+            other => panic!("expected Restrict in on_allow, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn restrict_empty_body_rejected() {
+        // A `restrict:` with no constraint fields restricts nothing —
+        // author error.
+        let err = parse_step_yaml("restrict: {}").unwrap_err();
+        assert!(format!("{}", err).contains("no constraint fields"), "got: {}", err);
+    }
+
+    #[test]
+    fn restrict_only_on_empty_rejected() {
+        // `on_empty` alone still constrains nothing.
+        let err = parse_step_yaml("restrict: { on_empty: deny }").unwrap_err();
+        assert!(format!("{}", err).contains("no constraint fields"), "got: {}", err);
+    }
+
+    #[test]
+    fn restrict_unknown_field_rejected() {
+        let err = parse_step_yaml("restrict: { allow_zones: [eu] }").unwrap_err();
+        let msg = format!("{}", err);
+        assert!(msg.contains("unknown"), "got: {}", msg);
+        assert!(msg.contains("allow_zones"), "got: {}", msg);
+    }
+
+    #[test]
+    fn restrict_bad_on_empty_value_rejected() {
+        let err =
+            parse_step_yaml("restrict: { deny_models: [\"openai/*\"], on_empty: maybe }").unwrap_err();
+        let msg = format!("{}", err);
+        assert!(msg.contains("on_empty"), "got: {}", msg);
+        assert!(msg.contains("maybe"), "got: {}", msg);
+    }
+
+    #[test]
+    fn restrict_non_scalar_custom_value_rejected() {
+        let yaml = r#"
+restrict:
+  custom:
+    gpu: [h100, a100]
+"#;
+        let err = parse_step_yaml(yaml).unwrap_err();
+        assert!(format!("{}", err).contains("scalar"), "got: {}", err);
+    }
+
+    #[test]
+    fn restrict_allowed_inside_parallel() {
+        // `restrict` is non-mutating, so it is *allowed* in parallel —
+        // this guards that we didn't accidentally class it as a mutation.
+        let yaml = r#"
+parallel:
+  - "plugin(audit)"
+  - restrict: { allow_regions: [eu] }
+"#;
+        let step = parse_step_yaml(yaml).unwrap();
+        let Step::Rule(rule) = step else {
+            panic!("expected Rule");
+        };
+        match rule.effects.as_slice() {
+            [Effect::Parallel(inner)] => {
+                assert_eq!(inner.len(), 2);
+                assert!(matches!(inner[1], Effect::Restrict { .. }));
+            },
+            other => panic!("expected Parallel with Restrict, got {:?}", other),
+        }
     }
 
     #[test]

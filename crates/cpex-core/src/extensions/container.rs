@@ -27,6 +27,7 @@ use super::meta::MetaExtension;
 use super::provenance::ProvenanceExtension;
 use super::raw_credentials::RawCredentialsExtension;
 use super::request::RequestExtension;
+use super::routing::CandidateConstraintExtension;
 use super::security::SecurityExtension;
 
 // ---------------------------------------------------------------------------
@@ -62,6 +63,13 @@ pub struct Extensions {
     /// Security — labels, classification, subject (frozen as Arc).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub security: Option<Arc<SecurityExtension>>,
+
+    /// Backend candidate constraint emitted by APL `restrict` effects
+    /// (frozen as Arc — cloned out in OwnedExtensions). The policy
+    /// engine writes it; the host router reads it typed to narrow its
+    /// candidate set. A routing directive, never an access decision.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub candidate_constraint: Option<Arc<CandidateConstraintExtension>>,
 
     /// Delegation chain (frozen as Arc).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -126,6 +134,7 @@ impl Clone for Extensions {
             agent: self.agent.clone(),
             http: self.http.clone(),
             security: self.security.clone(),
+            candidate_constraint: self.candidate_constraint.clone(),
             delegation: self.delegation.clone(),
             raw_credentials: self.raw_credentials.clone(),
             mcp: self.mcp.clone(),
@@ -178,6 +187,10 @@ impl Extensions {
             // Mutable/monotonic/guarded — cloned out of Arc into owned
             http: self.http.as_ref().map(|arc| Guarded::new((**arc).clone())),
             security: self.security.as_ref().map(|arc| (**arc).clone()),
+            candidate_constraint: self
+                .candidate_constraint
+                .as_ref()
+                .map(|arc| (**arc).clone()),
             delegation: self.delegation.as_ref().map(|arc| (**arc).clone()),
             custom: self.custom.as_ref().map(|arc| (**arc).clone()),
 
@@ -241,6 +254,7 @@ impl Extensions {
     pub fn merge_owned(&mut self, owned: OwnedExtensions) {
         self.http = owned.http.map(|g| Arc::new(g.into_inner()));
         self.security = owned.security.map(Arc::new);
+        self.candidate_constraint = owned.candidate_constraint.map(Arc::new);
         self.delegation = owned.delegation.map(Arc::new);
         self.custom = owned.custom.map(Arc::new);
         // `raw_credentials` is shared by Arc in `OwnedExtensions` —
@@ -295,6 +309,7 @@ pub struct OwnedExtensions {
     // Mutable/monotonic/guarded — owned, modifiable
     pub http: Option<Guarded<HttpExtension>>,
     pub security: Option<SecurityExtension>,
+    pub candidate_constraint: Option<CandidateConstraintExtension>,
     pub delegation: Option<DelegationExtension>,
     pub custom: Option<HashMap<String, serde_json::Value>>,
 

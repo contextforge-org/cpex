@@ -61,6 +61,7 @@ use cpex_core::manager::PluginManager;
 use cpex_core::plugin::PluginConfig;
 use cpex_core::visitor::{ConfigVisitor, VisitorError};
 
+use apl_core::attribute_source::{AttributeSource, AttributeTree};
 use apl_core::parser::compile_policy_block_value;
 use apl_core::plugin_decl::{PluginDeclaration, PluginRegistry};
 use apl_core::rules::CompiledRoute;
@@ -137,6 +138,13 @@ pub struct AplConfigVisitor {
     /// single-threaded config walk — never on the request hot path,
     /// where each handler holds its own cloned `Arc`.
     session_store: RwLock<Arc<dyn SessionStore>>,
+    /// Static `data.*` attribute tree, shared into every installed
+    /// handler. Set once before the config walk via
+    /// [`Self::set_attribute_tree`]; defaults to empty. Behind a `RwLock`
+    /// only because it's set after construction — like `session_store`,
+    /// it's touched only during the single-threaded config walk, never on
+    /// the request hot path (handlers hold their own cloned `Arc`).
+    attribute_tree: RwLock<Arc<AttributeTree>>,
     manager: Weak<PluginManager>,
     /// Baseline capabilities granted to every synthetic `AplRouteHandler`
     /// the visitor installs. Unioned with the per-route plugin
@@ -166,6 +174,7 @@ impl AplConfigVisitor {
             state: RwLock::new(VisitorState::default()),
             dispatch_cache,
             session_store: RwLock::new(session_store),
+            attribute_tree: RwLock::new(Arc::new(AttributeTree::empty())),
             manager,
             base_capabilities: default_base_capabilities(),
             pdp_factories: HashMap::new(),
@@ -181,6 +190,17 @@ impl AplConfigVisitor {
     pub fn register_pdp(&self, resolver: Arc<dyn PdpResolver>) {
         let mut state = self.state.write().unwrap_or_else(|p| p.into_inner());
         state.pdp_router.register(resolver);
+    }
+
+    /// Install the static `data.*` attribute tree. Call after
+    /// `register_apl` and **before** `load_config_yaml` (handlers capture
+    /// the tree during the config walk). Load it from any
+    /// [`AttributeSource`](apl_core::AttributeSource) — e.g.
+    /// `FileAttributeSource::new(paths).load()?` — or hand-build one.
+    /// Replacing a previously-set tree is allowed (last set wins).
+    pub fn set_attribute_tree(&self, tree: AttributeTree) {
+        let mut slot = self.attribute_tree.write().unwrap_or_else(|p| p.into_inner());
+        *slot = Arc::new(tree);
     }
 
     /// Register a PDP factory by its `kind()`. Called during
@@ -234,6 +254,56 @@ impl AplConfigVisitor {
             .session_store
             .write()
             .unwrap_or_else(|p| p.into_inner()) = store;
+        Ok(())
+    }
+
+    /// Load the static `data.*` tree from a `global.apl.attribute_files`
+    /// list and install it. Paths resolve relative to the process CWD
+    /// (the config is loaded from a string, so there is no config-file
+    /// directory to anchor to). Fail-fast: a missing file or a same-leaf
+    /// merge conflict aborts config load.
+    ///
+    /// Precedence: a tree injected via
+    /// [`AplConfigVisitor::set_attribute_tree`] before the config walk
+    /// wins — declarative `attribute_files` is skipped when a non-empty
+    /// tree is already present (injected > attribute_files > none).
+    fn build_attribute_tree_from_config(
+        &self,
+        entries: &serde_yaml::Sequence,
+    ) -> Result<(), VisitorError> {
+        {
+            let current = self
+                .attribute_tree
+                .read()
+                .unwrap_or_else(|p| p.into_inner());
+            if !current.is_empty() {
+                tracing::info!(
+                    "global.apl.attribute_files present but an attribute tree was already \
+                     injected via set_attribute_tree — keeping the injected tree \
+                     (injected > attribute_files)"
+                );
+                return Ok(());
+            }
+        }
+
+        let mut paths = Vec::with_capacity(entries.len());
+        for (i, entry) in entries.iter().enumerate() {
+            let s = entry.as_str().ok_or_else(|| {
+                format!("global.apl.attribute_files[{}] must be a string path", i)
+            })?;
+            paths.push(std::path::PathBuf::from(s));
+        }
+        if paths.is_empty() {
+            return Ok(());
+        }
+
+        let tree = crate::attribute_source::FileAttributeSource::new(paths)
+            .load()
+            .map_err(|e| format!("global.apl.attribute_files failed to load: {}", e))?;
+        *self
+            .attribute_tree
+            .write()
+            .unwrap_or_else(|p| p.into_inner()) = Arc::new(tree);
         Ok(())
     }
 
@@ -378,6 +448,17 @@ impl ConfigVisitor for AplConfigVisitor {
         // active store before `visit_route` clones it into handlers.
         if let Some(block) = apl_block.get("session_store") {
             self.build_session_store_from_config(block)?;
+        }
+
+        // Process an optional `global.apl.attribute_files` list: load +
+        // merge the static `data.*` tree before `visit_route` clones it
+        // into handlers. A tree already injected via `set_attribute_tree`
+        // takes precedence (injected > attribute_files > none).
+        if let Some(files) = apl_block.get("attribute_files") {
+            let entries = files.as_sequence().ok_or_else(|| {
+                "global.apl.attribute_files must be a list of file paths".to_string()
+            })?;
+            self.build_attribute_tree_from_config(entries)?;
         }
 
         // The `pdp:` / `session_store:` sub-keys aren't APL DSL fields;
@@ -587,6 +668,14 @@ impl ConfigVisitor for AplConfigVisitor {
                 .unwrap_or_else(|p| p.into_inner())
                 .clone();
 
+            // Snapshot the static attribute tree (set before the walk).
+            // Each handler captures its own `Arc` clone — shared, not copied.
+            let attribute_tree = self
+                .attribute_tree
+                .read()
+                .unwrap_or_else(|p| p.into_inner())
+                .clone();
+
             // Install Pre + Post handlers. Each handler instance is bound to
             // ONE phase so the executor can pick the right entry-point off
             // the (entity_type, entity_name, scope, hook_name) key.
@@ -604,6 +693,7 @@ impl ConfigVisitor for AplConfigVisitor {
                 &self.manager,
                 Some(Arc::clone(&pdp_router_arc)),
                 &self.base_capabilities,
+                Arc::clone(&attribute_tree),
             );
             install_handler(
                 mgr,
@@ -619,6 +709,7 @@ impl ConfigVisitor for AplConfigVisitor {
                 &self.manager,
                 Some(Arc::clone(&pdp_router_arc)),
                 &self.base_capabilities,
+                attribute_tree,
             );
         }
 
@@ -645,6 +736,7 @@ fn install_handler(
     manager: &Weak<PluginManager>,
     pdp: Option<Arc<dyn PdpResolver>>,
     base_capabilities: &std::collections::HashSet<String>,
+    attribute_tree: Arc<AttributeTree>,
 ) {
     // Capability gating at the synthetic-handler boundary. cpex-core's
     // executor calls `filter_extensions(&ext, &caps)` before every
@@ -686,7 +778,8 @@ fn install_handler(
         Arc::clone(dispatch_cache),
         Arc::clone(session_store),
         manager.clone(),
-    );
+    )
+    .with_attribute_tree(attribute_tree);
     if let Some(pdp) = pdp {
         handler = handler.with_pdp(pdp);
     }
@@ -784,7 +877,7 @@ fn warn_unreferenced_plugin_overrides(route: &CompiledRoute) {
 /// `compile_policy_block_value`, which doesn't model them. Kept as a single
 /// source of truth shared by [`strip_non_dsl_keys`] and
 /// [`warn_if_global_only_key_at_nonglobal_scope`].
-const GLOBAL_ONLY_NON_DSL_KEYS: [&str; 2] = ["pdp", "session_store"];
+const GLOBAL_ONLY_NON_DSL_KEYS: [&str; 3] = ["pdp", "session_store", "attribute_files"];
 
 /// Legacy APL config keys, mapped to their replacements. The flat-key path
 /// in [`apl_subblock`] only copies recognized keys into the synthetic block,

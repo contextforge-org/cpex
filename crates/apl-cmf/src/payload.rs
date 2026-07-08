@@ -37,6 +37,14 @@ pub fn extract_result(result: &Value, bag: &mut AttributeBag) {
     walk(result, BAG_RESULT_PREFIX.trim_end_matches('.'), bag);
 }
 
+/// Flatten a static attribute tree into `data.*` keys (design §4.2).
+/// Same walk as args/result — nested objects recurse, string arrays
+/// become `StringSet`s (so `data.tenants.x.allowed_models` supports
+/// `contains` and R3b `restrict` references).
+pub fn extract_data(tree: &apl_core::AttributeTree, bag: &mut AttributeBag) {
+    walk(tree.as_value(), "data", bag);
+}
+
 pub(crate) fn walk(value: &Value, prefix: &str, bag: &mut AttributeBag) {
     match value {
         Value::Object(map) => {
@@ -150,5 +158,30 @@ mod tests {
         let mut bag = AttributeBag::new();
         extract_args(&args, &mut bag);
         assert_eq!(bag.get_float("args.score"), Some(0.92));
+    }
+
+    #[test]
+    fn data_tree_flattens_under_data_namespace() {
+        let tree = apl_core::AttributeTree::new(json!({
+            "org": { "default_region": "us" },
+            "tenants": {
+                "acme-eu": { "data_region": "eu", "allowed_models": ["anthropic/*", "vllm/*"] }
+            }
+        }));
+        let mut bag = AttributeBag::new();
+        extract_data(&tree, &mut bag);
+
+        assert_eq!(bag.get_string("data.org.default_region"), Some("us"));
+        assert_eq!(bag.get_string("data.tenants.acme-eu.data_region"), Some("eu"));
+        // String arrays become a StringSet (ready for `contains` / R3b).
+        assert!(bag.set_contains("data.tenants.acme-eu.allowed_models", "anthropic/*"));
+        assert!(bag.set_contains("data.tenants.acme-eu.allowed_models", "vllm/*"));
+    }
+
+    #[test]
+    fn empty_data_tree_adds_nothing() {
+        let mut bag = AttributeBag::new();
+        extract_data(&apl_core::AttributeTree::empty(), &mut bag);
+        assert!(bag.is_empty());
     }
 }

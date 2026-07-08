@@ -88,18 +88,37 @@ fn eval_expression(expr: &Expression, bag: &AttributeBag) -> bool {
 
 fn eval_condition(cond: &Condition, bag: &AttributeBag) -> bool {
     match cond {
-        Condition::IsTrue { key } => bag.get_bool(key).unwrap_or(false),
-        Condition::IsFalse { key } => !bag.get_bool(key).unwrap_or(false),
-        Condition::Exists { key } => bag.contains(key),
-        Condition::Comparison { key, op, value } => eval_comparison(key, *op, value, bag),
+        // An unresolvable interpolated path (a missing request value) is
+        // treated as an absent key: `IsTrue`/`Exists`/`Comparison` are
+        // false, but `IsFalse` is true (absent is falsy — keeps
+        // `require(...)` fail-closed when the keyed lookup can't resolve).
+        Condition::IsTrue { key } => bag
+            .resolve_key(key)
+            .map(|k| bag.get_bool(&k).unwrap_or(false))
+            .unwrap_or(false),
+        Condition::IsFalse { key } => bag
+            .resolve_key(key)
+            .map(|k| !bag.get_bool(&k).unwrap_or(false))
+            .unwrap_or(true),
+        Condition::Exists { key } => bag
+            .resolve_key(key)
+            .map(|k| bag.contains(&k))
+            .unwrap_or(false),
+        Condition::Comparison { key, op, value } => match bag.resolve_key(key) {
+            Some(k) => eval_comparison(&k, *op, value, bag),
+            None => false,
+        },
         Condition::InSet {
             value_key,
             set_key,
             negate,
         } => {
-            let in_set = match (bag.get_string(value_key), bag.get_string_set(set_key)) {
-                (Some(s), Some(set)) => set.contains(s),
-                _ => false, // missing key or wrong type → not in set
+            let in_set = match bag.resolve_key(value_key).zip(bag.resolve_key(set_key)) {
+                Some((vk, sk)) => match (bag.get_string(&vk), bag.get_string_set(&sk)) {
+                    (Some(s), Some(set)) => set.contains(s),
+                    _ => false, // missing key or wrong type → not in set
+                },
+                None => false, // an interpolated key didn't resolve
             };
             if *negate {
                 !in_set
@@ -201,6 +220,7 @@ pub async fn evaluate_effects(
     payload: &mut crate::route::RoutePayload,
 ) -> StepsEvaluation {
     let mut taints: Vec<crate::pipeline::TaintEvent> = Vec::new();
+    let mut constraints: Vec<crate::constraint::CandidateConstraint> = Vec::new();
     let mut args_modified = false;
     let mut result_modified = false;
     for effect in effects {
@@ -220,6 +240,7 @@ pub async fn evaluate_effects(
             delegations,
             phase,
             &mut taints,
+            &mut constraints,
             &mut args_modified,
             &mut result_modified,
             payload,
@@ -228,13 +249,20 @@ pub async fn evaluate_effects(
         {
             EffectOutcome::Continue => {},
             EffectOutcome::Halt(decision) => {
-                return StepsEvaluation::deny(decision, taints, args_modified, result_modified);
+                return StepsEvaluation::deny(
+                    decision,
+                    taints,
+                    constraints,
+                    args_modified,
+                    result_modified,
+                );
             },
         }
     }
     StepsEvaluation {
         decision: Decision::Allow,
         taints,
+        constraints,
         args_modified,
         result_modified,
     }
@@ -254,6 +282,12 @@ pub async fn evaluate_effects(
 pub struct StepsEvaluation {
     pub decision: Decision,
     pub taints: Vec<crate::pipeline::TaintEvent>,
+    /// Backend candidate constraints emitted by any `restrict` effects
+    /// that ran. Accumulated even when the phase ultimately denies (same
+    /// discipline as `taints`). Empty in the common case — most phases
+    /// have no `restrict`. A higher layer (apl-cpex) folds these into a
+    /// single `CandidateConstraintExtension` for the host's router.
+    pub constraints: Vec<crate::constraint::CandidateConstraint>,
     pub args_modified: bool,
     pub result_modified: bool,
 }
@@ -262,12 +296,14 @@ impl StepsEvaluation {
     fn deny(
         d: Decision,
         taints: Vec<crate::pipeline::TaintEvent>,
+        constraints: Vec<crate::constraint::CandidateConstraint>,
         args_modified: bool,
         result_modified: bool,
     ) -> Self {
         Self {
             decision: d,
             taints,
+            constraints,
             args_modified,
             result_modified,
         }
@@ -309,6 +345,7 @@ async fn dispatch_effect(
     delegations: &Arc<dyn crate::step::DelegationInvoker>,
     phase: crate::step::DispatchPhase,
     taints: &mut Vec<crate::pipeline::TaintEvent>,
+    constraints: &mut Vec<crate::constraint::CandidateConstraint>,
     args_modified: &mut bool,
     result_modified: &mut bool,
     payload: &mut crate::route::RoutePayload,
@@ -427,6 +464,22 @@ async fn dispatch_effect(
             EffectOutcome::Continue
         },
 
+        Effect::Restrict { spec } => {
+            // Resolve any `data.*` field references against this request's
+            // bag (design §4.3), then accumulate the literal constraint —
+            // same discipline as `Taint`: never halts, always continues.
+            // An all-empty result is dropped (the parser rejects a literal
+            // empty `restrict:`, but a reference that resolves to nothing
+            // could still leave every field unset). Folding / intersection
+            // of the accumulated constraints happens at the bridge
+            // (apl-cpex → `CandidateConstraintExtension`).
+            let constraint = spec.resolve(bag);
+            if !constraint.is_empty() {
+                constraints.push(constraint);
+            }
+            EffectOutcome::Continue
+        },
+
         Effect::FieldOp { path, stages } => {
             dispatch_field_op(
                 path,
@@ -458,6 +511,7 @@ async fn dispatch_effect(
                     delegations,
                     phase,
                     taints,
+                    constraints,
                     args_modified,
                     result_modified,
                     payload,
@@ -485,6 +539,7 @@ async fn dispatch_effect(
                 delegations,
                 phase,
                 taints,
+                constraints,
                 payload,
             )
             .await
@@ -511,6 +566,7 @@ async fn dispatch_effect(
                     delegations,
                     phase,
                     taints,
+                    constraints,
                     args_modified,
                     result_modified,
                     payload,
@@ -546,6 +602,7 @@ async fn dispatch_effect(
                                 delegations,
                                 phase,
                                 taints,
+                                constraints,
                                 args_modified,
                                 result_modified,
                                 payload,
@@ -574,6 +631,7 @@ async fn dispatch_effect(
                                     delegations,
                                     phase,
                                     taints,
+                                    constraints,
                                     args_modified,
                                     result_modified,
                                     payload,
@@ -641,6 +699,7 @@ fn dispatch_parallel<'a>(
     delegations: &'a Arc<dyn crate::step::DelegationInvoker>,
     phase: crate::step::DispatchPhase,
     taints: &'a mut Vec<crate::pipeline::TaintEvent>,
+    constraints: &'a mut Vec<crate::constraint::CandidateConstraint>,
     payload: &'a crate::route::RoutePayload,
 ) -> futures::future::BoxFuture<'a, EffectOutcome> {
     Box::pin(async move {
@@ -658,8 +717,12 @@ fn dispatch_parallel<'a>(
         //   * an owned copy of the effect to evaluate (clone is cheap
         //     for the variants `Parallel` can hold: Allow, Deny, Plugin,
         //     Taint, Sequential, Parallel, When, Pdp).
-        let mut branches: Vec<ErasedBranch<(EffectOutcome, Vec<crate::pipeline::TaintEvent>)>> =
-            Vec::with_capacity(effects.len());
+        type BranchResult = (
+            EffectOutcome,
+            Vec<crate::pipeline::TaintEvent>,
+            Vec<crate::constraint::CandidateConstraint>,
+        );
+        let mut branches: Vec<ErasedBranch<BranchResult>> = Vec::with_capacity(effects.len());
         for effect in effects.iter() {
             let effect = effect.clone();
             let fallback = fallback_source.to_string();
@@ -670,6 +733,8 @@ fn dispatch_parallel<'a>(
             let delegations = Arc::clone(delegations);
             branches.push(Box::pin(async move {
                 let mut branch_taints: Vec<crate::pipeline::TaintEvent> = Vec::new();
+                let mut branch_constraints: Vec<crate::constraint::CandidateConstraint> =
+                    Vec::new();
                 let mut branch_args_modified = false;
                 let mut branch_result_modified = false;
                 let outcome = Box::pin(dispatch_effect(
@@ -681,12 +746,13 @@ fn dispatch_parallel<'a>(
                     &delegations,
                     phase,
                     &mut branch_taints,
+                    &mut branch_constraints,
                     &mut branch_args_modified,
                     &mut branch_result_modified,
                     &mut branch_payload,
                 ))
                 .await;
-                (outcome, branch_taints)
+                (outcome, branch_taints, branch_constraints)
             }));
         }
 
@@ -698,13 +764,9 @@ fn dispatch_parallel<'a>(
             timeout_per_branch: None,
             short_circuit_on_deny: true,
         };
-        let outcomes = run_branches(
-            branches,
-            cfg,
-            |v: &(EffectOutcome, Vec<crate::pipeline::TaintEvent>)| {
-                matches!(v.0, EffectOutcome::Halt(_))
-            },
-        )
+        let outcomes = run_branches(branches, cfg, |v: &BranchResult| {
+            matches!(v.0, EffectOutcome::Halt(_))
+        })
         .await;
 
         // Aggregate in input order: append every branch's taints; pick
@@ -717,8 +779,13 @@ fn dispatch_parallel<'a>(
         let mut first_halt: Option<Decision> = None;
         for (idx, outcome) in outcomes.into_iter().enumerate() {
             match outcome {
-                BranchOutcome::Completed((effect_outcome, branch_taints)) => {
+                BranchOutcome::Completed((effect_outcome, branch_taints, branch_constraints)) => {
+                    // Branch state merges back append-only, same as taints:
+                    // each branch's `restrict`-emitted constraints land in
+                    // the outer accumulator (they intersect at fold time,
+                    // so order-independent — safe to concatenate).
                     taints.extend(branch_taints);
+                    constraints.extend(branch_constraints);
                     if first_halt.is_none() {
                         if let EffectOutcome::Halt(d) = effect_outcome {
                             first_halt = Some(d);
@@ -1272,6 +1339,110 @@ mod tests {
 
     fn cond(c: Condition) -> Expression {
         Expression::Condition(c)
+    }
+
+    // ----- R3b: data.* path interpolation -----
+
+    /// Parse a predicate and evaluate it against `bag`.
+    fn eval_pred(src: &str, bag: &AttributeBag) -> bool {
+        let expr = crate::parser::parse_predicate(src).expect("parse predicate");
+        eval_expression(&expr, bag)
+    }
+
+    fn eu_tenant_bag() -> AttributeBag {
+        let mut bag = AttributeBag::new();
+        bag.set("subject.tenant", "acme-eu");
+        bag.set("data.tenants.acme-eu.data_region", "eu");
+        bag.set("data.tenants.acme-us.data_region", "us");
+        bag.set("data.org.default_region", "us");
+        bag
+    }
+
+    #[test]
+    fn interpolation_resolves_request_value_into_path() {
+        let bag = eu_tenant_bag();
+        // subject.tenant = acme-eu → data.tenants.acme-eu.data_region = eu.
+        assert!(eval_pred(
+            "data.tenants[subject.tenant].data_region == 'eu'",
+            &bag
+        ));
+        assert!(!eval_pred(
+            "data.tenants[subject.tenant].data_region == 'us'",
+            &bag
+        ));
+    }
+
+    #[test]
+    fn interpolation_picks_up_different_request_value() {
+        let mut bag = eu_tenant_bag();
+        bag.set("subject.tenant", "acme-us"); // now resolves to the US row
+        assert!(eval_pred(
+            "data.tenants[subject.tenant].data_region == 'us'",
+            &bag
+        ));
+    }
+
+    #[test]
+    fn missing_inner_key_makes_comparison_false() {
+        let mut bag = eu_tenant_bag();
+        // Drop the request value the bracket indexes on.
+        bag = {
+            let mut b = AttributeBag::new();
+            for (k, v) in bag.iter() {
+                if k != "subject.tenant" {
+                    b.set(k, v.clone());
+                }
+            }
+            b
+        };
+        assert!(!eval_pred(
+            "data.tenants[subject.tenant].data_region == 'eu'",
+            &bag
+        ));
+    }
+
+    #[test]
+    fn missing_inner_key_keeps_require_fail_closed() {
+        // `require(X)` desugars to IsFalse(X); an unresolvable path is
+        // absent → falsy → IsFalse true → the require denies.
+        let bag = AttributeBag::new(); // no subject.tenant, no data.*
+        let expr =
+            crate::parser::parse_predicate("data.tenants[subject.tenant].data_region").unwrap();
+        // Bare identifier predicate is IsTrue → false when unresolvable.
+        assert!(!eval_expression(&expr, &bag));
+    }
+
+    #[test]
+    fn interpolation_works_with_contains_on_a_set() {
+        let mut bag = AttributeBag::new();
+        bag.set("subject.id", "support-bot");
+        bag.set(
+            "data.agents.support-bot.allowed_models",
+            std::collections::HashSet::from(["vllm/*".to_string(), "anthropic/*".to_string()]),
+        );
+        assert!(eval_pred(
+            "data.agents[subject.id].allowed_models contains 'vllm/*'",
+            &bag
+        ));
+        assert!(!eval_pred(
+            "data.agents[subject.id].allowed_models contains 'openai/*'",
+            &bag
+        ));
+    }
+
+    #[test]
+    fn numeric_request_value_coerces_into_path() {
+        let mut bag = AttributeBag::new();
+        bag.set("subject.tier", 2i64);
+        bag.set("data.limits.2.max_cost", "cheap");
+        assert!(eval_pred("data.limits[subject.tier].max_cost == 'cheap'", &bag));
+    }
+
+    #[test]
+    fn non_interpolated_keys_still_work() {
+        let bag = eu_tenant_bag();
+        assert!(eval_pred("data.org.default_region == 'us'", &bag));
+        assert!(eval_pred("subject.tenant == 'acme-eu'", &bag));
     }
 
     // ----- Decision-level semantics -----
@@ -2773,6 +2944,160 @@ mod tests {
             eval.taints[0].scopes,
             vec![crate::pipeline::TaintScope::Session]
         );
+    }
+
+    // ----- R1: restrict effect accumulation -----
+
+    fn restrict_regions(regions: &[&str]) -> Effect {
+        use crate::constraint::{RestrictSpec, StringSetSpec};
+        Effect::Restrict {
+            spec: RestrictSpec {
+                allow_regions: Some(StringSetSpec::Literal(
+                    regions.iter().map(|s| s.to_string()).collect(),
+                )),
+                ..Default::default()
+            },
+        }
+    }
+
+    async fn eval(effects: &[Effect], bag: &mut AttributeBag) -> StepsEvaluation {
+        evaluate_effects(
+            effects,
+            bag,
+            &(Arc::new(FakePdp {
+                decision: Decision::Allow,
+            }) as Arc<dyn PdpResolver>),
+            &null_plugins(),
+            &noop_delegations(),
+            crate::step::DispatchPhase::Pre,
+            &mut crate::route::RoutePayload::new(serde_json::Value::Null),
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn restrict_accumulates_and_continues() {
+        // `restrict` never halts; a later rule still runs, and the
+        // constraint lands in `constraints`.
+        let mut bag = AttributeBag::new();
+        let effects = vec![restrict_regions(&["eu"]), Effect::Allow];
+        let e = eval(&effects, &mut bag).await;
+        assert_eq!(e.decision, Decision::Allow);
+        assert_eq!(e.constraints.len(), 1);
+        assert_eq!(
+            e.constraints[0].allow_regions.as_deref(),
+            Some(&["eu".to_string()][..])
+        );
+    }
+
+    #[tokio::test]
+    async fn restrict_accumulates_even_when_phase_denies() {
+        // Same discipline as taint — a constraint emitted before a deny
+        // still surfaces (audit / the host may still want it).
+        let mut bag = AttributeBag::new();
+        let effects = vec![
+            restrict_regions(&["eu"]),
+            Effect::Deny {
+                reason: Some("later".into()),
+                code: None,
+            },
+        ];
+        let e = eval(&effects, &mut bag).await;
+        assert!(matches!(e.decision, Decision::Deny { .. }));
+        assert_eq!(e.constraints.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn restrict_gated_by_when_only_fires_when_true() {
+        // The composition-layer gate: constraint emits only if `when` holds.
+        let gated = |key: &str| Effect::When {
+            condition: Expression::Condition(Condition::IsTrue { key: key.into() }),
+            body: vec![restrict_regions(&["eu"])],
+            source: "p[0]".into(),
+        };
+
+        let mut off = AttributeBag::new();
+        assert!(eval(&[gated("eu_resident")], &mut off).await.constraints.is_empty());
+
+        let mut on = AttributeBag::new();
+        on.set("eu_resident", true);
+        assert_eq!(eval(&[gated("eu_resident")], &mut on).await.constraints.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn restrict_inside_parallel_merges_back() {
+        // A `restrict` in one parallel branch merges into the outer
+        // accumulator, alongside a sibling branch's work.
+        let mut bag = AttributeBag::new();
+        let effects = vec![Effect::Parallel(vec![
+            Effect::Allow,
+            restrict_regions(&["eu"]),
+        ])];
+        let e = eval(&effects, &mut bag).await;
+        assert_eq!(e.decision, Decision::Allow);
+        assert_eq!(e.constraints.len(), 1);
+        assert_eq!(
+            e.constraints[0].allow_regions.as_deref(),
+            Some(&["eu".to_string()][..])
+        );
+    }
+
+    fn restrict_allow_models_ref(path: &str) -> Effect {
+        use crate::constraint::{RestrictSpec, StringSetSpec};
+        Effect::Restrict {
+            spec: RestrictSpec {
+                allow_models: Some(StringSetSpec::Ref(path.to_string())),
+                ..Default::default()
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn restrict_ref_resolves_from_data_tree() {
+        // A `data.*` reference resolves the caller's allow-list from the
+        // static tree at eval time — one rule, per-caller value.
+        let mut bag = AttributeBag::new();
+        bag.set("subject.id", "support-bot");
+        bag.set(
+            "data.agents.support-bot.allowed_models",
+            std::collections::HashSet::from(["vllm/*".to_string(), "anthropic/*".to_string()]),
+        );
+        let effects = vec![restrict_allow_models_ref("data.agents[subject.id].allowed_models")];
+        let e = eval(&effects, &mut bag).await;
+        assert_eq!(e.constraints.len(), 1);
+        // Resolved to the tree's set (sorted).
+        assert_eq!(
+            e.constraints[0].allow_models.as_deref(),
+            Some(&["anthropic/*".to_string(), "vllm/*".to_string()][..])
+        );
+    }
+
+    #[tokio::test]
+    async fn restrict_ref_picks_up_different_caller() {
+        let mut bag = AttributeBag::new();
+        bag.set("subject.id", "research-bot");
+        bag.set(
+            "data.agents.research-bot.allowed_models",
+            std::collections::HashSet::from(["openai/*".to_string()]),
+        );
+        let effects = vec![restrict_allow_models_ref("data.agents[subject.id].allowed_models")];
+        let e = eval(&effects, &mut bag).await;
+        assert_eq!(
+            e.constraints[0].allow_models.as_deref(),
+            Some(&["openai/*".to_string()][..])
+        );
+    }
+
+    #[tokio::test]
+    async fn restrict_ref_absent_resolves_to_empty_fail_closed() {
+        // No subject.id / no tree entry → the allow-list resolves to the
+        // empty set: a real (impossible) constraint that the host's
+        // on_empty then decides, never silently unconstrained.
+        let mut bag = AttributeBag::new();
+        let effects = vec![restrict_allow_models_ref("data.agents[subject.id].allowed_models")];
+        let e = eval(&effects, &mut bag).await;
+        assert_eq!(e.constraints.len(), 1);
+        assert_eq!(e.constraints[0].allow_models.as_deref(), Some(&[][..]));
     }
 
     // ----- E2: FieldOp end-to-end through evaluate_steps -----

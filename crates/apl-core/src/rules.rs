@@ -179,6 +179,15 @@ pub enum Effect {
         label: String,
         scopes: Vec<crate::pipeline::TaintScope>,
     },
+    /// Backend candidate constraint (DSL — the `restrict` effect). Narrows
+    /// the set of backends the host's router/LB may select from; never
+    /// picks a backend and never allows/denies. Accumulating, in the same
+    /// family as `Taint`: the evaluator collects the constraint, a higher
+    /// layer folds it into a `CandidateConstraintExtension` the host
+    /// serializes to its router. See docs/apl-restrict-effect-design.md.
+    Restrict {
+        spec: crate::constraint::RestrictSpec,
+    },
     /// Content effect (DSL §3) — apply a pipe chain (`redact`, `mask`,
     /// `omit`, `hash`, validators, transforms) to a field in the
     /// route's args or result. The author writes
@@ -261,7 +270,14 @@ impl Effect {
                 on_allow.iter().any(Effect::contains_mutation)
                     || on_deny.iter().any(Effect::contains_mutation)
             },
-            Effect::Allow | Effect::Deny { .. } | Effect::Plugin { .. } | Effect::Taint { .. } => {
+            Effect::Allow
+            | Effect::Deny { .. }
+            | Effect::Plugin { .. }
+            | Effect::Taint { .. }
+            | Effect::Restrict { .. } => {
+                // `Restrict` emits a candidate constraint, never touches the
+                // route payload — non-mutating, same as `Taint`. Safe inside
+                // `parallel:` (its constraint accumulates, like a taint label).
                 false
             },
         }

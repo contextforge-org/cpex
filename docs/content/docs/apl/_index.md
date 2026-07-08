@@ -14,8 +14,10 @@ This page covers the configuration: routes, phases, predicates, rules, and field
 - [Effects & Sequencing]({{< relref "/docs/apl/effects" >}}): the effects a rule can run, halt-on-deny ordering, and composition.
 - [PDP Integration]({{< relref "/docs/apl/pdp" >}}): hand a decision to Cedar, CEL, or an external engine.
 - [Identity & IdP]({{< relref "/docs/apl/identity" >}}): how callers are resolved into the attributes predicates read.
+- [Static Attributes]({{< relref "/docs/apl/attributes" >}}): operator-maintained config facts in the `data.*` namespace.
 - [Delegation]({{< relref "/docs/apl/delegation" >}}): mint scoped downstream credentials via token exchange.
 - [Session Tainting]({{< relref "/docs/apl/tainting" >}}): information-flow control across requests.
+- [Backend Restriction]({{< relref "/docs/apl/restrict" >}}): shape which backends the router may select for a request.
 
 ## Routes and phases
 
