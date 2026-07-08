@@ -322,7 +322,7 @@ mod tests {
                 assert_eq!(content.name, "get_weather");
                 assert_eq!(content.tool_call_id, "tc_001");
                 assert_eq!(content.arguments["city"], "London");
-            }
+            },
             _ => panic!("expected ToolCall variant"),
         }
     }
@@ -343,7 +343,7 @@ mod tests {
             ContentPart::ToolResult { content } => {
                 assert_eq!(content.tool_name, "get_weather");
                 assert!(!content.is_error);
-            }
+            },
             _ => panic!("expected ToolResult variant"),
         }
     }
@@ -365,7 +365,7 @@ mod tests {
                 assert_eq!(content.uri, "file:///data.txt");
                 assert!(content.is_embedded());
                 assert_eq!(content.get_text_content(), Some("Hello from file"));
-            }
+            },
             _ => panic!("expected Resource variant"),
         }
     }
@@ -385,7 +385,7 @@ mod tests {
             ContentPart::ResourceRef { content } => {
                 assert_eq!(content.uri, "db://users/42");
                 assert_eq!(content.resource_type, ResourceType::Database);
-            }
+            },
             _ => panic!("expected ResourceRef variant"),
         }
     }
@@ -405,7 +405,7 @@ mod tests {
             ContentPart::Image { content } => {
                 assert_eq!(content.source_type, "url");
                 assert_eq!(content.data, "https://example.com/photo.jpg");
-            }
+            },
             _ => panic!("expected Image variant"),
         }
     }
@@ -424,7 +424,7 @@ mod tests {
         match &part {
             ContentPart::PromptRequest { content } => {
                 assert_eq!(content.name, "summarize");
-            }
+            },
             _ => panic!("expected PromptRequest variant"),
         }
     }

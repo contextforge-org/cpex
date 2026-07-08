@@ -1,0 +1,96 @@
+# Location: ./builtins/plugins/identity-jwt/Cargo.toml
+# Copyright 2025
+# SPDX-License-Identifier: Apache-2.0
+# Authors: Teryl Taylor
+#
+# cpex-plugin-identity-jwt — JWT-based `IdentityResolveHandler`.
+#
+# Validates inbound JWTs against configured trusted issuers
+# (signature + exp + aud + iss claims) and maps the validated claims
+# into `SubjectExtension` / `ClientExtension` via a configurable
+# claim-mapper. The raw token is stashed in
+# `RawCredentialsExtension.inbound_tokens` for forwarding plugins
+# downstream.
+#
+# Lightweight (~5-15 transitive deps), so it stays in the workspace's
+# default-members.
+
+[package]
+name = "cpex-plugin-identity-jwt"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "CPEX identity handler — JWT validation and claim mapping."
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+cpex-core = { workspace = true }
+
+# `jsonwebtoken` is the de facto JWT library for Rust. Supports
+# RS256/RS384/RS512, ES256/ES384, EdDSA, HS256/HS384/HS512. Default
+# features include `use_pem` (load DecodingKey from PEM strings) which
+# we want. v10 split out the crypto backend into a required feature
+# (neither `rust_crypto` nor `aws_lc_rs` is on by default) and panics
+# at first sign/verify if none is selected. We pick `aws_lc_rs`: the
+# alternative, `rust_crypto`, pulls the pure-Rust `rsa` crate as a
+# runtime dependency, and that crate carries RUSTSEC-2023-0071 (Marvin
+# timing sidechannel) with no fixed release — which then propagates the
+# advisory to every downstream consumer of this plugin. aws-lc-rs keeps
+# `rsa` out of the runtime tree at the cost of a C/cmake build step.
+jsonwebtoken = { version = "10", features = ["aws_lc_rs"] }
+
+# `base64` for the peek-at-iss helper (split + URL_SAFE_NO_PAD decode
+# of the middle JWT segment). Pinned to 0.22 to match what
+# jsonwebtoken 9 pulls — Cargo dedups to a single version.
+base64 = "0.22"
+
+# `chrono` for the `resolved_at` timestamp on IdentityPayload. Comes
+# in transitively via cpex-core already; redeclaring keeps the
+# direct-dep relationship visible.
+chrono = { workspace = true }
+
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+
+# Async HTTP — used by `DecodingKeySource::build_async()` to fetch
+# IdP JWKS during `Plugin::initialize()`. We default the rustls-tls
+# backend (no OpenSSL system dep) and turn off any features we don't
+# use to keep the dep tree lean. cpex-plugin-delegator-oauth pulls reqwest
+# too, so cargo dedups to one copy.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+# `futures::join_all` so multiple resolvers' JWKS endpoints fetch
+# concurrently at initialize time rather than one-at-a-time.
+futures = { workspace = true }
+
+# `tokio::spawn` + `tokio::time::interval` for the background JWKS
+# refresh tasks introduced in Slice B. The runtime is already in
+# the workspace dep tree via cpex-core / apl-cpex, so this just
+# makes the existing types directly nameable here. We only need
+# the runtime + time features at runtime; full "macros / rt / rt-multi-thread"
+# was test-only previously.
+tokio = { workspace = true, features = ["rt", "time"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+# Mock JWKS endpoint for the async `JwksUrl` resolution tests.
+mockito = "1"
+# RSA keypair + JWK fixtures for tests. `rsa` generates keypairs;
+# `pkcs8` encodes them in the PEM format jsonwebtoken accepts.
+rsa = { version = "0.9", features = ["pem"] }
+# rsa 0.9's `RsaPrivateKey::new(&mut rng, bits)` takes an rng
+# implementing `rand_core::CryptoRngCore` — `rand::thread_rng()`
+# satisfies that. Pinned to 0.8: rsa 0.9 (latest stable) depends on
+# rand_core 0.6, which rand 0.9 (rand_core 0.9) no longer implements,
+# so the two are incompatible until rsa 0.10 ships. Test-only dep.
+rand = "0.8"
+
+[lints]
+workspace = true

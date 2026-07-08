@@ -188,7 +188,7 @@ plugins:
 routes:
   - tool: tool_a
     apl:
-      policy:
+      pre_invocation:
         - "plugin(gate)"
   - tool: tool_b
     apl:
@@ -196,7 +196,7 @@ routes:
         gate:
           config:
             allowlist: ["open"]
-      policy:
+      pre_invocation:
         - "plugin(gate)"
 "#;
     let (mgr, instance_count) = build_manager(YAML).await;
@@ -265,7 +265,7 @@ routes:
         gate:
           config:
             allowlist: ["open"]
-      policy:
+      pre_invocation:
         - "plugin(gate)"
 "#;
     let (mgr, instance_count) = build_manager(YAML).await;
@@ -313,7 +313,7 @@ routes:
       plugins:
         gate:
           on_error: ignore
-      policy:
+      pre_invocation:
         - "plugin(gate)"
 "#;
     let (mgr, instance_count) = build_manager(YAML).await;
@@ -365,7 +365,7 @@ routes:
         gate:
           config:
             allowlist: ["alpha"]
-      policy:
+      pre_invocation:
         - "plugin(gate)"
   - tool: tool_b
     apl:
@@ -373,7 +373,7 @@ routes:
         gate:
           config:
             allowlist: ["open"]
-      policy:
+      pre_invocation:
         - "plugin(gate)"
 "#;
     let (mgr, instance_count) = build_manager(YAML).await;

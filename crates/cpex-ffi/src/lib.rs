@@ -156,7 +156,7 @@ fn worker_threads_from_env() -> Option<usize> {
                 raw,
             );
             None
-        }
+        },
         Err(_) => {
             tracing::warn!(
                 "cpex-ffi: {}={:?} is not parseable as a positive integer; using num_cpus default",
@@ -164,7 +164,7 @@ fn worker_threads_from_env() -> Option<usize> {
                 raw,
             );
             None
-        }
+        },
     }
 }
 
@@ -229,7 +229,7 @@ pub extern "C" fn cpex_configure_runtime(worker_threads: c_int) -> c_int {
         Err(e) => {
             tracing::error!("cpex_configure_runtime: build failed: {}", e);
             return RC_PIPELINE_ERROR;
-        }
+        },
     };
     match SHARED_RUNTIME.set(rt) {
         Ok(()) => RC_OK,
@@ -241,7 +241,7 @@ pub extern "C" fn cpex_configure_runtime(worker_threads: c_int) -> c_int {
                  configuration ignored. Call before any cpex_manager_new.",
             );
             RC_INVALID_INPUT
-        }
+        },
     }
 }
 
@@ -303,7 +303,7 @@ where
                 FFI_WALL_CLOCK_TIMEOUT.as_secs(),
             );
             SafeRun::Timeout
-        }
+        },
         Err(_panic_payload) => {
             tracing::error!(
                 "FFI {}: plugin panicked across FFI boundary — caught to \
@@ -311,7 +311,7 @@ where
                 op_name,
             );
             SafeRun::Panicked
-        }
+        },
     }
 }
 
@@ -339,17 +339,17 @@ fn deserialize_payload(payload_type: u8, bytes: &[u8]) -> Result<Box<dyn PluginP
             let value: serde_json::Value = rmp_serde::from_slice(bytes)
                 .map_err(|e| format!("generic payload deserialize failed: {}", e))?;
             Ok(Box::new(GenericPayload { value }))
-        }
+        },
         PAYLOAD_CMF_MESSAGE => {
             let msg: cpex_core::cmf::MessagePayload = rmp_serde::from_slice(bytes)
                 .map_err(|e| format!("CMF payload deserialize failed: {}", e))?;
             Ok(Box::new(msg))
-        }
+        },
         PAYLOAD_IDENTITY => {
             let idp: IdentityPayload = rmp_serde::from_slice(bytes)
                 .map_err(|e| format!("identity payload deserialize failed: {}", e))?;
             Ok(Box::new(idp))
-        }
+        },
         _ => Err(format!("unknown payload type: {}", payload_type)),
     }
 }
@@ -494,7 +494,7 @@ pub unsafe extern "C" fn cpex_manager_new(
         Err(e) => {
             tracing::error!("cpex_manager_new: config parse failed: {}", e);
             return ptr::null_mut();
-        }
+        },
     };
 
     // Touch the shared runtime so any later cpex_configure_runtime
@@ -575,11 +575,11 @@ pub unsafe extern "C" fn cpex_load_config(
         Ok(Err(e)) => {
             tracing::error!("cpex_load_config: load_config failed: {}", e);
             RC_PIPELINE_ERROR
-        }
+        },
         Err(_panic) => {
             tracing::error!("cpex_load_config: panic caught at FFI boundary");
             RC_PANIC
-        }
+        },
     }
 }
 
@@ -602,7 +602,7 @@ pub unsafe extern "C" fn cpex_initialize(mgr: *const CpexManagerInner) -> c_int 
         SafeRun::Ok(Err(e)) => {
             tracing::error!("cpex_initialize: {}", e);
             RC_PIPELINE_ERROR
-        }
+        },
         other => other.rc(), // RC_TIMEOUT or RC_PANIC; already logged
     }
 }
@@ -833,7 +833,7 @@ pub unsafe extern "C" fn cpex_invoke(
         Err(e) => {
             tracing::error!("cpex_invoke: {}", e);
             return RC_PARSE_ERROR;
-        }
+        },
     };
 
     // Deserialize extensions from MessagePack
@@ -847,7 +847,7 @@ pub unsafe extern "C" fn cpex_invoke(
             Err(e) => {
                 tracing::error!("cpex_invoke: extensions deserialize failed: {}", e);
                 return RC_PARSE_ERROR;
-            }
+            },
         }
     } else {
         Extensions::default()
@@ -888,7 +888,7 @@ pub unsafe extern "C" fn cpex_invoke(
                     proto_error_code: None,
                 });
                 (payload_type, None)
-            }
+            },
         },
     };
 
@@ -915,7 +915,7 @@ pub unsafe extern "C" fn cpex_invoke(
         Err(e) => {
             tracing::error!("cpex_invoke: result serialize failed: {}", e);
             return RC_SERIALIZE_ERROR;
-        }
+        },
     };
 
     // Return result bytes
@@ -1007,7 +1007,7 @@ pub unsafe extern "C" fn cpex_invoke_resolved(
         Err(e) => {
             tracing::error!("cpex_invoke_resolved: {}", e);
             return RC_PARSE_ERROR;
-        }
+        },
     };
 
     let base_extensions: Extensions = if extensions_len > 0 {
@@ -1020,7 +1020,7 @@ pub unsafe extern "C" fn cpex_invoke_resolved(
             Err(e) => {
                 tracing::error!("cpex_invoke_resolved: extensions deserialize failed: {}", e);
                 return RC_PARSE_ERROR;
-            }
+            },
         }
     } else {
         Extensions::default()
@@ -1048,7 +1048,7 @@ pub unsafe extern "C" fn cpex_invoke_resolved(
                     e
                 );
                 return RC_PARSE_ERROR;
-            }
+            },
         };
 
         let (id_result, _id_bg) = match run_safely(
@@ -1142,7 +1142,7 @@ unsafe fn finish_pipeline_result(
                     proto_error_code: None,
                 });
                 (payload_type, None)
-            }
+            },
         },
     };
 
@@ -1166,7 +1166,7 @@ unsafe fn finish_pipeline_result(
         Err(e) => {
             tracing::error!("cpex_invoke_resolved: result serialize failed: {}", e);
             return RC_SERIALIZE_ERROR;
-        }
+        },
     };
 
     let (ptr, len) = alloc_bytes(&result_bytes);
@@ -1216,7 +1216,7 @@ pub unsafe extern "C" fn cpex_wait_background(
                 drop(Box::from_raw(bg_handle));
             }
             return RC_INVALID_HANDLE;
-        }
+        },
     };
 
     if bg_handle.is_null() {
@@ -1718,8 +1718,9 @@ plugins:
 routes:
   - tool: get_weather
     apl:
-      policy:
-        - "plugin(auditor)"
+      authorization:
+        pre_invocation:
+          - "plugin(auditor)"
 "#;
         unsafe {
             let mgr = build_test_manager();

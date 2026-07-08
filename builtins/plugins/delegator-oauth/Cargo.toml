@@ -1,0 +1,73 @@
+# Location: ./builtins/plugins/delegator-oauth/Cargo.toml
+# Copyright 2025
+# SPDX-License-Identifier: Apache-2.0
+# Authors: Teryl Taylor
+#
+# cpex-plugin-delegator-oauth — `TokenDelegateHandler` that performs RFC 8693
+# OAuth 2.0 token exchange against any compliant IdP.
+#
+# # Why this exists
+#
+# Slice 3's `TokenDelegateHook` defines the surface (`DelegationPayload`
+# in, `RawDelegatedToken` out via `apply_to_extensions`); this crate
+# is the *backend* — the part that actually mints the downstream
+# credential. The IdP-mediated path: POST to the IdP's `/token`
+# endpoint with `grant_type=urn:ietf:params:oauth:grant-type:token-exchange`,
+# parse the JSON response, build a `RawDelegatedToken`.
+#
+# # When to reach for this vs `cpex-plugin-delegator-biscuit`
+#
+# - **`cpex-plugin-delegator-oauth`** (this crate) — IdP-mediated. Use when
+#   the deployment already runs an OAuth server (Keycloak, Auth0,
+#   Hydra, Zitadel, Janssen Jans Auth Server) and wants centralized
+#   audit/revocation. Every delegation costs an IdP roundtrip;
+#   gateway must hold IdP client credentials.
+# - **`cpex-plugin-delegator-biscuit`** (slice 7) — decentralized capability
+#   tokens via biscuit attenuation. No IdP roundtrip. Use for
+#   federated agent ecosystems where there's no shared IdP.
+#
+# Both implement `HookHandler<TokenDelegateHook>` and are
+# swappable at config time.
+
+[package]
+name = "cpex-plugin-delegator-oauth"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "CPEX delegation handler — RFC 8693 OAuth 2.0 token exchange."
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+cpex-core = { workspace = true }
+
+# `reqwest` for the HTTP POST to the IdP token endpoint. Default
+# features pull `rustls` for TLS — we explicitly disable the
+# default `default-tls` (native-tls) and pick `rustls-tls` instead
+# for a cleaner build on macOS/Linux (no openssl link).
+# `json` feature for `.json()` response parsing; we send
+# application/x-www-form-urlencoded ourselves (RFC 8693 wants form).
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+chrono = { workspace = true }
+
+# Secret-clearing wrapper for client credentials in memory.
+zeroize = { version = "1.8", features = ["zeroize_derive"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }
+# `mockito` stands up an HTTP server in the test process so we can
+# verify the request body shape + simulate IdP responses without
+# touching the network.
+mockito = "1"
+
+[lints]
+workspace = true

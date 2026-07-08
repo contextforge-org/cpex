@@ -515,7 +515,7 @@ impl Executor {
                         // to the canonical store via store_context() below.
                     }
                     // If extract failed or no modifications — payload unchanged
-                }
+                },
                 Ok(Err(e)) => {
                     error!("{} plugin '{}' failed: {}", phase_label, plugin_name, e);
                     match on_error {
@@ -526,7 +526,7 @@ impl Executor {
                             );
                             v.plugin_name = Some(plugin_name.to_string());
                             return Some(v);
-                        }
+                        },
                         // Any non-halt outcome (Fail-in-non-blocking-phase,
                         // Ignore, Disable): record the error so the caller
                         // sees it in PipelineResult.errors instead of
@@ -537,10 +537,10 @@ impl Executor {
                                 phase_label, plugin_name,
                             );
                             errors.push((&e).into());
-                        }
+                        },
                         OnError::Ignore => {
                             errors.push((&e).into());
-                        }
+                        },
                         OnError::Disable => {
                             warn!(
                                 "{} plugin '{}' disabled after error",
@@ -548,9 +548,9 @@ impl Executor {
                             );
                             errors.push((&e).into());
                             entry.plugin_ref.disable();
-                        }
+                        },
                     }
-                }
+                },
                 Err(_) => {
                     error!("{} plugin '{}' timed out", phase_label, plugin_name);
                     let timeout_err = crate::error::PluginError::Timeout {
@@ -566,17 +566,17 @@ impl Executor {
                             );
                             v.plugin_name = Some(plugin_name.to_string());
                             return Some(v);
-                        }
+                        },
                         OnError::Fail => {
                             warn!(
                                 "{} plugin '{}' on_error=fail (timeout) in non-blocking phase — not halting",
                                 phase_label, plugin_name,
                             );
                             errors.push((&timeout_err).into());
-                        }
+                        },
                         OnError::Ignore => {
                             errors.push((&timeout_err).into());
-                        }
+                        },
                         OnError::Disable => {
                             warn!(
                                 "{} plugin '{}' disabled after timeout",
@@ -584,9 +584,9 @@ impl Executor {
                             );
                             errors.push((&timeout_err).into());
                             entry.plugin_ref.disable();
-                        }
+                        },
                     }
-                }
+                },
             }
 
             // Commit this plugin's context back to the table — replaces the
@@ -644,7 +644,7 @@ impl Executor {
             // forever no matter how many invocations errored. All non-halt
             // failures also push a record into PipelineResult.errors.
             match result {
-                Ok(Ok(_)) => {} // read-only — discard result and ext_clone
+                Ok(Ok(_)) => {}, // read-only — discard result and ext_clone
                 Ok(Err(e)) => {
                     warn!(
                         "{} plugin '{}' error (ignored): {}",
@@ -658,7 +658,7 @@ impl Executor {
                         );
                         entry.plugin_ref.disable();
                     }
-                }
+                },
                 Err(_) => {
                     warn!(
                         "{} plugin '{}' timed out (ignored)",
@@ -677,7 +677,7 @@ impl Executor {
                         );
                         entry.plugin_ref.disable();
                     }
-                }
+                },
             }
         }
     }
@@ -772,7 +772,7 @@ impl Executor {
                                 v
                             });
                             BranchData::Deny(violation)
-                        }
+                        },
                         // `Some(..)` with continue_processing=true, OR
                         // `None` (downcast failed — historically logged
                         // and treated as Allow) both fall through.
@@ -817,7 +817,7 @@ impl Executor {
             let on_error = on_error_by_idx[idx];
 
             match outcome {
-                BranchOutcome::Completed(BranchData::Allow) => {}
+                BranchOutcome::Completed(BranchData::Allow) => {},
                 BranchOutcome::Completed(BranchData::Deny(opt_v)) => {
                     let violation = opt_v.unwrap_or_else(|| {
                         let mut v = crate::error::PluginViolation::new(
@@ -830,7 +830,7 @@ impl Executor {
                     if first_violation.is_none() {
                         first_violation = Some(violation);
                     }
-                }
+                },
                 BranchOutcome::Completed(BranchData::Error(e)) => match on_error {
                     OnError::Fail => {
                         if first_violation.is_none() {
@@ -841,16 +841,16 @@ impl Executor {
                             v.plugin_name = Some(plugin_name.to_string());
                             first_violation = Some(v);
                         }
-                    }
+                    },
                     OnError::Ignore => {
                         warn!("CONCURRENT plugin '{}' error (ignored): {}", plugin_name, e);
                         errors.push((&*e).into());
-                    }
+                    },
                     OnError::Disable => {
                         warn!("CONCURRENT plugin '{}' disabled after error", plugin_name);
                         errors.push((&*e).into());
                         entry.plugin_ref.disable();
-                    }
+                    },
                 },
                 BranchOutcome::TimedOut => {
                     let timeout_err = crate::error::PluginError::Timeout {
@@ -868,18 +868,18 @@ impl Executor {
                                 v.plugin_name = Some(plugin_name.to_string());
                                 first_violation = Some(v);
                             }
-                        }
+                        },
                         OnError::Ignore => {
                             warn!("CONCURRENT plugin '{}' timed out (ignored)", plugin_name);
                             errors.push((&timeout_err).into());
-                        }
+                        },
                         OnError::Disable => {
                             warn!("CONCURRENT plugin '{}' disabled after timeout", plugin_name);
                             errors.push((&timeout_err).into());
                             entry.plugin_ref.disable();
-                        }
+                        },
                     }
-                }
+                },
                 BranchOutcome::Panicked(s) => {
                     error!("CONCURRENT plugin '{}' task panicked: {}", plugin_name, s);
                     let panic_err = crate::error::PluginError::Execution {
@@ -900,23 +900,23 @@ impl Executor {
                                 v.plugin_name = Some(plugin_name.to_string());
                                 first_violation = Some(v);
                             }
-                        }
+                        },
                         OnError::Ignore => {
                             warn!("CONCURRENT plugin '{}' panicked (ignored)", plugin_name);
                             errors.push((&panic_err).into());
-                        }
+                        },
                         OnError::Disable => {
                             warn!("CONCURRENT plugin '{}' disabled after panic", plugin_name);
                             errors.push((&panic_err).into());
                             entry.plugin_ref.disable();
-                        }
+                        },
                     }
-                }
+                },
                 BranchOutcome::Aborted => {
                     // Cancelled because an earlier branch hit a halt
                     // condition under short_circuit_on_deny. Intentional
                     // — no error to record.
-                }
+                },
             }
         }
 
@@ -982,19 +982,19 @@ impl Executor {
                     timeout(dur, handler.invoke(&*owned_payload, &filtered, &mut ctx)).await;
 
                 match result {
-                    Ok(Ok(_)) => {} // discard
+                    Ok(Ok(_)) => {}, // discard
                     Ok(Err(e)) => {
                         warn!(
                             "FIRE_AND_FORGET plugin '{}' error (ignored): {}",
                             name_for_log, e
                         );
-                    }
+                    },
                     Err(_) => {
                         warn!(
                             "FIRE_AND_FORGET plugin '{}' timed out (ignored)",
                             name_for_log
                         );
-                    }
+                    },
                 }
             });
 
@@ -1044,7 +1044,7 @@ pub fn extract_erased(result: Box<dyn Any + Send + Sync>) -> Option<ErasedResult
         Err(_) => {
             warn!("extract_erased: downcast failed — handler returned unexpected type");
             None
-        }
+        },
     }
 }
 

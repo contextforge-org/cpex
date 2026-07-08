@@ -11,12 +11,12 @@
 // The PDP backends that ship in this workspace, each its own crate
 // registered here by dialect:
 //
-//   - **cedar** (`apl-pdp-cedar-direct`) / **cedarling** (`apl-cedarling`)
-//     — Cedar policy-set evaluation, in-process and via Cedarling.
+//   - **cedar** (`cpex-pdp-cedar-direct`) — in-process Cedar policy-set
+//     evaluation.
 //   - **opa** — Open Policy Agent / Rego.
 //   - **authzen** — AuthZen-protocol external decision point.
 //   - **nemo** — NeMo reasoning backend.
-//   - **cel** (`apl-pdp-cel`) — inline CEL boolean predicates authored in
+//   - **cel** (`cpex-pdp-cel`) — inline CEL boolean predicates authored in
 //     the route YAML (`cel: { expr: "..." }`); smallest dep tree, no
 //     external policy store.
 //
@@ -110,11 +110,7 @@ impl PdpResolver for PdpRouter {
         PdpDialect::Custom("router".to_string())
     }
 
-    async fn evaluate(
-        &self,
-        call: &PdpCall,
-        bag: &AttributeBag,
-    ) -> Result<PdpDecision, PdpError> {
+    async fn evaluate(&self, call: &PdpCall, bag: &AttributeBag) -> Result<PdpDecision, PdpError> {
         let resolver = self
             .resolvers
             .get(&call.dialect)
@@ -213,7 +209,10 @@ mod tests {
             dialect: PdpDialect::Cedar,
             args: serde_yaml::Value::Null,
         };
-        let res = router.evaluate(&call, &AttributeBag::default()).await.unwrap();
+        let res = router
+            .evaluate(&call, &AttributeBag::default())
+            .await
+            .unwrap();
         assert!(matches!(res.decision, Decision::Allow));
     }
 }

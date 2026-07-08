@@ -61,14 +61,12 @@ pub fn evaluate_rules(rules: &[Rule], bag: &AttributeBag) -> Decision {
                     // `code` override on the effect takes precedence
                     // over the auto-generated rule source position,
                     // so author-stable categories survive YAML edits.
-                    let rule_source = code
-                        .clone()
-                        .unwrap_or_else(|| rule.source.clone());
+                    let rule_source = code.clone().unwrap_or_else(|| rule.source.clone());
                     return Decision::Deny {
                         reason: reason.clone(),
                         rule_source,
                     };
-                }
+                },
                 // Plugin / Delegate / Taint require the async step
                 // path; ignore here. See doc comment above.
                 _ => continue,
@@ -94,13 +92,21 @@ fn eval_condition(cond: &Condition, bag: &AttributeBag) -> bool {
         Condition::IsFalse { key } => !bag.get_bool(key).unwrap_or(false),
         Condition::Exists { key } => bag.contains(key),
         Condition::Comparison { key, op, value } => eval_comparison(key, *op, value, bag),
-        Condition::InSet { value_key, set_key, negate } => {
+        Condition::InSet {
+            value_key,
+            set_key,
+            negate,
+        } => {
             let in_set = match (bag.get_string(value_key), bag.get_string_set(set_key)) {
                 (Some(s), Some(set)) => set.contains(s),
                 _ => false, // missing key or wrong type → not in set
             };
-            if *negate { !in_set } else { in_set }
-        }
+            if *negate {
+                !in_set
+            } else {
+                in_set
+            }
+        },
     }
 }
 
@@ -119,7 +125,7 @@ fn eval_comparison(key: &str, op: CompareOp, lit: &Literal, bag: &AttributeBag) 
         CompareOp::NotEq => !values_eq(attr, lit),
         CompareOp::Gt | CompareOp::GtEq | CompareOp::Lt | CompareOp::LtEq => {
             numeric_compare(attr, lit, op)
-        }
+        },
     }
 }
 
@@ -220,10 +226,10 @@ pub async fn evaluate_effects(
         ))
         .await
         {
-            EffectOutcome::Continue => {}
+            EffectOutcome::Continue => {},
             EffectOutcome::Halt(decision) => {
                 return StepsEvaluation::deny(decision, taints, args_modified, result_modified);
-            }
+            },
         }
     }
     StepsEvaluation {
@@ -315,14 +321,12 @@ async fn dispatch_effect(
             // position. Lets MCP clients dispatch on stable categories
             // (`quota.exceeded`) rather than positional codes that
             // shift with YAML edits.
-            let rule_source = code
-                .clone()
-                .unwrap_or_else(|| fallback_source.to_string());
+            let rule_source = code.clone().unwrap_or_else(|| fallback_source.to_string());
             EffectOutcome::Halt(Decision::Deny {
                 reason: reason.clone(),
                 rule_source,
             })
-        }
+        },
 
         Effect::Plugin { name } => {
             match plugins
@@ -337,13 +341,13 @@ async fn dispatch_effect(
                         Decision::Allow => EffectOutcome::Continue,
                         deny @ Decision::Deny { .. } => EffectOutcome::Halt(deny),
                     }
-                }
+                },
                 Err(e) => EffectOutcome::Halt(Decision::Deny {
                     reason: Some(format!("plugin `{}` error: {}", name, e)),
                     rule_source: format!("plugin:{}", name),
                 }),
             }
-        }
+        },
 
         Effect::Delegate(delegate_step) => {
             match delegations.delegate(delegate_step).await {
@@ -360,10 +364,7 @@ async fn dispatch_effect(
                         if !outcome.granted_permissions.is_empty() {
                             let set: std::collections::HashSet<String> =
                                 outcome.granted_permissions.iter().cloned().collect();
-                            bag.set(
-                                bk::GRANTED_PERMISSIONS,
-                                AttributeValue::StringSet(set),
-                            );
+                            bag.set(bk::GRANTED_PERMISSIONS, AttributeValue::StringSet(set));
                         }
                         if let Some(aud) = &outcome.granted_audience {
                             bag.set(bk::GRANTED_AUDIENCE, aud.clone());
@@ -372,7 +373,7 @@ async fn dispatch_effect(
                             bag.set(bk::GRANTED_EXPIRES_AT, exp.clone());
                         }
                         EffectOutcome::Continue
-                    }
+                    },
                     Decision::Deny { .. } => {
                         // Apply the step's on_error policy. Default
                         // ("deny") halts; "continue" lets the pipeline
@@ -388,7 +389,7 @@ async fn dispatch_effect(
                         } else {
                             EffectOutcome::Halt(outcome.decision)
                         }
-                    }
+                    },
                 },
                 Err(e) => {
                     // Transport / lookup failure. on_error treats this
@@ -409,9 +410,9 @@ async fn dispatch_effect(
                             rule_source: delegate_step.source.clone(),
                         })
                     }
-                }
+                },
             }
-        }
+        },
 
         Effect::Taint { label, scopes } => {
             // Emit the taint into the phase's accumulator so it flows
@@ -424,7 +425,7 @@ async fn dispatch_effect(
                 scopes: scopes.clone(),
             });
             EffectOutcome::Continue
-        }
+        },
 
         Effect::FieldOp { path, stages } => {
             dispatch_field_op(
@@ -440,7 +441,7 @@ async fn dispatch_effect(
                 payload,
             )
             .await
-        }
+        },
 
         Effect::Sequential(effects) => {
             // Semantically the same as inlining the list into the
@@ -468,7 +469,7 @@ async fn dispatch_effect(
                 }
             }
             EffectOutcome::Continue
-        }
+        },
 
         Effect::Parallel(effects) => {
             // `dispatch_parallel` returns an explicit `BoxFuture<'_, _>`
@@ -487,9 +488,13 @@ async fn dispatch_effect(
                 payload,
             )
             .await
-        }
+        },
 
-        Effect::When { condition, body, source } => {
+        Effect::When {
+            condition,
+            body,
+            source,
+        } => {
             // Predicate-gated body — replaces the historical
             // `Step::Rule`. Skip silently when the condition is false;
             // otherwise walk the body in order and halt on first Deny.
@@ -517,9 +522,13 @@ async fn dispatch_effect(
                 }
             }
             EffectOutcome::Continue
-        }
+        },
 
-        Effect::Pdp { call, on_allow, on_deny } => {
+        Effect::Pdp {
+            call,
+            on_allow,
+            on_deny,
+        } => {
             // External PDP call — replaces `Step::Pdp`. Reactions run
             // through the same dispatch_effect path (recursively).
             match pdp.evaluate(call, bag).await {
@@ -548,7 +557,7 @@ async fn dispatch_effect(
                             }
                         }
                         EffectOutcome::Continue
-                    }
+                    },
                     deny @ Decision::Deny { .. } => {
                         // Reactions can override the PDP's deny reason
                         // (e.g. `on_deny: [deny "..."]`) but cannot
@@ -575,14 +584,14 @@ async fn dispatch_effect(
                             }
                         }
                         EffectOutcome::Halt(deny)
-                    }
+                    },
                 },
                 Err(e) => EffectOutcome::Halt(Decision::Deny {
                     reason: Some(format!("PDP error: {}", e)),
                     rule_source: format!("pdp:{:?}", call.dialect),
                 }),
             }
-        }
+        },
     }
 }
 
@@ -635,113 +644,113 @@ fn dispatch_parallel<'a>(
     payload: &'a crate::route::RoutePayload,
 ) -> futures::future::BoxFuture<'a, EffectOutcome> {
     Box::pin(async move {
-    use cpex_orchestration::{run_branches, BranchConfig, BranchOutcome, ErasedBranch};
+        use cpex_orchestration::{run_branches, BranchConfig, BranchOutcome, ErasedBranch};
 
-    if effects.is_empty() {
-        return EffectOutcome::Continue;
-    }
+        if effects.is_empty() {
+            return EffectOutcome::Continue;
+        }
 
-    // Build one spawn-ready branch future per effect. Each branch
-    // owns:
-    //   * a cloned bag and payload — branch mutations stay local;
-    //   * cloned Arcs to the invokers — `'static + Send`, ready for
-    //     `tokio::spawn`;
-    //   * an owned copy of the effect to evaluate (clone is cheap
-    //     for the variants `Parallel` can hold: Allow, Deny, Plugin,
-    //     Taint, Sequential, Parallel, When, Pdp).
-    let mut branches: Vec<ErasedBranch<(EffectOutcome, Vec<crate::pipeline::TaintEvent>)>> =
-        Vec::with_capacity(effects.len());
-    for effect in effects.iter() {
-        let effect = effect.clone();
-        let fallback = fallback_source.to_string();
-        let mut branch_bag = bag.clone();
-        let mut branch_payload = payload.clone();
-        let pdp = Arc::clone(pdp);
-        let plugins = Arc::clone(plugins);
-        let delegations = Arc::clone(delegations);
-        branches.push(Box::pin(async move {
-            let mut branch_taints: Vec<crate::pipeline::TaintEvent> = Vec::new();
-            let mut branch_args_modified = false;
-            let mut branch_result_modified = false;
-            let outcome = Box::pin(dispatch_effect(
-                &effect,
-                &fallback,
-                &mut branch_bag,
-                &pdp,
-                &plugins,
-                &delegations,
-                phase,
-                &mut branch_taints,
-                &mut branch_args_modified,
-                &mut branch_result_modified,
-                &mut branch_payload,
-            ))
-            .await;
-            (outcome, branch_taints)
-        }));
-    }
+        // Build one spawn-ready branch future per effect. Each branch
+        // owns:
+        //   * a cloned bag and payload — branch mutations stay local;
+        //   * cloned Arcs to the invokers — `'static + Send`, ready for
+        //     `tokio::spawn`;
+        //   * an owned copy of the effect to evaluate (clone is cheap
+        //     for the variants `Parallel` can hold: Allow, Deny, Plugin,
+        //     Taint, Sequential, Parallel, When, Pdp).
+        let mut branches: Vec<ErasedBranch<(EffectOutcome, Vec<crate::pipeline::TaintEvent>)>> =
+            Vec::with_capacity(effects.len());
+        for effect in effects.iter() {
+            let effect = effect.clone();
+            let fallback = fallback_source.to_string();
+            let mut branch_bag = bag.clone();
+            let mut branch_payload = payload.clone();
+            let pdp = Arc::clone(pdp);
+            let plugins = Arc::clone(plugins);
+            let delegations = Arc::clone(delegations);
+            branches.push(Box::pin(async move {
+                let mut branch_taints: Vec<crate::pipeline::TaintEvent> = Vec::new();
+                let mut branch_args_modified = false;
+                let mut branch_result_modified = false;
+                let outcome = Box::pin(dispatch_effect(
+                    &effect,
+                    &fallback,
+                    &mut branch_bag,
+                    &pdp,
+                    &plugins,
+                    &delegations,
+                    phase,
+                    &mut branch_taints,
+                    &mut branch_args_modified,
+                    &mut branch_result_modified,
+                    &mut branch_payload,
+                ))
+                .await;
+                (outcome, branch_taints)
+            }));
+        }
 
-    // `is_deny` short-circuits the moment any branch returns
-    // `EffectOutcome::Halt(_)`. The remaining branches get
-    // `BranchOutcome::Aborted` and we drop their (already-cancelled)
-    // futures. Taints from already-completed branches still land.
-    let cfg = BranchConfig {
-        timeout_per_branch: None,
-        short_circuit_on_deny: true,
-    };
-    let outcomes = run_branches(
-        branches,
-        cfg,
-        |v: &(EffectOutcome, Vec<crate::pipeline::TaintEvent>)| {
-            matches!(v.0, EffectOutcome::Halt(_))
-        },
-    )
-    .await;
+        // `is_deny` short-circuits the moment any branch returns
+        // `EffectOutcome::Halt(_)`. The remaining branches get
+        // `BranchOutcome::Aborted` and we drop their (already-cancelled)
+        // futures. Taints from already-completed branches still land.
+        let cfg = BranchConfig {
+            timeout_per_branch: None,
+            short_circuit_on_deny: true,
+        };
+        let outcomes = run_branches(
+            branches,
+            cfg,
+            |v: &(EffectOutcome, Vec<crate::pipeline::TaintEvent>)| {
+                matches!(v.0, EffectOutcome::Halt(_))
+            },
+        )
+        .await;
 
-    // Aggregate in input order: append every branch's taints; pick
-    // the first Halt (by branch index, not wall-clock order) as the
-    // overall result. Aborted / panicked branches contribute no
-    // taints — they didn't run to completion. A panicked branch is
-    // *not* converted into a Halt; we log via `tracing::warn!` and
-    // continue. (A misbehaving plugin shouldn't take down the
-    // parallel block any more than it would the host process.)
-    let mut first_halt: Option<Decision> = None;
-    for (idx, outcome) in outcomes.into_iter().enumerate() {
-        match outcome {
-            BranchOutcome::Completed((effect_outcome, branch_taints)) => {
-                taints.extend(branch_taints);
-                if first_halt.is_none() {
-                    if let EffectOutcome::Halt(d) = effect_outcome {
-                        first_halt = Some(d);
+        // Aggregate in input order: append every branch's taints; pick
+        // the first Halt (by branch index, not wall-clock order) as the
+        // overall result. Aborted / panicked branches contribute no
+        // taints — they didn't run to completion. A panicked branch is
+        // *not* converted into a Halt; we log via `tracing::warn!` and
+        // continue. (A misbehaving plugin shouldn't take down the
+        // parallel block any more than it would the host process.)
+        let mut first_halt: Option<Decision> = None;
+        for (idx, outcome) in outcomes.into_iter().enumerate() {
+            match outcome {
+                BranchOutcome::Completed((effect_outcome, branch_taints)) => {
+                    taints.extend(branch_taints);
+                    if first_halt.is_none() {
+                        if let EffectOutcome::Halt(d) = effect_outcome {
+                            first_halt = Some(d);
+                        }
                     }
-                }
-            }
-            BranchOutcome::Aborted => {
-                // Short-circuit cancelled this branch — intentional,
-                // no diagnostic needed.
-            }
-            BranchOutcome::TimedOut => {
-                // Unreachable today (no per-branch timeout
-                // configured). Treat as a no-op if it ever fires
-                // post-config-extension.
-            }
-            BranchOutcome::Panicked(msg) => {
-                // A panicking branch is a misbehaving plugin/effect;
-                // dropping its output (no Halt, no taints) keeps the
-                // parallel block's other branches intact rather than
-                // taking the whole block down. apl-core has no
-                // tracing dep — host integrations that care can
-                // surface the panic via cpex-core's plugin error
-                // path. `idx`/`msg` are eaten here.
-                let _ = (idx, msg);
+                },
+                BranchOutcome::Aborted => {
+                    // Short-circuit cancelled this branch — intentional,
+                    // no diagnostic needed.
+                },
+                BranchOutcome::TimedOut => {
+                    // Unreachable today (no per-branch timeout
+                    // configured). Treat as a no-op if it ever fires
+                    // post-config-extension.
+                },
+                BranchOutcome::Panicked(msg) => {
+                    // A panicking branch is a misbehaving plugin/effect;
+                    // dropping its output (no Halt, no taints) keeps the
+                    // parallel block's other branches intact rather than
+                    // taking the whole block down. apl-core has no
+                    // tracing dep — host integrations that care can
+                    // surface the panic via cpex-core's plugin error
+                    // path. `idx`/`msg` are eaten here.
+                    let _ = (idx, msg);
+                },
             }
         }
-    }
 
-    match first_halt {
-        Some(d) => EffectOutcome::Halt(d),
-        None => EffectOutcome::Continue,
-    }
+        match first_halt {
+            Some(d) => EffectOutcome::Halt(d),
+            None => EffectOutcome::Continue,
+        }
     })
 }
 
@@ -777,7 +786,10 @@ async fn dispatch_field_op(
 
     // Pick the right side of the payload based on the path prefix.
     // Out-of-phase ops drop silently (see the doc comment).
-    enum Side { Args, Result }
+    enum Side {
+        Args,
+        Result,
+    }
     let (root, subpath, side) = if let Some(rest) = path.strip_prefix("args.") {
         if !matches!(phase, DispatchPhase::Pre) {
             return EffectOutcome::Continue;
@@ -805,7 +817,9 @@ async fn dispatch_field_op(
         return EffectOutcome::Continue; // missing field → silent no-op
     };
 
-    let pipeline = crate::pipeline::Pipeline { stages: stages.to_vec() };
+    let pipeline = crate::pipeline::Pipeline {
+        stages: stages.to_vec(),
+    };
     let eval = evaluate_pipeline(&pipeline, &current, bag, plugins, path, phase).await;
     taints.extend(eval.taints);
     let mark_modified = |side: Side, args: &mut bool, result: &mut bool| match side {
@@ -819,14 +833,17 @@ async fn dispatch_field_op(
                 mark_modified(side, args_modified, result_modified);
             }
             EffectOutcome::Continue
-        }
+        },
         FieldOutcome::Omit => {
             if remove_dotted(root, subpath) {
                 mark_modified(side, args_modified, result_modified);
             }
             EffectOutcome::Continue
-        }
-        FieldOutcome::Deny { reason, stage_index: _ } => EffectOutcome::Halt(Decision::Deny {
+        },
+        FieldOutcome::Deny {
+            reason,
+            stage_index: _,
+        } => EffectOutcome::Halt(Decision::Deny {
             reason: Some(reason),
             rule_source: fallback_source.to_string(),
         }),
@@ -903,12 +920,15 @@ pub async fn evaluate_pipeline(
                         taints,
                     };
                 }
-            }
+            },
             Stage::Length { min, max } => {
                 let Some(s) = current.as_str() else {
                     return PipelineEvaluation {
                         outcome: FieldOutcome::Deny {
-                            reason: format!("len(...) requires string value, got {}", value_kind(&current)),
+                            reason: format!(
+                                "len(...) requires string value, got {}",
+                                value_kind(&current)
+                            ),
                             stage_index: idx,
                         },
                         taints,
@@ -924,12 +944,15 @@ pub async fn evaluate_pipeline(
                         taints,
                     };
                 }
-            }
+            },
             Stage::Range { min, max } => {
                 let Some(n) = current.as_i64() else {
                     return PipelineEvaluation {
                         outcome: FieldOutcome::Deny {
-                            reason: format!("range requires integer value, got {}", value_kind(&current)),
+                            reason: format!(
+                                "range requires integer value, got {}",
+                                value_kind(&current)
+                            ),
                             stage_index: idx,
                         },
                         taints,
@@ -944,12 +967,15 @@ pub async fn evaluate_pipeline(
                         taints,
                     };
                 }
-            }
+            },
             Stage::Enum { values } => {
                 let Some(s) = current.as_str() else {
                     return PipelineEvaluation {
                         outcome: FieldOutcome::Deny {
-                            reason: format!("enum(...) requires string value, got {}", value_kind(&current)),
+                            reason: format!(
+                                "enum(...) requires string value, got {}",
+                                value_kind(&current)
+                            ),
                             stage_index: idx,
                         },
                         taints,
@@ -964,7 +990,7 @@ pub async fn evaluate_pipeline(
                         taints,
                     };
                 }
-            }
+            },
             Stage::Regex { pattern } => {
                 // Compile-at-eval for now. A future step can swap to a
                 // route-level pre-compile cache keyed by pattern.
@@ -978,12 +1004,15 @@ pub async fn evaluate_pipeline(
                             },
                             taints,
                         };
-                    }
+                    },
                 };
                 let Some(s) = current.as_str() else {
                     return PipelineEvaluation {
                         outcome: FieldOutcome::Deny {
-                            reason: format!("regex requires string value, got {}", value_kind(&current)),
+                            reason: format!(
+                                "regex requires string value, got {}",
+                                value_kind(&current)
+                            ),
                             stage_index: idx,
                         },
                         taints,
@@ -998,7 +1027,7 @@ pub async fn evaluate_pipeline(
                         taints,
                     };
                 }
-            }
+            },
             Stage::Validate { name } => {
                 // Named-validator dispatch is not implemented in this
                 // build. The parser rejects `validate(...)` at compile
@@ -1017,14 +1046,17 @@ pub async fn evaluate_pipeline(
                     },
                     taints,
                 };
-            }
+            },
 
             // ----- Transforms -----
             Stage::Mask { keep_last } => {
                 let Some(s) = current.as_str() else {
                     return PipelineEvaluation {
                         outcome: FieldOutcome::Deny {
-                            reason: format!("mask(...) requires string value, got {}", value_kind(&current)),
+                            reason: format!(
+                                "mask(...) requires string value, got {}",
+                                value_kind(&current)
+                            ),
                             stage_index: idx,
                         },
                         taints,
@@ -1033,12 +1065,13 @@ pub async fn evaluate_pipeline(
                 let chars: Vec<char> = s.chars().collect();
                 let keep = (*keep_last).min(chars.len());
                 let mask_count = chars.len() - keep;
-                let masked: String = std::iter::repeat('*').take(mask_count)
+                let masked: String = std::iter::repeat('*')
+                    .take(mask_count)
                     .chain(chars.into_iter().skip(mask_count))
                     .collect();
                 current = serde_json::Value::String(masked);
                 replaced = true;
-            }
+            },
             Stage::Redact { condition } => {
                 let should_redact = match condition {
                     None => true,
@@ -1048,10 +1081,13 @@ pub async fn evaluate_pipeline(
                     current = serde_json::Value::String("[REDACTED]".into());
                     replaced = true;
                 }
-            }
+            },
             Stage::Omit => {
-                return PipelineEvaluation { outcome: FieldOutcome::Omit, taints };
-            }
+                return PipelineEvaluation {
+                    outcome: FieldOutcome::Omit,
+                    taints,
+                };
+            },
             Stage::Hash => {
                 // Simple deterministic digest — DefaultHasher is fine for
                 // de-identification (not for cryptographic use).
@@ -1060,12 +1096,15 @@ pub async fn evaluate_pipeline(
                 value_for_hash(&current).hash(&mut h);
                 current = serde_json::Value::String(format!("hash:{:016x}", h.finish()));
                 replaced = true;
-            }
+            },
 
             // ----- Effects -----
             Stage::Taint { label, scopes } => {
-                taints.push(TaintEvent { label: label.clone(), scopes: scopes.clone() });
-            }
+                taints.push(TaintEvent {
+                    label: label.clone(),
+                    scopes: scopes.clone(),
+                });
+            },
             Stage::Plugin { name } => {
                 let invocation = PluginInvocation::Field {
                     name: field_name,
@@ -1082,20 +1121,22 @@ pub async fn evaluate_pipeline(
                                     current = new_value;
                                     replaced = true;
                                 }
-                            }
-                            Decision::Deny { reason, rule_source: _ } => {
+                            },
+                            Decision::Deny {
+                                reason,
+                                rule_source: _,
+                            } => {
                                 return PipelineEvaluation {
                                     outcome: FieldOutcome::Deny {
-                                        reason: reason.unwrap_or_else(
-                                            || format!("plugin `{}` denied", name),
-                                        ),
+                                        reason: reason
+                                            .unwrap_or_else(|| format!("plugin `{}` denied", name)),
                                         stage_index: idx,
                                     },
                                     taints,
                                 };
-                            }
+                            },
                         }
-                    }
+                    },
                     Err(e) => {
                         // Fail-closed: plugin dispatch failure halts the pipeline.
                         return PipelineEvaluation {
@@ -1105,9 +1146,9 @@ pub async fn evaluate_pipeline(
                             },
                             taints,
                         };
-                    }
+                    },
                 }
-            }
+            },
             Stage::Scan { kind } => {
                 // Spec mapping (apl-dsl-spec §4): scan stages are taint
                 // emitters. The actual PII detection / injection signal
@@ -1127,7 +1168,7 @@ pub async fn evaluate_pipeline(
                     current = serde_json::Value::String("[REDACTED]".into());
                     replaced = true;
                 }
-            }
+            },
         }
     }
 
@@ -1139,15 +1180,18 @@ pub async fn evaluate_pipeline(
     PipelineEvaluation { outcome, taints }
 }
 
-
 fn type_check(tc: &TypeCheck, v: &serde_json::Value) -> bool {
     match tc {
         TypeCheck::Str => v.is_string(),
         TypeCheck::Int => v.is_i64(),
         TypeCheck::Bool => v.is_boolean(),
         TypeCheck::Float => v.is_f64() || v.is_i64(),
-        TypeCheck::Email => v.as_str().map_or(false, |s| s.contains('@') && s.contains('.')),
-        TypeCheck::Url => v.as_str().map_or(false, |s| s.starts_with("http://") || s.starts_with("https://")),
+        TypeCheck::Email => v
+            .as_str()
+            .map_or(false, |s| s.contains('@') && s.contains('.')),
+        TypeCheck::Url => v.as_str().map_or(false, |s| {
+            s.starts_with("http://") || s.starts_with("https://")
+        }),
         TypeCheck::Uuid => v.as_str().map_or(false, is_uuid_shape),
     }
 }
@@ -1155,11 +1199,21 @@ fn type_check(tc: &TypeCheck, v: &serde_json::Value) -> bool {
 fn is_uuid_shape(s: &str) -> bool {
     // 8-4-4-4-12 hex with `-` separators.
     let bytes = s.as_bytes();
-    if bytes.len() != 36 { return false; }
+    if bytes.len() != 36 {
+        return false;
+    }
     for (i, &b) in bytes.iter().enumerate() {
         match i {
-            8 | 13 | 18 | 23 => if b != b'-' { return false; },
-            _ => if !b.is_ascii_hexdigit() { return false; },
+            8 | 13 | 18 | 23 => {
+                if b != b'-' {
+                    return false;
+                }
+            },
+            _ => {
+                if !b.is_ascii_hexdigit() {
+                    return false;
+                }
+            },
         }
     }
     true
@@ -1186,7 +1240,7 @@ fn value_for_hash(v: &serde_json::Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::rules::{ Condition, Expression, Rule};
+    use crate::rules::{Condition, Expression, Rule};
     use crate::step::{DelegationInvoker, NoopDelegationInvoker};
     use std::collections::HashSet;
     use std::sync::Arc;
@@ -1210,7 +1264,10 @@ mod tests {
     }
 
     fn deny(reason: &str) -> Effect {
-        Effect::Deny { reason: Some(reason.into()), code: None }
+        Effect::Deny {
+            reason: Some(reason.into()),
+            code: None,
+        }
     }
 
     fn cond(c: Condition) -> Expression {
@@ -1232,15 +1289,26 @@ mod tests {
         bag.set("b", true);
 
         let rules = vec![
-            rule(cond(Condition::IsTrue { key: "a".into() }), deny("first"), "r0"),
-            rule(cond(Condition::IsTrue { key: "b".into() }), deny("second"), "r1"),
+            rule(
+                cond(Condition::IsTrue { key: "a".into() }),
+                deny("first"),
+                "r0",
+            ),
+            rule(
+                cond(Condition::IsTrue { key: "b".into() }),
+                deny("second"),
+                "r1",
+            ),
         ];
 
         match evaluate_rules(&rules, &bag) {
-            Decision::Deny { reason, rule_source } => {
+            Decision::Deny {
+                reason,
+                rule_source,
+            } => {
                 assert_eq!(reason.as_deref(), Some("first"));
                 assert_eq!(rule_source, "r0");
-            }
+            },
             d => panic!("expected Deny, got {:?}", d),
         }
     }
@@ -1253,8 +1321,16 @@ mod tests {
         bag.set("bad", true);
 
         let rules = vec![
-            rule(cond(Condition::IsTrue { key: "ok".into() }), Effect::Allow, "r0_allow"),
-            rule(cond(Condition::IsTrue { key: "bad".into() }), deny("later"), "r1_deny"),
+            rule(
+                cond(Condition::IsTrue { key: "ok".into() }),
+                Effect::Allow,
+                "r0_allow",
+            ),
+            rule(
+                cond(Condition::IsTrue { key: "bad".into() }),
+                deny("later"),
+                "r1_deny",
+            ),
         ];
 
         match evaluate_rules(&rules, &bag) {
@@ -1267,7 +1343,9 @@ mod tests {
     fn unmatched_rules_dont_fire() {
         let mut bag = AttributeBag::new(); // "denied" missing → false
         let rules = vec![rule(
-            cond(Condition::IsTrue { key: "denied".into() }),
+            cond(Condition::IsTrue {
+                key: "denied".into(),
+            }),
             deny("shouldn't fire"),
             "r0",
         )];
@@ -1279,8 +1357,18 @@ mod tests {
     #[test]
     fn missing_key_is_false() {
         let mut bag = AttributeBag::new();
-        assert!(!eval_condition(&Condition::IsTrue { key: "missing".into() }, &bag));
-        assert!(eval_condition(&Condition::IsFalse { key: "missing".into() }, &bag));
+        assert!(!eval_condition(
+            &Condition::IsTrue {
+                key: "missing".into()
+            },
+            &bag
+        ));
+        assert!(eval_condition(
+            &Condition::IsFalse {
+                key: "missing".into()
+            },
+            &bag
+        ));
         // Comparison on missing → false (spec §2.6).
         assert!(!eval_condition(
             &Condition::Comparison {
@@ -1301,10 +1389,22 @@ mod tests {
         let a = cond(Condition::IsTrue { key: "a".into() });
         let b = cond(Condition::IsTrue { key: "b".into() });
 
-        assert!(eval_expression(&Expression::And(vec![a.clone(), a.clone()]), &bag));
-        assert!(!eval_expression(&Expression::And(vec![a.clone(), b.clone()]), &bag));
-        assert!(eval_expression(&Expression::Or(vec![a.clone(), b.clone()]), &bag));
-        assert!(!eval_expression(&Expression::Or(vec![b.clone(), b.clone()]), &bag));
+        assert!(eval_expression(
+            &Expression::And(vec![a.clone(), a.clone()]),
+            &bag
+        ));
+        assert!(!eval_expression(
+            &Expression::And(vec![a.clone(), b.clone()]),
+            &bag
+        ));
+        assert!(eval_expression(
+            &Expression::Or(vec![a.clone(), b.clone()]),
+            &bag
+        ));
+        assert!(!eval_expression(
+            &Expression::Or(vec![b.clone(), b.clone()]),
+            &bag
+        ));
         assert!(eval_expression(&Expression::Not(Box::new(b)), &bag));
     }
 
@@ -1441,8 +1541,12 @@ mod tests {
             //             = when (role.hr is false) AND (role.finance is false), deny
             rule(
                 Expression::And(vec![
-                    cond(Condition::IsFalse { key: "role.hr".into() }),
-                    cond(Condition::IsFalse { key: "role.finance".into() }),
+                    cond(Condition::IsFalse {
+                        key: "role.hr".into(),
+                    }),
+                    cond(Condition::IsFalse {
+                        key: "role.finance".into(),
+                    }),
                 ]),
                 deny("not in hr/finance"),
                 "r1",
@@ -1455,7 +1559,9 @@ mod tests {
                         op: CompareOp::Gt,
                         value: 2_i64.into(),
                     }),
-                    cond(Condition::IsTrue { key: "include_ssn".into() }),
+                    cond(Condition::IsTrue {
+                        key: "include_ssn".into(),
+                    }),
                 ]),
                 deny("delegation too deep for SSN"),
                 "r2",
@@ -1493,7 +1599,16 @@ mod tests {
         v: &serde_json::Value,
         bag: &AttributeBag,
     ) -> FieldOutcome {
-        evaluate_pipeline(p, v, bag, &null_pipe_plugins(), "test_field", crate::step::DispatchPhase::Pre).await.outcome
+        evaluate_pipeline(
+            p,
+            v,
+            bag,
+            &null_pipe_plugins(),
+            "test_field",
+            crate::step::DispatchPhase::Pre,
+        )
+        .await
+        .outcome
     }
 
     /// Pipeline-test null invoker — distinct from the step-test `NullPlugins`
@@ -1508,7 +1623,10 @@ mod tests {
             _bag: &AttributeBag,
             _invocation: PluginInvocation<'_>,
         ) -> Result<PluginOutcome, PluginError> {
-            panic!("NullPipelinePlugins should not dispatch; got plugin({})", name);
+            panic!(
+                "NullPipelinePlugins should not dispatch; got plugin({})",
+                name
+            );
         }
     }
 
@@ -1516,19 +1634,28 @@ mod tests {
     async fn pipeline_empty_is_pass() {
         let mut bag = AttributeBag::new();
         let p = make_pipeline(vec![]);
-        assert_eq!(run_pipeline(&p, &json!("anything"), &bag).await, FieldOutcome::Pass);
+        assert_eq!(
+            run_pipeline(&p, &json!("anything"), &bag).await,
+            FieldOutcome::Pass
+        );
     }
 
     #[tokio::test]
     async fn pipeline_type_check_passes_and_denies() {
         let mut bag = AttributeBag::new();
         let p = make_pipeline(vec![Stage::Type(TypeCheck::Str)]);
-        assert_eq!(run_pipeline(&p, &json!("hello"), &bag).await, FieldOutcome::Pass);
+        assert_eq!(
+            run_pipeline(&p, &json!("hello"), &bag).await,
+            FieldOutcome::Pass
+        );
         match run_pipeline(&p, &json!(42), &bag).await {
-            FieldOutcome::Deny { reason, stage_index } => {
+            FieldOutcome::Deny {
+                reason,
+                stage_index,
+            } => {
                 assert!(reason.contains("expected Str"));
                 assert_eq!(stage_index, 0);
-            }
+            },
             other => panic!("expected Deny, got {:?}", other),
         }
     }
@@ -1572,7 +1699,9 @@ mod tests {
         let cond = Expression::Not(Box::new(Expression::Condition(Condition::IsTrue {
             key: "perm.view_ssn".into(),
         })));
-        let p = make_pipeline(vec![Stage::Redact { condition: Some(cond) }]);
+        let p = make_pipeline(vec![Stage::Redact {
+            condition: Some(cond),
+        }]);
         match run_pipeline(&p, &json!("123-45-6789"), &bag).await {
             FieldOutcome::Replace(v) => assert_eq!(v, json!("[REDACTED]")),
             other => panic!("expected Replace (redact fired), got {:?}", other),
@@ -1586,7 +1715,9 @@ mod tests {
         let cond = Expression::Not(Box::new(Expression::Condition(Condition::IsTrue {
             key: "perm.view_ssn".into(),
         })));
-        let p = make_pipeline(vec![Stage::Redact { condition: Some(cond) }]);
+        let p = make_pipeline(vec![Stage::Redact {
+            condition: Some(cond),
+        }]);
         // perm.view_ssn=true → !true=false → redact skipped → Pass.
         assert_eq!(
             run_pipeline(&p, &json!("123-45-6789"), &bag).await,
@@ -1602,7 +1733,10 @@ mod tests {
             // This stage should never run.
             Stage::Type(TypeCheck::Int),
         ]);
-        assert_eq!(run_pipeline(&p, &json!("anything"), &bag).await, FieldOutcome::Omit);
+        assert_eq!(
+            run_pipeline(&p, &json!("anything"), &bag).await,
+            FieldOutcome::Omit
+        );
     }
 
     #[tokio::test]
@@ -1610,15 +1744,24 @@ mod tests {
         let mut bag = AttributeBag::new();
         let p = make_pipeline(vec![
             Stage::Type(TypeCheck::Int),
-            Stage::Range { min: Some(0), max: Some(1_000_000) },
+            Stage::Range {
+                min: Some(0),
+                max: Some(1_000_000),
+            },
         ]);
-        assert_eq!(run_pipeline(&p, &json!(500_000), &bag).await, FieldOutcome::Pass);
+        assert_eq!(
+            run_pipeline(&p, &json!(500_000), &bag).await,
+            FieldOutcome::Pass
+        );
         // Above max → deny.
         match run_pipeline(&p, &json!(2_000_000), &bag).await {
-            FieldOutcome::Deny { reason, stage_index } => {
+            FieldOutcome::Deny {
+                reason,
+                stage_index,
+            } => {
                 assert!(reason.contains("outside"));
                 assert_eq!(stage_index, 1);
-            }
+            },
             other => panic!("expected Deny, got {:?}", other),
         }
     }
@@ -1626,8 +1769,14 @@ mod tests {
     #[tokio::test]
     async fn pipeline_length_validator() {
         let mut bag = AttributeBag::new();
-        let p = make_pipeline(vec![Stage::Length { min: None, max: Some(5) }]);
-        assert_eq!(run_pipeline(&p, &json!("hi"), &bag).await, FieldOutcome::Pass);
+        let p = make_pipeline(vec![Stage::Length {
+            min: None,
+            max: Some(5),
+        }]);
+        assert_eq!(
+            run_pipeline(&p, &json!("hi"), &bag).await,
+            FieldOutcome::Pass
+        );
         assert!(matches!(
             run_pipeline(&p, &json!("too long"), &bag).await,
             FieldOutcome::Deny { .. },
@@ -1640,7 +1789,10 @@ mod tests {
         let p = make_pipeline(vec![Stage::Enum {
             values: vec!["low".into(), "medium".into(), "high".into()],
         }]);
-        assert_eq!(run_pipeline(&p, &json!("medium"), &bag).await, FieldOutcome::Pass);
+        assert_eq!(
+            run_pipeline(&p, &json!("medium"), &bag).await,
+            FieldOutcome::Pass
+        );
         assert!(matches!(
             run_pipeline(&p, &json!("extreme"), &bag).await,
             FieldOutcome::Deny { .. },
@@ -1670,7 +1822,7 @@ mod tests {
                 let s = v.as_str().unwrap();
                 assert!(s.starts_with("hash:"));
                 assert_eq!(s.len(), "hash:".len() + 16);
-            }
+            },
             other => panic!("expected Replace, got {:?}", other),
         }
     }
@@ -1685,11 +1837,16 @@ mod tests {
         let mut bag = AttributeBag::new();
         let p = make_pipeline(vec![
             Stage::Type(TypeCheck::Str),
-            Stage::Validate { name: "ssn_format".into() },
+            Stage::Validate {
+                name: "ssn_format".into(),
+            },
             Stage::Mask { keep_last: 4 },
         ]);
         match run_pipeline(&p, &json!("123-45-6789"), &bag).await {
-            FieldOutcome::Deny { reason, stage_index } => {
+            FieldOutcome::Deny {
+                reason,
+                stage_index,
+            } => {
                 assert_eq!(stage_index, 1, "validate stage is at index 1");
                 assert!(
                     reason.contains("not implemented"),
@@ -1699,7 +1856,7 @@ mod tests {
                     reason.contains("regex") || reason.contains("plugin"),
                     "deny reason should point at alternatives: {reason}",
                 );
-            }
+            },
             other => panic!("expected Deny on validate(...) stage, got {:?}", other),
         }
     }
@@ -1709,7 +1866,7 @@ mod tests {
         // If the validator fails, the transform never runs.
         let mut bag = AttributeBag::new();
         let p = make_pipeline(vec![
-            Stage::Type(TypeCheck::Int),  // will fail on a string
+            Stage::Type(TypeCheck::Int), // will fail on a string
             Stage::Mask { keep_last: 4 },
         ]);
         match run_pipeline(&p, &json!("hello"), &bag).await {
@@ -1726,7 +1883,10 @@ mod tests {
         let p = make_pipeline(vec![Stage::Regex {
             pattern: r"^\d{3}-\d{2}-\d{4}$".into(),
         }]);
-        assert_eq!(run_pipeline(&p, &json!("123-45-6789"), &bag).await, FieldOutcome::Pass);
+        assert_eq!(
+            run_pipeline(&p, &json!("123-45-6789"), &bag).await,
+            FieldOutcome::Pass
+        );
     }
 
     #[tokio::test]
@@ -1736,10 +1896,13 @@ mod tests {
             pattern: r"^\d{3}-\d{2}-\d{4}$".into(),
         }]);
         match run_pipeline(&p, &json!("not an ssn"), &bag).await {
-            FieldOutcome::Deny { reason, stage_index } => {
+            FieldOutcome::Deny {
+                reason,
+                stage_index,
+            } => {
                 assert!(reason.contains("did not match"));
                 assert_eq!(stage_index, 0);
-            }
+            },
             other => panic!("expected Deny, got {:?}", other),
         }
     }
@@ -1747,11 +1910,13 @@ mod tests {
     #[tokio::test]
     async fn pipeline_regex_invalid_pattern_denies() {
         let mut bag = AttributeBag::new();
-        let p = make_pipeline(vec![Stage::Regex { pattern: "(unclosed".into() }]);
+        let p = make_pipeline(vec![Stage::Regex {
+            pattern: "(unclosed".into(),
+        }]);
         match run_pipeline(&p, &json!("anything"), &bag).await {
             FieldOutcome::Deny { reason, .. } => {
                 assert!(reason.contains("invalid regex"));
-            }
+            },
             other => panic!("expected Deny, got {:?}", other),
         }
     }
@@ -1759,11 +1924,13 @@ mod tests {
     #[tokio::test]
     async fn pipeline_regex_non_string_denies() {
         let mut bag = AttributeBag::new();
-        let p = make_pipeline(vec![Stage::Regex { pattern: r"^\d+$".into() }]);
+        let p = make_pipeline(vec![Stage::Regex {
+            pattern: r"^\d+$".into(),
+        }]);
         match run_pipeline(&p, &json!(42), &bag).await {
             FieldOutcome::Deny { reason, .. } => {
                 assert!(reason.contains("requires string"));
-            }
+            },
             other => panic!("expected Deny on non-string regex input, got {:?}", other),
         }
     }
@@ -1775,35 +1942,72 @@ mod tests {
         let mut bag = AttributeBag::new();
         let p = make_pipeline(vec![
             Stage::Type(TypeCheck::Str),
-            Stage::Taint { label: "PII".into(), scopes: vec![TaintScope::Session] },
+            Stage::Taint {
+                label: "PII".into(),
+                scopes: vec![TaintScope::Session],
+            },
             Stage::Mask { keep_last: 4 },
         ]);
-        let result = evaluate_pipeline(&p, &json!("123-45-6789"), &bag, &null_pipe_plugins(), "test_field", crate::step::DispatchPhase::Pre).await;
+        let result = evaluate_pipeline(
+            &p,
+            &json!("123-45-6789"),
+            &bag,
+            &null_pipe_plugins(),
+            "test_field",
+            crate::step::DispatchPhase::Pre,
+        )
+        .await;
         assert_eq!(result.outcome, FieldOutcome::Replace(json!("*******6789")));
-        assert_eq!(result.taints, vec![TaintEvent {
-            label: "PII".into(),
-            scopes: vec![TaintScope::Session],
-        }]);
+        assert_eq!(
+            result.taints,
+            vec![TaintEvent {
+                label: "PII".into(),
+                scopes: vec![TaintScope::Session],
+            }]
+        );
     }
 
     #[tokio::test]
     async fn pipeline_scan_pii_detect_emits_taint() {
         let mut bag = AttributeBag::new();
-        let p = make_pipeline(vec![Stage::Scan { kind: ScanKind::PiiDetect }]);
-        let result = evaluate_pipeline(&p, &json!("some text"), &bag, &null_pipe_plugins(), "test_field", crate::step::DispatchPhase::Pre).await;
+        let p = make_pipeline(vec![Stage::Scan {
+            kind: ScanKind::PiiDetect,
+        }]);
+        let result = evaluate_pipeline(
+            &p,
+            &json!("some text"),
+            &bag,
+            &null_pipe_plugins(),
+            "test_field",
+            crate::step::DispatchPhase::Pre,
+        )
+        .await;
         // PII detect: value unchanged, one taint event emitted.
         assert_eq!(result.outcome, FieldOutcome::Pass);
-        assert_eq!(result.taints, vec![TaintEvent {
-            label: "PII".into(),
-            scopes: vec![TaintScope::Session],
-        }]);
+        assert_eq!(
+            result.taints,
+            vec![TaintEvent {
+                label: "PII".into(),
+                scopes: vec![TaintScope::Session],
+            }]
+        );
     }
 
     #[tokio::test]
     async fn pipeline_scan_pii_redact_replaces_and_taints() {
         let mut bag = AttributeBag::new();
-        let p = make_pipeline(vec![Stage::Scan { kind: ScanKind::PiiRedact }]);
-        let result = evaluate_pipeline(&p, &json!("123-45-6789"), &bag, &null_pipe_plugins(), "test_field", crate::step::DispatchPhase::Pre).await;
+        let p = make_pipeline(vec![Stage::Scan {
+            kind: ScanKind::PiiRedact,
+        }]);
+        let result = evaluate_pipeline(
+            &p,
+            &json!("123-45-6789"),
+            &bag,
+            &null_pipe_plugins(),
+            "test_field",
+            crate::step::DispatchPhase::Pre,
+        )
+        .await;
         assert_eq!(result.outcome, FieldOutcome::Replace(json!("[REDACTED]")));
         assert_eq!(result.taints.len(), 1);
         assert_eq!(result.taints[0].label, "PII");
@@ -1812,8 +2016,18 @@ mod tests {
     #[tokio::test]
     async fn pipeline_scan_injection_emits_injection_taint() {
         let mut bag = AttributeBag::new();
-        let p = make_pipeline(vec![Stage::Scan { kind: ScanKind::InjectionScan }]);
-        let result = evaluate_pipeline(&p, &json!("user input"), &bag, &null_pipe_plugins(), "test_field", crate::step::DispatchPhase::Pre).await;
+        let p = make_pipeline(vec![Stage::Scan {
+            kind: ScanKind::InjectionScan,
+        }]);
+        let result = evaluate_pipeline(
+            &p,
+            &json!("user input"),
+            &bag,
+            &null_pipe_plugins(),
+            "test_field",
+            crate::step::DispatchPhase::Pre,
+        )
+        .await;
         assert_eq!(result.outcome, FieldOutcome::Pass);
         assert_eq!(result.taints[0].label, "injection");
     }
@@ -1824,16 +2038,33 @@ mod tests {
         // before the failure stick, taints after do not.
         let mut bag = AttributeBag::new();
         let p = make_pipeline(vec![
-            Stage::Taint { label: "before".into(), scopes: vec![TaintScope::Session] },
-            Stage::Type(TypeCheck::Int),  // fails on string input
-            Stage::Taint { label: "after".into(), scopes: vec![TaintScope::Session] },
+            Stage::Taint {
+                label: "before".into(),
+                scopes: vec![TaintScope::Session],
+            },
+            Stage::Type(TypeCheck::Int), // fails on string input
+            Stage::Taint {
+                label: "after".into(),
+                scopes: vec![TaintScope::Session],
+            },
         ]);
-        let result = evaluate_pipeline(&p, &json!("hello"), &bag, &null_pipe_plugins(), "test_field", crate::step::DispatchPhase::Pre).await;
+        let result = evaluate_pipeline(
+            &p,
+            &json!("hello"),
+            &bag,
+            &null_pipe_plugins(),
+            "test_field",
+            crate::step::DispatchPhase::Pre,
+        )
+        .await;
         assert!(matches!(result.outcome, FieldOutcome::Deny { .. }));
-        assert_eq!(result.taints, vec![TaintEvent {
-            label: "before".into(),
-            scopes: vec![TaintScope::Session],
-        }]);
+        assert_eq!(
+            result.taints,
+            vec![TaintEvent {
+                label: "before".into(),
+                scopes: vec![TaintScope::Session],
+            }]
+        );
     }
 
     // ----- Plugin stage in pipe chain -----
@@ -1861,16 +2092,27 @@ mod tests {
     async fn pipeline_plugin_allow_continues() {
         let mut bag = AttributeBag::new();
         let plugins: std::sync::Arc<dyn PluginInvoker> = std::sync::Arc::new(PipePlugin {
-            outcomes: std::collections::HashMap::from([
-                ("noop".to_string(), PluginOutcome::allow()),
-            ]),
+            outcomes: std::collections::HashMap::from([(
+                "noop".to_string(),
+                PluginOutcome::allow(),
+            )]),
         });
         let p = make_pipeline(vec![
             Stage::Type(TypeCheck::Str),
-            Stage::Plugin { name: "noop".into() },
+            Stage::Plugin {
+                name: "noop".into(),
+            },
             Stage::Mask { keep_last: 4 },
         ]);
-        let result = evaluate_pipeline(&p, &json!("123-45-6789"), &bag, &plugins, "compensation", crate::step::DispatchPhase::Pre).await;
+        let result = evaluate_pipeline(
+            &p,
+            &json!("123-45-6789"),
+            &bag,
+            &plugins,
+            "compensation",
+            crate::step::DispatchPhase::Pre,
+        )
+        .await;
         assert_eq!(result.outcome, FieldOutcome::Replace(json!("*******6789")));
         assert!(result.taints.is_empty());
     }
@@ -1879,52 +2121,83 @@ mod tests {
     async fn pipeline_plugin_can_replace_value() {
         let mut bag = AttributeBag::new();
         let plugins: std::sync::Arc<dyn PluginInvoker> = std::sync::Arc::new(PipePlugin {
-            outcomes: std::collections::HashMap::from([
-                ("scrubber".to_string(), PluginOutcome {
+            outcomes: std::collections::HashMap::from([(
+                "scrubber".to_string(),
+                PluginOutcome {
                     decision: Decision::Allow,
                     taints: vec![TaintEvent {
                         label: "PII".to_string(),
                         scopes: vec![TaintScope::Session],
                     }],
                     modified_value: Some(json!("***scrubbed***")),
-                }),
-            ]),
+                },
+            )]),
         });
-        let p = make_pipeline(vec![Stage::Plugin { name: "scrubber".into() }]);
-        let result = evaluate_pipeline(&p, &json!("sensitive data"), &bag, &plugins, "notes", crate::step::DispatchPhase::Pre).await;
-        assert_eq!(result.outcome, FieldOutcome::Replace(json!("***scrubbed***")));
-        assert_eq!(result.taints, vec![TaintEvent {
-            label: "PII".into(),
-            scopes: vec![TaintScope::Session],
+        let p = make_pipeline(vec![Stage::Plugin {
+            name: "scrubber".into(),
         }]);
+        let result = evaluate_pipeline(
+            &p,
+            &json!("sensitive data"),
+            &bag,
+            &plugins,
+            "notes",
+            crate::step::DispatchPhase::Pre,
+        )
+        .await;
+        assert_eq!(
+            result.outcome,
+            FieldOutcome::Replace(json!("***scrubbed***"))
+        );
+        assert_eq!(
+            result.taints,
+            vec![TaintEvent {
+                label: "PII".into(),
+                scopes: vec![TaintScope::Session],
+            }]
+        );
     }
 
     #[tokio::test]
     async fn pipeline_plugin_deny_halts() {
         let mut bag = AttributeBag::new();
         let plugins: std::sync::Arc<dyn PluginInvoker> = std::sync::Arc::new(PipePlugin {
-            outcomes: std::collections::HashMap::from([
-                ("guard".to_string(), PluginOutcome {
+            outcomes: std::collections::HashMap::from([(
+                "guard".to_string(),
+                PluginOutcome {
                     decision: Decision::Deny {
                         reason: Some("policy violation".into()),
                         rule_source: "guard".into(),
                     },
                     taints: vec![],
                     modified_value: None,
-                }),
-            ]),
+                },
+            )]),
         });
         let p = make_pipeline(vec![
-            Stage::Plugin { name: "guard".into() },
+            Stage::Plugin {
+                name: "guard".into(),
+            },
             // Should never run.
             Stage::Mask { keep_last: 4 },
         ]);
-        let result = evaluate_pipeline(&p, &json!("data"), &bag, &plugins, "payload", crate::step::DispatchPhase::Pre).await;
+        let result = evaluate_pipeline(
+            &p,
+            &json!("data"),
+            &bag,
+            &plugins,
+            "payload",
+            crate::step::DispatchPhase::Pre,
+        )
+        .await;
         match result.outcome {
-            FieldOutcome::Deny { reason, stage_index } => {
+            FieldOutcome::Deny {
+                reason,
+                stage_index,
+            } => {
                 assert_eq!(reason, "policy violation");
                 assert_eq!(stage_index, 0);
-            }
+            },
             other => panic!("expected Deny, got {:?}", other),
         }
     }
@@ -1932,9 +2205,21 @@ mod tests {
     #[tokio::test]
     async fn pipeline_plugin_missing_fails_closed() {
         let mut bag = AttributeBag::new();
-        let plugins: std::sync::Arc<dyn PluginInvoker> = std::sync::Arc::new(PipePlugin { outcomes: Default::default() });
-        let p = make_pipeline(vec![Stage::Plugin { name: "missing".into() }]);
-        let result = evaluate_pipeline(&p, &json!("data"), &bag, &plugins, "payload", crate::step::DispatchPhase::Pre).await;
+        let plugins: std::sync::Arc<dyn PluginInvoker> = std::sync::Arc::new(PipePlugin {
+            outcomes: Default::default(),
+        });
+        let p = make_pipeline(vec![Stage::Plugin {
+            name: "missing".into(),
+        }]);
+        let result = evaluate_pipeline(
+            &p,
+            &json!("data"),
+            &bag,
+            &plugins,
+            "payload",
+            crate::step::DispatchPhase::Pre,
+        )
+        .await;
         match result.outcome {
             FieldOutcome::Deny { reason, .. } => assert!(reason.contains("missing")),
             other => panic!("expected Deny on missing plugin, got {:?}", other),
@@ -1950,10 +2235,25 @@ mod tests {
         let mut bag = AttributeBag::new();
         bag.set("args.flag", false);
         // Key is present with a falsy value — IsTrue says false, Exists says true.
-        assert!(!eval_condition(&Condition::IsTrue { key: "args.flag".into() }, &bag));
-        assert!(eval_condition(&Condition::Exists { key: "args.flag".into() }, &bag));
+        assert!(!eval_condition(
+            &Condition::IsTrue {
+                key: "args.flag".into()
+            },
+            &bag
+        ));
+        assert!(eval_condition(
+            &Condition::Exists {
+                key: "args.flag".into()
+            },
+            &bag
+        ));
         // Missing key — Exists is false.
-        assert!(!eval_condition(&Condition::Exists { key: "args.nonexistent".into() }, &bag));
+        assert!(!eval_condition(
+            &Condition::Exists {
+                key: "args.nonexistent".into()
+            },
+            &bag
+        ));
     }
 
     #[test]
@@ -1965,18 +2265,24 @@ mod tests {
             std::collections::HashSet::from(["user".to_string(), "service".to_string()]),
         );
 
-        assert!(eval_condition(&Condition::InSet {
-            value_key: "subject.type".into(),
-            set_key: "allowed_types".into(),
-            negate: false,
-        }, &bag));
+        assert!(eval_condition(
+            &Condition::InSet {
+                value_key: "subject.type".into(),
+                set_key: "allowed_types".into(),
+                negate: false,
+            },
+            &bag
+        ));
 
         bag.set("subject.type", "agent");
-        assert!(!eval_condition(&Condition::InSet {
-            value_key: "subject.type".into(),
-            set_key: "allowed_types".into(),
-            negate: false,
-        }, &bag));
+        assert!(!eval_condition(
+            &Condition::InSet {
+                value_key: "subject.type".into(),
+                set_key: "allowed_types".into(),
+                negate: false,
+            },
+            &bag
+        ));
     }
 
     #[test]
@@ -1989,11 +2295,14 @@ mod tests {
         );
 
         // agent is not in blocked_types → not in → true
-        assert!(eval_condition(&Condition::InSet {
-            value_key: "subject.type".into(),
-            set_key: "blocked_types".into(),
-            negate: true,
-        }, &bag));
+        assert!(eval_condition(
+            &Condition::InSet {
+                value_key: "subject.type".into(),
+                set_key: "blocked_types".into(),
+                negate: true,
+            },
+            &bag
+        ));
     }
 
     #[test]
@@ -2001,16 +2310,22 @@ mod tests {
         let mut bag = AttributeBag::new();
         // Both missing → in = false → not in = true (spec §2.6 missing→false
         // applies to the underlying `in` lookup; negate flips it).
-        assert!(!eval_condition(&Condition::InSet {
-            value_key: "x".into(),
-            set_key: "y".into(),
-            negate: false,
-        }, &bag));
-        assert!(eval_condition(&Condition::InSet {
-            value_key: "x".into(),
-            set_key: "y".into(),
-            negate: true,
-        }, &bag));
+        assert!(!eval_condition(
+            &Condition::InSet {
+                value_key: "x".into(),
+                set_key: "y".into(),
+                negate: false,
+            },
+            &bag
+        ));
+        assert!(eval_condition(
+            &Condition::InSet {
+                value_key: "x".into(),
+                set_key: "y".into(),
+                negate: true,
+            },
+            &bag
+        ));
     }
 
     #[test]
@@ -2024,7 +2339,10 @@ mod tests {
         let mut bag = AttributeBag::new();
         let r = Rule {
             condition: Expression::Always,
-            effects: vec![Effect::Deny { reason: Some("unconditional".into()), code: None }],
+            effects: vec![Effect::Deny {
+                reason: Some("unconditional".into()),
+                code: None,
+            }],
             source: "test".into(),
         };
         match evaluate_rules(&[r], &bag) {
@@ -2038,8 +2356,8 @@ mod tests {
     // ===================================================================
 
     use crate::step::{
-        PdpCall, PdpDecision, PdpDialect, PdpError, PdpResolver,
-        PluginError, PluginInvocation, PluginInvoker, PluginOutcome,
+        PdpCall, PdpDecision, PdpDialect, PdpError, PdpResolver, PluginError, PluginInvocation,
+        PluginInvoker, PluginOutcome,
     };
     use async_trait::async_trait;
 
@@ -2051,13 +2369,18 @@ mod tests {
     }
     #[async_trait]
     impl PdpResolver for FakePdp {
-        fn dialect(&self) -> PdpDialect { PdpDialect::Cedar }
+        fn dialect(&self) -> PdpDialect {
+            PdpDialect::Cedar
+        }
         async fn evaluate(
             &self,
             _call: &PdpCall,
             _bag: &AttributeBag,
         ) -> Result<PdpDecision, PdpError> {
-            Ok(PdpDecision { decision: self.decision.clone(), diagnostics: vec![] })
+            Ok(PdpDecision {
+                decision: self.decision.clone(),
+                diagnostics: vec![],
+            })
         }
     }
 
@@ -2065,7 +2388,9 @@ mod tests {
     struct ErroringPdp;
     #[async_trait]
     impl PdpResolver for ErroringPdp {
-        fn dialect(&self) -> PdpDialect { PdpDialect::Cedar }
+        fn dialect(&self) -> PdpDialect {
+            PdpDialect::Cedar
+        }
         async fn evaluate(
             &self,
             _call: &PdpCall,
@@ -2131,7 +2456,18 @@ mod tests {
             body: vec![Effect::Allow],
             source: "test".into(),
         }];
-        let r = evaluate_effects(&steps, &mut bag, &(Arc::new(FakePdp { decision: Decision::Allow }) as Arc<dyn PdpResolver>), &null_plugins(), &noop_delegations(), crate::step::DispatchPhase::Pre, &mut crate::route::RoutePayload::new(serde_json::Value::Null)).await;
+        let r = evaluate_effects(
+            &steps,
+            &mut bag,
+            &(Arc::new(FakePdp {
+                decision: Decision::Allow,
+            }) as Arc<dyn PdpResolver>),
+            &null_plugins(),
+            &noop_delegations(),
+            crate::step::DispatchPhase::Pre,
+            &mut crate::route::RoutePayload::new(serde_json::Value::Null),
+        )
+        .await;
         assert_eq!(r.decision, Decision::Allow);
     }
 
@@ -2139,9 +2475,21 @@ mod tests {
     async fn pdp_allow_continues() {
         let mut bag = AttributeBag::new();
         let steps = vec![pdp_step("dummy")];
-        let pdp: Arc<dyn PdpResolver> = Arc::new(FakePdp { decision: Decision::Allow });
+        let pdp: Arc<dyn PdpResolver> = Arc::new(FakePdp {
+            decision: Decision::Allow,
+        });
         assert_eq!(
-            evaluate_effects(&steps, &mut bag, &pdp, &null_plugins(), &noop_delegations(), crate::step::DispatchPhase::Pre, &mut crate::route::RoutePayload::new(serde_json::Value::Null)).await.decision,
+            evaluate_effects(
+                &steps,
+                &mut bag,
+                &pdp,
+                &null_plugins(),
+                &noop_delegations(),
+                crate::step::DispatchPhase::Pre,
+                &mut crate::route::RoutePayload::new(serde_json::Value::Null)
+            )
+            .await
+            .decision,
             Decision::Allow,
         );
     }
@@ -2151,9 +2499,23 @@ mod tests {
         let mut bag = AttributeBag::new();
         let steps = vec![pdp_step("dummy")];
         let pdp: Arc<dyn PdpResolver> = Arc::new(FakePdp {
-            decision: Decision::Deny { reason: Some("forbidden".into()), rule_source: "pdp".into() },
+            decision: Decision::Deny {
+                reason: Some("forbidden".into()),
+                rule_source: "pdp".into(),
+            },
         });
-        match evaluate_effects(&steps, &mut bag, &pdp, &null_plugins(), &noop_delegations(), crate::step::DispatchPhase::Pre, &mut crate::route::RoutePayload::new(serde_json::Value::Null)).await.decision {
+        match evaluate_effects(
+            &steps,
+            &mut bag,
+            &pdp,
+            &null_plugins(),
+            &noop_delegations(),
+            crate::step::DispatchPhase::Pre,
+            &mut crate::route::RoutePayload::new(serde_json::Value::Null),
+        )
+        .await
+        .decision
+        {
             Decision::Deny { reason, .. } => assert_eq!(reason.as_deref(), Some("forbidden")),
             d => panic!("expected Deny, got {:?}", d),
         }
@@ -2165,22 +2527,45 @@ mod tests {
         // fires before the PDP's deny is returned.
         let mut bag = AttributeBag::new();
         let steps = vec![Effect::Pdp {
-            call: PdpCall { dialect: PdpDialect::Cedar, args: serde_yaml::Value::Null },
+            call: PdpCall {
+                dialect: PdpDialect::Cedar,
+                args: serde_yaml::Value::Null,
+            },
             on_deny: vec![Effect::When {
                 condition: Expression::Always,
-                body: vec![Effect::Deny { reason: Some("reaction took over".into()), code: None }],
+                body: vec![Effect::Deny {
+                    reason: Some("reaction took over".into()),
+                    code: None,
+                }],
                 source: "on_deny[0]".into(),
             }],
             on_allow: vec![],
         }];
         let pdp: Arc<dyn PdpResolver> = Arc::new(FakePdp {
-            decision: Decision::Deny { reason: Some("pdp original".into()), rule_source: "p".into() },
+            decision: Decision::Deny {
+                reason: Some("pdp original".into()),
+                rule_source: "p".into(),
+            },
         });
-        match evaluate_effects(&steps, &mut bag, &pdp, &null_plugins(), &noop_delegations(), crate::step::DispatchPhase::Pre, &mut crate::route::RoutePayload::new(serde_json::Value::Null)).await.decision {
-            Decision::Deny { reason, rule_source } => {
+        match evaluate_effects(
+            &steps,
+            &mut bag,
+            &pdp,
+            &null_plugins(),
+            &noop_delegations(),
+            crate::step::DispatchPhase::Pre,
+            &mut crate::route::RoutePayload::new(serde_json::Value::Null),
+        )
+        .await
+        .decision
+        {
+            Decision::Deny {
+                reason,
+                rule_source,
+            } => {
                 assert_eq!(reason.as_deref(), Some("reaction took over"));
                 assert_eq!(rule_source, "on_deny[0]");
-            }
+            },
             d => panic!("expected Deny, got {:?}", d),
         }
     }
@@ -2191,16 +2576,35 @@ mod tests {
         // taint check that fails). Outcome: deny.
         let mut bag = AttributeBag::new();
         let steps = vec![Effect::Pdp {
-            call: PdpCall { dialect: PdpDialect::Cedar, args: serde_yaml::Value::Null },
+            call: PdpCall {
+                dialect: PdpDialect::Cedar,
+                args: serde_yaml::Value::Null,
+            },
             on_deny: vec![],
             on_allow: vec![Effect::When {
                 condition: Expression::Always,
-                body: vec![Effect::Deny { reason: Some("reaction veto".into()), code: None }],
+                body: vec![Effect::Deny {
+                    reason: Some("reaction veto".into()),
+                    code: None,
+                }],
                 source: "on_allow[0]".into(),
             }],
         }];
-        let pdp: Arc<dyn PdpResolver> = Arc::new(FakePdp { decision: Decision::Allow });
-        match evaluate_effects(&steps, &mut bag, &pdp, &null_plugins(), &noop_delegations(), crate::step::DispatchPhase::Pre, &mut crate::route::RoutePayload::new(serde_json::Value::Null)).await.decision {
+        let pdp: Arc<dyn PdpResolver> = Arc::new(FakePdp {
+            decision: Decision::Allow,
+        });
+        match evaluate_effects(
+            &steps,
+            &mut bag,
+            &pdp,
+            &null_plugins(),
+            &noop_delegations(),
+            crate::step::DispatchPhase::Pre,
+            &mut crate::route::RoutePayload::new(serde_json::Value::Null),
+        )
+        .await
+        .decision
+        {
             Decision::Deny { reason, .. } => assert_eq!(reason.as_deref(), Some("reaction veto")),
             d => panic!("expected Deny, got {:?}", d),
         }
@@ -2210,10 +2614,21 @@ mod tests {
     async fn pdp_error_is_fail_closed() {
         let mut bag = AttributeBag::new();
         let steps = vec![pdp_step("dummy")];
-        match evaluate_effects(&steps, &mut bag, &(Arc::new(ErroringPdp) as Arc<dyn PdpResolver>), &null_plugins(), &noop_delegations(), crate::step::DispatchPhase::Pre, &mut crate::route::RoutePayload::new(serde_json::Value::Null)).await.decision {
+        match evaluate_effects(
+            &steps,
+            &mut bag,
+            &(Arc::new(ErroringPdp) as Arc<dyn PdpResolver>),
+            &null_plugins(),
+            &noop_delegations(),
+            crate::step::DispatchPhase::Pre,
+            &mut crate::route::RoutePayload::new(serde_json::Value::Null),
+        )
+        .await
+        .decision
+        {
             Decision::Deny { reason, .. } => {
                 assert!(reason.unwrap().contains("PDP error"));
-            }
+            },
             d => panic!("expected Deny on PDP error, got {:?}", d),
         }
     }
@@ -2224,24 +2639,58 @@ mod tests {
         let plugins: std::sync::Arc<dyn PluginInvoker> = std::sync::Arc::new(FakePlugin {
             decisions: std::collections::HashMap::from([
                 ("ok_plugin".to_string(), Decision::Allow),
-                ("blocking_plugin".to_string(), Decision::Deny {
-                    reason: Some("rate limit hit".into()),
-                    rule_source: "plugin".into(),
-                }),
+                (
+                    "blocking_plugin".to_string(),
+                    Decision::Deny {
+                        reason: Some("rate limit hit".into()),
+                        rule_source: "plugin".into(),
+                    },
+                ),
             ]),
         });
 
-        let allow_only = vec![Effect::Plugin { name: "ok_plugin".into() }];
+        let allow_only = vec![Effect::Plugin {
+            name: "ok_plugin".into(),
+        }];
         assert_eq!(
-            evaluate_effects(&allow_only, &mut bag, &(Arc::new(FakePdp { decision: Decision::Allow }) as Arc<dyn PdpResolver>), &plugins, &noop_delegations(), crate::step::DispatchPhase::Pre, &mut crate::route::RoutePayload::new(serde_json::Value::Null)).await.decision,
+            evaluate_effects(
+                &allow_only,
+                &mut bag,
+                &(Arc::new(FakePdp {
+                    decision: Decision::Allow
+                }) as Arc<dyn PdpResolver>),
+                &plugins,
+                &noop_delegations(),
+                crate::step::DispatchPhase::Pre,
+                &mut crate::route::RoutePayload::new(serde_json::Value::Null)
+            )
+            .await
+            .decision,
             Decision::Allow,
         );
 
         let with_deny = vec![
-            Effect::Plugin { name: "ok_plugin".into() },
-            Effect::Plugin { name: "blocking_plugin".into() },
+            Effect::Plugin {
+                name: "ok_plugin".into(),
+            },
+            Effect::Plugin {
+                name: "blocking_plugin".into(),
+            },
         ];
-        match evaluate_effects(&with_deny, &mut bag, &(Arc::new(FakePdp { decision: Decision::Allow }) as Arc<dyn PdpResolver>), &plugins, &noop_delegations(), crate::step::DispatchPhase::Pre, &mut crate::route::RoutePayload::new(serde_json::Value::Null)).await.decision {
+        match evaluate_effects(
+            &with_deny,
+            &mut bag,
+            &(Arc::new(FakePdp {
+                decision: Decision::Allow,
+            }) as Arc<dyn PdpResolver>),
+            &plugins,
+            &noop_delegations(),
+            crate::step::DispatchPhase::Pre,
+            &mut crate::route::RoutePayload::new(serde_json::Value::Null),
+        )
+        .await
+        .decision
+        {
             Decision::Deny { reason, .. } => assert_eq!(reason.as_deref(), Some("rate limit hit")),
             d => panic!("expected Deny from blocking_plugin, got {:?}", d),
         }
@@ -2250,13 +2699,33 @@ mod tests {
     #[tokio::test]
     async fn plugin_error_is_fail_closed() {
         let mut bag = AttributeBag::new();
-        let plugins: std::sync::Arc<dyn PluginInvoker> = std::sync::Arc::new(FakePlugin { decisions: Default::default() });
-        let steps = vec![Effect::Plugin { name: "missing".into() }];
-        match evaluate_effects(&steps, &mut bag, &(Arc::new(FakePdp { decision: Decision::Allow }) as Arc<dyn PdpResolver>), &plugins, &noop_delegations(), crate::step::DispatchPhase::Pre, &mut crate::route::RoutePayload::new(serde_json::Value::Null)).await.decision {
-            Decision::Deny { reason, rule_source } => {
+        let plugins: std::sync::Arc<dyn PluginInvoker> = std::sync::Arc::new(FakePlugin {
+            decisions: Default::default(),
+        });
+        let steps = vec![Effect::Plugin {
+            name: "missing".into(),
+        }];
+        match evaluate_effects(
+            &steps,
+            &mut bag,
+            &(Arc::new(FakePdp {
+                decision: Decision::Allow,
+            }) as Arc<dyn PdpResolver>),
+            &plugins,
+            &noop_delegations(),
+            crate::step::DispatchPhase::Pre,
+            &mut crate::route::RoutePayload::new(serde_json::Value::Null),
+        )
+        .await
+        .decision
+        {
+            Decision::Deny {
+                reason,
+                rule_source,
+            } => {
                 assert!(reason.unwrap().contains("missing"));
                 assert!(rule_source.contains("missing"));
-            }
+            },
             d => panic!("expected Deny, got {:?}", d),
         }
     }
@@ -2272,11 +2741,25 @@ mod tests {
             // A later rule should still fire — taint doesn't short-circuit.
             Effect::When {
                 condition: Expression::Always,
-                body: vec![Effect::Deny { reason: Some("after taint".into()), code: None }],
+                body: vec![Effect::Deny {
+                    reason: Some("after taint".into()),
+                    code: None,
+                }],
                 source: "p[1]".into(),
             },
         ];
-        let eval = evaluate_effects(&steps, &mut bag, &(Arc::new(FakePdp { decision: Decision::Allow }) as Arc<dyn PdpResolver>), &null_plugins(), &noop_delegations(), crate::step::DispatchPhase::Pre, &mut crate::route::RoutePayload::new(serde_json::Value::Null)).await;
+        let eval = evaluate_effects(
+            &steps,
+            &mut bag,
+            &(Arc::new(FakePdp {
+                decision: Decision::Allow,
+            }) as Arc<dyn PdpResolver>),
+            &null_plugins(),
+            &noop_delegations(),
+            crate::step::DispatchPhase::Pre,
+            &mut crate::route::RoutePayload::new(serde_json::Value::Null),
+        )
+        .await;
         match eval.decision {
             Decision::Deny { reason, .. } => assert_eq!(reason.as_deref(), Some("after taint")),
             d => panic!("expected Deny from rule after Taint, got {:?}", d),
@@ -2286,7 +2769,10 @@ mod tests {
         // the policy halted.
         assert_eq!(eval.taints.len(), 1);
         assert_eq!(eval.taints[0].label, "PII");
-        assert_eq!(eval.taints[0].scopes, vec![crate::pipeline::TaintScope::Session]);
+        assert_eq!(
+            eval.taints[0].scopes,
+            vec![crate::pipeline::TaintScope::Session]
+        );
     }
 
     // ----- E2: FieldOp end-to-end through evaluate_steps -----
@@ -2316,7 +2802,9 @@ mod tests {
         let eval = evaluate_effects(
             &steps,
             &mut bag,
-            &(Arc::new(FakePdp { decision: Decision::Allow }) as Arc<dyn PdpResolver>),
+            &(Arc::new(FakePdp {
+                decision: Decision::Allow,
+            }) as Arc<dyn PdpResolver>),
             &null_plugins(),
             &noop_delegations(),
             crate::step::DispatchPhase::Pre,
@@ -2333,7 +2821,10 @@ mod tests {
             Some("[REDACTED]")
         );
         // Other fields untouched.
-        assert_eq!(payload.args.get("name").and_then(|v| v.as_str()), Some("Jane"));
+        assert_eq!(
+            payload.args.get("name").and_then(|v| v.as_str()),
+            Some("Jane")
+        );
     }
 
     #[tokio::test]
@@ -2355,7 +2846,9 @@ mod tests {
         let eval = evaluate_effects(
             &vec![Effect::from(rule)],
             &mut bag,
-            &(Arc::new(FakePdp { decision: Decision::Allow }) as Arc<dyn PdpResolver>),
+            &(Arc::new(FakePdp {
+                decision: Decision::Allow,
+            }) as Arc<dyn PdpResolver>),
             &null_plugins(),
             &noop_delegations(),
             crate::step::DispatchPhase::Pre,
@@ -2386,7 +2879,9 @@ mod tests {
         let eval = evaluate_effects(
             &vec![Effect::from(rule)],
             &mut bag,
-            &(Arc::new(FakePdp { decision: Decision::Allow }) as Arc<dyn PdpResolver>),
+            &(Arc::new(FakePdp {
+                decision: Decision::Allow,
+            }) as Arc<dyn PdpResolver>),
             &null_plugins(),
             &noop_delegations(),
             crate::step::DispatchPhase::Pre,
@@ -2394,10 +2889,13 @@ mod tests {
         )
         .await;
         match eval.decision {
-            Decision::Deny { reason, rule_source } => {
+            Decision::Deny {
+                reason,
+                rule_source,
+            } => {
                 assert!(reason.unwrap_or_default().contains("must start with"));
                 assert_eq!(rule_source, "demo.policy[0]");
-            }
+            },
             other => panic!("expected Deny, got {:?}", other),
         }
     }
@@ -2428,7 +2926,9 @@ mod tests {
         let eval = evaluate_effects(
             &vec![Effect::from(rule)],
             &mut bag,
-            &(Arc::new(FakePdp { decision: Decision::Allow }) as Arc<dyn PdpResolver>),
+            &(Arc::new(FakePdp {
+                decision: Decision::Allow,
+            }) as Arc<dyn PdpResolver>),
             &null_plugins(),
             &noop_delegations(),
             crate::step::DispatchPhase::Pre,
@@ -2437,12 +2937,15 @@ mod tests {
         .await;
 
         match eval.decision {
-            Decision::Deny { reason, rule_source } => {
+            Decision::Deny {
+                reason,
+                rule_source,
+            } => {
                 assert_eq!(reason.as_deref(), Some("blocked by sequential"));
                 // The `code` override on the effect won — `seq.test`
                 // rather than the rule's `test.policy[0]` source.
                 assert_eq!(rule_source, "seq.test");
-            }
+            },
             other => panic!("expected Deny, got {:?}", other),
         }
     }
@@ -2468,7 +2971,9 @@ mod tests {
         let eval = evaluate_effects(
             &vec![Effect::from(rule)],
             &mut bag,
-            &(Arc::new(FakePdp { decision: Decision::Allow }) as Arc<dyn PdpResolver>),
+            &(Arc::new(FakePdp {
+                decision: Decision::Allow,
+            }) as Arc<dyn PdpResolver>),
             &null_plugins(),
             &noop_delegations(),
             crate::step::DispatchPhase::Pre,
@@ -2503,7 +3008,9 @@ mod tests {
         let eval = evaluate_effects(
             &vec![Effect::from(rule)],
             &mut bag,
-            &(Arc::new(FakePdp { decision: Decision::Allow }) as Arc<dyn PdpResolver>),
+            &(Arc::new(FakePdp {
+                decision: Decision::Allow,
+            }) as Arc<dyn PdpResolver>),
             &null_plugins(),
             &noop_delegations(),
             crate::step::DispatchPhase::Pre,
@@ -2514,7 +3021,7 @@ mod tests {
         match eval.decision {
             Decision::Deny { reason, .. } => {
                 assert_eq!(reason.as_deref(), Some("branch 1 denied"));
-            }
+            },
             other => panic!("expected Deny, got {:?}", other),
         }
     }
@@ -2545,7 +3052,9 @@ mod tests {
         let eval = evaluate_effects(
             &vec![Effect::from(rule)],
             &mut bag,
-            &(Arc::new(FakePdp { decision: Decision::Allow }) as Arc<dyn PdpResolver>),
+            &(Arc::new(FakePdp {
+                decision: Decision::Allow,
+            }) as Arc<dyn PdpResolver>),
             &null_plugins(),
             &noop_delegations(),
             crate::step::DispatchPhase::Pre,
@@ -2556,7 +3065,7 @@ mod tests {
         match eval.decision {
             Decision::Deny { reason, .. } => {
                 assert_eq!(reason.as_deref(), Some("idx-0"), "lower-index halt wins");
-            }
+            },
             other => panic!("expected Deny, got {:?}", other),
         }
     }

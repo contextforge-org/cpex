@@ -3,59 +3,74 @@
 # SPDX-License-Identifier: Apache-2.0
 # Authors: Fred Araujo
 #
-# cpex — batteries-included host facade.
+# cpex — host facade.
 #
 # One dependency instead of a dozen: re-exports the host runtime
-# (PluginManager, AplOptions, register_apl) plus the bundled plugin
-# factories, each gated behind a cargo feature. A host enables the
-# plugins it wants and gets them through this single crate rather than
-# pinning apl-cmf / apl-cpex / apl-pdp-* / apl-session-* individually.
+# (PluginManager, AplOptions, register_apl). The bundled plugins, PDPs, and
+# session stores live in `cpex-builtins` and are pulled in only when the
+# `builtins` / `full` feature (or a granular plugin feature) is enabled — so
+# the default `cpex = "0.2"` is the engine alone, no plugins compiled.
 #
-#   cpex = { version = "0.2.0", features = ["jwt", "oauth", "cedar", "cel", "valkey"] }
+#   cpex = { version = "0.2.0", features = ["builtins"] }            # default builtin set
+#   cpex = { version = "0.2.0", features = ["jwt", "cedar"] }        # a minimal subset
 #
 # then `cpex::install_builtins(&mgr)` registers every enabled factory and
 # installs the APL config visitor in one call.
 
 [package]
 name = "cpex"
-description = "CPEX host facade — re-exports the runtime and feature-gated plugin factories."
+description = "CPEX host facade — re-exports the runtime and (optionally) the feature-gated builtin extensions."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+rust-version.workspace = true
+# Use the project's root README as this crate's crates.io page (inherited path
+# is workspace-root-relative; cargo bundles it into the published .crate).
+readme.workspace = true
+
+# Build docs.rs with every extension enabled. The default build is engine-only
+# (`default = []`), which omits cpex-builtins entirely — so without this the
+# builtins re-exports and `install_builtins` are absent and the intra-doc link
+# to `cpex-builtins` does not resolve on docs.rs.
+[package.metadata.docs.rs]
+all-features = true
 
 [features]
-# No plugins are forced on a re-export-only consumer, but the common
-# in-process set is on by default so `cpex = "0.2"` is useful out of the
-# box. Heavier / external-backend plugins (valkey, and future cedarling)
-# stay opt-in, mirroring the workspace's default-members policy.
-default = ["jwt", "oauth", "pii", "audit", "cedar", "cel"]
+# Engine only by default: no builtin plugins are compiled in. Opt into the
+# bundled extensions with `builtins` (the common in-process set), `full`
+# (everything, incl. the Valkey session store), or a granular plugin
+# feature. Each enables the optional `cpex-builtins` dependency and forwards
+# to its matching cpex-builtins feature.
+default = []
 
-# Individual plugins, each pulling exactly one apl-* crate.
-jwt = ["dep:apl-identity-jwt"]
-oauth = ["dep:apl-delegator-oauth"]
-pii = ["dep:apl-pii-scanner"]
-audit = ["dep:apl-audit-logger"]
-cedar = ["dep:apl-pdp-cedar-direct"]
-cel = ["dep:apl-pdp-cel"]
-valkey = ["dep:apl-session-valkey"]
+builtins = ["cpex-builtins/default"]
+full = ["cpex-builtins/full"]
 
-# Everything the facade knows how to wire, including the Valkey session
-# store (redis client + rustls TLS stack).
-full = ["jwt", "oauth", "pii", "audit", "cedar", "cel", "valkey"]
+# Granular passthroughs — each pulls exactly one builtin via cpex-builtins.
+jwt = ["cpex-builtins/identity-jwt"]
+oauth = ["cpex-builtins/delegator-oauth"]
+pii = ["cpex-builtins/pii-scanner"]
+audit = ["cpex-builtins/audit-logger"]
+cedar = ["cpex-builtins/cedar-direct"]
+cel = ["cpex-builtins/cel"]
+valkey = ["cpex-builtins/valkey"]
 
 [dependencies]
 # Host runtime — always present, this is the point of the facade.
-cpex-core = { path = "../cpex-core" }
-apl-core = { path = "../apl-core" }
-apl-cmf = { path = "../apl-cmf" }
-apl-cpex = { path = "../apl-cpex" }
+cpex-core = { workspace = true }
+apl-core = { workspace = true }
+apl-cmf = { workspace = true }
+apl-cpex = { workspace = true }
 
-# Bundled plugin factories — each behind its feature.
-apl-identity-jwt = { path = "../apl-identity-jwt", optional = true }
-apl-delegator-oauth = { path = "../apl-delegator-oauth", optional = true }
-apl-pii-scanner = { path = "../apl-pii-scanner", optional = true }
-apl-audit-logger = { path = "../apl-audit-logger", optional = true }
-apl-pdp-cedar-direct = { path = "../apl-pdp-cedar-direct", optional = true }
-apl-pdp-cel = { path = "../apl-pdp-cel", optional = true }
-apl-session-valkey = { path = "../apl-session-valkey", optional = true }
+# Bundled extension set — present only when a builtins feature is enabled.
+# `default-features = false` so the granular plugin features compose; an
+# enabling feature turns on exactly the cpex-builtins features it names.
+cpex-builtins = { workspace = true, optional = true, default-features = false }
+
+[lints]
+workspace = true

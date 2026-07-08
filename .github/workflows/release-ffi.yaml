@@ -60,12 +60,16 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install Rust toolchain
-        # dtolnay/rust-toolchain is the de-facto rustup action.
-        # `stable` picks the latest stable; pin if we need a floor.
-        uses: dtolnay/rust-toolchain@stable
+        # Pin to the same toolchain as rust-toolchain.toml (1.96.0). Using
+        # @stable here installs the matrix target onto `stable`, but the
+        # repo's rust-toolchain.toml overrides cargo to 1.96.0 at build time,
+        # so the cross (musl) target ends up missing on the toolchain actually
+        # used (E0463: can't find crate for `core`). Pinning installs the
+        # target onto 1.96.0 directly. Mirrors the other workflows.
+        uses: dtolnay/rust-toolchain@1.96.0
         with:
           targets: ${{ matrix.target }}
 
@@ -104,7 +108,7 @@ jobs:
         run: bash scripts/release/build-artifact.sh
 
       - name: Upload tarball + sha256
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           # Unique per-target name so the download step in
           # sign-and-release can merge them all into one dist/.
@@ -119,10 +123,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Download all matrix artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: dist
           # merge-multiple flattens the per-target subdirs into one

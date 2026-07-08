@@ -25,7 +25,9 @@ pub mod types;
 
 // Re-export core types at the hooks level
 pub use adapter::TypedHandlerAdapter;
-pub use metadata::{lookup as lookup_hook_metadata, register_hook_metadata, HookMetadata, HookPhase};
+pub use metadata::{
+    lookup as lookup_hook_metadata, register_hook_metadata, HookMetadata, HookPhase,
+};
 pub use payload::{Extensions, PluginPayload};
 pub use trait_def::{HookHandler, HookTypeDef, PluginResult};
 pub use types::{builtin_hook_types, hook_type_from_str, HookType};

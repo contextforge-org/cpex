@@ -125,7 +125,7 @@ struct VisitorState {
 ///    `kind`, and constructs the resolver during `visit_global`.
 ///
 /// Factories are registered up front by `kind` name (`"cedar-direct"`,
-/// `"cedarling"`, …). The visitor knows nothing about specific PDP
+/// `"opa"`, …). The visitor knows nothing about specific PDP
 /// backends; everything dispatches through `PdpFactory`.
 pub struct AplConfigVisitor {
     state: RwLock<VisitorState>,
@@ -360,11 +360,12 @@ impl ConfigVisitor for AplConfigVisitor {
         _mgr: &Arc<PluginManager>,
         yaml: &serde_yaml::Value,
     ) -> Result<(), VisitorError> {
+        reject_legacy_apl_keys("global", yaml)?;
         let Some(apl_block) = apl_subblock(yaml) else {
             return Ok(());
         };
 
-        // Process `apl.pdp[]` before stacking the policy/post_policy
+        // Process `apl.pdp[]` before stacking the pre/post-invocation
         // layer — route handlers that reference PDPs need them
         // resolvable by the time `visit_route` runs.
         if let Some(pdp_entries) = apl_block.get("pdp").and_then(|v| v.as_sequence()) {
@@ -382,9 +383,10 @@ impl ConfigVisitor for AplConfigVisitor {
         // The `pdp:` / `session_store:` sub-keys aren't APL DSL fields;
         // strip them before handing the block to
         // `compile_policy_block_value` so the compiler doesn't see unknown
-        // keys. `compile_policy_block_value` accepts maps with `policy:` /
-        // `post_policy:` / `args:` / `result:` / `plugins:` (and inert
-        // fields it ignores), so a shallow strip on a clone is enough.
+        // keys. `compile_policy_block_value` accepts maps with
+        // `authorization:` / `pre_invocation:` / `post_invocation:` /
+        // `args:` / `result:` / `plugins:` (and inert fields it ignores),
+        // so a shallow strip on a clone is enough.
         let policy_only = strip_non_dsl_keys(&apl_block);
         let compiled = compile_policy_block_value("global.apl", &policy_only)
             .map_err(|e| Box::new(e) as VisitorError)?;
@@ -401,10 +403,11 @@ impl ConfigVisitor for AplConfigVisitor {
         entity_type: &str,
         yaml: &serde_yaml::Value,
     ) -> Result<(), VisitorError> {
+        let source = format!("global.defaults.{}.apl", entity_type);
+        reject_legacy_apl_keys(&source, yaml)?;
         let Some(apl_block) = apl_subblock(yaml) else {
             return Ok(());
         };
-        let source = format!("global.defaults.{}.apl", entity_type);
         warn_if_global_only_key_at_nonglobal_scope(&source, &apl_block);
         let compiled = compile_policy_block_value(&source, &apl_block)
             .map_err(|e| Box::new(e) as VisitorError)?;
@@ -422,10 +425,11 @@ impl ConfigVisitor for AplConfigVisitor {
         tag: &str,
         yaml: &serde_yaml::Value,
     ) -> Result<(), VisitorError> {
+        let source = format!("global.policies.{}.apl", tag);
+        reject_legacy_apl_keys(&source, yaml)?;
         let Some(apl_block) = apl_subblock(yaml) else {
             return Ok(());
         };
-        let source = format!("global.policies.{}.apl", tag);
         warn_if_global_only_key_at_nonglobal_scope(&source, &apl_block);
         let compiled = compile_policy_block_value(&source, &apl_block)
             .map_err(|e| Box::new(e) as VisitorError)?;
@@ -446,6 +450,7 @@ impl ConfigVisitor for AplConfigVisitor {
         // Extract the route's APL block (if any) and the entity identity
         // we need for annotate_route. A route without an APL block AND
         // without inherited layers contributes nothing — skip.
+        reject_legacy_apl_keys("route", yaml)?;
         let route_apl = apl_subblock(yaml);
         let (entity_type, entity_names) = match entity_identity(parsed) {
             Some(e) => e,
@@ -454,7 +459,7 @@ impl ConfigVisitor for AplConfigVisitor {
                     "APL visitor: route has no tool/resource/prompt/llm match — skipping",
                 );
                 return Ok(());
-            }
+            },
         };
         if let Some(block) = &route_apl {
             warn_if_global_only_key_at_nonglobal_scope(&format!("routes.{entity_type}"), block);
@@ -569,7 +574,7 @@ impl ConfigVisitor for AplConfigVisitor {
                         "APL visitor: no CMF hook pair for entity_type — skipping route",
                     );
                     continue;
-                }
+                },
             };
 
             // Snapshot the active session store (a `global.apl.session_store`
@@ -757,7 +762,9 @@ fn warn_unreferenced_plugin_overrides(route: &CompiledRoute) {
         return;
     }
     let mut referenced: std::collections::HashSet<String> =
-        crate::dispatch_plan::collect_plugin_names(route).into_iter().collect();
+        crate::dispatch_plan::collect_plugin_names(route)
+            .into_iter()
+            .collect();
     referenced.extend(crate::dispatch_plan::collect_delegate_plugin_names(route));
     for name in route.plugin_overrides.keys() {
         if !referenced.contains(name) {
@@ -778,6 +785,40 @@ fn warn_unreferenced_plugin_overrides(route: &CompiledRoute) {
 /// source of truth shared by [`strip_non_dsl_keys`] and
 /// [`warn_if_global_only_key_at_nonglobal_scope`].
 const GLOBAL_ONLY_NON_DSL_KEYS: [&str; 2] = ["pdp", "session_store"];
+
+/// Legacy APL config keys, mapped to their replacements. The flat-key path
+/// in [`apl_subblock`] only copies recognized keys into the synthetic block,
+/// so a config still using an old name would otherwise be *silently dropped*
+/// here — a fail-open for `policy` / `post_policy`. We reject them loudly.
+/// (The `apl:`-wrapped form is caught downstream by apl-core instead.)
+const RENAMED_APL_KEYS: [(&str, &str); 2] = [
+    (
+        "policy",
+        "authorization.pre_invocation (or flat pre_invocation)",
+    ),
+    (
+        "post_policy",
+        "authorization.post_invocation (or flat post_invocation)",
+    ),
+];
+
+/// Fail loudly when a section carries a renamed legacy APL key directly
+/// (flat form). Guards the fail-open where the flat-key filter in
+/// [`apl_subblock`] would otherwise drop an unrecognized `policy:` block.
+fn reject_legacy_apl_keys(scope: &str, yaml: &serde_yaml::Value) -> Result<(), VisitorError> {
+    let Some(map) = yaml.as_mapping() else {
+        return Ok(());
+    };
+    for (old, new) in RENAMED_APL_KEYS {
+        if map.contains_key(serde_yaml::Value::String(old.to_string())) {
+            return Err(format!(
+                "in `{scope}`: config field `{old}` was renamed to `{new}` — update your config",
+            )
+            .into());
+        }
+    }
+    Ok(())
+}
 
 /// Strip the global-only wiring sub-keys ([`GLOBAL_ONLY_NON_DSL_KEYS`])
 /// from an `apl:` mapping so the remainder can be handed to
@@ -821,9 +862,14 @@ fn on_error_to_string(on_err: &cpex_core::plugin::OnError) -> String {
 /// `plugins` is intentionally absent here — it is shape-ambiguous (a
 /// structural plugin-ref *list* vs an apl-override *map*) and handled
 /// separately in [`apl_subblock`].
-const FLAT_APL_KEYS: [&str; 6] = [
-    "policy",
-    "post_policy",
+///
+/// `authorization` is the nested `{ pre_invocation, post_invocation }`
+/// block; it is copied through verbatim and un-nested by apl-core's
+/// `compile_policy_block_value`, so nesting lives in exactly one place.
+const FLAT_APL_KEYS: [&str; 7] = [
+    "pre_invocation",
+    "post_invocation",
+    "authorization",
     "args",
     "result",
     "pdp",
@@ -832,9 +878,9 @@ const FLAT_APL_KEYS: [&str; 6] = [
 
 /// Pull a section's APL block out of its raw YAML.
 ///
-/// The explicit `apl:` wrapper (`route -> apl -> policy`) takes
+/// The explicit `apl:` wrapper (`route -> apl -> authorization`) takes
 /// precedence. When it is absent, APL terms written directly on the
-/// section (`route -> policy`) are accepted too: a synthetic block is
+/// section (`route -> authorization`) are accepted too: a synthetic block is
 /// assembled from the recognized [`FLAT_APL_KEYS`] present on the
 /// container, plus `plugins` when (and only when) it is a *mapping* —
 /// the apl-override shape. A structural `plugins:` *list*
@@ -888,22 +934,31 @@ mod tests {
 
     #[test]
     fn apl_wrapper_is_returned_as_is() {
-        let v = yaml("apl:\n  policy:\n    - \"deny\"\n");
+        let v = yaml("apl:\n  pre_invocation:\n    - \"deny\"\n");
         let block = apl_subblock(&v).expect("wrapper present");
-        assert!(block.get("policy").is_some(), "wrapper block exposes policy");
+        assert!(
+            block.get("pre_invocation").is_some(),
+            "wrapper block exposes pre_invocation"
+        );
     }
 
     #[test]
     fn null_apl_wrapper_is_none() {
         let v = yaml("apl: null\n");
-        assert!(apl_subblock(&v).is_none(), "explicit null apl => no contribution");
+        assert!(
+            apl_subblock(&v).is_none(),
+            "explicit null apl => no contribution"
+        );
     }
 
     #[test]
-    fn flat_policy_without_wrapper_is_collected() {
-        let v = yaml("tool: get_weather\npolicy:\n  - \"deny\"\n");
-        let block = apl_subblock(&v).expect("flat policy recognized");
-        assert!(block.get("policy").is_some(), "flat policy lifted into the block");
+    fn flat_pre_invocation_without_wrapper_is_collected() {
+        let v = yaml("tool: get_weather\npre_invocation:\n  - \"deny\"\n");
+        let block = apl_subblock(&v).expect("flat pre_invocation recognized");
+        assert!(
+            block.get("pre_invocation").is_some(),
+            "flat pre_invocation lifted into the block"
+        );
         assert!(
             block.get("tool").is_none(),
             "structural keys must not leak into the apl block",
@@ -917,7 +972,9 @@ mod tests {
         // on it — symmetric with the `apl:`-wrapped form and with `pdp:`.
         let v = yaml("session_store:\n  kind: valkey\n  endpoint: localhost:6379\n");
         let block = apl_subblock(&v).expect("flat session_store recognized");
-        let ss = block.get("session_store").expect("session_store lifted into the block");
+        let ss = block
+            .get("session_store")
+            .expect("session_store lifted into the block");
         assert_eq!(
             ss.get("kind").and_then(|k| k.as_str()),
             Some("valkey"),
@@ -944,20 +1001,23 @@ mod tests {
     #[test]
     fn section_without_apl_terms_is_none() {
         let v = yaml("tool: get_weather\n");
-        assert!(apl_subblock(&v).is_none(), "no APL terms => no contribution");
+        assert!(
+            apl_subblock(&v).is_none(),
+            "no APL terms => no contribution"
+        );
     }
 
     #[test]
     fn explicit_wrapper_wins_over_flat_keys() {
-        let v = yaml("apl:\n  policy:\n    - \"allow\"\npolicy:\n  - \"deny\"\n");
+        let v = yaml("apl:\n  pre_invocation:\n    - \"allow\"\npre_invocation:\n  - \"deny\"\n");
         let block = apl_subblock(&v).expect("wrapper present");
-        let policy = block
-            .get("policy")
+        let pre_invocation = block
+            .get("pre_invocation")
             .and_then(|p| p.as_sequence())
-            .expect("policy sequence");
-        assert_eq!(policy.len(), 1);
+            .expect("pre_invocation sequence");
+        assert_eq!(pre_invocation.len(), 1);
         assert_eq!(
-            policy[0].as_str(),
+            pre_invocation[0].as_str(),
             Some("allow"),
             "the explicit apl wrapper takes precedence over flat top-level keys",
         );
@@ -970,9 +1030,10 @@ mod tests {
         // either global-only wiring key (`pdp` / `session_store`), or for
         // none present. (The drop semantics are exercised end-to-end; here
         // we just guard the helper's contract.)
-        let with_pdp = yaml("policy:\n  - \"deny\"\npdp:\n  - kind: cel\n");
-        let with_session_store = yaml("policy:\n  - \"deny\"\nsession_store:\n  kind: valkey\n");
-        let without = yaml("policy:\n  - \"deny\"\n");
+        let with_pdp = yaml("pre_invocation:\n  - \"deny\"\npdp:\n  - kind: cel\n");
+        let with_session_store =
+            yaml("pre_invocation:\n  - \"deny\"\nsession_store:\n  kind: valkey\n");
+        let without = yaml("pre_invocation:\n  - \"deny\"\n");
         warn_if_global_only_key_at_nonglobal_scope("route", &with_pdp);
         warn_if_global_only_key_at_nonglobal_scope("routes.tool", &with_session_store);
         warn_if_global_only_key_at_nonglobal_scope("global.defaults.tool.apl", &without);
@@ -981,23 +1042,29 @@ mod tests {
     #[test]
     fn unreferenced_plugin_override_is_detectable_and_lint_is_safe() {
         use super::{compile_policy_block_value, warn_unreferenced_plugin_overrides};
-        // A route configures two plugins but its policy only activates one:
+        // A route configures two plugins but its pre_invocation only activates one:
         // `used` is referenced by a `plugin(...)` step, `unused` is only
         // configured. The lint relies on `collect_plugin_names` seeing the
         // referenced set; verify that linkage, then that the helper runs.
         let block = yaml(
-            "policy:\n  - \"plugin(used)\"\n\
+            "pre_invocation:\n  - \"plugin(used)\"\n\
              plugins:\n  used:\n    on_error: ignore\n  unused:\n    on_error: ignore\n",
         );
         let route = compile_policy_block_value("test", &block).expect("compiles");
 
         let referenced = crate::dispatch_plan::collect_plugin_names(&route);
-        assert!(referenced.contains(&"used".to_string()), "policy step is referenced");
+        assert!(
+            referenced.contains(&"used".to_string()),
+            "pre_invocation step is referenced"
+        );
         assert!(
             !referenced.contains(&"unused".to_string()),
             "config-only override is not a reference",
         );
-        assert!(route.plugin_overrides.contains_key("unused"), "override was compiled in");
+        assert!(
+            route.plugin_overrides.contains_key("unused"),
+            "override was compiled in"
+        );
 
         // Must not panic; it warns on `unused` and stays silent on `used`.
         warn_unreferenced_plugin_overrides(&route);

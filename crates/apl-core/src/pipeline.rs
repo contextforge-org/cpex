@@ -68,24 +68,40 @@ pub enum Stage {
     Type(TypeCheck),
     /// `regex("pattern")` — parser captures the pattern; evaluator stubbed
     /// until we add the `regex` crate dependency.
-    Regex { pattern: String },
+    Regex {
+        pattern: String,
+    },
     /// `validate(name)` — named validator dispatch; evaluator stubbed.
-    Validate { name: String },
+    Validate {
+        name: String,
+    },
     /// `len(..N)`, `len(N..M)`, `len(N..)` — string length bounds.
-    Length { min: Option<usize>, max: Option<usize> },
+    Length {
+        min: Option<usize>,
+        max: Option<usize>,
+    },
     /// Bare range literal `N..M`, `..M`, `N..`, with optional `k`/`K`/`m`/`M`
     /// numeric suffixes. Integer-only per DSL §4.3.
-    Range { min: Option<i64>, max: Option<i64> },
+    Range {
+        min: Option<i64>,
+        max: Option<i64>,
+    },
     /// `enum(a, b, c)` — value must equal one of the listed strings.
-    Enum { values: Vec<String> },
+    Enum {
+        values: Vec<String>,
+    },
 
     // ----- Transforms (produce a new value) -----
     /// `mask(N)` — replace all but last N chars with `*`.
-    Mask { keep_last: usize },
+    Mask {
+        keep_last: usize,
+    },
     /// `redact` (unconditional) or `redact(!condition)` (conditional).
     /// Replaces value with `[REDACTED]` when condition is true (or always,
     /// if no condition).
-    Redact { condition: Option<Expression> },
+    Redact {
+        condition: Option<Expression>,
+    },
     /// `omit` — drop the field from output entirely. No conditional form
     /// per DSL §4.1 — use a policy rule for conditional omit.
     Omit,
@@ -93,9 +109,16 @@ pub enum Stage {
     Hash,
 
     // ----- Effects (deferred to step 5c — IR captured, eval stubbed) -----
-    Taint { label: String, scopes: Vec<TaintScope> },
-    Plugin { name: String },
-    Scan { kind: ScanKind },
+    Taint {
+        label: String,
+        scopes: Vec<TaintScope>,
+    },
+    Plugin {
+        name: String,
+    },
+    Scan {
+        kind: ScanKind,
+    },
 }
 
 /// Sequence of stages applied to one field's value.
@@ -106,9 +129,15 @@ pub struct Pipeline {
 }
 
 impl Pipeline {
-    pub fn new() -> Self { Self::default() }
-    pub fn push(&mut self, stage: Stage) { self.stages.push(stage); }
-    pub fn is_empty(&self) -> bool { self.stages.is_empty() }
+    pub fn new() -> Self {
+        Self::default()
+    }
+    pub fn push(&mut self, stage: Stage) {
+        self.stages.push(stage);
+    }
+    pub fn is_empty(&self) -> bool {
+        self.stages.is_empty()
+    }
 }
 
 /// Attaches a pipeline to a specific field name in the args or result phase.

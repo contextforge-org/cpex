@@ -69,10 +69,13 @@ pub(crate) enum Step {
 
     /// `taint(label[, scope])` — apply a taint label. Always succeeds;
     /// never produces a Deny. SessionStore dispatch happens in apl-cpex.
-    Taint { label: String, scopes: Vec<TaintScope> },
+    Taint {
+        label: String,
+        scopes: Vec<TaintScope>,
+    },
 }
 
-/// One delegation invocation inside `policy:` or `post_policy:`.
+/// One delegation invocation inside `pre_invocation:` or `post_invocation:`.
 ///
 /// At runtime the apl-cpex `DelegationInvoker` constructs a
 /// `cpex_core::delegation::DelegationPayload` from
@@ -104,7 +107,7 @@ pub(crate) enum Step {
 /// rules.
 ///
 /// For fan-out flows that need multiple independently-queryable
-/// grants, split into `policy:` + `post_policy:` or reach for a
+/// grants, split into `pre_invocation:` + `post_invocation:` or reach for a
 /// future per-step `as:` alias (not in v0; see the design doc's
 /// "Open design questions" section).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -151,19 +154,12 @@ pub struct PdpCall {
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum PdpDialect {
-    /// Bare Cedar policy evaluation (`apl-pdp-cedar-direct`).
+    /// Bare Cedar policy evaluation (`cpex-pdp-cedar-direct`).
     Cedar,
-    /// Cedarling-mediated Cedar evaluation — same language but
-    /// adds signed policy stores, multi-issuer JWT validation, and
-    /// (with Lock Server) centralized policy management. Distinct
-    /// from `Cedar` so both can coexist in a single `PdpRouter`;
-    /// route YAML can target either with `cedar:(...)` or
-    /// `cedarling:(...)` keys.
-    Cedarling,
     Opa,
     AuthZen,
     NeMo,
-    /// CEL (Common Expression Language) evaluation — `apl-pdp-cel`.
+    /// CEL (Common Expression Language) evaluation — `cpex-pdp-cel`.
     /// The `cel:` step carries an `expr:` string that must evaluate to a
     /// boolean against the policy `AttributeBag` (exposed to CEL as nested
     /// namespaces: `subject.id`, `delegation.depth`, `session.labels`, …).
@@ -177,13 +173,11 @@ pub enum PdpDialect {
 }
 
 impl PdpDialect {
-    /// Parse a YAML key prefix like `cedar`, `cedarling`, `opa`,
-    /// `authzen`, `nemo` into the matching `PdpDialect`. Unknown
-    /// dialects become `Custom`.
+    /// Parse a YAML key prefix like `cedar`, `opa`, `authzen`, `nemo`
+    /// into the matching `PdpDialect`. Unknown dialects become `Custom`.
     pub fn from_key(key: &str) -> Self {
         match key {
             "cedar" => Self::Cedar,
-            "cedarling" => Self::Cedarling,
             "opa" => Self::Opa,
             "authzen" => Self::AuthZen,
             "nemo" => Self::NeMo,
@@ -197,9 +191,9 @@ impl PdpDialect {
 // Resolver traits
 // =====================================================================
 
-/// External policy-decision dispatch. Implemented by Cedar/Cedarling, OPA
-/// HTTP clients, AuthZen clients, NeMo Guardrails — anything that can
-/// answer "given this call, allow or deny?" against a request context.
+/// External policy-decision dispatch. Implemented by Cedar, OPA HTTP
+/// clients, AuthZen clients, NeMo Guardrails — anything that can answer
+/// "given this call, allow or deny?" against a request context.
 ///
 /// `apl-cpex` provides the bridge from CPEX plugins (e.g. `cedar-direct`)
 /// to this trait so the host doesn't have to know about the plugin types.
@@ -217,7 +211,7 @@ pub trait PdpResolver: Send + Sync {
 }
 
 /// Build a [`PdpResolver`] from a unified-config block. Implemented per
-/// PDP backend (cedar-direct, cedarling, opa, …) and registered with
+/// PDP backend (cedar-direct, opa, …) and registered with
 /// the apl-cpex visitor so unified-config YAML can declare PDPs
 /// without the host pre-constructing them in code.
 ///
@@ -233,7 +227,7 @@ pub trait PdpResolver: Send + Sync {
 pub trait PdpFactory: Send + Sync {
     /// Identifies which `kind:` in a config block this factory handles.
     /// Convention: kebab-case matching the published PDP product name
-    /// (`"cedar-direct"`, `"cedarling"`, `"opa"`, …).
+    /// (`"cedar-direct"`, `"opa"`, …).
     fn kind(&self) -> &str;
 
     /// Build a resolver from the rest of the PDP config block (everything
@@ -251,10 +245,10 @@ pub trait PdpFactory: Send + Sync {
 /// post phases (e.g. `cmf.tool_pre_invoke` AND `cmf.tool_post_invoke`).
 ///
 /// APL's four phases map to two dispatch phases:
-///   * `args:` field stages    → `Pre`
-///   * `policy:` steps         → `Pre`
-///   * `result:` field stages  → `Post`
-///   * `post_policy:` steps    → `Post`
+///   * `args:` field stages          → `Pre`
+///   * `pre_invocation:` steps        → `Pre`
+///   * `result:` field stages        → `Post`
+///   * `post_invocation:` steps       → `Post`
 ///
 /// Plugins that need to discriminate `args` vs `policy` (same `Pre`
 /// from the dispatcher's perspective) inspect `PluginContext::hook_name()`
@@ -281,7 +275,7 @@ pub enum DispatchPhase {
 /// plugin registered for multiple hooks.
 #[derive(Debug, Clone, Copy)]
 pub enum PluginInvocation<'a> {
-    /// Called from a `policy:` or `post_policy:` step. The plugin operates
+    /// Called from a `pre_invocation:` or `post_invocation:` step. The plugin operates
     /// on whatever typed payload the invoker was bound to.
     Step { phase: DispatchPhase },
     /// Called inside an `args:` / `result:` pipe chain on one field.
@@ -338,10 +332,7 @@ pub trait DelegationInvoker: Send + Sync {
     /// `step.config_override` is layered on top of the plugin's
     /// default config and threaded through the standard per-call
     /// override pathway.
-    async fn delegate(
-        &self,
-        step: &DelegateStep,
-    ) -> Result<DelegationOutcome, DelegationError>;
+    async fn delegate(&self, step: &DelegateStep) -> Result<DelegationOutcome, DelegationError>;
 }
 
 /// What a delegation invocation returned.
@@ -399,10 +390,7 @@ pub struct NoopDelegationInvoker;
 
 #[async_trait]
 impl DelegationInvoker for NoopDelegationInvoker {
-    async fn delegate(
-        &self,
-        step: &DelegateStep,
-    ) -> Result<DelegationOutcome, DelegationError> {
+    async fn delegate(&self, step: &DelegateStep) -> Result<DelegationOutcome, DelegationError> {
         Err(DelegationError::NotFound(step.plugin_name.clone()))
     }
 }
@@ -442,7 +430,11 @@ pub struct PluginOutcome {
 impl PluginOutcome {
     /// Convenience for the common "allow, no taints, no value change" case.
     pub fn allow() -> Self {
-        Self { decision: Decision::Allow, taints: vec![], modified_value: None }
+        Self {
+            decision: Decision::Allow,
+            taints: vec![],
+            modified_value: None,
+        }
     }
 }
 
@@ -474,10 +466,14 @@ pub enum PluginError {
 
 impl Step {
     /// Wrap a `Rule` as a `Step`. Saves typing in tests and parser code.
-    pub fn rule(r: Rule) -> Self { Step::Rule(r) }
+    pub fn rule(r: Rule) -> Self {
+        Step::Rule(r)
+    }
 
     /// Returns true if this step is a plain rule (no async dispatch needed).
-    pub fn is_rule(&self) -> bool { matches!(self, Step::Rule(_)) }
+    pub fn is_rule(&self) -> bool {
+        matches!(self, Step::Rule(_))
+    }
 }
 
 /// Bag keys the delegation step writes after a successful dispatch.
@@ -522,7 +518,6 @@ mod tests {
     #[test]
     fn from_key_maps_known_dialects() {
         assert_eq!(PdpDialect::from_key("cedar"), PdpDialect::Cedar);
-        assert_eq!(PdpDialect::from_key("cedarling"), PdpDialect::Cedarling);
         assert_eq!(PdpDialect::from_key("opa"), PdpDialect::Opa);
         assert_eq!(PdpDialect::from_key("authzen"), PdpDialect::AuthZen);
         assert_eq!(PdpDialect::from_key("nemo"), PdpDialect::NeMo);

@@ -17,13 +17,19 @@ use cpex_core::extensions::MetaExtension;
 use std::collections::HashSet;
 
 pub fn extract_meta(meta: &MetaExtension, bag: &mut AttributeBag) {
-    if let Some(v) = &meta.entity_type { bag.set("meta.entity_type", v.clone()); }
-    if let Some(v) = &meta.entity_name { bag.set("meta.entity_name", v.clone()); }
+    if let Some(v) = &meta.entity_type {
+        bag.set("meta.entity_type", v.clone());
+    }
+    if let Some(v) = &meta.entity_name {
+        bag.set("meta.entity_name", v.clone());
+    }
     if !meta.tags.is_empty() {
         let tags: HashSet<String> = meta.tags.iter().cloned().collect();
         bag.set("meta.tags", tags);
     }
-    if let Some(v) = &meta.scope { bag.set("meta.scope", v.clone()); }
+    if let Some(v) = &meta.scope {
+        bag.set("meta.scope", v.clone());
+    }
     for (k, v) in &meta.properties {
         bag.set(format!("meta.properties.{}", k), v.clone());
     }
@@ -41,9 +47,7 @@ mod tests {
             entity_name: Some("get_compensation".into()),
             tags: HashSet::from(["pii".to_string(), "sensitive".to_string()]),
             scope: Some("hr".into()),
-            properties: HashMap::from([
-                ("owner".to_string(), "compliance".to_string()),
-            ]),
+            properties: HashMap::from([("owner".to_string(), "compliance".to_string())]),
         };
         let mut bag = AttributeBag::new();
         extract_meta(&meta, &mut bag);

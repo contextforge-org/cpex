@@ -1,31 +1,136 @@
 # ===============================================================
-# CI - Main Continuous Integration Pipeline
+# CI - Rust lint, test, examples, and docs gate
 # ===============================================================
 
 name: CI
 
 on:
   push:
-    branches: ["main"]
+    branches: ["main", "dev"]
   pull_request:
     types: [opened, synchronize, ready_for_review]
-    branches: ["main"]
+    branches: ["main", "dev"]
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
   contents: read
 
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+
 jobs:
   lint:
-    name: Lint & Static Analysis
-    uses: ./.github/workflows/lint.yml
+    name: Lint (fmt + clippy)
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+      - name: Install Rust 1.96.0
+        uses: dtolnay/rust-toolchain@1.96.0
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - name: rustfmt
+        run: cargo fmt --all -- --check
+      - name: clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+  unused-deps:
+    name: Unused deps (advisory)
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Advisory only: cargo-machete static analysis false-positives on
+    # macro/derive-only crates (thiserror, tracing, serde, async-trait). Surfaced
+    # as a non-blocking signal until the reports are triaged in a follow-up.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+      - name: Install cargo-machete
+        run: cargo install cargo-machete --locked
+      - run: cargo machete
 
   test:
-    name: Tests
-    uses: ./.github/workflows/tests.yaml
+    name: Test (workspace)
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+      - name: Install Rust 1.96.0
+        uses: dtolnay/rust-toolchain@1.96.0
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo test
+        # Valkey/testcontainers integration tests are `#[ignore]`d by default
+        # and run out-of-band, so this needs no Docker daemon.
+        run: cargo test --workspace
+
+  examples:
+    name: Examples build (Rust + Go FFI)
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+      - name: Install Rust 1.96.0
+        uses: dtolnay/rust-toolchain@1.96.0
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.4"
+      - uses: Swatinem/rust-cache@v2
+      # Builds every Rust example plus the Go demo (which links the release
+      # cpex-ffi cdylib) — the cheapest guard against stale public-API usage.
+      - name: make examples-build
+        run: make examples-build
+
+  package:
+    name: Package (publish dry-run)
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+      - name: Install Rust 1.96.0
+        uses: dtolnay/rust-toolchain@1.96.0
+      # NOTE: intentionally NO Swatinem/rust-cache here, AND we wipe the registry
+      # index before packaging. The committed Cargo.lock is byte-identical to a
+      # fresh x86_64 resolution (verified in an amd64 container), so the lock is
+      # not the problem. The failure comes from stale `~/.cargo/registry` state
+      # the hosted runner carries: under the sparse protocol `cargo package
+      # --locked` consults that partial local index, decides it can't satisfy the
+      # committed lock, and aborts with "cannot update the lock file ... --locked"
+      # ~1.4s in (too fast for a real network fetch). Removing the index forces a
+      # clean fetch, against which Cargo.lock resolves cleanly — keeping this
+      # dry-run deterministic.
+      # Continuous dry-run of the crates.io release: build + verify a .crate for
+      # every publishable member without uploading. Catches publishability
+      # regressions (missing version reqs, packaging-excluded files, broken
+      # inter-crate deps) on every push/PR, long before a release tag. Mirrors
+      # `make publish-dry` and the release workflow's dry-run. The two
+      # `publish = false` FFI crates are excluded (not part of the registry set).
+      - name: cargo package (no upload)
+        run: |
+          # Drop any pre-seeded registry index/cache so cargo fetches fresh and
+          # --locked resolves against a clean index (see note above).
+          rm -rf ~/.cargo/registry/index ~/.cargo/registry/cache
+          cargo package --workspace --locked --exclude cpex-ffi --exclude cpex-demo-ffi
 
   docs:
     name: Docs Build

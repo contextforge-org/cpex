@@ -1,256 +1,74 @@
 ---
-title: "Patterns & Best Practices"
-weight: 110
+title: "Patterns"
+weight: 100
 ---
 
-# Patterns & Best Practices
+# Patterns
 
-Curated patterns for building production plugin pipelines.
+Production patterns for writing and rolling out CPEX policy. Each is expressed in APL and builds on the concepts in the earlier pages.
 
----
+## Layered enforcement
 
-## Layered Security Pipeline
+Order effects cheapest-gate-first so expensive work only runs for requests that survive the early checks. Attribute gates, then a PDP call, then delegation:
 
-Compose modes and priorities to build defense-in-depth. Each layer has a specific responsibility:
+```yaml
+pre_invocation:
+  - "require(team.engineering | team.security)"   # cheap
+  - cedar: { action: 'Action::"read"', resource: { type: Repo, id: ${args.repo_name} } }
+  - "delegate(github-oauth, target: github-api, permissions: [repo:read])"   # expensive, last
+```
+
+A deny at any layer halts the rest, so you never mint a token for a request a later layer would reject.
+
+## Shadow rollout with audit mode
+
+Before a new policy blocks traffic, run it in `audit` mode to observe what it would do without enforcing. An audit-mode plugin records decisions but cannot block, so you can measure a policy's deny rate against real traffic, then switch it to `sequential` once the rate is what you expect.
 
 ```yaml
 plugins:
-  # Layer 1: hard enforcement — blocks requests that violate policy
-  - name: token_budget
-    kind: security.TokenBudgetPlugin
-    mode: sequential
-    priority: 10
-    hooks: [tool_pre_invoke]
-
-  # Layer 2: content policy — blocks prohibited content
-  - name: content_policy
-    kind: security.ContentPolicyPlugin
-    mode: sequential
-    priority: 20
-    hooks: [tool_pre_invoke, agent_pre_invoke]
-
-  # Layer 3: transformation — redacts PII without blocking
-  - name: pii_redactor
-    kind: privacy.PIIRedactionPlugin
-    mode: transform
-    priority: 30
-    hooks: [tool_pre_invoke, tool_post_invoke]
-
-  # Layer 4: background logging — never blocks or slows
-  - name: audit_logger
-    kind: observability.AuditLogPlugin
-    mode: fire_and_forget
-    priority: 100
-    hooks: [tool_pre_invoke, tool_post_invoke, prompt_pre_fetch]
+  - name: new-policy-check
+    kind: validator/pii-scan
+    mode: audit          # observe only; flip to sequential to enforce
+    on_error: ignore
 ```
 
-Execution order: `token_budget` (sequential) → `content_policy` (sequential) → `pii_redactor` (transform) → `audit_logger` (fire_and_forget). Each layer can only do what its mode permits.
+## Input and output guardrails
 
----
-
-## Graceful Policy Rollout with Audit Mode
-
-Deploy new policies safely by starting in `audit` mode. Violations are logged but don't block traffic:
+Validate and transform on the way in with `args`, redact on the way out with `result`. The two phases bracket the operation:
 
 ```yaml
-  - name: new_content_policy_v2
-    kind: experimental.ContentPolicyV2
-    mode: audit          # observe only — no blocking, no modifications
-    priority: 15
-    hooks: [tool_pre_invoke]
+routes:
+  get_employee:
+    args:
+      employee_id: "str | regex(\"^[0-9]{6}$\")"   # reject malformed input
+    result:
+      ssn: "str | redact(!perm.view_ssn)"           # redact output by permission
 ```
 
-Monitor your logs for violations. When you're confident the policy is tuned correctly, promote to `sequential`:
+## Cross-request information flow
+
+Taint a session when it touches sensitive data, then gate later operations on the label. The control spans requests and the model cannot route around it (see [Session Tainting]({{< relref "/docs/apl/tainting" >}})):
 
 ```yaml
-    mode: sequential     # now enforcing
+routes:
+  get_compensation:
+    pre_invocation: [ "require(role.hr)", "taint(secret, session)" ]
+  send_email:
+    pre_invocation:
+      - "require(perm.email_send)"
+      - "security.labels contains \"secret\": deny('write-down blocked', 'session_tainted')"
 ```
 
-This gives you zero-risk rollout for any new policy.
+## Least-privilege effects
 
----
-
-## Input/Output Guardrails
-
-Apply the same `transform` plugin to both pre- and post-invoke hooks to sanitize inputs and outputs:
-
-```python
-import re
-
-from cpex.framework import Plugin, PluginConfig, PluginContext, ToolPreInvokePayload, ToolPreInvokeResult, ToolPostInvokePayload, ToolPostInvokeResult
-
-CREDIT_CARD = re.compile(r"\b\d{4}[- ]?\d{4}[- ]?\d{4}[- ]?\d{4}\b")
-
-
-class PIIGuardrailPlugin(Plugin):
-    async def tool_pre_invoke(
-        self, payload: ToolPreInvokePayload, context: PluginContext
-    ) -> ToolPreInvokeResult:
-        if not payload.args:
-            return ToolPreInvokeResult(continue_processing=True)
-        cleaned = {
-            k: CREDIT_CARD.sub("[CARD-REDACTED]", v) if isinstance(v, str) else v
-            for k, v in payload.args.items()
-        }
-        return ToolPreInvokeResult(
-            continue_processing=True,
-            modified_payload=payload.model_copy(update={"args": cleaned}),
-        )
-
-    async def tool_post_invoke(
-        self, payload: ToolPostInvokePayload, context: PluginContext
-    ) -> ToolPostInvokeResult:
-        if isinstance(payload.result, str):
-            cleaned = CREDIT_CARD.sub("[CARD-REDACTED]", payload.result)
-            return ToolPostInvokeResult(
-                continue_processing=True,
-                modified_payload=payload.model_copy(update={"result": cleaned}),
-            )
-        return ToolPostInvokeResult(continue_processing=True)
-```
-
-Configure with `mode: transform` so the plugin can modify payloads but never accidentally block the pipeline.
-
----
-
-## Cross-Hook State
-
-Use `PluginContext.state` to pass data between hooks within the same request lifecycle. The context persists across pre- and post-invoke hooks for the same request:
-
-```python
-import time
-
-from cpex.framework import Plugin, PluginContext, ToolPreInvokePayload, ToolPreInvokeResult, ToolPostInvokePayload, ToolPostInvokeResult
-
-
-class LatencyTrackerPlugin(Plugin):
-    async def tool_pre_invoke(
-        self, payload: ToolPreInvokePayload, context: PluginContext
-    ) -> ToolPreInvokeResult:
-        context.set_state("start_time", time.monotonic())
-        return ToolPreInvokeResult(continue_processing=True)
-
-    async def tool_post_invoke(
-        self, payload: ToolPostInvokePayload, context: PluginContext
-    ) -> ToolPostInvokeResult:
-        start = context.get_state("start_time")
-        if start:
-            elapsed_ms = (time.monotonic() - start) * 1000
-            context.set_state("tool_latency_ms", elapsed_ms)
-        return ToolPostInvokeResult(continue_processing=True)
-```
-
----
-
-## Config-Driven Deny/Allow Lists
-
-Drive plugin behavior from YAML config — no code changes needed to update the rules:
-
-```python
-from cpex.framework import Plugin, PluginConfig, PluginContext, PluginViolation, ToolPreInvokePayload, ToolPreInvokeResult
-
-
-class ToolAllowListPlugin(Plugin):
-    def __init__(self, config: PluginConfig):
-        super().__init__(config)
-        self._allowed = set((config.config or {}).get("allowed_tools", []))
-
-    async def tool_pre_invoke(
-        self, payload: ToolPreInvokePayload, context: PluginContext
-    ) -> ToolPreInvokeResult:
-        if self._allowed and payload.name not in self._allowed:
-            return ToolPreInvokeResult(
-                continue_processing=False,
-                violation=PluginViolation(
-                    reason=f"Tool '{payload.name}' not in allow list",
-                    description="Only explicitly allowed tools may be invoked.",
-                    code="TOOL_NOT_ALLOWED",
-                ),
-            )
-        return ToolPreInvokeResult(continue_processing=True)
-```
+Declare the narrowest capabilities each plugin needs, and scope delegated tokens to the minimum. A scanner that reads content does not get identity; a downstream token gets only the scope the operation requires, verified after the exchange:
 
 ```yaml
-  - name: tool_allowlist
-    kind: security.ToolAllowListPlugin
-    mode: sequential
-    priority: 5
-    hooks: [tool_pre_invoke]
-    config:
-      allowed_tools:
-        - web_search
-        - calculator
-        - file_read
+pre_invocation:
+  - "delegate(workday-oauth, target: workday-api, permissions: [read_compensation])"
+  - "delegation.granted.permissions contains 'read_compensation': allow"   # verify least privilege
 ```
 
----
+## Defense in depth
 
-## Plugin-Specific Config with Pydantic
-
-Validate your plugin's `config` dict at init time using a Pydantic model. This gives you type safety, default values, and clear error messages:
-
-```python
-from pydantic import BaseModel
-from cpex.framework import Plugin, PluginConfig
-
-
-class RateLimitConfig(BaseModel):
-    requests_per_minute: int = 60
-    burst_size: int = 10
-    scope: str = "user"  # "user" or "global"
-
-
-class RateLimitPlugin(Plugin):
-    def __init__(self, config: PluginConfig):
-        super().__init__(config)
-        self._settings = RateLimitConfig.model_validate(config.config or {})
-```
-
-If the YAML provides an invalid value (e.g., `requests_per_minute: "not_a_number"`), Pydantic raises a validation error at plugin initialization rather than at runtime.
-
----
-
-## Idempotent Initialize and Shutdown
-
-Make `initialize()` and `shutdown()` safe to call multiple times:
-
-```python
-class MyPlugin(Plugin):
-    def __init__(self, config):
-        super().__init__(config)
-        self._client = None
-
-    async def initialize(self):
-        if self._client is None:
-            self._client = await create_client()
-
-    async def shutdown(self):
-        if self._client is not None:
-            await self._client.close()
-            self._client = None
-```
-
-The plugin manager may call these methods more than once during lifecycle transitions. Guard against double-initialization and double-cleanup.
-
----
-
-## Observability Stack
-
-Use `fire_and_forget` plugins for telemetry that must never slow the pipeline:
-
-```yaml
-plugins:
-  - name: request_tracer
-    kind: observability.RequestTracerPlugin
-    mode: fire_and_forget
-    priority: 100
-    hooks: [tool_pre_invoke, tool_post_invoke, prompt_pre_fetch, prompt_post_fetch]
-
-  - name: metrics_collector
-    kind: observability.MetricsPlugin
-    mode: fire_and_forget
-    priority: 101
-    hooks: [tool_pre_invoke, tool_post_invoke]
-```
-
-These plugins receive an isolated snapshot of the payload, run asynchronously in the background, and their exceptions are logged but never propagated. The main pipeline is unaffected even if a telemetry backend is down.
+Combine the patterns: an attribute gate, a PDP relationship check, a PII scan on output, a taint, and an audit record, each a separate effect in one policy. No single layer is load-bearing alone; the operation has to pass all of them.

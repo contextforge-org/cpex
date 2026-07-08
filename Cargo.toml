@@ -1,7 +1,7 @@
 # Location: ./Cargo.toml
 # Copyright 2025
 # SPDX-License-Identifier: Apache-2.0
-# Authors: Teryl Taylor
+# Authors: Teryl Taylor, Fred Araujo
 #
 # Workspace root for the CPEX Rust crates.
 
@@ -12,57 +12,71 @@ members = [
     "crates/cpex-core",
     "crates/cpex-orchestration",
     "crates/cpex-sdk",
+    "crates/cpex-builtins",
     "crates/cpex-ffi",
     "crates/apl-core",
     "crates/apl-cmf",
     "crates/apl-cpex",
-    "crates/apl-pdp-cedar-direct",
-    "crates/apl-pdp-cel",
-    "crates/apl-cedarling",
-    "crates/apl-identity-jwt",
-    "crates/apl-delegator-oauth",
-    "crates/apl-delegator-biscuit",
-    "crates/apl-pii-scanner",
-    "crates/apl-audit-logger",
     "crates/cpex-hosts-python",
-    "crates/apl-session-valkey",
+    "builtins/plugins/pii-scanner",
+    "builtins/plugins/audit-logger",
+    "builtins/plugins/identity-jwt",
+    "builtins/plugins/delegator-oauth",
+    "builtins/plugins/delegator-biscuit",
+    "builtins/pdps/cedar-direct",
+    "builtins/pdps/cel",
+    "builtins/session/valkey",
     "examples/go-demo/ffi",
+    # PyO3 bindings — excluded from default-members so plain `cargo build`
+    # stays libpython-independent (KD3). Use `cargo build -p cpex-python`
+    # or `maturin develop` to build this crate explicitly.
+    "bindings/python",
 ]
 
 # `default-members` controls what `cargo build` / `cargo test` (with no
-# `-p` or `--workspace` flag) picks up. Cedarling integration crates
-# pull ~200 transitive deps (jsonwebtoken, reqwest, sparkv, datalogic-rs,
-# flate2, etc.) and slow default builds significantly — excluding them
+# `-p` or `--workspace` flag) picks up. `cpex-session-valkey` pulls a redis
+# client + a rustls TLS stack, which slows default builds — excluding it
 # from default-members keeps everyday iteration fast.
 #
-# To exercise Cedarling crates:
-#   cargo build --workspace                # all members
-#   cargo build -p apl-cedarling           # just this one
-#   cargo test --workspace                 # full sweep (CI)
+# To exercise the Valkey session store:
+#   cargo build --workspace                  # all members
+#   cargo build -p cpex-session-valkey       # just this one
+#   cargo test --workspace                   # full sweep (CI)
 default-members = [
     "crates/cpex",
     "crates/cpex-core",
     "crates/cpex-orchestration",
     "crates/cpex-sdk",
+    "crates/cpex-builtins",
     "crates/cpex-ffi",
     "crates/apl-core",
     "crates/apl-cmf",
     "crates/apl-cpex",
-    "crates/apl-pdp-cedar-direct",
-    "crates/apl-pdp-cel",
-    "crates/apl-identity-jwt",
-    "crates/apl-delegator-oauth",
-    "crates/apl-delegator-biscuit",
-    "crates/apl-pii-scanner",
-    "crates/apl-audit-logger",
+    "builtins/plugins/pii-scanner",
+    "builtins/plugins/audit-logger",
+    "builtins/plugins/identity-jwt",
+    "builtins/plugins/delegator-oauth",
+    "builtins/plugins/delegator-biscuit",
+    "builtins/pdps/cedar-direct",
+    "builtins/pdps/cel",
     "examples/go-demo/ffi",
 ]
 
 [workspace.package]
 version = "0.2.0"
 edition = "2021"
+# MSRV — keep in sync with rust-toolchain.toml `channel` and clippy.toml `msrv`.
+rust-version = "1.96"
 license = "Apache-2.0"
 authors = ["Teryl Taylor", "Fred Araujo"]
+repository = "https://github.com/contextforge-org/cpex"
+homepage = "https://contextforge-org.github.io/cpex/"
+keywords = ["ai", "agent", "security", "policy", "plugin"]
+categories = ["development-tools"]
+# Shared crate README, resolved relative to this workspace root. Members opt in
+# with `readme.workspace = true` (cpex does, for its crates.io page) so the one
+# root README is the single source — no per-crate copy.
+readme = "README.md"
 
 [workspace.dependencies]
 # Minimal tokio feature floor for crates that take `tokio = { workspace = true }`
@@ -82,7 +96,7 @@ tracing = "0.1"
 uuid = { version = "1", features = ["v4", "serde"] }
 paste = "1"
 futures = "0.3"
-hashbrown = "0.15"
+hashbrown = "0.17"
 arc-swap = "1.7"
 wildmatch = "2"
 rmp-serde = "1"
@@ -90,6 +104,29 @@ serde_bytes = "0.11"
 chrono = { version = "0.4", features = ["serde"] }
 regex = "1"
 sha2 = "0.10"
+
+# Internal workspace crates — single source of truth for their path + version
+# requirement. Members depend on these via `{ workspace = true }` so a version
+# bump touches only this table (plus `[workspace.package] version`). The
+# `version` is required because these crates publish to crates.io: at publish
+# time cargo substitutes it for the `path`. `cargo release` keeps these in sync
+# with the workspace version. Keys are package names (builtins differ from their
+# directory names), paths are workspace-root-relative.
+cpex-core                     = { path = "crates/cpex-core",                   version = "0.2.0" }
+cpex-orchestration            = { path = "crates/cpex-orchestration",          version = "0.2.0" }
+cpex-sdk                      = { path = "crates/cpex-sdk",                     version = "0.2.0" }
+cpex-builtins                 = { path = "crates/cpex-builtins",               version = "0.2.0", default-features = false }
+apl-core                      = { path = "crates/apl-core",                    version = "0.2.0" }
+apl-cmf                       = { path = "crates/apl-cmf",                      version = "0.2.0" }
+apl-cpex                      = { path = "crates/apl-cpex",                     version = "0.2.0" }
+cpex-plugin-pii-scanner       = { path = "builtins/plugins/pii-scanner",       version = "0.2.0" }
+cpex-plugin-audit-logger      = { path = "builtins/plugins/audit-logger",      version = "0.2.0" }
+cpex-plugin-identity-jwt      = { path = "builtins/plugins/identity-jwt",      version = "0.2.0" }
+cpex-plugin-delegator-oauth   = { path = "builtins/plugins/delegator-oauth",   version = "0.2.0" }
+cpex-plugin-delegator-biscuit = { path = "builtins/plugins/delegator-biscuit", version = "0.2.0" }
+cpex-pdp-cedar-direct         = { path = "builtins/pdps/cedar-direct",         version = "0.2.0" }
+cpex-pdp-cel                  = { path = "builtins/pdps/cel",                   version = "0.2.0" }
+cpex-session-valkey           = { path = "builtins/session/valkey",            version = "0.2.0" }
 
 # Size-first release profile. The FFI artifact (libcpex_ffi.a) is linked
 # statically into host binaries, so its compiled size flows straight into
@@ -106,3 +143,154 @@ opt-level = "z"      # optimize for size
 lto = true           # cross-crate inlining + dead-code elimination
 codegen-units = 1    # maximize optimization (one unit, no parallel-codegen bloat)
 strip = true         # drop symbols + debug info from the artifact
+
+# =============================================================================
+# Workspace lint policy
+# =============================================================================
+#
+# Ported from the praxis Rust project. Each member crate opts in with
+# `[lints] workspace = true`, and CI + `make lint` enforce the wall via
+# `cargo clippy --workspace --all-targets -- -D warnings`.
+#
+# Two tiers:
+#   * "deny"  — enforced now; the current tree is clean against these, so any
+#               NEW violation fails CI.
+#   * "allow" with a `ratchet:` note — valuable lints the pre-existing code does
+#               not yet satisfy (≈1900 sites, dominated by doc_markdown and
+#               uninlined_format_args). Parked to keep this tooling PR free of
+#               mechanical churn; tighten to "deny" in focused follow-up PRs
+#               (most are `cargo clippy --fix`-able one lint at a time).
+[workspace.lints.rust]
+# --- Enforced ---
+unused_imports = "deny"
+unused_variables = "deny"
+trivial_numeric_casts = "deny"
+macro_use_extern_crate = "deny"
+unused_macro_rules = "deny"
+meta_variable_misuse = "deny"
+keyword_idents_2024 = "deny"
+non_ascii_idents = "deny"
+noop_method_call = "deny"
+redundant_lifetimes = "deny"
+# --- Intentional / parked ---
+unsafe_code = "allow"                    # cpex-ffi is an intentional `unsafe extern "C"` boundary
+missing_debug_implementations = "allow"  # many types wrap Box<dyn Trait> without Debug bounds
+missing_docs = "allow"                   # ratchet: document public items, then deny
+dead_code = "allow"                      # ratchet
+unreachable_pub = "allow"                # ratchet
+unused_extern_crates = "allow"           # ratchet
+unused_qualifications = "allow"          # ratchet
+unused_mut = "allow"                     # ratchet
+private_interfaces = "allow"             # ratchet
+
+[workspace.lints.clippy]
+# --- Enforced: async / concurrency safety ---
+await_holding_lock = "deny"
+await_holding_refcell_ref = "deny"
+let_underscore_future = "deny"
+# --- Enforced: memory / allocation efficiency ---
+implicit_clone = "deny"
+inefficient_to_string = "deny"
+large_enum_variant = "deny"
+vec_init_then_push = "deny"
+# --- Enforced: idiomatic Rust ---
+checked_conversions = "deny"
+cloned_instead_of_copied = "deny"
+explicit_into_iter_loop = "deny"
+flat_map_option = "deny"
+from_iter_instead_of_collect = "deny"
+manual_instant_elapsed = "deny"
+manual_ok_or = "deny"
+unnecessary_get_then_check = "deny"
+# --- Enforced: borrow / clarity ---
+needless_borrow = "deny"
+match_bool = "deny"
+mut_mut = "deny"
+needless_for_each = "deny"
+range_plus_one = "deny"
+redundant_else = "deny"
+semicolon_if_nothing_returned = "deny"
+# --- Enforced: import hygiene ---
+enum_glob_use = "deny"
+macro_use_imports = "deny"
+# --- Enforced: code clarity ---
+same_functions_in_if_condition = "deny"
+stable_sort_primitive = "deny"
+string_add = "deny"
+string_lit_as_bytes = "deny"
+trait_duplication_in_bounds = "deny"
+type_repetition_in_bounds = "deny"
+zero_sized_map_values = "deny"
+fn_params_excessive_bools = "deny"
+# --- Enforced: safety / correctness ---
+or_fun_call = "deny"
+rc_mutex = "deny"
+disallowed_methods = "deny"
+# --- Enforced: dev hygiene / no placeholders ---
+dbg_macro = "deny"
+todo = "deny"
+unimplemented = "deny"
+# --- Parked: documentation (ratchet) ---
+doc_markdown = "allow"                   # ratchet (~640 sites; cargo clippy --fix-able)
+missing_docs_in_private_items = "allow"  # ratchet
+missing_errors_doc = "allow"             # ratchet
+missing_panics_doc = "allow"             # ratchet
+missing_safety_doc = "allow"             # ratchet
+# --- Parked: style / idiom (ratchet; most are cargo clippy --fix-able) ---
+uninlined_format_args = "allow"          # ratchet (~420 sites)
+redundant_closure_for_method_calls = "allow"  # ratchet
+manual_let_else = "allow"                # ratchet
+return_self_not_must_use = "allow"       # ratchet
+items_after_statements = "allow"         # ratchet
+map_unwrap_or = "allow"                  # ratchet
+unnecessary_map_or = "allow"             # ratchet
+match_same_arms = "allow"                # ratchet
+explicit_iter_loop = "allow"             # ratchet
+unnested_or_patterns = "allow"           # ratchet
+needless_continue = "allow"              # ratchet
+assigning_clones = "allow"               # ratchet
+let_underscore_must_use = "allow"        # ratchet
+wildcard_imports = "allow"               # ratchet
+manual_string_new = "allow"              # ratchet
+manual_assert = "allow"                  # ratchet
+manual_repeat_n = "allow"                # ratchet
+if_not_else = "allow"                    # ratchet
+unused_self = "allow"                    # ratchet
+unreadable_literal = "allow"             # ratchet
+iter_kv_map = "allow"                    # ratchet
+collapsible_match = "allow"              # ratchet
+bool_comparison = "allow"                # ratchet
+clone_on_ref_ptr = "allow"               # ratchet
+field_reassign_with_default = "allow"    # ratchet
+derivable_impls = "allow"                # ratchet
+useless_vec = "allow"                    # ratchet
+unwrap_or_default = "allow"              # ratchet
+empty_line_after_doc_comments = "allow"  # ratchet
+doc_lazy_continuation = "allow"          # ratchet
+doc_overindented_list_items = "allow"    # ratchet
+extra_unused_type_parameters = "allow"   # ratchet
+# --- Parked: complexity / size (ratchet) ---
+too_many_arguments = "allow"             # ratchet
+too_many_lines = "allow"                 # ratchet
+cognitive_complexity = "allow"           # ratchet
+type_complexity = "allow"                # ratchet
+struct_excessive_bools = "allow"         # ratchet
+rc_buffer = "allow"                      # ratchet
+# --- Parked: restriction lints (aspirational; ratchet) ---
+unwrap_used = "allow"                    # ratchet: pervasive in tests
+expect_used = "allow"                    # ratchet: pervasive in tests
+panic = "allow"                          # ratchet
+indexing_slicing = "allow"               # ratchet
+allow_attributes = "allow"               # ratchet: migrate #[allow] -> #[expect]
+allow_attributes_without_reason = "allow"  # ratchet
+print_stdout = "allow"                   # examples/FFI demos print intentionally
+print_stderr = "allow"                   # examples/FFI demos print intentionally
+
+[workspace.lints.rustdoc]
+# Validated by `cargo doc` / `make doc` (RUSTDOCFLAGS="-D warnings"), not clippy.
+broken_intra_doc_links = "deny"
+private_intra_doc_links = "deny"
+invalid_codeblock_attributes = "deny"
+invalid_html_tags = "deny"
+bare_urls = "allow"                      # ratchet
+missing_crate_level_docs = "allow"       # ratchet

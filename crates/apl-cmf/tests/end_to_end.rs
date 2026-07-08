@@ -42,7 +42,7 @@ routes:
   get_employee:
     args:
       employee_id: "str"
-    policy:
+    pre_invocation:
       - "require(authenticated)"
       - "delegation.depth > 2: deny"
     result:
@@ -56,13 +56,18 @@ routes:
 struct AllowPdp;
 #[async_trait]
 impl PdpResolver for AllowPdp {
-    fn dialect(&self) -> PdpDialect { PdpDialect::Cedar }
+    fn dialect(&self) -> PdpDialect {
+        PdpDialect::Cedar
+    }
     async fn evaluate(
         &self,
         _call: &PdpCall,
         _bag: &AttributeBag,
     ) -> Result<PdpDecision, PdpError> {
-        Ok(PdpDecision { decision: Decision::Allow, diagnostics: vec![] })
+        Ok(PdpDecision {
+            decision: Decision::Allow,
+            diagnostics: vec![],
+        })
     }
 }
 
@@ -163,7 +168,15 @@ async fn alice_full_route_through_cmf_bridge() {
         }),
     );
 
-    let r = evaluate_route(route, &mut bag, &mut payload, &pdp(), &plugins(), &delegations()).await;
+    let r = evaluate_route(
+        route,
+        &mut bag,
+        &mut payload,
+        &pdp(),
+        &plugins(),
+        &delegations(),
+    )
+    .await;
     assert_eq!(r.decision, Decision::Allow);
     let result = payload.result.as_ref().unwrap();
     // view_ssn=true and role.hr=true → both fields kept; employee_id masked.
@@ -191,7 +204,15 @@ async fn mallory_gets_both_fields_redacted_through_cmf_bridge() {
         }),
     );
 
-    let r = evaluate_route(route, &mut bag, &mut payload, &pdp(), &plugins(), &delegations()).await;
+    let r = evaluate_route(
+        route,
+        &mut bag,
+        &mut payload,
+        &pdp(),
+        &plugins(),
+        &delegations(),
+    )
+    .await;
     assert_eq!(r.decision, Decision::Allow);
     let result = payload.result.as_ref().unwrap();
     // Neither role.hr nor perm.view_ssn populated → both redact()s fire.
@@ -216,7 +237,15 @@ async fn deep_delegation_denies_through_cmf_bridge() {
         json!({ "employee_id": "123-45-6789" }),
         json!({ "ssn": "x", "salary": 1, "employee_id": "123-45-6789" }),
     );
-    let r = evaluate_route(route, &mut bag, &mut payload, &pdp(), &plugins(), &delegations()).await;
+    let r = evaluate_route(
+        route,
+        &mut bag,
+        &mut payload,
+        &pdp(),
+        &plugins(),
+        &delegations(),
+    )
+    .await;
     assert!(matches!(r.decision, Decision::Deny { .. }));
     // Result fields untouched — the result phase never ran.
     assert_eq!(payload.result.as_ref().unwrap()["ssn"], json!("x"));
@@ -231,7 +260,7 @@ async fn args_attributes_flow_into_bag_for_policy_use() {
     let yaml = r#"
 routes:
   guarded_route:
-    policy:
+    pre_invocation:
       - "args.include_ssn == true: deny"
 "#;
     let routes = compile_config(yaml).unwrap().routes;
@@ -245,11 +274,23 @@ routes:
     assert_eq!(bag.get_bool("args.include_ssn"), Some(true));
 
     let mut payload = RoutePayload::new(args);
-    let r = evaluate_route(route, &mut bag, &mut payload, &pdp(), &plugins(), &delegations()).await;
+    let r = evaluate_route(
+        route,
+        &mut bag,
+        &mut payload,
+        &pdp(),
+        &plugins(),
+        &delegations(),
+    )
+    .await;
     match r.decision {
         Decision::Deny { rule_source, .. } => {
-            assert!(rule_source.contains("policy"), "got source {}", rule_source);
-        }
+            assert!(
+                rule_source.contains("pre_invocation"),
+                "got source {}",
+                rule_source
+            );
+        },
         d => panic!("expected Deny on include_ssn, got {:?}", d),
     }
 }
@@ -270,6 +311,14 @@ async fn anonymous_user_denied_at_authenticated_check() {
         json!({ "employee_id": "123-45-6789" }),
         json!({ "ssn": "x", "salary": 1, "employee_id": "123-45-6789" }),
     );
-    let r = evaluate_route(route, &mut bag, &mut payload, &pdp(), &plugins(), &delegations()).await;
+    let r = evaluate_route(
+        route,
+        &mut bag,
+        &mut payload,
+        &pdp(),
+        &plugins(),
+        &delegations(),
+    )
+    .await;
     assert!(matches!(r.decision, Decision::Deny { .. }));
 }

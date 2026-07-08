@@ -138,10 +138,9 @@ impl HookHandler<TokenDelegateHook> for DecliningHandler {
         // Returns the payload unchanged — leaves output slots None,
         // signals "this handler had nothing to contribute."
         let mut updated = payload.clone();
-        updated.metadata.insert(
-            "declined_by".into(),
-            serde_json::json!("declining-handler"),
-        );
+        updated
+            .metadata
+            .insert("declined_by".into(), serde_json::json!("declining-handler"));
         PluginResult::modify_payload(updated)
     }
 }
@@ -271,15 +270,9 @@ fn extract_delegation(result: &cpex_core::executor::PipelineResult) -> Delegatio
 async fn single_handler_mints_token() {
     let mgr = Arc::new(PluginManager::default());
     let cfg = config("stub-exchanger", 10);
-    let plugin = Arc::new(StubExchanger {
-        cfg: cfg.clone(),
-    });
-    mgr.register_handler_for_names::<TokenDelegateHook, _>(
-        plugin,
-        cfg,
-        &[HOOK_TOKEN_DELEGATE],
-    )
-    .unwrap();
+    let plugin = Arc::new(StubExchanger { cfg: cfg.clone() });
+    mgr.register_handler_for_names::<TokenDelegateHook, _>(plugin, cfg, &[HOOK_TOKEN_DELEGATE])
+        .unwrap();
     mgr.initialize().await.unwrap();
 
     let (result, _bg) = mgr
@@ -386,15 +379,9 @@ async fn declining_then_fallback_chain_mints_token() {
 async fn rejecting_handler_halts_pipeline() {
     let mgr = Arc::new(PluginManager::default());
     let cfg = config("rejecting-handler", 10);
-    let plugin = Arc::new(RejectingHandler {
-        cfg: cfg.clone(),
-    });
-    mgr.register_handler_for_names::<TokenDelegateHook, _>(
-        plugin,
-        cfg,
-        &[HOOK_TOKEN_DELEGATE],
-    )
-    .unwrap();
+    let plugin = Arc::new(RejectingHandler { cfg: cfg.clone() });
+    mgr.register_handler_for_names::<TokenDelegateHook, _>(plugin, cfg, &[HOOK_TOKEN_DELEGATE])
+        .unwrap();
     mgr.initialize().await.unwrap();
 
     let (result, _bg) = mgr
@@ -423,15 +410,9 @@ async fn rejecting_handler_halts_pipeline() {
 async fn apply_to_extensions_writes_delegated_token_keyed_by_subject() {
     let mgr = Arc::new(PluginManager::default());
     let cfg = config("stub-exchanger", 10);
-    let plugin = Arc::new(StubExchanger {
-        cfg: cfg.clone(),
-    });
-    mgr.register_handler_for_names::<TokenDelegateHook, _>(
-        plugin,
-        cfg,
-        &[HOOK_TOKEN_DELEGATE],
-    )
-    .unwrap();
+    let plugin = Arc::new(StubExchanger { cfg: cfg.clone() });
+    mgr.register_handler_for_names::<TokenDelegateHook, _>(plugin, cfg, &[HOOK_TOKEN_DELEGATE])
+        .unwrap();
     mgr.initialize().await.unwrap();
 
     // Initial extensions: identity has already populated subject.
@@ -678,8 +659,8 @@ async fn cap_gating_post_apply_through_cmf_dispatch() {
         )
         .await;
     assert!(td_result.continue_processing);
-    let delegation = DelegationPayload::from_pipeline_result(&td_result)
-        .expect("delegation should have minted");
+    let delegation =
+        DelegationPayload::from_pipeline_result(&td_result).expect("delegation should have minted");
 
     // 3. Apply.
     let updated_ext = delegation.apply_to_extensions(initial_ext);
@@ -689,12 +670,7 @@ async fn cap_gating_post_apply_through_cmf_dispatch() {
         message: Message::text(Role::User, "fetch compensation"),
     };
     let (cmf_result, _bg) = mgr
-        .invoke_named::<CmfHook>(
-            "cmf.tool_pre_invoke",
-            cmf_payload,
-            updated_ext,
-            None,
-        )
+        .invoke_named::<CmfHook>("cmf.tool_pre_invoke", cmf_payload, updated_ext, None)
         .await;
     assert!(
         cmf_result.continue_processing,

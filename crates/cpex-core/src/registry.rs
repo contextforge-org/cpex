@@ -517,7 +517,7 @@ pub fn group_by_mode(entries: &[HookEntry]) -> GroupedHookEntries {
             PluginMode::Audit => audit.push(entry.clone()),
             PluginMode::Concurrent => concurrent.push(entry.clone()),
             PluginMode::FireAndForget => fire_and_forget.push(entry.clone()),
-            PluginMode::Disabled => {} // skip
+            PluginMode::Disabled => {}, // skip
         }
     }
 

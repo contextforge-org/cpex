@@ -1,0 +1,124 @@
+# ===============================================================
+# Release - publish the CPEX library crates to crates.io
+# ===============================================================
+#
+# Triggered by a semver tag (vX.Y.Z). Validates the tag matches the
+# workspace version, runs the test suite, then publishes every
+# publishable crate to crates.io in dependency (leaf-first) order.
+#
+# `cpex-ffi` is `publish = false` (distributed as signed prebuilt
+# artifacts by release-ffi.yaml), so it is intentionally absent below.
+#
+# Requires repo secret: CARGO_REGISTRY_TOKEN.
+
+name: Release
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+      - "v[0-9]+.[0-9]+.[0-9]+-*"   # pre-releases: v0.2.0-alpha.5, v1.0.0-rc.1, …
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Package + verify all crates without uploading to crates.io"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Validate tag matches workspace version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Rust 1.96.0
+        uses: dtolnay/rust-toolchain@1.96.0
+      - name: Check tag == workspace version
+        if: github.event_name == 'push'
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          TAG_VERSION="${TAG#v}"
+          CARGO_VERSION="$(cargo metadata --no-deps --format-version 1 \
+            | jq -r '.packages[] | select(.name=="cpex") | .version')"
+          echo "tag=$TAG_VERSION workspace=$CARGO_VERSION"
+          if [ "$TAG_VERSION" != "$CARGO_VERSION" ]; then
+            echo "::error::Tag ($TAG_VERSION) does not match workspace version ($CARGO_VERSION)"
+            exit 1
+          fi
+
+  test:
+    name: Test before publish
+    needs: [validate]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Rust 1.96.0
+        uses: dtolnay/rust-toolchain@1.96.0
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --workspace
+
+  publish:
+    name: Publish to crates.io
+    needs: [validate, test]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Rust 1.96.0
+        uses: dtolnay/rust-toolchain@1.96.0
+      # NOTE: intentionally NO Swatinem/rust-cache here. A restored partial
+      # `~/.cargo/registry` index makes `cargo package/publish --locked` abort
+      # with "cannot update the lock file" against the sparse index even when
+      # Cargo.lock is correct (see the CI `package` job for the full rationale).
+      # A fresh index each run keeps publish resolution deterministic.
+      - name: cargo publish (dependency order)
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          # true only for a manual workflow_dispatch with dry_run left on.
+          # A real version-tag push has empty DRY_RUN → publishes for real.
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          # Dry run: build + verify a .crate for every publishable member
+          # (cargo skips `publish = false` crates and resolves inter-member
+          # deps against each other's packaged versions) without uploading.
+          # This is how the workflow is exercised without a real release.
+          if [ "$DRY_RUN" = "true" ]; then
+            echo "::group::dry run — cargo package (no upload)"
+            # Verify the crates.io-published set only; the two publish=false
+            # FFI crates are not part of the registry release.
+            cargo package --workspace --locked --exclude cpex-ffi --exclude cpex-demo-ffi
+            echo "::endgroup::"
+            exit 0
+          fi
+          # Leaf-first topological order. Each `cargo publish` blocks until the
+          # crate is visible in the index before returning, so the next crate's
+          # dependency resolves; the short sleep is extra slack for propagation.
+          crates=(
+            cpex-orchestration
+            cpex-core
+            cpex-sdk
+            apl-core
+            apl-cmf
+            apl-cpex
+            cpex-plugin-pii-scanner
+            cpex-plugin-audit-logger
+            cpex-plugin-identity-jwt
+            cpex-plugin-delegator-oauth
+            cpex-plugin-delegator-biscuit
+            cpex-pdp-cedar-direct
+            cpex-pdp-cel
+            cpex-session-valkey
+            cpex-builtins
+            cpex
+          )
+          for c in "${crates[@]}"; do
+            echo "::group::publish $c"
+            cargo publish -p "$c" --locked
+            echo "::endgroup::"
+            sleep 15
+          done
