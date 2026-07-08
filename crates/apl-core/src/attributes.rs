@@ -145,6 +145,51 @@ impl AttributeBag {
             .unwrap_or(false)
     }
 
+    /// Resolve an attribute path to its concrete flat key, expanding any
+    /// `[inner]` interpolation groups (design §4.3). Each `[inner]` looks
+    /// `inner` up in this bag and substitutes `.` + its scalar value:
+    /// `data.tenants[subject.tenant].data_region` with `subject.tenant =
+    /// "acme-eu"` → `data.tenants.acme-eu.data_region`. The common
+    /// bracket-free key is returned borrowed (no allocation).
+    ///
+    /// Returns `None` when any `inner` key is missing or not a scalar — the
+    /// caller treats that as an absent attribute, so a lookup keyed on an
+    /// unknown request value fails to match rather than hitting a
+    /// half-substituted key. Shared by predicate evaluation and
+    /// `restrict` field references.
+    pub fn resolve_key<'a>(&self, key: &'a str) -> Option<std::borrow::Cow<'a, str>> {
+        if !key.contains('[') {
+            return Some(std::borrow::Cow::Borrowed(key));
+        }
+        let mut out = String::with_capacity(key.len());
+        let mut rest = key;
+        while let Some(open) = rest.find('[') {
+            out.push_str(&rest[..open]);
+            let after = &rest[open + 1..];
+            // The lexer guarantees a matching `]`; `?` is defensive.
+            let close = after.find(']')?;
+            let inner = after[..close].trim();
+            out.push('.');
+            out.push_str(&self.scalar_as_string(inner)?);
+            rest = &after[close + 1..];
+        }
+        out.push_str(rest);
+        Some(std::borrow::Cow::Owned(out))
+    }
+
+    /// The scalar at `key`, stringified for use as a path segment. Numbers
+    /// and bools coerce to their text form (a tenant id may be numeric); a
+    /// `StringSet` cannot index a path, so it yields `None`.
+    fn scalar_as_string(&self, key: &str) -> Option<String> {
+        match self.get(key)? {
+            AttributeValue::String(s) => Some(s.clone()),
+            AttributeValue::Int(i) => Some(i.to_string()),
+            AttributeValue::Bool(b) => Some(b.to_string()),
+            AttributeValue::Float(f) => Some(f.to_string()),
+            AttributeValue::StringSet(_) => None,
+        }
+    }
+
     pub fn len(&self) -> usize {
         self.attrs.len()
     }

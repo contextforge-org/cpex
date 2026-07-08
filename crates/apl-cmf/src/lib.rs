@@ -69,7 +69,7 @@ pub use http::extract_http;
 pub use llm::extract_llm;
 pub use mcp::extract_mcp;
 pub use meta::extract_meta;
-pub use payload::{extract_args, extract_result};
+pub use payload::{extract_args, extract_data, extract_result};
 pub use provenance::extract_provenance;
 pub use request::extract_request;
 pub use security::{extract_client, extract_security, extract_workload};
@@ -124,6 +124,14 @@ impl BagBuilder {
 
     pub fn with_result(mut self, result: &serde_json::Value) -> Self {
         extract_result(result, &mut self.bag);
+        self
+    }
+
+    /// Flatten a static attribute tree into the `data.*` namespace
+    /// (design §4.2). Typically called once with a shared, startup-loaded
+    /// tree so every request's bag carries the same policy-side constants.
+    pub fn with_data(mut self, tree: &apl_core::AttributeTree) -> Self {
+        extract_data(tree, &mut self.bag);
         self
     }
 

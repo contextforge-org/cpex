@@ -16,6 +16,7 @@ An APL rule does something. That something is an **effect**. Effects are the bui
 | `plugin(name)` (alias `run(name)`) | Invoke a registered plugin (PII scan, audit log, custom check). |
 | `delegate(name, ...)` | Mint a downstream credential via a delegator plugin. See [Delegation]({{< relref "/docs/apl/delegation" >}}). |
 | `taint(label[, scope])` | Attach a label to the session or message. See [Session Tainting]({{< relref "/docs/apl/tainting" >}}). |
+| `restrict: { ... }` | Narrow the set of backends the router may select from. See [Backend Restriction]({{< relref "/docs/apl/restrict" >}}). |
 | field pipelines | Validate or transform `args`/`result` fields. See [APL]({{< relref "/docs/apl" >}}). |
 | PDP call (`cedar:`, `cel:`, `opa(...)`) | Delegate the decision to a policy engine. See [PDP Integration]({{< relref "/docs/apl/pdp" >}}). |
 
@@ -53,7 +54,7 @@ pre_invocation:
 
 ## Composition: sequential and parallel
 
-Effects can be grouped. `sequential` runs its members in order and halts on the first deny. `parallel` runs independent gates concurrently; any deny fails the group, and taints from the branches accumulate.
+Effects can be grouped. `sequential` runs its members in order and halts on the first deny. `parallel` runs independent gates concurrently; any deny fails the group, and accumulating effects from the branches (taints, backend restrictions) all take hold.
 
 ```yaml
 pre_invocation:

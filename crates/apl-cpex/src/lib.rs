@@ -31,6 +31,8 @@
 // MessageView attributes. See the APL implementation memory's
 // "list-with-matchers" deferred item.
 
+pub mod attribute_source;
+pub mod candidate_constraint;
 pub mod cmf_invoker;
 pub mod delegation_invoker;
 pub mod dispatch_plan;
@@ -42,6 +44,8 @@ pub mod session_resolver;
 pub mod session_store;
 pub mod visitor;
 
+pub use attribute_source::{merge_attribute_docs, FileAttributeSource};
+pub use candidate_constraint::{fold_candidate_constraints, ConstraintConflict};
 pub use cmf_invoker::CmfPluginInvoker;
 pub use delegation_invoker::DelegationPluginInvoker;
 pub use dispatch_plan::{DispatchCache, RouteDispatchPlan, RoutePluginEntry};
