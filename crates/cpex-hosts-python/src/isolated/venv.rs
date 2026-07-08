@@ -62,9 +62,7 @@ impl VenvManager {
             .unwrap_or_default()
             .to_string_lossy()
             .to_string();
-        let plugin_dir = venv_path
-            .parent()
-            .unwrap_or(Path::new("."));
+        let plugin_dir = venv_path.parent().unwrap_or(Path::new("."));
         let cache_metadata_path = plugin_dir
             .join(".cpex")
             .join("venv_cache")
@@ -110,7 +108,10 @@ impl VenvManager {
             return false;
         }
         if !self.cache_metadata_path.exists() {
-            debug!("metadata file does not exist: {:?}", self.cache_metadata_path);
+            debug!(
+                "metadata file does not exist: {:?}",
+                self.cache_metadata_path
+            );
             return false;
         }
         match std::fs::read_to_string(&self.cache_metadata_path) {
@@ -127,16 +128,16 @@ impl VenvManager {
                         info!("valid venv cache at {:?}", self.venv_path);
                         true
                     }
-                }
+                },
                 Err(e) => {
                     warn!("could not parse venv metadata: {}", e);
                     false
-                }
+                },
             },
             Err(e) => {
                 warn!("could not read venv metadata: {}", e);
                 false
-            }
+            },
         }
     }
 
@@ -146,13 +147,19 @@ impl VenvManager {
         }
         let meta = VenvMetadata {
             venv_path: self.venv_path.display().to_string(),
-            requirements_file: self.requirements_file.as_ref().map(|p| p.display().to_string()),
+            requirements_file: self
+                .requirements_file
+                .as_ref()
+                .map(|p| p.display().to_string()),
             requirements_hash: self.compute_requirements_hash(),
             python_version: python_version_string(),
         };
         let json = serde_json::to_string_pretty(&meta)?;
         std::fs::write(&self.cache_metadata_path, json)?;
-        info!("saved venv cache metadata to {:?}", self.cache_metadata_path);
+        info!(
+            "saved venv cache metadata to {:?}",
+            self.cache_metadata_path
+        );
         Ok(())
     }
 
@@ -180,7 +187,10 @@ impl VenvManager {
             return Ok(());
         };
         if !req.exists() {
-            debug!("requirements file {:?} does not exist — skipping pip install", req);
+            debug!(
+                "requirements file {:?} does not exist — skipping pip install",
+                req
+            );
             return Ok(());
         }
         let python = self.python_executable();
@@ -260,7 +270,10 @@ mod tests {
         let state = mgr.ensure_venv().await.unwrap();
         assert_eq!(state, VenvState::Created);
         assert!(venv.exists(), "venv dir should exist after creation");
-        assert!(mgr.python_executable().exists(), "python executable should exist");
+        assert!(
+            mgr.python_executable().exists(),
+            "python executable should exist"
+        );
     }
 
     #[tokio::test]

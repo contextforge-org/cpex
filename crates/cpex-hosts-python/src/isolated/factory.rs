@@ -9,7 +9,8 @@
 // constructs a VenvManager, builds the adapter, and registers one
 // BoundHookHandler per declared hook name.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::Arc;
 
 use cpex_core::{
@@ -28,10 +29,44 @@ use super::venv::VenvManager;
 /// Full URI form: `isolated_venv://module.path.ClassName`
 pub const KIND: &str = "isolated_venv";
 
-/// Default path to the worker script relative to the working directory.
-/// Hosts that install cpex at a non-standard location should override via
-/// `IsolatedPythonPluginAdapterFactory::with_worker_script`.
-pub const DEFAULT_WORKER_SCRIPT: &str = "cpex/framework/isolated/worker.py";
+/// Dotted module path of the worker script inside the installed `cpex`
+/// framework. Resolved to an absolute path against a venv's site-packages
+/// via [`resolve_worker_script`].
+pub const WORKER_MODULE: &str = "cpex.framework.isolated.worker";
+
+/// Resolve `worker.py` from a venv's installed `cpex` framework.
+///
+/// The worker script ships *inside* the `cpex` package, which is installed
+/// into the plugin's venv transitively (via the plugin's self-referencing
+/// `requirements.txt`). There is no reliable project-relative path to it, so
+/// we ask the venv's own interpreter where the module lives:
+///
+/// ```text
+/// <venv>/bin/python -c "import cpex.framework.isolated.worker as w; print(w.__file__)"
+/// ```
+///
+/// This is robust across Python versions (`lib/python3.X/site-packages`) and
+/// platforms (`Lib/site-packages` on Windows). Returns `None` if the venv
+/// interpreter is missing or `cpex` is not importable there — the caller
+/// surfaces this as a plugin initialization error.
+pub fn resolve_worker_script(python_exe: &Path) -> Option<PathBuf> {
+    let output = Command::new(python_exe)
+        .args([
+            "-c",
+            &format!("import {WORKER_MODULE} as w; print(w.__file__)"),
+        ])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let path = String::from_utf8(output.stdout).ok()?;
+    let path = path.trim();
+    if path.is_empty() {
+        return None;
+    }
+    Some(PathBuf::from(path))
+}
 
 /// Factory for `kind: "isolated_venv"` and `config: class_name: module.ClassName`
 ///
@@ -48,21 +83,30 @@ pub const DEFAULT_WORKER_SCRIPT: &str = "cpex/framework/isolated/worker.py";
 /// ```
 pub struct IsolatedPythonPluginAdapterFactory {
     registry: Arc<HookPayloadRegistry>,
-    worker_script: PathBuf,
+    /// Explicit `worker.py` override. When `None` (the default), the adapter
+    /// resolves the worker from its venv's installed `cpex` framework at
+    /// initialization time via [`resolve_worker_script`].
+    worker_script: Option<PathBuf>,
 }
 
 impl IsolatedPythonPluginAdapterFactory {
-    /// Create with a pre-populated payload registry and the default worker script path.
+    /// Create with a pre-populated payload registry.
+    ///
+    /// The worker script is resolved from each plugin's venv at init time; use
+    /// [`with_worker_script`](Self::with_worker_script) to pin an explicit path.
     pub fn new(registry: HookPayloadRegistry) -> Self {
         Self {
             registry: Arc::new(registry),
-            worker_script: PathBuf::from(DEFAULT_WORKER_SCRIPT),
+            worker_script: None,
         }
     }
 
-    /// Override the path to `worker.py` (for non-standard cpex installs or tests).
+    /// Pin an explicit path to `worker.py`, bypassing venv resolution.
+    ///
+    /// Only needed for non-standard cpex installs where the worker is not
+    /// importable from the venv, or for tests running against a source tree.
     pub fn with_worker_script(mut self, path: impl Into<PathBuf>) -> Self {
-        self.worker_script = path.into();
+        self.worker_script = Some(path.into());
         self
     }
 }
@@ -121,11 +165,7 @@ impl PluginFactory for IsolatedPythonPluginAdapterFactory {
             .and_then(|v| v.as_str())
             .map(PathBuf::from)
             .unwrap_or_else(|| {
-                let class_root = class_name
-                    .split('.')
-                    .next()
-                    .unwrap_or("plugin")
-                    .to_string();
+                let class_root = class_name.split('.').next().unwrap_or("plugin").to_string();
                 let base = plugin_dirs
                     .first()
                     .map(PathBuf::from)
@@ -152,12 +192,14 @@ impl PluginFactory for IsolatedPythonPluginAdapterFactory {
         let handlers: Vec<_> = config
             .hooks
             .iter()
-            .map(|h| -> (&'static str, Arc<dyn cpex_core::registry::AnyHookHandler>) {
-                let leaked: &'static str = Box::leak(h.clone().into_boxed_str());
-                let handler: Arc<dyn cpex_core::registry::AnyHookHandler> =
-                    Arc::new(BoundHookHandler::new(Arc::clone(&adapter), leaked));
-                (leaked, handler)
-            })
+            .map(
+                |h| -> (&'static str, Arc<dyn cpex_core::registry::AnyHookHandler>) {
+                    let leaked: &'static str = Box::leak(h.clone().into_boxed_str());
+                    let handler: Arc<dyn cpex_core::registry::AnyHookHandler> =
+                        Arc::new(BoundHookHandler::new(Arc::clone(&adapter), leaked));
+                    (leaked, handler)
+                },
+            )
             .collect();
 
         Ok(PluginInstance {

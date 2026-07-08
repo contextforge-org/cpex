@@ -41,8 +41,9 @@ pub struct IsolatedPythonPluginAdapter {
     registry: Arc<HookPayloadRegistry>,
     class_name: String,
     plugin_dirs: Vec<String>,
-    /// Worker script path (cpex/framework/isolated/worker.py relative to cwd).
-    worker_script: std::path::PathBuf,
+    /// Explicit `worker.py` override. When `None`, the worker is resolved from
+    /// the venv's installed `cpex` framework at `initialize()` time.
+    worker_script: Option<std::path::PathBuf>,
 }
 
 impl IsolatedPythonPluginAdapter {
@@ -52,7 +53,7 @@ impl IsolatedPythonPluginAdapter {
         registry: Arc<HookPayloadRegistry>,
         class_name: String,
         plugin_dirs: Vec<String>,
-        worker_script: std::path::PathBuf,
+        worker_script: Option<std::path::PathBuf>,
     ) -> Self {
         Self {
             config,
@@ -80,9 +81,14 @@ impl IsolatedPythonPluginAdapter {
         _extensions: &Extensions,
         ctx: &mut PluginContext,
     ) -> Result<Box<dyn std::any::Any + Send + Sync>, Box<PluginError>> {
-        let payload_json = self.registry
+        let payload_json = self
+            .registry
             .payload_to_json(hook_name, payload)
-            .map_err(|e| Box::new(PluginError::Config { message: e.to_string() }))?;
+            .map_err(|e| {
+                Box::new(PluginError::Config {
+                    message: e.to_string(),
+                })
+            })?;
 
         // Build context in Python's PluginContext schema:
         //   { state: {}, global_context: { request_id: "..." }, metadata: {} }
@@ -131,7 +137,8 @@ impl IsolatedPythonPluginAdapter {
             "received worker response"
         );
 
-        let erased = self.registry
+        let erased = self
+            .registry
             .json_to_erased(hook_name, response)
             .map_err(|e| {
                 Box::new(PluginError::Config {
@@ -161,12 +168,35 @@ impl Plugin for IsolatedPythonPluginAdapter {
         })?;
 
         let python_exe = self.venv_manager.python_executable();
+
+        // Resolve worker.py from the venv's installed cpex framework unless an
+        // explicit override was configured. The framework arrives in the venv
+        // transitively via the plugin's requirements, so there is no reliable
+        // project-relative path to the worker.
+        let worker_script = match &self.worker_script {
+            Some(path) => path.clone(),
+            None => super::factory::resolve_worker_script(&python_exe).ok_or_else(|| {
+                Box::new(PluginError::Config {
+                    message: format!(
+                        "plugin '{}': could not locate '{}' in venv {:?} — is cpex installed \
+                         there (via the plugin's requirements)?",
+                        self.config.name,
+                        super::factory::WORKER_MODULE,
+                        self.venv_manager.venv_path,
+                    ),
+                })
+            })?,
+        };
+
         let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-        let worker = WorkerProcess::spawn(&python_exe, &self.worker_script, &cwd)
+        let worker = WorkerProcess::spawn(&python_exe, &worker_script, &cwd)
             .await
             .map_err(|e| {
                 Box::new(PluginError::Config {
-                    message: format!("plugin '{}': failed to spawn worker: {}", self.config.name, e),
+                    message: format!(
+                        "plugin '{}': failed to spawn worker: {}",
+                        self.config.name, e
+                    ),
                 })
             })?;
 

@@ -17,12 +17,12 @@ use std::collections::HashMap;
 
 use cpex_core::{
     cmf::{
-        MessagePayload,
         constants::{
             HOOK_CMF_LLM_INPUT, HOOK_CMF_LLM_OUTPUT, HOOK_CMF_PROMPT_POST_INVOKE,
             HOOK_CMF_PROMPT_PRE_INVOKE, HOOK_CMF_RESOURCE_POST_FETCH, HOOK_CMF_RESOURCE_PRE_FETCH,
             HOOK_CMF_TOOL_POST_INVOKE, HOOK_CMF_TOOL_PRE_INVOKE,
         },
+        MessagePayload,
     },
     delegation::{DelegationPayload, HOOK_TOKEN_DELEGATE},
     error::{PluginError, PluginViolation},
@@ -70,12 +70,7 @@ impl HookPayloadRegistry {
     }
 
     /// Register a (serialize, deserialize) shim pair for a hook type name.
-    pub fn register(
-        &mut self,
-        hook_name: &'static str,
-        ser: SerializeFn,
-        de: DeserializeFn,
-    ) {
+    pub fn register(&mut self, hook_name: &'static str, ser: SerializeFn, de: DeserializeFn) {
         self.serialize.insert(hook_name, ser);
         self.deserialize.insert(hook_name, de);
     }
@@ -97,7 +92,7 @@ impl HookPayloadRegistry {
                 } else {
                     Ok(serde_json::Value::Null)
                 }
-            }
+            },
         }
     }
 
@@ -141,8 +136,11 @@ impl HookPayloadRegistry {
             .get("modified_payload")
             .filter(|v| !v.is_null())
             .map(|v| {
-                self.json_to_payload(hook_name, v.clone())
-                    .map_err(|e| Box::new(PluginError::Config { message: e.to_string() }))
+                self.json_to_payload(hook_name, v.clone()).map_err(|e| {
+                    Box::new(PluginError::Config {
+                        message: e.to_string(),
+                    })
+                })
             })
             .transpose()?;
 
@@ -193,7 +191,9 @@ impl Default for HookPayloadRegistry {
 // Shim functions — one pair per concrete payload type
 // ---------------------------------------------------------------------------
 
-fn serialize_message_payload(p: &dyn PluginPayload) -> Result<serde_json::Value, serde_json::Error> {
+fn serialize_message_payload(
+    p: &dyn PluginPayload,
+) -> Result<serde_json::Value, serde_json::Error> {
     let concrete = p
         .as_any()
         .downcast_ref::<MessagePayload>()
@@ -201,11 +201,15 @@ fn serialize_message_payload(p: &dyn PluginPayload) -> Result<serde_json::Value,
     serde_json::to_value(concrete)
 }
 
-fn deserialize_message_payload(v: serde_json::Value) -> Result<Box<dyn PluginPayload>, serde_json::Error> {
+fn deserialize_message_payload(
+    v: serde_json::Value,
+) -> Result<Box<dyn PluginPayload>, serde_json::Error> {
     Ok(Box::new(serde_json::from_value::<MessagePayload>(v)?))
 }
 
-fn serialize_identity_payload(p: &dyn PluginPayload) -> Result<serde_json::Value, serde_json::Error> {
+fn serialize_identity_payload(
+    p: &dyn PluginPayload,
+) -> Result<serde_json::Value, serde_json::Error> {
     let concrete = p
         .as_any()
         .downcast_ref::<IdentityPayload>()
@@ -213,11 +217,15 @@ fn serialize_identity_payload(p: &dyn PluginPayload) -> Result<serde_json::Value
     serde_json::to_value(concrete)
 }
 
-fn deserialize_identity_payload(v: serde_json::Value) -> Result<Box<dyn PluginPayload>, serde_json::Error> {
+fn deserialize_identity_payload(
+    v: serde_json::Value,
+) -> Result<Box<dyn PluginPayload>, serde_json::Error> {
     Ok(Box::new(serde_json::from_value::<IdentityPayload>(v)?))
 }
 
-fn serialize_delegation_payload(p: &dyn PluginPayload) -> Result<serde_json::Value, serde_json::Error> {
+fn serialize_delegation_payload(
+    p: &dyn PluginPayload,
+) -> Result<serde_json::Value, serde_json::Error> {
     let concrete = p
         .as_any()
         .downcast_ref::<DelegationPayload>()
@@ -225,7 +233,9 @@ fn serialize_delegation_payload(p: &dyn PluginPayload) -> Result<serde_json::Val
     serde_json::to_value(concrete)
 }
 
-fn deserialize_delegation_payload(v: serde_json::Value) -> Result<Box<dyn PluginPayload>, serde_json::Error> {
+fn deserialize_delegation_payload(
+    v: serde_json::Value,
+) -> Result<Box<dyn PluginPayload>, serde_json::Error> {
     Ok(Box::new(serde_json::from_value::<DelegationPayload>(v)?))
 }
 
@@ -236,7 +246,7 @@ fn deserialize_delegation_payload(v: serde_json::Value) -> Result<Box<dyn Plugin
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cpex_core::cmf::{Message, MessagePayload, enums::Role};
+    use cpex_core::cmf::{enums::Role, Message, MessagePayload};
 
     fn make_registry() -> HookPayloadRegistry {
         HookPayloadRegistry::default()
@@ -252,7 +262,9 @@ mod tests {
     fn payload_to_json_message_payload() {
         let r = make_registry();
         let p: Box<dyn PluginPayload> = Box::new(msg_payload());
-        let v = r.payload_to_json(HOOK_CMF_TOOL_PRE_INVOKE, p.as_ref()).unwrap();
+        let v = r
+            .payload_to_json(HOOK_CMF_TOOL_PRE_INVOKE, p.as_ref())
+            .unwrap();
         assert!(v.is_object());
         assert!(v.get("message").is_some());
     }

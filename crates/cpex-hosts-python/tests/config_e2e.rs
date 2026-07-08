@@ -11,7 +11,7 @@ use std::process::Command;
 use std::sync::Arc;
 
 use cpex_core::{
-    cmf::{Message, MessagePayload, constants::HOOK_CMF_TOOL_PRE_INVOKE, enums::Role},
+    cmf::{constants::HOOK_CMF_TOOL_PRE_INVOKE, enums::Role, Message, MessagePayload},
     hooks::payload::Extensions,
     manager::PluginManager,
 };
@@ -27,14 +27,6 @@ fn repo_root() -> PathBuf {
         .to_path_buf()
 }
 
-fn worker_script_path() -> PathBuf {
-    repo_root()
-        .join("cpex")
-        .join("framework")
-        .join("isolated")
-        .join("worker.py")
-}
-
 fn python3_available() -> bool {
     Command::new("python3")
         .arg("--version")
@@ -46,7 +38,9 @@ fn python3_available() -> bool {
 // ---------------------------------------------------------------------------
 // Load config from plugins/config.yaml and invoke tool_pre_invoke on cpex-test-plugin.
 //
-// To run this test, the cpex-test-plugin must be installed via:
+// To run this test, the cpex-test-plugin must be installed at the project root and with the
+// tests/fixtures/.venv as the active environment (run, "cargo test -p cpex-hosts-python --test isolated_e2e" 
+// to initialize the venv and then "source tests/fixtures/.venv/bin/activate" to activate it):
 //
 // cpex plugin --type test-pypi install "cpex-test-plugin@>=0.2.0"
 //
@@ -68,8 +62,9 @@ async fn cpex_test_plugin_tool_pre_invoke() {
     std::env::set_current_dir(&root).expect("failed to cd to repo root");
     let config_path = root.join("plugins").join("config.yaml");
 
-    let factory = IsolatedPythonPluginAdapterFactory::new(HookPayloadRegistry::default())
-        .with_worker_script(worker_script_path());
+    // No worker_script override: worker.py is resolved from the installed
+    // cpex framework inside the plugin's venv.
+    let factory = IsolatedPythonPluginAdapterFactory::new(HookPayloadRegistry::default());
 
     let mgr = Arc::new(PluginManager::default());
     mgr.register_factory(KIND, Box::new(factory));

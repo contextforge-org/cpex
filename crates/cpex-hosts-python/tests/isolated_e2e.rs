@@ -14,7 +14,7 @@ use std::process::Command;
 use std::sync::Arc;
 
 use cpex_core::{
-    cmf::{Message, MessagePayload, constants::HOOK_CMF_TOOL_PRE_INVOKE, enums::Role},
+    cmf::{constants::HOOK_CMF_TOOL_PRE_INVOKE, enums::Role, Message, MessagePayload},
     hooks::payload::Extensions,
     manager::PluginManager,
 };
@@ -26,18 +26,6 @@ fn fixtures_dir() -> PathBuf {
         .join("fixtures")
 }
 
-fn worker_script_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .join("cpex")
-        .join("framework")
-        .join("isolated")
-        .join("worker.py")
-}
-
 fn python3_available() -> bool {
     Command::new("python3")
         .arg("--version")
@@ -47,8 +35,9 @@ fn python3_available() -> bool {
 }
 
 fn make_factory() -> IsolatedPythonPluginAdapterFactory {
+    // No worker_script override: the adapter resolves worker.py from the
+    // installed cpex framework inside each plugin's venv.
     IsolatedPythonPluginAdapterFactory::new(HookPayloadRegistry::default())
-        .with_worker_script(worker_script_path())
 }
 
 fn plugin_yaml(class_name: &str, hook: &str, on_error: &str, mode: &str) -> String {
@@ -94,12 +83,8 @@ fn cpex_root() -> PathBuf {
 /// This avoids pip's inconsistent relative-path resolution inside `-r` files.
 fn write_requirements_txt() {
     let req_path = fixtures_dir().join("requirements.txt");
-    let cpex = cpex_root();
-    std::fs::write(
-        &req_path,
-        format!("-e {}\n", cpex.display()),
-    )
-    .expect("failed to write requirements.txt");
+    let _cpex = cpex_root();
+    std::fs::write(&req_path, "git+https://github.com/contextforge-org/cpex.git@feat/python_plugin_compat_0.1.x").expect("failed to write requirements.txt");
 }
 
 fn tool_payload() -> MessagePayload {
@@ -113,7 +98,8 @@ fn make_manager(class_name: &str, on_error: &str) -> Arc<PluginManager> {
     let mgr = Arc::new(PluginManager::default());
     mgr.register_factory(KIND, Box::new(make_factory()));
     let yaml = plugin_yaml(class_name, HOOK_CMF_TOOL_PRE_INVOKE, on_error, "sequential");
-    mgr.load_config_yaml(&yaml).expect("load_config_yaml failed");
+    mgr.load_config_yaml(&yaml)
+        .expect("load_config_yaml failed");
     mgr
 }
 

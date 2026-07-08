@@ -33,7 +33,7 @@ pub enum WorkerError {
     #[error("worker process died or channel closed")]
     ProcessDied,
     #[error("worker returned error: {0}")]
-    WorkerError(String),
+    Worker(String),
 }
 
 type ResponseSender = oneshot::Sender<Result<serde_json::Value, WorkerError>>;
@@ -64,7 +64,11 @@ pub struct WorkerProcess {
 
 impl WorkerProcess {
     /// Spawn the worker.py subprocess and start the background I/O task.
-    pub async fn spawn(python_exe: &Path, script_path: &Path, cwd: &Path) -> Result<Self, WorkerError> {
+    pub async fn spawn(
+        python_exe: &Path,
+        script_path: &Path,
+        cwd: &Path,
+    ) -> Result<Self, WorkerError> {
         let mut child = Command::new(python_exe)
             .arg(script_path)
             .current_dir(cwd)
@@ -148,7 +152,7 @@ impl WorkerProcess {
                                                         .and_then(|v| v.as_str())
                                                         .unwrap_or("worker error")
                                                         .to_string();
-                                                    let _ = tx.send(Err(WorkerError::WorkerError(msg)));
+                                                    let _ = tx.send(Err(WorkerError::Worker(msg)));
                                                 } else {
                                                     let _ = tx.send(Ok(resp));
                                                 }
@@ -244,14 +248,14 @@ impl WorkerProcess {
         match self.send_task(shutdown_data, timeout).await {
             Ok(_) => {
                 info!("worker shutdown acknowledged");
-            }
+            },
             Err(WorkerError::Timeout(_)) => {
                 warn!("worker shutdown timed out — killing");
                 self.kill().await;
-            }
+            },
             Err(e) => {
                 debug!("worker shutdown send error: {} — likely already dead", e);
-            }
+            },
         }
         // Close the sender so the I/O task can finish.
         *self.task_tx.lock().await = None;
