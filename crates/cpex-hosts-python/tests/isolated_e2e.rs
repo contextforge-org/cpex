@@ -84,7 +84,11 @@ fn cpex_root() -> PathBuf {
 fn write_requirements_txt() {
     let req_path = fixtures_dir().join("requirements.txt");
     let _cpex = cpex_root();
-    std::fs::write(&req_path, "git+https://github.com/contextforge-org/cpex.git@feat/python_plugin_compat_0.1.x").expect("failed to write requirements.txt");
+    std::fs::write(
+        &req_path,
+        "git+https://github.com/contextforge-org/cpex.git@feat/python_plugin_compat_0.1.x",
+    )
+    .expect("failed to write requirements.txt");
 }
 
 fn tool_payload() -> MessagePayload {

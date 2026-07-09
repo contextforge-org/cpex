@@ -39,7 +39,7 @@ fn python3_available() -> bool {
 // Load config from plugins/config.yaml and invoke tool_pre_invoke on cpex-test-plugin.
 //
 // To run this test, the cpex-test-plugin must be installed at the project root and with the
-// tests/fixtures/.venv as the active environment (run, "cargo test -p cpex-hosts-python --test isolated_e2e" 
+// tests/fixtures/.venv as the active environment (run, "cargo test -p cpex-hosts-python --test isolated_e2e"
 // to initialize the venv and then "source tests/fixtures/.venv/bin/activate" to activate it):
 //
 // cpex plugin --type test-pypi install "cpex-test-plugin@>=0.2.0"
