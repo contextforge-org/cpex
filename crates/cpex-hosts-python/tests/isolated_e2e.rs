@@ -84,6 +84,7 @@ fn cpex_root() -> PathBuf {
 fn write_requirements_txt() {
     let req_path = fixtures_dir().join("requirements.txt");
     let _cpex = cpex_root();
+    // TODO: replace this with cpex>=0.1.1,<0.2 when pr https://github.com/contextforge-org/cpex/pull/113 is merged into 0.1.x
     std::fs::write(
         &req_path,
         "git+https://github.com/contextforge-org/cpex.git@feat/python_plugin_compat_0.1.x",

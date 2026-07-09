@@ -16,7 +16,7 @@ license.workspace = true
 authors.workspace = true
 
 [dependencies]
-cpex-core = { path = "../cpex-core" }
+cpex-core = { workspace = true }
 
 async-trait = { workspace = true }
 serde       = { workspace = true }
