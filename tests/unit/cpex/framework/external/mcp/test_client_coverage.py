@@ -682,7 +682,6 @@ class TestShutdownMoreBranches:
         plugin._stdio_stop.set = MagicMock()
         plugin._stdio_ready = MagicMock()
         plugin._exit_stack = None
-        plugin._session_id = None
 
         await plugin.shutdown()
         assert plugin._stdio_task is None

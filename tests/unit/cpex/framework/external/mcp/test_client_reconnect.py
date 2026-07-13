@@ -210,7 +210,6 @@ class TestInvokeHookWithReconnection:
         plugin._session = mock_session
 
         from mcp import MCPError
-        from mcp_types import ErrorData
 
         call_count = 0
 
