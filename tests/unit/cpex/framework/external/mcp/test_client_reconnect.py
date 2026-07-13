@@ -248,6 +248,21 @@ class TestInvokeHookWithReconnection:
             from mcp_types import CallToolResult, TextContent
 
             return CallToolResult(content=[TextContent(type="text", text='{"result": {"name": "test", "args": {}}}')])
+
+        mock_session.call_tool = mock_call_tool
+
+        with patch("cpex.framework.external.mcp.client.get_hook_registry") as mock_registry:
+            mock_registry.return_value.get_result_type.return_value = ToolPreInvokePayload
+            with patch.object(plugin, "_reconnect_session", new_callable=AsyncMock) as mock_reconnect:
+                payload = ToolPreInvokePayload(name="test", args={})
+                result = await plugin.invoke_hook("tool_pre_invoke", payload, mock_plugin_context)
+                mock_reconnect.assert_called_once()
+                assert result is not None
+                # The call is retried after reconnect: first raises, second succeeds.
+                assert call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_invoke_hook_no_reconnect_on_other_plugin_errors(self, mock_http_plugin_config, mock_plugin_context):
         plugin = ExternalPlugin(mock_http_plugin_config)
         mock_session = AsyncMock()
         plugin._session = mock_session
