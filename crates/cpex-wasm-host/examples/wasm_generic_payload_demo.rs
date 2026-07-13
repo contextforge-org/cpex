@@ -1,28 +1,30 @@
-// Location: ./crates/cpex-wasm-host/examples/wasm_generic_payload_demo.rs
+// Location: ./crates/cpex-wasm-host/examples/wasm_custom_payload_demo.rs
 // Copyright 2025
 // SPDX-License-Identifier: Apache-2.0
 // Authors: Shriti Priya
 //
-// Generic payload WASM plugin demo.
+// Custom payload WASM plugin demo.
 //
 // Demonstrates a custom payload type (ToolInvokePayload) crossing the WASM
-// boundary via HookPayload::Generic. This covers the path beyond CMF:
+// boundary via HookPayload::Custom. This covers the path beyond CMF:
 //
 //   host: ToolInvokePayload → PayloadSerializerRegistry.serialize()
-//         → HookPayload::Generic { payload_type: "cpex.tool_invoke", bytes }
+//         → HookPayload::Custom { payload_type: "cpex.tool_invoke", bytes }
 //         → SandboxManager.invoke()
-//   WASM guest: receives Generic variant, logs receipt, returns allow()
+//   WASM guest: receives Custom variant, logs receipt, returns allow()
 //   host: PayloadSerializerRegistry.deserialize() on any modified payload
 //
-// The guest currently returns allow() for all Generic payloads (full typed
-// dispatch requires Phase 5+ generic handler registration in the guest).
-// This demo validates the host-side infrastructure and the wire format.
+// The bundled guest has no HookHandler for ToolInvokePayload, so this
+// demo exercises the pass-through path: an unhandled custom payload
+// returns allow(), same as a native plugin not registered for the hook.
+// See wasm_identity_resolve_demo for full typed dispatch on the custom
+// path (IdentityPayload -> HookHandler<IdentityHook> inside the guest).
 //
 // Prerequisites: build the WASM plugin first:
 //   cargo build -p cpex-wasm-plugin --target wasm32-wasip2
 //
 // Run from the workspace root:
-//   cargo run -p cpex-wasm-host --example wasm_generic_payload_demo
+//   cargo run -p cpex-wasm-host --example wasm_custom_payload_demo
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -136,7 +138,7 @@ async fn main() {
 
     if result.continue_processing {
         println!("Result: ALLOWED");
-        println!("  (guest received Generic payload, logged receipt, returned allow())");
+        println!("  (guest has no ToolInvokePayload handler — passed through as allow())");
     } else {
         let reason = result.violation.as_ref().map(|v| v.reason.as_str()).unwrap_or("unknown");
         println!("Result: DENIED — {}", reason);
@@ -145,8 +147,8 @@ async fn main() {
     bg.wait_for_background_tasks().await;
 
     println!("\n=== Demo complete ===");
-    println!("\nNote: full typed dispatch inside the guest (ToolInvokePayload → HookHandler<ToolPreInvoke>)");
-    println!("is the next milestone — the host-side generic path and wire format are validated here.");
+    println!("\nNote: for typed dispatch of a custom payload inside the guest, see");
+    println!("wasm_identity_resolve_demo (IdentityPayload → HookHandler<IdentityHook>).");
 }
 
 fn build_extensions() -> Extensions {

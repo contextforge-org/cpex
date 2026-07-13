@@ -14,7 +14,9 @@ use cpex_core::cmf::{CmfHook, MessagePayload};
 use cpex_core::context::PluginContext;
 use cpex_core::error::{PluginError, PluginViolation};
 use cpex_core::extensions::container::Extensions;
+use cpex_core::extensions::security::{SubjectExtension, SubjectType};
 use cpex_core::hooks::trait_def::{HookHandler, PluginResult};
+use cpex_core::identity::{IdentityHook, IdentityPayload};
 use cpex_core::plugin::{Plugin, PluginConfig};
 
 pub struct IdentityCheckerPlugin;
@@ -106,5 +108,36 @@ impl HookHandler<CmfHook> for IdentityCheckerPlugin {
         }
 
         PluginResult::allow()
+    }
+}
+
+impl HookHandler<IdentityHook> for IdentityCheckerPlugin {
+    /// identity_resolve via the custom payload path. The raw token is
+    /// `#[serde(skip)]` and never reaches the sandbox, so this resolves
+    /// the subject from the request headers instead.
+    async fn handle(
+        &self,
+        payload: &IdentityPayload,
+        _extensions: &Extensions,
+        _ctx: &mut PluginContext,
+    ) -> PluginResult<IdentityPayload> {
+        if payload.subject.is_some() {
+            eprintln!("[WASM] IDENTITY: subject already resolved");
+            return PluginResult::allow();
+        }
+
+        let Some(user_id) = payload.headers().get("x-user-id") else {
+            eprintln!("[WASM] IDENTITY: no x-user-id header — passing through");
+            return PluginResult::allow();
+        };
+
+        eprintln!("[WASM] IDENTITY: resolved subject '{}' from header", user_id);
+        let mut resolved = payload.clone();
+        resolved.subject = Some(SubjectExtension {
+            id: Some(user_id.clone()),
+            subject_type: Some(SubjectType::User),
+            ..Default::default()
+        });
+        PluginResult::modify_payload(resolved)
     }
 }

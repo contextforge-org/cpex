@@ -8,16 +8,17 @@
 //
 // Supports arbitrary payload types via the hook-payload variant:
 // - cmf: structured CMF MessagePayload (field-by-field conversion, no full-payload serialization)
-// - generic: any serializable payload as JSON bytes with a type discriminator
+// - custom: any serializable payload as JSON bytes with a type discriminator
 
 package cpex:plugin;
 
 interface types {
 
   // ---------------------------------------------------------------------------
-  // CMF enums
+  // CMF enums: 
   // ---------------------------------------------------------------------------
 
+  // Verified
   enum role {
     system,
     developer,
@@ -26,12 +27,14 @@ interface types {
     tool,
   }
 
+  // Verified
   enum channel {
     analysis,
     commentary,
     final,
   }
-
+  
+  // Verified
   enum resource-type {
     file,
     blob,
@@ -45,13 +48,14 @@ interface types {
   // ---------------------------------------------------------------------------
   // CMF content parts
   // ---------------------------------------------------------------------------
-
+  // Verified
   record image-source {
     source-type: string,
     data: string,
     media-type: option<string>,
   }
-
+  
+  // Verified
   record video-source {
     source-type: string,
     data: string,
@@ -59,6 +63,7 @@ interface types {
     duration-ms: option<u64>,
   }
 
+  // Verified
   record audio-source {
     source-type: string,
     data: string,
@@ -66,6 +71,7 @@ interface types {
     duration-ms: option<u64>,
   }
 
+  // Verified
   record document-source {
     source-type: string,
     data: string,
@@ -73,6 +79,7 @@ interface types {
     title: option<string>,
   }
 
+  // Verified
   record tool-call {
     tool-call-id: string,
     name: string,
@@ -80,7 +87,8 @@ interface types {
     arguments: string,
     namespace: option<string>,
   }
-
+  
+  // Verified
   record tool-result {
     tool-call-id: string,
     tool-name: string,
@@ -89,6 +97,7 @@ interface types {
     is-error: bool,
   }
 
+  // Verified
   record cmf-resource {
     resource-request-id: string,
     uri: string,
@@ -104,6 +113,7 @@ interface types {
     version: option<string>,
   }
 
+  // Verified
   record resource-reference {
     resource-request-id: string,
     uri: string,
@@ -114,6 +124,7 @@ interface types {
     selector: option<string>,
   }
 
+  // Verified
   record prompt-request {
     prompt-request-id: string,
     name: string,
@@ -122,6 +133,7 @@ interface types {
     server-id: option<string>,
   }
 
+  // Verified
   record prompt-result {
     prompt-request-id: string,
     prompt-name: string,
@@ -134,6 +146,7 @@ interface types {
     error-message: option<string>,
   }
 
+  // Verified
   variant content-part {
     text(string),
     thinking(string),
@@ -149,6 +162,7 @@ interface types {
     document(document-source),
   }
 
+  // Verified
   record message {
     schema-version: string,
     role: role,
@@ -156,22 +170,133 @@ interface types {
     channel: option<channel>,
   }
 
+  // Verified
   record message-payload {
     message: message,
   }
 
   // ---------------------------------------------------------------------------
-  // Generic payload for arbitrary types
+  // Custom payload for arbitrary types
   // ---------------------------------------------------------------------------
 
-  record generic-payload {
+  record custom-payload {
     payload-type: string,
     payload-data: list<u8>,
   }
 
+  // ---------------------------------------------------------------------------
+  // Identity payload (IdentityResolve hook)
+  // Note: raw_token is #[serde(skip)] in Rust — never crosses the WASM
+  // boundary. WASM handlers resolve identity from source/headers/claims.
+  // ---------------------------------------------------------------------------
+
+  // Verified
+  enum token-source {
+    bearer,
+    user-token,
+    mtls,
+    spiffe-jwt-svid,
+    api-key,
+    // custom source name carried as a string alongside this enum value
+    // via identity-payload.source-custom when this variant is selected
+    custom,
+  }
+
+  // Verified
+  record identity-payload {
+    // Input fields (host-supplied, read-only for handlers)
+    source: token-source,
+    // non-empty when source = custom
+    source-custom: option<string>,
+    source-header: option<string>,
+    // request headers as key-value pairs — escape hatch for custom auth flows
+    headers: list<tuple<string, string>>,
+    client-host: option<string>,
+    client-port: option<u16>,
+
+    // Output fields (handlers populate these on the returned payload)
+    subject: option<subject-extension>,
+    client: option<client-extension>,
+    caller-workload: option<workload-identity>,
+    // initial delegation chain parsed from act/equivalent claims
+    delegation: option<delegation-extension>,
+    // resolved_at as ISO 8601 string (DateTime<Utc>)
+    resolved-at: option<string>,
+    // raw decoded token claims as a JSON object string (HashMap<String, Value>)
+    raw-claims: option<string>,
+  }
+
+  // ---------------------------------------------------------------------------
+  // Delegation payload (TokenDelegate hook)
+  // Note: bearer_token and delegated_token.token are #[serde(skip)] in Rust —
+  // they never cross the WASM boundary. WASM handlers can attenuat scopes and
+  // populate delegation_update/metadata but cannot mint raw tokens.
+  // ---------------------------------------------------------------------------
+
+  enum target-type {
+    tool,
+    agent,
+    %resource,
+    service,
+    // custom target kind name carried in delegation-payload.target-type-custom
+    custom,
+  }
+
+  enum auth-enforced-by {
+    caller,
+    target,
+    both,
+  }
+
+  enum delegation-mode {
+    on-behalf-of-user,
+    as-gateway,
+  }
+
+  record attenuation-config {
+    capabilities: list<string>,
+    resource-template: option<string>,
+    actions: list<string>,
+    ttl-seconds: option<u64>,
+  }
+
+  // Minted outbound credential (token bytes are #[serde(skip)] — omitted).
+  record raw-delegated-token {
+    outbound-header: string,
+    audience: string,
+    scopes: list<string>,
+    // expires_at as ISO 8601 string (DateTime<Utc>)
+    expires-at: string,
+  }
+
+  record delegation-payload {
+    // Input fields (host-supplied, read-only for handlers)
+    target-name: string,
+    target-type: target-type,
+    // non-empty when target-type = custom
+    target-type-custom: option<string>,
+    target-audience: option<string>,
+    required-permissions: list<string>,
+    trust-domain: option<string>,
+    auth-enforced-by: auth-enforced-by,
+    route-attenuation: option<attenuation-config>,
+
+    // Output fields (handlers populate these on the returned payload)
+    // token bytes omitted — raw credential material never crosses the sandbox
+    delegated-token: option<raw-delegated-token>,
+    delegation-update: option<delegation-extension>,
+    delegation-mode: option<delegation-mode>,
+    // minted_at as ISO 8601 string (DateTime<Utc>)
+    minted-at: option<string>,
+    // handler metadata as a JSON object string (HashMap<String, Value>)
+    metadata: option<string>,
+  }
+
   variant hook-payload {
     cmf(message-payload),
-    generic(generic-payload),
+    identity(identity-payload),
+    delegation(delegation-payload),
+    custom(custom-payload),
   }
 
   // ---------------------------------------------------------------------------
@@ -492,6 +617,7 @@ interface types {
     proto-error-code: option<s64>,
   }
 
+  // Verified
   // metadata is a JSON string (serde_json::Value)
   record hook-result {
     continue-processing: bool,

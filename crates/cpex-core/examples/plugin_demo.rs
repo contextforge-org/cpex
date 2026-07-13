@@ -75,6 +75,7 @@ impl Plugin for IdentityResolver {
     }
 }
 
+// this will go to plugin.rs within cpex-wasm-plugin
 impl HookHandler<ToolPreInvoke> for IdentityResolver {
     async fn handle(
         &self,

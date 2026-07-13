@@ -6,6 +6,12 @@ edition = "2021"
 [lib]
 crate-type = ["cdylib"]
 
+[features]
+default = ["identity-checker"]
+identity-checker = []
+header-injector = []
+audit-logger = []
+
 [dependencies]
 wit-bindgen = "0.57"
 wit-bindgen-rt = "0.44"

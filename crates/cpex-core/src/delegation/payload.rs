@@ -450,6 +450,13 @@ impl DelegationPayload {
 
 impl_plugin_payload!(DelegationPayload);
 
+// WASM transport: `bearer_token` and `delegated_token.token` are
+// `#[serde(skip)]`, so raw credential material never crosses the
+// sandbox boundary. A WASM handler can attenuate scopes and populate
+// `delegation_update` / `metadata`, but token minting that must
+// return the raw token stays in-process.
+crate::impl_wasm_payload!(DelegationPayload, "cpex.delegation");
+
 #[cfg(test)]
 mod tests {
     use super::*;

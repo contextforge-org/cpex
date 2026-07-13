@@ -369,6 +369,11 @@ impl IdentityPayload {
 
 impl_plugin_payload!(IdentityPayload);
 
+// WASM transport: `raw_token` is `#[serde(skip)]`, so a WASM handler
+// receives every input except the raw credential bytes — it resolves
+// identity from `headers` / claims and returns the output fields.
+crate::impl_wasm_payload!(IdentityPayload, "cpex.identity");
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -277,3 +277,6 @@ tmp/
 plugin-catalog
 # Hugo build output
 docs/public/
+crates/cpex-wasm-host/wasm/*.wasm
+crates/cpex-wasm-plugin/plugin.wasm
+crates/cpex-wasm-plugin/Cargo.lock

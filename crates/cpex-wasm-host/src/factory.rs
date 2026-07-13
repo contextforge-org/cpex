@@ -46,10 +46,16 @@ impl WasmPluginFactory {
         Self { wasm_dir, registry }
     }
 
-    /// Convenience constructor that pre-registers `MessagePayload` only.
-    pub fn with_cmf_only(wasm_dir: PathBuf) -> Self {
+    /// Convenience constructor that pre-registers all built-in payload types:
+    /// `MessagePayload` (CMF hooks), `IdentityPayload` (identity_resolve),
+    /// and `DelegationPayload` (token_delegate).
+    /// Credential fields marked `#[serde(skip)]` on the identity and
+    /// delegation payloads never cross the sandbox boundary.
+    pub fn with_builtin_payloads(wasm_dir: PathBuf) -> Self {
         let mut registry = PayloadSerializerRegistry::new();
         registry.register::<MessagePayload>();
+        registry.register::<cpex_core::identity::IdentityPayload>();
+        registry.register::<cpex_core::delegation::DelegationPayload>();
         Self::new(wasm_dir, Arc::new(registry))
     }
 }
@@ -180,8 +186,8 @@ impl AnyHookHandler for WasmBridgeHandler {
                     message: format!("plugin '{}': payload serialization failed: {}", self.plugin_name, e),
                 })
             })?;
-            crate::sandbox_manager::types::HookPayload::Generic(
-                crate::sandbox_manager::types::GenericPayload {
+            crate::sandbox_manager::types::HookPayload::Custom(
+                crate::sandbox_manager::types::CustomPayload {
                     payload_type: type_name.to_string(),
                     payload_data: bytes,
                 },
@@ -213,15 +219,20 @@ impl AnyHookHandler for WasmBridgeHandler {
                 })?
         };
 
-        // Convert WIT HookResult → native PluginResult + optional context writeback
-        let (native_result, modified_ctx) = wit_hook_result_to_native(wit_result, &self.registry);
+        // Convert WIT HookResult → type-erased result fields + optional
+        // context writeback. The erased fields carry the modified payload
+        // as Box<dyn PluginPayload> with its concrete type intact (CMF or
+        // any registry-registered custom payload), so no erase_result
+        // round-trip through a hardcoded payload type is needed.
+        let (erased_fields, modified_ctx) =
+            wit_hook_result_to_native(wit_result, &self.registry, extensions);
 
         if let Some(new_ctx) = modified_ctx {
             ctx.local_state = new_ctx.local_state;
             ctx.global_state = new_ctx.global_state;
         }
 
-        Ok(cpex_core::executor::erase_result(native_result))
+        Ok(Box::new(erased_fields))
     }
 
     fn hook_type_name(&self) -> &'static str {

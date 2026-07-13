@@ -140,7 +140,7 @@ macro_rules! impl_plugin_payload {
 ///
 /// Implement this (via [`impl_wasm_payload!`]) for any payload type that WASM
 /// plugins should be able to receive or return. The type discriminator string
-/// is embedded in the WIT `generic-payload` record so the host and guest can
+/// is embedded in the WIT `custom-payload` record so the host and guest can
 /// agree on which concrete type to deserialize.
 ///
 /// # Example
@@ -159,7 +159,7 @@ macro_rules! impl_plugin_payload {
 /// impl_wasm_payload!(ToolInvokePayload, "cpex.tool_invoke");
 /// ```
 pub trait WasmSerializablePayload: PluginPayload {
-    /// Type discriminator used in the WIT `generic-payload` record.
+    /// Type discriminator used in the WIT `custom-payload` record.
     ///
     /// Must be unique across all payload types registered with the host.
     /// Convention: `"<namespace>.<type>"` (e.g. `"cmf.message"`, `"cpex.tool_invoke"`).

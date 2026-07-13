@@ -1,20 +1,16 @@
-// Location: ./crates/cpex-wasm-host/examples/wasm_plugin_demo.rs
-// Copyright 2025
-// SPDX-License-Identifier: Apache-2.0
-// Authors: Shriti Priya
+// WASM Capabilities Demo
 //
-// CMF payload WASM plugin demo.
+// Demonstrates:
+//   1. Three WASM plugins with different capability profiles
+//   2. Capability-gated extension visibility across the WASM sandbox boundary
+//   3. Extension modification by a WASM plugin (add label + inject header)
+//   4. Multi-plugin pipeline with priority ordering
 //
-// Shows the end-to-end CMF path: a MessagePayload crosses the WASM boundary,
-// the guest IdentityCheckerPlugin (written with HookHandler<CmfHook> — identical
-// to a native plugin) runs the identity check, and the result flows back.
+// Prerequisites: build all plugin binaries:
+//   cd crates/cpex-wasm-plugin && make build-all
 //
-// Prerequisites: build the WASM plugin first:
-//   cargo build -p cpex-wasm-plugin --target wasm32-wasip2
-//   cargo run --example wasm_plugin_demo
-//
-// Run from the workspace root:
-//   cargo run -p cpex-wasm-host --example wasm_plugin_demo
+// Run:
+//   cargo run -p cpex-wasm-host --example wasm_capabilities_demo
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -32,10 +28,11 @@ use cpex_wasm_host::factory::WasmPluginFactory;
 
 #[tokio::main]
 async fn main() {
-    println!("=== WASM Plugin Demo — CMF MessagePayload ===\n");
+    println!("=== WASM Capabilities Demo ===\n");
 
     let crate_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let config_path = crate_dir.join("config/config.yaml");
+    let config_path = crate_dir.join("config/config_capabilities.yaml");
+    let wasm_dir = crate_dir.join("wasm");
 
     println!("Loading config: {}", config_path.display());
     let yaml = std::fs::read_to_string(&config_path)
@@ -43,20 +40,34 @@ async fn main() {
     let cpex_config = parse_config(&yaml).unwrap();
 
     let mgr = PluginManager::default();
+
+    // Register the WASM factory for each plugin kind.
+    // The factory strips "wasm://" and looks for the .wasm file in the wasm/ dir.
     mgr.register_factory(
-        "wasm://plugin.wasm",
-        Box::new(WasmPluginFactory::with_builtin_payloads(crate_dir.join("wasm"))),
+        "wasm://identity-checker.wasm",
+        Box::new(WasmPluginFactory::with_builtin_payloads(wasm_dir.clone())),
     );
+    mgr.register_factory(
+        "wasm://header-injector.wasm",
+        Box::new(WasmPluginFactory::with_builtin_payloads(wasm_dir.clone())),
+    );
+    mgr.register_factory(
+        "wasm://audit-logger.wasm",
+        Box::new(WasmPluginFactory::with_builtin_payloads(wasm_dir)),
+    );
+
     mgr.load_config(cpex_config).unwrap();
     mgr.initialize().await.unwrap();
 
-    // Build a pre-invoke payload: assistant requesting a tool call.
+    // --- Build CMF Message: assistant requesting a tool call ---
     let pre_payload = MessagePayload {
         message: Message {
             schema_version: cpex_core::cmf::constants::SCHEMA_VERSION.into(),
             role: Role::Assistant,
             content: vec![
-                ContentPart::Text { text: "Looking up compensation data.".into() },
+                ContentPart::Text {
+                    text: "Looking up compensation data.".into(),
+                },
                 ContentPart::ToolCall {
                     content: ToolCall {
                         tool_call_id: "tc_001".into(),
@@ -70,29 +81,46 @@ async fn main() {
         },
     };
 
-    let pre_ext = build_extensions("PII");
+    let ext = build_extensions();
 
-    // --- Phase 1: pre-invoke ---
-    println!("=== cmf.tool_pre_invoke ===");
+    // --- Phase 1: Pre-invoke ---
+    println!("=== Phase 1: cmf.tool_pre_invoke ===\n");
+
     let (pre_result, pre_bg) = mgr
-        .invoke_named::<CmfHook>("cmf.tool_pre_invoke", pre_payload, pre_ext, None)
+        .invoke_named::<CmfHook>("cmf.tool_pre_invoke", pre_payload, ext, None)
         .await;
 
+    println!();
     if pre_result.continue_processing {
-        println!("Pre-invoke: ALLOWED");
+        println!("Pre-invoke result: ALLOWED");
+        if let Some(ref modified_ext) = pre_result.modified_extensions {
+            if let Some(ref sec) = modified_ext.security {
+                let labels: Vec<&String> = sec.labels.iter().collect();
+                println!("  Labels after pre-invoke: {:?}", labels);
+            }
+            if let Some(ref http) = modified_ext.http {
+                println!("  Headers after pre-invoke: {:?}", http.request_headers);
+            }
+        }
     } else {
-        let reason = pre_result.violation.as_ref().map(|v| v.reason.as_str()).unwrap_or("unknown");
-        println!("Pre-invoke: DENIED — {}", reason);
+        let reason = pre_result
+            .violation
+            .as_ref()
+            .map(|v| v.reason.as_str())
+            .unwrap_or("unknown");
+        println!("Pre-invoke result: DENIED — {}", reason);
         pre_bg.wait_for_background_tasks().await;
         println!("\n=== Demo complete ===");
         return;
     }
     pre_bg.wait_for_background_tasks().await;
 
-    println!("\n  [tool executes: {{\"salary\": 150000, \"currency\": \"USD\"}}]\n");
+    // --- Simulate tool execution ---
+    println!("\n--- Tool 'get_compensation' executes... ---");
+    println!("  Result: {{\"salary\": 150000, \"currency\": \"USD\"}}\n");
 
-    // --- Phase 2: post-invoke with tool result ---
-    println!("=== cmf.tool_post_invoke ===");
+    // --- Phase 2: Post-invoke with tool result ---
+    println!("=== Phase 2: cmf.tool_post_invoke ===\n");
 
     let post_payload = MessagePayload {
         message: Message {
@@ -110,8 +138,9 @@ async fn main() {
         },
     };
 
-    // Carry forward any modified extensions from pre-invoke; rebuild if none.
-    let post_ext = pre_result.modified_extensions.unwrap_or_else(|| build_extensions("PII"));
+    let post_ext = pre_result
+        .modified_extensions
+        .unwrap_or_else(build_extensions);
 
     let (post_result, post_bg) = mgr
         .invoke_named::<CmfHook>(
@@ -122,20 +151,25 @@ async fn main() {
         )
         .await;
 
+    println!();
     if post_result.continue_processing {
-        println!("Post-invoke: ALLOWED");
+        println!("Post-invoke result: ALLOWED");
     } else {
-        let reason = post_result.violation.as_ref().map(|v| v.reason.as_str()).unwrap_or("unknown");
-        println!("Post-invoke: DENIED — {}", reason);
+        let reason = post_result
+            .violation
+            .as_ref()
+            .map(|v| v.reason.as_str())
+            .unwrap_or("unknown");
+        println!("Post-invoke result: DENIED — {}", reason);
     }
 
     post_bg.wait_for_background_tasks().await;
     println!("\n=== Demo complete ===");
 }
 
-fn build_extensions(security_label: &str) -> Extensions {
+fn build_extensions() -> Extensions {
     let mut security = SecurityExtension::default();
-    security.add_label(security_label);
+    security.add_label("PII");
     security.add_label("HR_DATA");
     security.classification = Some("confidential".into());
     security.subject = Some(SubjectExtension {

@@ -1,0 +1,28 @@
+# Identity-resolve WASM demo configuration.
+#
+# One WASM plugin registered on the identity.resolve hook. The payload
+# crosses the sandbox via the generic path ("cpex.identity") — the raw
+# token is #[serde(skip)] and never enters the sandbox; the plugin
+# resolves the subject from request headers.
+
+plugin_settings:
+  routing_enabled: false
+
+plugins:
+  - name: identity-checker
+    kind: wasm://plugin.wasm
+    hooks: [identity.resolve]
+    mode: sequential
+    priority: 10
+    on_error: fail
+    config:
+      sandbox_policy:
+        allowed_filesystem: []   # No host filesystem access
+        allowed_network: []      # No outbound HTTP allowed
+        allowed_env: []          # No host environment variables exposed
+        resources:
+          max_memory_bytes: 10485760   # 10 MB linear memory cap
+          max_fuel: 1000000000         # ~1 billion instructions (session-level budget)
+          max_execution_time_ms: 5000  # 5 seconds per invocation timeout
+          max_instances: 10            # Max WASM module instances
+          max_tables: 10               # Max WASM tables

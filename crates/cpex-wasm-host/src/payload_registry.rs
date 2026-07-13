@@ -6,9 +6,9 @@
 // PayloadSerializerRegistry — maps payload TypeId ↔ (type_name, serialize, deserialize).
 //
 // The host registers every payload type it wants to route through the WASM
-// boundary here. WasmBridgeHandler calls serialize() to build HookPayload::Generic
+// boundary here. WasmBridgeHandler calls serialize() to build HookPayload::Custom
 // before invocation, and deserialize() to reconstruct a Box<dyn PluginPayload>
-// from the guest's returned generic payload.
+// from the guest's returned custom payload.
 
 use std::any::TypeId;
 use std::collections::HashMap;

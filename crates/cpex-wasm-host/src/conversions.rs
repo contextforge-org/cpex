@@ -7,20 +7,21 @@
 // Used by WasmBridgeHandler to translate between the PluginManager's native
 // types and the WIT types that the WASM sandbox expects.
 
-use std::sync::Arc;
-
 use chrono::DateTime;
 
 use cpex_core::cmf::content as native_content;
 use cpex_core::cmf::enums as native_enums;
 use cpex_core::cmf::message as native_msg;
 use cpex_core::context::PluginContext as NativePluginContext;
+use cpex_core::delegation::payload::{
+    AttenuationConfig as NativeAttenuationConfig, AuthEnforcedBy as NativeAuthEnforcedBy,
+    DelegationPayload as NativeDelegationPayload, TargetType as NativeTargetType,
+};
 use cpex_core::error::PluginViolation as NativePluginViolation;
 use cpex_core::extensions::agent::AgentExtension as NativeAgentExtension;
 use cpex_core::extensions::authorization::AuthorizationDetail as NativeAuthDetail;
 use cpex_core::extensions::completion::{
     CompletionExtension as NativeCompletionExtension, StopReason as NativeStopReason,
-    TokenUsage as NativeTokenUsage,
 };
 use cpex_core::extensions::container::{
     Extensions as NativeExtensions, OwnedExtensions as NativeOwnedExtensions,
@@ -38,6 +39,9 @@ use cpex_core::extensions::mcp::{
 };
 use cpex_core::extensions::meta::MetaExtension as NativeMetaExtension;
 use cpex_core::extensions::provenance::ProvenanceExtension as NativeProvenanceExtension;
+use cpex_core::extensions::raw_credentials::{
+    DelegationMode as NativeDelegationMode, RawDelegatedToken as NativeRawDelegatedToken,
+};
 use cpex_core::extensions::request::RequestExtension as NativeRequestExtension;
 use cpex_core::extensions::security::{
     ClientExtension as NativeClientExtension, ClientTrustLevel as NativeClientTrustLevel,
@@ -46,7 +50,9 @@ use cpex_core::extensions::security::{
     SubjectExtension as NativeSubjectExtension, SubjectType as NativeSubjectType,
     WorkloadIdentity as NativeWorkloadIdentity,
 };
-use cpex_core::hooks::trait_def::PluginResult as NativePluginResult;
+use cpex_core::executor::ErasedResultFields;
+use cpex_core::hooks::payload::PluginPayload;
+use cpex_core::identity::payload::{IdentityPayload as NativeIdentityPayload, TokenSource as NativeTokenSource};
 
 use crate::payload_registry::PayloadSerializerRegistry;
 use crate::sandbox_manager::types::*;
@@ -211,6 +217,103 @@ fn native_prompt_result_to_wit(pr: &native_content::PromptResult) -> PromptResul
         content: pr.content.clone(),
         is_error: pr.is_error,
         error_message: pr.error_message.clone(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Native → WIT: IdentityPayload
+// ---------------------------------------------------------------------------
+
+pub fn native_identity_payload_to_wit(p: &NativeIdentityPayload) -> IdentityPayload {
+    let (source, source_custom) = match p.source() {
+        NativeTokenSource::Bearer => (TokenSource::Bearer, None),
+        NativeTokenSource::UserToken => (TokenSource::UserToken, None),
+        NativeTokenSource::Mtls => (TokenSource::Mtls, None),
+        NativeTokenSource::SpiffeJwtSvid => (TokenSource::SpiffeJwtSvid, None),
+        NativeTokenSource::ApiKey => (TokenSource::ApiKey, None),
+        NativeTokenSource::Custom(s) => (TokenSource::Custom, Some(s.clone())),
+        _ => (TokenSource::Bearer, None),
+    };
+    IdentityPayload {
+        source,
+        source_custom,
+        source_header: p.source_header().map(str::to_owned),
+        headers: p.headers().iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+        client_host: p.client_host().map(str::to_owned),
+        client_port: p.client_port(),
+        subject: p.subject.as_ref().map(native_subject_to_wit),
+        client: p.client.as_ref().map(native_client_to_wit),
+        caller_workload: p.caller_workload.as_ref().map(native_workload_to_wit),
+        delegation: p.delegation.as_ref().map(native_delegation_to_wit),
+        resolved_at: p.resolved_at.map(|dt| dt.to_rfc3339()),
+        raw_claims: if p.raw_claims.is_empty() {
+            None
+        } else {
+            serde_json::to_string(&p.raw_claims).ok()
+        },
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Native → WIT: DelegationPayload
+// ---------------------------------------------------------------------------
+
+pub fn native_delegation_payload_to_wit(p: &NativeDelegationPayload) -> DelegationPayload {
+    let (target_type, target_type_custom) = match p.target_type() {
+        NativeTargetType::Tool => (TargetType::Tool, None),
+        NativeTargetType::Agent => (TargetType::Agent, None),
+        NativeTargetType::Resource => (TargetType::Resource, None),
+        NativeTargetType::Service => (TargetType::Service, None),
+        NativeTargetType::Custom(s) => (TargetType::Custom, Some(s.clone())),
+        _ => (TargetType::Tool, None),
+    };
+    let auth_enforced_by = match p.auth_enforced_by() {
+        NativeAuthEnforcedBy::Caller => AuthEnforcedBy::Caller,
+        NativeAuthEnforcedBy::Target => AuthEnforcedBy::Target,
+        NativeAuthEnforcedBy::Both => AuthEnforcedBy::Both,
+        _ => AuthEnforcedBy::Caller,
+    };
+    DelegationPayload {
+        target_name: p.target_name().to_owned(),
+        target_type,
+        target_type_custom,
+        target_audience: p.target_audience().map(str::to_owned),
+        required_permissions: p.required_permissions().to_vec(),
+        trust_domain: p.trust_domain().map(str::to_owned),
+        auth_enforced_by,
+        route_attenuation: p.route_attenuation().map(native_attenuation_to_wit),
+        // token bytes are #[serde(skip)] — omit from WIT
+        delegated_token: p.delegated_token.as_ref().map(native_raw_delegated_token_to_wit),
+        delegation_update: p.delegation_update.as_ref().map(native_delegation_to_wit),
+        delegation_mode: p.delegation_mode.as_ref().map(|m| match m {
+            NativeDelegationMode::OnBehalfOfUser => DelegationMode::OnBehalfOfUser,
+            NativeDelegationMode::AsGateway => DelegationMode::AsGateway,
+            _ => DelegationMode::OnBehalfOfUser,
+        }),
+        minted_at: p.minted_at.map(|dt| dt.to_rfc3339()),
+        metadata: if p.metadata.is_empty() {
+            None
+        } else {
+            serde_json::to_string(&p.metadata).ok()
+        },
+    }
+}
+
+fn native_attenuation_to_wit(a: &NativeAttenuationConfig) -> AttenuationConfig {
+    AttenuationConfig {
+        capabilities: a.capabilities.clone(),
+        resource_template: a.resource_template.clone(),
+        actions: a.actions.clone(),
+        ttl_seconds: a.ttl_seconds,
+    }
+}
+
+fn native_raw_delegated_token_to_wit(t: &NativeRawDelegatedToken) -> RawDelegatedToken {
+    RawDelegatedToken {
+        outbound_header: t.outbound_header.clone(),
+        audience: t.audience.clone(),
+        scopes: t.scopes.clone(),
+        expires_at: t.expires_at.to_rfc3339(),
     }
 }
 
@@ -554,35 +657,51 @@ pub fn native_context_to_wit(ctx: &NativePluginContext) -> PluginContext {
 // WIT → Native: HookResult
 // ---------------------------------------------------------------------------
 
+/// Converts a WIT HookResult into the executor's type-erased result fields.
+///
+/// The modified payload stays type-erased (`Box<dyn PluginPayload>`) so a
+/// generic hook (e.g. identity_resolve carrying `IdentityPayload`) gets its
+/// modification back as the concrete type the pipeline expects — the registry
+/// reconstructs it from the type discriminator. Result `metadata` has no slot
+/// in `ErasedResultFields` and is dropped, same as the native erasure path.
 pub fn wit_hook_result_to_native(
     result: crate::sandbox_manager::types::HookResult,
     registry: &PayloadSerializerRegistry,
-) -> (NativePluginResult<native_msg::MessagePayload>, Option<NativePluginContext>) {
-    let modified_payload = result.modified_payload.and_then(|hp| match hp {
-        HookPayload::Cmf(mp) => Some(wit_cmf_payload_to_native(mp)),
-        HookPayload::Generic(gp) => {
-            match registry.deserialize(&gp.payload_type, &gp.payload_data) {
-                Ok(boxed) => boxed.as_any().downcast_ref::<native_msg::MessagePayload>().cloned(),
-                Err(e) => {
-                    eprintln!("[HOST] generic payload writeback failed for '{}': {}", gp.payload_type, e);
-                    None
+    original_extensions: &NativeExtensions,
+) -> (ErasedResultFields, Option<NativePluginContext>) {
+    let modified_payload: Option<Box<dyn PluginPayload>> =
+        result.modified_payload.and_then(|hp| match hp {
+            HookPayload::Cmf(mp) => {
+                Some(Box::new(wit_cmf_payload_to_native(mp)) as Box<dyn PluginPayload>)
+            }
+            HookPayload::Identity(ip) => {
+                Some(Box::new(wit_identity_payload_to_native(ip)) as Box<dyn PluginPayload>)
+            }
+            HookPayload::Delegation(dp) => {
+                Some(Box::new(wit_delegation_payload_to_native(dp)) as Box<dyn PluginPayload>)
+            }
+            HookPayload::Custom(gp) => {
+                match registry.deserialize(&gp.payload_type, &gp.payload_data) {
+                    Ok(boxed) => Some(boxed),
+                    Err(e) => {
+                        eprintln!("[HOST] custom payload writeback failed for '{}': {}", gp.payload_type, e);
+                        None
+                    }
                 }
             }
-        }
-    });
+        });
 
-    let modified_extensions = result.modified_extensions.map(wit_extensions_to_owned);
-
-    let native_result = NativePluginResult {
+    let fields = ErasedResultFields {
         continue_processing: result.continue_processing,
         modified_payload,
-        modified_extensions,
+        modified_extensions: result
+            .modified_extensions
+            .map(|e| wit_extensions_to_owned(e, original_extensions)),
         violation: result.violation.map(wit_violation_to_native),
-        metadata: result.metadata.and_then(|s| serde_json::from_str(&s).ok()),
     };
 
     let modified_ctx = result.modified_context.map(wit_context_to_native);
-    (native_result, modified_ctx)
+    (fields, modified_ctx)
 }
 
 fn wit_violation_to_native(v: PluginViolation) -> NativePluginViolation {
@@ -741,6 +860,118 @@ fn wit_content_part_to_native(part: ContentPart) -> native_content::ContentPart 
     }
 }
 
+// ---------------------------------------------------------------------------
+// WIT → Native: IdentityPayload
+// ---------------------------------------------------------------------------
+
+pub fn wit_identity_payload_to_native(p: IdentityPayload) -> NativeIdentityPayload {
+    let source = match p.source {
+        TokenSource::Bearer => NativeTokenSource::Bearer,
+        TokenSource::UserToken => NativeTokenSource::UserToken,
+        TokenSource::Mtls => NativeTokenSource::Mtls,
+        TokenSource::SpiffeJwtSvid => NativeTokenSource::SpiffeJwtSvid,
+        TokenSource::ApiKey => NativeTokenSource::ApiKey,
+        TokenSource::Custom => {
+            NativeTokenSource::Custom(p.source_custom.unwrap_or_default())
+        }
+    };
+    let mut out = NativeIdentityPayload::new("", source);
+    if let Some(h) = p.source_header {
+        out = out.with_source_header(h);
+    }
+    out = out.with_headers(p.headers.into_iter().collect());
+    if let Some(h) = p.client_host {
+        out = out.with_client_host(h);
+    }
+    if let Some(port) = p.client_port {
+        out = out.with_client_port(port);
+    }
+    out.subject = p.subject.map(|s| NativeSubjectExtension {
+        id: s.id,
+        subject_type: s.subject_type.map(|st| match st {
+            SubjectType::User => NativeSubjectType::User,
+            SubjectType::Agent => NativeSubjectType::Agent,
+            SubjectType::Service => NativeSubjectType::Service,
+            SubjectType::System => NativeSubjectType::System,
+        }),
+        roles: s.roles.into_iter().collect(),
+        permissions: s.permissions.into_iter().collect(),
+        teams: s.teams.into_iter().collect(),
+        claims: s.claims.into_iter().collect(),
+    });
+    out.client = p.client.map(wit_client_to_native);
+    out.caller_workload = p.caller_workload.map(wit_workload_to_native);
+    out.delegation = p.delegation.map(wit_delegation_to_native);
+    out.resolved_at = p.resolved_at
+        .as_deref()
+        .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+        .map(|dt| dt.with_timezone(&chrono::Utc));
+    out.raw_claims = p.raw_claims
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default();
+    out
+}
+
+// ---------------------------------------------------------------------------
+// WIT → Native: DelegationPayload
+// ---------------------------------------------------------------------------
+
+pub fn wit_delegation_payload_to_native(p: DelegationPayload) -> NativeDelegationPayload {
+    let target_type = match p.target_type {
+        TargetType::Tool => NativeTargetType::Tool,
+        TargetType::Agent => NativeTargetType::Agent,
+        TargetType::Resource => NativeTargetType::Resource,
+        TargetType::Service => NativeTargetType::Service,
+        TargetType::Custom => NativeTargetType::Custom(p.target_type_custom.unwrap_or_default()),
+    };
+    let auth_enforced_by = match p.auth_enforced_by {
+        AuthEnforcedBy::Caller => NativeAuthEnforcedBy::Caller,
+        AuthEnforcedBy::Target => NativeAuthEnforcedBy::Target,
+        AuthEnforcedBy::Both => NativeAuthEnforcedBy::Both,
+    };
+    // bearer_token is never sent across the boundary; reconstruct with empty string
+    let mut out = NativeDelegationPayload::new("", p.target_name)
+        .with_target_type(target_type)
+        .with_auth_enforced_by(auth_enforced_by);
+    if let Some(aud) = p.target_audience {
+        out = out.with_target_audience(aud);
+    }
+    if !p.required_permissions.is_empty() {
+        out = out.with_required_permissions(p.required_permissions);
+    }
+    if let Some(td) = p.trust_domain {
+        out = out.with_trust_domain(td);
+    }
+    if let Some(att) = p.route_attenuation {
+        out = out.with_route_attenuation(NativeAttenuationConfig {
+            capabilities: att.capabilities,
+            resource_template: att.resource_template,
+            actions: att.actions,
+            ttl_seconds: att.ttl_seconds,
+        });
+    }
+    out.delegated_token = p.delegated_token.map(|t| {
+        let expires_at = DateTime::parse_from_rfc3339(&t.expires_at)
+            .map(|dt| dt.with_timezone(&chrono::Utc))
+            .unwrap_or_else(|_| chrono::Utc::now());
+        // token bytes are not sent across — reconstructed empty
+        NativeRawDelegatedToken::new("", t.outbound_header, t.audience, t.scopes, expires_at)
+    });
+    out.delegation_update = p.delegation_update.map(wit_delegation_to_native);
+    out.delegation_mode = p.delegation_mode.map(|m| match m {
+        DelegationMode::OnBehalfOfUser => NativeDelegationMode::OnBehalfOfUser,
+        DelegationMode::AsGateway => NativeDelegationMode::AsGateway,
+    });
+    out.minted_at = p.minted_at
+        .as_deref()
+        .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+        .map(|dt| dt.with_timezone(&chrono::Utc));
+    out.metadata = p.metadata
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default();
+    out
+}
+
 fn wit_resource_type_to_native(rt: ResourceType) -> native_enums::ResourceType {
     match rt {
         ResourceType::File => native_enums::ResourceType::File,
@@ -757,64 +988,26 @@ fn wit_resource_type_to_native(rt: ResourceType) -> native_enums::ResourceType {
 // WIT → Native: Extensions (writeback from guest)
 // ---------------------------------------------------------------------------
 
-fn wit_extensions_to_owned(ext: Extensions) -> NativeOwnedExtensions {
+fn wit_extensions_to_owned(ext: Extensions, original: &NativeExtensions) -> NativeOwnedExtensions {
     use cpex_core::extensions::guarded::Guarded;
 
-    let request = ext.request.map(|r| Arc::new(NativeRequestExtension {
-        environment: r.environment,
-        request_id: r.request_id,
-        timestamp: r.timestamp,
-        trace_id: r.trace_id,
-        span_id: r.span_id,
-    }));
+    // Seed from cow_copy() of the pipeline's extensions so the immutable
+    // slots keep their original Arc pointers — `validate_immutable` checks
+    // pointer equality, and slots rebuilt from WIT data would always be
+    // rejected as tampering. Only the mutable slots (http, security,
+    // delegation, custom) are overlaid with what the guest returned;
+    // those are the only slots `merge_owned` consumes.
+    let mut owned = original.cow_copy();
 
-    let security = ext.security.map(|s| wit_security_to_native(s));
-    let http = ext.http.map(|h| Guarded::new(NativeHttpExtension {
+    owned.security = ext.security.map(wit_security_to_native);
+    owned.http = ext.http.map(|h| Guarded::new(NativeHttpExtension {
         request_headers: h.request_headers.into_iter().collect(),
         response_headers: h.response_headers.into_iter().collect(),
     }));
-    let meta = ext.meta.map(|m| Arc::new(NativeMetaExtension {
-        entity_type: m.entity_type,
-        entity_name: m.entity_name,
-        tags: m.tags.into_iter().collect(),
-        scope: m.scope,
-        properties: m.properties.into_iter().collect(),
-    }));
-    let agent = ext.agent.map(|a| Arc::new(wit_agent_to_native(a)));
-    let mcp = ext.mcp.map(|m| Arc::new(wit_mcp_to_native(m)));
-    let completion = ext.completion.map(|c| Arc::new(wit_completion_to_native(c)));
-    let provenance = ext.provenance.map(|p| Arc::new(NativeProvenanceExtension {
-        source: p.source,
-        message_id: p.message_id,
-        parent_id: p.parent_id,
-    }));
-    let llm = ext.llm.map(|l| Arc::new(NativeLLMExtension {
-        model_id: l.model_id,
-        provider: l.provider,
-        capabilities: l.capabilities,
-    }));
-    let framework = ext.framework.map(|f| Arc::new(wit_framework_to_native(f)));
-    let delegation = ext.delegation.map(wit_delegation_to_native);
-    let custom = ext.custom.and_then(|s| serde_json::from_str(&s).ok());
+    owned.delegation = ext.delegation.map(wit_delegation_to_native);
+    owned.custom = ext.custom.and_then(|s| serde_json::from_str(&s).ok());
 
-    NativeOwnedExtensions {
-        request,
-        agent,
-        mcp,
-        completion,
-        provenance,
-        llm,
-        framework,
-        meta,
-        raw_credentials: None,
-        http,
-        security,
-        delegation,
-        custom,
-        http_write_token: None,
-        labels_write_token: None,
-        delegation_write_token: None,
-    }
+    owned
 }
 
 fn wit_security_to_native(s: SecurityExtension) -> NativeSecurityExtension {
@@ -900,91 +1093,9 @@ fn wit_workload_to_native(w: WorkloadIdentity) -> NativeWorkloadIdentity {
     }
 }
 
-fn wit_agent_to_native(a: AgentExtension) -> NativeAgentExtension {
-    use cpex_core::extensions::agent::ConversationContext;
-    NativeAgentExtension {
-        input: a.input,
-        session_id: a.session_id,
-        conversation_id: a.conversation_id,
-        turn: a.turn,
-        agent_id: a.agent_id,
-        parent_agent_id: a.parent_agent_id,
-        conversation: a.conversation.map(|c| ConversationContext {
-            history: c.history.iter()
-                .map(|s| serde_json::from_str(s).unwrap_or(serde_json::Value::String(s.clone())))
-                .collect(),
-            summary: c.summary,
-            topics: c.topics,
-        }),
-    }
-}
 
-fn wit_mcp_to_native(m: McpExtension) -> NativeMCPExtension {
-    NativeMCPExtension {
-        tool: m.tool.map(|t| NativeToolMetadata {
-            name: t.name,
-            title: t.title,
-            description: t.description,
-            input_schema: t.input_schema.and_then(|s| serde_json::from_str(&s).ok()),
-            output_schema: t.output_schema.and_then(|s| serde_json::from_str(&s).ok()),
-            server_id: t.server_id,
-            namespace: t.namespace,
-            annotations: t.annotations.into_iter()
-                .map(|(k, v)| (k, serde_json::from_str(&v).unwrap_or(serde_json::Value::String(v))))
-                .collect(),
-        }),
-        resource: m.resource_info.map(|r| NativeResourceMetadata {
-            uri: r.uri,
-            name: r.name,
-            description: r.description,
-            mime_type: r.mime_type,
-            server_id: r.server_id,
-            annotations: r.annotations.into_iter()
-                .map(|(k, v)| (k, serde_json::from_str(&v).unwrap_or(serde_json::Value::String(v))))
-                .collect(),
-        }),
-        prompt: m.prompt.map(|p| NativePromptMetadata {
-            name: p.name,
-            description: p.description,
-            arguments: p.arguments.and_then(|s| serde_json::from_str(&s).ok()),
-            server_id: p.server_id,
-            annotations: p.annotations.into_iter()
-                .map(|(k, v)| (k, serde_json::from_str(&v).unwrap_or(serde_json::Value::String(v))))
-                .collect(),
-        }),
-    }
-}
 
-fn wit_completion_to_native(c: CompletionExtension) -> NativeCompletionExtension {
-    NativeCompletionExtension {
-        stop_reason: c.stop_reason.map(|r| match r {
-            StopReason::End => NativeStopReason::End,
-            StopReason::ReturnComplete => NativeStopReason::Return,
-            StopReason::Call => NativeStopReason::Call,
-            StopReason::MaxTokens => NativeStopReason::MaxTokens,
-            StopReason::StopSequence => NativeStopReason::StopSequence,
-        }),
-        tokens: c.tokens.map(|t| NativeTokenUsage {
-            input_tokens: t.input_tokens,
-            output_tokens: t.output_tokens,
-            total_tokens: t.total_tokens,
-        }),
-        model: c.model,
-        raw_format: c.raw_format,
-        created_at: c.created_at,
-        latency_ms: c.latency_ms,
-    }
-}
 
-fn wit_framework_to_native(f: FrameworkExtension) -> NativeFrameworkExtension {
-    NativeFrameworkExtension {
-        framework: f.framework,
-        framework_version: f.framework_version,
-        node_id: f.node_id,
-        graph_id: f.graph_id,
-        metadata: f.metadata.and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default(),
-    }
-}
 
 fn wit_delegation_to_native(d: DelegationExtension) -> NativeDelegationExtension {
     NativeDelegationExtension {
@@ -1035,5 +1146,136 @@ fn wit_delegation_to_native(d: DelegationExtension) -> NativeDelegationExtension
         actor_subject_id: d.actor_subject_id,
         delegated: d.delegated,
         age_seconds: d.age_seconds.parse().unwrap_or(0.0),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    use cpex_core::hooks::payload::WasmSerializablePayload;
+    use cpex_core::identity::{IdentityPayload, TokenSource};
+
+    use super::*;
+
+    fn empty_hook_result() -> HookResult {
+        HookResult {
+            continue_processing: true,
+            modified_payload: None,
+            modified_extensions: None,
+            modified_context: None,
+            violation: None,
+            metadata: None,
+        }
+    }
+
+    #[test]
+    fn test_generic_modified_payload_writeback_preserves_concrete_type() {
+        // A guest returning a modified IdentityPayload must come back as
+        // IdentityPayload, not be silently dropped for not being CMF.
+        let mut registry = PayloadSerializerRegistry::new();
+        registry.register::<IdentityPayload>();
+
+        let mut headers = HashMap::new();
+        headers.insert("x-user-id".to_string(), "alice".to_string());
+        let mut payload =
+            IdentityPayload::new("secret-token", TokenSource::Bearer).with_headers(headers);
+        payload.subject = Some(NativeSubjectExtension {
+            id: Some("alice".to_string()),
+            ..Default::default()
+        });
+
+        let result = HookResult {
+            modified_payload: Some(HookPayload::Custom(CustomPayload {
+                payload_type: "cpex.identity".to_string(),
+                payload_data: payload.to_wasm_bytes().unwrap(),
+            })),
+            ..empty_hook_result()
+        };
+
+        let (fields, _) =
+            wit_hook_result_to_native(result, &registry, &NativeExtensions::default());
+
+        let boxed = fields.modified_payload.expect("modified payload dropped");
+        let roundtripped = boxed
+            .as_any()
+            .downcast_ref::<IdentityPayload>()
+            .expect("payload lost its concrete type across the boundary");
+        assert_eq!(
+            roundtripped.subject.as_ref().and_then(|s| s.id.as_deref()),
+            Some("alice")
+        );
+        // The raw token is #[serde(skip)] — it must NOT survive transport.
+        assert_eq!(roundtripped.raw_token(), "");
+    }
+
+    #[test]
+    fn test_cmf_modified_payload_writeback() {
+        let registry = PayloadSerializerRegistry::new();
+        let native = native_msg::MessagePayload {
+            message: native_msg::Message::text(native_enums::Role::User, "hello"),
+        };
+
+        let result = HookResult {
+            modified_payload: Some(HookPayload::Cmf(native_payload_to_wit(&native))),
+            ..empty_hook_result()
+        };
+
+        let (fields, _) =
+            wit_hook_result_to_native(result, &registry, &NativeExtensions::default());
+        let boxed = fields.modified_payload.expect("modified payload dropped");
+        assert!(boxed
+            .as_any()
+            .downcast_ref::<native_msg::MessagePayload>()
+            .is_some());
+    }
+
+    #[test]
+    fn test_modified_extensions_pass_validate_immutable() {
+        // Guest-returned extensions are rebuilt from WIT data. The owned
+        // copy must share the original's Arcs on immutable slots or the
+        // executor rejects the whole modification as tampering.
+        let mut security = NativeSecurityExtension::default();
+        security.add_label("PII");
+
+        let original = NativeExtensions {
+            request: Some(Arc::new(NativeRequestExtension {
+                request_id: Some("req-1".to_string()),
+                ..Default::default()
+            })),
+            meta: Some(Arc::new(NativeMetaExtension {
+                entity_type: Some("tool".to_string()),
+                ..Default::default()
+            })),
+            security: Some(Arc::new(security)),
+            ..Default::default()
+        };
+
+        // Simulate the guest echoing extensions back (with a label added).
+        let mut wit_ext = native_extensions_to_wit(&original);
+        if let Some(ref mut s) = wit_ext.security {
+            s.labels.push("CHECKED".to_string());
+        }
+
+        let result = HookResult {
+            modified_extensions: Some(wit_ext),
+            ..empty_hook_result()
+        };
+
+        let registry = PayloadSerializerRegistry::new();
+        let (fields, _) = wit_hook_result_to_native(result, &registry, &original);
+        let owned = fields.modified_extensions.expect("extensions dropped");
+
+        assert!(
+            original.validate_immutable(&owned),
+            "writeback extensions flagged as tampering"
+        );
+
+        // Monotonic label check must also pass: original labels preserved.
+        let new_sec = owned.security.as_ref().unwrap();
+        let orig_sec = original.security.as_ref().unwrap();
+        assert!(new_sec.labels.is_superset(&orig_sec.labels));
+        assert!(new_sec.has_label("CHECKED"));
     }
 }

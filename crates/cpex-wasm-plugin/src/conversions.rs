@@ -480,7 +480,42 @@ pub fn native_result_to_hook_result(
     result: NativePluginResult<native_msg::MessagePayload>,
     ctx: &NativePluginContext,
 ) -> HookResult {
-    let modified_payload = result.modified_payload.map(|p| HookPayload::Cmf(native_payload_to_wit(p)));
+    native_result_to_hook_result_generic(result, ctx)
+}
+
+/// Converts a typed `PluginResult<P>` to a WIT HookResult for any payload
+/// type that can cross the WASM boundary. A modified `MessagePayload` goes
+/// back structured (cmf variant); every other payload type is serialized
+/// into the custom variant with its type discriminator, which the host's
+/// PayloadSerializerRegistry uses to reconstruct the concrete type.
+pub fn native_result_to_hook_result_generic<P>(
+    result: NativePluginResult<P>,
+    ctx: &NativePluginContext,
+) -> HookResult
+where
+    P: cpex_core::hooks::payload::WasmSerializablePayload + 'static,
+{
+    let modified_payload = result.modified_payload.and_then(|p| {
+        let any: &dyn std::any::Any = &p;
+        if let Some(mp) = any.downcast_ref::<native_msg::MessagePayload>() {
+            Some(HookPayload::Cmf(native_payload_to_wit(mp.clone())))
+        } else {
+            match p.to_wasm_bytes() {
+                Ok(bytes) => Some(HookPayload::Custom(CustomPayload {
+                    payload_type: P::payload_type_name().to_string(),
+                    payload_data: bytes,
+                })),
+                Err(e) => {
+                    eprintln!(
+                        "[WASM] failed to serialize modified payload '{}': {}",
+                        P::payload_type_name(),
+                        e
+                    );
+                    None
+                }
+            }
+        }
+    });
     HookResult {
         continue_processing: result.continue_processing,
         modified_payload,
@@ -498,7 +533,7 @@ pub fn native_result_to_hook_result(
     }
 }
 
-fn native_context_to_wit(ctx: &NativePluginContext) -> PluginContext {
+pub(crate) fn native_context_to_wit(ctx: &NativePluginContext) -> PluginContext {
     PluginContext {
         local_state: ctx.local_state.iter()
             .map(|(k, v)| ContextEntry { key: k.clone(), value: serde_json::to_string(v).unwrap_or_default() })
