@@ -237,6 +237,41 @@ class TestConnectHTTP:
             with pytest.raises(PluginError, match="connection failed after 3 attempts"):
                 await plugin._ExternalPlugin__connect_to_http_server("http://localhost:9999/mcp")
 
+    @pytest.mark.asyncio
+    async def test_streamable_client_called_with_prebuilt_client_and_terminate_on_close(self):
+        """v2 SDK contract: streamable_http_client receives a pre-built httpx client and
+        terminate_on_close=True (replacing the removed manual __terminate_http_session)."""
+        plugin = _make_plugin()
+
+        class OkCtx:
+            async def __aenter__(self):
+                return AsyncMock(), AsyncMock()
+
+            async def __aexit__(self, *args):
+                return False
+
+        mock_session = AsyncMock()
+        mock_session.initialize = AsyncMock()
+        list_tools_result = MagicMock()
+        list_tools_result.tools = []
+        mock_session.list_tools = AsyncMock(return_value=list_tools_result)
+
+        prebuilt_client = AsyncMock(spec=httpx.AsyncClient)
+
+        with (
+            patch("cpex.framework.external.mcp.client.streamable_http_client", return_value=OkCtx()) as mock_streamable,
+            patch("cpex.framework.external.mcp.client.ClientSession", return_value=mock_session),
+            patch("cpex.framework.external.mcp.client.httpx.AsyncClient", return_value=prebuilt_client),
+        ):
+            plugin._exit_stack = AsyncExitStack()
+            await plugin._ExternalPlugin__connect_to_http_server("http://localhost:9999/mcp")
+
+        mock_streamable.assert_called_once()
+        _, kwargs = mock_streamable.call_args
+        assert kwargs["terminate_on_close"] is True
+        # A pre-built AsyncClient instance is passed, not a factory callable (v2 API change).
+        assert kwargs["http_client"] is prebuilt_client
+
 
 # ===========================================================================
 # Shutdown

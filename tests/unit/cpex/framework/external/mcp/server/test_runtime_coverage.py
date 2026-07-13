@@ -49,6 +49,48 @@ class TestSSLCapableMCPServerInit:
         config = MCPServerConfig(host="127.0.0.1", port=8000, uds=uds_path)
         server = runtime.SSLCapableMCPServer(server_config=config, name="UDSTest")
         assert server.server_config.uds == uds_path
+        # UDS servers get DNS rebinding protection auto-configured in __init__.
+        assert server._transport_security is not None
+        assert server._transport_security.enable_dns_rebinding_protection is True
+
+    def test_non_uds_leaves_transport_security_unset(self):
+        config = MCPServerConfig(host="0.0.0.0", port=8000)
+        server = runtime.SSLCapableMCPServer(server_config=config, name="NonUDSTest")
+        # Non-UDS servers rely on the SDK/host handling, not the UDS auto-config.
+        assert server._transport_security is None
+
+    @pytest.mark.asyncio
+    async def test_run_streamable_http_async_forwards_transport_security(self, tmp_path, monkeypatch):
+        """run_streamable_http_async must forward _transport_security to streamable_http_app()."""
+        uds_path = str(tmp_path / "plugin.sock")
+        config = MCPServerConfig(host="127.0.0.1", port=8000, uds=uds_path)
+        server = runtime.SSLCapableMCPServer(server_config=config, name="ForwardTest")
+
+        captured = {}
+
+        def capture_app(**kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(routes=[])
+
+        server.streamable_http_app = capture_app
+        monkeypatch.setattr(runtime.SSLCapableMCPServer, "_get_ssl_config", lambda self: {})
+
+        class DummyServer:
+            def __init__(self, config):
+                self.config = config
+
+            async def serve(self):
+                pass
+
+        monkeypatch.setattr(runtime.uvicorn, "Config", lambda **kwargs: SimpleNamespace(**kwargs))
+        monkeypatch.setattr(runtime.uvicorn, "Server", lambda config: DummyServer(config))
+
+        await runtime.SSLCapableMCPServer.run_streamable_http_async(server)
+
+        assert captured["transport_security"] is server._transport_security
+        assert captured["transport_security"].enable_dns_rebinding_protection is True
+        # Real bind host is forwarded so the SDK does not force a localhost-only allowlist.
+        assert captured["host"] == "127.0.0.1"
 
     def test_ssl_config_partial_tls_warns(self, tmp_path, caplog):
         """TLS present but no keyfile/certfile returns empty dict + warning."""
