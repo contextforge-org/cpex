@@ -117,6 +117,7 @@ class TestRunStreamableHTTPAsync:
         server = object.__new__(runtime.SSLCapableMCPServer)
         server.server_config = config
         server.settings = SimpleNamespace(host="127.0.0.1", port=8000, log_level="info")
+        server._transport_security = None
         server.streamable_http_app = lambda **kwargs: SimpleNamespace(routes=[])
 
         monkeypatch.setattr(runtime.SSLCapableMCPServer, "_get_ssl_config", lambda self: {})
@@ -154,6 +155,7 @@ class TestRunStreamableHTTPAsync:
         server = object.__new__(runtime.SSLCapableMCPServer)
         server.server_config = config
         server.settings = SimpleNamespace(host="127.0.0.1", port=8000, log_level="info")
+        server._transport_security = None
         server.streamable_http_app = lambda **kwargs: SimpleNamespace(routes=[])
 
         monkeypatch.setattr(runtime.SSLCapableMCPServer, "_get_ssl_config", lambda self: {})
@@ -183,6 +185,7 @@ class TestRunStreamableHTTPAsync:
 
         routes_added = []
         app = SimpleNamespace(routes=routes_added)
+        server._transport_security = None
         server.streamable_http_app = lambda **kwargs: app
 
         monkeypatch.setattr(runtime.SSLCapableMCPServer, "_get_ssl_config", lambda self: {})
@@ -284,6 +287,7 @@ class TestRunStreamableHTTPAsyncEndpoints:
         server = object.__new__(runtime.SSLCapableMCPServer)
         server.server_config = config
         server.settings = SimpleNamespace(host="127.0.0.1", port=8000, log_level="INFO")
+        server._transport_security = None
         server.streamable_http_app = lambda **kwargs: SimpleNamespace(routes=[])
 
         monkeypatch.setenv("ENABLE_METRICS", "true")
@@ -315,6 +319,7 @@ class TestRunStreamableHTTPAsyncEndpoints:
         server = object.__new__(runtime.SSLCapableMCPServer)
         server.server_config = config
         server.settings = SimpleNamespace(host="127.0.0.1", port=8000, log_level="INFO")
+        server._transport_security = None
         server.streamable_http_app = lambda **kwargs: SimpleNamespace(routes=[])
 
         monkeypatch.setenv("ENABLE_METRICS", "false")

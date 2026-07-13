@@ -387,7 +387,10 @@ class SSLCapableMCPServer(MCPServer):
             >>> server.server_config.port
             9000
         """
-        starlette_app = self.streamable_http_app(transport_security=self._transport_security)
+        starlette_app = self.streamable_http_app(
+            transport_security=self._transport_security,
+            host=self.server_config.host,
+        )
 
         # Add health check endpoint to main app
         # Third-Party
