@@ -376,6 +376,11 @@ class ExternalPlugin(Plugin):
         for attempt in range(max_retries):
             try:
                 http_client = _tls_httpx_client_factory()
+                # The v2 SDK does not close a caller-provided http_client, so we own its
+                # lifecycle. Enter it into the exit stack first (before the transport) so
+                # LIFO teardown closes the transport — firing the terminate_on_close DELETE
+                # while the client is still open — and then closes the client itself.
+                await self._exit_stack.enter_async_context(http_client)
                 streamable_client = streamable_http_client(
                     uri, http_client=http_client, terminate_on_close=True
                 )
