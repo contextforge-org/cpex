@@ -15,14 +15,14 @@ This runtime does the following:
 - Implements all plugin hook tools (get_plugin_configs, tool_pre_invoke, etc.)
 
 Examples:
-    Create an SSL-capable FastMCP server:
+    Create an SSL-capable MCPServer:
 
     >>> from cpex.framework.models import MCPServerConfig
     >>> config = MCPServerConfig(host="localhost", port=8000)
     >>> server = SSLCapableMCPServer(server_config=config, name="TestServer")
-    >>> server.settings.host
+    >>> server.server_config.host
     'localhost'
-    >>> server.settings.port
+    >>> server.server_config.port
     8000
 
     Check SSL configuration returns empty dict when TLS is not configured:
@@ -49,9 +49,9 @@ Examples:
     >>> from cpex.framework.models import MCPServerConfig
     >>> config = MCPServerConfig(host="0.0.0.0", port=8080)
     >>> server = SSLCapableMCPServer(server_config=config, name="SettingsTest")
-    >>> server.settings.host
+    >>> server.server_config.host
     '0.0.0.0'
-    >>> server.settings.port
+    >>> server.server_config.port
     8080
 """
 
@@ -189,19 +189,19 @@ class SSLCapableMCPServer(MCPServer):
     """MCPServer with SSL/TLS support using MCPServerConfig.
 
     Examples:
-    Create an SSL-capable MCPServer:
+        Create an SSL-capable MCPServer:
 
         >>> from cpex.framework.models import MCPServerConfig
         >>> config = MCPServerConfig(host="127.0.0.1", port=8000)
         >>> server = SSLCapableMCPServer(server_config=config, name="TestServer")
-        >>> server.settings.host
+        >>> server.server_config.host
         '127.0.0.1'
-        >>> server.settings.port
+        >>> server.server_config.port
         8000
     """
 
     def __init__(self, server_config: MCPServerConfig, *args, **kwargs):
-        """Initialize an SSL capable Fast MCP server.
+        """Initialize an SSL capable MCPServer.
 
         Args:
             server_config: the MCP server configuration including mTLS information.
@@ -363,10 +363,10 @@ class SSLCapableMCPServer(MCPServer):
         # Create a minimal Starlette app with only the health endpoint
         health_app = Starlette(routes=routes)
 
-        logger.info(f"Starting HTTP health check server on {            self.server_config.host}:{health_port}")
+        logger.info(f"Starting HTTP health check server on {self.server_config.host}:{health_port}")
         config = uvicorn.Config(
             app=health_app,
-            host=            self.server_config.host,
+            host=self.server_config.host,
             port=health_port,
             log_level="warning",  # Reduce noise from health checks
         )
@@ -382,12 +382,12 @@ class SSLCapableMCPServer(MCPServer):
             >>> from cpex.framework.models import MCPServerConfig
             >>> config = MCPServerConfig(host="0.0.0.0", port=9000)
             >>> server = SSLCapableMCPServer(server_config=config, name="HTTPServer")
-            >>> server.settings.host
+            >>> server.server_config.host
             '0.0.0.0'
-            >>> server.settings.port
+            >>> server.server_config.port
             9000
         """
-        starlette_app = self.streamable_http_app(transport_security=getattr(self, '_transport_security', None))
+        starlette_app = self.streamable_http_app(transport_security=self._transport_security)
 
         # Add health check endpoint to main app
         # Third-Party
@@ -440,8 +440,8 @@ class SSLCapableMCPServer(MCPServer):
         ssl_config = self._get_ssl_config()
         config_kwargs = {
             "app": starlette_app,
-            "host":             self.server_config.host,
-            "port":             self.server_config.port,
+            "host": self.server_config.host,
+            "port": self.server_config.port,
             "log_level": self.settings.log_level.lower(),
         }
         config_kwargs.update(ssl_config)
@@ -452,13 +452,13 @@ class SSLCapableMCPServer(MCPServer):
             config_kwargs["uds"] = self.server_config.uds
             logger.info(f"Starting plugin server on unix socket {self.server_config.uds}")
         else:
-            logger.info(f"Starting plugin server on {            self.server_config.host}:{            self.server_config.port}")
+            logger.info(f"Starting plugin server on {self.server_config.host}:{self.server_config.port}")
         config = uvicorn.Config(**config_kwargs)  # type: ignore[arg-type]
         server = uvicorn.Server(config)
 
         # If SSL is enabled, start a separate HTTP health check server
         if ssl_config and not self.server_config.uds:
-            health_port =             self.server_config.port + 1000  # Use port+1000 for health checks
+            health_port = self.server_config.port + 1000  # Use port+1000 for health checks
             logger.info(f"SSL enabled - starting separate HTTP health check on port {health_port}")
             # Run both servers concurrently
             await asyncio.gather(server.serve(), self._start_health_check_server(health_port))

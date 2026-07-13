@@ -375,9 +375,9 @@ class ExternalPlugin(Plugin):
 
         for attempt in range(max_retries):
             try:
-                http_client_instance = _tls_httpx_client_factory()
+                http_client = _tls_httpx_client_factory()
                 streamable_client = streamable_http_client(
-                    uri, http_client=http_client_instance, terminate_on_close=True
+                    uri, http_client=http_client, terminate_on_close=True
                 )
                 http_transport = await self._exit_stack.enter_async_context(streamable_client)
                 self._http, self._write = http_transport
