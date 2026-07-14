@@ -146,6 +146,11 @@ const TABLE: &[CapabilityEntry] = &[
         prefixes: &[
             BAG_HTTP_REQUEST_HEADERS_PREFIX,
             BAG_HTTP_RESPONSE_HEADERS_PREFIX,
+            // The request line rides the same capability as headers.
+            BAG_HTTP_METHOD,
+            BAG_HTTP_PATH,
+            BAG_HTTP_HOST,
+            BAG_HTTP_SCHEME,
         ],
     },
     CapabilityEntry {

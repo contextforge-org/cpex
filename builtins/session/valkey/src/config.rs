@@ -4,7 +4,7 @@
 // Authors: Fred Araujo
 //
 // Parses and validates the `global.apl.session_store` block for the
-// Valkey backend. Deliberately minimal (R11): a single endpoint, TLS,
+// Valkey backend. Deliberately minimal: a single endpoint, TLS,
 // auth, key prefix, optional sliding TTL, and fail-closed timeout/retry
 // knobs with committed safe defaults. Sentinel/Cluster fields are NOT
 // present — they are out of scope and would be dead config surface.
@@ -52,17 +52,17 @@ pub struct ValkeyConfig {
     #[serde(default)]
     pub password: Option<String>,
 
-    /// Key prefix/namespace for label keys (R9).
+    /// Key prefix/namespace for label keys.
     #[serde(default = "default_key_prefix")]
     pub key_prefix: String,
 
     /// Sliding TTL in seconds, refreshed on load and append. `None`
-    /// (default) means no expiry (R7).
+    /// (default) means no expiry.
     #[serde(default)]
     pub ttl_seconds: Option<u64>,
 
     /// Declared maximum session-identity lifetime, used only to emit the
-    /// TTL-soundness warning (R17) when `ttl_seconds` is shorter.
+    /// TTL-soundness warning when `ttl_seconds` is shorter.
     #[serde(default)]
     pub max_session_lifetime_seconds: Option<u64>,
 
@@ -90,9 +90,9 @@ impl ValkeyConfig {
     }
 
     /// Enforce the non-negotiable invariants. TLS is mandatory off
-    /// localhost (R10); a `tls: true` + plaintext `redis://` scheme is a
+    /// localhost; a `tls: true` + plaintext `redis://` scheme is a
     /// contradiction (would connect in cleartext); the connection URL
-    /// must build; the TTL-soundness warning (R17) is emitted here.
+    /// must build; the TTL-soundness warning is emitted here.
     ///
     /// All error text routes the endpoint through [`redact_endpoint`] so
     /// embedded credentials never leak into errors or logs.
@@ -152,7 +152,7 @@ impl ValkeyConfig {
                     ttl_seconds = ttl,
                     max_session_lifetime_seconds = life,
                     "valkey session_store TTL is shorter than the declared max session lifetime; \
-                     accumulated taint can silently expire (downgrade-by-waiting) — see R8"
+                     accumulated taint can silently expire (downgrade-by-waiting)"
                 );
             }
         }

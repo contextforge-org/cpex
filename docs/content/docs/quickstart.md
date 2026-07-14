@@ -38,9 +38,10 @@ routes:
   get_employee:
     args:
       employee_id: "str"
-    pre_invocation:
-      - "require(authenticated)"
-      - "require(role.hr)"
+    authorization:
+      pre_invocation:
+        - "require(authenticated)"
+        - "require(role.hr)"
     result:
       ssn: "str | redact(!perm.view_ssn)"
       salary: "int | redact(!role.hr)"

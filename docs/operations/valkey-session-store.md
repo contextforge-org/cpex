@@ -19,22 +19,21 @@ security guarantee, so treat this as part of the deployment contract.
 
 ## 1. Enabling it
 
-Add a `session_store` block under `global.apl` in the unified config:
+Add a `session_store` block under `global` in the unified config:
 
 ```yaml
 global:
-  apl:
-    session_store:
-      kind: valkey
-      endpoint: valkey.internal:6379   # or rediss://valkey.internal:6379
-      tls: true
-      username: gateway                # ACL user (see §3)
-      password: ${VALKEY_PASSWORD}     # inject from a secrets manager
-      key_prefix: taint:v1             # default; bump only on schema change
-      ttl_seconds: 86400               # optional sliding TTL (see §4)
-      max_session_lifetime_seconds: 86400  # enables the TTL-soundness warning
-      command_timeout_ms: 500          # fail-closed hot-path budget (default)
-      connect_timeout_ms: 250          # default
+  session_store:
+    kind: valkey
+    endpoint: valkey.internal:6379   # or rediss://valkey.internal:6379
+    tls: true
+    username: gateway                # ACL user (see §3)
+    password: ${VALKEY_PASSWORD}     # inject from a secrets manager
+    key_prefix: taint:v1             # default; bump only on schema change
+    ttl_seconds: 86400               # optional sliding TTL (see §4)
+    max_session_lifetime_seconds: 86400  # enables the TTL-soundness warning
+    command_timeout_ms: 500          # fail-closed hot-path budget (default)
+    connect_timeout_ms: 250          # default
 ```
 
 When no `session_store` block is present, the gateway keeps its in-process

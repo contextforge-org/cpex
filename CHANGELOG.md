@@ -13,7 +13,14 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/).
 > - **Fixed**: for any bug fixes.
 > - **Security**: in case of vulnerabilities.
 
-## [Unreleased]
+## [0.2.1] - 2026-07-14
+
+### Added
+
+- **HTTP request-line attributes.** `HttpExtension` now carries optional `method` / `path` / `host` / `scheme`, surfaced in the APL attribute bag as `http.method` / `http.path` / `http.host` / `http.scheme` so CEL/APL predicates can reason over the HTTP request line. They ride the existing `read_headers` capability (the `http` extension slot is gated as a whole). `http.host` must be populated from a validated request authority (e.g. HTTP/2 `:authority`), never a raw client `Host` header, so host-based policy cannot be spoofed.
+- **Custom denial response (`response:` block).** A route — or `global` — may declare a custom HTTP `status` / `body` / `headers` for its denials via a `response:` block (a sibling of `authorization:`). On a deny, these are carried on `PluginViolation.details` (`http.status` / `http.body` / `http.headers`) for the host to render; absent, the host default is unchanged. No new APL grammar and no new `PluginViolation` fields. It is scope-local: a `global` response is not inherited by entity routes, and the block warns (inert) at `defaults` / policy-bundle scope.
+- **Entity-less HTTP authorization.** The catch-all `global` policy now authorizes generic (non-MCP/A2A) HTTP requests that carry no entity, via new reserved coordinates (`http` / `*`) and the `cmf.http_request` hook. A host fires `cmf.http_request` with those coordinates; the global `authorization` (or `args`) block is evaluated with `read_headers` granted, and a global `response:` decorates the denial. Fail-closed session-store denials carry the response too.
+- **Python bindings (PyO3).** Native `cpex` Python package wrapping the cpex-core `PluginManager`, built with maturin/PyO3. ([#70](https://github.com/contextforge-org/cpex/pull/70))
 
 ### Changed
 
@@ -23,6 +30,8 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/).
   - `post_policy:` → `authorization.post_invocation:` (or flat `post_invocation:`)
 
   The two authorization phases may be written either nested under an `authorization:` block or flat directly on the section; the forms are equivalent. The field-pipeline keys `args:` / `result:` are unchanged (they stay aligned with the `args.*` / `result.*` attribute namespaces that predicates and interpolation read). Internal APL IR is unchanged. (#105)
+
+- **Canonical APL config shape in docs.** All documentation, the README, and the bundled examples now use one canonical shape — no `apl:` wrapper, with `authentication:` and `authorization:` as sibling blocks (`pre_invocation:` / `post_invocation:` nested under `authorization:`; `args:` / `result:` / `pdp:` / `session_store:` / `response:` as siblings). Both the `apl:` wrapper and the wrapper-free form remain accepted by the parser; this only standardizes the examples authors copy from.
 
 ## [0.2.0] - 2026-06-26
 

@@ -9,13 +9,12 @@
 //
 // ```yaml
 // global:
-//   apl:
-//     pdp:
-//       - kind: cedar-direct
-//         dialect: cedar          # optional, defaults to PdpDialect::Cedar
-//         policy_text: |          # required (or policy_file)
-//           @id("owner-override")
-//           permit(...);
+//   pdp:
+//     - kind: cedar-direct
+//       dialect: cedar          # optional, defaults to PdpDialect::Cedar
+//       policy_text: |          # required (or policy_file)
+//         @id("owner-override")
+//         permit(...);
 // ```
 //
 // Hosts register an instance of this factory in `AplOptions.pdp_factories`;

@@ -33,7 +33,7 @@ flowchart LR
 
 The first `deny` in any phase halts that phase and every later phase. Nothing reaches the backend after a deny in `args` or `authorization.pre_invocation`.
 
-`authorization` names *when* the phase runs, not a pure allow/deny gate: alongside the decision, `pre_invocation` (and `post_invocation`) can carry obligations and effects — `taint(...)`, `delegate(...)`, and `plugin(...)` (which may transform the payload) — that run as part of the phase. If you find the `authorization:` label too narrow, the equivalent flat `pre_invocation:` / `post_invocation:` keys name the phase by timing instead.
+`authorization` names *when* the phase runs, not a pure allow/deny gate: alongside the decision, `pre_invocation` (and `post_invocation`) can carry obligations and effects — `taint(...)`, `delegate(...)`, and `plugin(...)` (which may transform the payload) — that run as part of the phase.
 
 ```yaml
 routes:
@@ -98,6 +98,42 @@ For richer conditionals, use the `when` / `do` form, where `do` is a single effe
     - "taint(restricted, session)"
     - "plugin(audit-log)"
 ```
+
+## Custom denial response
+
+By default a deny surfaces a reason and code, and the host renders its own denial. A route can instead attach a custom HTTP response — status, body, headers — through a `response:` block, a sibling of the route's `authorization:` block:
+
+```yaml
+routes:
+  - tool: locked
+    authorization:
+      pre_invocation:
+        - "require(authenticated)"
+    response:
+      status: 403
+      body: "{\"error\":\"forbidden\"}"
+      headers:
+        WWW-Authenticate: "Bearer"
+```
+
+All three fields are optional; an absent block leaves the host's default denial unchanged. When the route denies, the status/body/headers are carried on the violation for the host to render on the wire. `response:` is honored at route scope and at `global` scope (below); it is inert — and warns at load time — under `defaults` or a policy bundle. It is scope-local: a `global` `response:` is not inherited by entity routes.
+
+## Authorizing HTTP requests without an entity
+
+Routes key on an MCP / A2A entity — a tool, prompt, resource, or LLM. A generic HTTP request that carries no such entity is authorized by the `global` policy instead: when `global` declares an `authorization:` (or `args:`) block, CPEX evaluates it for these requests, reading the request line (`http.method`, `http.path`, `http.host`, `http.scheme`) and headers. Pair it with a `global` `response:` to return a custom denial.
+
+```yaml
+global:
+  authorization:
+    pre_invocation:
+      - "http.method != 'GET': deny"
+  response:
+    status: 405
+    headers:
+      Allow: "GET"
+```
+
+The host must populate `http.host` from a validated request authority, never a raw client `Host` header, so host-based predicates cannot be spoofed by the caller.
 
 ## Field pipelines
 

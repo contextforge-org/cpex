@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Authors: Fred Araujo
 //
-// Internal connection layer (R14): builds and holds the deadpool-redis
+// Internal connection layer: builds and holds the deadpool-redis
 // pool for the Valkey backend. Kept private to this crate — it is NOT a
 // public reusable API. When a second consumer (the planned OAuth token
 // cache) is actually scheduled, extract a shared layer then
