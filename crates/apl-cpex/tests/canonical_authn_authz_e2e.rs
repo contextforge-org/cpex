@@ -83,8 +83,9 @@ impl PluginFactory for RecordingIdentityFactory {
             name: config.name.clone(),
             ledger: Arc::clone(&self.ledger),
         });
-        let adapter: Arc<dyn AnyHookHandler> =
-            Arc::new(TypedHandlerAdapter::<IdentityHook, _>::new(Arc::clone(&plugin)));
+        let adapter: Arc<dyn AnyHookHandler> = Arc::new(
+            TypedHandlerAdapter::<IdentityHook, _>::new(Arc::clone(&plugin)),
+        );
         Ok(PluginInstance {
             plugin: plugin as Arc<dyn Plugin>,
             handlers: vec![(HOOK_IDENTITY_RESOLVE, adapter)],
