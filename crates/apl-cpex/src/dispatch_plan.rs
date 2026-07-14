@@ -466,7 +466,7 @@ pub(crate) fn route_capability_union(
         }
     }
     // A route with an elicitation step needs `read_headers` on the synthetic
-    // handler so the `X-CPEX-Elicitation-Id` retry header survives the
+    // handler so the `X-Policy-Elicitation-Id` retry header survives the
     // capability filter and reaches the bag (Phase 5 retry-seeding). Without
     // it, the `http` extension is stripped before the handler reads it and
     // every retry re-dispatches a fresh elicitation instead of checking.

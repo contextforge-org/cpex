@@ -66,7 +66,7 @@ pub const ELICITATION_PENDING_CODE: i64 = -32120;
 /// seeds it into the bag (`elicitation.id`) before evaluation so the
 /// runtime *checks* the existing elicitation instead of dispatching a new
 /// one. Mirrors how `X-User-Token` carries request-scoped context.
-pub const ELICITATION_ID_HEADER: &str = "X-CPEX-Elicitation-Id";
+pub const ELICITATION_ID_HEADER: &str = "X-Policy-Elicitation-Id";
 
 /// JSON-RPC error code emitted when an agent re-checks an approval in
 /// *peek* mode and it has resolved approved: "approved — confirm to apply."
@@ -75,10 +75,10 @@ pub const ELICITATION_ID_HEADER: &str = "X-CPEX-Elicitation-Id";
 /// Lets a human authorize while the requester separately commits execution.
 pub const ELICITATION_APPROVED_CODE: i64 = -32121;
 
-/// Header an agent sets (alongside `X-CPEX-Elicitation-Id`) to *peek* at an
+/// Header an agent sets (alongside `X-Policy-Elicitation-Id`) to *peek* at an
 /// approval — resolve its status without committing the action. Truthy
 /// value ("1"/"true"/anything non-empty) enables it.
-pub const ELICITATION_PEEK_HEADER: &str = "X-CPEX-Elicitation-Peek";
+pub const ELICITATION_PEEK_HEADER: &str = "X-Policy-Elicitation-Peek";
 
 /// Which APL phase this handler runs. Pre covers `args` + `policy`; Post
 /// covers `result` + `post_invocation`. Set once at construction and never
@@ -270,7 +270,7 @@ impl AnyHookHandler for AplRouteHandler {
             .build();
 
         // Phase 5 retry seeding: if the agent echoed an elicitation id (from
-        // a prior `-32120`) in the `X-CPEX-Elicitation-Id` header, seed it
+        // a prior `-32120`) in the `X-Policy-Elicitation-Id` header, seed it
         // into the bag *before* evaluation. `dispatch_elicitation` then takes
         // the "id present → check" path (poll the existing approval) instead
         // of dispatching a fresh one. Without this, every retry would open a
@@ -499,7 +499,7 @@ impl AnyHookHandler for AplRouteHandler {
         }
 
         // Peek (confirm-then-apply): the agent re-checked an approval but
-        // asked NOT to commit yet (the `X-CPEX-Elicitation-Peek` header). If
+        // asked NOT to commit yet (the `X-Policy-Elicitation-Peek` header). If
         // the elicitation resolved approved (Allow, not pending), report
         // "approved — confirm to apply" (-32121) and do NOT forward. The
         // agent then asks the requester, who re-sends without the peek header
@@ -715,7 +715,7 @@ fn extensions_changed(before: &Extensions, after: &Extensions) -> bool {
 // ---------------------------------------------------------------------
 
 /// Extract the elicitation id an agent echoes on retry from the
-/// `X-CPEX-Elicitation-Id` request header. `None` when absent/empty.
+/// `X-Policy-Elicitation-Id` request header. `None` when absent/empty.
 /// Pure so it's unit-testable without the full handler path.
 fn elicitation_id_from_headers(ext: &Extensions) -> Option<String> {
     ext.http
@@ -725,7 +725,7 @@ fn elicitation_id_from_headers(ext: &Extensions) -> Option<String> {
         .map(str::to_string)
 }
 
-/// True when the agent set `X-CPEX-Elicitation-Peek` to a truthy value —
+/// True when the agent set `X-Policy-Elicitation-Peek` to a truthy value —
 /// it wants to resolve the approval's status without committing the action.
 fn elicitation_peek_from_headers(ext: &Extensions) -> bool {
     ext.http
@@ -818,7 +818,7 @@ mod phase5_tests {
     #[test]
     fn elicitation_id_extracted_from_header_case_insensitively() {
         let mut http = HttpExtension::default();
-        http.set_request_header("x-cpex-elicitation-id", "elic-42");
+        http.set_request_header("x-policy-elicitation-id", "elic-42");
         let ext = Extensions { http: Some(Arc::new(http)), ..Extensions::default() };
         assert_eq!(elicitation_id_from_headers(&ext).as_deref(), Some("elic-42"));
     }
