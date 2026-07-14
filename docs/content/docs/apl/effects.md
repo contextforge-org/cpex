@@ -24,12 +24,15 @@ An APL rule does something. That something is an **effect**. Effects are the bui
 Effects in a `pre_invocation:` block run top to bottom. The first `deny` halts the phase and skips every later phase, so order is a tool: put cheap gates first and expensive effects last.
 
 ```yaml
-pre_invocation:
-  - "require(role.hr)"                                  # cheap attribute gate
-  - cedar:                                              # relationship decision
-      action: 'Action::"read"'
-      resource: { type: Repo, id: ${args.repo_name} }
-  - "delegate(github-oauth, target: github-api, permissions: [repo:read])"  # expensive, last
+authorization:
+  pre_invocation:
+    - "require(role.hr)"                                  # cheap attribute gate
+    - cedar:                                              # relationship decision
+        action: 'Action::"read"'
+        resource:
+          type: Repo
+          id: ${args.repo_name}
+    - "delegate(github-oauth, target: github-api, permissions: [repo:read])"  # expensive, last
 ```
 
 If `require(role.hr)` denies, the Cedar call and the token exchange never run. This is both faster and safer: you do not mint a credential for a caller you were going to reject.
@@ -39,14 +42,17 @@ If `require(role.hr)` denies, the Cedar call and the token exchange never run. T
 A PDP call can carry reaction blocks that run depending on the decision:
 
 ```yaml
-pre_invocation:
-  - cedar:
-      action: 'Action::"read"'
-      resource: { type: Document, id: ${args.doc_id} }
-    on_allow:
-      - "taint(cedar_approved, session)"
-    on_deny:
-      - "deny('not permitted by Cedar policy', 'cedar_denied')"
+authorization:
+  pre_invocation:
+    - cedar:
+        action: 'Action::"read"'
+        resource:
+          type: Document
+          id: ${args.doc_id}
+      on_allow:
+        - "taint(cedar_approved, session)"
+      on_deny:
+        - "deny('not permitted by Cedar policy', 'cedar_denied')"
 ```
 
 `on_allow` runs its effects when the PDP permits; `on_deny` runs when it denies. Without an `on_deny`, a PDP denial halts the phase on its own.
@@ -56,10 +62,11 @@ pre_invocation:
 Effects can be grouped. `sequential` runs its members in order and halts on the first deny. `parallel` runs independent gates concurrently; any deny fails the group, and taints from the branches accumulate.
 
 ```yaml
-pre_invocation:
-  - parallel:
-      - "require(perm.read_pii)"
-      - cel: { expr: "subject.department == 'compliance'" }
+authorization:
+  pre_invocation:
+    - parallel:
+        - "require(perm.read_pii)"
+        - cel: { expr: "subject.department == 'compliance'" }
 ```
 
 `parallel` is for independent decisions only. It rejects field operations and delegation, because a discarded branch would silently lose those effects. Use `sequential` (the default for a `pre_invocation:` list) whenever one effect depends on another.

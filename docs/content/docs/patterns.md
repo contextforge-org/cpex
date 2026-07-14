@@ -12,10 +12,15 @@ Production patterns for writing and rolling out CPEX policy. Each is expressed i
 Order effects cheapest-gate-first so expensive work only runs for requests that survive the early checks. Attribute gates, then a PDP call, then delegation:
 
 ```yaml
-pre_invocation:
-  - "require(team.engineering | team.security)"   # cheap
-  - cedar: { action: 'Action::"read"', resource: { type: Repo, id: ${args.repo_name} } }
-  - "delegate(github-oauth, target: github-api, permissions: [repo:read])"   # expensive, last
+authorization:
+  pre_invocation:
+    - "require(team.engineering | team.security)"   # cheap
+    - cedar:
+        action: 'Action::"read"'
+        resource:
+          type: Repo
+          id: ${args.repo_name}
+    - "delegate(github-oauth, target: github-api, permissions: [repo:read])"   # expensive, last
 ```
 
 A deny at any layer halts the rest, so you never mint a token for a request a later layer would reject.
@@ -52,11 +57,13 @@ Taint a session when it touches sensitive data, then gate later operations on th
 ```yaml
 routes:
   get_compensation:
-    pre_invocation: [ "require(role.hr)", "taint(secret, session)" ]
+    authorization:
+      pre_invocation: [ "require(role.hr)", "taint(secret, session)" ]
   send_email:
-    pre_invocation:
-      - "require(perm.email_send)"
-      - "security.labels contains \"secret\": deny('write-down blocked', 'session_tainted')"
+    authorization:
+      pre_invocation:
+        - "require(perm.email_send)"
+        - "security.labels contains \"secret\": deny('write-down blocked', 'session_tainted')"
 ```
 
 ## Least-privilege effects
@@ -64,9 +71,10 @@ routes:
 Declare the narrowest capabilities each plugin needs, and scope delegated tokens to the minimum. A scanner that reads content does not get identity; a downstream token gets only the scope the operation requires, verified after the exchange:
 
 ```yaml
-pre_invocation:
-  - "delegate(workday-oauth, target: workday-api, permissions: [read_compensation])"
-  - "delegation.granted.permissions contains 'read_compensation': allow"   # verify least privilege
+authorization:
+  pre_invocation:
+    - "delegate(workday-oauth, target: workday-api, permissions: [read_compensation])"
+    - "delegation.granted.permissions contains 'read_compensation': allow"   # verify least privilege
 ```
 
 ## Defense in depth

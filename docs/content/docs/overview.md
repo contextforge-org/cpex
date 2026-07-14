@@ -24,8 +24,9 @@ The clearest demonstration is redaction on the wire. Three callers issue the ide
 ```yaml
 routes:
   - tool: get_compensation
-    pre_invocation:
-      - "require(role.hr)"
+    authorization:
+      pre_invocation:
+        - "require(role.hr)"
     result:
       ssn: "str | redact(!perm.view_ssn)"
 ```
@@ -51,9 +52,10 @@ Some controls depend on what already happened. When a caller reads compensation 
 ```yaml
 routes:
   - tool: send_email
-    pre_invocation:
-      - "require(perm.email_send)"
-      - "security.labels contains \"secret\": deny('session touched secret data', 'session_tainted')"
+    authorization:
+      pre_invocation:
+        - "require(perm.email_send)"
+        - "security.labels contains \"secret\": deny('session touched secret data', 'session_tainted')"
 ```
 
 An email with no sensitive content in its body is still blocked if the session previously read secret data. This is a write-down control, and the LLM cannot route around it because the taint lives in CPEX, not in the conversation. See [Session Tainting]({{< relref "/docs/apl/tainting" >}}) for how labels propagate and persist.
