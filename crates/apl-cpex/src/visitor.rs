@@ -51,10 +51,10 @@ use std::collections::HashMap;
 use std::sync::{Arc, RwLock, Weak};
 
 use cpex_core::cmf::constants::{
-    ENTITY_LLM, ENTITY_PROMPT, ENTITY_RESOURCE, ENTITY_TOOL, HOOK_CMF_LLM_INPUT,
-    HOOK_CMF_LLM_OUTPUT, HOOK_CMF_PROMPT_POST_INVOKE, HOOK_CMF_PROMPT_PRE_INVOKE,
-    HOOK_CMF_RESOURCE_POST_FETCH, HOOK_CMF_RESOURCE_PRE_FETCH, HOOK_CMF_TOOL_POST_INVOKE,
-    HOOK_CMF_TOOL_PRE_INVOKE,
+    ENTITY_HTTP, ENTITY_LLM, ENTITY_NAME_GLOBAL, ENTITY_PROMPT, ENTITY_RESOURCE, ENTITY_TOOL,
+    HOOK_CMF_HTTP_REQUEST, HOOK_CMF_LLM_INPUT, HOOK_CMF_LLM_OUTPUT, HOOK_CMF_PROMPT_POST_INVOKE,
+    HOOK_CMF_PROMPT_PRE_INVOKE, HOOK_CMF_RESOURCE_POST_FETCH, HOOK_CMF_RESOURCE_PRE_FETCH,
+    HOOK_CMF_TOOL_POST_INVOKE, HOOK_CMF_TOOL_PRE_INVOKE,
 };
 use cpex_core::config::RouteEntry;
 use cpex_core::manager::PluginManager;
@@ -63,7 +63,7 @@ use cpex_core::visitor::{ConfigVisitor, VisitorError};
 
 use apl_core::parser::compile_policy_block_value;
 use apl_core::plugin_decl::{PluginDeclaration, PluginRegistry};
-use apl_core::rules::CompiledRoute;
+use apl_core::rules::{CompiledRoute, DenyResponse};
 use apl_core::step::{PdpFactory, PdpResolver};
 
 use crate::dispatch_plan::DispatchCache;
@@ -286,6 +286,34 @@ impl AplConfigVisitor {
         state.pdp_router.register(resolver);
         Ok(())
     }
+
+    /// Snapshot the request-time dispatch state — plugin registry, PDP
+    /// router, and active session store — each `Arc`-wrapped for a handler
+    /// to capture. Reads the visitor's `RwLock`s once through a single
+    /// poison-recovery path shared by both handler-install sites
+    /// (`visit_global`'s entity-less HTTP handler and `visit_route`'s
+    /// per-entity handlers) so the policy can't diverge between them.
+    fn snapshot_dispatch_state(
+        &self,
+    ) -> (
+        Arc<PluginRegistry>,
+        Arc<dyn PdpResolver>,
+        Arc<dyn SessionStore>,
+    ) {
+        let (plugin_registry, pdp_router_arc) = {
+            let state = self.state.read().unwrap_or_else(|p| p.into_inner());
+            (
+                Arc::new(state.plugin_registry.clone()),
+                Arc::new(state.pdp_router.clone()) as Arc<dyn PdpResolver>,
+            )
+        };
+        let session_store = self
+            .session_store
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
+        (plugin_registry, pdp_router_arc, session_store)
+    }
 }
 
 /// Read-only baseline for APL predicates: enough to make
@@ -357,11 +385,24 @@ impl ConfigVisitor for AplConfigVisitor {
 
     fn visit_global(
         &self,
-        _mgr: &Arc<PluginManager>,
+        mgr: &Arc<PluginManager>,
         yaml: &serde_yaml::Value,
     ) -> Result<(), VisitorError> {
         reject_legacy_apl_keys("global", yaml)?;
         let Some(apl_block) = apl_subblock(yaml) else {
+            // No `apl:` wrapper and no flat DSL keys — there is nothing to
+            // compile or install. But a bare `global: { response: {...} }`
+            // (a denyWith with no accompanying policy) would otherwise be
+            // dropped here silently, before the `response_subblock` read
+            // below ever runs. Warn so this fail-open-by-omission case gets
+            // the same signal as the args/policy-empty case handled further
+            // down, rather than vanishing without a trace.
+            if response_yaml_block(yaml).is_some_and(|v| !v.is_null()) {
+                tracing::warn!(
+                    "APL visitor: global.response is set but global.apl has no policy/args block \
+                     — the entity-less HTTP catch-all handler will not install, so this response can never fire",
+                );
+            }
             return Ok(());
         };
 
@@ -388,8 +429,46 @@ impl ConfigVisitor for AplConfigVisitor {
         // `args:` / `result:` / `plugins:` (and inert fields it ignores),
         // so a shallow strip on a clone is enough.
         let policy_only = strip_non_dsl_keys(&apl_block);
-        let compiled = compile_policy_block_value("global.apl", &policy_only)
+        let mut compiled = compile_policy_block_value("global.apl", &policy_only)
             .map_err(|e| Box::new(e) as VisitorError)?;
+        // A `response:` block at the global scope is the catch-all denyWith.
+        compiled.response = response_subblock(yaml, "global");
+
+        // Install a catch-all handler so the global policy also evaluates for
+        // generic (non-MCP/A2A) HTTP requests, which carry no entity.
+        // Entity routes still stack `global` via apply_layer in visit_route;
+        // this is the *entity-less* evaluation path. Pre-phase only —
+        // authorization is an admission check, so there is no post handler.
+        let installs_pre_handler = http_catchall_should_install(&compiled);
+        if !installs_pre_handler && compiled.response.is_some() {
+            tracing::warn!(
+                "APL visitor: global.response is set but global.apl has no `args:`/`policy:` steps \
+                 — the entity-less HTTP catch-all handler will not install, so this response can never fire",
+            );
+        }
+        if installs_pre_handler {
+            let (plugin_registry, pdp_router_arc, session_store) = self.snapshot_dispatch_state();
+            // The global HTTP policy reads the request line / headers, so
+            // grant `read_headers` on top of the visitor baseline.
+            let mut caps = self.base_capabilities.clone();
+            caps.insert("read_headers".to_string());
+            install_handler(
+                mgr,
+                ENTITY_HTTP,
+                ENTITY_NAME_GLOBAL,
+                None,
+                HOOK_CMF_HTTP_REQUEST,
+                Phase::Pre,
+                Arc::new(compiled.clone()),
+                &plugin_registry,
+                &self.dispatch_cache,
+                &session_store,
+                &self.manager,
+                Some(pdp_router_arc),
+                &caps,
+            );
+        }
+
         self.state
             .write()
             .unwrap_or_else(|p| p.into_inner())
@@ -405,6 +484,7 @@ impl ConfigVisitor for AplConfigVisitor {
     ) -> Result<(), VisitorError> {
         let source = format!("global.defaults.{}.apl", entity_type);
         reject_legacy_apl_keys(&source, yaml)?;
+        warn_if_response_at_unsupported_scope(yaml, &format!("global.defaults.{entity_type}"));
         let Some(apl_block) = apl_subblock(yaml) else {
             return Ok(());
         };
@@ -427,6 +507,7 @@ impl ConfigVisitor for AplConfigVisitor {
     ) -> Result<(), VisitorError> {
         let source = format!("global.policies.{}.apl", tag);
         reject_legacy_apl_keys(&source, yaml)?;
+        warn_if_response_at_unsupported_scope(yaml, &format!("global.policies.{tag}"));
         let Some(apl_block) = apl_subblock(yaml) else {
             return Ok(());
         };
@@ -471,21 +552,21 @@ impl ConfigVisitor for AplConfigVisitor {
             .map(|m| m.tags.clone())
             .unwrap_or_default();
 
-        // Snapshot the plugin registry + PDP router once outside the
-        // per-entity loop. `visit_plugins` populated the registry
-        // before any `visit_route` call; the router has been populated
-        // by code-supplied `register_pdp` calls + `visit_global`
-        // factory dispatch. Routes share both, so cloning each into an
-        // `Arc` once and handing clones to each handler is cheaper than
-        // re-reading the RwLock per entity. Cloning `PdpRouter` is
-        // refcount bumps on each inner resolver — cheap.
-        let (plugin_registry, pdp_router_arc) = {
-            let state = self.state.read().unwrap_or_else(|p| p.into_inner());
-            (
-                Arc::new(state.plugin_registry.clone()),
-                Arc::new(state.pdp_router.clone()) as Arc<dyn PdpResolver>,
-            )
-        };
+        // Snapshot the dispatch state once outside the per-entity loop.
+        // `visit_plugins` populated the registry before any `visit_route`
+        // call; the router + session store were finalized in `visit_global`.
+        // Routes share all three, so cloning each into an `Arc` once and
+        // handing clones to each handler is cheaper than re-reading the
+        // RwLocks per entity. Cloning `PdpRouter` is refcount bumps on each
+        // inner resolver — cheap.
+        let (plugin_registry, pdp_router_arc, session_store) = self.snapshot_dispatch_state();
+
+        // Route-level denial response (transpiled `denyWith`) — parsed once;
+        // its input (`yaml`) is loop-invariant across the entity names this
+        // route matches, so hoisting avoids re-deserializing (and
+        // re-warning) once per entity. `response` is scope-local: an entity
+        // route carries only its own block, never an inherited `global` one.
+        let route_response = response_subblock(yaml, &format!("routes.{entity_type}"));
 
         for (idx, entity_name) in entity_names.iter().enumerate() {
             // route_key is what `DispatchCache` keys on, so it must
@@ -522,6 +603,13 @@ impl ConfigVisitor for AplConfigVisitor {
                     .map_err(|e| Box::new(e) as VisitorError)?;
                 effective.apply_layer(route_layer);
             }
+
+            // Route-level denial response (transpiled `denyWith`), parsed
+            // above the loop. Route scope is most-specific and inheritance
+            // was removed, so this is the only source of `response` for an
+            // entity route — a malformed or absent block leaves it `None`
+            // (host default denial), never a leaked `global` response.
+            effective.response = route_response.clone();
 
             // Load-time lint, once per route: flag any APL `plugins:`
             // override declared for a plugin that no policy / delegate step
@@ -576,16 +664,6 @@ impl ConfigVisitor for AplConfigVisitor {
                     continue;
                 },
             };
-
-            // Snapshot the active session store (a `global.apl.session_store`
-            // block in `visit_global` may have swapped it). Each handler
-            // captures its own clone, so request-time dispatch never touches
-            // the visitor's lock.
-            let session_store = self
-                .session_store
-                .read()
-                .unwrap_or_else(|p| p.into_inner())
-                .clone();
 
             // Install Pre + Post handlers. Each handler instance is bound to
             // ONE phase so the executor can pick the right entry-point off
@@ -924,12 +1002,205 @@ fn apl_subblock(yaml: &serde_yaml::Value) -> Option<serde_yaml::Value> {
     }
 }
 
+/// Whether the entity-less HTTP catch-all handler (Pre-phase only) should
+/// install for a compiled `global` layer. Gate on both Pre-phase steps
+/// (`args` + `policy`, via [`CompiledRoute::declared_phases`]), not
+/// `policy` alone — an operator whose `global.apl` has only an `args:`
+/// admission block (no `policy:`) must still get the catch-all installed,
+/// or entity-less HTTP traffic silently bypasses it entirely (fail-open by
+/// omission).
+fn http_catchall_should_install(compiled: &CompiledRoute) -> bool {
+    let declared = compiled.declared_phases();
+    declared.contains(apl_core::rules::Phase::Args)
+        || declared.contains(apl_core::rules::Phase::Policy)
+}
+
+/// `response:` is not an APL DSL term (it never enters [`apl_subblock`]'s
+/// [`FLAT_APL_KEYS`]) — it is documented and tested as a sibling of `apl:`
+/// (`global: { apl: {...}, response: {...} }`). But an operator who mirrors
+/// the `pdp:` / `session_store:` convention (which *do* work identically
+/// whether flat or nested under `apl:`) may reasonably nest `response:`
+/// inside `apl:` too. Accept both spellings so that mistake degrades to
+/// "the other spelling wins," not "silently dropped."
+///
+/// PRECEDENCE — deliberately the INVERSE of [`apl_subblock`]. `apl_subblock`
+/// makes an explicit `apl:` wrapper win *entirely* over flat top-level keys
+/// (for `policy:`/`pdp:`/`session_store:`); here the top-level sibling
+/// `response:` wins over an `apl:`-nested one. This is intentional, not an
+/// oversight: the top-level sibling is the documented, already-shipped,
+/// tested form, so preferring it preserves backward compatibility, and the
+/// choice can only affect the *rendered denial shape* (status/body/headers)
+/// — never an Allow/Deny outcome. Do NOT "align" this with `apl_subblock`'s
+/// wrapper-wins rule without a deliberate compatibility decision.
+fn response_yaml_block(yaml: &serde_yaml::Value) -> Option<&serde_yaml::Value> {
+    yaml.get("response")
+        .or_else(|| yaml.get("apl").and_then(|apl| apl.get("response")))
+}
+
+/// Warn when a `response:` block appears at a scope that never renders it.
+/// A custom denial response is honored only at `global` (the entity-less
+/// HTTP path) or on a route; at `default` / policy-bundle scope it is inert
+/// — there is no propagation path to a handler. Mirrors the existing
+/// global-only-key lint so a misplaced `response:` fails loud, not silent.
+fn warn_if_response_at_unsupported_scope(yaml: &serde_yaml::Value, scope: &str) {
+    if response_yaml_block(yaml).is_some_and(|v| !v.is_null()) {
+        tracing::warn!(
+            scope,
+            "APL visitor: `response:` is honored only at `global` or route scope; ignoring here",
+        );
+    }
+}
+
+/// Extract a route-level `response:` block — the transpiled `denyWith`.
+/// cpex-core tolerates this out-of-band key on the route; here we
+/// deserialize it into a [`DenyResponse`]. A malformed block is logged
+/// and skipped (best-effort) rather than failing the whole config.
+fn response_subblock(yaml: &serde_yaml::Value, route_key: &str) -> Option<DenyResponse> {
+    let block = response_yaml_block(yaml)?;
+    if block.is_null() {
+        return None;
+    }
+    match serde_yaml::from_value::<DenyResponse>(block.clone()) {
+        Ok(resp) => Some(resp),
+        Err(e) => {
+            tracing::warn!(route = route_key, error = %e, "APL visitor: ignoring malformed route `response:` block");
+            None
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::apl_subblock;
+    use super::{apl_subblock, http_catchall_should_install, response_subblock};
+    use apl_core::pipeline::{FieldRule, Pipeline, Stage, TypeCheck};
+    use apl_core::rules::{CompiledRoute, Effect};
 
     fn yaml(s: &str) -> serde_yaml::Value {
         serde_yaml::from_str(s).expect("valid yaml")
+    }
+
+    fn deny_effect() -> Effect {
+        Effect::Deny {
+            reason: None,
+            code: None,
+        }
+    }
+
+    fn field_rule(field: &str) -> FieldRule {
+        FieldRule {
+            field: field.to_string(),
+            pipeline: Pipeline {
+                stages: vec![Stage::Type(TypeCheck::Str)],
+            },
+            source: "test".to_string(),
+        }
+    }
+
+    #[test]
+    fn http_catchall_installs_for_args_only_global_block() {
+        // Regression for the fail-open-by-omission gap: a `global.apl` with
+        // only `args:` (no `policy:`) must still get the entity-less HTTP
+        // catch-all installed. Before the fix this gated on
+        // `!compiled.policy.is_empty()` alone, so an args-only admission
+        // block silently disabled authorization for all entity-less HTTP
+        // traffic.
+        let mut route = CompiledRoute::new("global");
+        route.args.push(field_rule("http.method"));
+        assert!(
+            http_catchall_should_install(&route),
+            "an args-only global block must still install the catch-all handler"
+        );
+    }
+
+    #[test]
+    fn http_catchall_installs_for_policy_only_global_block() {
+        let mut route = CompiledRoute::new("global");
+        route.policy.push(deny_effect());
+        assert!(http_catchall_should_install(&route));
+    }
+
+    #[test]
+    fn http_catchall_does_not_install_for_empty_or_post_only_global_block() {
+        let empty = CompiledRoute::new("global");
+        assert!(
+            !http_catchall_should_install(&empty),
+            "an empty global block has nothing to evaluate; installing would be a no-op handler"
+        );
+
+        let mut post_only = CompiledRoute::new("global");
+        post_only.post_policy.push(deny_effect());
+        assert!(
+            !http_catchall_should_install(&post_only),
+            "post_policy never runs on the Pre-phase-only catch-all, so it must not gate installation"
+        );
+    }
+
+    #[test]
+    fn response_subblock_parses_denywith() {
+        let v = yaml(
+            "tool: \"*\"\nresponse:\n  status: 403\n  body: \"{\\\"error\\\":\\\"forbidden\\\"}\"\n  headers:\n    WWW-Authenticate: \"Bearer\"\n",
+        );
+        let resp = response_subblock(&v, "tool:*").expect("response present");
+        assert_eq!(resp.status, Some(403));
+        assert_eq!(resp.body.as_deref(), Some("{\"error\":\"forbidden\"}"));
+        assert_eq!(
+            resp.headers.get("WWW-Authenticate").map(String::as_str),
+            Some("Bearer")
+        );
+    }
+
+    #[test]
+    fn response_subblock_absent_is_none() {
+        let v = yaml("tool: \"*\"\npolicy:\n  - \"deny\"\n");
+        assert!(response_subblock(&v, "tool:*").is_none());
+    }
+
+    #[test]
+    fn response_subblock_nested_under_apl_wrapper_is_read() {
+        // An operator mirroring the pdp:/session_store: convention (which
+        // work identically flat or nested under `apl:`) may nest `response:`
+        // under `apl:` too. It must not be silently absorbed.
+        let v =
+            yaml("tool: \"*\"\napl:\n  policy:\n    - \"deny\"\n  response:\n    status: 401\n");
+        let resp = response_subblock(&v, "tool:*").expect("nested response present");
+        assert_eq!(resp.status, Some(401));
+    }
+
+    #[test]
+    fn response_subblock_top_level_wins_over_nested_apl_form() {
+        let v = yaml(
+            "tool: \"*\"\napl:\n  policy:\n    - \"deny\"\n  response:\n    status: 401\nresponse:\n  status: 403\n",
+        );
+        let resp = response_subblock(&v, "tool:*").expect("response present");
+        assert_eq!(
+            resp.status,
+            Some(403),
+            "top-level sibling response takes precedence over the nested apl: form"
+        );
+    }
+
+    #[test]
+    fn response_subblock_malformed_is_none_not_propagated() {
+        // `status` must deserialize as a u16; a string value fails to parse.
+        // A malformed block must be dropped (warn-only), never bubble up an
+        // error that fails the whole config load.
+        let v = yaml("tool: \"*\"\nresponse:\n  status: \"not-a-number\"\n");
+        assert!(
+            response_subblock(&v, "tool:*").is_none(),
+            "malformed response: block must be ignored, not panic or propagate an error"
+        );
+    }
+
+    #[test]
+    fn warn_if_response_at_unsupported_scope_is_a_safe_noop() {
+        use super::warn_if_response_at_unsupported_scope;
+        // The helper only emits a tracing event; it must never panic whether
+        // `response:` is present or absent at a scope that can't render it.
+        let with_response = yaml("policy:\n  - \"deny\"\nresponse:\n  status: 403\n");
+        let without = yaml("policy:\n  - \"deny\"\n");
+        warn_if_response_at_unsupported_scope(&with_response, "global.defaults.tool");
+        warn_if_response_at_unsupported_scope(&with_response, "global.policies.some-tag");
+        warn_if_response_at_unsupported_scope(&without, "global.defaults.tool");
     }
 
     #[test]

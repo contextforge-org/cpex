@@ -36,7 +36,8 @@ pub use plugin_decl::{
 };
 pub use route::{evaluate_post, evaluate_pre, evaluate_route, RouteDecision, RoutePayload};
 pub use rules::{
-    CompareOp, CompiledRoute, Condition, Effect, Expression, Literal, Phase, PhaseSet, Rule,
+    CompareOp, CompiledRoute, Condition, DenyResponse, Effect, Expression, Literal, Phase,
+    PhaseSet, Rule,
 };
 pub use step::{
     delegation_bag_keys, elicitation_bag_keys, AutoApprovingElicitor, DelegateStep,

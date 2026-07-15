@@ -6,16 +6,16 @@
 // `ValkeySessionStore` — the Valkey-backed `SessionStore`. Labels live in
 // a Redis SET per session so `append_labels` is a single atomic
 // server-side union (`SADD`), never a client-side read-modify-write that
-// would lose labels under concurrent cross-node appends (R16).
+// would lose labels under concurrent cross-node appends.
 //
-// # Fail-closed mapping (R5/R15)
+// # Fail-closed mapping
 //
 //   - `SMEMBERS` on a missing key returns an empty set → `Ok(empty)`
-//     (unknown session, R15). It is NOT an error.
+//     (unknown session). It is NOT an error.
 //   - connection/timeout/protocol/decode failures → `Err(Backend)` so the
 //     caller fails the request closed.
 //
-// # Sliding TTL (R7)
+// # Sliding TTL
 //
 // `append_labels` issues `SADD` + `EXPIRE` in one atomic pipeline.
 // `load_labels` refreshes the TTL fail-open: the read already succeeded,
@@ -97,8 +97,8 @@ impl SessionStore for ValkeySessionStore {
         let mut conn = self.conn().await?;
 
         // SMEMBERS on a missing key returns an empty set (Ok), so an
-        // unknown session naturally maps to Ok(empty) (R15). Only a real
-        // backend failure becomes Err (R5).
+        // unknown session naturally maps to Ok(empty). Only a real
+        // backend failure becomes Err.
         let labels: Vec<String> =
             match tokio::time::timeout(self.command_timeout, conn.smembers(&key)).await {
                 Ok(res) => res.map_err(backend)?,
@@ -111,7 +111,7 @@ impl SessionStore for ValkeySessionStore {
 
         // Sliding-TTL refresh is fail-open for the read: the labels were
         // read successfully, so a refresh failure is alarmed, not failed
-        // closed (R7). A persistently-failing refresh risks silent key
+        // closed. A persistently-failing refresh risks silent key
         // expiry across requests — see the operator runbook.
         if let Some(ttl) = self.ttl_seconds {
             let refresh: Result<bool, _> =
@@ -146,7 +146,7 @@ impl SessionStore for ValkeySessionStore {
 
         // Atomic server-side union + optional TTL refresh in one round
         // trip (MULTI/EXEC). SADD is a commutative merge, so concurrent
-        // cross-node appends never lose labels (R16).
+        // cross-node appends never lose labels.
         let mut pipe = redis::pipe();
         pipe.atomic();
         pipe.sadd(&key, labels).ignore();

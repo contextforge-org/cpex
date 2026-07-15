@@ -27,10 +27,11 @@ You do not write enforcement logic in application code. You write **APL**: the d
 ```yaml
 routes:
   - tool: get_compensation
-    pre_invocation:
-      - "require(role.hr)"
-      - "delegate(workday-oauth, target: workday-api, permissions: [read_compensation])"
-      - "taint(secret, session)"
+    authorization:
+      pre_invocation:
+        - "require(role.hr)"
+        - "delegate(workday-oauth, target: workday-api, permissions: [read_compensation])"
+        - "taint(secret, session)"
     result:
       ssn: "str | redact(!perm.view_ssn)"
 ```

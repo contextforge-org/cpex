@@ -51,7 +51,7 @@ checksum = "2a4385e2e34eb35d6b3efe798b9eb88096925d87726c0798709bf56d9ed84af3"
 
 [[package]]
 name = "apl-cmf"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "apl-core",
  "async-trait",
@@ -62,7 +62,7 @@ dependencies = [
 
 [[package]]
 name = "apl-core"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "async-trait",
  "cpex-orchestration",
@@ -77,7 +77,7 @@ dependencies = [
 
 [[package]]
 name = "apl-cpex"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "apl-cmf",
  "apl-core",
@@ -710,7 +710,7 @@ checksum = "773648b94d0e5d620f64f280777445740e61fe701025087ec8b57f45c791888b"
 
 [[package]]
 name = "cpex"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "apl-cmf",
  "apl-core",
@@ -721,7 +721,7 @@ dependencies = [
 
 [[package]]
 name = "cpex-builtins"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "apl-core",
  "apl-cpex",
@@ -739,7 +739,7 @@ dependencies = [
 
 [[package]]
 name = "cpex-core"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -770,7 +770,7 @@ dependencies = [
 
 [[package]]
 name = "cpex-ffi"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "apl-cpex",
  "async-trait",
@@ -786,7 +786,7 @@ dependencies = [
 
 [[package]]
 name = "cpex-orchestration"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "futures",
  "tokio",
@@ -794,7 +794,7 @@ dependencies = [
 
 [[package]]
 name = "cpex-pdp-cedar-direct"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "apl-cmf",
  "apl-core",
@@ -812,7 +812,7 @@ dependencies = [
 
 [[package]]
 name = "cpex-pdp-cel"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "apl-cmf",
  "apl-core",
@@ -828,7 +828,7 @@ dependencies = [
 
 [[package]]
 name = "cpex-plugin-audit-logger"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "async-trait",
  "chrono",
@@ -841,7 +841,7 @@ dependencies = [
 
 [[package]]
 name = "cpex-plugin-delegator-biscuit"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "async-trait",
  "biscuit-auth",
@@ -855,7 +855,7 @@ dependencies = [
 
 [[package]]
 name = "cpex-plugin-delegator-oauth"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "async-trait",
  "chrono",
@@ -870,7 +870,7 @@ dependencies = [
 
 [[package]]
 name = "cpex-plugin-elicitation-ciba"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -888,7 +888,7 @@ dependencies = [
 
 [[package]]
 name = "cpex-plugin-identity-jwt"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -908,7 +908,7 @@ dependencies = [
 
 [[package]]
 name = "cpex-plugin-pii-scanner"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "async-trait",
  "cpex-core",
@@ -920,7 +920,7 @@ dependencies = [
 
 [[package]]
 name = "cpex-python"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "async-trait",
  "cpex-builtins",
@@ -935,14 +935,14 @@ dependencies = [
 
 [[package]]
 name = "cpex-sdk"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "cpex-core",
 ]
 
 [[package]]
 name = "cpex-session-valkey"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "apl-cpex",
  "async-trait",

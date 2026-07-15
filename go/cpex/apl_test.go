@@ -38,10 +38,9 @@ plugins:
     hooks: [cmf.tool_pre_invoke]
 routes:
   - tool: get_weather
-    apl:
-      authorization:
-        pre_invocation:
-          - "plugin(auditor)"
+    authorization:
+      pre_invocation:
+        - "plugin(auditor)"
 `
 	if err := mgr.LoadConfig(yaml); err != nil {
 		t.Fatalf("LoadConfig failed: %v", err)
