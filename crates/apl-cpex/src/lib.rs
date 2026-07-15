@@ -34,6 +34,7 @@
 pub mod cmf_invoker;
 pub mod delegation_invoker;
 pub mod dispatch_plan;
+pub mod elicitation_invoker;
 pub mod parallel_safety;
 pub mod pdp_router;
 pub mod register;
@@ -45,8 +46,12 @@ pub mod visitor;
 pub use cmf_invoker::CmfPluginInvoker;
 pub use delegation_invoker::DelegationPluginInvoker;
 pub use dispatch_plan::{DispatchCache, RouteDispatchPlan, RoutePluginEntry};
+pub use elicitation_invoker::ElicitationPluginInvoker;
 pub use pdp_router::PdpRouter;
 pub use register::{register_apl, AplOptions};
-pub use route_handler::{AplRouteHandler, Phase};
+pub use route_handler::{
+    AplRouteHandler, Phase, ELICITATION_APPROVED_CODE, ELICITATION_ID_HEADER,
+    ELICITATION_PEEK_HEADER, ELICITATION_PENDING_CODE,
+};
 pub use session_store::{MemorySessionStore, SessionStore, SessionStoreError, SessionStoreFactory};
 pub use visitor::AplConfigVisitor;

@@ -32,8 +32,8 @@ use cpex_core::plugin::{Plugin, PluginConfig};
 
 use apl_core::pipeline::TaintScope;
 use apl_core::{
-    compile_config, evaluate_route, AttributeBag, Decision, NoopDelegationInvoker, PdpCall,
-    PdpDecision, PdpDialect, PdpError, PdpResolver, RoutePayload,
+    compile_config, evaluate_route, AttributeBag, Decision, NoopDelegationInvoker,
+    NoopElicitationInvoker, PdpCall, PdpDecision, PdpDialect, PdpError, PdpResolver, RoutePayload,
 };
 
 use apl_cpex::{
@@ -248,6 +248,7 @@ routes:
         &(Arc::new(AllowPdp) as Arc<dyn apl_core::PdpResolver>),
         &(invoker.clone() as Arc<dyn apl_core::PluginInvoker>),
         &(Arc::new(NoopDelegationInvoker) as Arc<dyn apl_core::DelegationInvoker>),
+        &(Arc::new(NoopElicitationInvoker) as Arc<dyn apl_core::ElicitationInvoker>),
     )
     .await;
 
@@ -299,6 +300,7 @@ routes:
         &(Arc::new(AllowPdp) as Arc<dyn apl_core::PdpResolver>),
         &(invoker.clone() as Arc<dyn apl_core::PluginInvoker>),
         &(Arc::new(NoopDelegationInvoker) as Arc<dyn apl_core::DelegationInvoker>),
+        &(Arc::new(NoopElicitationInvoker) as Arc<dyn apl_core::ElicitationInvoker>),
     )
     .await;
 
@@ -425,6 +427,7 @@ routes:
         &(Arc::new(AllowPdp) as Arc<dyn apl_core::PdpResolver>),
         &(invoker.clone() as Arc<dyn apl_core::PluginInvoker>),
         &(Arc::new(NoopDelegationInvoker) as Arc<dyn apl_core::DelegationInvoker>),
+        &(Arc::new(NoopElicitationInvoker) as Arc<dyn apl_core::ElicitationInvoker>),
     )
     .await;
 
@@ -518,6 +521,7 @@ routes:
         &(Arc::new(AllowPdp) as Arc<dyn apl_core::PdpResolver>),
         &(invoker.clone() as Arc<dyn apl_core::PluginInvoker>),
         &(Arc::new(NoopDelegationInvoker) as Arc<dyn apl_core::DelegationInvoker>),
+        &(Arc::new(NoopElicitationInvoker) as Arc<dyn apl_core::ElicitationInvoker>),
     )
     .await;
     assert_eq!(decision.decision, Decision::Allow);
@@ -577,6 +581,7 @@ routes:
         &(Arc::new(AllowPdp) as Arc<dyn apl_core::PdpResolver>),
         &(invoker.clone() as Arc<dyn apl_core::PluginInvoker>),
         &(Arc::new(NoopDelegationInvoker) as Arc<dyn apl_core::DelegationInvoker>),
+        &(Arc::new(NoopElicitationInvoker) as Arc<dyn apl_core::ElicitationInvoker>),
     )
     .await;
     assert_eq!(decision.decision, Decision::Allow);

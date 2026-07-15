@@ -175,6 +175,13 @@ pub enum Effect {
         name: String,
     },
     Delegate(crate::step::DelegateStep),
+    /// Elicitation effect — dispatch a question to a human (approval,
+    /// confirmation, step-up, …) through a channel plugin, hold pending
+    /// state across the agent's retries, validate the response, resume.
+    /// The elicitation analogue of `Delegate`. See
+    /// `docs/apl-manager-approval-ciba-design.md` and
+    /// [`crate::step::ElicitStep`].
+    Elicit(crate::step::ElicitStep),
     Taint {
         label: String,
         scopes: Vec<crate::pipeline::TaintScope>,
@@ -250,7 +257,10 @@ impl Effect {
     /// branch.
     pub fn contains_mutation(&self) -> bool {
         match self {
-            Effect::FieldOp { .. } | Effect::Delegate(_) => true,
+            // `Elicit` has an external side effect (posts to a channel,
+            // registers an intent) — like `Delegate` it must not sit in
+            // a `Parallel` branch that could be silently discarded.
+            Effect::FieldOp { .. } | Effect::Delegate(_) | Effect::Elicit(_) => true,
             Effect::Sequential(effects) | Effect::Parallel(effects) => {
                 effects.iter().any(Effect::contains_mutation)
             },
