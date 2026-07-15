@@ -65,6 +65,24 @@ fn tool_request(name: &str) -> Extensions {
     }
 }
 
+/// An MCP tool-call request that also carries an `http` extension — the
+/// shape a host produces when it enriches an entity request with the HTTP
+/// request line so one policy can combine `http.*` and entity attributes.
+fn tool_request_with_http(name: &str, method: &str) -> Extensions {
+    let mut meta = MetaExtension::default();
+    meta.entity_type = Some("tool".to_string());
+    meta.entity_name = Some(name.to_string());
+    let http = HttpExtension {
+        method: Some(method.to_string()),
+        ..Default::default()
+    };
+    Extensions {
+        meta: Some(Arc::new(meta)),
+        http: Some(Arc::new(http)),
+        ..Default::default()
+    }
+}
+
 // APL predicate:action form: deny when the method is not GET. (Comparisons
 // use this form; `require(...)` is truthiness-only.)
 const GET_ONLY: &str = r#"
@@ -182,6 +200,52 @@ routes:
             && !v.details.contains_key(DETAIL_HTTP_HEADERS),
         "global response leaked onto entity denial: {:?}",
         v.details
+    );
+}
+
+/// Entity routes are granted `read_headers`, so a tool route's rule can read
+/// `http.*` from an enriched request. The route denies when the HTTP method
+/// is GET: a GET tool request is denied only if `http.method` actually reached
+/// the entity bag, which proves the capability grant. A POST request (the
+/// predicate is false) passes, confirming the method is genuinely read.
+#[tokio::test]
+async fn entity_route_reads_http_attributes() {
+    const YAML: &str = r#"
+plugin_settings:
+  routing_enabled: true
+routes:
+  - tool: echo
+    apl:
+      pre_invocation:
+        - "http.method == 'GET': deny"
+"#;
+    let mgr = manager_with(YAML).await;
+
+    let (denied, _bg) = mgr
+        .invoke_named::<CmfHook>(
+            "cmf.tool_pre_invoke",
+            payload(),
+            tool_request_with_http("echo", "GET"),
+            None,
+        )
+        .await;
+    assert!(
+        !denied.continue_processing,
+        "GET tool request must be denied — proves http.method reached the entity bag (read_headers granted)",
+    );
+
+    let (allowed, _bg) = mgr
+        .invoke_named::<CmfHook>(
+            "cmf.tool_pre_invoke",
+            payload(),
+            tool_request_with_http("echo", "POST"),
+            None,
+        )
+        .await;
+    assert!(
+        allowed.continue_processing,
+        "POST tool request must pass (http.method == 'GET' is false); violation = {:?}",
+        allowed.violation,
     );
 }
 

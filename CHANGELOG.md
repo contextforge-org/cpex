@@ -13,6 +13,12 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/).
 > - **Fixed**: for any bug fixes.
 > - **Security**: in case of vulnerabilities.
 
+## [0.2.2] - 2026-07-15
+
+### Changed
+
+- **`read_headers` granted to every synthetic policy handler.** The entity-less HTTP catch-all, per-entity routes (tool/prompt/resource), and defaults are now all granted the `read_headers` capability at install time, so `http.*` request attributes (`http.method` / `http.path` / `http.host` / `http.scheme` / `http.request_headers.*`) are available to policy evaluation wherever the host attaches an `HttpExtension`. Previously only the `global` HTTP catch-all had it, so a per-entity rule could not read the HTTP request line. This lets one policy combine `http.*` with entity/`args.*` predicates in a single evaluation (e.g. an MCP tool route that also gates on `http.method`). It is a no-op for hosts that never populate the HTTP extension — there is nothing to read — and `http.host` continues to be sourced from a validated request authority, never a raw client `Host` header.
+
 ## [0.2.1] - 2026-07-14
 
 ### Added
