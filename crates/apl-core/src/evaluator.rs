@@ -189,6 +189,22 @@ fn coerce_f64_lit(lit: &Literal) -> Option<f64> {
     }
 }
 
+/// Heuristic: does `s` look like a bag attribute reference (e.g.
+/// `claim.manager`, `user.sub`) rather than a literal identity (e.g.
+/// `alice@corp.com`, a bare username)? Used to decide whether an
+/// unresolved elicitation `from` should fail closed (an attribute that
+/// didn't resolve) or pass through as a literal.
+///
+/// A reference is a dotted path of identifier characters only — starts
+/// with a letter and contains only `[A-Za-z0-9_.]` with at least one dot.
+/// Literals like emails (contain `@`) or display names (contain spaces)
+/// are excluded, so they still pass through verbatim.
+fn looks_like_attribute_ref(s: &str) -> bool {
+    s.contains('.')
+        && s.starts_with(|c: char| c.is_ascii_alphabetic())
+        && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.')
+}
+
 // =====================================================================
 // Async effect evaluator (policy: / post_policy: walks Vec<Effect>)
 // =====================================================================
@@ -673,10 +689,11 @@ async fn dispatch_effect(
 /// `on_error` — `on_error` governs channel/validation *failures*, not a
 /// valid "no" from the approver.
 ///
-/// Pending is currently fail-closed: until the `-32120` pending bundle
-/// side-channel lands, "the human hasn't answered yet" is treated as
-/// "not allowed." The bag still records `elicitation.status = pending`
-/// so the host/audit can see the in-flight state.
+/// While the human hasn't answered, the phase *suspends*: the step yields
+/// an [`EffectOutcome::Pending`] carrying the bundle the host turns into a
+/// JSON-RPC `-32120` (retry) instead of forwarding. The bag also records
+/// `elicitation.status = pending` so the host/audit can see the in-flight
+/// state.
 async fn dispatch_elicitation(
     step: &crate::step::ElicitStep,
     bag: &mut AttributeBag,
@@ -707,14 +724,24 @@ async fn dispatch_elicitation(
     // bundle in the bag.
     //
     // Resolve `from` against the bag (e.g. `claim.manager` → the
-    // manager's identity); fall back to the literal when it isn't a bag
-    // key (e.g. `from` written as a literal email). The attribute
-    // vocabulary lives here in the runtime, so the invoker receives the
-    // resolved identity rather than re-deriving it.
-    let resolved_from = bag
-        .get_string(&step.from)
-        .unwrap_or(step.from.as_str())
-        .to_string();
+    // manager's identity). A `from` written as a literal identity (e.g.
+    // `alice@corp.com`) that isn't a bag key falls through to the literal.
+    // But a `from` that *looks like* an unresolved attribute reference
+    // (e.g. `claim.manager` when the claim is absent) must NOT be sent to
+    // the channel verbatim — that would dispatch an approval to a bogus
+    // `login_hint`. This is an auth boundary: fail closed instead. The
+    // attribute vocabulary lives here in the runtime, so the invoker
+    // receives the resolved identity rather than re-deriving it.
+    let resolved_from = match bag.get_string(&step.from) {
+        Some(v) => v.to_string(),
+        None if looks_like_attribute_ref(&step.from) => {
+            return fail(format!(
+                "elicitation `from` attribute `{}` did not resolve to an identity",
+                step.from
+            ));
+        }
+        None => step.from.clone(),
+    };
     let id = match bag.get_string(bk::ID) {
         Some(existing) => existing.to_string(),
         None => match elicitations.dispatch(step, &resolved_from).await {
@@ -3443,11 +3470,17 @@ mod tests {
     // ----- Effect::Elicit (human-in-the-loop) -----
 
     /// Run a single `Effect::Elicit` against the given invoker + bag.
+    /// Seeds the `user.manager` attribute (the `from` these tests use) so
+    /// it resolves — an unresolved attribute `from` now fails closed, which
+    /// its own dedicated test covers.
     async fn run_elicit(
         effect: Effect,
         elicitations: &Arc<dyn crate::step::ElicitationInvoker>,
         bag: &mut AttributeBag,
     ) -> StepsEvaluation {
+        if bag.get_string("user.manager").is_none() {
+            bag.set("user.manager", "manager@corp.com");
+        }
         evaluate_effects(
             &[effect],
             bag,
@@ -3469,7 +3502,7 @@ mod tests {
         // Resolved facts land in the bag for downstream rules / audit.
         assert_eq!(bag.get_string("elicitation.status"), Some("resolved"));
         assert_eq!(bag.get_string("elicitation.outcome"), Some("approved"));
-        assert_eq!(bag.get_string("elicitation.approver"), Some("user.manager"));
+        assert_eq!(bag.get_string("elicitation.approver"), Some("manager@corp.com"));
         assert_eq!(bag.get_string("elicitation.intent_id"), Some("auto-intent"));
     }
 
@@ -3567,7 +3600,7 @@ mod tests {
         let bundle = eval.pending.expect("pending bundle carried out");
         assert_eq!(bundle.id, "pending-1");
         assert_eq!(bundle.plugin_name, "manager-approver");
-        assert_eq!(bundle.approver.as_deref(), Some("user.manager"));
+        assert_eq!(bundle.approver.as_deref(), Some("manager@corp.com"));
         assert_eq!(bundle.intent_id.as_deref(), Some("intent-xyz"));
         assert_eq!(bundle.channel.as_deref(), Some("ciba"));
         assert_eq!(bundle.expires_at.as_deref(), Some("2026-12-31T00:00:00Z"));
@@ -3596,6 +3629,7 @@ mod tests {
         // phase kept walking, the decision would be Deny, not Allow+pending.
         let pending: Arc<dyn crate::step::ElicitationInvoker> = Arc::new(StillPendingElicitor);
         let mut bag = AttributeBag::new();
+        bag.set("user.manager", "manager@corp.com");
         let effects = vec![elicit_effect(None, None), deny("should not run")];
         let eval = evaluate_effects(
             &effects,
@@ -3610,5 +3644,75 @@ mod tests {
         .await;
         assert_eq!(eval.decision, Decision::Allow, "trailing deny must not run");
         assert!(eval.pending.is_some());
+    }
+
+    #[tokio::test]
+    async fn elicit_unresolved_from_attribute_fails_closed() {
+        // `from` is an attribute reference (`user.manager`) that isn't in
+        // the bag. It must fail closed BEFORE dispatch — never send the
+        // literal `"user.manager"` to the channel as a bogus login_hint.
+        let mut bag = AttributeBag::new(); // note: no user.manager seeded
+        let eval = evaluate_effects(
+            &[elicit_effect(None, None)],
+            &mut bag,
+            &(Arc::new(FakePdp { decision: Decision::Allow }) as Arc<dyn PdpResolver>),
+            &null_plugins(),
+            &noop_delegations(),
+            &auto_elicitations(),
+            crate::step::DispatchPhase::Pre,
+            &mut crate::route::RoutePayload::new(serde_json::Value::Null),
+        )
+        .await;
+        match eval.decision {
+            Decision::Deny { reason, .. } => {
+                let r = reason.as_deref().unwrap_or("");
+                assert!(r.contains("did not resolve"), "got: {r}");
+                assert!(r.contains("user.manager"), "got: {r}");
+            }
+            d => panic!("expected fail-closed Deny on unresolved `from`, got {:?}", d),
+        }
+        // Nothing was dispatched, so no elicitation id was recorded.
+        assert!(bag.get_string("elicitation.id").is_none());
+    }
+
+    #[tokio::test]
+    async fn elicit_literal_from_passes_through_unresolved() {
+        // A `from` that is a literal identity (an email — not an attribute
+        // reference) is used verbatim even when it isn't a bag key.
+        let mut bag = AttributeBag::new();
+        let effect = Effect::Elicit(crate::step::ElicitStep {
+            from: "alice@corp.com".into(),
+            ..match elicit_effect(None, None) {
+                Effect::Elicit(e) => e,
+                _ => unreachable!(),
+            }
+        });
+        let eval = evaluate_effects(
+            &[effect],
+            &mut bag,
+            &(Arc::new(FakePdp { decision: Decision::Allow }) as Arc<dyn PdpResolver>),
+            &null_plugins(),
+            &noop_delegations(),
+            &auto_elicitations(),
+            crate::step::DispatchPhase::Pre,
+            &mut crate::route::RoutePayload::new(serde_json::Value::Null),
+        )
+        .await;
+        assert_eq!(eval.decision, Decision::Allow);
+        // The literal identity flowed through as the resolved approver.
+        assert_eq!(bag.get_string("elicitation.approver"), Some("alice@corp.com"));
+    }
+
+    #[test]
+    fn looks_like_attribute_ref_classification() {
+        // Attribute references: dotted identifier paths.
+        assert!(looks_like_attribute_ref("user.manager"));
+        assert!(looks_like_attribute_ref("claim.manager"));
+        assert!(looks_like_attribute_ref("user.sub"));
+        // Literals: emails, display names, bare tokens.
+        assert!(!looks_like_attribute_ref("alice@corp.com"));
+        assert!(!looks_like_attribute_ref("Alice Smith"));
+        assert!(!looks_like_attribute_ref("alice"));
+        assert!(!looks_like_attribute_ref(""));
     }
 }

@@ -718,8 +718,12 @@ pub enum ElicitationError {
     #[error("no elicitation invoker available for plugin `{0}`")]
     NotFound(String),
 
-    #[error("elicitation dispatch failed: {0}")]
-    Dispatch(String),
+    /// The handler failed to service an operation (dispatch / check /
+    /// validate) — a channel error, a handler deny, or a malformed
+    /// response. The message names the operation; the evaluator routes
+    /// this through the step's `on_error`.
+    #[error("elicitation handler error: {0}")]
+    Handler(String),
 }
 
 /// [`ElicitationInvoker`] impl that returns `NotFound` for every call.

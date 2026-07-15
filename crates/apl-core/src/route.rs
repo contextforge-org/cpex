@@ -529,6 +529,9 @@ mod tests {
 
         let elicitor: Arc<dyn ElicitationInvoker> = Arc::new(PendingElicitor);
         let mut bag = AttributeBag::new();
+        // The step's `from` is an attribute ref — seed it so it resolves
+        // (an unresolved attribute `from` now fails closed by design).
+        bag.set("user.manager", "manager@corp.com");
         let mut payload =
             RoutePayload::with_result(json!({}), json!({ "ssn": "123-45-6789" }));
         let r = evaluate_route(

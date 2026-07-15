@@ -15,7 +15,13 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **Human-in-the-loop (HIL) elicitation for APL.** A policy can pause an operation to ask a human — manager approval, a confirm, a step-up re-auth, an attestation — and resume once the human responds, without blocking the request path. Sugar verbs (`require_approval` / `confirm` / `require_step_up` / `require_attestation` / `request_info` / `require_review`) desugar to one `Step::Elicit`, resolved by name to an `ElicitationHandler` plugin exactly like `delegate(...)`. While the human hasn't answered, the phase *suspends* (`Decision` stays `Allow` with a pending bundle) and the host emits JSON-RPC `-32120` so the agent retries by echoing the elicitation id; expiry, channel error, denial, or a failed validation fail closed (default `on_error: deny`). The approval is bound to the live request args via an APL `scope:` expression (`args.amount <= 25000`) the runtime checks at resolution — never an LLM summary. Ships a working Keycloak **CIBA** channel plugin (`kind: elicitation/ciba`, in `cpex-builtins` default features). See [Elicitation]({{< relref "/docs/apl/elicitation" >}}). (#115)
+
 ### Changed
+
+- **APL order comparisons now coerce numeric-looking strings.** `numeric_compare` parses string operands as `f64` for order operators (`>`, `>=`, `<`, `<=`), so `args.amount > 10000` fires when the arg arrives as the string `"25000"` — as LLM tool arguments routinely do. This affects **all** order comparisons in the engine, not just elicitation `scope:` bindings: a comparison that previously returned `false` because one side was a numeric string may now evaluate numerically. Equality (`==`) is unchanged, and genuinely non-numeric strings still don't order-compare (they yield `false`, per spec §2.3). (#115)
 
 - **BREAKING — APL authz/authn config keys renamed** for clarity. The old key names no longer parse; a config using them fails to load with an error naming the replacement (a dropped authorization or authentication block would otherwise fail open, so the rejection is deliberate). Migration:
   - `identity:` → `authentication:` (at `global`, per-route, and policy-group scope)

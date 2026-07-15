@@ -96,9 +96,12 @@ impl ElicitationPluginInvoker {
 
     /// Common dispatch: invoke the resolved entry with `payload`, returns
     /// the resolved `ElicitationPayload` on allow, or an
-    /// `ElicitationError` on a handler deny / missing payload.
+    /// `ElicitationError` on a handler deny / missing payload. `op` names
+    /// the operation (`"dispatch"` / `"check"` / `"validate"`) so a
+    /// failure reads accurately rather than always saying "dispatch".
     async fn invoke(
         &self,
+        op: &str,
         plugin_name: &str,
         payload: ElicitationPayload,
     ) -> Result<ElicitationPayload, ElicitationError> {
@@ -120,14 +123,14 @@ impl ElicitationPluginInvoker {
                 .violation
                 .map(|v| format!("{}: {}", v.code, v.reason))
                 .unwrap_or_else(|| "denied without violation detail".to_string());
-            return Err(ElicitationError::Dispatch(format!(
-                "elicitation plugin `{plugin_name}` halted: {detail}"
+            return Err(ElicitationError::Handler(format!(
+                "{op}: plugin `{plugin_name}` halted: {detail}"
             )));
         }
 
         ElicitationPayload::from_pipeline_result(&result).ok_or_else(|| {
-            ElicitationError::Dispatch(format!(
-                "elicitation plugin `{plugin_name}` returned allow but no ElicitationPayload"
+            ElicitationError::Handler(format!(
+                "{op}: plugin `{plugin_name}` returned allow but no ElicitationPayload"
             ))
         })
     }
@@ -162,12 +165,12 @@ impl ElicitationInvoker for ElicitationPluginInvoker {
             ElicitationPayload::new(ElicitationOp::Dispatch, step.kind.as_str(), resolved_from),
             step,
         );
-        let out = self.invoke(&step.plugin_name, payload).await?;
+        let out = self.invoke("dispatch", &step.plugin_name, payload).await?;
 
         // The handler must mint an id on dispatch.
         let id = out.id.ok_or_else(|| {
-            ElicitationError::Dispatch(format!(
-                "elicitation plugin `{}` dispatched without returning an id",
+            ElicitationError::Handler(format!(
+                "dispatch: plugin `{}` dispatched without returning an id",
                 step.plugin_name
             ))
         })?;
@@ -189,7 +192,7 @@ impl ElicitationInvoker for ElicitationPluginInvoker {
                 .with_elicitation_id(id),
             step,
         );
-        let out = self.invoke(&step.plugin_name, payload).await?;
+        let out = self.invoke("check", &step.plugin_name, payload).await?;
 
         match out.status {
             Some(ElicitationStatusKind::Pending) | None => Ok(ElicitationStatus::Pending),
@@ -216,7 +219,7 @@ impl ElicitationInvoker for ElicitationPluginInvoker {
                 .with_elicitation_id(id),
             step,
         );
-        let out = self.invoke(&step.plugin_name, payload).await?;
+        let out = self.invoke("validate", &step.plugin_name, payload).await?;
 
         Ok(ElicitationValidation {
             // Absent `valid` is treated as not-valid (fail-closed).

@@ -15,6 +15,7 @@ This page covers the configuration: routes, phases, predicates, rules, and field
 - [PDP Integration]({{< relref "/docs/apl/pdp" >}}): hand a decision to Cedar, CEL, or an external engine.
 - [Identity & IdP]({{< relref "/docs/apl/identity" >}}): how callers are resolved into the attributes predicates read.
 - [Delegation]({{< relref "/docs/apl/delegation" >}}): mint scoped downstream credentials via token exchange.
+- [Elicitation]({{< relref "/docs/apl/elicitation" >}}): pause an operation for human approval and resume on retry.
 - [Session Tainting]({{< relref "/docs/apl/tainting" >}}): information-flow control across requests.
 
 ## Routes and phases
