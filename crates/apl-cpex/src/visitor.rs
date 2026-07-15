@@ -448,10 +448,8 @@ impl ConfigVisitor for AplConfigVisitor {
         }
         if installs_pre_handler {
             let (plugin_registry, pdp_router_arc, session_store) = self.snapshot_dispatch_state();
-            // The global HTTP policy reads the request line / headers, so
-            // grant `read_headers` on top of the visitor baseline.
-            let mut caps = self.base_capabilities.clone();
-            caps.insert("read_headers".to_string());
+            // `read_headers` (for `http.*`) is granted to every synthetic policy
+            // handler in `install_handler`, so the baseline is passed as-is here.
             install_handler(
                 mgr,
                 ENTITY_HTTP,
@@ -465,7 +463,7 @@ impl ConfigVisitor for AplConfigVisitor {
                 &session_store,
                 &self.manager,
                 Some(pdp_router_arc),
-                &caps,
+                &self.base_capabilities,
             );
         }
 
@@ -742,6 +740,13 @@ fn install_handler(
         &route,
         plugin_registry,
     ));
+    // Every synthetic policy handler (the entity-less HTTP catch-all, per-entity
+    // routes, and defaults) is granted `read_headers` so `http.*` request
+    // attributes are available to policy evaluation wherever the host attaches
+    // an `HttpExtension`. This lets an entity-route rule combine `http.*` with
+    // entity/`args.*` predicates in one evaluation. It is a no-op for hosts that
+    // never populate the HTTP extension (nothing to read).
+    capabilities.insert("read_headers".to_string());
 
     let plugin_config = PluginConfig {
         name: format!(
