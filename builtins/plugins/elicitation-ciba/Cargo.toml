@@ -41,7 +41,7 @@ categories.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-cpex-core = { path = "../../../crates/cpex-core", version = "0.2.0" }
+cpex-core = { workspace = true }
 
 # `reqwest` for the backchannel + token-endpoint POSTs. Same TLS stance
 # as cpex-plugin-delegator-oauth: rustls, no native-tls/openssl link.
@@ -54,8 +54,6 @@ base64 = "0.22"
 async-trait = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-thiserror = { workspace = true }
-tracing = { workspace = true }
 tokio = { workspace = true, features = ["sync"] }
 chrono = { workspace = true }
 
