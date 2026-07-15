@@ -46,6 +46,8 @@ pub use cpex_pdp_cel::CelPdpFactory;
 pub use cpex_plugin_audit_logger::{AuditLoggerFactory, KIND as AUDIT_KIND};
 #[cfg(feature = "delegator-oauth")]
 pub use cpex_plugin_delegator_oauth::{OAuthDelegatorFactory, KIND as OAUTH_KIND};
+#[cfg(feature = "elicitation-ciba")]
+pub use cpex_plugin_elicitation_ciba::{CibaApproverFactory, KIND as CIBA_KIND};
 #[cfg(feature = "identity-jwt")]
 pub use cpex_plugin_identity_jwt::{JwtIdentityFactory, KIND as JWT_KIND};
 #[cfg(feature = "pii-scanner")]
@@ -88,10 +90,11 @@ macro_rules! register_builtins {
 }
 
 register_builtins! {
-    feature "identity-jwt"    => cpex_plugin_identity_jwt::JwtIdentityFactory,
-    feature "delegator-oauth" => cpex_plugin_delegator_oauth::OAuthDelegatorFactory,
-    feature "pii-scanner"     => cpex_plugin_pii_scanner::PiiScannerFactory,
-    feature "audit-logger"    => cpex_plugin_audit_logger::AuditLoggerFactory,
+    feature "identity-jwt"     => cpex_plugin_identity_jwt::JwtIdentityFactory,
+    feature "delegator-oauth"  => cpex_plugin_delegator_oauth::OAuthDelegatorFactory,
+    feature "elicitation-ciba" => cpex_plugin_elicitation_ciba::CibaApproverFactory,
+    feature "pii-scanner"      => cpex_plugin_pii_scanner::PiiScannerFactory,
+    feature "audit-logger"     => cpex_plugin_audit_logger::AuditLoggerFactory,
 }
 
 // -----------------------------------------------------------------------------

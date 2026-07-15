@@ -22,6 +22,7 @@ members = [
     "builtins/plugins/identity-jwt",
     "builtins/plugins/delegator-oauth",
     "builtins/plugins/delegator-biscuit",
+    "builtins/plugins/elicitation-ciba",
     "builtins/pdps/cedar-direct",
     "builtins/pdps/cel",
     "builtins/session/valkey",
@@ -56,6 +57,7 @@ default-members = [
     "builtins/plugins/identity-jwt",
     "builtins/plugins/delegator-oauth",
     "builtins/plugins/delegator-biscuit",
+    "builtins/plugins/elicitation-ciba",
     "builtins/pdps/cedar-direct",
     "builtins/pdps/cel",
     "examples/go-demo/ffi",
@@ -122,6 +124,7 @@ cpex-plugin-audit-logger      = { path = "builtins/plugins/audit-logger",      v
 cpex-plugin-identity-jwt      = { path = "builtins/plugins/identity-jwt",      version = "0.2.2" }
 cpex-plugin-delegator-oauth   = { path = "builtins/plugins/delegator-oauth",   version = "0.2.2" }
 cpex-plugin-delegator-biscuit = { path = "builtins/plugins/delegator-biscuit", version = "0.2.2" }
+cpex-plugin-elicitation-ciba  = { path = "builtins/plugins/elicitation-ciba",  version = "0.2.2" }
 cpex-pdp-cedar-direct         = { path = "builtins/pdps/cedar-direct",         version = "0.2.2" }
 cpex-pdp-cel                  = { path = "builtins/pdps/cel",                   version = "0.2.2" }
 cpex-session-valkey           = { path = "builtins/session/valkey",            version = "0.2.2" }

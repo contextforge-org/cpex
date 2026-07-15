@@ -15,6 +15,7 @@ An APL rule does something. That something is an **effect**. Effects are the bui
 | `deny` / `deny('reason')` / `deny('reason', 'code')` | Halt the phase and all later phases with a violation. |
 | `plugin(name)` (alias `run(name)`) | Invoke a registered plugin (PII scan, audit log, custom check). |
 | `delegate(name, ...)` | Mint a downstream credential via a delegator plugin. See [Delegation]({{< relref "/docs/apl/delegation" >}}). |
+| `require_approval(name, ...)` / `confirm(...)` / `require_step_up(...)` / `require_attestation(...)` / `request_info(...)` / `require_review(...)` | Ask a human and suspend the operation until they respond. See [Elicitation]({{< relref "/docs/apl/elicitation" >}}). |
 | `taint(label[, scope])` | Attach a label to the session or message. See [Session Tainting]({{< relref "/docs/apl/tainting" >}}). |
 | field pipelines | Validate or transform `args`/`result` fields. See [APL]({{< relref "/docs/apl" >}}). |
 | PDP call (`cedar:`, `cel:`, `opa(...)`) | Delegate the decision to a policy engine. See [PDP Integration]({{< relref "/docs/apl/pdp" >}}). |
@@ -73,4 +74,4 @@ authorization:
 
 ## Phases recap
 
-Effects run within the four route phases: `args`, `authorization.pre_invocation`, `result`, `authorization.post_invocation` (see [APL]({{< relref "/docs/apl" >}})). `delegate` and PDP calls belong in `pre_invocation` or `post_invocation`; field pipelines belong in `args` and `result`. A deny anywhere halts the rest.
+Effects run within the four route phases: `args`, `authorization.pre_invocation`, `result`, `authorization.post_invocation` (see [APL]({{< relref "/docs/apl" >}})). `delegate`, elicitation verbs, and PDP calls belong in `pre_invocation` or `post_invocation`; field pipelines belong in `args` and `result`. A deny anywhere halts the rest. An elicitation verb can also *suspend* a phase — the operation neither allows nor denies, but pauses for a human and resumes on retry (see [Elicitation]({{< relref "/docs/apl/elicitation" >}})).
