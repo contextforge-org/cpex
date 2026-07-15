@@ -107,7 +107,7 @@ impl ClientSecretSource {
         match self {
             Self::EnvVar { name } => {
                 std::env::var(name).map_err(|e| format!("env var '{name}' unavailable: {e}"))
-            }
+            },
             Self::File { path } => std::fs::read_to_string(path)
                 .map(|s| s.trim().to_string())
                 .map_err(|e| format!("secret file '{}' unreadable: {e}", path.display())),
@@ -161,7 +161,9 @@ mod tests {
 
     #[test]
     fn literal_secret_resolves() {
-        let src = ClientSecretSource::Literal { secret: "hush".into() };
+        let src = ClientSecretSource::Literal {
+            secret: "hush".into(),
+        };
         assert_eq!(src.resolve().unwrap(), "hush");
     }
 

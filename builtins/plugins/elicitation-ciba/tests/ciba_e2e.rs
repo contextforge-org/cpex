@@ -114,7 +114,10 @@ async fn check_authorization_pending_maps_to_pending() {
     let mut server = mockito::Server::new_async().await;
     let m = server
         .mock("POST", "/token")
-        .match_body(mockito::Matcher::UrlEncoded("auth_req_id".into(), "REQ-123".into()))
+        .match_body(mockito::Matcher::UrlEncoded(
+            "auth_req_id".into(),
+            "REQ-123".into(),
+        ))
         .with_status(400)
         .with_header("content-type", "application/json")
         .with_body(json!({ "error": "authorization_pending" }).to_string())
@@ -205,9 +208,7 @@ async fn full_flow_dispatch_check_validate_approves() {
     let _tok = server
         .mock("POST", "/token")
         .with_status(200)
-        .with_body(
-            json!({ "id_token": fake_id_token("alice@corp.com") }).to_string(),
-        )
+        .with_body(json!({ "id_token": fake_id_token("alice@corp.com") }).to_string())
         .create_async()
         .await;
 
@@ -225,8 +226,7 @@ async fn full_flow_dispatch_check_validate_approves() {
     // 2. check — approved.
     let c = run(
         &app,
-        ElicitationPayload::new(ElicitationOp::Check, "approval", "")
-            .with_elicitation_id(&id),
+        ElicitationPayload::new(ElicitationOp::Check, "approval", "").with_elicitation_id(&id),
     )
     .await;
     assert_eq!(c.outcome, Some(ElicitationOutcomeKind::Approved));
@@ -234,8 +234,7 @@ async fn full_flow_dispatch_check_validate_approves() {
     // 3. validate — token's preferred_username matches the login_hint.
     let v = run(
         &app,
-        ElicitationPayload::new(ElicitationOp::Validate, "approval", "")
-            .with_elicitation_id(&id),
+        ElicitationPayload::new(ElicitationOp::Validate, "approval", "").with_elicitation_id(&id),
     )
     .await;
     assert_eq!(v.valid, Some(true));

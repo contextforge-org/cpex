@@ -101,16 +101,16 @@ impl HookHandler<ElicitationHook> for FakeApprover {
                 out.approver = Some(payload.from().to_string());
                 out.intent_id = Some("intent-77".to_string());
                 out.expires_at = Some("2026-12-31T00:00:00Z".to_string());
-            }
+            },
             ElicitationOp::Check => {
                 out.status = Some(self.check_status);
                 out.outcome = self.check_outcome;
-            }
+            },
             ElicitationOp::Validate => {
                 out.valid = Some(self.validate_valid);
                 out.approver = Some("alice@example.com".to_string());
                 out.intent_id = Some("intent-77".to_string());
-            }
+            },
         }
         PluginResult::modify_payload(out)
     }
@@ -176,10 +176,7 @@ fn elicit_step() -> ElicitStep {
     }
 }
 
-fn invoker(
-    mgr: Arc<PluginManager>,
-    plan: Arc<RouteDispatchPlan>,
-) -> ElicitationPluginInvoker {
+fn invoker(mgr: Arc<PluginManager>, plan: Arc<RouteDispatchPlan>) -> ElicitationPluginInvoker {
     ElicitationPluginInvoker::new(mgr, Arc::new(AsyncMutex::new(Extensions::default())), plan)
 }
 
@@ -233,7 +230,10 @@ async fn check_maps_pending_and_resolved() {
     });
     let (mgr, plan) = setup(Arc::clone(&plugin), approver_cfg("manager-approver")).await;
     let inv = invoker(mgr, plan);
-    let s = inv.check(&elicit_step(), "elic-abc").await.expect("check ok");
+    let s = inv
+        .check(&elicit_step(), "elic-abc")
+        .await
+        .expect("check ok");
     assert_eq!(s, ElicitationStatus::Pending);
 
     // Resolved + approved.
@@ -247,10 +247,15 @@ async fn check_maps_pending_and_resolved() {
     });
     let (mgr, plan) = setup(Arc::clone(&plugin), approver_cfg("manager-approver")).await;
     let inv = invoker(mgr, plan);
-    let s = inv.check(&elicit_step(), "elic-abc").await.expect("check ok");
+    let s = inv
+        .check(&elicit_step(), "elic-abc")
+        .await
+        .expect("check ok");
     assert_eq!(
         s,
-        ElicitationStatus::Resolved { outcome: ElicitationOutcome::Approved }
+        ElicitationStatus::Resolved {
+            outcome: ElicitationOutcome::Approved
+        }
     );
 }
 
@@ -267,10 +272,15 @@ async fn check_resolved_without_outcome_defaults_denied() {
     });
     let (mgr, plan) = setup(Arc::clone(&plugin), approver_cfg("manager-approver")).await;
     let inv = invoker(mgr, plan);
-    let s = inv.check(&elicit_step(), "elic-abc").await.expect("check ok");
+    let s = inv
+        .check(&elicit_step(), "elic-abc")
+        .await
+        .expect("check ok");
     assert_eq!(
         s,
-        ElicitationStatus::Resolved { outcome: ElicitationOutcome::Denied }
+        ElicitationStatus::Resolved {
+            outcome: ElicitationOutcome::Denied
+        }
     );
 }
 

@@ -105,7 +105,10 @@ mod tests {
         let store = InMemoryCorrelationStore::new();
         store.put(
             "req-1",
-            Correlation { expected_approver: "alice".into(), resolved_approver: None },
+            Correlation {
+                expected_approver: "alice".into(),
+                resolved_approver: None,
+            },
         );
         let c = store.get("req-1").expect("present");
         assert_eq!(c.expected_approver, "alice");
@@ -118,10 +121,16 @@ mod tests {
         let store = InMemoryCorrelationStore::new();
         store.put(
             "req-1",
-            Correlation { expected_approver: "alice".into(), resolved_approver: None },
+            Correlation {
+                expected_approver: "alice".into(),
+                resolved_approver: None,
+            },
         );
         store.set_resolved_approver("req-1", "alice".into());
-        assert_eq!(store.get("req-1").unwrap().resolved_approver.as_deref(), Some("alice"));
+        assert_eq!(
+            store.get("req-1").unwrap().resolved_approver.as_deref(),
+            Some("alice")
+        );
         // Unknown id is a silent no-op.
         store.set_resolved_approver("missing", "x".into());
         assert!(store.get("missing").is_none());

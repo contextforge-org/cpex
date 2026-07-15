@@ -32,8 +32,8 @@ use cpex_core::plugin::{Plugin, PluginConfig};
 
 use apl_core::pipeline::TaintScope;
 use apl_core::{
-    compile_config, evaluate_route, AttributeBag, Decision, NoopDelegationInvoker, NoopElicitationInvoker, PdpCall,
-    PdpDecision, PdpDialect, PdpError, PdpResolver, RoutePayload,
+    compile_config, evaluate_route, AttributeBag, Decision, NoopDelegationInvoker,
+    NoopElicitationInvoker, PdpCall, PdpDecision, PdpDialect, PdpError, PdpResolver, RoutePayload,
 };
 
 use apl_cpex::{

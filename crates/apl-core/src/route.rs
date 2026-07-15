@@ -376,8 +376,7 @@ mod tests {
     use crate::rules::{Effect, Expression, Rule};
     use crate::step::{
         NoopDelegationInvoker, NoopElicitationInvoker, PdpCall, PdpDecision, PdpDialect, PdpError,
-        PluginError,
-        PluginInvocation, PluginOutcome,
+        PluginError, PluginInvocation, PluginOutcome,
     };
     use async_trait::async_trait;
     use serde_json::json;
@@ -525,15 +524,16 @@ mod tests {
             source: "payroll.policy[0]".into(),
         }));
         // A result rule that WOULD mask — proves post didn't run if untouched.
-        route.result.push(field_rule("ssn", vec![Stage::Mask { keep_last: 4 }]));
+        route
+            .result
+            .push(field_rule("ssn", vec![Stage::Mask { keep_last: 4 }]));
 
         let elicitor: Arc<dyn ElicitationInvoker> = Arc::new(PendingElicitor);
         let mut bag = AttributeBag::new();
         // The step's `from` is an attribute ref — seed it so it resolves
         // (an unresolved attribute `from` now fails closed by design).
         bag.set("user.manager", "manager@corp.com");
-        let mut payload =
-            RoutePayload::with_result(json!({}), json!({ "ssn": "123-45-6789" }));
+        let mut payload = RoutePayload::with_result(json!({}), json!({ "ssn": "123-45-6789" }));
         let r = evaluate_route(
             &route,
             &mut bag,
@@ -551,7 +551,10 @@ mod tests {
         assert_eq!(bundle.plugin_name, "manager-approver");
         // post never ran → result untouched (no masking applied).
         assert!(!r.result_modified);
-        assert_eq!(payload.result.as_ref().unwrap()["ssn"], json!("123-45-6789"));
+        assert_eq!(
+            payload.result.as_ref().unwrap()["ssn"],
+            json!("123-45-6789")
+        );
     }
 
     #[tokio::test]

@@ -202,7 +202,8 @@ fn coerce_f64_lit(lit: &Literal) -> Option<f64> {
 fn looks_like_attribute_ref(s: &str) -> bool {
     s.contains('.')
         && s.starts_with(|c: char| c.is_ascii_alphabetic())
-        && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.')
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.')
 }
 
 // =====================================================================
@@ -484,9 +485,7 @@ async fn dispatch_effect(
             }
         },
 
-        Effect::Elicit(elicit_step) => {
-            dispatch_elicitation(elicit_step, bag, elicitations).await
-        }
+        Effect::Elicit(elicit_step) => dispatch_elicitation(elicit_step, bag, elicitations).await,
 
         Effect::Taint { label, scopes } => {
             // Emit the taint into the phase's accumulator so it flows
@@ -661,7 +660,7 @@ async fn dispatch_effect(
                             ))
                             .await
                             {
-                                EffectOutcome::Continue => {}
+                                EffectOutcome::Continue => {},
                                 // A reaction can override the deny reason;
                                 // a suspended reaction (Pending) surfaces.
                                 other => return other,
@@ -739,7 +738,7 @@ async fn dispatch_elicitation(
                 "elicitation `from` attribute `{}` did not resolve to an identity",
                 step.from
             ));
-        }
+        },
         None => step.from.clone(),
     };
     let id = match bag.get_string(bk::ID) {
@@ -762,7 +761,7 @@ async fn dispatch_elicitation(
                     bag.set(bk::EXPIRES_AT, exp.clone());
                 }
                 d.id
-            }
+            },
             Err(e) => return fail(format!("elicitation dispatch failed: {e}")),
         },
     };
@@ -792,12 +791,14 @@ async fn dispatch_elicitation(
                 expires_at,
                 source: step.source.clone(),
             })
-        }
+        },
         ElicitationStatus::Expired => {
             bag.set(bk::STATUS, "expired".to_string());
             fail("elicitation expired before a response".to_string())
-        }
-        ElicitationStatus::Resolved { outcome: ElicitationOutcome::Denied } => {
+        },
+        ElicitationStatus::Resolved {
+            outcome: ElicitationOutcome::Denied,
+        } => {
             bag.set(bk::STATUS, "resolved".to_string());
             bag.set(bk::OUTCOME, "denied".to_string());
             // A genuine "no" halts unconditionally — not subject to
@@ -806,8 +807,10 @@ async fn dispatch_elicitation(
                 reason: Some("elicitation denied by approver".to_string()),
                 rule_source: step.source.clone(),
             })
-        }
-        ElicitationStatus::Resolved { outcome: ElicitationOutcome::Approved } => {
+        },
+        ElicitationStatus::Resolved {
+            outcome: ElicitationOutcome::Approved,
+        } => {
             // Genuineness (plugin): signature / intent binding /
             // responder identity.
             let validation = match elicitations.validate(step, &id).await {
@@ -828,16 +831,14 @@ async fn dispatch_elicitation(
                 match crate::parser::parse_predicate(scope_src) {
                     Ok(expr) => {
                         if !eval_expression(&expr, bag) {
-                            return fail(format!(
-                                "elicitation scope not satisfied: `{scope_src}`"
-                            ));
+                            return fail(format!("elicitation scope not satisfied: `{scope_src}`"));
                         }
-                    }
+                    },
                     Err(e) => {
                         return fail(format!(
                             "elicitation scope `{scope_src}` failed to parse: {e}"
                         ));
-                    }
+                    },
                 }
             }
 
@@ -852,7 +853,7 @@ async fn dispatch_elicitation(
                 bag.set(bk::INTENT_ID, intent);
             }
             EffectOutcome::Continue
-        }
+        },
     }
 }
 
@@ -1752,13 +1753,25 @@ mod tests {
             op,
             value: v.into(),
         };
-        assert!(eval_condition(&cmp(CompareOp::Gt, 10000), &bag), "\"25000\" > 10000");
-        assert!(eval_condition(&cmp(CompareOp::LtEq, 25000), &bag), "\"25000\" <= 25000");
-        assert!(!eval_condition(&cmp(CompareOp::Gt, 25000), &bag), "\"25000\" > 25000 is false");
+        assert!(
+            eval_condition(&cmp(CompareOp::Gt, 10000), &bag),
+            "\"25000\" > 10000"
+        );
+        assert!(
+            eval_condition(&cmp(CompareOp::LtEq, 25000), &bag),
+            "\"25000\" <= 25000"
+        );
+        assert!(
+            !eval_condition(&cmp(CompareOp::Gt, 25000), &bag),
+            "\"25000\" > 25000 is false"
+        );
 
         // A genuinely non-numeric string still doesn't order-compare.
         bag.set("args.amount", "lots");
-        assert!(!eval_condition(&cmp(CompareOp::Gt, 10000), &bag), "\"lots\" > 10000 is false");
+        assert!(
+            !eval_condition(&cmp(CompareOp::Gt, 10000), &bag),
+            "\"lots\" > 10000 is false"
+        );
     }
 
     #[test]
@@ -3484,7 +3497,9 @@ mod tests {
         evaluate_effects(
             &[effect],
             bag,
-            &(Arc::new(FakePdp { decision: Decision::Allow }) as Arc<dyn PdpResolver>),
+            &(Arc::new(FakePdp {
+                decision: Decision::Allow,
+            }) as Arc<dyn PdpResolver>),
             &null_plugins(),
             &noop_delegations(),
             elicitations,
@@ -3502,7 +3517,10 @@ mod tests {
         // Resolved facts land in the bag for downstream rules / audit.
         assert_eq!(bag.get_string("elicitation.status"), Some("resolved"));
         assert_eq!(bag.get_string("elicitation.outcome"), Some("approved"));
-        assert_eq!(bag.get_string("elicitation.approver"), Some("manager@corp.com"));
+        assert_eq!(
+            bag.get_string("elicitation.approver"),
+            Some("manager@corp.com")
+        );
         assert_eq!(bag.get_string("elicitation.intent_id"), Some("auto-intent"));
     }
 
@@ -3535,11 +3553,14 @@ mod tests {
         match eval.decision {
             Decision::Deny { reason, .. } => {
                 assert!(
-                    reason.as_deref().unwrap_or("").contains("scope not satisfied"),
+                    reason
+                        .as_deref()
+                        .unwrap_or("")
+                        .contains("scope not satisfied"),
                     "got: {:?}",
                     reason
                 );
-            }
+            },
             d => panic!("expected scope Deny, got {:?}", d),
         }
     }
@@ -3550,10 +3571,13 @@ mod tests {
         let mut bag = AttributeBag::new();
         let eval = run_elicit(elicit_effect(None, None), &noop_elicitations(), &mut bag).await;
         match eval.decision {
-            Decision::Deny { reason, rule_source } => {
+            Decision::Deny {
+                reason,
+                rule_source,
+            } => {
                 assert!(reason.as_deref().unwrap_or("").contains("dispatch failed"));
                 assert_eq!(rule_source, "route.test.policy[0]");
-            }
+            },
             d => panic!("expected fail-closed Deny, got {:?}", d),
         }
     }
@@ -3580,8 +3604,11 @@ mod tests {
         let eval = run_elicit(elicit_effect(None, Some("continue")), &denier, &mut bag).await;
         match eval.decision {
             Decision::Deny { reason, .. } => {
-                assert!(reason.as_deref().unwrap_or("").contains("denied by approver"));
-            }
+                assert!(reason
+                    .as_deref()
+                    .unwrap_or("")
+                    .contains("denied by approver"));
+            },
             d => panic!("expected denial Deny, got {:?}", d),
         }
         assert_eq!(bag.get_string("elicitation.outcome"), Some("denied"));
@@ -3616,10 +3643,12 @@ mod tests {
         // the bundle still surfaces so the host suspends.
         let pending: Arc<dyn crate::step::ElicitationInvoker> = Arc::new(StillPendingElicitor);
         let mut bag = AttributeBag::new();
-        let eval =
-            run_elicit(elicit_effect(None, Some("continue")), &pending, &mut bag).await;
+        let eval = run_elicit(elicit_effect(None, Some("continue")), &pending, &mut bag).await;
         assert_eq!(eval.decision, Decision::Allow);
-        assert!(eval.pending.is_some(), "pending must survive on_error=continue");
+        assert!(
+            eval.pending.is_some(),
+            "pending must survive on_error=continue"
+        );
     }
 
     #[tokio::test]
@@ -3634,7 +3663,9 @@ mod tests {
         let eval = evaluate_effects(
             &effects,
             &mut bag,
-            &(Arc::new(FakePdp { decision: Decision::Allow }) as Arc<dyn PdpResolver>),
+            &(Arc::new(FakePdp {
+                decision: Decision::Allow,
+            }) as Arc<dyn PdpResolver>),
             &null_plugins(),
             &noop_delegations(),
             &pending,
@@ -3655,7 +3686,9 @@ mod tests {
         let eval = evaluate_effects(
             &[elicit_effect(None, None)],
             &mut bag,
-            &(Arc::new(FakePdp { decision: Decision::Allow }) as Arc<dyn PdpResolver>),
+            &(Arc::new(FakePdp {
+                decision: Decision::Allow,
+            }) as Arc<dyn PdpResolver>),
             &null_plugins(),
             &noop_delegations(),
             &auto_elicitations(),
@@ -3668,8 +3701,11 @@ mod tests {
                 let r = reason.as_deref().unwrap_or("");
                 assert!(r.contains("did not resolve"), "got: {r}");
                 assert!(r.contains("user.manager"), "got: {r}");
-            }
-            d => panic!("expected fail-closed Deny on unresolved `from`, got {:?}", d),
+            },
+            d => panic!(
+                "expected fail-closed Deny on unresolved `from`, got {:?}",
+                d
+            ),
         }
         // Nothing was dispatched, so no elicitation id was recorded.
         assert!(bag.get_string("elicitation.id").is_none());
@@ -3690,7 +3726,9 @@ mod tests {
         let eval = evaluate_effects(
             &[effect],
             &mut bag,
-            &(Arc::new(FakePdp { decision: Decision::Allow }) as Arc<dyn PdpResolver>),
+            &(Arc::new(FakePdp {
+                decision: Decision::Allow,
+            }) as Arc<dyn PdpResolver>),
             &null_plugins(),
             &noop_delegations(),
             &auto_elicitations(),
@@ -3700,7 +3738,10 @@ mod tests {
         .await;
         assert_eq!(eval.decision, Decision::Allow);
         // The literal identity flowed through as the resolved approver.
-        assert_eq!(bag.get_string("elicitation.approver"), Some("alice@corp.com"));
+        assert_eq!(
+            bag.get_string("elicitation.approver"),
+            Some("alice@corp.com")
+        );
     }
 
     #[test]

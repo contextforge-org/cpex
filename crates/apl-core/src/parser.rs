@@ -1198,10 +1198,10 @@ fn parse_elicit_call_args(
                          of `{verb}(...)`; don't pass it as a kwarg too"
                     ),
                 });
-            }
+            },
             _ => {
                 config_map.insert(serde_yaml::Value::String(key.to_string()), value);
-            }
+            },
         }
     }
 
@@ -4871,9 +4871,8 @@ routes:
     fn parse_confirm_prompt_aliases_purpose() {
         // The elicitation-hook doc uses `prompt` for confirm; it maps to
         // the same `purpose` field as `require_approval`.
-        let e = parse_elicit_str(
-            "confirm(inband-asker, from: user.sub, prompt: \"Drop the table?\")",
-        );
+        let e =
+            parse_elicit_str("confirm(inband-asker, from: user.sub, prompt: \"Drop the table?\")");
         assert_eq!(e.kind, ElicitKind::Confirm);
         assert_eq!(e.purpose.as_deref(), Some("Drop the table?"));
     }
@@ -4931,8 +4930,7 @@ routes:
 
     #[test]
     fn parse_missing_from_errors() {
-        let value =
-            serde_yaml::Value::String("require_approval(manager-approver)".into());
+        let value = serde_yaml::Value::String("require_approval(manager-approver)".into());
         let err = parse_step(&value, "test.policy[0]").expect_err("missing from");
         assert!(format!("{err}").contains("requires `from`"));
     }

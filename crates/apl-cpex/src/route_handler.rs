@@ -50,8 +50,8 @@ use apl_core::step::PdpResolver;
 
 use crate::cmf_invoker::CmfPluginInvoker;
 use crate::delegation_invoker::DelegationPluginInvoker;
-use crate::elicitation_invoker::ElicitationPluginInvoker;
 use crate::dispatch_plan::DispatchCache;
+use crate::elicitation_invoker::ElicitationPluginInvoker;
 use crate::pdp_router::PdpRouter;
 use crate::session_store::SessionStore;
 
@@ -863,8 +863,14 @@ mod phase5_tests {
     fn elicitation_id_extracted_from_header_case_insensitively() {
         let mut http = HttpExtension::default();
         http.set_request_header("x-policy-elicitation-id", "elic-42");
-        let ext = Extensions { http: Some(Arc::new(http)), ..Extensions::default() };
-        assert_eq!(elicitation_id_from_headers(&ext).as_deref(), Some("elic-42"));
+        let ext = Extensions {
+            http: Some(Arc::new(http)),
+            ..Extensions::default()
+        };
+        assert_eq!(
+            elicitation_id_from_headers(&ext).as_deref(),
+            Some("elic-42")
+        );
     }
 
     #[test]
@@ -874,7 +880,10 @@ mod phase5_tests {
         // Header present but empty → treated as absent.
         let mut http = HttpExtension::default();
         http.set_request_header(ELICITATION_ID_HEADER, "");
-        let ext = Extensions { http: Some(Arc::new(http)), ..Extensions::default() };
+        let ext = Extensions {
+            http: Some(Arc::new(http)),
+            ..Extensions::default()
+        };
         assert!(elicitation_id_from_headers(&ext).is_none());
     }
 }

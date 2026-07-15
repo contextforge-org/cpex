@@ -76,9 +76,10 @@ impl CibaApprover {
     /// validate endpoints (https unless `insecure_http`), resolve the
     /// client secret, and build the shared HTTP client.
     pub fn new(cfg: PluginConfig) -> Result<Self, Box<PluginError>> {
-        let raw = cfg.config.as_ref().ok_or_else(|| {
-            cfg_err(&cfg.name, "requires a `config:` block".to_string())
-        })?;
+        let raw = cfg
+            .config
+            .as_ref()
+            .ok_or_else(|| cfg_err(&cfg.name, "requires a `config:` block".to_string()))?;
         let typed: CibaConfig = serde_json::from_value(raw.clone())
             .map_err(|e| cfg_err(&cfg.name, format!("config parse failed: {e}")))?;
 
@@ -94,7 +95,10 @@ impl CibaApprover {
             }
         }
         if typed.client_id.trim().is_empty() {
-            return Err(cfg_err(&cfg.name, "client_id must be non-empty".to_string()));
+            return Err(cfg_err(
+                &cfg.name,
+                "client_id must be non-empty".to_string(),
+            ));
         }
 
         let secret = typed
@@ -167,14 +171,20 @@ impl CibaApprover {
         {
             Ok(r) => r,
             Err(e) if e.is_timeout() => {
-                return deny("elicitation.op_timeout", format!("CIBA backchannel POST timed out: {e}"));
-            }
+                return deny(
+                    "elicitation.op_timeout",
+                    format!("CIBA backchannel POST timed out: {e}"),
+                );
+            },
             Err(e) => {
                 return deny(
                     "elicitation.op_unreachable",
-                    format!("CIBA backchannel POST to {} failed: {e}", self.typed.backchannel_endpoint),
+                    format!(
+                        "CIBA backchannel POST to {} failed: {e}",
+                        self.typed.backchannel_endpoint
+                    ),
                 );
-            }
+            },
         };
 
         if !response.status().is_success() {
@@ -193,7 +203,7 @@ impl CibaApprover {
                     "elicitation.bad_response",
                     format!("CIBA backchannel response wasn't valid JSON: {e}"),
                 );
-            }
+            },
         };
 
         // The `auth_req_id` IS the elicitation id the agent echoes on
@@ -201,7 +211,10 @@ impl CibaApprover {
         let id = parsed.auth_req_id;
         self.store.put(
             &id,
-            Correlation { expected_approver: login_hint.to_string(), resolved_approver: None },
+            Correlation {
+                expected_approver: login_hint.to_string(),
+                resolved_approver: None,
+            },
         );
 
         let expires_at = parsed
@@ -221,7 +234,12 @@ impl CibaApprover {
     async fn do_check(&self, payload: &ElicitationPayload) -> PluginResult<ElicitationPayload> {
         let id = match payload.elicitation_id() {
             Some(id) => id,
-            None => return deny("elicitation.bad_request", "CIBA check requires an elicitation id"),
+            None => {
+                return deny(
+                    "elicitation.bad_request",
+                    "CIBA check requires an elicitation id",
+                )
+            },
         };
 
         // Cache short-circuit. The OP's `auth_req_id` is single-use: once a
@@ -251,14 +269,20 @@ impl CibaApprover {
         {
             Ok(r) => r,
             Err(e) if e.is_timeout() => {
-                return deny("elicitation.op_timeout", format!("CIBA token poll timed out: {e}"));
-            }
+                return deny(
+                    "elicitation.op_timeout",
+                    format!("CIBA token poll timed out: {e}"),
+                );
+            },
             Err(e) => {
                 return deny(
                     "elicitation.op_unreachable",
-                    format!("CIBA token poll to {} failed: {e}", self.typed.token_endpoint),
+                    format!(
+                        "CIBA token poll to {} failed: {e}",
+                        self.typed.token_endpoint
+                    ),
                 );
-            }
+            },
         };
 
         let status = response.status();
@@ -276,7 +300,7 @@ impl CibaApprover {
                         "elicitation.bad_response",
                         format!("CIBA token response wasn't valid JSON: {e}"),
                     );
-                }
+                },
             };
             // Prefer the id_token (carries user claims); fall back to the
             // access_token. Extract the approver claim and drop the token.
@@ -311,7 +335,7 @@ impl CibaApprover {
                     "elicitation.op_rejected",
                     format!("CIBA token poll failed ({status}): {body}"),
                 );
-            }
+            },
         };
 
         let mut out = payload.clone();
@@ -326,8 +350,11 @@ impl CibaApprover {
         let id = match payload.elicitation_id() {
             Some(id) => id,
             None => {
-                return deny("elicitation.bad_request", "CIBA validate requires an elicitation id")
-            }
+                return deny(
+                    "elicitation.bad_request",
+                    "CIBA validate requires an elicitation id",
+                )
+            },
         };
 
         let correlation = match self.store.get(id) {
@@ -349,7 +376,7 @@ impl CibaApprover {
                         self.typed.approver_claim
                     ),
                 )
-            }
+            },
         };
 
         let mut out = payload.clone();
@@ -546,7 +573,10 @@ mod tests {
         let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD
             .encode(serde_json::to_vec(&payload).unwrap());
         let token = format!("aaa.{b64}.bbb");
-        assert_eq!(decode_jwt_claim(&token, "preferred_username").as_deref(), Some("alice"));
+        assert_eq!(
+            decode_jwt_claim(&token, "preferred_username").as_deref(),
+            Some("alice")
+        );
         assert_eq!(decode_jwt_claim(&token, "sub").as_deref(), Some("u-1"));
         assert!(decode_jwt_claim(&token, "missing").is_none());
         assert!(decode_jwt_claim("not-a-jwt", "sub").is_none());

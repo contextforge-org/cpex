@@ -69,7 +69,10 @@ pub(crate) enum Step {
 
     /// `taint(label[, scope])` — apply a taint label. Always succeeds;
     /// never produces a Deny. SessionStore dispatch happens in apl-cpex.
-    Taint { label: String, scopes: Vec<TaintScope> },
+    Taint {
+        label: String,
+        scopes: Vec<TaintScope>,
+    },
 
     /// `require_approval(...)` / `confirm(...)` / … — dispatch an
     /// elicitation to a human and resume once resolved. The elicitation

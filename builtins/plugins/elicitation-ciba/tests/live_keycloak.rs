@@ -83,17 +83,24 @@ async fn live_dispatch_then_pending() {
         .with_purpose("Phase 0 verification — please ignore");
     let mut ctx = PluginContext::new();
     let out = approver.handle(&dispatch, &ext, &mut ctx).await;
-    assert!(out.continue_processing, "dispatch denied: {:?}", out.violation);
+    assert!(
+        out.continue_processing,
+        "dispatch denied: {:?}",
+        out.violation
+    );
     let dispatched = out.modified_payload.expect("dispatch payload");
-    let id = dispatched.id.clone().expect("Keycloak returned an auth_req_id");
+    let id = dispatched
+        .id
+        .clone()
+        .expect("Keycloak returned an auth_req_id");
     assert_eq!(dispatched.status, Some(ElicitationStatusKind::Pending));
     assert_eq!(dispatched.approver.as_deref(), Some(login_hint.as_str()));
     eprintln!("dispatch OK — auth_req_id = {id}");
 
     // 2. check → token poll before approval (runbook §5.2). Without a
     //    completed decoupled approval this must report Pending.
-    let check = ElicitationPayload::new(ElicitationOp::Check, "approval", "")
-        .with_elicitation_id(&id);
+    let check =
+        ElicitationPayload::new(ElicitationOp::Check, "approval", "").with_elicitation_id(&id);
     let mut ctx = PluginContext::new();
     let out = approver.handle(&check, &ext, &mut ctx).await;
     assert!(out.continue_processing, "check denied: {:?}", out.violation);

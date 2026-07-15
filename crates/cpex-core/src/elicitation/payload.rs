@@ -188,11 +188,7 @@ impl ElicitationPayload {
     /// Construct a payload for the given operation + kind + resolved
     /// approver. Optional input slots are set via the `.with_*` builders;
     /// output fields start empty and accumulate as the handler runs.
-    pub fn new(
-        operation: ElicitationOp,
-        kind: impl Into<String>,
-        from: impl Into<String>,
-    ) -> Self {
+    pub fn new(operation: ElicitationOp, kind: impl Into<String>, from: impl Into<String>) -> Self {
         Self {
             operation,
             elicitation_id: None,

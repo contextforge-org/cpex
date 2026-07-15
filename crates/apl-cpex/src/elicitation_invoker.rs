@@ -205,7 +205,7 @@ impl ElicitationInvoker for ElicitationPluginInvoker {
                     Some(ElicitationOutcomeKind::Denied) | None => ElicitationOutcome::Denied,
                 };
                 Ok(ElicitationStatus::Resolved { outcome })
-            }
+            },
         }
     }
 
