@@ -152,9 +152,21 @@ async def process_task(task_data, tp: TaskProcessor):
         plugin_context = PluginContext(
             state=context.get("state"), global_context=context.get("global_context"), metadata=context.get("metadata")
         )
+        # The client serializes the payload with model_dump(mode="json") before
+        # sending it over stdin, so it arrives here as a plain dict. Reconstruct
+        # the typed PluginPayload (e.g. ToolPreInvokePayload) before invoking the
+        # plugin — otherwise the hook receives a dict and attribute access such as
+        # payload.args raises AttributeError. This mirrors the response path, which
+        # rebuilds results via json_to_result on the client side.
+        raw_payload = task_data.get("payload")
+        payload = (
+            tp.plugin_ref.plugin.json_to_payload(hook_type, raw_payload)
+            if raw_payload is not None
+            else None
+        )
         result = await tp.executor.execute_plugin(
             hook_ref=tp.get_hook_ref(hook_type),
-            payload=task_data.get("payload"),
+            payload=payload,
             local_context=plugin_context,
             violations_as_exceptions=False,
         )

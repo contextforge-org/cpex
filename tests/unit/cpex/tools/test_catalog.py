@@ -1641,15 +1641,20 @@ class TestPluginCatalogInstallFolderViaPipIsolated:
         # Mock the download and initialization
         with patch.object(catalog, '_download_monorepo_folder_to_temp') as mock_download:
             mock_download.return_value = tmp_path / "package"
-            
-            with patch.object(catalog, '_initialize_isolated_venv') as mock_init:
+
+            with (
+                patch.object(catalog, '_initialize_isolated_venv') as mock_init,
+                patch.object(catalog, '_install_package_into_venv') as mock_venv_install,
+            ):
                 mock_init.return_value = tmp_path / "venv"
-                
+
                 result = catalog.install_folder_via_pip(manifest)
-                
+
                 assert result == tmp_path / "venv"
                 mock_download.assert_called_once()
                 mock_init.assert_called_once()
+                # Plugin package is installed into the venv from the monorepo source (U4).
+                mock_venv_install.assert_called_once()
 
 
 
@@ -1850,16 +1855,21 @@ class TestPluginCatalogInstallFromPypiIsolated:
         
         with patch.object(catalog, '_download_package_to_temp') as mock_download:
             mock_download.return_value = extract_dir
-            
-            with patch.object(catalog, '_initialize_isolated_venv') as mock_init:
+
+            with (
+                patch.object(catalog, '_initialize_isolated_venv') as mock_init,
+                patch.object(catalog, '_install_package_into_venv') as mock_venv_install,
+            ):
                 mock_init.return_value = tmp_path / "venv"
-                
+
                 with patch.object(catalog, '_persist_manifest'):
                     manifest, plugin_path = catalog.install_from_pypi("test_plugin")
-                    
+
                     assert manifest.kind == "isolated_venv"
                     assert plugin_path == tmp_path / "venv"
                     mock_init.assert_called_once()
+                    # Plugin package is installed into the venv from PyPI (U4).
+                    mock_venv_install.assert_called_once()
 
 
 
@@ -3620,6 +3630,308 @@ class TestPluginCatalogVerMethod:
         catalog = PluginCatalog()
         v_no_epoch = catalog._ver("2.0.0")
         v_with_epoch = catalog._ver("1!1.0.0")
-        
+
         # Epoch takes precedence
         assert v_with_epoch > v_no_epoch
+
+
+class TestClassifyPluginKind:
+    """Tests for classify_plugin_kind (U1: FQN kind detection)."""
+
+    @pytest.mark.parametrize(
+        "kind",
+        ["builtin", "native", "wasm", "external", "isolated_venv", "PDP"],
+    )
+    def test_known_kinds_classify_as_known(self, kind):
+        """Each recognized kind classifies as KIND_KNOWN."""
+        from cpex.tools.catalog import KIND_KNOWN, classify_plugin_kind
+
+        assert classify_plugin_kind(kind) == KIND_KNOWN
+
+    def test_fqn_class_path_classifies_as_fqn(self):
+        """A dotted class path that is not a known kind is an FQN to convert."""
+        from cpex.tools.catalog import KIND_FQN, classify_plugin_kind
+
+        assert classify_plugin_kind("cpex_pii_filter.pii_filter.PIIFilterPlugin") == KIND_FQN
+
+    def test_single_segment_rejected(self):
+        """A bare token with no dots is not a class path."""
+        from cpex.tools.catalog import KIND_REJECT, classify_plugin_kind
+
+        assert classify_plugin_kind("PIIFilterPlugin") == KIND_REJECT
+
+    def test_typo_kind_rejected(self):
+        """A misspelled known kind is rejected, not silently converted."""
+        from cpex.tools.catalog import KIND_REJECT, classify_plugin_kind
+
+        assert classify_plugin_kind("isolate_venv") == KIND_REJECT
+
+    def test_lowercase_final_segment_rejected(self):
+        """A dotted path whose final segment is not class-shaped is rejected."""
+        from cpex.tools.catalog import KIND_REJECT, classify_plugin_kind
+
+        assert classify_plugin_kind("a.b.c") == KIND_REJECT
+
+    @pytest.mark.parametrize("kind", [None, "", "   "])
+    def test_empty_or_whitespace_rejected(self, kind):
+        """Missing or blank kind is rejected."""
+        from cpex.tools.catalog import KIND_REJECT, classify_plugin_kind
+
+        assert classify_plugin_kind(kind) == KIND_REJECT
+
+    def test_invalid_identifier_segment_rejected(self):
+        """A dotted path with a non-identifier segment is rejected."""
+        from cpex.tools.catalog import KIND_REJECT, classify_plugin_kind
+
+        assert classify_plugin_kind("pkg.1module.ClassName") == KIND_REJECT
+
+    def test_supported_kinds_message_names_all_kinds(self):
+        """The rejection message names every supported kind."""
+        from cpex.tools.catalog import supported_kinds_message
+
+        msg = supported_kinds_message()
+        for kind in ["builtin", "native", "wasm", "external", "isolated_venv", "PDP"]:
+            assert kind in msg
+
+
+class TestConvertFqnKind:
+    """Tests for convert_fqn_kind_in_place and normalize integration (U2)."""
+
+    def test_fqn_manifest_converted(self):
+        """A bare-FQN kind moves into class_name and kind becomes isolated_venv."""
+        from cpex.tools.catalog import convert_fqn_kind_in_place
+
+        data = {
+            "name": "cpex-pii-filter",
+            "kind": "cpex_pii_filter.pii_filter.PIIFilterPlugin",
+            "default_config": {"detect_ssn": True},
+        }
+        convert_fqn_kind_in_place(data)
+
+        assert data["kind"] == "isolated_venv"
+        assert data["default_config"]["class_name"] == "cpex_pii_filter.pii_filter.PIIFilterPlugin"
+        # Other config fields preserved.
+        assert data["default_config"]["detect_ssn"] is True
+
+    def test_fqn_manifest_without_default_config(self):
+        """Conversion creates default_config when absent."""
+        from cpex.tools.catalog import convert_fqn_kind_in_place
+
+        data = {"name": "p", "kind": "pkg.mod.MyPlugin"}
+        convert_fqn_kind_in_place(data)
+
+        assert data["kind"] == "isolated_venv"
+        assert data["default_config"]["class_name"] == "pkg.mod.MyPlugin"
+
+    def test_already_isolated_venv_untouched(self):
+        """An isolated_venv manifest with class_name is idempotent."""
+        from cpex.tools.catalog import convert_fqn_kind_in_place
+
+        data = {
+            "name": "p",
+            "kind": "isolated_venv",
+            "default_config": {"class_name": "pkg.mod.Plugin", "requirements_file": "requirements.txt"},
+        }
+        convert_fqn_kind_in_place(dict(data))  # copy to be safe
+        result = convert_fqn_kind_in_place(data)
+
+        assert result["kind"] == "isolated_venv"
+        assert result["default_config"]["class_name"] == "pkg.mod.Plugin"
+
+    def test_explicit_class_name_wins_over_fqn(self):
+        """When both an FQN kind and class_name exist, keep explicit class_name."""
+        from cpex.tools.catalog import convert_fqn_kind_in_place
+
+        data = {
+            "name": "p",
+            "kind": "pkg.mod.FromKind",
+            "default_config": {"class_name": "pkg.mod.Explicit"},
+        }
+        convert_fqn_kind_in_place(data)
+
+        assert data["kind"] == "isolated_venv"
+        assert data["default_config"]["class_name"] == "pkg.mod.Explicit"
+
+    def test_unknown_non_fqn_kind_raises(self):
+        """A non-FQN unknown kind raises with the supported-kinds message."""
+        from cpex.tools.catalog import convert_fqn_kind_in_place
+
+        data = {"name": "p", "kind": "isolate_venv"}
+        with pytest.raises(ValueError, match="isolated_venv"):
+            convert_fqn_kind_in_place(data)
+
+    def test_normalize_converts_fqn_and_normalizes_default_configs(self, mock_github_env):
+        """_normalize_manifest_data converts FQN after normalizing legacy default_configs."""
+        catalog = PluginCatalog()
+        manifest_data = {
+            "kind": "cpex_pii_filter.pii_filter.PIIFilterPlugin",
+            "description": "PII filter",
+            "author": "ContextForge",
+            "version": "0.3.6",
+            "available_hooks": ["tool_pre_invoke"],
+            "default_configs": {"detect_ssn": True},  # legacy plural key
+        }
+        manifest = catalog._normalize_manifest_data(manifest_data, "cpex-pii-filter", ">=0.3.0")
+
+        assert manifest.kind == "isolated_venv"
+        assert manifest.default_config["class_name"] == "cpex_pii_filter.pii_filter.PIIFilterPlugin"
+        assert manifest.default_config["detect_ssn"] is True
+
+    def test_normalize_rejects_typo_kind(self, mock_github_env):
+        """_normalize_manifest_data surfaces the rejection for a typo'd kind."""
+        catalog = PluginCatalog()
+        manifest_data = {
+            "kind": "isolate_venv",
+            "description": "d",
+            "author": "a",
+            "version": "1.0.0",
+            "available_hooks": [],
+            "default_config": {},
+        }
+        with pytest.raises(RuntimeError, match="isolated_venv"):
+            catalog._normalize_manifest_data(manifest_data, "p", None)
+
+    def test_transform_leaves_unrecognized_kind_unconverted(self, mock_github_env):
+        """Catalog scan must not drop a manifest over an unrecognized kind (Finding #2).
+
+        _transform_manifest_data is used during catalog population; a reject there
+        should leave the kind unconverted rather than raising and silently dropping
+        the plugin. The install path still raises (covered above).
+        """
+        catalog = PluginCatalog()
+        content = {"kind": "some_odd_token", "default_configs": {}}
+        result = catalog._transform_manifest_data(
+            content, name="odd", member=None, repo_url=httpx.URL("https://github.com/org/repo")
+        )
+        # Kind is left as-is; no exception, manifest not dropped.
+        assert result["kind"] == "some_odd_token"
+
+
+class TestInstallPackageIntoVenv:
+    """Tests for installing the plugin package into the isolated venv (U4)."""
+
+    def _isolated_manifest_file(self, tmp_path, requirements_file=None):
+        extract_dir = tmp_path / "extracted"
+        extract_dir.mkdir(exist_ok=True)
+        package_dir = extract_dir / "test_package"
+        package_dir.mkdir(exist_ok=True)
+        default_config = {"class_name": "test_package.mod.Plugin"}
+        if requirements_file:
+            default_config["requirements_file"] = requirements_file
+        manifest_data = {
+            "name": "test_package",
+            "version": "1.0.0",
+            "kind": "isolated_venv",
+            "description": "Test",
+            "author": "Test Author",
+            "tags": ["test"],
+            "available_hooks": ["tool_pre_invoke"],
+            "default_config": default_config,
+        }
+        manifest_file = package_dir / "plugin-manifest.yaml"
+        manifest_file.write_text(yaml.safe_dump(manifest_data))
+        return extract_dir, manifest_file
+
+    def test_helper_builds_pip_install_command(self, tmp_path, mock_github_env):
+        """_install_package_into_venv runs pip install in the venv python with the given args."""
+        catalog = PluginCatalog()
+        plugin_path = tmp_path / "plug"
+        with (
+            patch.object(PluginCatalog, "_get_venv_python_executable", return_value="/venv/bin/python"),
+            patch("cpex.tools.catalog.subprocess.run") as mock_run,
+        ):
+            catalog._install_package_into_venv(plugin_path, ["some-pkg>=1.0"])
+
+        args = mock_run.call_args[0][0]
+        assert args == ["/venv/bin/python", "-m", "pip", "install", "some-pkg>=1.0"]
+
+    def test_pypi_installs_package_into_venv_with_constraint(self, tmp_path, mock_github_env):
+        """PyPI isolated install installs the package into the venv with its version constraint."""
+        extract_dir, manifest_file = self._isolated_manifest_file(tmp_path)
+        with (
+            patch("cpex.tools.catalog.PluginCatalog._download_package_to_temp", return_value=extract_dir),
+            patch("cpex.tools.catalog.PluginCatalog._find_manifest_in_extracted_package", return_value=manifest_file),
+            patch("cpex.tools.catalog.PluginCatalog._handle_plugin_installation", return_value=tmp_path / "plug"),
+            patch("cpex.tools.catalog.PluginCatalog._install_package_into_venv") as mock_venv_install,
+            patch("cpex.tools.catalog.PluginCatalog._finalize_plugin_installation", return_value=tmp_path / "plug"),
+            patch("shutil.rmtree"),
+        ):
+            catalog = PluginCatalog()
+            catalog.catalog_folder = str(tmp_path / "catalog")
+            catalog.install_from_pypi("test_package", version_constraint=">=0.2.0")
+
+        mock_venv_install.assert_called_once()
+        pth, pip_args = mock_venv_install.call_args[0]
+        assert pip_args == ["test_package>=0.2.0"]
+
+    def test_test_pypi_uses_test_index(self, tmp_path, mock_github_env):
+        """test-pypi isolated install passes the test index URL."""
+        extract_dir, manifest_file = self._isolated_manifest_file(tmp_path)
+        with (
+            patch("cpex.tools.catalog.PluginCatalog._download_package_to_temp", return_value=extract_dir),
+            patch("cpex.tools.catalog.PluginCatalog._find_manifest_in_extracted_package", return_value=manifest_file),
+            patch("cpex.tools.catalog.PluginCatalog._handle_plugin_installation", return_value=tmp_path / "plug"),
+            patch("cpex.tools.catalog.PluginCatalog._install_package_into_venv") as mock_venv_install,
+            patch("cpex.tools.catalog.PluginCatalog._finalize_plugin_installation", return_value=tmp_path / "plug"),
+            patch("shutil.rmtree"),
+        ):
+            catalog = PluginCatalog()
+            catalog.catalog_folder = str(tmp_path / "catalog")
+            catalog.install_from_pypi("test_package", use_pytest=True)
+
+        _pth, pip_args = mock_venv_install.call_args[0]
+        assert "--index-url" in pip_args
+        assert "https://test.pypi.org/simple/" in pip_args
+        assert "test_package" in pip_args
+
+    def test_persist_manifest_to_plugin_dir(self, tmp_path, mock_github_env):
+        """The converted manifest is written under plugins/<class_root>/ (U5, R3)."""
+        catalog = PluginCatalog()
+        catalog.plugin_folder = str(tmp_path / "plugins")
+        manifest = create_test_manifest(
+            name="cpex-pii-filter",
+            kind="isolated_venv",
+            default_config={"class_name": "cpex_pii_filter.pii_filter.PIIFilterPlugin"},
+        )
+
+        result = catalog._persist_manifest_to_plugin_dir(manifest)
+
+        expected = Path(catalog.plugin_folder) / "cpex_pii_filter" / "plugin-manifest.yaml"
+        assert result == expected
+        assert expected.exists()
+        written = yaml.safe_load(expected.read_text())
+        assert written["kind"] == "isolated_venv"
+        assert written["default_config"]["class_name"] == "cpex_pii_filter.pii_filter.PIIFilterPlugin"
+
+    def test_persist_manifest_to_plugin_dir_skips_non_isolated(self, tmp_path, mock_github_env):
+        """Non-isolated plugins are not persisted to a plugin dir."""
+        catalog = PluginCatalog()
+        catalog.plugin_folder = str(tmp_path / "plugins")
+        manifest = create_test_manifest(name="p", kind="native")
+
+        assert catalog._persist_manifest_to_plugin_dir(manifest) is None
+
+    def test_monorepo_installs_package_into_venv_from_source(self, tmp_path, mock_github_env):
+        """Monorepo isolated install installs the subdirectory source into the venv."""
+        from cpex.framework.models import Monorepo
+
+        catalog = PluginCatalog()
+        manifest = create_test_manifest(
+            name="test_package",
+            kind="isolated_venv",
+            default_config={"class_name": "test_package.mod.Plugin"},
+        )
+        manifest.monorepo = Monorepo(
+            package_source="https://github.com/org/repo#subdirectory=plugins/test_package",
+            repo_url="https://github.com/org/repo",
+            package_folder="plugins/test_package",
+        )
+        with (
+            patch("cpex.tools.catalog.PluginCatalog._download_monorepo_folder_to_temp", return_value=tmp_path / "pkg"),
+            patch("cpex.tools.catalog.PluginCatalog._initialize_isolated_venv", return_value=tmp_path / "plug"),
+            patch("cpex.tools.catalog.PluginCatalog._install_package_into_venv") as mock_venv_install,
+        ):
+            catalog.install_folder_via_pip(manifest)
+
+        _pth, pip_args = mock_venv_install.call_args[0]
+        assert pip_args == ["git+https://github.com/org/repo#subdirectory=plugins/test_package"]

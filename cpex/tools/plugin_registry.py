@@ -125,6 +125,20 @@ class PluginRegistry:
                 return True
         return False
 
+    def get(self, plugin_name: str) -> InstalledPluginInfo | None:
+        """Return the installed plugin record by name, or None if not installed.
+
+        Args:
+            plugin_name: The name of the plugin to look up.
+
+        Returns:
+            The InstalledPluginInfo for the plugin, or None.
+        """
+        for plugin in self.registry.plugins:
+            if plugin.name == plugin_name:
+                return plugin
+        return None
+
     def remove(self, plugin_name: str) -> bool:
         """
         Remove a plugin from the registry.

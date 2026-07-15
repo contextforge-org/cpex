@@ -39,6 +39,8 @@ from cpex.tools.cli import (
     update_plugins_config_yaml,
     remove_from_plugins_config_yaml,
     uninstall,
+    _plugin_name_from_source,
+    _should_skip_reinstall,
 )
 from cpex.tools.plugin_registry import PluginRegistry
 from cpex.framework.models import PluginManifest, Monorepo, Config, PluginConfig, PluginMode, PyPiRepo
@@ -2026,6 +2028,85 @@ class TestUninstallManifestNotFound:
         mock_catalog_instance.uninstall_package.assert_not_called()
         mock_console.print.assert_any_call(":x: Plugin test_plugin not found in catalog.")
 
+
+def _seed_registry(registry_dir, name, version, kind="isolated_venv", install_type="pypi"):
+    """Write an installed-plugins.json with one plugin for U6 tests."""
+    registry_file = registry_dir / "installed-plugins.json"
+    registry_file.write_text(
+        json.dumps(
+            {
+                "plugins": [
+                    {
+                        "name": name,
+                        "kind": kind,
+                        "version": version,
+                        "installation_type": install_type,
+                        "installation_path": "/path/to/plugin",
+                        "installed_at": "2026-01-01T00:00:00.000000Z",
+                        "installed_by": "test_user",
+                    }
+                ]
+            }
+        )
+    )
+    return registry_file
+
+
+class TestPluginNameFromSource:
+    """Tests for _plugin_name_from_source (U6)."""
+
+    def test_pypi_source_strips_constraint(self):
+        assert _plugin_name_from_source("cpex-test-plugin@>=0.2.0", "pypi") == "cpex-test-plugin"
+
+    def test_test_pypi_source_strips_constraint(self):
+        assert _plugin_name_from_source("cpex-test-plugin@>=0.2.0", "test-pypi") == "cpex-test-plugin"
+
+    def test_git_source_takes_name_before_at(self):
+        assert (
+            _plugin_name_from_source("cpex-test-plugin @ git+https://github.com/o/r@main", "git")
+            == "cpex-test-plugin"
+        )
+
+    def test_bare_name_passthrough(self):
+        assert _plugin_name_from_source("cpex-pii-filter", "monorepo") == "cpex-pii-filter"
+
+
+class TestShouldSkipReinstall:
+    """Tests for _should_skip_reinstall (U6: repeat-install version compare)."""
+
+    def test_not_installed_proceeds(self, temp_registry_dir):
+        """A plugin not in the registry always proceeds to install."""
+        catalog = Mock()
+        catalog.find.return_value = None
+        assert _should_skip_reinstall("new-plugin", "monorepo", catalog) is False
+
+    def test_same_version_skips(self, temp_registry_dir):
+        """Same installed and catalog version -> skip (no-op)."""
+        _seed_registry(temp_registry_dir, "cpex-test-plugin", "0.2.0")
+        catalog = Mock()
+        catalog.find.return_value = create_test_manifest(name="cpex-test-plugin", version="0.2.0")
+        assert _should_skip_reinstall("cpex-test-plugin", "monorepo", catalog) is True
+
+    def test_different_version_proceeds(self, temp_registry_dir):
+        """Catalog version newer than installed -> proceed (upgrade)."""
+        _seed_registry(temp_registry_dir, "cpex-test-plugin", "0.2.0")
+        catalog = Mock()
+        catalog.find.return_value = create_test_manifest(name="cpex-test-plugin", version="0.3.0")
+        assert _should_skip_reinstall("cpex-test-plugin", "monorepo", catalog) is False
+
+    def test_unresolvable_target_proceeds(self, temp_registry_dir):
+        """When the catalog has no record (e.g. pypi pre-update), proceed."""
+        _seed_registry(temp_registry_dir, "cpex-test-plugin", "0.2.0")
+        catalog = Mock()
+        catalog.find.return_value = None
+        assert _should_skip_reinstall("cpex-test-plugin@>=0.2.0", "pypi", catalog) is False
+
+    def test_version_compare_is_kind_agnostic(self, temp_registry_dir):
+        """A native (non-converted) plugin at the same version is also skipped."""
+        _seed_registry(temp_registry_dir, "native-plugin", "1.0.0", kind="native")
+        catalog = Mock()
+        catalog.find.return_value = create_test_manifest(name="native-plugin", version="1.0.0", kind="native")
+        assert _should_skip_reinstall("native-plugin", "monorepo", catalog) is True
 
 
 # Made with Bob

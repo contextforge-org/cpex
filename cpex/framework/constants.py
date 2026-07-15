@@ -12,8 +12,26 @@ This module stores a collection of plugin constants used throughout the framewor
 
 # Model constants.
 # Specialized plugin types.
+NATIVE_PLUGIN_TYPE = "native"
+BUILTIN_PLUGIN_TYPE = "builtin"
+WASM_PLUGIN_TYPE = "wasm"
 EXTERNAL_PLUGIN_TYPE = "external"
 ISOLATED_VENV_PLUGIN_TYPE = "isolated_venv"
+PDP_PLUGIN_TYPE = "PDP"
+
+# The set of manifest `kind` values the installer recognizes as-is. Any `kind`
+# outside this set is a candidate for FQN auto-conversion to isolated_venv
+# (see cpex.tools.catalog.classify_plugin_kind).
+KNOWN_PLUGIN_KINDS = frozenset(
+    {
+        BUILTIN_PLUGIN_TYPE,
+        NATIVE_PLUGIN_TYPE,
+        WASM_PLUGIN_TYPE,
+        EXTERNAL_PLUGIN_TYPE,
+        ISOLATED_VENV_PLUGIN_TYPE,
+        PDP_PLUGIN_TYPE,
+    }
+)
 
 
 # MCP related constants.

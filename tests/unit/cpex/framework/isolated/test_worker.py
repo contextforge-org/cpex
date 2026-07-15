@@ -175,6 +175,102 @@ class TestWorkerFunctions:
         self.cleanup_mock_plugin_dirs()
 
     @pytest.mark.asyncio
+    @patch("cpex.framework.isolated.worker.import_module")
+    async def test_process_task_deserializes_payload_to_typed_object(self, mock_import, mock_plugin_dirs):
+        """Regression: the worker must reconstruct the typed payload before invoking the plugin.
+
+        The client serializes the payload with ``model_dump(mode="json")``, so it
+        arrives at the worker as a plain dict. Previously the worker passed that
+        dict straight to the plugin hook, which then failed with
+        ``AttributeError("'dict' object has no attribute 'args'")`` the moment the
+        hook touched ``payload.args``. This test drives a real Plugin subclass
+        through ``process_task`` and asserts the hook receives a genuine
+        ``ToolPreInvokePayload`` with a working ``.args`` attribute.
+        """
+        from cpex.framework.base import Plugin
+        from cpex.framework.hooks.tools import ToolPreInvokePayload, ToolPreInvokeResult
+
+        received = {}
+
+        class RealTypedPlugin(Plugin):
+            """Minimal real plugin that asserts payload typing at runtime."""
+
+            async def tool_pre_invoke(self, payload, context, extensions=None):
+                # Would raise AttributeError before the fix, when payload is a dict.
+                received["type"] = type(payload)
+                received["args"] = payload.args
+                received["name"] = payload.name
+                return ToolPreInvokeResult(continue_processing=True)
+
+        mock_module = MagicMock()
+        mock_module.RealTypedPlugin = RealTypedPlugin
+        mock_import.return_value = mock_module
+
+        config_dict = {"name": "typed_plugin", "kind": "isolated_venv", "config": {}}
+        task_data = {
+            "task_type": "load_and_run_hook",
+            "config": json.dumps(config_dict),
+            "plugin_dirs": mock_plugin_dirs,
+            "class_name": "typed_plugin.RealTypedPlugin",
+            "hook_type": "tool_pre_invoke",
+            # Payload exactly as the client sends it: model_dump(mode="json") output.
+            "payload": {"name": "web_search", "args": {"query": "CPEX framework"}},
+            "context": {"state": {}, "global_context": {"request_id": "req-123"}, "metadata": {}},
+        }
+        tp = TaskProcessor()
+        result = await process_task(task_data, tp)
+
+        assert result is not None
+        assert result.continue_processing is True
+        # The hook must have received a typed payload, not a dict.
+        assert received["type"] is ToolPreInvokePayload
+        assert received["name"] == "web_search"
+        assert received["args"] == {"query": "CPEX framework"}
+        self.cleanup_mock_plugin_dirs()
+
+    @pytest.mark.asyncio
+    @patch("cpex.framework.isolated.worker.import_module")
+    @patch("cpex.framework.isolated.worker.PluginExecutor")
+    async def test_process_task_none_payload_passes_through(
+        self, mock_executor_class, mock_import, mock_plugin_dirs
+    ):
+        """A None payload must be forwarded as None, not run through json_to_payload."""
+        mock_plugin_instance = AsyncMock()
+        mock_plugin_instance.initialize = AsyncMock()
+        mock_plugin_instance.json_to_payload = MagicMock()
+        mock_plugin_class = MagicMock(return_value=mock_plugin_instance)
+
+        mock_module = MagicMock()
+        mock_module.TestPlugin = mock_plugin_class
+        mock_import.return_value = mock_module
+
+        mock_executor = MagicMock()
+        mock_result = MagicMock()
+        mock_executor.execute_plugin = AsyncMock(return_value=mock_result)
+        mock_executor_class.return_value = mock_executor
+
+        config_dict = {"name": "test_plugin", "kind": "isolated_venv", "config": {}}
+        task_data = {
+            "task_type": "load_and_run_hook",
+            "config": json.dumps(config_dict),
+            "plugin_dirs": mock_plugin_dirs,
+            "class_name": "test_plugin.TestPlugin",
+            "hook_type": "tool_pre_invoke",
+            "payload": None,
+            "context": {"state": {}, "global_context": {"request_id": "req-123"}, "metadata": {}},
+        }
+        tp = TaskProcessor()
+        result = await process_task(task_data, tp)
+
+        assert result is not None
+        # json_to_payload must not be invoked for a None payload.
+        mock_plugin_instance.json_to_payload.assert_not_called()
+        # execute_plugin must have been called with payload=None.
+        _, call_kwargs = mock_executor.execute_plugin.call_args
+        assert call_kwargs["payload"] is None
+        self.cleanup_mock_plugin_dirs()
+
+    @pytest.mark.asyncio
     async def test_process_task_unknown_task_type(self):
         """Test processing task with unknown task type."""
         task_data = {"task_type": "unknown_type"}

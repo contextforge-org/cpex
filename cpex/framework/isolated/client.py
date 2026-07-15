@@ -51,25 +51,51 @@ class IsolatedVenvPlugin(Plugin):
         self.cache_dir: Path = cache_root / ".cpex" / "venv_cache"
         self.cache_dir.mkdir(parents=True, exist_ok=True)
 
-    def _compute_requirements_hash(self, requirements_file: str) -> str:
+    def _compute_requirements_hash(self, requirements_file: Optional[str]) -> str:
         """Compute SHA256 hash of requirements file content.
 
         Args:
-            requirements_file: Path to the requirements file
+            requirements_file: Path to the requirements file, or None when the
+                plugin has no requirements file.
 
         Returns:
-            Hexadecimal hash string
+            Hexadecimal hash string. An absent or non-existent file hashes to
+            the empty-content digest.
         """
         hasher = hashlib.sha256()
-        req_path = Path(requirements_file)
 
-        if req_path.exists():
-            with open(req_path, "rb") as f:
-                hasher.update(f.read())
+        if requirements_file is not None:
+            req_path = Path(requirements_file)
+            if req_path.exists():
+                with open(req_path, "rb") as f:
+                    hasher.update(f.read())
+            else:
+                # If no requirements file, use empty hash
+                hasher.update(b"")
         else:
-            # If no requirements file, use empty hash
             hasher.update(b"")
 
+        return hasher.hexdigest()
+
+    def _manifest_path(self) -> Path:
+        """Path to the plugin's persisted manifest under its plugin directory."""
+        return self.plugin_path / "plugin-manifest.yaml"
+
+    def _compute_manifest_hash(self) -> str:
+        """Compute SHA256 hash of the persisted plugin-manifest.yaml.
+
+        Returns the empty-content digest when no manifest file is present. This
+        gives plugins without a self-referencing requirements file a stable
+        change signal for cache invalidation (U5): a version bump or any edit to
+        the persisted manifest changes the hash and forces a venv reinstall.
+        """
+        hasher = hashlib.sha256()
+        manifest_path = self._manifest_path()
+        if manifest_path.exists():
+            with open(manifest_path, "rb") as f:
+                hasher.update(f.read())
+        else:
+            hasher.update(b"")
         return hasher.hexdigest()
 
     def _get_cache_metadata_path(self, venv_path: str) -> Path:
@@ -84,12 +110,14 @@ class IsolatedVenvPlugin(Plugin):
         venv_name = Path(venv_path).name
         return self.cache_dir / f"{venv_name}_metadata.json"
 
-    def _is_venv_cache_valid(self, venv_path: str, requirements_file: str) -> bool:
-        """Check if cached venv is valid by comparing requirements hash.
+    def _is_venv_cache_valid(self, venv_path: str, requirements_file: Optional[str]) -> bool:
+        """Check if cached venv is valid by comparing requirements + manifest signals.
 
         Args:
             venv_path: Path to the virtual environment
-            requirements_file: Path to the requirements file
+            requirements_file: Path to the requirements file, or None when the
+                plugin has no requirements file (manifest version+hash is then
+                the sole change signal).
 
         Returns:
             True if cache is valid, False otherwise
@@ -115,10 +143,31 @@ class IsolatedVenvPlugin(Plugin):
             # Compute current requirements hash
             current_hash = self._compute_requirements_hash(requirements_file)
 
-            # Compare hashes
+            # Compare requirements hash
             cached_hash = metadata.get("requirements_hash")
             if cached_hash != current_hash:
                 logger.info("Requirements changed. Cached hash: %s, Current hash: %s", cached_hash, current_hash)
+                return False
+
+            # Compare manifest version + hash (U5). Either changing invalidates
+            # the cache — this is the sole change signal for plugins with no
+            # requirements file (whose requirements hash is a constant).
+            current_version = self.config.version
+            cached_version = metadata.get("manifest_version")
+            if cached_version != current_version:
+                logger.info(
+                    "Manifest version changed. Cached: %s, Current: %s", cached_version, current_version
+                )
+                return False
+
+            current_manifest_hash = self._compute_manifest_hash()
+            cached_manifest_hash = metadata.get("manifest_hash")
+            if cached_manifest_hash != current_manifest_hash:
+                logger.info(
+                    "Manifest content changed. Cached hash: %s, Current hash: %s",
+                    cached_manifest_hash,
+                    current_manifest_hash,
+                )
                 return False
 
             logger.info("Valid venv cache found for %s", venv_path)
@@ -128,20 +177,27 @@ class IsolatedVenvPlugin(Plugin):
             logger.warning("Error reading cache metadata: %s", str(e))
             return False
 
-    def _save_cache_metadata(self, venv_path: str, requirements_file: str) -> None:
+    def _save_cache_metadata(self, venv_path: str, requirements_file: Optional[str]) -> None:
         """Save cache metadata for the venv.
 
         Args:
             venv_path: Path to the virtual environment
-            requirements_file: Path to the requirements file
+            requirements_file: Path to the requirements file, or None when the
+                plugin has no requirements file.
         """
         metadata_path = self._get_cache_metadata_path(venv_path)
         requirements_hash = self._compute_requirements_hash(requirements_file)
 
+        resolved_requirements = None
+        if requirements_file is not None and Path(requirements_file).exists():
+            resolved_requirements = str(Path(requirements_file).resolve())
+
         metadata = {
             "venv_path": str(Path(venv_path).resolve()),
-            "requirements_file": str(Path(requirements_file).resolve()) if Path(requirements_file).exists() else None,
+            "requirements_file": resolved_requirements,
             "requirements_hash": requirements_hash,
+            "manifest_version": self.config.version,
+            "manifest_hash": self._compute_manifest_hash(),
             "python_version": f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",
         }
 
@@ -162,8 +218,10 @@ class IsolatedVenvPlugin(Plugin):
         """
         venv_path_obj = Path(venv_path)
 
-        # Check if we can use cached venv
-        if use_cache and requirements_file and self._is_venv_cache_valid(venv_path, requirements_file):
+        # Check if we can use cached venv. A None requirements_file is valid:
+        # for converted FQN plugins the manifest version+hash is the cache signal
+        # (U5), so cache validity must be evaluated even without a requirements file.
+        if use_cache and self._is_venv_cache_valid(venv_path, requirements_file):
             logger.info("✓ Using cached virtual environment at: %s", venv_path_obj.resolve())
             return False
 
@@ -209,38 +267,38 @@ class IsolatedVenvPlugin(Plugin):
 
         venv_path = self.plugin_path / ".venv"
 
-        # Prevent directory traversal: ensure requirements_file stays within plugin_path
-        requirements_file_input = self.config.config["requirements_file"]
+        # requirements_file is optional: converted FQN plugins get their package
+        # into the venv via the installer's channel source, not a requirements file.
+        requirements_file_input = self.config.config.get("requirements_file")
 
-        # Handle both relative and absolute paths
-        if isinstance(requirements_file_input, Path):
-            requirements_file = requirements_file_input
-        else:
-            requirements_file = Path(requirements_file_input)
+        requirements_file: Optional[Path] = None
+        if requirements_file_input:
+            # Try to find the package location where plugin-manifest.yaml resides.
+            # Fall back to self.plugin_path if package is not installed (e.g., in tests).
+            try:
+                package_path = find_package_path(self.config.name)
+                logger.debug("Found installed package %s at %s", self.config.name, package_path)
+            except RuntimeError:
+                # Package not installed (e.g., in test environment), use plugin_path
+                package_path = self.plugin_path
+                logger.debug("Package %s not installed, using plugin_path: %s", self.config.name, package_path)
 
-        # Try to find the package location where plugin-manifest.yaml resides
-        # Fall back to self.plugin_path if package is not installed (e.g., in tests)
-        try:
-            package_path = find_package_path(self.config.name)
-            logger.debug("Found installed package %s at %s", self.config.name, package_path)
-        except RuntimeError:
-            # Package not installed (e.g., in test environment), use plugin_path
-            package_path = self.plugin_path
-            logger.debug("Package %s not installed, using plugin_path: %s", self.config.name, package_path)
+            requirements_file = package_path / requirements_file_input
 
-        requirements_file = package_path / requirements_file_input
-
-        # Create venv with caching support
+        # Create venv with caching support. create_venv tolerates a None/missing
+        # requirements file (empty-hash path).
         new_venv = await self.create_venv(venv_path=venv_path, requirements_file=requirements_file, use_cache=True)
 
         self.comm = VenvProcessCommunicator(venv_path)
 
-        # Only install requirements if venv was newly created or cache was invalid
-        # Check if we need to install requirements
+        # Only (re)install when the venv was newly created or the cache was invalid.
         if new_venv:
-            logger.info("Installing requirements in venv")
-            self.comm.install_requirements(requirements_file)
-            # Save metadata after successful installation
+            if requirements_file is not None and Path(requirements_file).exists():
+                logger.info("Installing requirements in venv")
+                self.comm.install_requirements(requirements_file)
+            else:
+                logger.info("No requirements file for %s; skipping requirements install", self.config.name)
+            # Save metadata after successful creation (records requirements hash for cache validity).
             self._save_cache_metadata(venv_path, requirements_file)
         else:
             logger.info("Using cached venv, skipping requirements installation")

@@ -480,6 +480,70 @@ def _parse_pypi_source(source: str) -> tuple[str, Optional[str]]:
     return package_name, version_constraint
 
 
+def _plugin_name_from_source(source: str, install_type: str | None) -> str:
+    """Extract the plugin/package name from an install source string.
+
+    Handles the per-channel source shapes: pypi ``pkg@constraint``,
+    git ``pkg @ git+url``, and bare names / monorepo search terms.
+
+    Args:
+        source: The install source string.
+        install_type: The install channel type, or None (defaults to monorepo).
+
+    Returns:
+        The plugin/package name portion of the source.
+    """
+    if install_type in {"pypi", "test-pypi"}:
+        name, _ = _parse_pypi_source(source)
+        return name.strip()
+    if " @ " in source:  # git: "Name @ git+url"
+        return source.split(" @ ", 1)[0].strip()
+    return source.strip()
+
+
+def _should_skip_reinstall(source: str, install_type: str | None, catalog: PluginCatalog) -> bool:
+    """Decide whether an install of an already-registered plugin is a no-op (U6).
+
+    When the plugin is not yet installed, returns False (proceed with install).
+    When it is installed, compares the target version (from the catalog, when
+    resolvable) against the recorded installed version and skips only when they
+    match. If the target version cannot be resolved, proceeds with the install
+    so the downstream venv cache key (U5) decides whether work is actually
+    needed. Kind-agnostic — applies to every plugin kind.
+
+    Args:
+        source: The install source string.
+        install_type: The install channel type.
+        catalog: The plugin catalog (already updated for monorepo/git).
+
+    Returns:
+        True to skip the install (already at the requested version), else False.
+    """
+    registry = PluginRegistry()
+    name = _plugin_name_from_source(source, install_type)
+    installed = registry.get(name)
+    if installed is None:
+        return False
+
+    target_manifest = catalog.find(name)
+    target_version = target_manifest.version if target_manifest is not None else None
+
+    if target_version is not None and target_version == installed.version:
+        console.print(f"Plugin {name} is already installed at version {installed.version}.")
+        return True
+
+    if target_version is None:
+        # Cannot resolve a target version to compare; proceed and let the venv
+        # cache key decide whether a rebuild is needed.
+        logger.info("Could not resolve target version for %s; proceeding with install.", name)
+        return False
+
+    console.print(
+        f"Plugin {name} is installed at {installed.version}; installing version {target_version}."
+    )
+    return False
+
+
 def _finalize_installation(
     manifest: PluginManifest, install_type: str, catalog: PluginCatalog, plugin_path: Path | None = None
 ):
@@ -862,12 +926,6 @@ def plugin(
             raise typer.Exit(EXIT_INVALID_ARGS)
         pc = PluginCatalog()
         return uninstall(source, catalog=pc, assume_yes=assume_yes)
-    if cmd_action == "install" and source is not None:
-        registry = PluginRegistry()
-        if registry.has(source):
-            console.print(f"Plugin {source} is already installed.")
-            return
-
     # update the catalog before proceeding with install etc.
     pc = PluginCatalog()
     # optimized github search REST api takes ~14s to search & download all manifests
@@ -879,6 +937,14 @@ def plugin(
                 console.log(":x: Catalog update failed.")
             else:
                 console.log("Catalog update completed.")
+
+    # Repeat-install version compare (U6): when a plugin is already registered,
+    # only skip when the requested/catalog version matches the installed version;
+    # otherwise fall through and reinstall (upgrade). This is kind-agnostic and
+    # applies to all plugin kinds.
+    if cmd_action == "install" and source is not None:
+        if _should_skip_reinstall(source, install_type, pc):
+            return
 
     if cmd_action == "versions":
         return versions(source, catalog=pc, fmt=fmt)
