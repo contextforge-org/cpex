@@ -14,10 +14,11 @@ Take the `get_compensation` route. It is identical whether CPEX fronts the backe
 ```yaml
 routes:
   - tool: get_compensation
-    pre_invocation:
-      - "require(role.hr)"
-      - "delegate(workday-oauth, target: workday-api, audience: workday-api, permissions: [read_compensation])"
-      - "taint(secret, session)"
+    authorization:
+      pre_invocation:
+        - "require(role.hr)"
+        - "delegate(workday-oauth, target: workday-api, audience: workday-api, permissions: [read_compensation])"
+        - "taint(secret, session)"
     result:
       ssn: "str | redact(!perm.view_ssn)"
 ```

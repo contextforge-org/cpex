@@ -10,13 +10,31 @@
 // to remember the original case.
 //
 // Namespace:
+//   http.method                    : String  (request line)
+//   http.path                      : String
+//   http.host                      : String
+//   http.scheme                    : String
 //   http.request_headers.<name>    : String  (lowercased name)
 //   http.response_headers.<name>   : String  (lowercased name)
 
 use apl_core::AttributeBag;
 use cpex_core::extensions::HttpExtension;
 
+use crate::constants::{BAG_HTTP_HOST, BAG_HTTP_METHOD, BAG_HTTP_PATH, BAG_HTTP_SCHEME};
+
 pub fn extract_http(http: &HttpExtension, bag: &mut AttributeBag) {
+    if let Some(method) = &http.method {
+        bag.set(BAG_HTTP_METHOD.to_string(), method.clone());
+    }
+    if let Some(path) = &http.path {
+        bag.set(BAG_HTTP_PATH.to_string(), path.clone());
+    }
+    if let Some(host) = &http.host {
+        bag.set(BAG_HTTP_HOST.to_string(), host.clone());
+    }
+    if let Some(scheme) = &http.scheme {
+        bag.set(BAG_HTTP_SCHEME.to_string(), scheme.clone());
+    }
     for (k, v) in &http.request_headers {
         bag.set(
             format!("http.request_headers.{}", k.to_lowercase()),
@@ -34,6 +52,31 @@ pub fn extract_http(http: &HttpExtension, bag: &mut AttributeBag) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn request_line_surfaced_in_bag() {
+        let http = HttpExtension {
+            method: Some("POST".to_string()),
+            path: Some("/api/widgets".to_string()),
+            host: Some("api.example.com".to_string()),
+            scheme: Some("https".to_string()),
+            ..Default::default()
+        };
+        let mut bag = AttributeBag::new();
+        extract_http(&http, &mut bag);
+        assert_eq!(bag.get_string("http.method"), Some("POST"));
+        assert_eq!(bag.get_string("http.path"), Some("/api/widgets"));
+        assert_eq!(bag.get_string("http.host"), Some("api.example.com"));
+        assert_eq!(bag.get_string("http.scheme"), Some("https"));
+    }
+
+    #[test]
+    fn request_line_absent_when_unset() {
+        let http = HttpExtension::default();
+        let mut bag = AttributeBag::new();
+        extract_http(&http, &mut bag);
+        assert_eq!(bag.get_string("http.method"), None);
+    }
 
     #[test]
     fn headers_lowercased_in_bag() {

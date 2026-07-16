@@ -175,6 +175,13 @@ pub enum Effect {
         name: String,
     },
     Delegate(crate::step::DelegateStep),
+    /// Elicitation effect — dispatch a question to a human (approval,
+    /// confirmation, step-up, …) through a channel plugin, hold pending
+    /// state across the agent's retries, validate the response, resume.
+    /// The elicitation analogue of `Delegate`. See
+    /// `docs/apl-manager-approval-ciba-design.md` and
+    /// [`crate::step::ElicitStep`].
+    Elicit(crate::step::ElicitStep),
     Taint {
         label: String,
         scopes: Vec<crate::pipeline::TaintScope>,
@@ -250,7 +257,10 @@ impl Effect {
     /// branch.
     pub fn contains_mutation(&self) -> bool {
         match self {
-            Effect::FieldOp { .. } | Effect::Delegate(_) => true,
+            // `Elicit` has an external side effect (posts to a channel,
+            // registers an intent) — like `Delegate` it must not sit in
+            // a `Parallel` branch that could be silently discarded.
+            Effect::FieldOp { .. } | Effect::Delegate(_) | Effect::Elicit(_) => true,
             Effect::Sequential(effects) | Effect::Parallel(effects) => {
                 effects.iter().any(Effect::contains_mutation)
             },
@@ -405,6 +415,25 @@ impl PhaseSet {
     }
 }
 
+/// Custom response to attach when a route's policy denies (e.g., equivalent
+/// to a Kuadrant `AuthPolicy` `response.unauthorized` `denyWith`).
+/// Carried on the route and surfaced on the deny outcome's
+/// `details` map by the host (apl-cpex), so a host can render a custom
+/// HTTP response. All fields optional; an absent block leaves the host's
+/// default denial response unchanged.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct DenyResponse {
+    /// HTTP status to use for the denial (e.g. 403, 302).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<u16>,
+    /// Response body.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body: Option<String>,
+    /// Response headers (e.g. `Location` for a redirect, `WWW-Authenticate`).
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub headers: std::collections::BTreeMap<String, String>,
+}
+
 /// Compiler output for a single route.
 ///
 /// One `CompiledRoute` per route_key. The compiler merges global / default /
@@ -434,6 +463,11 @@ pub struct CompiledRoute {
     /// hooks/kind/source always come from the global declaration.
     #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
     pub plugin_overrides: std::collections::HashMap<String, crate::plugin_decl::PluginOverride>,
+
+    /// Custom denial response (transpiled `denyWith`). Most-specific layer
+    /// wins on collision. `None` leaves the host's default denial behavior.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response: Option<DenyResponse>,
 }
 
 impl CompiledRoute {
@@ -515,12 +549,51 @@ impl CompiledRoute {
         // plugin_overrides: HashMap::extend overwrites on key collision,
         // which is exactly the more_specific-wins semantic.
         self.plugin_overrides.extend(more_specific.plugin_overrides);
+
+        // response: deliberately NOT layered. A custom denial response is
+        // scope-local — the entity-less HTTP handler carries the `global`
+        // block directly, and an entity route carries only its own
+        // `response:`. Propagating it here let a `global` catch-all
+        // `denyWith` leak onto every inherited entity (MCP tool / llm /
+        // prompt / resource) denial with no way to opt back out. Callers
+        // set `response` explicitly at the scope that owns it.
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn apply_layer_does_not_propagate_response() {
+        // `response` is scope-local and must never cross a layer boundary —
+        // a `global` catch-all denyWith must not leak onto entity routes.
+        let mut base = CompiledRoute::new("tool:x");
+        base.response = Some(DenyResponse {
+            status: Some(401),
+            ..Default::default()
+        });
+
+        let mut layer = CompiledRoute::new("tool:x");
+        layer.response = Some(DenyResponse {
+            status: Some(403),
+            body: Some("forbidden".to_string()),
+            ..Default::default()
+        });
+        base.apply_layer(layer);
+        // base keeps its own response; the layer's is dropped.
+        assert_eq!(base.response.as_ref().unwrap().status, Some(401));
+
+        // A layer's response never populates an empty base either.
+        let mut empty = CompiledRoute::new("tool:x");
+        let mut with_resp = CompiledRoute::new("tool:x");
+        with_resp.response = Some(DenyResponse {
+            status: Some(418),
+            ..Default::default()
+        });
+        empty.apply_layer(with_resp);
+        assert!(empty.response.is_none());
+    }
 
     #[test]
     fn phase_set_basic() {

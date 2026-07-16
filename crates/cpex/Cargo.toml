@@ -11,8 +11,8 @@
 # `builtins` / `full` feature (or a granular plugin feature) is enabled — so
 # the default `cpex = "0.2"` is the engine alone, no plugins compiled.
 #
-#   cpex = { version = "0.2.0", features = ["builtins"] }            # default builtin set
-#   cpex = { version = "0.2.0", features = ["jwt", "cedar"] }        # a minimal subset
+#   cpex = { version = "0.2.1", features = ["builtins"] }            # default builtin set
+#   cpex = { version = "0.2.1", features = ["jwt", "cedar"] }        # a minimal subset
 #
 # then `cpex::install_builtins(&mgr)` registers every enabled factory and
 # installs the APL config visitor in one call.
@@ -56,6 +56,7 @@ jwt = ["cpex-builtins/identity-jwt"]
 oauth = ["cpex-builtins/delegator-oauth"]
 pii = ["cpex-builtins/pii-scanner"]
 audit = ["cpex-builtins/audit-logger"]
+elicitation-ciba = ["cpex-builtins/elicitation-ciba"]
 cedar = ["cpex-builtins/cedar-direct"]
 cel = ["cpex-builtins/cel"]
 valkey = ["cpex-builtins/valkey"]
