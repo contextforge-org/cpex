@@ -338,11 +338,30 @@ register_wasm_plugin!(
     [cpex_core::cmf::CmfHook]
 );
 
+#[cfg(all(feature = "fs-test", not(test)))]
+register_wasm_plugin!(
+    plugins::fs_test::FsTestPlugin,
+    [cpex_core::cmf::CmfHook]
+);
+
+#[cfg(all(feature = "net-test", not(test)))]
+register_wasm_plugin!(
+    plugins::net_test::NetTestPlugin,
+    [cpex_core::cmf::CmfHook]
+);
+
+#[cfg(all(feature = "env-test", not(test)))]
+register_wasm_plugin!(
+    plugins::env_test::EnvTestPlugin,
+    [cpex_core::cmf::CmfHook]
+);
+
 // ---------------------------------------------------------------------------
 // Unit tests — run natively with `cargo test`
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[allow(unused_imports, dead_code)]
 mod tests {
     use std::sync::Arc;
     use cpex_core::cmf::{ContentPart, Message, MessagePayload, Role, ToolCall, ToolResult};

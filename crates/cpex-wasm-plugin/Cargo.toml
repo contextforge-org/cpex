@@ -13,6 +13,9 @@ header-injector = []
 audit-logger = []
 token-attenuator = []
 noop = []
+fs-test = []
+net-test = []
+env-test = []
 
 [dependencies]
 wit-bindgen = "0.57"

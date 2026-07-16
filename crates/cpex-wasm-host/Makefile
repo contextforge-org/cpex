@@ -1,4 +1,4 @@
-.PHONY: all build build-plugin build-all-plugins run-demos run-cmf-demo run-identity-demo run-generic-demo run-capabilities-demo clean help
+.PHONY: all build build-plugin build-all-plugins build-test-plugins test run-demos run-cmf-demo run-identity-demo run-generic-demo run-capabilities-demo clean clean-all help
 
 PLUGIN_DIR := ../cpex-wasm-plugin
 WASM_DIR   := wasm
@@ -45,12 +45,45 @@ run-capabilities-demo: build-all-plugins ## Build all plugins and run the capabi
 	cargo run --example wasm_capabilities_demo
 
 # ---------------------------------------------------------------------------
+# Test
+# ---------------------------------------------------------------------------
+
+PLUGIN_TARGET := $(PLUGIN_DIR)/target/wasm32-wasip2/release/cpex_wasm_plugin.wasm
+TEST_PLUGINS  := fs-test net-test env-test noop
+
+build-test-plugins: ## Build all test WASM plugins (fs-test, net-test, env-test, noop)
+	@for plugin in $(TEST_PLUGINS); do \
+		echo "Building $$plugin..."; \
+		cargo build --manifest-path $(PLUGIN_DIR)/Cargo.toml \
+			--target wasm32-wasip2 --release \
+			--features $$plugin --no-default-features; \
+		cp $(PLUGIN_TARGET) $(WASM_DIR)/$$plugin.wasm; \
+	done
+	@echo "All test plugins built and staged."
+
+test: clean-all build-all-plugins build-test-plugins ## Clean all, rebuild all plugins, run all tests
+	@echo "\n========== Running host tests (46 tests) ==========\n"
+	cargo test
+	@echo "\n========== Running plugin unit tests ==========\n"
+	cargo test --manifest-path $(PLUGIN_DIR)/Cargo.toml --features identity-checker --no-default-features
+	cargo test --manifest-path $(PLUGIN_DIR)/Cargo.toml --features header-injector --no-default-features
+	cargo test --manifest-path $(PLUGIN_DIR)/Cargo.toml --features audit-logger --no-default-features
+	cargo test --manifest-path $(PLUGIN_DIR)/Cargo.toml --features token-attenuator --no-default-features
+	@echo "\n========== All tests passed ==========\n"
+
+# ---------------------------------------------------------------------------
 # Cleanup
 # ---------------------------------------------------------------------------
 
-clean: ## Remove build artifacts
+clean: ## Remove host build artifacts and default plugin.wasm
 	cargo clean
 	rm -f $(WASM_DIR)/plugin.wasm
+
+clean-all: ## Remove host + plugin build artifacts and ALL .wasm files
+	cargo clean
+	cargo clean --manifest-path $(PLUGIN_DIR)/Cargo.toml
+	cargo clean --manifest-path $(PLUGIN_DIR)/Cargo.toml --target wasm32-wasip2
+	rm -f $(WASM_DIR)/*.wasm
 
 # ---------------------------------------------------------------------------
 # Help

@@ -198,4 +198,70 @@ resources:
         assert!(policy.allowed_env.is_empty());
         assert!(policy.resources.max_memory_bytes.is_none());
     }
+
+    #[test]
+    fn test_no_policy_builds_context_with_no_filesystem() {
+        let ctx = build_wasi_context(None);
+        assert!(ctx.is_ok(), "no-policy context should build successfully");
+        let ctx = ctx.unwrap();
+        assert!(ctx.allowed_hosts.is_empty());
+    }
+
+    #[test]
+    fn test_empty_policy_builds_context_with_no_filesystem() {
+        let policy = SandboxPolicy::default();
+        let ctx = build_wasi_context(Some(&policy));
+        assert!(ctx.is_ok());
+        let ctx = ctx.unwrap();
+        assert!(ctx.allowed_hosts.is_empty());
+    }
+
+    #[test]
+    fn test_nonexistent_directory_fails_to_preopen() {
+        let policy = SandboxPolicy {
+            allowed_filesystem: vec![FilesystemRule {
+                dir: Some("/nonexistent_path_that_does_not_exist_xyz".to_string()),
+                file: None,
+                permission: "read".to_string(),
+            }],
+            ..Default::default()
+        };
+        let result = build_wasi_context(Some(&policy));
+        assert!(
+            result.is_err(),
+            "preopening a non-existent directory should fail"
+        );
+    }
+
+    #[test]
+    fn test_invalid_permission_rejected() {
+        let policy = SandboxPolicy {
+            allowed_filesystem: vec![FilesystemRule {
+                dir: Some("/tmp".to_string()),
+                file: None,
+                permission: "execute".to_string(),
+            }],
+            ..Default::default()
+        };
+        let result = build_wasi_context(Some(&policy));
+        assert!(
+            result.is_err(),
+            "invalid permission 'execute' should be rejected"
+        );
+    }
+
+    #[test]
+    fn test_network_allowlist_populated_from_policy() {
+        let policy = SandboxPolicy {
+            allowed_network: vec![
+                "api.internal.svc".to_string(),
+                "auth.example.com".to_string(),
+            ],
+            ..Default::default()
+        };
+        let ctx = build_wasi_context(Some(&policy)).unwrap();
+        assert_eq!(ctx.allowed_hosts.len(), 2);
+        assert!(ctx.allowed_hosts.contains(&"api.internal.svc".to_string()));
+        assert!(ctx.allowed_hosts.contains(&"auth.example.com".to_string()));
+    }
 }

@@ -57,7 +57,10 @@ cpex-wasm-host/
 │   └── README.md                     # How to run benchmarks
 ├── tests/
 │   ├── test_policy_loader.rs         # Config/sandbox policy tests
-│   └── test_security_enforcement.rs  # Security validation tests
+│   ├── test_security_enforcement.rs  # Security validation tests
+│   ├── test_sandbox_isolation.rs     # E2E: filesystem access denied in WASM
+│   ├── test_sandbox_network.rs       # E2E: network access denied in WASM
+│   └── test_sandbox_env.rs           # E2E: env var isolation in WASM
 ├── src/
 │   ├── lib.rs
 │   ├── sandbox_manager.rs            # SharedEngine, SandboxManager, host-logging impl
@@ -107,16 +110,50 @@ cargo run -p cpex-wasm-host --example wasm_capabilities_demo
 ## Running Tests
 
 ```bash
-# All host tests (35 tests)
+# All host tests (46 tests)
 cargo test -p cpex-wasm-host
 ```
 
 Tests cover:
 - **Security enforcement** (15 tests): capability filtering, immutable tier, monotonic labels, write authorization, filtered slot preservation
+- **Sandbox isolation** (6 tests, E2E): real `.wasm` plugins attempt filesystem/network/env access — sandbox denies them
 - **Conversions** (3 tests): CMF/Identity payload round-trips, extension immutability
-- **Policy loader** (3 tests): config parsing, deserialization, deny-all default
+- **Policy loader** (8 tests): config parsing, deserialization, deny-all default, context building, invalid permissions
 - **Config integration** (8 tests): YAML validity, plugin structure, resource limits
 - **Error classification** (6 tests): timeout, fuel, memory, trap, network, unknown
+
+### Sandbox Isolation Tests (E2E with real WASM binaries)
+
+These require pre-built `.wasm` test plugins:
+
+```bash
+# Build the sandbox test plugins (one-time)
+cd crates/cpex-wasm-plugin
+cargo build --target wasm32-wasip2 --release --features fs-test --no-default-features
+cp target/wasm32-wasip2/release/cpex_wasm_plugin.wasm ../cpex-wasm-host/wasm/fs-test.wasm
+
+cargo build --target wasm32-wasip2 --release --features net-test --no-default-features
+cp target/wasm32-wasip2/release/cpex_wasm_plugin.wasm ../cpex-wasm-host/wasm/net-test.wasm
+
+cargo build --target wasm32-wasip2 --release --features env-test --no-default-features
+cp target/wasm32-wasip2/release/cpex_wasm_plugin.wasm ../cpex-wasm-host/wasm/env-test.wasm
+cd ../..
+
+# Run just the sandbox tests
+cargo test -p cpex-wasm-host --test test_sandbox_isolation
+cargo test -p cpex-wasm-host --test test_sandbox_network
+cargo test -p cpex-wasm-host --test test_sandbox_env
+```
+
+What these prove:
+| Test | Asserts |
+|------|---------|
+| `test_plugin_cannot_read_etc_passwd_without_filesystem_policy` | Plugin reads `/etc/passwd` → WASI returns permission denied |
+| `test_plugin_cannot_read_etc_passwd_with_unrelated_filesystem_policy` | `/tmp` allowed but `/etc` still blocked |
+| `test_plugin_cannot_access_network_without_policy` | Plugin attempts DNS → denied (no raw socket access in WASI) |
+| `test_plugin_cannot_access_network_with_unrelated_allowlist` | `internal.example.com` allowed but `httpbin.org` still blocked |
+| `test_plugin_cannot_see_env_vars_without_policy` | `HOME`, `PATH`, `SECRET_API_KEY` all empty |
+| `test_plugin_sees_only_allowed_env_var` | Only `CPEX_TEST_ALLOWED` visible; `HOME` and `SECRET_API_KEY` still hidden |
 
 ---
 
@@ -331,4 +368,47 @@ impl PayloadSerializerRegistry {
 | `WASM invocation failed: epoch deadline` | Plugin exceeded timeout | Increase `max_execution_time_ms` in config |
 | `WASM invocation failed: all fuel consumed` | Plugin exceeded instruction budget | Increase `max_fuel` in config |
 | Bench skips WASM tests | `noop.wasm` missing | See "Running Benchmarks" section |
+| Sandbox tests skipped | Test `.wasm` binaries missing | See "Sandbox Isolation Tests" section |
 | `block_in_place` panic | Single-threaded tokio runtime | Use `rt-multi-thread` feature on tokio |
+
+---
+
+## Full Verification (all steps)
+
+```bash
+# Prerequisites
+rustup target add wasm32-wasip2
+
+# 1. Build ALL plugin WASM binaries
+cd crates/cpex-wasm-plugin
+make build-all
+cargo build --target wasm32-wasip2 --release --features fs-test --no-default-features
+cp target/wasm32-wasip2/release/cpex_wasm_plugin.wasm ../cpex-wasm-host/wasm/fs-test.wasm
+cargo build --target wasm32-wasip2 --release --features net-test --no-default-features
+cp target/wasm32-wasip2/release/cpex_wasm_plugin.wasm ../cpex-wasm-host/wasm/net-test.wasm
+cargo build --target wasm32-wasip2 --release --features env-test --no-default-features
+cp target/wasm32-wasip2/release/cpex_wasm_plugin.wasm ../cpex-wasm-host/wasm/env-test.wasm
+cargo build --target wasm32-wasip2 --release --features noop --no-default-features
+cp target/wasm32-wasip2/release/cpex_wasm_plugin.wasm ../cpex-wasm-host/wasm/noop.wasm
+cd ../..
+
+# 2. Host tests (46 tests including sandbox isolation)
+cargo test -p cpex-wasm-host
+
+# 3. Plugin unit tests (12 tests)
+cargo test --manifest-path crates/cpex-wasm-plugin/Cargo.toml --features identity-checker --no-default-features
+cargo test --manifest-path crates/cpex-wasm-plugin/Cargo.toml --features header-injector --no-default-features
+cargo test --manifest-path crates/cpex-wasm-plugin/Cargo.toml --features audit-logger --no-default-features
+cargo test --manifest-path crates/cpex-wasm-plugin/Cargo.toml --features token-attenuator --no-default-features
+
+# 4. Benchmarks
+cargo bench -p cpex-wasm-host
+
+# 5. Demos
+cargo run -p cpex-wasm-host --example wasm_capabilities_demo
+
+# 6. Workspace check
+cargo check
+```
+
+**Expected:** 46 host tests pass, 12 plugin tests pass, benchmarks show ~5-8µs WASM latency, demos run without errors, workspace compiles clean.
