@@ -77,6 +77,10 @@ class TestWorkerFunctions:
         mock_plugin_instance.tool_post_invoke = AsyncMock()
         mock_plugin_instance.tool_exception = AsyncMock()
         mock_plugin_instance.tool_cleanup = AsyncMock()
+        # json_to_payload is a synchronous method; without this override the
+        # AsyncMock parent would auto-create it as an AsyncMock, and process_task
+        # calls it without awaiting (worker.py) — leaking an unawaited coroutine.
+        mock_plugin_instance.json_to_payload = MagicMock()
         mock_plugin_class = MagicMock(return_value=mock_plugin_instance)
 
         mock_module = MagicMock()
@@ -295,6 +299,9 @@ class TestWorkerFunctions:
         mock_plugin_instance.prompt_post_fetch = AsyncMock()
         mock_plugin_instance.tool_exception = AsyncMock()
         mock_plugin_instance.tool_cleanup = AsyncMock()
+        # json_to_payload is synchronous — keep it a MagicMock so the AsyncMock
+        # parent doesn't auto-create it as a coroutine that process_task never awaits.
+        mock_plugin_instance.json_to_payload = MagicMock()
 
         mock_plugin_class = MagicMock(return_value=mock_plugin_instance)
 
