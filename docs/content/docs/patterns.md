@@ -5,11 +5,11 @@ weight: 100
 
 # Patterns
 
-Production patterns for writing and rolling out CPEX policy. Each is expressed in APL and builds on the concepts in the earlier pages.
+Production patterns for writing and rolling out CPEX policy. Each is expressed in APL and builds on the concepts in the earlier pages. The [Tutorial]({{< relref "/docs/tutorial" >}}) builds most of these hands-on; this page is the condensed reference for authoring and rollout.
 
 ## Layered enforcement
 
-Order effects cheapest-gate-first so expensive work only runs for requests that survive the early checks. Attribute gates, then a PDP call, then delegation:
+Order effects cheapest-gate-first so expensive work only runs for requests that survive the early checks. Attribute gates, then a PDP call, then delegation (built up in tutorial modules [4]({{< relref "/docs/tutorial/04-effects" >}}), [5]({{< relref "/docs/tutorial/05-pdp" >}}), and [6]({{< relref "/docs/tutorial/06-delegation" >}})):
 
 ```yaml
 authorization:
@@ -39,11 +39,11 @@ plugins:
 
 ## Input and output guardrails
 
-Validate and transform on the way in with `args`, redact on the way out with `result`. The two phases bracket the operation:
+Validate and transform on the way in with `args`, redact on the way out with `result`. The two phases bracket the operation (redaction is tutorial [module 3]({{< relref "/docs/tutorial/03-shaping" >}})):
 
 ```yaml
 routes:
-  get_employee:
+  - tool: get_employee
     args:
       employee_id: "str | regex(\"^[0-9]{6}$\")"   # reject malformed input
     result:
@@ -52,14 +52,16 @@ routes:
 
 ## Cross-request information flow
 
-Taint a session when it touches sensitive data, then gate later operations on the label. The control spans requests and the model cannot route around it (see [Session Tainting]({{< relref "/docs/apl/tainting" >}})):
+Taint a session when it touches sensitive data, then gate later operations on the label. The control spans requests and the model cannot route around it (see [Session Tainting]({{< relref "/docs/apl/tainting" >}}) and tutorial [module 7]({{< relref "/docs/tutorial/07-tainting" >}})):
 
 ```yaml
 routes:
-  get_compensation:
+  - tool: get_compensation
     authorization:
-      pre_invocation: [ "require(role.hr)", "taint(secret, session)" ]
-  send_email:
+      pre_invocation:
+        - "require(role.hr)"
+        - "taint(secret, session)"
+  - tool: send_email
     authorization:
       pre_invocation:
         - "require(perm.email_send)"
@@ -68,13 +70,13 @@ routes:
 
 ## Least-privilege effects
 
-Declare the narrowest capabilities each plugin needs, and scope delegated tokens to the minimum. A scanner that reads content does not get identity; a downstream token gets only the scope the operation requires, verified after the exchange:
+Declare the narrowest capabilities each plugin needs, and scope delegated tokens to the minimum. A scanner that reads content does not get identity; a downstream token gets only the scope the operation requires, verified after the exchange (deny if the grant is missing):
 
 ```yaml
 authorization:
   pre_invocation:
     - "delegate(workday-oauth, target: workday-api, permissions: [read_compensation])"
-    - "delegation.granted.permissions contains 'read_compensation': allow"   # verify least privilege
+    - "!(delegation.granted.permissions contains 'read_compensation'): deny"   # fail closed if not granted
 ```
 
 ## Defense in depth

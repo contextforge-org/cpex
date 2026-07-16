@@ -35,13 +35,7 @@ routes:
 - An HR analyst without `view_ssn` gets the same record with the SSN redacted before it leaves CPEX. The backend never sees the difference; the redaction happens at the boundary.
 - An engineer is denied at `require(role.hr)`. The call never reaches the backend.
 
-```mermaid
-flowchart LR
-  REQ["get_compensation<br>(identical request)"] --> CPEX{{"APL policy"}}
-  CPEX -->|"HR + view_ssn"| FULL["full record"]
-  CPEX -->|"HR, no view_ssn"| RED["record, SSN redacted"]
-  CPEX -->|"not HR"| DENY["denied"]
-```
+![Three identical get_compensation requests pass through CPEX APL policy and produce three outcomes by identity: the full record for HR with view_ssn, the record with SSN redacted for HR without view_ssn, and a deny for non-HR callers](/cpex/images/overview_outcomes.png)
 
 No application code changed between the three outcomes. The policy did.
 

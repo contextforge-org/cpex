@@ -1,0 +1,95 @@
+# Capstone, the three-backend agent
+#
+# This is the scenario from the CPEX Overview, assembled from everything
+# the tutorial built. One agent, three backends, one policy. The same
+# request gets a different result per caller, and information follows the
+# session across calls.
+#
+#   get_compensation (HR)   authorize by role, mint a scoped downstream
+#                           token (delegation), redact by permission, and
+#                           taint the session as having read secret data.
+#   search_repos (repos)    a CEL decision: engineers read internal only,
+#                           security reads any.
+#   send_email (email)      refuse if the session already touched secret
+#                           data (write-down), and audit every attempt.
+#
+# The application never changes. Only this policy decides the outcomes.
+
+global:
+  apl:
+    pdp:
+      - kind: cel
+
+plugins:
+  - name: keycloak
+    kind: identity/jwt
+    hooks: [identity.resolve]
+    config:
+      claim_mapper: standard
+      trusted_issuers:
+        - issuer: http://localhost:8081/realms/cpex-tutorial
+          audiences: [cpex-tutorial]
+          algorithms: [RS256]
+          decoding_key:
+            kind: jwks_url
+            url: http://localhost:8081/realms/cpex-tutorial/protocol/openid-connect/certs
+            insecure_http: true
+          leeway_seconds: 60
+
+  - name: workday-oauth
+    kind: delegator/oauth
+    hooks: [token.delegate]
+    capabilities: [read_inbound_credentials, write_delegated_tokens]
+    config:
+      token_endpoint: http://localhost:8081/realms/cpex-tutorial/protocol/openid-connect/token
+      client_id: cpex-gateway
+      client_secret_source:
+        kind: literal
+        secret: gateway-dev-secret
+      insecure_http: true
+
+  - name: audit-log
+    kind: audit/logger
+    hooks: [cmf.tool_pre_invoke]
+    capabilities: [read_subject, read_meta]
+    config:
+      destination: stderr
+
+routes:
+  # HR lookup: gate on role, mint a scoped downstream token, taint the
+  # session, audit, then redact fields by permission on the way out.
+  - tool: get_compensation
+    authentication:
+      - keycloak
+    authorization:
+      pre_invocation:
+        - "require(role.hr)"
+        - "delegate(workday-oauth, target: workday-api, audience: workday-api)"
+        - "taint(secret, session)"
+        - "run(audit-log)"
+    result:
+      ssn: "str | redact(!perm.view_ssn)"
+      salary: "int | redact(!role.hr)"
+
+  # Repo search: hand the decision to CEL.
+  - tool: search_repos
+    authentication:
+      - keycloak
+    authorization:
+      pre_invocation:
+        - "require(authenticated)"
+        - cel:
+            expr: "(has(role.engineer) && role.engineer && args.visibility == 'internal') || (has(role.security) && role.security)"
+            on_deny:
+              - "deny('engineers read internal only; security reads any', 'repo.policy_denied')"
+        - "run(audit-log)"
+
+  # Outbound email: refuse if the session already read secret data.
+  - tool: send_email
+    authentication:
+      - keycloak
+    authorization:
+      pre_invocation:
+        - "require(authenticated)"
+        - "security.labels contains \"secret\": deny('write-down blocked: this session read secret data', 'session_tainted')"
+        - "run(audit-log)"

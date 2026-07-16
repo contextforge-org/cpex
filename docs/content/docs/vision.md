@@ -54,13 +54,10 @@ APL leads. CMF gives policy a uniform thing to evaluate across tools, A2A, infer
 
 Different controls belong at different points. CPEX runs the same way at each of them, so you place a policy where its enforcement point is, not where the framework forces it.
 
-```mermaid
-flowchart LR
-  soft["soft<br>prompt-level<br>style · tone · refusals"] --> mid["enforcement<br>tool / A2A authorization<br>redaction · delegation"] --> hard["hard<br>infra boundary<br>identity · info-flow · audit"]
-```
+![The policy spectrum: soft prompt-level controls (style, tone, refusals), enforcement-tier tool and A2A authorization (redaction, delegation), and hard infrastructure-boundary controls (identity, info-flow, audit), on an axis from advisory to enforced at the boundary](/cpex/images/vision_policy_spectrum.png)
 
 A style guardrail at the prompt level and a hard information-flow control at an infrastructure boundary are the same kind of object: an APL policy evaluated by a CPEX reference monitor. Only the placement changes.
 
 ## Where CPEX runs
 
-CPEX is direction-agnostic. It enforces the same policy whether it sits in front of a tool server as a gateway, beside an agent as an egress sidecar, or inside an agent framework. See [Deployment]({{< relref "/docs/deployment" >}}) for the placements and [Overview]({{< relref "/docs/overview" >}}) for the model in motion.
+CPEX is direction-agnostic. It enforces the same policy whether it sits in front of a tool server as a gateway, beside an agent as an egress sidecar, or inside an agent framework. See [Deployment]({{< relref "/docs/deployment" >}}) for the placements, the [Threat Model]({{< relref "/docs/threat-model" >}}) for what each placement covers against an untrusted model, and [Overview]({{< relref "/docs/overview" >}}) for the model in motion.

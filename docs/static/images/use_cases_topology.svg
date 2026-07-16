@@ -1,0 +1,74 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1660 712" font-family="IBM Plex Sans">
+  <defs>
+    <marker id="ah" markerWidth="6" markerHeight="5" refX="4" refY="2.25" orient="auto">
+      <path d="M0,0 L5,2.25 L0,4.5 z" fill="#161616"/>
+    </marker>
+    <marker id="ahg" markerWidth="6" markerHeight="5" refX="4" refY="2.25" orient="auto">
+      <path d="M0,0 L5,2.25 L0,4.5 z" fill="#9e9e9e"/>
+    </marker>
+  </defs>
+  <rect width="1660" height="712" fill="#ffffff"/>
+
+  <!-- caller -->
+  <rect x="30" y="185" width="230" height="100" rx="8" fill="#ffffff" stroke="#161616" stroke-width="2.5"/>
+  <text x="145" y="230" font-size="26" fill="#161616" text-anchor="middle">chat agent</text>
+  <text x="145" y="262" font-size="20" fill="#5f5f5f" text-anchor="middle" font-family="IBM Plex Mono">/ curl</text>
+
+  <line x1="260" y1="235" x2="333" y2="235" stroke="#161616" stroke-width="3.5" marker-end="url(#ah)"/>
+  <text x="297" y="212" font-size="20" fill="#3b6de8" text-anchor="middle" font-family="IBM Plex Mono">MCP</text>
+
+  <!-- gateway container -->
+  <rect x="345" y="95" width="830" height="280" rx="10" fill="#f2f2f2" stroke="#161616" stroke-width="2.5"/>
+  <text x="375" y="140" font-size="26" fill="#161616">Praxis gateway</text>
+  <text x="580" y="140" font-size="21" fill="#5f5f5f" font-family="IBM Plex Mono">:8090</text>
+
+  <!-- cpex.yaml config leader -->
+  <text x="775" y="55" font-size="21" fill="#161616" text-anchor="middle" font-family="IBM Plex Mono" font-weight="600">cpex.yaml</text>
+  <line x1="775" y1="68" x2="775" y2="165" stroke="#161616" stroke-width="2.5" stroke-dasharray="3 6" marker-end="url(#ah)"/>
+
+  <!-- filter chain -->
+  <rect x="385" y="200" width="150" height="110" rx="8" fill="#ffffff" stroke="#161616" stroke-width="2"/>
+  <text x="460" y="248" font-size="23" fill="#161616" text-anchor="middle" font-family="IBM Plex Mono">mcp</text>
+  <text x="460" y="282" font-size="17" fill="#5f5f5f" text-anchor="middle">parse JSON-RPC</text>
+
+  <line x1="535" y1="255" x2="588" y2="255" stroke="#161616" stroke-width="3" marker-end="url(#ah)"/>
+
+  <rect x="600" y="180" width="350" height="150" rx="8" fill="#ece0fb" stroke="#161616" stroke-width="2"/>
+  <text x="775" y="225" font-size="24" fill="#161616" text-anchor="middle"><tspan font-family="IBM Plex Mono" font-weight="600">policy</tspan>  (CPEX)</text>
+  <text x="775" y="266" font-size="18" fill="#161616" text-anchor="middle">identity &#183; APL &#183; PDP &#183; delegation</text>
+  <text x="775" y="296" font-size="18" fill="#161616" text-anchor="middle">PII &#183; taint &#183; elicitation &#183; audit</text>
+
+  <line x1="950" y1="255" x2="1003" y2="255" stroke="#161616" stroke-width="3" marker-end="url(#ah)"/>
+
+  <rect x="1015" y="200" width="130" height="110" rx="8" fill="#ffffff" stroke="#161616" stroke-width="2"/>
+  <text x="1080" y="262" font-size="23" fill="#161616" text-anchor="middle" font-family="IBM Plex Mono">router</text>
+
+  <!-- gateway -> backend -->
+  <line x1="1175" y1="235" x2="1268" y2="235" stroke="#161616" stroke-width="3.5" marker-end="url(#ah)"/>
+  <text x="1222" y="212" font-size="20" fill="#3b6de8" text-anchor="middle" font-family="IBM Plex Mono">forward</text>
+
+  <rect x="1280" y="185" width="290" height="100" rx="8" fill="#ffffff" stroke="#161616" stroke-width="2.5"/>
+  <text x="1425" y="230" font-size="26" fill="#161616" text-anchor="middle">hr-mcp server</text>
+  <text x="1425" y="262" font-size="20" fill="#5f5f5f" text-anchor="middle" font-family="IBM Plex Mono">:9100</text>
+
+  <!-- dotted connectors from policy filter -->
+  <line x1="700" y1="330" x2="640" y2="505" stroke="#9e9e9e" stroke-width="4" stroke-dasharray="2 10" stroke-linecap="round"/>
+  <line x1="850" y1="330" x2="960" y2="505" stroke="#9e9e9e" stroke-width="4" stroke-dasharray="2 10" stroke-linecap="round"/>
+
+  <!-- supporting services -->
+  <rect x="450" y="510" width="360" height="110" rx="8" fill="#ffffff" stroke="#161616" stroke-width="2"/>
+  <text x="630" y="553" font-size="25" fill="#161616" text-anchor="middle">Keycloak <tspan font-size="20" fill="#5f5f5f" font-family="IBM Plex Mono">:8081</tspan></text>
+  <text x="630" y="589" font-size="18" fill="#5f5f5f" text-anchor="middle">IdP &#183; token exchange (RFC 8693) &#183; CIBA</text>
+
+  <rect x="870" y="510" width="250" height="110" rx="8" fill="#ffffff" stroke="#161616" stroke-width="2"/>
+  <text x="995" y="553" font-size="25" fill="#161616" text-anchor="middle">Valkey <tspan font-size="20" fill="#5f5f5f" font-family="IBM Plex Mono">:6379</tspan></text>
+  <text x="995" y="589" font-size="18" fill="#5f5f5f" text-anchor="middle">session taint store</text>
+
+  <rect x="1180" y="510" width="330" height="110" rx="8" fill="#ffffff" stroke="#161616" stroke-width="2"/>
+  <text x="1345" y="553" font-size="25" fill="#161616" text-anchor="middle">auth-channel <tspan font-size="20" fill="#5f5f5f" font-family="IBM Plex Mono">:5001</tspan></text>
+  <text x="1345" y="589" font-size="18" fill="#5f5f5f" text-anchor="middle">approval UI, &#8220;the manager&#8217;s phone&#8221;</text>
+
+  <!-- Keycloak -> auth-channel (CIBA push), routed under the row -->
+  <path d="M 630 620 L 630 662 L 1345 662 L 1345 628" fill="none" stroke="#9e9e9e" stroke-width="4" stroke-dasharray="2 10" stroke-linecap="round" marker-end="url(#ahg)"/>
+  <text x="988" y="695" font-size="18" fill="#5f5f5f" text-anchor="middle">CIBA push to the approver</text>
+</svg>

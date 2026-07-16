@@ -22,10 +22,7 @@ This page covers the configuration: routes, phases, predicates, rules, and field
 
 Policy is organized by **route**: an operation CPEX mediates, identified by the tool, A2A method, or other interface it governs. Each route runs through four phases, in order:
 
-```mermaid
-flowchart LR
-  ARGS["args<br>validate / transform input"] --> POL["authorization.pre_invocation<br>authorize"] --> RES["result<br>transform output"] --> POST["authorization.post_invocation<br>audit / final checks"]
-```
+![The four route phases in order: args validates and transforms input, authorization.pre_invocation authorizes, result redacts and masks output, and authorization.post_invocation runs audit and final checks; the first deny in any phase halts that phase and every later one](/cpex/images/apl_phases.png)
 
 - **args**: validate and transform request inputs before the operation runs.
 - **authorization.pre_invocation**: authorize the operation. Predicates, PDP calls, delegation, tainting.

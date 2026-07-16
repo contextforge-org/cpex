@@ -39,7 +39,7 @@ A deployment integration usually expresses routes as a list of `- tool:` entries
 | Egress sidecar (outbound) | every call an agent makes, to any backend | you own the agent and want to guard what it can reach |
 | In-framework | operations as the agent runtime issues them | you control the runtime and want enforcement inline |
 
-The decision is about which boundary you control and trust, not about policy capability. Identity resolution, PDP calls, delegation, redaction, and tainting all work the same at each.
+The decision is about which boundary you control and trust, not about policy capability. Identity resolution, PDP calls, delegation, redaction, and tainting all work the same at each. For what each placement does and does not defend against, see the [Threat Model]({{< relref "/docs/threat-model#where-the-boundary-sits-and-what-each-placement-covers" >}}).
 
 ## Inference traffic
 

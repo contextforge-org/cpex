@@ -1,0 +1,46 @@
+# Location: ./examples/tutorial/Cargo.toml
+# Copyright 2025
+# SPDX-License-Identifier: Apache-2.0
+# Authors: Fred Araujo
+#
+# cpex-tutorial, the runnable companion to the CPEX tutorial docs
+# (docs/content/docs/tutorial). One crate, one shared harness, and one
+# `examples/` binary per tutorial module. Not published.
+#
+#   cargo run -p cpex-tutorial --example m01_hello
+#   cargo run -p cpex-tutorial --example m02_identity -- --check
+#
+# The harness (`src/`) provides fake tool backends, a `mediate()` wrapper
+# over the CPEX dispatch loop, a Keycloak helper, and a tiny approval
+# channel. Modules 2+ expect the tutorial IdP to be running
+# (`docker compose -f examples/tutorial/idp/docker-compose.yml up -d`).
+
+[package]
+name = "cpex-tutorial"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+publish = false
+
+[dependencies]
+# The host facade with the bundled builtins (jwt, oauth, pii, audit,
+# cedar, cel, elicitation-ciba). Path dependency, the tutorial is not
+# published, so it does not use the workspace version table.
+cpex = { path = "../../crates/cpex", features = ["builtins"] }
+cpex-core = { workspace = true }
+cpex-sdk = { workspace = true }
+apl-core = { workspace = true }
+apl-cmf = { workspace = true }
+
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "sync", "time", "macros"] }
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Keycloak token minting (module 2+) and the approval channel (module 8).
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+tiny_http = "0.12"
+
+[lints]
+workspace = true

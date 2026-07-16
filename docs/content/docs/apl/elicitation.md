@@ -46,17 +46,7 @@ An elicitation has three short, synchronous touch-points. The hours-long human g
 
 While pending, the phase **suspends** rather than denies. The decision stays `Allow`, but a pending marker rides alongside it, and the host maps that to JSON-RPC **`-32120`** ("not complete — retry echoing this id"). The forward rule is one clause: *forward only when the decision is `Allow` and nothing is pending.* Expiry, channel error, a genuine denial, or a failed validation all fail closed (default `on_error: deny`).
 
-```mermaid
-flowchart LR
-  REQ["agent request"] --> DISP["require_approval(manager-approver)"]
-  DISP -->|"dispatch: open backchannel"| OP["Keycloak CIBA"]
-  DISP -->|"-32120 + elicitation id"| REQ
-  REQ -->|"retry, echo id"| CHK["check status"]
-  CHK -->|"pending"| REQ
-  CHK -->|"resolved"| VAL["validate genuineness<br>+ scope over live args"]
-  VAL -->|"approved & sufficient"| TOOL["forward to tool"]
-  VAL -->|"denied / expired / invalid"| DENY["deny (fail closed)"]
-```
+![The elicitation suspend-and-resume flow: an agent request hits require_approval, which opens a Keycloak CIBA backchannel and returns -32120 with an elicitation id; agent retries hit a non-blocking status check that keeps returning pending until the channel resolves; validate then verifies genuineness and scope over the live args, forwarding to the tool when approved and sufficient, and failing closed on denial, expiry, or invalid responses](/cpex/images/apl_elicitation_flow.png)
 
 ## The CIBA channel plugin
 

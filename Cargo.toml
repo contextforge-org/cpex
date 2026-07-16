@@ -27,6 +27,7 @@ members = [
     "builtins/pdps/cel",
     "builtins/session/valkey",
     "examples/go-demo/ffi",
+    "examples/tutorial",
     # PyO3 bindings — excluded from default-members so plain `cargo build`
     # stays libpython-independent (KD3). Use `cargo build -p cpex-python`
     # or `maturin develop` to build this crate explicitly.
@@ -61,6 +62,7 @@ default-members = [
     "builtins/pdps/cedar-direct",
     "builtins/pdps/cel",
     "examples/go-demo/ffi",
+    "examples/tutorial",
 ]
 
 [workspace.package]

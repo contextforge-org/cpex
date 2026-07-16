@@ -62,6 +62,8 @@ The outcome matches the scenario:
 
 ## Next
 
+- [Tutorial]({{< relref "/docs/tutorial" >}}): build this up hands-on, one capability per module, with runnable code you edit and re-run. This Quick Start is the 10-minute taste; the tutorial is the meal.
+- [Use Cases]({{< relref "/docs/use-cases" >}}): the full set of controls running end-to-end behind a real gateway.
 - [APL]({{< relref "/docs/apl" >}}): the full language: predicates, effects, field pipelines, phases.
 - [Identity]({{< relref "/docs/apl/identity" >}}): resolving callers into the attributes policy reads.
 - [PDP Integration]({{< relref "/docs/apl/pdp" >}}): delegating decisions to Cedar, CEL, or an external engine.
