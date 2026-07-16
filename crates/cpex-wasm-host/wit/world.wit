@@ -611,6 +611,18 @@ interface types {
   }
 }
 
+interface host-logging {
+  enum log-level {
+    trace,
+    debug,
+    info,
+    warn,
+    error,
+  }
+
+  log: func(level: log-level, message: string);
+}
+
 /// Known hook names (not exhaustive - hosts may define custom hooks):
 ///
 /// Legacy (typed payloads):
@@ -631,6 +643,7 @@ world plugin {
   import wasi:clocks/monotonic-clock@0.2.6;
   import wasi:http/types@0.2.6;
   import wasi:http/outgoing-handler@0.2.6;
+  import host-logging;
 
   use types.{hook-payload, extensions, plugin-context, hook-result};
 

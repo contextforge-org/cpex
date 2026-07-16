@@ -7,6 +7,8 @@ use cpex_core::extensions::container::Extensions;
 use cpex_core::hooks::trait_def::{HookHandler, PluginResult};
 use cpex_core::plugin::{Plugin, PluginConfig};
 
+use crate::cpex_log;
+
 pub struct AuditLoggerPlugin;
 
 impl Default for AuditLoggerPlugin {
@@ -66,18 +68,20 @@ impl HookHandler<CmfHook> for AuditLoggerPlugin {
                 .unwrap_or("unknown")
         };
 
-        eprint!("[WASM:audit-logger] AUDIT[{}]: tool='{}' ", phase, tool_name);
+        let labels_str = extensions
+            .security
+            .as_ref()
+            .map(|s| {
+                let labels: Vec<&String> = s.labels.iter().collect();
+                format!("{:?}", labels)
+            })
+            .unwrap_or_else(|| "[]".into());
 
-        if let Some(ref security) = extensions.security {
-            let labels: Vec<&String> = security.labels.iter().collect();
-            eprint!("labels={:?} ", labels);
-        }
-
-        if let Some(ref http) = extensions.http {
-            if let Some(req_id) = http.get_header("X-Request-ID") {
-                eprint!("request_id='{}' ", req_id);
-            }
-        }
+        let req_id = extensions
+            .http
+            .as_ref()
+            .and_then(|h| h.get_header("X-Request-ID"))
+            .unwrap_or_default();
 
         if is_result {
             let is_error = payload
@@ -86,10 +90,12 @@ impl HookHandler<CmfHook> for AuditLoggerPlugin {
                 .first()
                 .map(|tr| tr.is_error)
                 .unwrap_or(false);
-            eprint!("error={} ", is_error);
+            cpex_log!(info, "AUDIT[{}]: tool='{}' labels={} request_id='{}' error={}",
+                phase, tool_name, labels_str, req_id, is_error);
+        } else {
+            cpex_log!(info, "AUDIT[{}]: tool='{}' labels={} request_id='{}'",
+                phase, tool_name, labels_str, req_id);
         }
-
-        eprintln!();
         PluginResult::allow()
     }
 }

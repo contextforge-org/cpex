@@ -11,6 +11,8 @@ default = ["identity-checker"]
 identity-checker = []
 header-injector = []
 audit-logger = []
+token-attenuator = []
+noop = []
 
 [dependencies]
 wit-bindgen = "0.57"
@@ -20,6 +22,10 @@ serde_json = "1"
 cpex-core = { path = "../cpex-core", default-features = false }
 async-trait = "0.1"
 chrono = { version = "0.4", features = ["serde"] }
+zeroize = "1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt"] }
 
 [package.metadata.component]
 package = "cpex:plugin"

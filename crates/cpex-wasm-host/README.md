@@ -1,299 +1,334 @@
 # cpex-wasm-host
 
-Loads and executes a WASM plugin inside a sandboxed wasmtime environment. Enforces resource limits (fuel, memory, execution time) and network/filesystem policies. Provides a bridge to cpex-core's `PluginManager` for integration into the hook pipeline.
+WASM plugin host runtime for the CPEX framework. Loads WebAssembly Component Model plugins into sandboxed wasmtime environments, enforces resource limits and capability-based access control, and bridges to cpex-core's `PluginManager` for seamless integration with native plugins.
 
-## How It Works
+---
+
+## Architecture
 
 ```
-┌──────────────────────────────────────────────────────────┐
-│  PluginManager (cpex-core)                               │
-│    invoke_named::<CmfHook>("cmf.tool_pre_invoke", ...)   │
-└──────────────────────┬───────────────────────────────────┘
-                       │
-                       ▼
-┌──────────────────────────────────────────────────────────┐
-│  WasmBridgeHandler (factory.rs)                          │
-│    native MessagePayload → WIT MessagePayload            │
-│    native Extensions     → WIT Extensions                │
-│    native PluginContext   → WIT PluginContext             │
-└──────────────────────┬───────────────────────────────────┘
-                       │
-                       ▼
-┌──────────────────────────────────────────────────────────┐
-│  SandboxManager (sandbox_manager.rs)                     │
-│    call_handle_hook() inside wasmtime sandbox             │
-│    ┌─────────────────────────────────┐                   │
-│    │  Sandbox Enforcement            │                   │
-│    │  • Fuel budget (session-level)  │                   │
-│    │  • Memory limit                 │                   │
-│    │  • Execution timeout (per-call) │                   │
-│    │  • Network allowlist            │                   │
-│    │  • Filesystem permissions       │                   │
-│    │  • Environment variable filter  │                   │
-│    └─────────────────────────────────┘                   │
-└──────────────────────┬───────────────────────────────────┘
-                       │
-                       ▼
-┌──────────────────────────────────────────────────────────┐
-│  WIT PluginResult → native PluginResult                  │
-│  returned to PluginManager pipeline                      │
-└──────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│  PluginManager::invoke_named::<CmfHook>(...)                │
+│    → Executor: group_by_mode, filter extensions, dispatch   │
+└────────────────────────────┬────────────────────────────────┘
+                             ▼
+┌─────────────────────────────────────────────────────────────┐
+│  WasmBridgeHandler                                          │
+│    1. Payload → WIT (CMF/Identity/Delegation structured,    │
+│       custom via JSON bytes)                                │
+│    2. Extensions → WIT (field-by-field conversion)          │
+│    3. Sandbox invoke (fuel reset + epoch reset)             │
+│    4. WIT result → native (with filtered slot preservation) │
+│    5. Post-invocation validation (immutable tier, monotonic │
+│       labels, write authorization)                          │
+└────────────────────────────┬────────────────────────────────┘
+                             ▼
+┌─────────────────────────────────────────────────────────────┐
+│  Wasmtime Sandbox                                           │
+│    SharedEngine (1 per factory, shared across all plugins)  │
+│    Store (1 per plugin, isolated memory/fuel/state)         │
+│    Guest: handle-hook(hook_name, payload, ext, ctx)         │
+│    Host imports: WASI P2, WASI HTTP, host-logging           │
+│    Enforcement: fuel, timeout, memory, network, filesystem  │
+└─────────────────────────────────────────────────────────────┘
 ```
+
+---
 
 ## Project Structure
 
 ```
 cpex-wasm-host/
 ├── Cargo.toml
+├── README.md
+├── Makefile
 ├── config/
-│   ├── config.yaml                   # CMF demo config (pre/post invoke + generic)
-│   └── config_identity.yaml          # Identity-resolve demo config
+│   ├── config.yaml                   # Single-plugin demo config
+│   ├── config_capabilities.yaml      # 3-plugin capabilities demo
+│   └── config_identity.yaml          # Identity-resolve demo
 ├── examples/
 │   ├── wasm_plugin_demo.rs           # CMF MessagePayload end-to-end
+│   ├── wasm_capabilities_demo.rs     # 3 plugins, capability isolation
 │   ├── wasm_identity_resolve_demo.rs # IdentityPayload typed dispatch
 │   └── wasm_generic_payload_demo.rs  # Custom payload pass-through
+├── benchmarking/
+│   ├── invocation.rs                 # Criterion benchmarks (WASM vs native)
+│   ├── results.md                    # Benchmark results table
+│   └── README.md                     # How to run benchmarks
+├── tests/
+│   ├── test_policy_loader.rs         # Config/sandbox policy tests
+│   └── test_security_enforcement.rs  # Security validation tests
 ├── src/
-│   ├── lib.rs                        # Module exports
-│   ├── sandbox_manager.rs            # Core: wasmtime engine, plugin loading, invocation
-│   ├── policy_loader.rs              # Parses sandbox config (filesystem, network, env, resources)
-│   ├── payload_registry.rs           # Type-erased payload serialization registry
-│   ├── conversions.rs                # Native cpex-core types ↔ WIT types
-│   └── factory.rs                    # PluginFactory bridge for PluginManager integration
-├── wasm/
-│   └── plugin.wasm                   # Compiled WASM plugin (from cpex-wasm-plugin)
+│   ├── lib.rs
+│   ├── sandbox_manager.rs            # SharedEngine, SandboxManager, host-logging impl
+│   ├── factory.rs                    # WasmPluginFactory, WasmBridgeHandler, validation
+│   ├── conversions.rs                # Native ↔ WIT type conversions
+│   ├── policy_loader.rs              # SandboxPolicy parsing, WASI context builder
+│   └── payload_registry.rs           # Type-erased custom payload serialization
+├── wasm/                             # Compiled .wasm binaries (gitignored)
 └── wit/
-    ├── world.wit                     # Plugin interface definition
+    ├── world.wit                     # WIT interface definition
     └── deps/                         # WASI interface dependencies
 ```
 
-## Components
+---
 
-### SandboxManager (`sandbox_manager.rs`)
-
-The core component. Manages a single WASM plugin in an isolated wasmtime environment.
-
-- `new()` — Creates the wasmtime engine, linker, and epoch ticker thread
-- `load_wasmplugin(path, config)` — Instantiates a WASM component with sandbox policies applied
-- `invoke(payload, extensions, ctx)` — Calls the plugin's `handle-hook` function
-- `is_loaded()` — Checks if a plugin is loaded
-
-**Sandbox enforcement:**
-- Fuel budget is session-level — set once at load, depletes across all invocations
-- Execution timeout is per-invocation — reset each call so no single call hangs
-- Network requests are gated by an allowlist of hosts
-- Filesystem access is limited to preopened directories with explicit permissions
-- Only explicitly listed environment variables are visible to the plugin
-
-### Policy Loader (`policy_loader.rs`)
-
-Parses sandbox configuration from the plugin's `config.sandbox_policy` YAML key:
-
-```yaml
-plugins:
-  - name: identity-checker
-    kind: "wasm://plugin.wasm"
-    config:
-      sandbox_policy:
-        allowed_filesystem:
-          - dir: /tmp/data
-            permission: "read"
-        allowed_network:
-          - "httpbin.org"
-        allowed_env:
-          - "API_KEY"
-        resources:
-          max_memory_bytes: 10485760
-          max_fuel: 1000000000
-          max_execution_time_ms: 5000
-```
-
-If `sandbox_policy` is absent, deny-by-default applies (no filesystem, no network, no env vars).
-
-### Conversions (`conversions.rs`)
-
-Bidirectional type mappings between native cpex-core types and WIT types:
-
-| Direction | Purpose |
-|---|---|
-| Native → WIT | Before calling the WASM sandbox (payload, extensions, context) |
-| WIT → Native | After the sandbox returns (plugin result, modified payload) |
-
-WIT can't represent `HashMap`, `HashSet`, `Arc`, or `serde_json::Value` directly, so these are serialized to JSON strings or flattened to lists/tuples at the boundary.
-
-### Factory (`factory.rs`)
-
-Bridges cpex-core's `PluginFactory` trait to the `SandboxManager`. Contains:
-
-- `WasmPluginFactory` — implements `PluginFactory::create()`, loads the plugin into the sandbox
-- `WasmBridgePlugin` — implements `Plugin` trait (lifecycle)
-- `WasmBridgeHandler` — implements `AnyHookHandler`, converts types and routes calls through the sandbox
-
-## Prerequisites
-
-- Rust toolchain (stable)
-- `wasm32-wasip2` target installed:
-  ```sh
-  rustup target add wasm32-wasip2
-  ```
-- (Optional) `wasm-tools` for validation/inspection:
-  ```sh
-  cargo install wasm-tools
-  ```
-
-## Running the End-to-End Demos
+## Quick Start
 
 ### Prerequisites
 
-```sh
+```bash
 rustup target add wasm32-wasip2
 ```
 
-### Available Demos
+### Build & Run (end-to-end)
 
-| Demo | Native Equivalent | What It Tests |
-|------|-------------------|---------------|
-| `wasm_plugin_demo` | `plugin_demo` (cpex-core) | Single WASM plugin, CMF payload, pre/post invoke |
-| `wasm_capabilities_demo` | `cmf_capabilities_demo` (cpex-core) | 3 plugins, capability isolation, extension modification |
-| `wasm_identity_resolve_demo` | — | Identity resolution via custom typed payload |
-| `wasm_generic_payload_demo` | — | Custom payload pass-through (unhandled type → allow) |
-
-### Quick Start (single-plugin demos)
-
-```sh
-# Build the default plugin (identity-checker) and stage it
-cd crates/cpex-wasm-plugin && make all && cd ../..
-
-# Run the CMF demo (like plugin_demo.rs but via WASM sandbox)
-cargo run -p cpex-wasm-host --example wasm_plugin_demo
-
-# Run the identity resolve demo
-cargo run -p cpex-wasm-host --example wasm_identity_resolve_demo
-
-# Run the generic payload demo
-cargo run -p cpex-wasm-host --example wasm_generic_payload_demo
-```
-
-### Capabilities Demo (3 WASM plugins, like cmf_capabilities_demo.rs)
-
-This demo runs **three independent WASM plugins** in the same pipeline, each with different capabilities:
-
-| Plugin | Binary | Capabilities | Behavior |
-|--------|--------|--------------|----------|
-| identity-checker | `identity-checker.wasm` | `read_labels`, `read_subject`, `read_roles` | Checks PII access |
-| header-injector | `header-injector.wasm` | `read_headers`, `write_headers`, `append_labels` | Adds label + injects header |
-| audit-logger | `audit-logger.wasm` | `read_headers`, `read_labels` | Read-only audit logging |
-
-```sh
-# Build all three plugin binaries and stage them
+```bash
+# 1. Build all plugin binaries
 cd crates/cpex-wasm-plugin && make build-all && cd ../..
 
-# Run the capabilities demo
+# 2. Run the capabilities demo (3 plugins in a pipeline)
 cargo run -p cpex-wasm-host --example wasm_capabilities_demo
 ```
 
-Or via the host Makefile:
-```sh
-cd crates/cpex-wasm-host && make run-capabilities-demo
-```
+### What Happens
 
-**Expected output:**
+1. `WasmPluginFactory` loads 3 `.wasm` binaries from `wasm/` directory
+2. Each plugin gets its own sandboxed Store (shared Engine)
+3. The pipeline invokes `cmf.tool_pre_invoke` → all 3 plugins run in priority order:
+   - **identity-checker** (priority 10): checks PII labels vs subject roles
+   - **header-injector** (priority 20): adds "PROCESSED" label + "X-Processed-By" header
+   - **audit-logger** (priority 100, audit mode): logs tool name + labels + request ID
+4. Then `cmf.tool_post_invoke` runs the applicable plugins again
+5. Results flow back through the executor to the caller
 
-```
-=== WASM Capabilities Demo ===
+---
 
-=== Phase 1: cmf.tool_pre_invoke ===
-[identity-checker] sees labels + subject, HTTP NOT visible → ALLOWED
-[header-injector] sees HTTP, subject NOT visible → adds label + header
-[audit-logger] logs tool, labels (includes "PROCESSED"), request-id
+## Running Tests
 
-Pre-invoke result: ALLOWED
-  Labels after pre-invoke: ["PROCESSED"]
-  Headers after pre-invoke: {"X-Processed-By": "header-injector", ...}
-
-=== Phase 2: cmf.tool_post_invoke ===
-[identity-checker] verifies result → ALLOWED
-[audit-logger] logs post-invoke
-
-Post-invoke result: ALLOWED
-=== Demo complete ===
-```
-
-### All demos in one shot
-
-```sh
-cd crates/cpex-wasm-plugin && make build-all && make all && cd ../..
-cargo run -p cpex-wasm-host --example wasm_plugin_demo
-cargo run -p cpex-wasm-host --example wasm_identity_resolve_demo
-cargo run -p cpex-wasm-host --example wasm_generic_payload_demo
-cargo run -p cpex-wasm-host --example wasm_capabilities_demo
-```
-
-### Troubleshooting
-
-| Symptom | Cause | Fix |
-|---------|-------|-----|
-| `error: target 'wasm32-wasip2' not found` | Target not installed | `rustup target add wasm32-wasip2` |
-| `failed to load wasm from .../plugin.wasm` | Missing binary | `cd crates/cpex-wasm-plugin && make all` |
-| `failed to load wasm from .../<name>.wasm` | Capabilities demo binaries missing | `cd crates/cpex-wasm-plugin && make build-all` |
-| `failed to instantiate plugin` | Stale `.wasm` (WIT mismatch) | Rebuild plugins: `make build-all` |
-
-### Build tests
-
-```sh
+```bash
+# All host tests (35 tests)
 cargo test -p cpex-wasm-host
 ```
 
-## Usage
+Tests cover:
+- **Security enforcement** (15 tests): capability filtering, immutable tier, monotonic labels, write authorization, filtered slot preservation
+- **Conversions** (3 tests): CMF/Identity payload round-trips, extension immutability
+- **Policy loader** (3 tests): config parsing, deserialization, deny-all default
+- **Config integration** (8 tests): YAML validity, plugin structure, resource limits
+- **Error classification** (6 tests): timeout, fuel, memory, trap, network, unknown
 
-### Via PluginManager
+---
+
+## Running Benchmarks
+
+```bash
+# Build the noop plugin (one-time)
+cd crates/cpex-wasm-plugin
+cargo build --target wasm32-wasip2 --release --features noop --no-default-features
+cp target/wasm32-wasip2/release/cpex_wasm_plugin.wasm ../cpex-wasm-host/wasm/noop.wasm
+cd ../..
+
+# Run benchmarks
+cargo bench -p cpex-wasm-host
+
+# View HTML report
+open target/criterion/report/index.html
+```
+
+### Results (Apple M-series, ARM64)
+
+| Scenario | Latency | vs Native |
+|----------|:-------:|:---------:|
+| Native handler (noop) | 84 ns | 1x |
+| Type conversion only | 843 ns | 10x |
+| WASM noop (minimal) | 4.8 µs | 57x |
+| WASM with full extensions | 7.9 µs | 94x |
+
+~126,000 WASM plugin calls/sec/core with realistic extensions. For a typical LLM request (200ms), 3 plugin calls add ~24µs overhead (0.01%).
+
+---
+
+## Running Demos
+
+| Demo | Command | What It Shows |
+|------|---------|---------------|
+| CMF plugin | `cargo run -p cpex-wasm-host --example wasm_plugin_demo` | Single plugin, pre/post invoke |
+| Capabilities | `cargo run -p cpex-wasm-host --example wasm_capabilities_demo` | 3 plugins, capability isolation |
+| Identity resolve | `cargo run -p cpex-wasm-host --example wasm_identity_resolve_demo` | Custom payload (IdentityPayload) |
+| Generic payload | `cargo run -p cpex-wasm-host --example wasm_generic_payload_demo` | Unhandled payload type → allow |
+
+All demos require plugin binaries. Build with `cd crates/cpex-wasm-plugin && make build-all`.
+
+---
+
+## Integration with PluginManager
 
 ```rust
 use std::path::PathBuf;
-use cpex_wasm_host::factory::WasmPluginFactory;
-use cpex_core::manager::PluginManager;
+use cpex_core::cmf::CmfHook;
 use cpex_core::config::parse_config;
+use cpex_core::manager::PluginManager;
+use cpex_wasm_host::factory::WasmPluginFactory;
 
 let mgr = PluginManager::default();
 
+// Register WASM factory (one per unique kind)
 mgr.register_factory(
-    "wasm://plugin.wasm",
-    Box::new(WasmPluginFactory::new(PathBuf::from("wasm"))),
+    "wasm://my-plugin.wasm",
+    Box::new(WasmPluginFactory::with_builtin_payloads(PathBuf::from("wasm"))),
 );
 
+// Load config → factory creates sandboxed plugin instances
 let config = parse_config(&yaml)?;
 mgr.load_config(config)?;
 mgr.initialize().await?;
 
+// Invoke — WASM plugins participate transparently alongside native plugins
 let (result, bg) = mgr
-    .invoke_named::<CmfHook>("cmf.tool_pre_invoke", payload, ext, None)
+    .invoke_named::<CmfHook>("cmf.tool_pre_invoke", payload, extensions, None)
     .await;
+
+if !result.continue_processing {
+    println!("Denied: {}", result.violation.unwrap().reason);
+}
 bg.wait_for_background_tasks().await;
 ```
 
-## Config Format
+---
 
-The `kind` field uses the `wasm://` scheme following cpex-core's convention.
-The `sandbox_policy` is nested under the plugin's `config` key:
+## Configuration
 
 ```yaml
 plugins:
   - name: my-plugin
-    kind: "wasm://plugin.wasm"
-    hooks: [cmf.tool_pre_invoke]
-    capabilities: [read_security]
+    kind: wasm://my-plugin.wasm          # wasm:// triggers WasmPluginFactory
+    hooks: [cmf.tool_pre_invoke, cmf.tool_post_invoke]
+    mode: sequential                      # sequential|transform|audit|concurrent|fire_and_forget
+    priority: 50                          # lower = earlier within same mode
+    on_error: fail                        # fail|ignore|disable (circuit breaker)
+    capabilities:
+      - read_labels
+      - append_labels
+      - read_headers
+      - write_headers
     config:
       sandbox_policy:
         allowed_filesystem:
-          - dir: /tmp/data
-            permission: "read"
-        allowed_network: ["api.example.com"]
-        allowed_env: ["API_KEY"]
+          - { path: "/data/readonly", permissions: "read" }
+        allowed_network:
+          - "api.internal.svc"
+        allowed_env:
+          - "PLUGIN_CONFIG"
         resources:
-          max_fuel: 500000000
-          max_memory_bytes: 5242880
-          max_execution_time_ms: 5000
+          max_memory_bytes: 10485760      # 10 MB
+          max_fuel: 1000000000            # per invocation (~1B instructions)
+          max_execution_time_ms: 5000     # 5 seconds per call
           max_instances: 10
           max_tables: 10
 ```
 
-If `sandbox_policy` is absent or all lists are empty, deny-by-default applies (no filesystem, no network, no env vars).
+**Defaults** (no sandbox_policy): deny-all filesystem, deny-all network, deny-all env, 5s timeout, unlimited fuel/memory.
+
+---
+
+## Security Enforcement
+
+Five layers of defense-in-depth at the WASM trust boundary:
+
+| Layer | What It Does | On Violation |
+|-------|-------------|--------------|
+| Capability filtering | Strips extension slots the plugin isn't authorized to read | Plugin never receives unauthorized data |
+| Immutable tier | Verifies Arc pointer identity on immutable slots after return | Rejects all extension modifications |
+| Monotonic labels | Verifies labels can only be added, never removed | Rejects extension modifications |
+| Write authorization | Verifies mutations only on slots with write capability | Rejects extension modifications |
+| Slot preservation | Hidden slots preserved unchanged during writeback | Pipeline data integrity maintained |
+
+Additionally, the sandbox enforces: fuel limits (per-invocation), execution timeout (epoch-based), memory caps, network allowlist, and filesystem preopens.
+
+---
+
+## Error Handling
+
+WASM runtime errors are classified into proper `PluginError` variants:
+
+| Error | Variant | Executor Behavior |
+|-------|---------|-------------------|
+| Epoch deadline exceeded | `Timeout` | Applies `on_error` policy |
+| Fuel exhausted | `Execution { code: "fuel_exhausted" }` | Applies `on_error` policy |
+| Memory limit | `Execution { code: "memory_limit" }` | Applies `on_error` policy |
+| Plugin trap/panic | `Execution { code: "wasm_trap" }` | Applies `on_error` policy |
+| Network denied | `Execution { code: "network_denied" }` | Applies `on_error` policy |
+
+With `on_error: disable`, the executor permanently disables a failing plugin (circuit breaker).
+
+---
+
+## Module Reference
+
+### `SharedEngine`
+
+One engine + one epoch ticker thread shared across all plugins from the same factory. Reduces overhead from N threads to 1.
+
+```rust
+pub struct SharedEngine { /* engine + linker */ }
+impl SharedEngine {
+    pub fn new() -> Result<Self>;
+}
+```
+
+### `SandboxManager`
+
+Manages a single plugin in an isolated Store.
+
+```rust
+pub struct SandboxManager { /* engine, linker, instance */ }
+impl SandboxManager {
+    pub fn new() -> Result<Self>;                              // own engine
+    pub fn with_shared_engine(shared: &SharedEngine) -> Self;  // shared engine
+    pub async fn load_wasmplugin(&mut self, path: &Path, policy: Option<&SandboxPolicy>, name: &str) -> Result<()>;
+    pub async fn invoke(&mut self, hook: &str, payload, ext, ctx) -> Result<HookResult>;
+    pub fn is_loaded(&self) -> bool;
+}
+```
+
+### `WasmPluginFactory`
+
+Implements `cpex_core::factory::PluginFactory`. Creates sandboxed plugin instances.
+
+```rust
+pub struct WasmPluginFactory { /* wasm_dir, registry, shared_engine */ }
+impl WasmPluginFactory {
+    pub fn new(wasm_dir: PathBuf, registry: Arc<PayloadSerializerRegistry>) -> Self;
+    pub fn with_builtin_payloads(wasm_dir: PathBuf) -> Self;
+}
+```
+
+### `PayloadSerializerRegistry`
+
+Type-erased serialization for custom payload types crossing the WASM boundary.
+
+```rust
+pub struct PayloadSerializerRegistry { /* type_id → (name, ser, deser) */ }
+impl PayloadSerializerRegistry {
+    pub fn new() -> Self;
+    pub fn register<T: WasmSerializablePayload>(&mut self);
+    pub fn serialize(&self, payload: &dyn PluginPayload) -> Result<(&str, Vec<u8>)>;
+    pub fn deserialize(&self, type_name: &str, bytes: &[u8]) -> Result<Box<dyn PluginPayload>>;
+}
+```
+
+---
+
+## Troubleshooting
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| `target 'wasm32-wasip2' not found` | Target not installed | `rustup target add wasm32-wasip2` |
+| `failed to load wasm from .../plugin.wasm` | Binary missing | Build: `cd crates/cpex-wasm-plugin && make all` |
+| `failed to load wasm from .../<name>.wasm` | Capabilities demo binaries missing | `cd crates/cpex-wasm-plugin && make build-all` |
+| `failed to instantiate plugin` | Stale .wasm (WIT mismatch) | Rebuild: `make build-all` |
+| `WASM invocation failed: epoch deadline` | Plugin exceeded timeout | Increase `max_execution_time_ms` in config |
+| `WASM invocation failed: all fuel consumed` | Plugin exceeded instruction budget | Increase `max_fuel` in config |
+| Bench skips WASM tests | `noop.wasm` missing | See "Running Benchmarks" section |
+| `block_in_place` panic | Single-threaded tokio runtime | Use `rt-multi-thread` feature on tokio |

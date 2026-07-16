@@ -16,3 +16,13 @@ serde_json = { workspace = true }
 cpex-core = { path = "../cpex-core" }
 async-trait = "0.1"
 chrono = { version = "0.4", features = ["serde"] }
+tracing = { workspace = true }
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["async_tokio"] }
+async-trait = "0.1"
+
+[[bench]]
+name = "invocation"
+harness = false
+path = "benchmarking/invocation.rs"

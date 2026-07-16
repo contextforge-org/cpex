@@ -29,6 +29,75 @@ pub use conversions::{
 };
 
 // ---------------------------------------------------------------------------
+// Structured host logging — calls the host-logging import
+// ---------------------------------------------------------------------------
+
+/// Log level for host-side structured logging.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LogLevel {
+    Trace,
+    Debug,
+    Info,
+    Warn,
+    Error,
+}
+
+/// Send a structured log message to the host's tracing infrastructure.
+///
+/// The host routes this to its `tracing` subscriber with the plugin name
+/// attached as a span field. Use this instead of `eprintln!` for production
+/// logging.
+pub fn host_log(level: LogLevel, message: &str) {
+    // In test mode, the WIT host import doesn't exist — fall back to eprintln
+    #[cfg(test)]
+    {
+        eprintln!("[{:?}] {}", level, message);
+        return;
+    }
+
+    #[cfg(not(test))]
+    {
+        use crate::cpex::plugin::host_logging;
+
+        let wit_level = match level {
+            LogLevel::Trace => host_logging::LogLevel::Trace,
+            LogLevel::Debug => host_logging::LogLevel::Debug,
+            LogLevel::Info => host_logging::LogLevel::Info,
+            LogLevel::Warn => host_logging::LogLevel::Warn,
+            LogLevel::Error => host_logging::LogLevel::Error,
+        };
+
+        host_logging::log(wit_level, message);
+    }
+}
+
+/// Convenience macro for structured host logging with format arguments.
+///
+/// # Example
+/// ```no_run
+/// cpex_log!(info, "processed {} items in {}ms", count, elapsed);
+/// cpex_log!(warn, "payload field missing, using default");
+/// ```
+#[macro_export]
+macro_rules! cpex_log {
+    (trace, $($arg:tt)*) => {
+        $crate::host_log($crate::LogLevel::Trace, &format!($($arg)*))
+    };
+    (debug, $($arg:tt)*) => {
+        $crate::host_log($crate::LogLevel::Debug, &format!($($arg)*))
+    };
+    (info, $($arg:tt)*) => {
+        $crate::host_log($crate::LogLevel::Info, &format!($($arg)*))
+    };
+    (warn, $($arg:tt)*) => {
+        $crate::host_log($crate::LogLevel::Warn, &format!($($arg)*))
+    };
+    (error, $($arg:tt)*) => {
+        $crate::host_log($crate::LogLevel::Error, &format!($($arg)*))
+    };
+}
+
+// ---------------------------------------------------------------------------
 // register_wasm_plugin! — the core macro
 //
 // Generates a complete `Guest` impl that:
@@ -66,8 +135,6 @@ macro_rules! register_wasm_plugin {
             ) -> HookResult {
                 use cpex_core::hooks::payload::WasmSerializablePayload;
                 use cpex_core::hooks::trait_def::{HookHandler, HookTypeDef};
-
-                eprintln!("[WASM] handle_hook: {}", hook_name);
 
                 let native_ext = $crate::wit_extensions_to_native(extensions);
                 let mut native_ctx = $crate::wit_context_to_native(ctx);
@@ -241,20 +308,378 @@ pub fn __block_on<F: std::future::Future>(f: F) -> F::Output {
 // Build with: cargo build --target wasm32-wasip2 --features <plugin> --no-default-features
 // ---------------------------------------------------------------------------
 
-#[cfg(feature = "identity-checker")]
+#[cfg(all(feature = "identity-checker", not(test)))]
 register_wasm_plugin!(
     plugins::identity_checker::IdentityCheckerPlugin,
     [cpex_core::cmf::CmfHook, cpex_core::identity::IdentityHook]
 );
 
-#[cfg(feature = "header-injector")]
+#[cfg(all(feature = "header-injector", not(test)))]
 register_wasm_plugin!(
     plugins::header_injector::HeaderInjectorPlugin,
     [cpex_core::cmf::CmfHook]
 );
 
-#[cfg(feature = "audit-logger")]
+#[cfg(all(feature = "audit-logger", not(test)))]
 register_wasm_plugin!(
     plugins::audit_logger::AuditLoggerPlugin,
     [cpex_core::cmf::CmfHook]
 );
+
+#[cfg(all(feature = "token-attenuator", not(test)))]
+register_wasm_plugin!(
+    plugins::token_attenuator::TokenAttenuatorPlugin,
+    [cpex_core::delegation::TokenDelegateHook]
+);
+
+#[cfg(all(feature = "noop", not(test)))]
+register_wasm_plugin!(
+    plugins::noop::NoopPlugin,
+    [cpex_core::cmf::CmfHook]
+);
+
+// ---------------------------------------------------------------------------
+// Unit tests — run natively with `cargo test`
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+    use cpex_core::cmf::{ContentPart, Message, MessagePayload, Role, ToolCall, ToolResult};
+    use cpex_core::cmf::constants::SCHEMA_VERSION;
+    use cpex_core::context::PluginContext;
+    use cpex_core::extensions::container::Extensions;
+    use cpex_core::extensions::http::HttpExtension;
+    use cpex_core::extensions::security::{SecurityExtension, SubjectExtension, SubjectType};
+    use cpex_core::hooks::payload::PluginPayload;
+    use cpex_core::hooks::trait_def::PluginResult;
+
+    trait ResultAssert<P: PluginPayload> {
+        fn assert_allowed(&self);
+        fn assert_denied(&self);
+        fn assert_has_modified_payload(&self);
+        fn assert_has_modified_extensions(&self);
+    }
+
+    impl<P: PluginPayload> ResultAssert<P> for PluginResult<P> {
+        fn assert_allowed(&self) {
+            assert!(self.continue_processing, "expected ALLOW, got DENY");
+        }
+        fn assert_denied(&self) {
+            assert!(!self.continue_processing, "expected DENY, got ALLOW");
+            assert!(self.violation.is_some(), "denied but no violation");
+        }
+        fn assert_has_modified_payload(&self) {
+            assert!(self.modified_payload.is_some(), "expected modified payload");
+        }
+        fn assert_has_modified_extensions(&self) {
+            assert!(self.modified_extensions.is_some(), "expected modified extensions");
+        }
+    }
+
+    fn tool_call_payload(name: &str) -> MessagePayload {
+        MessagePayload {
+            message: Message {
+                schema_version: SCHEMA_VERSION.into(),
+                role: Role::Assistant,
+                content: vec![ContentPart::ToolCall {
+                    content: ToolCall {
+                        tool_call_id: format!("tc_{}", name),
+                        name: name.into(),
+                        arguments: Default::default(),
+                        namespace: None,
+                    },
+                }],
+                channel: None,
+            },
+        }
+    }
+
+    fn tool_result_payload(name: &str, content: serde_json::Value, is_error: bool) -> MessagePayload {
+        MessagePayload {
+            message: Message {
+                schema_version: SCHEMA_VERSION.into(),
+                role: Role::Tool,
+                content: vec![ContentPart::ToolResult {
+                    content: ToolResult {
+                        tool_call_id: format!("tc_{}", name),
+                        tool_name: name.into(),
+                        content,
+                        is_error,
+                    },
+                }],
+                channel: None,
+            },
+        }
+    }
+
+    fn ext_with_security(f: impl FnOnce(&mut SecurityExtension)) -> Extensions {
+        let mut sec = SecurityExtension::default();
+        f(&mut sec);
+        Extensions { security: Some(Arc::new(sec)), ..Default::default() }
+    }
+
+    #[cfg(feature = "identity-checker")]
+    mod identity_checker {
+        use super::*;
+        use crate::plugins::identity_checker::IdentityCheckerPlugin;
+        use cpex_core::cmf::CmfHook;
+        use cpex_core::hooks::trait_def::HookHandler;
+
+        #[tokio::test]
+        async fn test_denies_pii_access_without_hr_admin_role() {
+            let ext = ext_with_security(|s| {
+                s.add_label("PII");
+                s.subject = Some(SubjectExtension {
+                    id: Some("bob".into()),
+                    subject_type: Some(SubjectType::User),
+                    roles: ["viewer".to_string()].into(),
+                    ..Default::default()
+                });
+            });
+            let payload = tool_call_payload("get_compensation");
+            let mut ctx = PluginContext::default();
+
+            let result: PluginResult<_> =
+                <IdentityCheckerPlugin as HookHandler<CmfHook>>::handle(
+                    &IdentityCheckerPlugin, &payload, &ext, &mut ctx,
+                ).await;
+            result.assert_denied();
+        }
+
+        #[tokio::test]
+        async fn test_allows_pii_access_with_hr_admin_role() {
+            let ext = ext_with_security(|s| {
+                s.add_label("PII");
+                s.subject = Some(SubjectExtension {
+                    id: Some("alice".into()),
+                    subject_type: Some(SubjectType::User),
+                    roles: ["hr_admin".to_string()].into(),
+                    ..Default::default()
+                });
+            });
+            let payload = tool_call_payload("get_compensation");
+            let mut ctx = PluginContext::default();
+
+            let result: PluginResult<_> =
+                <IdentityCheckerPlugin as HookHandler<CmfHook>>::handle(
+                    &IdentityCheckerPlugin, &payload, &ext, &mut ctx,
+                ).await;
+            result.assert_allowed();
+        }
+
+        #[tokio::test]
+        async fn test_allows_non_pii_without_role() {
+            let ext = ext_with_security(|s| s.add_label("PUBLIC"));
+            let payload = tool_call_payload("get_weather");
+            let mut ctx = PluginContext::default();
+
+            let result: PluginResult<_> =
+                <IdentityCheckerPlugin as HookHandler<CmfHook>>::handle(
+                    &IdentityCheckerPlugin, &payload, &ext, &mut ctx,
+                ).await;
+            result.assert_allowed();
+        }
+
+        use cpex_core::identity::{IdentityHook, IdentityPayload, TokenSource};
+        use std::collections::HashMap;
+
+        #[tokio::test]
+        async fn test_identity_resolves_subject_from_header() {
+            let mut headers = HashMap::new();
+            headers.insert("x-user-id".to_string(), "alice".to_string());
+            let payload = IdentityPayload::new("", TokenSource::Bearer).with_headers(headers);
+            let ext = Extensions::default();
+            let mut ctx = PluginContext::default();
+
+            let result: PluginResult<_> =
+                <IdentityCheckerPlugin as HookHandler<IdentityHook>>::handle(
+                    &IdentityCheckerPlugin, &payload, &ext, &mut ctx,
+                ).await;
+            result.assert_allowed();
+            result.assert_has_modified_payload();
+            let subject = result.modified_payload.as_ref().unwrap()
+                .subject.as_ref().expect("subject should be resolved");
+            assert_eq!(subject.id.as_deref(), Some("alice"));
+            assert_eq!(subject.subject_type, Some(SubjectType::User));
+        }
+
+        #[tokio::test]
+        async fn test_identity_passes_through_without_header() {
+            let payload = IdentityPayload::new("", TokenSource::Bearer);
+            let ext = Extensions::default();
+            let mut ctx = PluginContext::default();
+
+            let result: PluginResult<_> =
+                <IdentityCheckerPlugin as HookHandler<IdentityHook>>::handle(
+                    &IdentityCheckerPlugin, &payload, &ext, &mut ctx,
+                ).await;
+            result.assert_allowed();
+            assert!(result.modified_payload.is_none());
+        }
+
+        #[tokio::test]
+        async fn test_identity_skips_when_subject_already_resolved() {
+            let mut headers = HashMap::new();
+            headers.insert("x-user-id".to_string(), "bob".to_string());
+            let mut payload = IdentityPayload::new("", TokenSource::Bearer).with_headers(headers);
+            payload.subject = Some(SubjectExtension {
+                id: Some("existing-user".into()),
+                subject_type: Some(SubjectType::User),
+                ..Default::default()
+            });
+            let ext = Extensions::default();
+            let mut ctx = PluginContext::default();
+
+            let result: PluginResult<_> =
+                <IdentityCheckerPlugin as HookHandler<IdentityHook>>::handle(
+                    &IdentityCheckerPlugin, &payload, &ext, &mut ctx,
+                ).await;
+            result.assert_allowed();
+            assert!(result.modified_payload.is_none());
+        }
+    }
+
+    #[cfg(feature = "header-injector")]
+    mod header_injector {
+        use super::*;
+        use crate::plugins::header_injector::HeaderInjectorPlugin;
+        use cpex_core::cmf::CmfHook;
+        use cpex_core::hooks::trait_def::HookHandler;
+
+        #[tokio::test]
+        async fn test_injects_header_and_label() {
+            let mut sec = SecurityExtension::default();
+            sec.add_label("PII");
+            let mut http = HttpExtension::default();
+            http.set_header("Authorization", "Bearer token");
+            let ext = Extensions {
+                security: Some(Arc::new(sec)),
+                http: Some(Arc::new(http)),
+                ..Default::default()
+            };
+            let payload = tool_call_payload("fetch-data");
+            let mut ctx = PluginContext::default();
+
+            let result: PluginResult<_> =
+                <HeaderInjectorPlugin as HookHandler<CmfHook>>::handle(
+                    &HeaderInjectorPlugin, &payload, &ext, &mut ctx,
+                ).await;
+            result.assert_allowed();
+            result.assert_has_modified_extensions();
+
+            let modified = result.modified_extensions.as_ref().unwrap();
+            assert!(modified.security.as_ref().unwrap().has_label("PROCESSED"));
+            assert!(modified.security.as_ref().unwrap().has_label("PII"));
+            let h = modified.http.as_ref().unwrap().read();
+            assert_eq!(h.request_headers.get("X-Processed-By").map(|s| s.as_str()), Some("header-injector"));
+        }
+    }
+
+    #[cfg(feature = "audit-logger")]
+    mod audit_logger {
+        use super::*;
+        use crate::plugins::audit_logger::AuditLoggerPlugin;
+        use cpex_core::cmf::CmfHook;
+        use cpex_core::hooks::trait_def::HookHandler;
+
+        #[tokio::test]
+        async fn test_always_allows_pre_invoke() {
+            let mut sec = SecurityExtension::default();
+            sec.add_label("PII");
+            let mut http = HttpExtension::default();
+            http.set_header("X-Request-ID", "req-123");
+            let ext = Extensions {
+                security: Some(Arc::new(sec)),
+                http: Some(Arc::new(http)),
+                ..Default::default()
+            };
+            let payload = tool_call_payload("get_data");
+            let mut ctx = PluginContext::default();
+
+            let result: PluginResult<_> =
+                <AuditLoggerPlugin as HookHandler<CmfHook>>::handle(
+                    &AuditLoggerPlugin, &payload, &ext, &mut ctx,
+                ).await;
+            result.assert_allowed();
+        }
+
+        #[tokio::test]
+        async fn test_always_allows_post_invoke() {
+            let ext = Extensions::default();
+            let payload = tool_result_payload("get_data", serde_json::json!({"result": "ok"}), false);
+            let mut ctx = PluginContext::default();
+
+            let result: PluginResult<_> =
+                <AuditLoggerPlugin as HookHandler<CmfHook>>::handle(
+                    &AuditLoggerPlugin, &payload, &ext, &mut ctx,
+                ).await;
+            result.assert_allowed();
+        }
+    }
+
+    #[cfg(feature = "token-attenuator")]
+    mod token_attenuator {
+        use super::*;
+        use crate::plugins::token_attenuator::TokenAttenuatorPlugin;
+        use cpex_core::delegation::{DelegationPayload, TargetType, TokenDelegateHook};
+        use cpex_core::hooks::trait_def::HookHandler;
+
+        #[tokio::test]
+        async fn test_mints_token_for_tool_target() {
+            let payload = DelegationPayload::new("", "get_compensation")
+                .with_target_type(TargetType::Tool)
+                .with_target_audience("hr-service.internal")
+                .with_required_permissions(vec!["read_compensation".into()]);
+            let ext = Extensions::default();
+            let mut ctx = PluginContext::default();
+
+            let result: PluginResult<_> =
+                <TokenAttenuatorPlugin as HookHandler<TokenDelegateHook>>::handle(
+                    &TokenAttenuatorPlugin, &payload, &ext, &mut ctx,
+                ).await;
+            result.assert_allowed();
+            result.assert_has_modified_payload();
+
+            let modified = result.modified_payload.as_ref().unwrap();
+            let token = modified.delegated_token.as_ref().expect("should mint token");
+            assert_eq!(token.audience, "hr-service.internal");
+            assert_eq!(token.scopes, vec!["read_compensation"]);
+            assert_eq!(token.outbound_header, "Authorization");
+            assert!(modified.minted_at.is_some());
+            assert_eq!(modified.metadata.get("minter").and_then(|v| v.as_str()), Some("token-attenuator-wasm"));
+        }
+
+        #[tokio::test]
+        async fn test_passes_through_non_tool_targets() {
+            let payload = DelegationPayload::new("", "agent-downstream")
+                .with_target_type(TargetType::Agent);
+            let ext = Extensions::default();
+            let mut ctx = PluginContext::default();
+
+            let result: PluginResult<_> =
+                <TokenAttenuatorPlugin as HookHandler<TokenDelegateHook>>::handle(
+                    &TokenAttenuatorPlugin, &payload, &ext, &mut ctx,
+                ).await;
+            result.assert_allowed();
+            assert!(result.modified_payload.is_none());
+        }
+
+        #[tokio::test]
+        async fn test_uses_target_name_as_audience_when_no_explicit_audience() {
+            let payload = DelegationPayload::new("", "fetch-records")
+                .with_target_type(TargetType::Tool);
+            let ext = Extensions::default();
+            let mut ctx = PluginContext::default();
+
+            let result: PluginResult<_> =
+                <TokenAttenuatorPlugin as HookHandler<TokenDelegateHook>>::handle(
+                    &TokenAttenuatorPlugin, &payload, &ext, &mut ctx,
+                ).await;
+            result.assert_has_modified_payload();
+            let token = result.modified_payload.as_ref().unwrap()
+                .delegated_token.as_ref().unwrap();
+            assert_eq!(token.audience, "fetch-records");
+        }
+    }
+}

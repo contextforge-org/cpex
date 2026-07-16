@@ -75,6 +75,20 @@ struct WasmPluginState {
     network: NetworkPolicy,
     table: ResourceTable,
     limits: StoreLimits,
+    plugin_name: String,
+}
+
+impl cpex::plugin::host_logging::Host for WasmPluginState {
+    fn log(&mut self, level: cpex::plugin::host_logging::LogLevel, message: String) {
+        use cpex::plugin::host_logging::LogLevel;
+        match level {
+            LogLevel::Trace => tracing::trace!(plugin = %self.plugin_name, "{}", message),
+            LogLevel::Debug => tracing::debug!(plugin = %self.plugin_name, "{}", message),
+            LogLevel::Info => tracing::info!(plugin = %self.plugin_name, "{}", message),
+            LogLevel::Warn => tracing::warn!(plugin = %self.plugin_name, "{}", message),
+            LogLevel::Error => tracing::error!(plugin = %self.plugin_name, "{}", message),
+        }
+    }
 }
 
 impl WasiView for WasmPluginState {
@@ -102,6 +116,8 @@ struct WasmPluginInstance {
     plugin: Plugin,
     /// Epoch ticks before the store traps (used to reset timeout per invocation)
     epoch_deadline: u64,
+    /// Fuel budget per invocation (reset at the start of each call)
+    fuel_per_invocation: u64,
 }
 
 /// Manages a single WASM plugin in a sandboxed wasmtime environment.
@@ -112,8 +128,16 @@ pub struct SandboxManager {
     instance: Option<WasmPluginInstance>,
 }
 
-impl SandboxManager {
-    /// Create a new SandboxManager with no plugin loaded.
+/// A shared engine + linker + epoch ticker that multiple `SandboxManager` instances
+/// can use. Create one per factory, not one per plugin.
+pub struct SharedEngine {
+    engine: Engine,
+    linker: Linker<WasmPluginState>,
+}
+
+impl SharedEngine {
+    /// Create a shared engine with WASI, HTTP, and host-logging linked.
+    /// Spawns a single epoch ticker thread for all plugins using this engine.
     pub fn new() -> Result<Self> {
         let mut config = Config::new();
         config.wasm_component_model(true);
@@ -124,19 +148,38 @@ impl SandboxManager {
         let mut linker = Linker::new(&engine);
         wasmtime_wasi::p2::add_to_linker_async(&mut linker)?;
         wasmtime_wasi_http::p2::add_only_http_to_linker_async(&mut linker)?;
+        cpex::plugin::host_logging::add_to_linker::<WasmPluginState, wasmtime::component::HasSelf<WasmPluginState>>(&mut linker, |state| state)?;
 
-        // Start epoch ticker thread for timeout enforcement
         let engine_clone = engine.clone();
         std::thread::spawn(move || loop {
             std::thread::sleep(std::time::Duration::from_millis(1));
             engine_clone.increment_epoch();
         });
 
+        Ok(Self { engine, linker })
+    }
+}
+
+impl SandboxManager {
+    /// Create a new SandboxManager with its own engine and epoch ticker.
+    /// Prefer `with_shared_engine` when loading multiple plugins.
+    pub fn new() -> Result<Self> {
+        let shared = SharedEngine::new()?;
         Ok(Self {
-            engine,
-            linker,
+            engine: shared.engine,
+            linker: shared.linker,
             instance: None,
         })
+    }
+
+    /// Create a SandboxManager backed by a shared engine.
+    /// All plugins sharing an engine use one epoch ticker thread.
+    pub fn with_shared_engine(shared: &SharedEngine) -> Self {
+        Self {
+            engine: shared.engine.clone(),
+            linker: shared.linker.clone(),
+            instance: None,
+        }
     }
 
     /// Load a plugin from a WASM file with the given sandbox policy.
@@ -145,10 +188,10 @@ impl SandboxManager {
         &mut self,
         wasm_path: &Path,
         sandbox_policy: Option<&SandboxPolicy>,
+        plugin_name: &str,
     ) -> Result<()> {
-        eprintln!("[SANDBOX] load_wasmplugin: path={}", wasm_path.display());
+        tracing::debug!(plugin = %plugin_name, path = %wasm_path.display(), "loading WASM plugin");
         let ctx = build_wasi_context(sandbox_policy)?;
-        eprintln!("[SANDBOX] WASI context built");
         let default_resources = ResourceLimits::default();
         let resources = sandbox_policy
             .map(|p| &p.resources)
@@ -167,10 +210,8 @@ impl SandboxManager {
         }
         let limits = limits_builder.trap_on_grow_failure(true).build();
 
-        eprintln!("[SANDBOX] Loading component from file...");
         let component = Component::from_file(&self.engine, wasm_path)
             .map_err(|e| anyhow::anyhow!("failed to load wasm from {}: {}", wasm_path.display(), e))?;
-        eprintln!("[SANDBOX] Component loaded successfully");
 
         let mut store = Store::new(
             &self.engine,
@@ -182,41 +223,51 @@ impl SandboxManager {
                 },
                 table: ResourceTable::new(),
                 limits,
+                plugin_name: plugin_name.to_string(),
             },
         );
 
         // Apply memory/table limits
         store.limiter(|state| &mut state.limits);
 
-        // Apply fuel budget (instruction count limit)
-        let fuel = resources.max_fuel.unwrap_or(u64::MAX);
-        store.set_fuel(fuel)
+        // Fuel is set per-invocation (reset at the start of each call) to
+        // prevent long-lived plugins from silently degrading. The initial
+        // budget is set here so the plugin can instantiate.
+        let fuel_per_invocation = resources.max_fuel.unwrap_or(u64::MAX);
+        store.set_fuel(fuel_per_invocation)
             .map_err(|e| anyhow::anyhow!("failed to set fuel: {}", e))?;
 
-        // Apply execution timeout via epoch deadline
-        // Each epoch tick is ~1ms (from ticker thread), so ms ≈ ticks
-        let epoch_deadline = resources.max_execution_time_ms.unwrap_or(3_600_000);
+        // Apply execution timeout via epoch deadline.
+        // Default is 5 seconds — safe for synchronous hooks. Plugins that
+        // perform outbound HTTP should set a higher value explicitly.
+        let epoch_deadline = resources.max_execution_time_ms.unwrap_or(5_000);
+        if resources.max_execution_time_ms.is_none() {
+            tracing::warn!(
+                plugin = %plugin_name,
+                "no explicit max_execution_time_ms configured — using default 5000ms"
+            );
+        }
         store.set_epoch_deadline(epoch_deadline);
         store.epoch_deadline_trap();
 
-        eprintln!("[SANDBOX] Instantiating plugin component...");
         let plugin = Plugin::instantiate_async(&mut store, &component, &self.linker)
             .await
             .map_err(|e| anyhow::anyhow!("failed to instantiate plugin: {}", e))?;
-        eprintln!("[SANDBOX] Plugin instantiated OK");
+        tracing::debug!(plugin = %plugin_name, "plugin instantiated");
 
         self.instance = Some(WasmPluginInstance {
             store,
             plugin,
             epoch_deadline,
+            fuel_per_invocation,
         });
 
         Ok(())
     }
 
     /// Invoke the loaded plugin's handle-hook function.
-    /// Fuel is a session-level budget (not reset between invocations).
-    /// Epoch deadline is per-invocation (reset each call so no single call hangs).
+    /// Both fuel and epoch deadline are reset per invocation so each call
+    /// gets a fresh budget — no silent degradation over time.
     pub async fn invoke(
         &mut self,
         hook_name: &str,
@@ -224,25 +275,22 @@ impl SandboxManager {
         extensions: types::Extensions,
         ctx: types::PluginContext,
     ) -> Result<types::HookResult> {
-        eprintln!("[SANDBOX] invoke() called, plugin loaded: {}", self.is_loaded());
         let instance = self
             .instance
             .as_mut()
             .with_context(|| "no plugin loaded")?;
 
+        // Reset fuel per invocation — each call gets a fresh budget
+        instance.store.set_fuel(instance.fuel_per_invocation)
+            .map_err(|e| anyhow::anyhow!("failed to reset fuel: {}", e))?;
+
         // Reset epoch deadline per invocation (timeout is per-call)
         instance.store.set_epoch_deadline(instance.epoch_deadline);
 
-        eprintln!("[SANDBOX] Calling handle_hook on WASM component...");
         let result = instance
             .plugin
             .call_handle_hook(&mut instance.store, hook_name, &payload, &extensions, &ctx)
             .await;
-
-        match &result {
-            Ok(r) => eprintln!("[SANDBOX] handle_hook OK: continue_processing={}", r.continue_processing),
-            Err(e) => eprintln!("[SANDBOX] handle_hook FAILED: {}", e),
-        }
 
         result.map_err(|e| anyhow::anyhow!("plugin invocation failed: {}", e))
     }
@@ -252,3 +300,4 @@ impl SandboxManager {
         self.instance.is_some()
     }
 }
+

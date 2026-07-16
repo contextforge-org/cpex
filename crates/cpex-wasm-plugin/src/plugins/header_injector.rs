@@ -8,6 +8,8 @@ use cpex_core::extensions::guarded::Guarded;
 use cpex_core::hooks::trait_def::{HookHandler, PluginResult};
 use cpex_core::plugin::{Plugin, PluginConfig};
 
+use crate::cpex_log;
+
 pub struct HeaderInjectorPlugin;
 
 impl Default for HeaderInjectorPlugin {
@@ -45,26 +47,13 @@ impl HookHandler<CmfHook> for HeaderInjectorPlugin {
         extensions: &Extensions,
         _ctx: &mut PluginContext,
     ) -> PluginResult<MessagePayload> {
-        if let Some(ref http) = extensions.http {
-            eprintln!(
-                "[WASM:header-injector] HTTP visible: {} headers",
-                http.request_headers.len()
-            );
-        }
-
-        if let Some(ref security) = extensions.security {
-            if security.subject.is_some() {
-                eprintln!("[WASM:header-injector] WARNING: Subject visible (unexpected!)");
-            } else {
-                eprintln!("[WASM:header-injector] Subject: not visible (correct — no read_subject)");
-            }
-        }
+        cpex_log!(debug, "processing hook, http_headers={}",
+            extensions.http.as_ref().map(|h| h.request_headers.len()).unwrap_or(0));
 
         let mut modified = extensions.cow_copy();
 
         if let Some(ref mut sec) = modified.security {
             sec.add_label("PROCESSED");
-            eprintln!("[WASM:header-injector] Added label 'PROCESSED'");
         }
 
         let mut http = extensions
@@ -74,7 +63,8 @@ impl HookHandler<CmfHook> for HeaderInjectorPlugin {
             .unwrap_or_default();
         http.set_header("X-Processed-By", "header-injector");
         modified.http = Some(Guarded::new(http));
-        eprintln!("[WASM:header-injector] Injected header 'X-Processed-By'");
+
+        cpex_log!(info, "injected header 'X-Processed-By' and label 'PROCESSED'");
 
         PluginResult::modify_extensions(modified)
     }

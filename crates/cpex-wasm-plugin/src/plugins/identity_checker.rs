@@ -19,6 +19,8 @@ use cpex_core::hooks::trait_def::{HookHandler, PluginResult};
 use cpex_core::identity::{IdentityHook, IdentityPayload};
 use cpex_core::plugin::{Plugin, PluginConfig};
 
+use crate::cpex_log;
+
 pub struct IdentityCheckerPlugin;
 
 impl Default for IdentityCheckerPlugin {
@@ -65,14 +67,12 @@ impl HookHandler<CmfHook> for IdentityCheckerPlugin {
                 .first()
                 .map(|tr| tr.tool_name.as_str())
                 .unwrap_or("unknown");
-            eprintln!("[WASM] POST-INVOKE: verifying result from '{}'", tool_name);
 
             if let Some(ref security) = extensions.security {
                 if let Some(ref subject) = security.subject {
-                    eprintln!("[WASM] Result authorized for subject: {:?}", subject.id);
+                    cpex_log!(info, "POST-INVOKE: result from '{}' authorized for subject={:?}", tool_name, subject.id);
                 }
             }
-            eprintln!("[WASM] POST-INVOKE ALLOWED");
         } else {
             let tool_name = payload
                 .message
@@ -80,20 +80,14 @@ impl HookHandler<CmfHook> for IdentityCheckerPlugin {
                 .first()
                 .map(|tc| tc.name.as_str())
                 .unwrap_or("unknown");
-            eprintln!("[WASM] PRE-INVOKE: checking identity for '{}'", tool_name);
 
             if let Some(ref security) = extensions.security {
-                let labels: Vec<&String> = security.labels.iter().collect();
-                eprintln!("[WASM] Security labels: {:?}", labels);
-
                 if let Some(ref subject) = security.subject {
-                    eprintln!(
-                        "[WASM] Subject: {:?}, Roles: {:?}",
-                        subject.id,
-                        subject.roles.iter().collect::<Vec<_>>()
-                    );
+                    cpex_log!(debug, "PRE-INVOKE '{}': subject={:?} roles={:?}",
+                        tool_name, subject.id, subject.roles.iter().collect::<Vec<_>>());
 
                     if security.has_label("PII") && !subject.roles.contains("hr_admin") {
+                        cpex_log!(warn, "PRE-INVOKE '{}': DENIED — missing hr_admin role for PII", tool_name);
                         return PluginResult::deny(PluginViolation::new(
                             "insufficient_role",
                             &format!(
@@ -104,7 +98,7 @@ impl HookHandler<CmfHook> for IdentityCheckerPlugin {
                     }
                 }
             }
-            eprintln!("[WASM] PRE-INVOKE ALLOWED");
+            cpex_log!(debug, "PRE-INVOKE '{}': ALLOWED", tool_name);
         }
 
         PluginResult::allow()
@@ -122,16 +116,16 @@ impl HookHandler<IdentityHook> for IdentityCheckerPlugin {
         _ctx: &mut PluginContext,
     ) -> PluginResult<IdentityPayload> {
         if payload.subject.is_some() {
-            eprintln!("[WASM] IDENTITY: subject already resolved");
+            cpex_log!(debug, "IDENTITY: subject already resolved");
             return PluginResult::allow();
         }
 
         let Some(user_id) = payload.headers().get("x-user-id") else {
-            eprintln!("[WASM] IDENTITY: no x-user-id header — passing through");
+            cpex_log!(debug, "IDENTITY: no x-user-id header — passing through");
             return PluginResult::allow();
         };
 
-        eprintln!("[WASM] IDENTITY: resolved subject '{}' from header", user_id);
+        cpex_log!(info, "IDENTITY: resolved subject '{}' from header", user_id);
         let mut resolved = payload.clone();
         resolved.subject = Some(SubjectExtension {
             id: Some(user_id.clone()),

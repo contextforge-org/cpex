@@ -669,6 +669,19 @@ pub fn wit_hook_result_to_native(
     registry: &PayloadSerializerRegistry,
     original_extensions: &NativeExtensions,
 ) -> (ErasedResultFields, Option<NativePluginContext>) {
+    wit_hook_result_to_native_filtered(result, registry, original_extensions, None)
+}
+
+/// Same as `wit_hook_result_to_native` but accepts the filtered extensions
+/// that were actually sent to the WASM guest. When provided, mutable slots
+/// that were hidden from the guest (filtered to `None`) are preserved from
+/// the original rather than being nulled by the guest's empty return.
+pub fn wit_hook_result_to_native_filtered(
+    result: crate::sandbox_manager::types::HookResult,
+    registry: &PayloadSerializerRegistry,
+    original_extensions: &NativeExtensions,
+    filtered_extensions: Option<&NativeExtensions>,
+) -> (ErasedResultFields, Option<NativePluginContext>) {
     let modified_payload: Option<Box<dyn PluginPayload>> =
         result.modified_payload.and_then(|hp| match hp {
             HookPayload::Cmf(mp) => {
@@ -684,7 +697,7 @@ pub fn wit_hook_result_to_native(
                 match registry.deserialize(&gp.payload_type, &gp.payload_data) {
                     Ok(boxed) => Some(boxed),
                     Err(e) => {
-                        eprintln!("[HOST] custom payload writeback failed for '{}': {}", gp.payload_type, e);
+                        tracing::warn!("custom payload writeback failed for '{}': {}", gp.payload_type, e);
                         None
                     }
                 }
@@ -696,7 +709,7 @@ pub fn wit_hook_result_to_native(
         modified_payload,
         modified_extensions: result
             .modified_extensions
-            .map(|e| wit_extensions_to_owned(e, original_extensions)),
+            .map(|e| wit_extensions_to_owned(e, original_extensions, filtered_extensions)),
         violation: result.violation.map(wit_violation_to_native),
     };
 
@@ -988,7 +1001,11 @@ fn wit_resource_type_to_native(rt: ResourceType) -> native_enums::ResourceType {
 // WIT → Native: Extensions (writeback from guest)
 // ---------------------------------------------------------------------------
 
-fn wit_extensions_to_owned(ext: Extensions, original: &NativeExtensions) -> NativeOwnedExtensions {
+fn wit_extensions_to_owned(
+    ext: Extensions,
+    original: &NativeExtensions,
+    filtered: Option<&NativeExtensions>,
+) -> NativeOwnedExtensions {
     use cpex_core::extensions::guarded::Guarded;
 
     // Seed from cow_copy() of the pipeline's extensions so the immutable
@@ -999,12 +1016,28 @@ fn wit_extensions_to_owned(ext: Extensions, original: &NativeExtensions) -> Nati
     // those are the only slots `merge_owned` consumes.
     let mut owned = original.cow_copy();
 
-    owned.security = ext.security.map(wit_security_to_native);
-    owned.http = ext.http.map(|h| Guarded::new(NativeHttpExtension {
-        request_headers: h.request_headers.into_iter().collect(),
-        response_headers: h.response_headers.into_iter().collect(),
-    }));
-    owned.delegation = ext.delegation.map(wit_delegation_to_native);
+    // Only overwrite a mutable slot if the guest was authorized to see it
+    // (i.e., it was present in the filtered view sent to the guest).
+    // If the slot was hidden by capability filtering, preserve the original
+    // value from cow_copy() — otherwise the guest's empty return would
+    // null out the pipeline's slot.
+    let guest_saw_security = filtered.is_none_or(|f| f.security.is_some());
+    let guest_saw_http = filtered.is_none_or(|f| f.http.is_some());
+    let guest_saw_delegation = filtered.is_none_or(|f| f.delegation.is_some());
+
+    if guest_saw_security {
+        owned.security = ext.security.map(wit_security_to_native);
+    }
+    if guest_saw_http {
+        owned.http = ext.http.map(|h| Guarded::new(NativeHttpExtension {
+            request_headers: h.request_headers.into_iter().collect(),
+            response_headers: h.response_headers.into_iter().collect(),
+        }));
+    }
+    if guest_saw_delegation {
+        owned.delegation = ext.delegation.map(wit_delegation_to_native);
+    }
+    // Custom is unrestricted — always writable
     owned.custom = ext.custom.and_then(|s| serde_json::from_str(&s).ok());
 
     owned
@@ -1029,9 +1062,9 @@ fn wit_security_to_native(s: SecurityExtension) -> NativeSecurityExtension {
             teams: sub.teams.into_iter().collect(),
             claims: sub.claims.into_iter().collect(),
         }),
-        client: s.client.map(|c| wit_client_to_native(c)),
-        caller_workload: s.caller_workload.map(|w| wit_workload_to_native(w)),
-        this_workload: s.this_workload.map(|w| wit_workload_to_native(w)),
+        client: s.client.map(wit_client_to_native),
+        caller_workload: s.caller_workload.map(wit_workload_to_native),
+        this_workload: s.this_workload.map(wit_workload_to_native),
         auth_method: s.auth_method,
         objects: s.objects.into_iter()
             .map(|(k, v)| (k, NativeObjectSecurityProfile {

@@ -1,128 +1,25 @@
 # cpex-wasm-plugin
 
-WASM Plugin SDK and built-in plugins for the CPEX framework. Compiles CPEX plugins into portable `.wasm` components that the host (`cpex-wasm-host`) loads and executes in sandboxed wasmtime environments.
+WASM Plugin SDK for the CPEX framework. Write plugins using the same `HookHandler` trait as native Rust plugins, compile to `.wasm`, and run them in sandboxed isolation with capability-based access control.
 
-## SDK Architecture
+---
 
-This crate serves as both an **SDK** (WIT bindings, conversions, macro) and a **plugin collection** (feature-gated). Adding a new WASM plugin requires only writing a handler implementation — the SDK generates all WIT glue automatically.
+## What This Crate Provides
 
-```
-cpex-wasm-plugin/
-├── Cargo.toml                 # cdylib target, feature flags per plugin
-├── Makefile                   # Build targets (single plugin, all plugins)
-├── src/
-│   ├── lib.rs                 # SDK: wit_bindgen, register_wasm_plugin! macro, helpers
-│   ├── conversions.rs         # WIT ↔ cpex-core type mappings (all 11 extension types)
-│   └── plugins/
-│       ├── mod.rs             # Feature-gated module declarations
-│       ├── identity_checker.rs  # Checks PII access via labels + subject roles
-│       ├── header_injector.rs   # Modifies extensions: adds label + injects header
-│       └── audit_logger.rs      # Read-only audit logging
-└── wit/
-    ├── world.wit              # Plugin interface definition (shared with host)
-    └── deps/                  # WASI interface dependencies
-```
+- **`register_wasm_plugin!` macro** — generates all WIT glue code. You never touch WIT types directly.
+- **`cpex_log!` macro** — structured logging that flows through the host's tracing infrastructure.
+- **Bidirectional type conversions** — all 11 extension types, 3 payload types, and plugin context automatically convert between native and WIT.
+- **Feature-gated demo plugins** — reference implementations showing common patterns.
+- **Native unit testing** — test your handler logic without compiling to WASM.
 
-## How It Works
+---
 
-1. **WIT Interface (`wit/world.wit`)** defines the contract. The plugin exports a single function:
+## Create Your Own Plugin in 5 Minutes
 
-   ```wit
-   export handle-hook: func(
-     hook-name: string,
-     payload: hook-payload,
-     extensions: extensions,
-     ctx: plugin-context
-   ) -> hook-result;
-   ```
-
-2. **`register_wasm_plugin!` macro** generates the complete `Guest` impl. Plugin authors implement `HookHandler<H>` from `cpex-core` — identical code to a native plugin.
-
-3. **Feature-gated registration** — each plugin is a Cargo feature. Only one plugin compiles into each `.wasm` binary:
-
-   ```toml
-   [features]
-   default = ["identity-checker"]
-   identity-checker = []
-   header-injector = []
-   audit-logger = []
-   ```
-
-4. **Type Conversions (`src/conversions.rs`)** handles bidirectional mapping between WIT-generated types and native `cpex-core` types across all 11 extension types.
-
-## Built-in Plugins
-
-| Plugin | Feature Flag | Capabilities | Behavior |
-|--------|-------------|--------------|----------|
-| `identity-checker` | `identity-checker` | `read_labels`, `read_subject`, `read_roles` | Checks PII access — denies if subject lacks required role |
-| `header-injector` | `header-injector` | `read_headers`, `write_headers`, `append_labels` | Adds "PROCESSED" label + "X-Processed-By" header |
-| `audit-logger` | `audit-logger` | `read_headers`, `read_labels` | Read-only audit logging of tool invocations |
-
-## Prerequisites
-
-- Rust toolchain with the `wasm32-wasip2` target:
-  ```sh
-  rustup target add wasm32-wasip2
-  ```
-- `wasm-tools` CLI (optional, for validation and inspection):
-  ```sh
-  cargo install wasm-tools
-  ```
-
-## Building
-
-### Single plugin (default: identity-checker)
-
-```sh
-make all
-```
-
-### All plugins
-
-```sh
-make build-all
-```
-
-This builds each feature into a separate `.wasm` and stages them in `../cpex-wasm-host/wasm/`:
-
-```
-wasm/identity-checker.wasm
-wasm/header-injector.wasm
-wasm/audit-logger.wasm
-```
-
-### Manual build (specific plugin)
-
-```sh
-cargo build --target wasm32-wasip2 --release --features header-injector --no-default-features
-cp target/wasm32-wasip2/release/cpex_wasm_plugin.wasm ../cpex-wasm-host/wasm/header-injector.wasm
-```
-
-## Running the Demos
-
-From the workspace root:
-
-```sh
-# Build all plugins + run the capabilities demo (3 plugins, capability isolation)
-cd crates/cpex-wasm-plugin && make build-all && cd ../..
-cargo run -p cpex-wasm-host --example wasm_capabilities_demo
-
-# Or use the host Makefile:
-cd crates/cpex-wasm-host && make run-capabilities-demo
-```
-
-Expected output shows three plugins running in the same pipeline with different views of the extensions:
-- `identity-checker` sees labels + subject, HTTP NOT visible
-- `header-injector` sees HTTP, subject NOT visible, adds label + injects header
-- `audit-logger` logs tool name, labels (including "PROCESSED"), request-id
-
-## Writing a New Plugin
-
-Adding a new plugin requires **3 steps** — no WIT knowledge needed:
-
-### Step 1: Create `src/plugins/my_plugin.rs`
+### Step 1: Create the handler file
 
 ```rust
+// src/plugins/my_plugin.rs
 use async_trait::async_trait;
 use cpex_core::cmf::{CmfHook, MessagePayload};
 use cpex_core::context::PluginContext;
@@ -130,6 +27,7 @@ use cpex_core::error::{PluginError, PluginViolation};
 use cpex_core::extensions::container::Extensions;
 use cpex_core::hooks::trait_def::{HookHandler, PluginResult};
 use cpex_core::plugin::{Plugin, PluginConfig};
+use crate::cpex_log;
 
 pub struct MyPlugin;
 
@@ -137,12 +35,12 @@ impl Default for MyPlugin {
     fn default() -> Self { Self }
 }
 
-static PLUGIN_CONFIG: std::sync::OnceLock<PluginConfig> = std::sync::OnceLock::new();
+static CONFIG: std::sync::OnceLock<PluginConfig> = std::sync::OnceLock::new();
 
 #[async_trait]
 impl Plugin for MyPlugin {
     fn config(&self) -> &PluginConfig {
-        PLUGIN_CONFIG.get_or_init(|| PluginConfig {
+        CONFIG.get_or_init(|| PluginConfig {
             name: "my-plugin".to_string(),
             kind: "wasm://my-plugin.wasm".to_string(),
             hooks: vec!["cmf.tool_pre_invoke".to_string()],
@@ -160,19 +58,30 @@ impl HookHandler<CmfHook> for MyPlugin {
         extensions: &Extensions,
         _ctx: &mut PluginContext,
     ) -> PluginResult<MessagePayload> {
-        // Your logic here — identical to a native plugin.
+        // Read extensions (only slots your capabilities grant)
+        if let Some(ref security) = extensions.security {
+            if security.has_label("PII") {
+                cpex_log!(warn, "PII data detected in tool call");
+
+                // Check authorization
+                if let Some(ref subject) = security.subject {
+                    if !subject.roles.contains("admin") {
+                        return PluginResult::deny(PluginViolation::new(
+                            "unauthorized",
+                            "Admin role required for PII access",
+                        ));
+                    }
+                }
+            }
+        }
+
+        cpex_log!(info, "tool call approved");
         PluginResult::allow()
     }
 }
 ```
 
-### Step 2: Add the feature flag
-
-In `Cargo.toml`:
-```toml
-[features]
-my-plugin = []
-```
+### Step 2: Register the plugin
 
 In `src/plugins/mod.rs`:
 ```rust
@@ -180,182 +89,372 @@ In `src/plugins/mod.rs`:
 pub mod my_plugin;
 ```
 
-In `src/lib.rs` (at the bottom, with the other registrations):
+In `src/lib.rs`:
 ```rust
-#[cfg(feature = "my-plugin")]
+#[cfg(all(feature = "my-plugin", not(test)))]
 register_wasm_plugin!(
     plugins::my_plugin::MyPlugin,
     [cpex_core::cmf::CmfHook]
 );
 ```
 
-### Step 3: Build and stage
-
-```sh
-cargo build --target wasm32-wasip2 --release --features my-plugin --no-default-features
-cp target/wasm32-wasip2/release/cpex_wasm_plugin.wasm ../cpex-wasm-host/wasm/my-plugin.wasm
+In `Cargo.toml`:
+```toml
+[features]
+my-plugin = []
 ```
 
-That's it — your WASM component is ready for the host to load.
+### Step 3: Build and deploy
 
-### Denying a request
+```bash
+# Build to WASM
+cargo build --target wasm32-wasip2 --release \
+    --features my-plugin --no-default-features
 
-Return `PluginResult::deny(...)` with a `PluginViolation` to block processing:
+# Copy to the host's wasm directory
+cp target/wasm32-wasip2/release/cpex_wasm_plugin.wasm \
+    ../cpex-wasm-host/wasm/my-plugin.wasm
+```
+
+### Step 4: Configure in YAML
+
+```yaml
+plugins:
+  - name: my-plugin
+    kind: wasm://my-plugin.wasm
+    hooks: [cmf.tool_pre_invoke]
+    mode: sequential
+    priority: 50
+    on_error: fail
+    capabilities:
+      - read_labels
+      - read_subject
+      - read_roles
+    config:
+      sandbox_policy:
+        allowed_filesystem: []
+        allowed_network: []
+        allowed_env: []
+        resources:
+          max_memory_bytes: 10485760
+          max_fuel: 1000000000
+          max_execution_time_ms: 5000
+```
+
+That's it. Your plugin runs in a sandboxed WASM environment with the same API as a native plugin.
+
+---
+
+## Testing Your Plugin
+
+Tests run natively — no WASM compilation needed:
+
+```bash
+cargo test --features my-plugin --no-default-features
+```
+
+Add tests in `src/lib.rs` inside the `#[cfg(test)] mod tests` block:
 
 ```rust
-if security.has_label("PII") && !subject.roles.contains("hr_admin") {
-    return PluginResult::deny(PluginViolation::new(
-        "insufficient_role",
-        "Tool requires 'hr_admin' role for PII data",
-    ));
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(feature = "my-plugin")]
+    mod my_plugin_tests {
+        use std::sync::Arc;
+        use cpex_core::cmf::CmfHook;
+        use cpex_core::context::PluginContext;
+        use cpex_core::extensions::container::Extensions;
+        use cpex_core::extensions::security::SecurityExtension;
+        use cpex_core::hooks::trait_def::HookHandler;
+        use crate::plugins::my_plugin::MyPlugin;
+
+        #[tokio::test]
+        async fn test_allows_non_pii() {
+            let ext = Extensions::default();
+            let payload = /* build your payload */;
+            let mut ctx = PluginContext::default();
+
+            let result: cpex_core::hooks::trait_def::PluginResult<_> =
+                <MyPlugin as HookHandler<CmfHook>>::handle(
+                    &MyPlugin, &payload, &ext, &mut ctx,
+                ).await;
+            assert!(result.continue_processing);
+        }
+    }
 }
 ```
 
-### Reading extensions
+---
 
-All 11 extension types are available — security, HTTP, request, meta, agent, MCP, completion, provenance, LLM, framework, delegation:
+## Capabilities (What Your Plugin Can Do)
+
+### Reading Extensions
+
+Extensions are passed by reference. You only see slots matching your declared capabilities:
 
 ```rust
-// Security labels and subject identity
+// Security (requires: read_labels, read_subject, read_roles, etc.)
 if let Some(ref security) = extensions.security {
-    let labels: Vec<_> = security.labels.iter().collect();
+    let has_pii = security.has_label("PII");
+    let labels: Vec<&String> = security.labels.iter().collect();
     if let Some(ref subject) = security.subject {
-        // subject.id, subject.roles, subject.permissions, ...
-    }
-    if let Some(ref client) = security.client {
-        // client.client_id, client.trust_level, client.authorized_scopes, ...
+        let user_id = &subject.id;
+        let roles = &subject.roles;
     }
 }
 
-// Request tracing
+// HTTP headers (requires: read_headers)
+if let Some(ref http) = extensions.http {
+    let auth = http.get_header("Authorization");
+    let req_id = http.get_header("X-Request-ID");
+}
+
+// Request metadata (always available)
 if let Some(ref request) = extensions.request {
-    // request.request_id, request.trace_id, request.environment, ...
+    let env = &request.environment;
+    let trace_id = &request.trace_id;
 }
 
-// MCP tool metadata
-if let Some(ref mcp) = extensions.mcp {
-    if let Some(ref tool) = mcp.tool {
-        // tool.name, tool.description, tool.input_schema, ...
-    }
+// Agent context (requires: read_agent)
+if let Some(ref agent) = extensions.agent {
+    let session = &agent.session_id;
 }
 ```
 
-### Modifying extensions (labels, headers)
+### Modifying Extensions
 
-Use `cow_copy()` to get a mutable workspace, modify it, and return via `PluginResult::modify_extensions`:
+Use `extensions.cow_copy()` to get a mutable workspace, then return it:
 
 ```rust
-use cpex_core::extensions::guarded::Guarded;
-
+// Requires: append_labels + write_headers capabilities
 let mut modified = extensions.cow_copy();
 
-// Add a security label (requires append_labels capability on host)
+// Add a security label (monotonic — can only add, never remove)
 if let Some(ref mut sec) = modified.security {
     sec.add_label("PROCESSED");
 }
 
-// Modify HTTP headers (requires write_headers capability on host)
-let mut http = extensions.http.as_ref().map(|h| (**h).clone()).unwrap_or_default();
+// Inject an HTTP header
+use cpex_core::extensions::guarded::Guarded;
+let mut http = extensions.http.as_ref()
+    .map(|h| (**h).clone())
+    .unwrap_or_default();
 http.set_header("X-Processed-By", "my-plugin");
 modified.http = Some(Guarded::new(http));
 
 PluginResult::modify_extensions(modified)
 ```
 
-The host executor validates modifications against the plugin's declared capabilities — if the plugin lacks `write_headers`, HTTP changes are rejected.
-
-### Modifying payload or context
+### Denying Requests
 
 ```rust
-ctx.local_state.insert("checked_at".to_string(), serde_json::json!("pre_invoke"));
+use cpex_core::error::PluginViolation;
 
-let mut modified = payload.clone();
-modified.message.content.push(ContentPart::Text {
-    text: "[audited]".into(),
-});
-PluginResult::allow_with_payload(modified)
+PluginResult::deny(PluginViolation::new(
+    "insufficient_permissions",     // code (machine-readable)
+    "User lacks admin role for PII" // reason (human-readable)
+))
 ```
 
-### Handling non-CMF hooks (identity_resolve, token_delegate, custom payloads)
+### Modifying Payloads
 
-Hooks whose payload is not `MessagePayload` cross the boundary via the WIT
-`generic` variant: the host serializes the payload with its type
-discriminator, and `register_wasm_plugin!` routes it to the matching
-`HookHandler<H>` by that discriminator. Implement the handler exactly like a
-native plugin and add the hook type to the registration list:
+```rust
+let mut modified_payload = payload.clone();
+// ... modify the message content ...
+PluginResult::modify_payload(modified_payload)
+```
+
+### Using Plugin Context (state across hooks)
+
+```rust
+// Write state in pre-invoke
+ctx.set_local("start_time", serde_json::json!(chrono::Utc::now().timestamp_millis()));
+
+// Read it back in post-invoke (same request lifecycle)
+if let Some(start) = ctx.get_local("start_time") {
+    let elapsed = now - start.as_i64().unwrap();
+    cpex_log!(info, "tool execution took {}ms", elapsed);
+}
+```
+
+---
+
+## Structured Logging
+
+Use `cpex_log!` instead of `println!` or `eprintln!`:
+
+```rust
+use crate::cpex_log;
+
+cpex_log!(trace, "entering handler");
+cpex_log!(debug, "subject={:?}, roles={:?}", subject_id, roles);
+cpex_log!(info, "processing tool '{}' for user '{}'", tool_name, user_id);
+cpex_log!(warn, "PII access without admin role");
+cpex_log!(error, "validation failed: {}", reason);
+```
+
+Logs flow through the host's `tracing` subscriber with your plugin name attached. In tests, they fall back to `eprintln!`.
+
+---
+
+## Handling Different Payload Types
+
+### CMF Payloads (most common)
+
+```rust
+impl HookHandler<CmfHook> for MyPlugin {
+    async fn handle(&self, payload: &MessagePayload, ...) -> PluginResult<MessagePayload> {
+        // Access tool calls
+        for tc in payload.message.get_tool_calls() {
+            cpex_log!(info, "tool: {} args: {:?}", tc.name, tc.arguments);
+        }
+        // Access tool results
+        for tr in payload.message.get_tool_results() {
+            cpex_log!(info, "result: {} error: {}", tr.tool_name, tr.is_error);
+        }
+        PluginResult::allow()
+    }
+}
+```
+
+### Identity Payloads (custom)
 
 ```rust
 use cpex_core::identity::{IdentityHook, IdentityPayload};
 
-impl HookHandler<IdentityHook> for MyPlugin {
-    async fn handle(
-        &self,
-        payload: &IdentityPayload,
-        _extensions: &Extensions,
-        _ctx: &mut PluginContext,
-    ) -> PluginResult<IdentityPayload> {
-        // Resolve identity from payload.headers() — the raw token is
-        // #[serde(skip)] and never enters the sandbox.
+impl HookHandler<IdentityHook> for MyResolver {
+    async fn handle(&self, payload: &IdentityPayload, ...) -> PluginResult<IdentityPayload> {
+        // Read headers to resolve identity
+        let user_id = payload.headers().get("x-user-id")?;
+
         let mut resolved = payload.clone();
-        // ... populate resolved.subject / resolved.client ...
+        resolved.subject = Some(SubjectExtension {
+            id: Some(user_id.clone()),
+            subject_type: Some(SubjectType::User),
+            ..Default::default()
+        });
         PluginResult::modify_payload(resolved)
     }
 }
 
-register_wasm_plugin!(MyPlugin, [CmfHook, IdentityHook]);
+// Register for both hooks:
+register_wasm_plugin!(MyResolver, [CmfHook, IdentityHook]);
 ```
 
-Three requirements for a payload type to cross the boundary:
+### Delegation Payloads (token minting)
 
-1. It implements `WasmSerializablePayload` — built-ins already do
-   (`MessagePayload` = `"cmf.message"`, `IdentityPayload` = `"cpex.identity"`,
-   `DelegationPayload` = `"cpex.delegation"`); custom types use
-   `impl_wasm_payload!(MyPayload, "my.payload")`.
-2. The host registers it in the `PayloadSerializerRegistry`
-   (`WasmPluginFactory::with_builtin_payloads` covers the built-ins).
-3. Fields carrying secrets are `#[serde(skip)]` if they must stay host-side —
-   skipped fields never serialize into the sandbox and never come back.
+```rust
+use cpex_core::delegation::{DelegationPayload, TokenDelegateHook, TargetType};
 
-A generic payload no listed hook handles returns `allow()` (pass-through); a
-payload that matches a listed hook but fails to decode returns a deny
-violation rather than silently skipping the plugin's check.
+impl HookHandler<TokenDelegateHook> for MyDelegator {
+    async fn handle(&self, payload: &DelegationPayload, ...) -> PluginResult<DelegationPayload> {
+        let target = payload.target_name();
+        let audience = payload.target_audience().unwrap_or(target);
+
+        let mut resolved = payload.clone();
+        resolved.delegated_token = Some(RawDelegatedToken { ... });
+        resolved.delegation_mode = Some(DelegationMode::OnBehalfOfUser);
+        PluginResult::modify_payload(resolved)
+    }
+}
+```
+
+---
+
+## Built-in Demo Plugins
+
+| Plugin | Feature | Hook(s) | What It Does |
+|--------|---------|---------|--------------|
+| **identity-checker** | `identity-checker` | `CmfHook` + `IdentityHook` | PII access control + identity resolution from headers |
+| **header-injector** | `header-injector` | `CmfHook` | Adds "PROCESSED" label + injects HTTP header |
+| **audit-logger** | `audit-logger` | `CmfHook` | Read-only logging of tool name, labels, request ID |
+| **token-attenuator** | `token-attenuator` | `TokenDelegateHook` | Mints scoped delegation tokens for downstream tools |
+| **noop** | `noop` | `CmfHook` | Returns `allow()` immediately (for benchmarking) |
+
+---
+
+## Build Commands
+
+```bash
+# Prerequisites
+rustup target add wasm32-wasip2
+
+# Build a single plugin
+cargo build --target wasm32-wasip2 --release \
+    --features identity-checker --no-default-features
+
+# Build all plugins (via Makefile)
+make build-all
+
+# Stage to host directory
+make stage
+
+# Validate the binary
+wasm-tools validate target/wasm32-wasip2/release/cpex_wasm_plugin.wasm
+
+# Inspect component structure
+wasm-tools component wit target/wasm32-wasip2/release/cpex_wasm_plugin.wasm
+```
+
+---
+
+## Project Structure
+
+```
+cpex-wasm-plugin/
+├── Cargo.toml              # cdylib target, feature flags per plugin
+├── Makefile                 # Build/stage/validate/run targets
+├── src/
+│   ├── lib.rs              # SDK: wit_bindgen, register_wasm_plugin! macro,
+│   │                       #   host_log/cpex_log!, unit tests
+│   ├── conversions.rs      # WIT ↔ native type conversions (all 11 extensions)
+│   └── plugins/
+│       ├── mod.rs           # Feature-gated module declarations
+│       ├── identity_checker.rs
+│       ├── header_injector.rs
+│       ├── audit_logger.rs
+│       ├── token_attenuator.rs
+│       └── noop.rs
+└── wit/
+    ├── world.wit           # WIT interface (shared with cpex-wasm-host)
+    └── deps/               # WASI P2 interface definitions
+```
 
 ---
 
 ## Constraints
 
-### One plugin per binary
-
-`register_wasm_plugin!` calls `export!(_WasmGuestImpl)` which is a WIT component export — there can only be one per `.wasm` binary. That's why each plugin is gated behind a Cargo feature — building with `--features header-injector --no-default-features` produces a binary containing only the header-injector plugin.
-
-### WASM-compatible dependencies only
-
-Any crate you `use` inside `plugin.rs` must compile to `wasm32-wasip2`. The compiler will tell you immediately if something doesn't compile for WASM.
-
-| Works in WASM | Does not work in WASM |
-|---|---|
-| `cpex-core` (no default features) | `cpex-core` with `runtime` feature (pulls Tokio) |
-| `serde`, `serde_json` | Tokio, `std::thread::spawn` |
-| `chrono` | `std::fs`, `std::net` |
-| `async-trait` | Any crate that does file I/O or spawns OS threads |
+- **One plugin per `.wasm` binary** — WIT's single-export constraint. Use feature flags to build separate binaries.
+- **No raw credential access** — `#[serde(skip)]` fields (bearer tokens, delegated token bytes) never cross the boundary.
+- **WASM-compatible dependencies only** — no tokio, no reqwest, no file I/O (use WASI HTTP for network calls).
+- **Monotonic labels** — security labels can only be added, never removed. Removal is a security violation.
+- **Handlers must complete synchronously** — the guest async executor polls once. Don't `.await` anything that yields.
 
 ---
 
-## Makefile Targets
+## Available Capabilities
 
-| Target | Description |
-|--------|-------------|
-| `make all` | Build default plugin (identity-checker) and stage as `plugin.wasm` |
-| `make build-all` | Build all three plugins and stage as separate `.wasm` files |
-| `make build-debug` | Debug build (faster compile) |
-| `make check` | Type-check only (fastest feedback) |
-| `make clean` | Remove all artifacts |
-| `make run-demo` | Build + stage + run the CMF demo |
-| `make run-all-demos` | Build + stage + run all existing demos |
-| `make help` | Show all available targets |
+Declare in your YAML config to control what extensions your plugin sees:
 
----
+| Capability | Grants |
+|-----------|--------|
+| `read_labels` | See security labels |
+| `append_labels` | Add security labels |
+| `read_subject` | See subject id + type |
+| `read_roles` | See subject roles |
+| `read_teams` | See subject teams |
+| `read_claims` | See subject claims |
+| `read_permissions` | See subject permissions |
+| `read_client` | See OAuth client identity |
+| `read_workload` | See workload identity |
+| `read_headers` | See HTTP headers |
+| `write_headers` | Modify HTTP headers |
+| `read_agent` | See agent context |
+| `read_delegation` | See delegation chain |
+| `append_delegation` | Append to delegation chain |
+| `read_inbound_credentials` | See raw inbound tokens |
+| `read_delegated_tokens` | See minted tokens |
 
-## Dependency Notes
-
-This crate depends on `cpex-core` with `default-features = false`. This excludes the `runtime` feature (Tokio, task spawning, orchestration), which is not available in WASM. All types, traits, and extension types are available; only the executor/manager/registry modules are excluded.
+Undeclared slots are invisible — your plugin receives `None` for those fields.
