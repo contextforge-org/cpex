@@ -163,11 +163,6 @@ async fn main() {
         .expect("policy m08.yaml should load");
     mgr.initialize().await.expect("initialize");
 
-    if let Err(e) = idp::wait_until_ready(Duration::from_secs(60)).await {
-        eprintln!("\x1b[31m{e}\x1b[0m");
-        std::process::exit(if ui::check_mode() { 1 } else { 0 });
-    }
-
     let evan = match idp::mint_token("evan", "evan").await {
         Ok(t) => Caller::with_token(t),
         Err(e) => {

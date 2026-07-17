@@ -21,7 +21,6 @@
 //     session, so a later email in that session is refused.
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use cpex::PluginManager;
 use cpex_tutorial::backends;
@@ -67,11 +66,6 @@ async fn main() {
     mgr.load_config_yaml(policy)
         .expect("capstone policy should load");
     mgr.initialize().await.expect("initialize");
-
-    if let Err(e) = idp::wait_until_ready(Duration::from_secs(60)).await {
-        eprintln!("\x1b[31m{e}\x1b[0m");
-        std::process::exit(if ui::check_mode() { 1 } else { 0 });
-    }
 
     let alice = token("alice").await;
     let dana = token("dana").await;

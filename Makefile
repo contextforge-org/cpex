@@ -314,6 +314,9 @@ tutorial-check-local:
 tutorial-check: tutorial-check-local
 	@echo "→ starting tutorial IdP"
 	@docker compose -f $(TUTORIAL_IDP_COMPOSE) up -d
+	@echo "→ waiting for Keycloak realm to be ready"
+	@$(CARGO) run -q -p cpex-tutorial --example wait_for_idp || { \
+		docker compose -f $(TUTORIAL_IDP_COMPOSE) down; exit 1; }
 	@for m in $(TUTORIAL_IDP_MODULES); do \
 		echo "→ tutorial $$m --check"; \
 		$(CARGO) run -q -p cpex-tutorial --example $$m -- --check || { \

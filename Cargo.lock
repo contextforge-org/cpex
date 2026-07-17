@@ -973,14 +973,11 @@ dependencies = [
 name = "cpex-tutorial"
 version = "0.2.2"
 dependencies = [
- "apl-cmf",
- "apl-core",
  "async-trait",
  "cpex",
  "cpex-core",
  "cpex-sdk",
  "reqwest",
- "serde",
  "serde_json",
  "tiny_http",
  "tokio",

@@ -30,7 +30,13 @@ docker compose -f examples/tutorial/idp/docker-compose.yml up -d   # ~30s first 
 docker compose -f examples/tutorial/idp/docker-compose.yml down    # resets everything
 ```
 
-See [`idp/README.md`](idp/README.md) for the personas and how to mint a token by hand.
+The realm takes a few seconds to import. Wait for it before running an IdP-backed module (a call returning `auth.jwks_unavailable` means it was still booting):
+
+```bash
+cargo run -p cpex-tutorial --example wait_for_idp   # blocks until the realm is serving
+```
+
+`make tutorial-check` runs this probe automatically before the IdP modules. See [`idp/README.md`](idp/README.md) for the personas and how to mint a token by hand.
 
 ## Editing policy
 

@@ -30,12 +30,9 @@ publish = false
 cpex = { path = "../../crates/cpex", features = ["builtins"] }
 cpex-core = { workspace = true }
 cpex-sdk = { workspace = true }
-apl-core = { workspace = true }
-apl-cmf = { workspace = true }
 
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "sync", "time", "macros"] }
 async-trait = { workspace = true }
-serde = { workspace = true }
 serde_json = { workspace = true }
 
 # Keycloak token minting (module 2+) and the approval channel (module 8).
