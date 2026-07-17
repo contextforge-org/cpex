@@ -5,7 +5,7 @@ weight: 18
 
 # Use Cases
 
-> Seven things teams use CPEX for, each shown as it runs in the end-to-end [Praxis demo](https://github.com/praxis-proxy/demos/tree/main/demos/cpex): a real proxy, a real IdP, a mock MCP backend, and CPEX as the gateway's policy engine. Every snippet below is quoted from the demo's live config, and every scenario is a script you can run.
+> Each use case below runs end-to-end in the [Praxis demo](https://github.com/praxis-proxy/demos/tree/main/demos/cpex): CPEX as the policy engine inside a real AI gateway, backed by a real IdP and a mock MCP backend. Every snippet is quoted from the demo's live config, and every scenario is a script you can run.
 
 The demo realizes the [running scenario]({{< relref "/docs/overview" >}}): one agent, three callers, three kinds of backend reached over MCP. Identity decides the outcome.
 
@@ -17,9 +17,15 @@ The demo realizes the [running scenario]({{< relref "/docs/overview" >}}): one a
 
 [Praxis](https://github.com/praxis-proxy/praxis) is an AI-native proxy built around a filter chain. CPEX ships as its `policy` filter (the `cpex-policy-engine` feature), so the gateway parses MCP JSON-RPC, runs the full policy pass, and only then forwards a scoped request upstream:
 
-![The Praxis demo topology: a chat agent calls the Praxis gateway over MCP, where the mcp, policy (CPEX), and router filters run in sequence before forwarding to the hr-mcp server; the policy filter is configured by cpex.yaml and talks to Keycloak for identity, token exchange, and CIBA, and to Valkey for session taint, while Keycloak pushes CIBA approvals to the auth-channel UI](/cpex/images/use_cases_topology.png)
+![The Praxis demo topology: a chat agent calls the Praxis gateway over MCP, where the mcp, policy (CPEX), and router filters run in sequence before forwarding to the hr-mcp server; the policy filter is configured by cpex.yaml and talks to Keycloak for identity, token exchange, and CIBA, and to Valkey for session taint, while Keycloak pushes CIBA approvals to the auth-channel UI](images/use_cases_topology.png)
 
 The wiring is two files: [`praxis.yaml`](https://github.com/praxis-proxy/demos/blob/main/demos/cpex/praxis.yaml) declares the listener and filter chain, and [`cpex.yaml`](https://github.com/praxis-proxy/demos/blob/main/demos/cpex/cpex.yaml) holds everything CPEX: identity plugins, delegators, validators, routes, and the PDP policy. The use cases below are that one config, taken apart.
+
+## Watch it run
+
+The recording below shows an interactive session against the gateway, driven by an LLM agent, covering an allow with token exchange, on-the-wire redaction, session taint, a CEL policy decision, and a human-in-the-loop manager approval, with the governing policy shown alongside each step.
+
+{{< asciinema cast="https://asciinema.org/a/NsnafpaR7xzyjm7a.cast" poster="npt:0:03" >}}
 
 ## 1. Identity-aware tool access
 
@@ -116,7 +122,7 @@ Some actions should not happen on the caller's authority alone. `adjust_compensa
 
 The gateway never blocks. It suspends the call, answers the agent with JSON-RPC `-32120` and an elicitation id, and drives an OIDC CIBA backchannel request to Keycloak, which pushes the prompt to the manager's device. The `scope` binds the approval to the live amount, so a sign-off cannot be replayed against a larger change.
 
-![The approval sequence: the agent sends adjust_compensation for $25k and the gateway answers -32120 pending with an elicitation id while firing a CIBA backchannel request to Keycloak, which pushes the prompt to the manager's device; after the manager approves, the agent's peek returns -32121 approved, and re-sending with X-Policy-Elicitation-Id applies the change with a 200](/cpex/images/use_cases_hil_sequence.png)
+![The approval sequence: the agent sends adjust_compensation for $25k and the gateway answers -32120 pending with an elicitation id while firing a CIBA backchannel request to Keycloak, which pushes the prompt to the manager's device; after the manager approves, the agent's peek returns -32121 approved, and re-sending with X-Policy-Elicitation-Id applies the change with a 200](images/use_cases_hil_sequence.png)
 
 The agent needs no approval protocol; it sees "retry later" and, later, a result. In the demo's chat client the conversation simply continues until the approval lands and the result cuts back in.
 

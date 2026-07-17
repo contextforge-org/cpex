@@ -14,7 +14,7 @@
   <text x="205" y="128" font-size="24" fill="#161616" text-anchor="middle" font-family="IBM Plex Mono">get_compensation</text>
 
   <line x1="370" y1="120" x2="588" y2="120" stroke="#161616" stroke-width="3" marker-end="url(#ah)"/>
-  <text x="470" y="94" font-size="17" fill="#3b6de8" text-anchor="middle" font-family="IBM Plex Mono">taint(secret, session)</text>
+  <text x="487" y="98" font-size="16" fill="#3b6de8" text-anchor="middle" font-family="IBM Plex Mono">taint(secret, session)</text>
 
   <rect x="600" y="60" width="330" height="120" rx="8" fill="#f0f0f0" stroke="#8a8a8a" stroke-width="2.5" stroke-dasharray="7 7"/>
   <text x="765" y="112" font-size="22" fill="#161616" text-anchor="middle">session labels</text>
@@ -36,11 +36,11 @@
   <line x1="765" y1="180" x2="765" y2="298" stroke="#9e9e9e" stroke-width="4" stroke-dasharray="2 10" stroke-linecap="round" marker-end="url(#ahg)"/>
 
   <!-- branches -->
-  <line x1="930" y1="345" x2="1148" y2="285" stroke="#161616" stroke-width="3" marker-end="url(#ah)"/>
-  <text x="1040" y="288" font-size="19" fill="#5f5f5f" text-anchor="middle">yes</text>
+  <path d="M 930 345 H 1022 Q 1040 345 1040 327 V 293 Q 1040 275 1058 275 H 1148" fill="none" stroke="#161616" stroke-width="3" marker-end="url(#ah)"/>
+  <text x="1094" y="253" font-size="19" fill="#5f5f5f" text-anchor="middle">yes</text>
 
-  <line x1="930" y1="395" x2="1148" y2="455" stroke="#161616" stroke-width="3" marker-end="url(#ah)"/>
-  <text x="1040" y="453" font-size="19" fill="#5f5f5f" text-anchor="middle">no</text>
+  <path d="M 930 395 H 1022 Q 1040 395 1040 413 V 437 Q 1040 455 1058 455 H 1148" fill="none" stroke="#161616" stroke-width="3" marker-end="url(#ah)"/>
+  <text x="1094" y="433" font-size="19" fill="#5f5f5f" text-anchor="middle">no</text>
 
   <rect x="1160" y="220" width="330" height="110" rx="8" fill="#ffffff" stroke="#161616" stroke-width="2.5"/>
   <text x="1325" y="268" font-size="23" fill="#161616" text-anchor="middle">deny</text>

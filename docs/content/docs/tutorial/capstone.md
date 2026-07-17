@@ -48,7 +48,7 @@ Two behaviors carry the whole idea.
   ✗ DENIED   [session_tainted] write-down blocked: this session read secret data
 ```
 
-The application code treated every call the same. Identity, permission, and session history produced every outcome. That is the whole point of CPEX: behavior lives in policy, at the boundary, not in the app.
+The application code treated every call the same. Identity, permission, and session history produced every outcome: behavior lives in policy, not in the application.
 
 If you skipped module 6, run the variant that drops delegation:
 

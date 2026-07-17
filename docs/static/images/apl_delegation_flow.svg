@@ -43,7 +43,7 @@
   <text x="855" y="373" font-size="19" fill="#161616" text-anchor="middle" font-family="IBM Plex Mono" font-weight="600">delegation.granted.permissions</text>
   <text x="855" y="407" font-size="18" fill="#5f5f5f" text-anchor="middle">verified before forward; less than requested denies</text>
 
-  <line x1="1095" y1="375" x2="1330" y2="300" stroke="#9e9e9e" stroke-width="4" stroke-dasharray="2 10" stroke-linecap="round" marker-end="url(#ahg)"/>
+  <path d="M 1095 382 H 1142 Q 1160 382 1160 364 V 318 Q 1160 300 1178 300 H 1330" fill="none" stroke="#9e9e9e" stroke-width="4" stroke-dasharray="2 10" stroke-linecap="round" marker-end="url(#ahg)"/>
 
   <text x="175" y="300" font-size="18" fill="#5f5f5f" font-style="italic">the caller's raw IdP credential never leaves CPEX</text>
 </svg>

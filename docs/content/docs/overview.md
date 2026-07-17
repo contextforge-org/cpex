@@ -9,13 +9,9 @@ weight: 10
 
 Picture one agent serving several people. It answers questions by calling tools (an HR records service, a code repository, an email sender), invoking other agents over A2A, running inference, and fetching prompts and resources. The backends are shared. The callers are not: an HR analyst, an engineer, and a support rep each drive the same agent with different identities and different entitlements.
 
-![One agent serves three users across HR, repo, and email backends; CPEX policy produces a different outcome per identity](/cpex/images/demo_scenario.png)
+![One agent serves three users across HR, repo, and email backends; CPEX policy produces a different outcome per identity](images/demo_scenario.png)
 
-The agent's LLM decides which operation to run. It is untrusted. CPEX sits between it and every capability, and decides what actually happens.
-
-![CPEX mediates every operation an untrusted LLM triggers, evaluating APL policy against identity, delegation, taint, and audit state the model cannot forge](/cpex/images/cpex_overview.png)
-
-For each operation, CPEX resolves the caller's identity, evaluates the APL policy attached to that operation, and applies the resulting effects before anything reaches the backend. The same four phases run every time: validate arguments, evaluate policy, transform the result, run post-policy checks.
+The agent's LLM decides which operation to run. It is untrusted. CPEX sits between it and every capability, and decides what actually happens. For each operation, CPEX resolves the caller's identity, evaluates the APL policy attached to that operation, and applies the resulting effects before anything reaches the backend. The same four phases run every time: validate arguments, evaluate policy, transform the result, run post-policy checks.
 
 ## Same request, different data
 
@@ -35,7 +31,7 @@ routes:
 - An HR analyst without `view_ssn` gets the same record with the SSN redacted before it leaves CPEX. The backend never sees the difference; the redaction happens at the boundary.
 - An engineer is denied at `require(role.hr)`. The call never reaches the backend.
 
-![Three identical get_compensation requests pass through CPEX APL policy and produce three outcomes by identity: the full record for HR with view_ssn, the record with SSN redacted for HR without view_ssn, and a deny for non-HR callers](/cpex/images/overview_outcomes.png)
+![Three identical get_compensation requests pass through CPEX APL policy and produce three outcomes by identity: the full record for HR with view_ssn, the record with SSN redacted for HR without view_ssn, and a deny for non-HR callers](images/overview_outcomes.png)
 
 No application code changed between the three outcomes. The policy did.
 

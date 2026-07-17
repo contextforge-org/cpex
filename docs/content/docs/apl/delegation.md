@@ -25,7 +25,7 @@ authorization:
 
 The order matters. The `require` gate runs first, so a credential is only minted for a caller who passed authorization. After the exchange, a post-check verifies the credential actually carries the scope requested, and denies the operation if the IdP returned less.
 
-![The delegation flow: the caller's verified token enters delegate(workday-oauth), which performs an RFC 8693 exchange at the IdP token endpoint; the resulting downstream token is audience- and scope-limited, delegation.granted.permissions is verified before forward, and only the minted token reaches the backend](/cpex/images/apl_delegation_flow.png)
+![The delegation flow: the caller's verified token enters delegate(workday-oauth), which performs an RFC 8693 exchange at the IdP token endpoint; the resulting downstream token is audience- and scope-limited, delegation.granted.permissions is verified before forward, and only the minted token reaches the backend](images/apl_delegation_flow.png)
 
 ## The delegator plugin
 

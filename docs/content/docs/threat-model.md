@@ -5,7 +5,7 @@ weight: 15
 
 # Threat Model
 
-> This page describes the adversary CPEX is built against, the trust boundary it draws, and what each deployment placement does and does not cover. For the underlying model, read [Vision]({{< relref "/docs/vision" >}}) first.
+> This threat model defines the adversary CPEX assumes, the boundary it enforces, and what each deployment placement does and does not cover. See [Vision]({{< relref "/docs/vision" >}}) for the underlying model.
 
 ## The adversary
 
@@ -23,9 +23,9 @@ The consequence is the reference-monitor rule: authorization, delegation, and in
 
 CPEX draws that boundary. Every operation the agent attempts crosses it; nothing the model emits reaches a capability directly.
 
-![The CPEX trust boundary: an untrusted caller and agent on one side, mediated capabilities on the other, with the CPEX reference monitor between them evaluating APL policy against identity, delegation, taint, and audit state the model cannot forge, fed by an IdP and a PDP](/cpex/images/threat_model.png)
+![The CPEX trust boundary: an untrusted caller and agent on one side, mediated capabilities on the other, with the CPEX reference monitor between them evaluating APL policy against identity, delegation, taint, and audit state the model cannot forge, fed by an IdP and a PDP](images/threat_model.png)
 
-Everything to the left of the monitor is assumed hostile, and nothing the policy reads comes from there: verified tokens come from the IdP, decisions from the PDP, taint labels from the session store, and the delegation and audit state is CPEX's own. The model can ask for anything; it can influence none of the state the answer depends on.
+Everything to the left of the monitor is assumed hostile, and nothing the policy reads comes from there: verified tokens come from the IdP (identity provider), decisions from the PDP, taint labels from the session store, and the delegation and audit state is CPEX's own. The model can ask for anything; it can influence none of the state the answer depends on.
 
 ## Threats and controls
 
@@ -50,7 +50,7 @@ CPEX is direction-agnostic: the same APL policy enforces at any placement (see [
 
 CPEX fronts a tool server. Every request to that backend crosses the boundary, whichever agent or client sent it.
 
-![CPEX as a gateway: agents and direct clients all pass through the CPEX gateway before reaching the tool server](/cpex/images/threat_model_gateway.png)
+![CPEX as a gateway: agents and direct clients all pass through the CPEX gateway before reaching the tool server](images/threat_model_gateway.png)
 
 **Covers**
 
@@ -69,7 +69,7 @@ This is the placement in the end-to-end [Praxis demo]({{< relref "/docs/use-case
 
 CPEX sits beside one agent and mediates its egress. Everything that agent emits crosses the boundary, whatever it targets.
 
-![CPEX as an egress sidecar: all egress from the agent workload passes through the CPEX sidecar on its way to internal tools, third-party APIs, and other agents](/cpex/images/threat_model_sidecar.png)
+![CPEX as an egress sidecar: all egress from the agent workload passes through the CPEX sidecar on its way to internal tools, third-party APIs, and other agents](images/threat_model_sidecar.png)
 
 **Covers**
 
@@ -87,7 +87,7 @@ CPEX sits beside one agent and mediates its egress. Everything that agent emits 
 
 CPEX runs inside the agent runtime and mediates operations as the framework issues them.
 
-![CPEX in-process: inside the agent runtime the LLM drives the framework, whose operations pass through in-process CPEX before reaching tools and backends](/cpex/images/threat_model_inframework.png)
+![CPEX in-process: inside the agent runtime the LLM drives the framework, whose operations pass through in-process CPEX before reaching tools and backends](images/threat_model_inframework.png)
 
 **Covers**
 

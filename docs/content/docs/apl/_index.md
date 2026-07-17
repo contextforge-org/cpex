@@ -7,7 +7,7 @@ weight: 30
 
 APL is the declarative configuration that defines a CPEX enforcement pipeline. Each capability an agent can invoke (a tool, resource, prompt, or A2A method) defines its own pipeline through a **route** that sequences the controls protecting it, evaluated at the boundary. You describe the conditions and the effects; you do not write enforcement logic in application code.
 
-![An APL config: plugins and global settings, then per-entity routes with a pre-invocation flow (require, PDP, delegate, run) and post-invocation result handling (taint, redact), plus session tainting across entities](/cpex/images/apl_overview.png)
+![An APL config: plugins and global settings, then per-entity routes with a pre-invocation flow (require, PDP, delegate, run) and post-invocation result handling (taint, redact), plus session tainting across entities](images/apl_overview.png)
 
 This page covers the configuration: routes, phases, predicates, rules, and field pipelines. The rest of this section goes deeper on each kind of policy:
 
@@ -22,7 +22,7 @@ This page covers the configuration: routes, phases, predicates, rules, and field
 
 Policy is organized by **route**: an operation CPEX mediates, identified by the tool, A2A method, or other interface it governs. Each route runs through four phases, in order:
 
-![The four route phases in order: args validates and transforms input, authorization.pre_invocation authorizes, result redacts and masks output, and authorization.post_invocation runs audit and final checks; the first deny in any phase halts that phase and every later one](/cpex/images/apl_phases.png)
+![The four route phases in order: args validates and transforms input, authorization.pre_invocation authorizes, result redacts and masks output, and authorization.post_invocation runs audit and final checks; the first deny in any phase halts that phase and every later one](images/apl_phases.png)
 
 - **args**: validate and transform request inputs before the operation runs.
 - **authorization.pre_invocation**: authorize the operation. Predicates, PDP calls, delegation, tainting.

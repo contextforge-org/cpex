@@ -60,9 +60,9 @@
   <text x="1470" y="546" font-size="17" fill="#5f5f5f" text-anchor="middle">fail closed</text>
 
   <!-- return loops -->
-  <path d="M 530 360 L 530 440 L 110 440 L 110 368" fill="none" stroke="#161616" stroke-width="3" marker-end="url(#ah)"/>
+  <path d="M 530 360 V 422 Q 530 440 512 440 H 208 Q 190 440 190 422 V 368" fill="none" stroke="#161616" stroke-width="3" marker-end="url(#ah)"/>
   <text x="330" y="425" font-size="18" fill="#161616" text-anchor="middle"><tspan font-family="IBM Plex Mono" fill="#3b6de8">-32120</tspan> + elicitation id</text>
 
-  <path d="M 940 360 L 940 510 L 165 510 L 165 368" fill="none" stroke="#161616" stroke-width="3" marker-end="url(#ah)"/>
+  <path d="M 940 360 V 492 Q 940 510 922 510 H 108 Q 90 510 90 492 V 368" fill="none" stroke="#161616" stroke-width="3" marker-end="url(#ah)"/>
   <text x="555" y="495" font-size="18" fill="#161616" text-anchor="middle">pending: agent retries, echoing the id</text>
 </svg>

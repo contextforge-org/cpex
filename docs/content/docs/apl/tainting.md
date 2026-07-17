@@ -46,7 +46,7 @@ routes:
         - "security.labels contains \"secret\": deny('session touched secret data', 'session_tainted')"
 ```
 
-![The taint produce-and-consume flow: get_compensation runs taint(secret, session), writing the secret label into session state; later in the same session, send_email with a clean body is checked against that CPEX-owned state and denied with session_tainted when the label is present, allowed otherwise](/cpex/images/apl_tainting_flow.png)
+![The taint produce-and-consume flow: get_compensation runs taint(secret, session), writing the secret label into session state; later in the same session, send_email with a clean body is checked against that CPEX-owned state and denied with session_tainted when the label is present, allowed otherwise](images/apl_tainting_flow.png)
 
 The email is denied because the session is tainted, not because of anything in its body. The decision is made from CPEX-owned state, so the model cannot route around it by rewording the email.
 
