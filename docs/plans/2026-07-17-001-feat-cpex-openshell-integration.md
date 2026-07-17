@@ -18,7 +18,7 @@ deepened: 2026-07-17
 
 This proposal explores whether CPEX can provide a valuable *optional,
 operator-owned* identity and fine-grained authorization layer for OpenShell's
-L7 egress proxy. Its Cedar/CEL, delegation, response transformation, and
+L7 egress proxy. Its Cedar/CEL, delegation, elicitation, response transformation, and
 session-state model align with the project's policy, provider, middleware, and multi-tenant roadmaps.
 
 This is **not** presented as a drop-in replacement for the existing OPA/
@@ -135,6 +135,7 @@ CONNECT L4: process + hostname + port + resolved-IP/SSRF gate (existing OpenShel
   -> TLS termination / HTTP parsing / canonicalization (existing)
   -> redact placeholders and construct a minimal non-secret request view
   -> baseline L7 structural gate (method/path/body/header limits; existing)
+  -> supervisor middleware chain (existing; per-entry fail_open/fail_closed)
   -> selected authorization engine:
        OPA: existing generated L7 rules
        CPEX: immutable CPEX adapter + one local PDP, using trusted identity
@@ -330,6 +331,12 @@ Each needs a new design review and independently deployable tests:
 5. Cross-request taint/session state only after authenticated session ownership,
    tenant/sandbox namespacing, bounded TTL/size, atomic persistence, restart/HA
    behavior, and deletion/retention semantics are approved.
+6. Human-in-the-loop elicitation based on CIBA: policy-gated egress requests
+   suspended pending an out-of-band approval bound to the concrete request. Requires
+   its own design for pending-decision semantics on a proxied HTTP request (hold
+   vs. deny-and-retry), bounded pending state with timeout-as-deny, an operator-owned
+   out-of-band channel separate from the sandbox egress path, verified approver identity,
+   and no request secrets in elicitation prompts.
 
 ## Validation matrix
 
