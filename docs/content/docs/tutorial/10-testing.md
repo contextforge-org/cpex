@@ -82,4 +82,4 @@ The `Outcome` from `mediate()`: allowed or denied, and for denials the reason co
 
 ## Next
 
-The capstone reassembles the full three-backend scenario. Modules 6, 8, and 9 (delegation, elicitation, custom plugins) round out the set.
+[Capstone: the three-backend agent]({{< relref "capstone" >}}): assemble every control you have built into the full Overview scenario.

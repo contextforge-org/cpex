@@ -81,4 +81,4 @@ For a hand-written guard, the second argument to `deny('reason', 'code')`. For a
 
 ## Next
 
-Modules 5 through 10 continue with PDPs, scoped credentials, information flow, human-in-the-loop, custom plugins, and testing, ending in the capstone that reassembles the whole three-backend scenario.
+[Module 5: Delegating decisions]({{< relref "05-pdp" >}}): hand a decision to CEL or Cedar and let CPEX enforce the verdict.

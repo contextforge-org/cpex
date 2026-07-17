@@ -101,4 +101,4 @@ The first attempt returns an elicitation id. The caller echoes it on retry (the 
 
 ## Next
 
-The capstone reassembles all three backends and every control into the full scenario.
+[Module 9: Write your own plugin]({{< relref "09-custom-plugin" >}}): build a custom plugin with the SDK and reference it from policy.

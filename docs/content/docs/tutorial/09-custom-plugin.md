@@ -100,4 +100,4 @@ Your handler returns `PluginResult::allow()` or `PluginResult::deny(violation)`.
 
 ## Next
 
-The capstone reassembles the full three-backend scenario using the builtins and everything you have written.
+[Module 10: Testing your policy]({{< relref "10-testing" >}}): write table-driven allow/deny tests that run in CI.
