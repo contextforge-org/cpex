@@ -47,7 +47,7 @@ routes:
 
 The plugin validates the JWT offline against the realm's signing keys, fetched once from the JWKS url and cached. It checks issuer, audience, expiry, and signature. A token that fails any check is rejected before any authorization rule runs. The realm emits flat `roles` and `permissions` claims (see [`idp/README.md`](https://github.com/contextforge-org/cpex/tree/main/examples/tutorial/idp)). The `standard` mapper turns `roles: ["hr"]` into `role.hr = true` and `permissions: ["view_ssn"]` into `perm.view_ssn = true`.
 
-The tutorial personas: alice (hr and `view_ssn`), dana (hr, no `view_ssn`), evan (engineer), sam (security).
+The snippet is abbreviated; the file also sets `role`, `header`, and the JWKS `refresh_secs`. The tutorial personas: alice (hr and `view_ssn`), dana (hr, no `view_ssn`), evan (engineer), sam (security).
 
 ## Run it
 
@@ -66,13 +66,20 @@ cargo run -p cpex-tutorial --example m02_identity
   ✗ DENIED   [auth.malformed_header] ...
 ```
 
-The harness mints each persona's token from Keycloak with a password grant (see `src/idp.rs`), then calls the same route. Identity, not code, splits the outcomes.
+The harness *mints* each persona's token, meaning it obtains a signed JWT for them from Keycloak with a password grant (see `src/idp.rs`), then calls the same route. Identity, not code, splits the outcomes.
 
 ## Try it
 
-1. Swap personas. In `m02_identity.rs`, mint `dana` instead of `evan`. Expect: dana (also hr) is allowed. The `view_ssn` difference does not matter until module 3.
-2. Break the audience. In the policy, change `audiences: [cpex-tutorial]` to `[some-other-api]` and re-run. Expect: every call denies with `auth.audience_mismatch`, because validation fails before authorization.
-3. Inspect a token. Mint one by hand (`idp/README.md` has the curl) and decode it to see the `roles`, `permissions`, and `aud` claims the mappers produced.
+1. Swap personas. In `examples/tutorial/examples/m02_identity.rs`, replace the `evan` scenario with `dana` (hr, no `view_ssn`). Three edits: change the token line to `let dana = idp::mint_token("dana", "dana")...` (rename the `evan` binding to `dana`), update the `ui::scenario("evan (engineer) → ...")` label to `dana (hr) → get_compensation`, and pass `&dana` to that `mediate(...)` call. Re-run. Expect: dana is allowed too (she is hr); the `view_ssn` difference does not matter until module 3.
+2. Break the audience. In `policies/m02.yaml`, change `audiences: [cpex-tutorial]` to `[some-other-api]` and re-run. Expect: alice and evan now deny with `auth.audience_mismatch`. The garbage token still fails earlier at `auth.malformed_header`: it is not a valid JWT, so audience is never checked.
+3. Inspect a token. Mint one by hand and decode its claims (works on Linux and macOS, jq only):
+   ```bash
+   TOKEN=$(curl -s http://localhost:8081/realms/cpex-tutorial/protocol/openid-connect/token \
+     -d grant_type=password -d client_id=cpex-tutorial \
+     -d username=alice -d password=alice | jq -r .access_token)
+   echo "$TOKEN" | cut -d. -f2 | jq -Rr '. + "=="[:(4 - length % 4) % 4] | @base64d' | jq .
+   ```
+   Look for the flat `roles`, `permissions`, and `aud` claims the realm's mappers produced. See [`idp/README.md`](https://github.com/contextforge-org/cpex/tree/main/examples/tutorial/idp) for all the personas and their passwords.
 
 ## Checkpoint
 

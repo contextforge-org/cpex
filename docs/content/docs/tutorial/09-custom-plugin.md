@@ -73,9 +73,16 @@ cargo run -p cpex-tutorial --example m09_custom_plugin
 
 ## Try it
 
-1. Change the window. Set `close_hour: 23` in the policy and confirm the 22:00 call now allows. Config feeds the plugin.
-2. Add a reason. Return a richer `PluginViolation` with extra detail and see it in the outcome.
-3. Gate a different tool. Add `run(business-hours)` to another route and confirm the same plugin guards it.
+1. Change the window. In `examples/tutorial/policies/m09.yaml`, set `close_hour: 23` and re-run. Expect: the 22:00 call now allows. Config feeds the plugin.
+2. Change the denial. In `examples/tutorial/examples/m09_custom_plugin.rs`, edit the `PluginViolation::new("office.closed", ...)` call in the `Some(h)` arm, changing the code and reason strings, and re-run at hour 22. Expect: the denial line shows your new code and reason. (The tutorial's `Outcome` surfaces the code and reason; a plugin can also attach `description` and `details` on the violation, which a real host logs even though this harness does not print them.)
+3. Gate a different tool. In `policies/m09.yaml`, add a second route so the same plugin guards it:
+   ```yaml
+   - tool: search_repos
+     authorization:
+       pre_invocation:
+         - "run(business-hours)"
+   ```
+   Then add a call to it in `m09_custom_plugin.rs` (e.g. `mediate(&mgr, &caller, "search_repos", json!({ "visibility": "public", "hour": 22 }), backends::search_repos)`), re-run, and confirm `search_repos` is denied at hour 22 too. One plugin, many routes.
 
 ## Checkpoint
 
@@ -93,4 +100,4 @@ Your handler returns `PluginResult::allow()` or `PluginResult::deny(violation)`.
 
 ## Next
 
-The capstone reassembles the full three-backend scenario using the builtins and everything you have written.
+[Module 10: Testing your policy]({{< relref "10-testing" >}}): write table-driven allow/deny tests that run in CI.

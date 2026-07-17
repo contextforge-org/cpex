@@ -49,9 +49,18 @@ The call is allowed, so the record still comes back, but `ssn` and `salary` are 
 
 ## Try it
 
-1. See the full record. Start the IdP and change the example to mint `alice` (hr and `view_ssn`). Expect: `ssn` and `salary` come back in full, `employee_id` still masked. Same policy, different caller.
-2. Split the two fields. Mint `dana` (hr, no `view_ssn`). Expect: `salary` is visible (she has `role.hr`) but `ssn` is redacted (she lacks `view_ssn`). The two redactions gate independently.
-3. Change the mask width. Set `employee_id: "str | mask(2)"`. Expect: only the last two characters survive.
+1. Redact another field. In `examples/tutorial/policies/m03.yaml`, add a line under `result:` such as `name: "str | redact(!perm.view_ssn)"`, then re-run. Expect: `name` now comes back `[REDACTED]` too. The pipeline transforms exactly the fields you name.
+2. See the full record with identity. The default run is anonymous, so every redaction fires (no caller has `view_ssn`). To see the per-permission contrast, give the route an identity, the same way module 2 does. This is a two-file change:
+   - In `examples/tutorial/policies/m03.yaml`, add the `keycloak` identity plugin and reference it from the route. Copy the top-level `plugins:` block and the `authentication:` line from `policies/m02.yaml` (module 3's policy has no identity plugin on its own, which is why minting a token alone changes nothing).
+   - In `examples/tutorial/examples/m03_shaping.rs`, add `use cpex_tutorial::idp;` near the other imports and replace `let caller = Caller::anonymous();` with:
+     ```rust
+     let caller = match idp::mint_token("alice", "alice").await {
+         Ok(t) => Caller::with_token(t),
+         Err(e) => { eprintln!("{e}"); std::process::exit(1); }
+     };
+     ```
+   - Start the IdP and re-run. Expect: alice (`view_ssn`) now sees the full `ssn` and `salary`, with `employee_id` still masked. Swap `"alice"` for `"dana"` and `ssn` is redacted again (she lacks `view_ssn`) while `salary` stays visible. Same policy, different caller. This is the contrast the [capstone]({{< relref "capstone" >}}) runs end to end.
+3. Change the mask width. Set `employee_id: "str | mask(2)"` and re-run. Expect: only the last two characters survive.
 
 ## Checkpoint
 

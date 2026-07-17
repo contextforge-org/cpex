@@ -59,9 +59,9 @@ Same anonymous caller, same host code. The route decided the outcome, and the de
 
 ## Try it
 
-1. Change the failing predicate. In `policies/m01.yaml`, change `require(authenticated)` to `require(role.hr)` and re-run. Expect: `get_compensation` still denies, but the reason points at the new rule, since nobody has a role yet.
+1. Change the failing predicate. In `examples/tutorial/policies/m01.yaml`, change `require(authenticated)` to `require(role.hr)` and re-run. Expect: `get_compensation` still denies, because the anonymous caller has no role either. The displayed reason is the same generic, position-based code (`...pre_invocation[0]] access denied`); what changed is which predicate rejected the call, not the visible text.
 2. Open the gated route. Delete the `require(authenticated)` line (leave `pre_invocation: []`) and re-run. Expect: both calls allow.
-3. Gate the open route. Add `- "require(authenticated)"` under `search_repos` and re-run. Expect: both calls deny.
+3. Gate the open route. `get_compensation` already denies; add `- "require(authenticated)"` under `search_repos` too, leaving `get_compensation` unchanged, and re-run. Expect: both calls now deny.
 
 Reset any time with `git checkout -- examples/tutorial/policies`.
 

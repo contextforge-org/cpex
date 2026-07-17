@@ -18,10 +18,11 @@ plugins:        # the plugins available to policy, by kind
     config: { ... }
 
 global:         # cross-cutting resolvers and stores
-  pdp:
-    - kind: ...
-  session_store:
-    kind: ...
+  apl:
+    pdp:
+      - kind: ...
+    session_store:
+      kind: ...
 
 routes:         # APL policy, a list of operations
   - tool: <name>            # or resource: / prompt: / llm:
@@ -72,18 +73,19 @@ plugins:
 
 ## Global
 
-`global.pdp` registers PDP resolvers; `global.session_store` selects where taint labels live (absent it, the in-process memory store is used).
+`global.apl.pdp` registers PDP resolvers; `global.apl.session_store` selects where taint labels live (absent it, the in-process memory store is used).
 
 ```yaml
 global:
-  pdp:
-    - kind: cedar-direct
-      policy_text: |
-        permit(principal, action == Action::"read", resource is Repo)
-        when { principal.roles.contains("security") };
-  session_store:
-    kind: valkey
-    endpoint: localhost:6379
+  apl:
+    pdp:
+      - kind: cedar-direct
+        policy_text: |
+          permit(principal, action == Action::"read", resource is Repo)
+          when { principal.roles.contains("security") };
+    session_store:
+      kind: valkey
+      endpoint: localhost:6379
 ```
 
 ## Routes

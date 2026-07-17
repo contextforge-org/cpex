@@ -44,11 +44,12 @@ pub fn print_outcome(outcome: &Outcome) {
 }
 
 /// Assert an outcome matches what a scenario expects, for `--check` mode.
-/// Returns `true` on match; prints a diff line and returns `false`
-/// otherwise so the caller can accumulate a non-zero exit code.
+/// Returns `true` on match. The mismatch line is printed only under
+/// `--check`: an interactive run (the "Try it" flow, where you deliberately
+/// change outcomes) stays quiet and just shows the scenario and its result.
 pub fn expect(outcome: &Outcome, want_allowed: bool) -> bool {
     let ok = outcome.is_allowed() == want_allowed;
-    if !ok {
+    if !ok && check_mode() {
         let want = if want_allowed { "ALLOWED" } else { "DENIED" };
         println!("  \x1b[33m! CHECK FAILED\x1b[0m expected {want}, got {outcome:?}");
     }

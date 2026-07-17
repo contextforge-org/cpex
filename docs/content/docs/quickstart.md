@@ -7,6 +7,8 @@ weight: 20
 
 This walks through standing up CPEX as an enforcement point and running the [scenario]({{< relref "/docs/overview" >}}): the `get_employee` route that authorizes by role and redacts a field by permission.
 
+You need Rust 1.96 or newer ([install with rustup](https://rustup.rs)). Section 4 runs the tutorial's first module, which lives in the repo, so clone it first: `git clone https://github.com/contextforge-org/cpex.git && cd cpex`, and run `cargo` commands from that root.
+
 ## 1. Add CPEX
 
 ```bash

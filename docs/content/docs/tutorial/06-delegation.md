@@ -71,7 +71,7 @@ alice's call runs a real token exchange and gets a `workday-api`-scoped token be
 
 1. Drop the capabilities. Remove the `capabilities:` line from the plugin and re-run. Expect: alice is denied with `delegation.bad_request` (empty token), because the inbound credential was filtered out.
 2. Wrong audience. Change `audience:` to a client the gateway may not target and re-run. Expect: the exchange is rejected by Keycloak and the step denies.
-3. Inspect the exchange. Add a `permissions: [read_compensation]` arg and set up the matching client scope in the realm to see a scoped-down token (this is how you narrow the downstream grant).
+3. Narrow the grant (advanced). In `policies/m06.yaml`, add a `permissions:` argument to the `delegate(...)` step so it reads `delegate(workday-oauth, target: workday-api, audience: workday-api, permissions: [read_compensation])`. The exchange then requests only that scope. For Keycloak to actually issue it, the `read_compensation` client scope must exist on the realm and be assigned to the `workday-api` client (see [`idp/README.md`](https://github.com/contextforge-org/cpex/tree/main/examples/tutorial/idp)); without that realm setup the exchange returns the default scope. This is how you narrow the downstream grant to exactly what the operation needs.
 
 ## Checkpoint
 
@@ -89,4 +89,4 @@ Keycloak mints the scoped token during the exchange, constrained by the requeste
 
 ## Next
 
-[Module 8: Human in the loop]({{< relref "08-elicitation" >}}) (or the capstone, which reassembles all three backends).
+[Module 7: Information flow]({{< relref "07-tainting" >}}): carry security state across a session to block write-down.

@@ -58,8 +58,12 @@ cargo run -p cpex-tutorial --example m10_testing
 
 ## Try it
 
-1. Break a policy. Edit `policies/m04.yaml` to drop the external-recipient guard, then run `cargo test -p cpex-tutorial`. Expect: the test fails, catching the regression.
-2. Add a case. Add a row asserting an allowed call and confirm it passes.
+1. Break a policy. Edit `examples/tutorial/policies/m04.yaml` to drop the external-recipient guard (the `deny(...)` line), then run `cargo test -p cpex-tutorial`. Expect: `module4_external_email_denied_with_custom_code` fails, catching the regression.
+2. Add a case. In `examples/tutorial/tests/policy_tests.rs`, add a row to the `cases` array in `module1_gates_by_authentication`, for example:
+   ```rust
+   Case { tool: "search_repos", args: json!({ "visibility": "internal" }), want_allowed: true, want_code: None },
+   ```
+   Run `cargo test -p cpex-tutorial`. Expect: it passes (`search_repos` is open in `m01.yaml`).
 3. Wire it into CI. `make test` runs the whole workspace test suite, including these.
 
 ## Checkpoint
@@ -78,4 +82,4 @@ The `Outcome` from `mediate()`: allowed or denied, and for denials the reason co
 
 ## Next
 
-The capstone reassembles the full three-backend scenario. Modules 6, 8, and 9 (delegation, elicitation, custom plugins) round out the set.
+[Capstone: the three-backend agent]({{< relref "capstone" >}}): assemble every control you have built into the full Overview scenario.

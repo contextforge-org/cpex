@@ -145,7 +145,9 @@ TOKEN=$(curl -s -X POST \
   -d grant_type=password -d client_id=cpex-tutorial \
   -d username=alice -d password=alice | jq -r .access_token)
 
-echo "$TOKEN" | cut -d. -f2 | base64 -d 2>/dev/null | jq .
+# jq-only decode: pads the base64url segment and decodes it (works on Linux and macOS,
+# unlike `base64 -d`, which rejects the unpadded segment on BSD/macOS).
+echo "$TOKEN" | cut -d. -f2 | jq -Rr '. + "=="[:(4 - length % 4) % 4] | @base64d' | jq .
 ```
 
 For **alice** you should see `"roles": ["hr"]`, `"permissions": ["view_ssn"]`,

@@ -15,6 +15,18 @@ CPEX is a policy enforcement runtime for AI agents. It is a deterministic refere
 
 You are the host: the process that embeds CPEX and drives the loop of resolving identity, running policy, calling the backend, and running policy again on the result. The tutorial harness wraps that loop in a single `mediate()` call so you can focus on policy. Module 9 opens `mediate()` up and shows the real dispatch API underneath.
 
+## Get the code
+
+The tutorial runs from a clone of the CPEX repository (not from a published crate), so you can edit the policies and examples as you go.
+
+- Install Rust 1.96 or newer with [rustup](https://rustup.rs) (gives you `rustc` and `cargo`).
+- Clone the repo and move into it:
+  ```bash
+  git clone https://github.com/contextforge-org/cpex.git
+  cd cpex
+  ```
+- Run every `cargo run -p cpex-tutorial ...` command from the repository root.
+
 ## Check your setup
 
 ```bash
