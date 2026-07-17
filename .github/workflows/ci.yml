@@ -34,7 +34,7 @@ jobs:
         with:
           fetch-depth: 1
       - name: Install Rust 1.96.0
-        uses: dtolnay/rust-toolchain@1.96.0
+        uses: dtolnay/rust-toolchain@1.100.0
         with:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
@@ -70,7 +70,7 @@ jobs:
         with:
           fetch-depth: 1
       - name: Install Rust 1.96.0
-        uses: dtolnay/rust-toolchain@1.96.0
+        uses: dtolnay/rust-toolchain@1.100.0
       - uses: Swatinem/rust-cache@v2
       - name: cargo test
         # Valkey/testcontainers integration tests are `#[ignore]`d by default
@@ -87,7 +87,7 @@ jobs:
         with:
           fetch-depth: 1
       - name: Install Rust 1.96.0
-        uses: dtolnay/rust-toolchain@1.96.0
+        uses: dtolnay/rust-toolchain@1.100.0
       - name: Install Go
         uses: actions/setup-go@v5
         with:
@@ -108,7 +108,7 @@ jobs:
         with:
           fetch-depth: 1
       - name: Install Rust 1.96.0
-        uses: dtolnay/rust-toolchain@1.96.0
+        uses: dtolnay/rust-toolchain@1.100.0
       # NOTE: intentionally NO Swatinem/rust-cache here, AND we wipe the registry
       # index before packaging. The committed Cargo.lock is byte-identical to a
       # fresh x86_64 resolution (verified in an amd64 container), so the lock is
