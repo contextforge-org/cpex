@@ -41,6 +41,16 @@ jobs:
           hugo-version: "latest"
           extended: true
 
+      # Build with a root-relative baseURL so the link checker can resolve
+      # internal links against the built files rather than the live site.
       - name: Build docs
         working-directory: docs
-        run: hugo --minify
+        run: hugo --minify --baseURL "/"
+
+      - name: Check links
+        uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8 # v2
+        with:
+          args: --no-progress --root-dir "${{ github.workspace }}/docs/public" "docs/public/**/*.html"
+          fail: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

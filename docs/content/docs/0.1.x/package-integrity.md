@@ -314,7 +314,6 @@ See [`cpex.tools.integrity`](../api-reference/#cpextoolsintegrity) for detailed 
 
 - [CLI Reference](../cli/) - Command-line usage
 - [Configuration](../configuration/) - General configuration options
-- [Security Best Practices](../security/) - Comprehensive security guide
 
 ## Changelog
 

@@ -1,0 +1,9 @@
+{"version": 3, "term": {"cols": 80, "rows": 24}, "timestamp": 1784230065, "command": "cargo run -q -p cpex-tutorial --example m08_elicitation -- --check", "title": "CPEX tutorial: m08-elicitation", "env": {"SHELL": "/bin/zsh"}}
+[0.6, "o", "\r\n\u001b[1;36m=== Module 8: Human in the loop (Elicitation) ===\u001b[0m\r\n\r\n"]
+[1.2, "o", "\u001b[1m\u25b8 evan \u2192 send_email (first attempt: suspends for manager approval)\u001b[0m\r\n"]
+[1.8, "o", "  \u001b[33m\u23f8 PENDING\u001b[0m  awaiting mona's approval (id elic-mona)\r\n\r\n  Approve it from another terminal with:\r\n"]
+[2.4, "o", "    curl -X POST localhost:8090/approvals/elic-mona/approve\r\n\r\n"]
+[3.0, "o", "  (--check mode approved it automatically)\r\n\r\n\u001b[1m\u25b8 evan \u2192 send_email (retry with the approval: resumes and runs)\u001b[0m\r\n"]
+[3.6, "o", "  \u001b[32m\u2713 ALLOWED\u001b[0m  {\"sent\":true,\"to\":\"client@partner.example\",\"subject\":\"proposal\"}\r\n\r\nThe operation suspended until a human approved, then resumed. The agent could not proceed alone.\r\n"]
+[4.2, "o", "\u001b[32mAll checks passed.\u001b[0m\r\n"]
+[5.0, "x", "0"]
