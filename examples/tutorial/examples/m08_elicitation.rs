@@ -201,10 +201,15 @@ async fn main() {
         channel.resolve(&elicitation_id, true);
         println!("  (--check mode approved it automatically)\n");
     } else {
-        // Interactive path: wait for the human to curl an approval.
+        // Interactive path: wait for the human to curl a decision. Break on
+        // either resolution so a denial is picked up as promptly as an
+        // approval; the retry below then reflects whichever it was.
         print!("  waiting for approval");
         for _ in 0..60 {
-            if channel.status(&elicitation_id) == Some(Status::Approved) {
+            if matches!(
+                channel.status(&elicitation_id),
+                Some(Status::Approved) | Some(Status::Denied)
+            ) {
                 break;
             }
             print!(".");
@@ -228,8 +233,13 @@ async fn main() {
     )
     .await;
     ui::print_outcome(&outcome);
-    all_passed &= ui::expect(&outcome, true);
 
-    println!("The operation suspended until a human approved, then resumed. The agent could not proceed alone.");
+    if outcome.is_allowed() {
+        println!("The operation suspended until a human approved, then resumed. The agent could not proceed alone.");
+    } else {
+        println!("The human denied the approval, so the suspended operation ended denied. The agent could not proceed alone.");
+    }
+    // --check drives the approve path, so the resumed call must be allowed.
+    all_passed &= ui::expect(&outcome, true);
     ui::finish_check(all_passed);
 }
