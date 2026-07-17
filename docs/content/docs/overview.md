@@ -11,6 +11,17 @@ Picture one agent serving several people. It answers questions by calling tools 
 
 ![One agent serves three users across HR, repo, and email backends; CPEX policy produces a different outcome per identity](images/demo_scenario.png)
 
+The **R1–R6** labels in the diagram are the six requirements this scenario places on the enforcement point. Each is a control CPEX applies, and each maps to a later page:
+
+| Label | Requirement | Where |
+|-------|-------------|-------|
+| R1 | Resolve the real user behind the agent | [Identity]({{< relref "/docs/apl/identity" >}}) |
+| R2 | Same request, different data (redact per identity) | [Effects]({{< relref "/docs/apl/effects" >}}) |
+| R3 | Enforce on inputs and results (validate args, shape output) | [APL]({{< relref "/docs/apl" >}}) |
+| R4 | Delegate downstream with a narrower credential | [Delegation]({{< relref "/docs/apl/delegation" >}}) |
+| R5 | Remember the session (carry state across calls) | [Session Tainting]({{< relref "/docs/apl/tainting" >}}) |
+| R6 | Out-of-band elicitations (human approval) | [Elicitation]({{< relref "/docs/apl/elicitation" >}}) |
+
 The agent's LLM decides which operation to run. It is untrusted. CPEX sits between it and every capability, and decides what actually happens. For each operation, CPEX resolves the caller's identity, evaluates the APL policy attached to that operation, and applies the resulting effects before anything reaches the backend. The same four phases run every time: validate arguments, evaluate policy, transform the result, run post-policy checks.
 
 ## Same request, different data

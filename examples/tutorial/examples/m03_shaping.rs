@@ -52,28 +52,20 @@ async fn main() {
 
     // The call is allowed, but the sensitive fields must be transformed.
     all_passed &= ui::expect(&outcome, true);
-    if let Outcome::Allowed { result } = &outcome {
-        let ssn = result.get("ssn").and_then(|v| v.as_str()).unwrap_or("");
-        let salary_present = result.get("salary").and_then(|v| v.as_i64()).is_some();
-        let id = result
-            .get("employee_id")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-        let ssn_redacted = ssn != "521-38-7710";
-        let salary_redacted = !salary_present || result.get("salary") == Some(&json!(null));
-        let id_masked = id != "e-1001";
-        if ssn_redacted {
-            println!("  ssn was transformed (no view_ssn permission) ✓");
-        } else {
-            println!("  \x1b[33m! ssn was NOT redacted\x1b[0m");
+    // Field-level verification runs under --check only, so an interactive
+    // "Try it" run (e.g. minting alice, where the SSN is meant to appear)
+    // stays quiet; the printed result above already shows what was shaped.
+    if ui::check_mode() {
+        if let Outcome::Allowed { result } = &outcome {
+            let ssn = result.get("ssn").and_then(|v| v.as_str()).unwrap_or("");
+            let id = result
+                .get("employee_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let ssn_redacted = ssn != "521-38-7710";
+            let id_masked = id != "e-1001";
+            all_passed &= ssn_redacted && id_masked;
         }
-        if id_masked {
-            println!("  employee_id was masked ✓");
-        } else {
-            println!("  \x1b[33m! employee_id was NOT masked\x1b[0m");
-        }
-        all_passed &= ssn_redacted && id_masked;
-        let _ = salary_redacted;
     }
     println!();
 

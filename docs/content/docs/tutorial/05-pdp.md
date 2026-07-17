@@ -60,7 +60,7 @@ One expression captured a rule that mixes role and argument. The PDP decided, an
 ## Try it
 
 1. Loosen the engineer rule. Change the expression to also allow engineers to read public repos. Re-run and confirm evan's public search now allows.
-2. Break a guard. Remove a `has(...)` guard and run as sam. Expect: sam is denied, because the expression errors on the unset `role.engineer` and fails closed.
+2. Why the guards matter. Remove the `has(role.engineer)` guard from the expression and re-run. Expect: sam is still allowed. `role.security` is true, and CEL's `||` yields true even though the other side now errors on the unset `role.engineer` (CEL absorbs an error when the other operand is true). The guard exists so the expression stays well-defined for every caller: a caller who is neither engineer nor security (an `hr` user like alice) would hit that evaluation error with nothing to absorb it and be denied fail-closed.
 3. Change the deny code. Edit the `on_deny` code and confirm the reason code changes.
 
 ## Checkpoint

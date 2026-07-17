@@ -59,9 +59,20 @@ The same `send_email` call is allowed in a clean session and denied in the sessi
 
 ## Try it
 
-1. Separate the sessions. Give the third call a new session id. Expect: it allows again, because taint is per session.
-2. Taint from elsewhere. Add `taint(secret, session)` to a different route and confirm reading through that route also blocks later email.
-3. Persist across restarts. Start Valkey (`docker compose -f examples/tutorial/idp/docker-compose.yml --profile valkey up -d`) and point the session store at it, so taint survives a process restart. The in-memory store used here resets when the program exits.
+1. Separate the sessions. In `examples/tutorial/examples/m07_tainting.rs`, change the third call's `.in_session("session-hr-work")` to a fresh id like `.in_session("session-new")` and re-run. Expect: the email allows again, because taint is per session.
+2. Rename the label. In `examples/tutorial/policies/m07.yaml`, change `taint(secret, session)` to `taint(pii, session)` and update the guard `security.labels contains "secret"` to `"pii"`. Re-run. Expect: the write-down still blocks, now keyed on the `pii` label. Labels are arbitrary names you choose; the write and the read just have to agree.
+3. Persist across restarts. The default store is in-memory and resets when the program exits. To back it with Valkey:
+   - Start Valkey: `docker compose -f examples/tutorial/idp/docker-compose.yml --profile valkey up -d`.
+   - Enable the feature: in `examples/tutorial/Cargo.toml`, change the `cpex` dependency to `features = ["builtins", "valkey"]`.
+   - In `policies/m07.yaml`, add a session store under `global`:
+     ```yaml
+     global:
+       apl:
+         session_store:
+           kind: valkey
+           endpoint: localhost:6379
+     ```
+   Re-run: the taint now lives in Valkey and survives a process restart.
 
 ## Checkpoint
 

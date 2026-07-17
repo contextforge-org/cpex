@@ -48,7 +48,7 @@ match payload.operation() {
 }
 ```
 
-The channel is served over HTTP so a human can approve with `curl`. In production this would be an OIDC CIBA backchannel or a push to the approver's phone. The point here is CPEX's suspend and resume model, not the notification transport.
+The channel is served over HTTP so a human can approve with `curl`. In production this would be an OIDC CIBA backchannel or a push to the approver's phone. CIBA (Client-Initiated Backchannel Authentication, [OpenID spec](https://openid.net/specs/openid-client-initiated-backchannel-authentication-core-1_0.html)) is the OpenID flow where the app asks the identity provider to prompt a user on a separate device and polls for their decision; see [Human-in-the-Loop Elicitation]({{< relref "/docs/apl/elicitation" >}}) for how CPEX drives it. The point here is CPEX's suspend and resume model, not the notification transport.
 
 ## Run it
 
@@ -66,12 +66,14 @@ The first attempt suspends:
     curl -X POST localhost:8090/approvals/elic-mona/approve
 ```
 
-Run that curl in a second terminal. The program is polling; once you approve, it retries and the call runs:
+Run that curl in a second terminal. You do not re-run anything: the same program is polling the approval channel in a loop, so a moment after your curl (it polls on an interval, so allow a few seconds) it picks up the decision and resumes on its own:
 
 ```
 ▸ evan → send_email (retry with the approval: resumes and runs)
   ✓ ALLOWED  {"sent":true, ...}
 ```
+
+Here "retry" means that automatic re-check inside the running program, not a second `cargo run`. In a real agent it is the agent re-sending the request with the elicitation id; the tutorial harness does it for you.
 
 Run with `-- --check` to have it approve itself and exercise the whole path unattended.
 
@@ -79,9 +81,9 @@ Run with `-- --check` to have it approve itself and exercise the whole path unat
 
 ## Try it
 
-1. Deny instead. Use `curl -X POST localhost:8090/approvals/elic-mona/deny`. Expect: the retry is denied, not allowed.
+1. Deny instead. Use `curl -X POST localhost:8090/approvals/elic-mona/deny`. Expect: the program's next poll picks up the denial (again allow a few seconds), and the call ends denied, not allowed.
 2. List pending. `curl localhost:8090/approvals` shows the open request while the program waits.
-3. Retry without approving. Resume before approving and confirm the call is still pending, not allowed.
+3. Let it stay pending. Do nothing. The program keeps polling and the operation never runs; it only proceeds once someone approves. There is no manual retry step, the running program resumes itself.
 
 ## Checkpoint
 

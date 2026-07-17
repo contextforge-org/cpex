@@ -17,6 +17,24 @@ One policy ([`policies/capstone.yaml`](https://github.com/contextforge-org/cpex/
 - `search_repos` (repos): hand the decision to CEL: engineers read internal only, security reads any.
 - `send_email` (email): refuse if the session already touched secret data, and audit every attempt.
 
+`get_compensation` is the densest route, and it runs each control you built in order:
+
+```yaml
+- tool: get_compensation
+  authentication: [keycloak]                 # module 2: resolve the caller from a JWT
+  authorization:
+    pre_invocation:
+      - "require(role.hr)"                     # module 1/2: gate by role
+      - "delegate(workday-oauth, target: workday-api, audience: workday-api)"  # module 6
+      - "taint(secret, session)"               # module 7: mark the session
+      - "run(audit-log)"                       # module 4: record the attempt
+  result:
+    ssn: "str | redact(!perm.view_ssn)"        # module 3: shape the output per permission
+    salary: "int | redact(!role.hr)"
+```
+
+The one control the Overview did not show is `delegate(...)`: before the backend call, CPEX exchanges the caller's token for a fresh one scoped to the `workday-api` audience (RFC 8693, [module 6]({{< relref "06-delegation" >}})), so the backend never receives the caller's original credential. Everything else on this route you have already seen on its own; the capstone just runs them together, in sequence, on one operation.
+
 ## Run it
 
 ```bash
