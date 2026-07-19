@@ -113,6 +113,8 @@ impl Default for TokenSource {
 /// existing Sequential-phase machinery — no bespoke plumbing.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IdentityPayload {
+    /// Raw credential bytes. Cleared on drop via `Zeroizing`.
+    /// `#[serde(skip)]` — never appears in serialized output.
     #[serde(skip)]
     raw_token: Zeroizing<String>,
 
@@ -135,6 +137,7 @@ pub struct IdentityPayload {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     client_port: Option<u16>,
 
+    /// Resolved user identity. `None` until a handler populates it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subject: Option<SubjectExtension>,
 

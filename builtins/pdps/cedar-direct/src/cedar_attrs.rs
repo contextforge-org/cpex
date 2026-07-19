@@ -44,6 +44,13 @@ pub const ATTR_TEAMS: &str = "teams";
 /// `apl-cmf`'s `claim.*` bag keys.
 pub const ATTR_CLAIMS: &str = "claims";
 
+// JSON wrapping keys (Cedar's entity-from-JSON shape).
+//
+// These aren't entity attributes per se — they're the top-level
+// keys of the JSON shape Cedar expects when reading an entity from
+// `Entity::from_json_value`. Kept here so the entity-builder code
+// stays free of magic strings.
+
 /// `uid` — the {type, id} envelope at the top of an entity JSON.
 pub const KEY_UID: &str = "uid";
 

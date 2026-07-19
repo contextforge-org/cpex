@@ -52,6 +52,13 @@ pub const CAP_APPEND_LABELS: &str = "append_labels";
 pub const CAP_APPEND_DELEGATION: &str = "append_delegation";
 pub const CAP_WRITE_HEADERS: &str = "write_headers";
 
+// Bag-attribute prefixes (and exact-match keys) — must match what
+// the apl-cmf extractor modules write.
+//
+// Prefixes ending in `.` match any key starting with them
+// (e.g. `BAG_ROLE_PREFIX` matches `role.hr`, `role.admin`).
+// Prefixes WITHOUT a trailing `.` match the exact bag key
+// (e.g. `BAG_AUTHENTICATED` matches only `authenticated`).
 pub const BAG_SUBJECT_ID: &str = "subject.id";
 pub const BAG_SUBJECT_TYPE: &str = "subject.type";
 pub const BAG_SUBJECT_TEAMS: &str = "subject.teams";
@@ -61,6 +68,12 @@ pub const BAG_PERM_PREFIX: &str = "perm.";
 pub const BAG_TEAM_PREFIX: &str = "team.";
 pub const BAG_CLAIM_PREFIX: &str = "claim.";
 
+// Payload (args / result).
+//
+// These are the dotted-prefix forms used when apl-cmf::payload flattens
+// the request's args object and the upstream's result object into the
+// bag. APL predicates / Cedar `${args.X}` substitutions / OPA `input.X`
+// paths all resolve through these.
 pub const BAG_ARGS_PREFIX: &str = "args.";
 pub const BAG_RESULT_PREFIX: &str = "result.";
 

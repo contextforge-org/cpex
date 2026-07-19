@@ -490,6 +490,13 @@ mod tests {
         assert_eq!(sid, subject_scoped(Some("alice"), "from-claim").unwrap());
     }
 
+    // Tier 2 (`X-CPEX-Session-Id` header) is intentionally absent.
+    //
+    // The Python `SessionResolver` included a header tier; cpex Rust
+    // does not. See the module-level doc comment for the threat model.
+    // A spoofing-regression guard lives below in
+    // `header_x_cpex_session_id_is_ignored`.
+
     #[test]
     fn tier2_identity_derived_when_no_claim() {
         let sec = SecurityExtension {

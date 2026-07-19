@@ -213,6 +213,19 @@ where
         .collect()
 }
 
+// Implementation note on the generic signature:
+//
+// `P` is the closure type for `is_deny`. We declare it as a generic
+// type parameter rather than `impl Fn(...)` so the function works
+// uniformly across async runtimes and callers that need to use
+// boxed predicates (`Box<dyn Fn(...)>`) for runtime polymorphism.
+//
+// The `BoxFuture` import isn't strictly needed for the public API
+// but is re-exported below for callers that want to build
+// homogeneous branch vectors out of differently-typed futures (the
+// common case in apl-core's `Effect::Parallel` dispatch, where each
+// effect's future has a unique inferred type).
+
 /// Convenience alias re-exported from `futures` for callers building
 /// type-erased branch vectors. `apl-core`'s `Effect::Parallel`
 /// dispatch uses this because the per-effect futures have different

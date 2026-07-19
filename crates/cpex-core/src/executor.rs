@@ -308,6 +308,8 @@ impl Executor {
             );
         }
 
+        // Phase 2: TRANSFORM — serial, chained, can modify, cannot block.
+        // can_block=false means denials are suppressed (returns None).
         self.run_serial_phase(
             &transform,
             &mut current_payload,
@@ -347,6 +349,9 @@ impl Executor {
             );
         }
 
+        // Phase 5: FIRE_AND_FORGET — background, read-only, ignore results.
+        // FAF errors don't go in PipelineResult.errors — they're delivered
+        // via BackgroundTasks::wait_for_background_tasks() instead.
         let bg_handles = self.spawn_fire_and_forget(
             &fire_and_forget,
             &*current_payload,
@@ -393,6 +398,10 @@ impl Executor {
             let plugin_id = entry.plugin_ref.id();
             let on_error = entry.plugin_ref.trusted_config().on_error;
 
+            // Take this plugin's context out of the table — pulls its stored
+            // local_state and seeds global_state from the canonical store.
+            // Replaces the previous values().last() seed, which was
+            // non-deterministic across HashMap iteration orders.
             let mut ctx = ctx_table.take_context(plugin_id);
 
             // Filter extensions per plugin based on declared capabilities.
@@ -555,6 +564,10 @@ impl Executor {
                 },
             }
 
+            // Commit this plugin's context back to the table — replaces the
+            // canonical global_state with its (possibly modified) copy and
+            // stores the local_state for the next hook invocation. The
+            // global_state move is free; only the local_state insert allocates.
             ctx_table.store_context(plugin_id, ctx);
         }
 

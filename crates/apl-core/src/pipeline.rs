@@ -90,6 +90,7 @@ pub enum Stage {
         values: Vec<String>,
     },
 
+    /// `mask(N)` — replace all but last N chars with `*`.
     Mask {
         keep_last: usize,
     },

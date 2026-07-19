@@ -101,6 +101,7 @@ pub enum ElicitationOutcomeKind {
 /// updated payload).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ElicitationPayload {
+    /// Which touch-point this is.
     operation: ElicitationOp,
 
     /// Correlation id from a prior `Dispatch`. `None` on dispatch (the
@@ -136,6 +137,7 @@ pub struct ElicitationPayload {
     /// selected by name).
     channel: Option<String>,
 
+    /// Correlation id minted on `Dispatch`. The agent echoes it on retry.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
 

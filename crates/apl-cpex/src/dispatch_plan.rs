@@ -199,6 +199,10 @@ impl RouteDispatchPlan {
                 continue;
             }
 
+            // Store every (hook_name, HookEntry) pair the plugin
+            // registered. Dispatch-time entry selection (pick_entry)
+            // consults cpex-core's hook routing table per hook name.
+            // Replaces the prior naming heuristic.
             let mut entries_by_hook: HashMap<String, HookEntry> = HashMap::new();
             for (hook_name, entry) in entries {
                 entries_by_hook.insert(hook_name, entry);

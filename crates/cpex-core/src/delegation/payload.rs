@@ -157,6 +157,10 @@ pub struct AttenuationConfig {
 /// clones and return the updated payload).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DelegationPayload {
+    /// The caller's current credential — the one a token-exchange
+    /// handler will swap for a downstream-scoped credential. Cleared
+    /// on drop via `Zeroizing`. `#[serde(skip)]` — never appears in
+    /// serialized output.
     #[serde(skip)]
     bearer_token: Zeroizing<String>,
 
@@ -189,6 +193,11 @@ pub struct DelegationPayload {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     route_attenuation: Option<AttenuationConfig>,
 
+    /// The minted outbound credential. `None` until a handler
+    /// produces one. Carries the raw bytes (cleared on drop), the
+    /// header the proxy plugin should attach it under, the
+    /// audience it was minted for, the effective scopes, and the
+    /// expiry timestamp.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delegated_token: Option<RawDelegatedToken>,
 

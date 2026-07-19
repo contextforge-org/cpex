@@ -28,6 +28,14 @@ use cpex_core::manager::PluginManager;
 // APL governance wiring — the `cpex_apl_install` extern "C" entry point.
 mod apl;
 
+// FFI functions return c_int. 0 means success; negative codes classify
+// failures so the Go (or other-language) caller can produce a typed
+// error rather than a single opaque "invoke failed" string. The codes
+// are stable wire ABI — additions go at the end with a fresh value;
+// don't renumber.
+//
+// Mapped on the Go side in `go/cpex/manager.go::errorFromRC`.
+
 /// Operation succeeded.
 pub const RC_OK: c_int = 0;
 /// Manager handle is null or shut down.
@@ -51,6 +59,31 @@ pub const RC_TIMEOUT: c_int = -6;
 /// Plugin panicked; caught by `catch_unwind` at the FFI boundary.
 pub const RC_PANIC: c_int = -7;
 
+// The FFI ABI version is an integer that identifies the C-surface
+// contract this crate exposes. Bump it on any breaking change to the
+// C surface:
+//
+//   - added / removed / renamed extern "C" function
+//   - argument count, argument type, or return type change on an
+//     existing function
+//   - layout change of a struct that crosses the boundary
+//   - semantic change to an existing function (e.g. new RC_* value
+//     returned for a previously-success case, change in pointer
+//     ownership)
+//
+// Adding a new RC_* code at the end of the existing range is *not* a
+// breaking change (the wire codes are stable; consumers handle unknown
+// codes as generic failure).
+//
+// Consumers — every language binding — MUST call `cpex_ffi_abi_version`
+// at init and compare against the version their binding was generated
+// for. Mismatch is a hard error: the C surface they generated against
+// is not the one they're linked against. Document the binding's
+// expected ABI version in its source.
+//
+// Bumps are recorded in CHANGELOG.md under "Changed" with the from→to
+// integers and a one-line description of what moved.
+
 /// FFI ABI version. Bump on breaking C-surface changes; see module
 /// docs above for what counts as breaking.
 pub const FFI_ABI_VERSION: u32 = 2;
@@ -73,6 +106,19 @@ pub extern "C" fn cpex_ffi_abi_version() -> u32 {
 /// usual case never hits this bound.
 const FFI_WALL_CLOCK_TIMEOUT: Duration = Duration::from_secs(60);
 
+// One process-singleton runtime serves every manager rather than each
+// `cpex_manager_new` building its own. With many managers (multi-tenant
+// hosts that create one per request, dynamic plugin reload, etc.) the
+// per-manager model exploded thread count: 100 managers × num_cpus
+// workers each = hundreds of OS threads (and ~2MB stack apiece).
+//
+// Worker thread count precedence (highest first):
+//   1. `cpex_configure_runtime(N)` — explicit FFI call, before first use.
+//   2. `CPEX_FFI_WORKER_THREADS` env var — operator-friendly; read once
+//      on first use of `shared_runtime()`.
+//   3. tokio default (`num_cpus`).
+//
+// Once the runtime is initialized it's fixed for the process lifetime.
 static SHARED_RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
 
 /// Name of the env var operators set to bound worker threads without
@@ -945,6 +991,11 @@ pub unsafe extern "C" fn cpex_invoke_resolved(
         Extensions::default()
     };
 
+    // Identity resolution (in-process): resolve identity and merge the
+    // result into the extensions BEFORE the hook runs, so raw_credentials
+    // (skip-serialized across FFI) reach the hook in Rust memory. Skipped
+    // when no identity payload was supplied or no identity.resolve hook is
+    // registered.
     let merged_extensions: Extensions = if identity_len > 0
         && inner
             .manager
@@ -1264,6 +1315,11 @@ pub struct GenericPayload {
 
 cpex_core::impl_plugin_payload!(GenericPayload);
 
+// These tests call the `extern "C"` functions directly from Rust to
+// exercise the FFI safety layer (catch_unwind, return-code mapping,
+// payload-type validation) without needing a Go test harness. The
+// reviewer flagged that `cpex-ffi` had zero `#[cfg(test)]` coverage —
+// this seeds the file with regressions for the highest-value invariants.
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -243,6 +243,7 @@ impl HookHandler<TokenDelegateHook> for OAuthDelegator {
 
         let scope = Self::requested_scopes(payload);
 
+        // Build the form-encoded body. RFC 8693 §2.1.
         let mut form: Vec<(&str, &str)> = vec![
             ("grant_type", GRANT_TYPE_TOKEN_EXCHANGE),
             ("subject_token", bearer),

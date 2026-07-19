@@ -271,6 +271,9 @@ impl PluginInvoker for CmfPluginInvoker {
             ext.meta.as_ref().and_then(|m| m.entity_type.clone())
         };
 
+        // Pick the entry whose registered hook matches the current
+        // dispatch context via cpex-core's hook metadata table.
+        // Replaces the prior naming heuristic.
         let dispatch_phase = match invocation.phase() {
             DispatchPhase::Pre => HookPhase::Pre,
             DispatchPhase::Post => HookPhase::Post,
