@@ -889,8 +889,6 @@ mod tests {
         );
     }
 
-    // ----- E3: parallel-purity validation -----
-
     #[test]
     fn validate_parallel_pure_block_passes() {
         // A parallel block of read-only effects validates clean.

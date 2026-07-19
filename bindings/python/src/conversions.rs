@@ -18,10 +18,6 @@ use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyDict, PyFloat, PyInt, PyList, PyString};
 use serde_json::{Map, Value};
 
-// ---------------------------------------------------------------------------
-// GenericPayload — local struct for non-CMF hooks (KD5)
-// ---------------------------------------------------------------------------
-
 /// Wraps any serde_json::Value for hooks that are not `cmf.*` (KD1, KD2).
 ///
 /// Defined locally because `cpex-core` exports the macro but not the struct
@@ -32,10 +28,6 @@ pub struct GenericPayload {
 }
 
 cpex_core::impl_plugin_payload!(GenericPayload);
-
-// ---------------------------------------------------------------------------
-// PyObject → serde_json::Value
-// ---------------------------------------------------------------------------
 
 /// Convert a Python object to a `serde_json::Value`.
 ///
@@ -104,10 +96,6 @@ pub fn pyobj_to_json_value(
     )))
 }
 
-// ---------------------------------------------------------------------------
-// serde_json::Value → PyObject
-// ---------------------------------------------------------------------------
-
 /// Convert a `serde_json::Value` to a Python object.
 ///
 /// `null` → `None`, booleans → `bool`, numbers → `int` or `float`,
@@ -145,10 +133,6 @@ pub fn json_value_to_pyobj<'py>(py: Python<'py>, v: &Value) -> PyResult<Bound<'p
     }
 }
 
-// ---------------------------------------------------------------------------
-// Payload resolution
-// ---------------------------------------------------------------------------
-
 /// Build the correct `Box<dyn PluginPayload>` for a hook.
 ///
 /// `cmf.*` hooks → `MessagePayload` (serde-constructed from the value).
@@ -170,10 +154,6 @@ pub fn resolve_payload(hook_name: &str, value: Value) -> PyResult<Box<dyn Plugin
     }
 }
 
-// ---------------------------------------------------------------------------
-// Payload serialization (for modified_payload in PipelineResult)
-// ---------------------------------------------------------------------------
-
 /// Serialize a `&dyn PluginPayload` back to a `serde_json::Value`.
 ///
 /// Returns `None` when the payload type is not in the local registry (unknown
@@ -191,10 +171,6 @@ pub fn serialize_payload(payload: &dyn PluginPayload) -> Option<Value> {
     }
     None
 }
-
-// ---------------------------------------------------------------------------
-// Extensions / PluginContextTable helpers
-// ---------------------------------------------------------------------------
 
 /// Deserialize Python dict → `Extensions` via serde.
 ///

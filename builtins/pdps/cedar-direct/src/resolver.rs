@@ -120,7 +120,6 @@ impl CedarDirectResolver {
             .as_mapping()
             .ok_or_else(|| BuildError::ConfigShape("Cedar PDP config must be a mapping".into()))?;
 
-        // ----- policy source -----
         let policy_text = read_yaml_string(map, "policy_text");
         let policy_file = read_yaml_string(map, "policy_file");
         let policies = match (policy_text, policy_file) {
@@ -141,7 +140,6 @@ impl CedarDirectResolver {
             .parse()
             .map_err(|e: cedar_policy::ParseErrors| BuildError::PolicyParse(e.to_string()))?;
 
-        // ----- optional schema -----
         let schema_text = read_yaml_string(map, "schema_text");
         let schema_file = read_yaml_string(map, "schema_file");
         let schema = match (schema_text, schema_file) {
@@ -157,7 +155,6 @@ impl CedarDirectResolver {
             (None, None) => None,
         };
 
-        // ----- optional dialect override -----
         let dialect = match read_yaml_string(map, "dialect").as_deref() {
             None | Some("cedar") => PdpDialect::Cedar,
             Some(other) => PdpDialect::Custom(other.to_string()),
@@ -255,10 +252,6 @@ impl PdpResolver for CedarDirectResolver {
         })
     }
 }
-
-// =====================================================================
-// Helpers
-// =====================================================================
 
 fn parse_schema(text: &str) -> Result<Schema, BuildError> {
     Schema::from_cedarschema_str(text)

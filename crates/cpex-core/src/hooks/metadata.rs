@@ -162,10 +162,6 @@ impl HookMetadata {
     }
 }
 
-// =====================================================================
-// Built-in registry
-// =====================================================================
-
 /// Built-in hook metadata. Plugin authors and hosts can register
 /// additional entries via [`register_hook_metadata`]. The 8 CMF step
 /// hooks (entity × pre/post) are the complete CMF-routable surface

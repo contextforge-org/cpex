@@ -62,10 +62,6 @@
 //! registration helpers and the concrete factory types are re-exported here
 //! from [`cpex-builtins`](cpex_builtins).
 
-// -----------------------------------------------------------------------------
-// Host runtime re-exports (always available)
-// -----------------------------------------------------------------------------
-
 // Whole-crate re-exports for advanced use (types not surfaced below).
 pub use {apl_cmf, apl_core, apl_cpex, cpex_core};
 
@@ -74,10 +70,6 @@ pub use apl_cpex::{
     register_apl, AplOptions, DispatchCache, MemorySessionStore, SessionStore, SessionStoreFactory,
 };
 pub use cpex_core::manager::PluginManager;
-
-// -----------------------------------------------------------------------------
-// Bundled extensions (only when a builtins feature pulls in cpex-builtins)
-// -----------------------------------------------------------------------------
 
 // The whole aggregator, for advanced use.
 #[cfg(feature = "cpex-builtins")]
@@ -107,10 +99,6 @@ pub use cpex_builtins::{OAuthDelegatorFactory, OAUTH_KIND};
 pub use cpex_builtins::{PiiScannerFactory, PII_KIND};
 #[cfg(feature = "valkey")]
 pub use cpex_builtins::{ValkeyConfig, ValkeySessionStoreFactory, VALKEY_KIND};
-
-// -----------------------------------------------------------------------------
-// Tests
-// -----------------------------------------------------------------------------
 
 #[cfg(all(test, feature = "cpex-builtins"))]
 mod tests {

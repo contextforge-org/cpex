@@ -29,10 +29,6 @@ use std::fmt;
 // compatibility with existing code that imports from hooks::payload.
 pub use crate::extensions::{Extensions, Guarded, MetaExtension, OwnedExtensions, WriteToken};
 
-// ---------------------------------------------------------------------------
-// PluginPayload Trait
-// ---------------------------------------------------------------------------
-
 /// Base trait for all hook payloads.
 ///
 /// Mirrors Python's `PluginPayload(BaseModel, frozen=True)`. Every
@@ -97,10 +93,6 @@ impl fmt::Debug for dyn PluginPayload {
         f.write_str("dyn PluginPayload")
     }
 }
-
-// ---------------------------------------------------------------------------
-// Blanket helper macro for implementing PluginPayload
-// ---------------------------------------------------------------------------
 
 /// Implements `PluginPayload` for a type that is `Clone + Send + Sync + 'static`.
 ///

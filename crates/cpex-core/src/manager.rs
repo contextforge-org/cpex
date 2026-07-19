@@ -44,10 +44,6 @@ use crate::hooks::HookType;
 use crate::plugin::{Plugin, PluginConfig};
 use crate::registry::{AnyHookHandler, PluginRef, PluginRegistry};
 
-// ---------------------------------------------------------------------------
-// Manager Configuration
-// ---------------------------------------------------------------------------
-
 /// Default upper bound on the routing cache. Caps memory growth from
 /// attacker-controlled entity names without forcing operators to tune.
 pub const DEFAULT_ROUTE_CACHE_MAX_ENTRIES: usize = 10_000;
@@ -73,10 +69,6 @@ impl Default for ManagerConfig {
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// Plugin Manager
-// ---------------------------------------------------------------------------
 
 /// Central plugin lifecycle and dispatch manager.
 ///
@@ -436,10 +428,6 @@ impl PluginManager {
         self.generation.load(Ordering::Acquire)
     }
 
-    // -----------------------------------------------------------------------
-    // Factory Registration
-    // -----------------------------------------------------------------------
-
     /// Register a plugin factory for a given `kind` name.
     ///
     /// The host calls this to tell the manager how to create plugins
@@ -463,10 +451,6 @@ impl PluginManager {
             .unwrap_or_else(|p| p.into_inner())
             .register(kind, factory);
     }
-
-    // -----------------------------------------------------------------------
-    // Config Loading
-    // -----------------------------------------------------------------------
 
     /// Load plugins from a YAML config file.
     ///
@@ -705,10 +689,6 @@ impl PluginManager {
         Ok(manager)
     }
 
-    // -----------------------------------------------------------------------
-    // Registration
-    // -----------------------------------------------------------------------
-
     /// Register a plugin handler for its primary hook name.
     ///
     /// This is the preferred registration method. The framework creates
@@ -804,10 +784,6 @@ impl PluginManager {
         self.clear_routing_cache();
         Ok(())
     }
-
-    // -----------------------------------------------------------------------
-    // Lifecycle
-    // -----------------------------------------------------------------------
 
     /// Initialize all registered plugins.
     ///
@@ -910,10 +886,6 @@ impl PluginManager {
         info!("PluginManager shutdown complete");
     }
 
-    // -----------------------------------------------------------------------
-    // Hook Invocation — Dynamic (invoke_by_name)
-    // -----------------------------------------------------------------------
-
     /// Invoke a hook by name with a type-erased payload.
     ///
     /// This is the dynamic dispatch path used by Python/Go/WASM
@@ -989,11 +961,6 @@ impl PluginManager {
             )
             .await
     }
-
-    // -----------------------------------------------------------------------
-    // Hook Invocation — Typed (invoke::<H>)
-
-    // -----------------------------------------------------------------------
 
     /// Invoke a typed hook.
     ///
@@ -1209,10 +1176,6 @@ impl PluginManager {
             .await
     }
 
-    // -----------------------------------------------------------------------
-    // Route Annotation
-    // -----------------------------------------------------------------------
-
     /// Override the resolved plugin list for one `(entity_type, entity_name)`
     /// pair on the listed hooks with a single synthetic handler. The handler
     /// takes responsibility for any further plugin dispatch within itself
@@ -1286,10 +1249,6 @@ impl PluginManager {
             snap.route_annotations.remove(&key);
         });
     }
-
-    // -----------------------------------------------------------------------
-    // Route Filtering
-    // -----------------------------------------------------------------------
 
     /// Filter hook entries based on route resolution, with caching.
     ///
@@ -1792,10 +1751,6 @@ impl PluginManager {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .len()
     }
-
-    // -----------------------------------------------------------------------
-    // Query Methods
-    // -----------------------------------------------------------------------
 
     /// Whether anything would run for the given hook name — either a
     /// registered plugin handler OR a route annotation targeting that hook.
@@ -5467,14 +5422,6 @@ routes:
         // With filter_extensions, security IS Some but with empty labels and no subject
         // So saw_security will be true, but the content is filtered
     }
-
-    // -----------------------------------------------------------------------
-    // Awaiting handler tests
-    //
-    // `HookHandler<H>` is async by design. These tests cover handlers
-    // that genuinely `.await` inside the body — sleeps, yields, and
-    // co-registration with handlers whose body has no `.await` at all.
-    // -----------------------------------------------------------------------
 
     /// Plugin that genuinely awaits inside its handler. Increments a
     /// shared counter after the await resolves so the test can verify

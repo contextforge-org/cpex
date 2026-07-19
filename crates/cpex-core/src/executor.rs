@@ -39,10 +39,6 @@ use crate::hooks::payload::{Extensions, PluginPayload, WriteToken};
 use crate::plugin::OnError;
 use crate::registry::{group_by_mode, HookEntry};
 
-// ---------------------------------------------------------------------------
-// Executor Configuration
-// ---------------------------------------------------------------------------
-
 /// Configuration for the executor.
 #[derive(Debug, Clone)]
 pub struct ExecutorConfig {
@@ -61,10 +57,6 @@ impl Default for ExecutorConfig {
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// Pipeline Result
-// ---------------------------------------------------------------------------
 
 /// Aggregate result from a full hook invocation across all phases.
 ///
@@ -161,10 +153,6 @@ impl PipelineResult {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Background Tasks
-// ---------------------------------------------------------------------------
-
 /// Handles to fire-and-forget background tasks spawned by the executor.
 ///
 /// Returned separately from [`PipelineResult`] so that the policy
@@ -232,10 +220,6 @@ impl fmt::Debug for BackgroundTasks {
             .finish()
     }
 }
-
-// ---------------------------------------------------------------------------
-// Executor
-// ---------------------------------------------------------------------------
 
 /// 5-phase plugin execution engine.
 ///
@@ -305,7 +289,6 @@ impl Executor {
         // become the violation directly.
         let mut errors: Vec<crate::error::PluginErrorRecord> = Vec::new();
 
-        // Phase 1: SEQUENTIAL — serial, chained, can block + modify
         if let Some(v) = self
             .run_serial_phase(
                 &sequential,
@@ -325,8 +308,6 @@ impl Executor {
             );
         }
 
-        // Phase 2: TRANSFORM — serial, chained, can modify, cannot block
-        // can_block=false means denials are suppressed (returns None)
         self.run_serial_phase(
             &transform,
             &mut current_payload,
@@ -339,7 +320,6 @@ impl Executor {
         )
         .await;
 
-        // Phase 3: AUDIT — serial, read-only, discard results
         self.run_ref_phase(
             &audit,
             &*current_payload,
@@ -350,7 +330,6 @@ impl Executor {
         )
         .await;
 
-        // Phase 4: CONCURRENT — parallel, can block, cannot modify
         if let Some(violation) = self
             .run_concurrent_phase(
                 &concurrent,
@@ -368,9 +347,6 @@ impl Executor {
             );
         }
 
-        // Phase 5: FIRE_AND_FORGET — background, read-only, ignore results.
-        // FAF errors don't go in PipelineResult.errors — they're delivered
-        // via BackgroundTasks::wait_for_background_tasks() instead.
         let bg_handles = self.spawn_fire_and_forget(
             &fire_and_forget,
             &*current_payload,
@@ -385,10 +361,6 @@ impl Executor {
             BackgroundTasks::from_handles(bg_handles),
         )
     }
-
-    // -----------------------------------------------------------------------
-    // Phase 1 & 2: Serial execution (SEQUENTIAL / TRANSFORM)
-    // -----------------------------------------------------------------------
 
     /// Run a serial phase — plugins execute one at a time, each seeing
     /// the (possibly modified) payload from the previous.
@@ -421,10 +393,6 @@ impl Executor {
             let plugin_id = entry.plugin_ref.id();
             let on_error = entry.plugin_ref.trusted_config().on_error;
 
-            // Take this plugin's context out of the table — pulls its stored
-            // local_state and seeds global_state from the canonical store.
-            // Replaces the previous values().last() seed, which was
-            // non-deterministic across HashMap iteration orders.
             let mut ctx = ctx_table.take_context(plugin_id);
 
             // Filter extensions per plugin based on declared capabilities.
@@ -589,19 +557,11 @@ impl Executor {
                 },
             }
 
-            // Commit this plugin's context back to the table — replaces the
-            // canonical global_state with its (possibly modified) copy and
-            // stores the local_state for the next hook invocation. The
-            // global_state move is free; only the local_state insert allocates.
             ctx_table.store_context(plugin_id, ctx);
         }
 
         None // no denial
     }
-
-    // -----------------------------------------------------------------------
-    // Phase 3 & 5: Read-only execution (AUDIT / FIRE_AND_FORGET)
-    // -----------------------------------------------------------------------
 
     /// Run a read-only phase — plugins receive &payload, results discarded.
     async fn run_ref_phase(
@@ -681,10 +641,6 @@ impl Executor {
             }
         }
     }
-
-    // -----------------------------------------------------------------------
-    // Phase 4: Concurrent (parallel, fail-fast)
-    // -----------------------------------------------------------------------
 
     /// Run the concurrent phase — plugins execute truly in parallel.
     /// Returns the first violation if any plugin denies.
@@ -923,10 +879,6 @@ impl Executor {
         first_violation
     }
 
-    // -----------------------------------------------------------------------
-    // Phase 5: Fire-and-Forget (background, no await)
-    // -----------------------------------------------------------------------
-
     /// Spawn fire-and-forget handlers as background tasks.
     ///
     /// Each handler runs in its own `tokio::spawn` — the pipeline does
@@ -1011,15 +963,7 @@ impl Default for Executor {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Internal types
-// ---------------------------------------------------------------------------
-
 // SerialResult removed — run_serial_phase now returns Option<Violation> directly.
-
-// ---------------------------------------------------------------------------
-// Erased Result Extraction
-// ---------------------------------------------------------------------------
 
 /// Common fields extracted from a type-erased PluginResult.
 ///

@@ -29,10 +29,6 @@ use super::raw_credentials::RawCredentialsExtension;
 use super::request::RequestExtension;
 use super::security::SecurityExtension;
 
-// ---------------------------------------------------------------------------
-// Extensions — all Arc, fully immutable, zero-copy shareable
-// ---------------------------------------------------------------------------
-
 /// Typed container for all message extensions.
 ///
 /// All slots are `Arc<T>` — fully immutable, zero-copy shareable.
@@ -257,10 +253,6 @@ impl Extensions {
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// OwnedExtensions — plugin's writeable workspace
-// ---------------------------------------------------------------------------
 
 /// Owned copy of extensions for plugin modification.
 ///

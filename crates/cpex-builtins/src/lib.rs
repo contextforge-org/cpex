@@ -34,10 +34,6 @@ use apl_core::step::PdpFactory;
 use apl_cpex::{register_apl, AplOptions, SessionStoreFactory};
 use cpex_core::manager::PluginManager;
 
-// -----------------------------------------------------------------------------
-// Feature-gated re-exports of each builtin's factory + KIND
-// -----------------------------------------------------------------------------
-
 #[cfg(feature = "cedar-direct")]
 pub use cpex_pdp_cedar_direct::CedarDirectPdpFactory;
 #[cfg(feature = "cel")]
@@ -54,10 +50,6 @@ pub use cpex_plugin_identity_jwt::{JwtIdentityFactory, KIND as JWT_KIND};
 pub use cpex_plugin_pii_scanner::{PiiScannerFactory, KIND as PII_KIND};
 #[cfg(feature = "valkey")]
 pub use cpex_session_valkey::{ValkeyConfig, ValkeySessionStoreFactory, KIND as VALKEY_KIND};
-
-// -----------------------------------------------------------------------------
-// Plugin-factory registration (by-kind axis)
-// -----------------------------------------------------------------------------
 
 /// Generate [`register_builtins`] from a feature → factory table. Each entry
 /// expands to a `#[cfg(feature = ...)]`-gated, **explicit**
@@ -97,10 +89,6 @@ register_builtins! {
     feature "audit-logger"     => cpex_plugin_audit_logger::AuditLoggerFactory,
 }
 
-// -----------------------------------------------------------------------------
-// PDP-factory and session-store axes
-// -----------------------------------------------------------------------------
-
 /// The enabled PDP factories, ready to drop into
 /// [`AplOptions::pdp_factories`]. A route's `cedar:` or `cel:` step selects
 /// which one runs.
@@ -130,10 +118,6 @@ pub fn builtin_session_store_factories() -> Vec<Arc<dyn SessionStoreFactory>> {
     factories
 }
 
-// -----------------------------------------------------------------------------
-// One-call install
-// -----------------------------------------------------------------------------
-
 /// Register every enabled plugin factory and install the APL config visitor
 /// on `mgr` with in-process defaults (a `MemorySessionStore` and the default
 /// baseline capabilities). The enabled PDP and session-store factories are
@@ -151,10 +135,6 @@ pub fn install_builtins(mgr: &Arc<PluginManager>) {
 
     let _visitor = register_apl(mgr, opts);
 }
-
-// -----------------------------------------------------------------------------
-// Tests
-// -----------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {

@@ -567,10 +567,6 @@ impl AnyHookHandler for AplRouteHandler {
     }
 }
 
-// =====================================================================
-// Helpers
-// =====================================================================
-
 /// Attach a route's transpiled `denyWith` (status/body/headers) to a
 /// denial `violation`'s `details` map so the host can render a custom HTTP
 /// denial response. Carried via `details` (not new violation fields) to
@@ -753,10 +749,6 @@ fn extensions_changed(before: &Extensions, after: &Extensions) -> bool {
     };
     security_changed || delegation_changed || raw_creds_changed
 }
-
-// ---------------------------------------------------------------------
-// Phase 5: pending elicitation ↔ wire (`-32120`)
-// ---------------------------------------------------------------------
 
 /// Extract the elicitation id an agent echoes on retry from the
 /// `X-Policy-Elicitation-Id` request header. `None` when absent/empty.

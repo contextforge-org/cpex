@@ -64,7 +64,6 @@ pub enum ScanKind {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Stage {
-    // ----- Validators (halt with deny on failure) -----
     Type(TypeCheck),
     /// `regex("pattern")` — parser captures the pattern; evaluator stubbed
     /// until we add the `regex` crate dependency.
@@ -91,8 +90,6 @@ pub enum Stage {
         values: Vec<String>,
     },
 
-    // ----- Transforms (produce a new value) -----
-    /// `mask(N)` — replace all but last N chars with `*`.
     Mask {
         keep_last: usize,
     },
@@ -108,7 +105,6 @@ pub enum Stage {
     /// `hash` — replace value with a hash digest.
     Hash,
 
-    // ----- Effects (deferred to step 5c — IR captured, eval stubbed) -----
     Taint {
         label: String,
         scopes: Vec<TaintScope>,

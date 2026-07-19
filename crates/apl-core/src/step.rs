@@ -332,10 +332,6 @@ impl PdpDialect {
     }
 }
 
-// =====================================================================
-// Resolver traits
-// =====================================================================
-
 /// External policy-decision dispatch. Implemented by Cedar, OPA HTTP
 /// clients, AuthZen clients, NeMo Guardrails — anything that can answer
 /// "given this call, allow or deny?" against a request context.
@@ -539,10 +535,6 @@ impl DelegationInvoker for NoopDelegationInvoker {
         Err(DelegationError::NotFound(step.plugin_name.clone()))
     }
 }
-
-// =====================================================================
-// Elicitation dispatch
-// =====================================================================
 
 /// Elicitation dispatch — drives a human-in-the-loop step (approval,
 /// confirmation, step-up, …) through a channel plugin. apl-cpex
@@ -817,10 +809,6 @@ impl ElicitationInvoker for AutoApprovingElicitor {
     }
 }
 
-// =====================================================================
-// Resolver results
-// =====================================================================
-
 /// What a PDP returned.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PdpDecision {
@@ -860,10 +848,6 @@ impl PluginOutcome {
     }
 }
 
-// =====================================================================
-// Errors
-// =====================================================================
-
 #[derive(Debug, Error)]
 pub enum PdpError {
     #[error("no PDP resolver registered for dialect {0:?}")]
@@ -881,10 +865,6 @@ pub enum PluginError {
     #[error("plugin dispatch failed: {0}")]
     Dispatch(String),
 }
-
-// =====================================================================
-// Convenience
-// =====================================================================
 
 impl Step {
     /// Wrap a `Rule` as a `Step`. Saves typing in tests and parser code.

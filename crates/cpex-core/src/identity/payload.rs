@@ -113,9 +113,6 @@ impl Default for TokenSource {
 /// existing Sequential-phase machinery — no bespoke plumbing.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IdentityPayload {
-    // ----- Input (private — host-supplied, never mutated by handlers) -----
-    /// Raw credential bytes. Cleared on drop via `Zeroizing`.
-    /// `#[serde(skip)]` — never appears in serialized output.
     #[serde(skip)]
     raw_token: Zeroizing<String>,
 
@@ -138,8 +135,6 @@ pub struct IdentityPayload {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     client_port: Option<u16>,
 
-    // ----- Output (pub — handlers populate via direct assignment on clones) -----
-    /// Resolved user identity. `None` until a handler populates it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subject: Option<SubjectExtension>,
 
@@ -197,8 +192,6 @@ impl IdentityPayload {
         }
     }
 
-    // -------- Input builders --------
-
     pub fn with_source_header(mut self, h: impl Into<String>) -> Self {
         self.source_header = Some(h.into());
         self
@@ -218,8 +211,6 @@ impl IdentityPayload {
         self.client_port = Some(port);
         self
     }
-
-    // -------- Input read accessors (no mutable variants) --------
 
     /// The raw credential bytes. Borrowed — handlers cannot move
     /// or replace the underlying `Zeroizing<String>` through this
@@ -247,8 +238,6 @@ impl IdentityPayload {
     pub fn client_port(&self) -> Option<u16> {
         self.client_port
     }
-
-    // -------- Output helpers --------
 
     /// Layer another payload's *output* fields onto this one's,
     /// following "Some replaces None, last write wins per slot."
@@ -282,8 +271,6 @@ impl IdentityPayload {
             self.raw_claims.insert(k, v);
         }
     }
-
-    // -------- Host-side application helpers --------
 
     /// Pull the resolved `IdentityPayload` out of a `PipelineResult`
     /// returned by `mgr.invoke_named::<IdentityHook>(...)`. Returns

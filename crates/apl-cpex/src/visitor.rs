@@ -702,10 +702,6 @@ impl ConfigVisitor for AplConfigVisitor {
     }
 }
 
-// =====================================================================
-// Helpers
-// =====================================================================
-
 #[allow(clippy::too_many_arguments)]
 fn install_handler(
     mgr: &Arc<PluginManager>,

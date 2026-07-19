@@ -132,10 +132,6 @@ impl PyPipelineResult {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Builder
-// ---------------------------------------------------------------------------
-
 /// Convert a `PipelineResult` from the Rust runtime into `PyPipelineResult`.
 ///
 /// If `modified_payload` is present but cannot be serialised, a synthetic

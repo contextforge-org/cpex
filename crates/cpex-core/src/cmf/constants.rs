@@ -8,10 +8,6 @@
 /// Current CMF message schema version.
 pub const SCHEMA_VERSION: &str = "2.0";
 
-// ---------------------------------------------------------------------------
-// Serialization field names for MessageView::to_dict() / to_opa_input()
-// ---------------------------------------------------------------------------
-
 // Core view fields
 pub const FIELD_KIND: &str = "kind";
 pub const FIELD_ROLE: &str = "role";
@@ -64,13 +60,6 @@ pub const FIELD_TAGS: &str = "tags";
 // OPA envelope
 pub const FIELD_OPA_INPUT: &str = "input";
 
-// ---------------------------------------------------------------------------
-// Entity type identifiers — used in MetaExtension.entity_type and as the
-// keys for `global.defaults` per-entity-type policy groups. These are the
-// MCP entity taxonomy: tools (callable functions), LLMs (model
-// invocations), prompts (template fills), resources (URI fetches).
-// ---------------------------------------------------------------------------
-
 pub const ENTITY_TOOL: &str = "tool";
 pub const ENTITY_LLM: &str = "llm";
 pub const ENTITY_PROMPT: &str = "prompt";
@@ -84,16 +73,6 @@ pub const ENTITY_HTTP: &str = "http";
 
 /// Reserved entity name for the global catch-all policy annotation.
 pub const ENTITY_NAME_GLOBAL: &str = "*";
-
-// ---------------------------------------------------------------------------
-// CMF hook names — the canonical names plugins register under and hosts
-// pass to `PluginManager::invoke_named::<CmfHook>(...)`. Two per entity
-// type — pre-invocation (called from APL's policy / args phase) and
-// post-invocation (called from APL's post_policy / result phase).
-//
-// Used as keys in `hooks::metadata`'s routing table and from plugin
-// declarations.
-// ---------------------------------------------------------------------------
 
 pub const HOOK_CMF_TOOL_PRE_INVOKE: &str = "cmf.tool_pre_invoke";
 pub const HOOK_CMF_TOOL_POST_INVOKE: &str = "cmf.tool_post_invoke";

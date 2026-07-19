@@ -10,10 +10,6 @@
 
 use serde::{Deserialize, Serialize};
 
-// ---------------------------------------------------------------------------
-// Role
-// ---------------------------------------------------------------------------
-
 /// Identifies WHO is speaking in a conversation turn.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -30,10 +26,6 @@ pub enum Role {
     Tool,
 }
 
-// ---------------------------------------------------------------------------
-// Channel
-// ---------------------------------------------------------------------------
-
 /// Classifies the kind of output a message represents.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -45,10 +37,6 @@ pub enum Channel {
     /// Terminal response intended for delivery.
     Final,
 }
-
-// ---------------------------------------------------------------------------
-// ContentType
-// ---------------------------------------------------------------------------
 
 /// Discriminator for the typed ContentPart hierarchy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -79,10 +67,6 @@ pub enum ContentType {
     /// Document content (PDF, Word, etc.).
     Document,
 }
-
-// ---------------------------------------------------------------------------
-// ResourceType
-// ---------------------------------------------------------------------------
 
 /// Type of resource being referenced.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]

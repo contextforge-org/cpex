@@ -583,10 +583,6 @@ impl HookHandler<IdentityHook> for JwtIdentityResolver {
     }
 }
 
-// =====================================================================
-// Internal helpers
-// =====================================================================
-
 /// Pull the `iss` claim out of a JWT *without* verifying the
 /// signature. Used purely to look up which trusted issuer config
 /// to validate against next.

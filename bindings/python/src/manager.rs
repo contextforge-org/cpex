@@ -142,7 +142,6 @@ impl PyPluginManager {
         extensions: Option<&Bound<'_, PyAny>>,
         context_table: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Bound<'py, PyAny>> {
-        // --- GIL held: convert all arguments ---
         let payload_value = pyobj_to_json_value(py, payload, 0)?;
         let rust_payload = resolve_payload(hook_name, payload_value)?;
 
@@ -161,14 +160,6 @@ impl PyPluginManager {
         let manager = Arc::clone(&self.inner);
         let hook_name = hook_name.to_string();
 
-        // --- GIL released: async execution with wall-clock timeout (KD7) ---
-        // future_into_py catches panics via tokio's JoinHandle and converts them
-        // to pyo3_async_runtimes.RustPanic (a PyException subclass). To keep the
-        // documented interface consistent — the docstring promises RuntimeError —
-        // we spawn invoke_by_name as an isolated tokio task and intercept the
-        // JoinError::is_panic() case ourselves, converting it to RuntimeError.
-        // This mirrors cpex-ffi's run_safely/catch_unwind pattern at the async
-        // boundary.
         future_into_py(
             py,
             invoke_with_timeout(
@@ -182,10 +173,6 @@ impl PyPluginManager {
         )
     }
 }
-
-// ---------------------------------------------------------------------------
-// Async helper — extracted so tests can inject a short timeout
-// ---------------------------------------------------------------------------
 
 /// Drives a single `invoke_by_name` call with an isolated tokio task (panic
 /// capture) and a wall-clock timeout, returning a Python-compatible result.
@@ -238,19 +225,6 @@ pub(crate) async fn invoke_with_timeout(
         ))),
     }
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-//
-// These tests exercise the tokio::spawn + JoinError::is_panic() panic-catching
-// path without requiring a live Python interpreter. They run under plain
-// `cargo test -p cpex-python` (cdylibs produce a separate test binary that
-// doesn't link against libpython).
-//
-// The test mirrors the FFI crate's `cpex_invoke_returns_rc_panic_when_plugin_panics`
-// pattern: register a plugin that unconditionally panics, invoke it, verify the
-// panic is caught and surfaced as a JoinError rather than aborting the process.
 
 #[cfg(test)]
 mod tests {
