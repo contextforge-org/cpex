@@ -888,7 +888,6 @@ mod tests {
         let mut v = json!({ "a": { "b": 1, "c": 2 } });
         assert!(remove_dotted(&mut v, "a.b"));
         assert_eq!(v, json!({ "a": { "c": 2 } }));
-        // Removing a missing leaf returns false.
         assert!(!remove_dotted(&mut v, "a.b"));
     }
 

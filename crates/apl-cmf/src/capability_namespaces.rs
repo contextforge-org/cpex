@@ -253,7 +253,6 @@ mod tests {
 
     #[test]
     fn write_capability_returns_empty() {
-        // Write caps don't expose bag-readable state.
         assert!(capability_namespaces(CAP_APPEND_LABELS).is_empty());
         assert!(capability_namespaces(CAP_APPEND_DELEGATION).is_empty());
         assert!(capability_namespaces(CAP_WRITE_HEADERS).is_empty());

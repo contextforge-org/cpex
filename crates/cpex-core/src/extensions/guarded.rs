@@ -134,7 +134,6 @@ mod tests {
         // Read — no token needed
         assert!(guarded.read().map.is_empty());
 
-        // Write — token required
         guarded
             .write(&token)
             .map

@@ -814,7 +814,6 @@ impl PluginManager {
                 if let Err(e) = plugin.initialize().await {
                     error!("Failed to initialize plugin '{}': {}", plugin_name, e);
 
-                    // Clean up already-initialized plugins
                     for init_name in initialized_plugins.iter().rev() {
                         if let Some(pr) = snapshot.registry.get(init_name) {
                             if let Err(shutdown_err) = pr.plugin().shutdown().await {
@@ -1322,7 +1321,6 @@ impl PluginManager {
             },
         };
 
-        // Extract entity info from meta extension
         let meta = match &extensions.meta {
             Some(m) => m,
             None => return Arc::new(entries.to_vec()),
@@ -2004,7 +2002,6 @@ mod tests {
             cfg: config.clone(),
         });
 
-        // Clean registration — no AnyHookHandler needed
         mgr.register_handler::<TestHook, _>(plugin, config).unwrap();
         mgr.initialize().await.unwrap();
 
@@ -3159,7 +3156,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_timeout_fires_on_slow_handler() {
-        // Create a manager with a very short timeout
         let config = ManagerConfig {
             executor: crate::executor::ExecutorConfig {
                 timeout_seconds: 1,
@@ -3425,7 +3421,6 @@ mod tests {
                 _extensions: &Extensions,
                 ctx: &mut PluginContext,
             ) -> Result<Box<dyn std::any::Any + Send + Sync>, Box<PluginError>> {
-                // Increment a counter in local_state
                 let count = ctx
                     .get_local("call_count")
                     .and_then(|v| v.as_u64())
@@ -5292,7 +5287,6 @@ routes:
             .unwrap();
         mgr.initialize().await.unwrap();
 
-        // Build extensions with a security label
         let mut security = crate::extensions::SecurityExtension::default();
         security.add_label("ORIGINAL");
 
@@ -5326,7 +5320,6 @@ routes:
             .unwrap();
         mgr.initialize().await.unwrap();
 
-        // Build extensions with a request extension
         let ext = Extensions {
             request: Some(std::sync::Arc::new(crate::extensions::RequestExtension {
                 request_id: Some("original-req-id".into()),
@@ -5396,7 +5389,6 @@ routes:
             .unwrap();
         mgr.initialize().await.unwrap();
 
-        // Build extensions WITH security data
         let mut security = crate::extensions::SecurityExtension::default();
         security.add_label("SECRET");
         security.subject = Some(crate::extensions::security::SubjectExtension {

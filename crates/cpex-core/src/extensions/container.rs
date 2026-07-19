@@ -177,7 +177,6 @@ impl Extensions {
             delegation: self.delegation.as_ref().map(|arc| (**arc).clone()),
             custom: self.custom.as_ref().map(|arc| (**arc).clone()),
 
-            // Write tokens — propagated from the original
             http_write_token: if self.http_write_token.is_some() {
                 Some(WriteToken::new())
             } else {
@@ -290,7 +289,6 @@ pub struct OwnedExtensions {
     pub delegation: Option<DelegationExtension>,
     pub custom: Option<HashMap<String, serde_json::Value>>,
 
-    // Write tokens — propagated from executor
     pub http_write_token: Option<WriteToken>,
     pub labels_write_token: Option<WriteToken>,
     pub delegation_write_token: Option<WriteToken>,
@@ -481,7 +479,6 @@ mod tests {
         use crate::extensions::delegation::DelegationHop;
         use crate::extensions::DelegationExtension;
 
-        // Build extensions with security, http, delegation, custom
         let mut security = SecurityExtension::default();
         security.add_label("PII");
 

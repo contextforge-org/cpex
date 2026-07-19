@@ -396,12 +396,10 @@ impl PluginRegistry {
     pub fn unregister(&mut self, name: &str) -> Option<Arc<PluginRef>> {
         let plugin_ref = self.plugins.remove(name)?;
 
-        // Remove from hook index
         for entries in self.hook_index.values_mut() {
             entries.retain(|e| e.plugin_ref.name() != name);
         }
 
-        // Clean up empty hook entries
         self.hook_index.retain(|_, entries| !entries.is_empty());
 
         Some(plugin_ref)

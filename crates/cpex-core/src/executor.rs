@@ -429,7 +429,6 @@ impl Executor {
             match result {
                 Ok(Ok(result_box)) => {
                     if let Some(erased) = extract_erased(result_box) {
-                        // Check deny
                         if !erased.continue_processing && can_block {
                             if let Some(mut v) = erased.violation {
                                 v.plugin_name = Some(plugin_name.to_string());
@@ -443,7 +442,6 @@ impl Executor {
                                 *payload = mp;
                             }
                             if let Some(owned) = erased.modified_extensions {
-                                // Validate tier constraints before accepting
                                 let valid = extensions.validate_immutable(&owned);
                                 if !valid {
                                     warn!(
