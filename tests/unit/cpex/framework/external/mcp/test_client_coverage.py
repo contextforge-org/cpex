@@ -7,7 +7,6 @@ from contextlib import AsyncExitStack
 from unittest.mock import AsyncMock, MagicMock, patch
 
 # Third-Party
-import httpx
 import orjson
 import pytest
 from mcp_types import TextContent
@@ -587,7 +586,7 @@ class TestHTTPClientFactory:
             patch("cpex.framework.external.mcp.client.streamable_http_client", return_value=OkCtx()),
             patch("cpex.framework.external.mcp.client.ClientSession", return_value=mock_session),
             patch("cpex.framework.external.mcp.client.create_ssl_context", return_value="sslctx"),
-            patch("cpex.framework.external.mcp.client.httpx.AsyncClient") as mock_httpx,
+            patch("cpex.framework.external.mcp.client.httpx2.AsyncClient") as mock_httpx,
             patch("cpex.framework.external.mcp.client.get_http_client_settings", return_value=mock_http_settings),
         ):
             plugin._exit_stack = AsyncExitStack()

@@ -1,7 +1,7 @@
 # CPEX MCP SDK v1 → v2 Migration Strategy
 
 **Date:** 2025-07-03
-**Target SDK:** `mcp==2.0.0b1`, `mcp-types==2.0.0b1` (already pinned in `pyproject.toml`)
+**Target SDK:** `mcp==2.0.0b2`, `mcp-types==2.0.0b2` (already pinned in `pyproject.toml`)
 **Source of truth:** [MCP Python SDK v2 Migration Guide](https://py.sdk.modelcontextprotocol.io/v2/migration/)
 
 ---
@@ -470,8 +470,8 @@ from mcp.client.stdio import stdio_client
 
 The `pyproject.toml` already pins:
 ```toml
-"mcp==2.0.0b1",
-"mcp-types==2.0.0b1",
+    "mcp==2.0.0b2",
+    "mcp-types==2.0.0b2",
 ```
 
 Per the [Dependency floors section](https://py.sdk.modelcontextprotocol.io/v2/migration/#dependency-floors-raised-and-new-required-dependencies), these new floors apply:

@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Optional
 
 # Third-Party
-import httpx
+import httpx2
 import orjson
 from mcp import ClientSession, MCPError, StdioServerParameters
 from mcp.client.stdio import stdio_client
@@ -315,10 +315,10 @@ class ExternalPlugin(Plugin):
 
         def _tls_httpx_client_factory(
             headers: Optional[dict[str, str]] = None,
-            timeout: Optional[httpx.Timeout] = None,
-            auth: Optional[httpx.Auth] = None,
-        ) -> httpx.AsyncClient:
-            """Build an httpx client with TLS configuration for external MCP servers.
+            timeout: Optional[httpx2.Timeout] = None,
+            auth: Optional[httpx2.Auth] = None,
+        ) -> httpx2.AsyncClient:
+            """Build an httpx2 client with TLS configuration for external MCP servers.
 
             Args:
                 headers: Optional HTTP headers to include in requests.
@@ -334,14 +334,14 @@ class ExternalPlugin(Plugin):
 
             kwargs: dict[str, Any] = {"follow_redirects": True}
             if uds_path:
-                kwargs["transport"] = httpx.AsyncHTTPTransport(uds=uds_path)
+                kwargs["transport"] = httpx2.AsyncHTTPTransport(uds=uds_path)
             if headers:
                 kwargs["headers"] = headers
             http_settings = get_http_client_settings()
             kwargs["timeout"] = (
                 timeout
                 if timeout
-                else httpx.Timeout(
+                else httpx2.Timeout(
                     connect=http_settings.httpx_connect_timeout,
                     read=http_settings.httpx_read_timeout,
                     write=http_settings.httpx_write_timeout,
@@ -352,7 +352,7 @@ class ExternalPlugin(Plugin):
                 kwargs["auth"] = auth
 
             # Add connection pool limits
-            kwargs["limits"] = httpx.Limits(
+            kwargs["limits"] = httpx2.Limits(
                 max_connections=http_settings.httpx_max_connections,
                 max_keepalive_connections=http_settings.httpx_max_keepalive_connections,
                 keepalive_expiry=http_settings.httpx_keepalive_expiry,
@@ -361,14 +361,14 @@ class ExternalPlugin(Plugin):
             if not tls_config:
                 # Use skip_ssl_verify setting when no custom TLS config
                 kwargs["verify"] = not http_settings.skip_ssl_verify
-                return httpx.AsyncClient(**kwargs)
+                return httpx2.AsyncClient(**kwargs)
 
             # Create SSL context using the utility function
             # This implements certificate validation per test_client_certificate_validation.py
             ssl_context = create_ssl_context(tls_config, self.name)
             kwargs["verify"] = ssl_context
 
-            return httpx.AsyncClient(**kwargs)
+            return httpx2.AsyncClient(**kwargs)
 
         max_retries = 3
         base_delay = 1.0
