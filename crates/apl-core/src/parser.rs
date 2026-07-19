@@ -1857,6 +1857,18 @@ fn step_to_effect(step: Step, source: &str) -> Result<Effect, ParseError> {
     }
 }
 
+/// Parse a `delegate:` step body into a `Step::Delegate`. Accepted
+/// YAML shape:
+///
+/// ```yaml
+/// - delegate:
+///     plugin: workday-oauth          # required — TokenDelegateHook plugin name
+///     config:                         # optional — per-call config override
+///       target: workday-api
+///       permissions: [read_compensation]
+///     on_error: deny                  # optional — deny | continue (default deny)
+/// ```
+///
 /// `config:` is opaque — the framework hands it to the named plugin
 /// via the existing per-call config-override pathway. The plugin
 /// owns the typed schema (target / audience / permissions / mode /
