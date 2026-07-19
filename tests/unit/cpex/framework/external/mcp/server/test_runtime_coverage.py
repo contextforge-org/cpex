@@ -27,27 +27,70 @@ class TestModuleLevelTools:
 
 
 # ===========================================================================
-# SSLCapableFastMCP __init__
+# SSLCapableMCPServer __init__
 # ===========================================================================
 
 
-class TestSSLCapableFastMCPInit:
+class TestSSLCapableMCPServerInit:
     def test_kwargs_override_host_port(self):
         config = MCPServerConfig(host="0.0.0.0", port=9000)
-        server = runtime.SSLCapableFastMCP(
+        server = runtime.SSLCapableMCPServer(
             server_config=config,
             name="Test",
             host="custom_host",
             port=1234,
         )
-        assert server.settings.host == "custom_host"
-        assert server.settings.port == 1234
+        # MCPServer v2 ignores host/port kwargs; values come from server_config
+        assert server.server_config.host == "0.0.0.0"
+        assert server.server_config.port == 9000
 
     def test_uds_sets_transport_security(self, tmp_path):
         uds_path = str(tmp_path / "plugin.sock")
         config = MCPServerConfig(host="127.0.0.1", port=8000, uds=uds_path)
-        server = runtime.SSLCapableFastMCP(server_config=config, name="UDSTest")
+        server = runtime.SSLCapableMCPServer(server_config=config, name="UDSTest")
         assert server.server_config.uds == uds_path
+        # UDS servers get DNS rebinding protection auto-configured in __init__.
+        assert server._transport_security is not None
+        assert server._transport_security.enable_dns_rebinding_protection is True
+
+    def test_non_uds_leaves_transport_security_unset(self):
+        config = MCPServerConfig(host="0.0.0.0", port=8000)
+        server = runtime.SSLCapableMCPServer(server_config=config, name="NonUDSTest")
+        # Non-UDS servers rely on the SDK/host handling, not the UDS auto-config.
+        assert server._transport_security is None
+
+    @pytest.mark.asyncio
+    async def test_run_streamable_http_async_forwards_transport_security(self, tmp_path, monkeypatch):
+        """run_streamable_http_async must forward _transport_security to streamable_http_app()."""
+        uds_path = str(tmp_path / "plugin.sock")
+        config = MCPServerConfig(host="127.0.0.1", port=8000, uds=uds_path)
+        server = runtime.SSLCapableMCPServer(server_config=config, name="ForwardTest")
+
+        captured = {}
+
+        def capture_app(**kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(routes=[])
+
+        server.streamable_http_app = capture_app
+        monkeypatch.setattr(runtime.SSLCapableMCPServer, "_get_ssl_config", lambda self: {})
+
+        class DummyServer:
+            def __init__(self, config):
+                self.config = config
+
+            async def serve(self):
+                pass
+
+        monkeypatch.setattr(runtime.uvicorn, "Config", lambda **kwargs: SimpleNamespace(**kwargs))
+        monkeypatch.setattr(runtime.uvicorn, "Server", lambda config: DummyServer(config))
+
+        await runtime.SSLCapableMCPServer.run_streamable_http_async(server)
+
+        assert captured["transport_security"] is server._transport_security
+        assert captured["transport_security"].enable_dns_rebinding_protection is True
+        # Real bind host is forwarded so the SDK does not force a localhost-only allowlist.
+        assert captured["host"] == "127.0.0.1"
 
     def test_ssl_config_partial_tls_warns(self, tmp_path, caplog):
         """TLS present but no keyfile/certfile returns empty dict + warning."""
@@ -57,7 +100,7 @@ class TestSSLCapableFastMCPInit:
 
         # Create a config object then patch tls to have certfile but no keyfile
         config = MCPServerConfig(host="127.0.0.1", port=8000)
-        server = object.__new__(runtime.SSLCapableFastMCP)
+        server = object.__new__(runtime.SSLCapableMCPServer)
         server.server_config = config
 
         # Manually set tls with no keyfile and no certfile
@@ -92,10 +135,10 @@ class TestSSLCapableFastMCPInit:
             ),
         )
 
-        server = object.__new__(runtime.SSLCapableFastMCP)
+        server = object.__new__(runtime.SSLCapableMCPServer)
         server.server_config = config
 
-        ssl_config = runtime.SSLCapableFastMCP._get_ssl_config(server)
+        ssl_config = runtime.SSLCapableMCPServer._get_ssl_config(server)
         assert ssl_config["ssl_keyfile"] == str(key_path)
         assert ssl_config["ssl_certfile"] == str(cert_path)
         assert "ssl_ca_certs" not in ssl_config
@@ -113,12 +156,13 @@ class TestRunStreamableHTTPAsync:
         uds_path = str(tmp_path / "plugin.sock")
         config = MCPServerConfig(host="127.0.0.1", port=8000, uds=uds_path)
 
-        server = object.__new__(runtime.SSLCapableFastMCP)
+        server = object.__new__(runtime.SSLCapableMCPServer)
         server.server_config = config
         server.settings = SimpleNamespace(host="127.0.0.1", port=8000, log_level="info")
-        server.streamable_http_app = lambda: SimpleNamespace(routes=[])
+        server._transport_security = None
+        server.streamable_http_app = lambda **kwargs: SimpleNamespace(routes=[])
 
-        monkeypatch.setattr(runtime.SSLCapableFastMCP, "_get_ssl_config", lambda self: {})
+        monkeypatch.setattr(runtime.SSLCapableMCPServer, "_get_ssl_config", lambda self: {})
 
         served = MagicMock()
 
@@ -139,7 +183,7 @@ class TestRunStreamableHTTPAsync:
         monkeypatch.setattr(runtime.uvicorn, "Config", capture_config)
         monkeypatch.setattr(runtime.uvicorn, "Server", lambda config: DummyServer(config))
 
-        await runtime.SSLCapableFastMCP.run_streamable_http_async(server)
+        await runtime.SSLCapableMCPServer.run_streamable_http_async(server)
 
         served.assert_called_once()
         assert configs_seen[0].get("uds") == uds_path
@@ -150,12 +194,13 @@ class TestRunStreamableHTTPAsync:
     async def test_no_ssl(self, monkeypatch):
         config = MCPServerConfig(host="127.0.0.1", port=8000)
 
-        server = object.__new__(runtime.SSLCapableFastMCP)
+        server = object.__new__(runtime.SSLCapableMCPServer)
         server.server_config = config
         server.settings = SimpleNamespace(host="127.0.0.1", port=8000, log_level="info")
-        server.streamable_http_app = lambda: SimpleNamespace(routes=[])
+        server._transport_security = None
+        server.streamable_http_app = lambda **kwargs: SimpleNamespace(routes=[])
 
-        monkeypatch.setattr(runtime.SSLCapableFastMCP, "_get_ssl_config", lambda self: {})
+        monkeypatch.setattr(runtime.SSLCapableMCPServer, "_get_ssl_config", lambda self: {})
 
         served = MagicMock()
 
@@ -169,22 +214,23 @@ class TestRunStreamableHTTPAsync:
         monkeypatch.setattr(runtime.uvicorn, "Config", lambda **kwargs: SimpleNamespace(**kwargs))
         monkeypatch.setattr(runtime.uvicorn, "Server", lambda config: DummyServer(config))
 
-        await runtime.SSLCapableFastMCP.run_streamable_http_async(server)
+        await runtime.SSLCapableMCPServer.run_streamable_http_async(server)
         served.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_metrics_disabled(self, monkeypatch):
         config = MCPServerConfig(host="127.0.0.1", port=8000)
 
-        server = object.__new__(runtime.SSLCapableFastMCP)
+        server = object.__new__(runtime.SSLCapableMCPServer)
         server.server_config = config
         server.settings = SimpleNamespace(host="127.0.0.1", port=8000, log_level="info")
 
         routes_added = []
         app = SimpleNamespace(routes=routes_added)
-        server.streamable_http_app = lambda: app
+        server._transport_security = None
+        server.streamable_http_app = lambda **kwargs: app
 
-        monkeypatch.setattr(runtime.SSLCapableFastMCP, "_get_ssl_config", lambda self: {})
+        monkeypatch.setattr(runtime.SSLCapableMCPServer, "_get_ssl_config", lambda self: {})
         monkeypatch.setenv("ENABLE_METRICS", "false")
 
         served = MagicMock()
@@ -199,7 +245,7 @@ class TestRunStreamableHTTPAsync:
         monkeypatch.setattr(runtime.uvicorn, "Config", lambda **kwargs: SimpleNamespace(**kwargs))
         monkeypatch.setattr(runtime.uvicorn, "Server", lambda config: DummyServer(config))
 
-        await runtime.SSLCapableFastMCP.run_streamable_http_async(server)
+        await runtime.SSLCapableMCPServer.run_streamable_http_async(server)
         served.assert_called_once()
         # Verify routes were added (health + metrics_disabled)
         assert len(routes_added) >= 2
@@ -213,7 +259,8 @@ class TestRunStreamableHTTPAsync:
 class TestStartHealthCheckServerEndpoints:
     @pytest.mark.asyncio
     async def test_metrics_enabled_executes_health_and_metrics_endpoints(self, monkeypatch):
-        server = object.__new__(runtime.SSLCapableFastMCP)
+        server = object.__new__(runtime.SSLCapableMCPServer)
+        server.server_config = SimpleNamespace(host="127.0.0.1", port=8000, uds=None, tls=None)
         server.settings = SimpleNamespace(host="127.0.0.1", port=8000, log_level="INFO")
 
         monkeypatch.setenv("ENABLE_METRICS", "true")
@@ -236,13 +283,14 @@ class TestStartHealthCheckServerEndpoints:
         monkeypatch.setattr(runtime.uvicorn, "Config", lambda **kwargs: SimpleNamespace(**kwargs))
         monkeypatch.setattr(runtime.uvicorn, "Server", lambda config: DummyServer(config))
 
-        await runtime.SSLCapableFastMCP._start_health_check_server(server, 9000)
+        await runtime.SSLCapableMCPServer._start_health_check_server(server, 9000)
         assert called["health"] is True
         assert called["metrics"] is True
 
     @pytest.mark.asyncio
     async def test_metrics_disabled_executes_metrics_disabled_endpoint(self, monkeypatch):
-        server = object.__new__(runtime.SSLCapableFastMCP)
+        server = object.__new__(runtime.SSLCapableMCPServer)
+        server.server_config = SimpleNamespace(host="127.0.0.1", port=8000, uds=None, tls=None)
         server.settings = SimpleNamespace(host="127.0.0.1", port=8000, log_level="INFO")
 
         monkeypatch.setenv("ENABLE_METRICS", "false")
@@ -265,7 +313,7 @@ class TestStartHealthCheckServerEndpoints:
         monkeypatch.setattr(runtime.uvicorn, "Config", lambda **kwargs: SimpleNamespace(**kwargs))
         monkeypatch.setattr(runtime.uvicorn, "Server", lambda config: DummyServer(config))
 
-        await runtime.SSLCapableFastMCP._start_health_check_server(server, 9000)
+        await runtime.SSLCapableMCPServer._start_health_check_server(server, 9000)
         assert called["disabled"] is True
 
 
@@ -278,13 +326,14 @@ class TestRunStreamableHTTPAsyncEndpoints:
     @pytest.mark.asyncio
     async def test_metrics_enabled_executes_routes(self, monkeypatch):
         config = MCPServerConfig(host="127.0.0.1", port=8000)
-        server = object.__new__(runtime.SSLCapableFastMCP)
+        server = object.__new__(runtime.SSLCapableMCPServer)
         server.server_config = config
         server.settings = SimpleNamespace(host="127.0.0.1", port=8000, log_level="INFO")
-        server.streamable_http_app = lambda: SimpleNamespace(routes=[])
+        server._transport_security = None
+        server.streamable_http_app = lambda **kwargs: SimpleNamespace(routes=[])
 
         monkeypatch.setenv("ENABLE_METRICS", "true")
-        monkeypatch.setattr(runtime.SSLCapableFastMCP, "_get_ssl_config", lambda self: {})
+        monkeypatch.setattr(runtime.SSLCapableMCPServer, "_get_ssl_config", lambda self: {})
 
         called = {"health": False, "metrics": False}
 
@@ -302,20 +351,21 @@ class TestRunStreamableHTTPAsyncEndpoints:
         monkeypatch.setattr(runtime.uvicorn, "Config", lambda **kwargs: SimpleNamespace(**kwargs))
         monkeypatch.setattr(runtime.uvicorn, "Server", lambda config: DummyServer(config))
 
-        await runtime.SSLCapableFastMCP.run_streamable_http_async(server)
+        await runtime.SSLCapableMCPServer.run_streamable_http_async(server)
         assert called["health"] is True
         assert called["metrics"] is True
 
     @pytest.mark.asyncio
     async def test_metrics_disabled_executes_route(self, monkeypatch):
         config = MCPServerConfig(host="127.0.0.1", port=8000)
-        server = object.__new__(runtime.SSLCapableFastMCP)
+        server = object.__new__(runtime.SSLCapableMCPServer)
         server.server_config = config
         server.settings = SimpleNamespace(host="127.0.0.1", port=8000, log_level="INFO")
-        server.streamable_http_app = lambda: SimpleNamespace(routes=[])
+        server._transport_security = None
+        server.streamable_http_app = lambda **kwargs: SimpleNamespace(routes=[])
 
         monkeypatch.setenv("ENABLE_METRICS", "false")
-        monkeypatch.setattr(runtime.SSLCapableFastMCP, "_get_ssl_config", lambda self: {})
+        monkeypatch.setattr(runtime.SSLCapableMCPServer, "_get_ssl_config", lambda self: {})
 
         called = {"disabled": False}
 
@@ -335,7 +385,7 @@ class TestRunStreamableHTTPAsyncEndpoints:
         monkeypatch.setattr(runtime.uvicorn, "Config", lambda **kwargs: SimpleNamespace(**kwargs))
         monkeypatch.setattr(runtime.uvicorn, "Server", lambda config: DummyServer(config))
 
-        await runtime.SSLCapableFastMCP.run_streamable_http_async(server)
+        await runtime.SSLCapableMCPServer.run_streamable_http_async(server)
         assert called["disabled"] is True
 
 
@@ -385,7 +435,7 @@ class TestRunFunction:
                 created["ran_stdio"] = True
 
         monkeypatch.setattr(runtime, "ExternalPluginServer", lambda: DummyServer())
-        monkeypatch.setattr(runtime, "FastMCP", DummyFastMCP)
+        monkeypatch.setattr(runtime, "MCPServer", DummyFastMCP)
         monkeypatch.delenv("PLUGINS_TRANSPORT", raising=False)
         monkeypatch.setattr("sys.stdin", SimpleNamespace(isatty=lambda: False))
 
@@ -423,7 +473,7 @@ class TestRunFunction:
                 created["ran_http"] = True
 
         monkeypatch.setattr(runtime, "ExternalPluginServer", lambda: DummyServer())
-        monkeypatch.setattr(runtime, "SSLCapableFastMCP", DummyMCP)
+        monkeypatch.setattr(runtime, "SSLCapableMCPServer", DummyMCP)
         monkeypatch.delenv("PLUGINS_TRANSPORT", raising=False)
         monkeypatch.setattr("sys.stdin", SimpleNamespace(isatty=lambda: True))
 
@@ -463,7 +513,7 @@ class TestRunFunction:
                 raise RuntimeError("server crashed")
 
         monkeypatch.setattr(runtime, "ExternalPluginServer", lambda: DummyServer())
-        monkeypatch.setattr(runtime, "SSLCapableFastMCP", DummyMCP)
+        monkeypatch.setattr(runtime, "SSLCapableMCPServer", DummyMCP)
         monkeypatch.setenv("PLUGINS_TRANSPORT", "http")
 
         with pytest.raises(RuntimeError, match="server crashed"):
@@ -474,7 +524,8 @@ class TestRunFunction:
     @pytest.mark.asyncio
     async def test_health_check_metrics_disabled(self, monkeypatch):
         """Test _start_health_check_server with ENABLE_METRICS=false."""
-        server = object.__new__(runtime.SSLCapableFastMCP)
+        server = object.__new__(runtime.SSLCapableMCPServer)
+        server.server_config = SimpleNamespace(host="127.0.0.1", port=8000, uds=None, tls=None)
         server.settings = SimpleNamespace(host="127.0.0.1", port=8000, log_level="INFO")
 
         monkeypatch.setenv("ENABLE_METRICS", "false")
@@ -491,5 +542,5 @@ class TestRunFunction:
         monkeypatch.setattr(runtime.uvicorn, "Config", lambda **kwargs: SimpleNamespace(**kwargs))
         monkeypatch.setattr(runtime.uvicorn, "Server", lambda config: DummyServer(config))
 
-        await runtime.SSLCapableFastMCP._start_health_check_server(server, 9000)
+        await runtime.SSLCapableMCPServer._start_health_check_server(server, 9000)
         served.assert_called_once()
