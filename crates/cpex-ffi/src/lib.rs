@@ -28,18 +28,6 @@ use cpex_core::manager::PluginManager;
 // APL governance wiring — the `cpex_apl_install` extern "C" entry point.
 mod apl;
 
-// ---------------------------------------------------------------------------
-// FFI Result Codes
-// ---------------------------------------------------------------------------
-//
-// FFI functions return c_int. 0 means success; negative codes classify
-// failures so the Go (or other-language) caller can produce a typed
-// error rather than a single opaque "invoke failed" string. The codes
-// are stable wire ABI — additions go at the end with a fresh value;
-// don't renumber.
-//
-// Mapped on the Go side in `go/cpex/manager.go::errorFromRC`.
-
 /// Operation succeeded.
 pub const RC_OK: c_int = 0;
 /// Manager handle is null or shut down.
@@ -63,35 +51,6 @@ pub const RC_TIMEOUT: c_int = -6;
 /// Plugin panicked; caught by `catch_unwind` at the FFI boundary.
 pub const RC_PANIC: c_int = -7;
 
-// ---------------------------------------------------------------------------
-// FFI ABI Version
-// ---------------------------------------------------------------------------
-//
-// The FFI ABI version is an integer that identifies the C-surface
-// contract this crate exposes. Bump it on any breaking change to the
-// C surface:
-//
-//   - added / removed / renamed extern "C" function
-//   - argument count, argument type, or return type change on an
-//     existing function
-//   - layout change of a struct that crosses the boundary
-//   - semantic change to an existing function (e.g. new RC_* value
-//     returned for a previously-success case, change in pointer
-//     ownership)
-//
-// Adding a new RC_* code at the end of the existing range is *not* a
-// breaking change (the wire codes are stable; consumers handle unknown
-// codes as generic failure).
-//
-// Consumers — every language binding — MUST call `cpex_ffi_abi_version`
-// at init and compare against the version their binding was generated
-// for. Mismatch is a hard error: the C surface they generated against
-// is not the one they're linked against. Document the binding's
-// expected ABI version in its source.
-//
-// Bumps are recorded in CHANGELOG.md under "Changed" with the from→to
-// integers and a one-line description of what moved.
-
 /// FFI ABI version. Bump on breaking C-surface changes; see module
 /// docs above for what counts as breaking.
 pub const FFI_ABI_VERSION: u32 = 2;
@@ -114,23 +73,6 @@ pub extern "C" fn cpex_ffi_abi_version() -> u32 {
 /// usual case never hits this bound.
 const FFI_WALL_CLOCK_TIMEOUT: Duration = Duration::from_secs(60);
 
-// ---------------------------------------------------------------------------
-// Shared Tokio Runtime
-// ---------------------------------------------------------------------------
-//
-// One process-singleton runtime serves every manager rather than each
-// `cpex_manager_new` building its own. With many managers (multi-tenant
-// hosts that create one per request, dynamic plugin reload, etc.) the
-// per-manager model exploded thread count: 100 managers × num_cpus
-// workers each = hundreds of OS threads (and ~2MB stack apiece).
-//
-// Worker thread count precedence (highest first):
-//   1. `cpex_configure_runtime(N)` — explicit FFI call, before first use.
-//   2. `CPEX_FFI_WORKER_THREADS` env var — operator-friendly; read once
-//      on first use of `shared_runtime()`.
-//   3. tokio default (`num_cpus`).
-//
-// Once the runtime is initialized it's fixed for the process lifetime.
 static SHARED_RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
 
 /// Name of the env var operators set to bound worker threads without
@@ -315,10 +257,6 @@ where
     }
 }
 
-// ---------------------------------------------------------------------------
-// Payload Type Registry
-// ---------------------------------------------------------------------------
-
 /// Payload type IDs — must match Go constants.
 pub const PAYLOAD_GENERIC: u8 = 0;
 pub const PAYLOAD_CMF_MESSAGE: u8 = 1;
@@ -391,10 +329,6 @@ fn serialize_payload(payload: &dyn PluginPayload) -> Result<(u8, Vec<u8>), Strin
     Err("unknown payload type, cannot serialize across FFI".to_string())
 }
 
-// ---------------------------------------------------------------------------
-// Opaque Handle Types
-// ---------------------------------------------------------------------------
-
 /// Opaque handle to a PluginManager.
 ///
 /// All managers share the process-singleton runtime returned by
@@ -416,10 +350,6 @@ pub struct CpexContextTableInner {
 pub struct CpexBackgroundTasksInner {
     tasks: BackgroundTasks,
 }
-
-// ---------------------------------------------------------------------------
-// Helper: safe string from C
-// ---------------------------------------------------------------------------
 
 unsafe fn c_str_to_slice<'a>(ptr: *const c_char, len: c_int) -> Option<&'a str> {
     if ptr.is_null() || len <= 0 {
@@ -457,7 +387,8 @@ fn alloc_bytes(data: &[u8]) -> (*mut u8, c_int) {
         );
         return (ptr::null_mut(), 0);
     }
-    let layout = std::alloc::Layout::from_size_align(len, 1).unwrap();
+    let layout = std::alloc::Layout::from_size_align(len, 1)
+        .expect("align 1 is always valid and len <= c_int::MAX is far under isize::MAX");
     unsafe {
         let ptr = std::alloc::alloc(layout);
         if ptr.is_null() {
@@ -467,10 +398,6 @@ fn alloc_bytes(data: &[u8]) -> (*mut u8, c_int) {
         (ptr, len as c_int)
     }
 }
-
-// ---------------------------------------------------------------------------
-// Manager Lifecycle
-// ---------------------------------------------------------------------------
 
 /// Create a new PluginManager from a YAML config string.
 ///
@@ -716,10 +643,6 @@ pub unsafe extern "C" fn cpex_plugin_names(
     RC_OK
 }
 
-// ---------------------------------------------------------------------------
-// Hook Invocation
-// ---------------------------------------------------------------------------
-
 /// Invoke a hook by name.
 ///
 /// Payload and extensions are passed as MessagePack bytes.
@@ -816,7 +739,6 @@ pub unsafe extern "C" fn cpex_invoke(
         None => return RC_INVALID_HANDLE,
     };
 
-    // Parse hook name
     let name = match c_str_to_slice(hook_name, hook_len) {
         Some(s) => s,
         None => return RC_INVALID_INPUT,
@@ -918,17 +840,14 @@ pub unsafe extern "C" fn cpex_invoke(
         },
     };
 
-    // Return result bytes
     let (ptr, len) = alloc_bytes(&result_bytes);
     *result_msgpack_out = ptr;
     *result_len_out = len;
 
-    // Return context table as opaque handle
     *context_table_out = Box::into_raw(Box::new(CpexContextTableInner {
         table: result.context_table,
     }));
 
-    // Return background tasks as opaque handle
     *bg_handle_out = Box::into_raw(Box::new(CpexBackgroundTasksInner { tasks: bg }));
 
     RC_OK
@@ -1026,11 +945,6 @@ pub unsafe extern "C" fn cpex_invoke_resolved(
         Extensions::default()
     };
 
-    // ---- Identity resolution (in-process) ----
-    // Resolve identity and merge the result into the extensions BEFORE the
-    // hook runs, so raw_credentials (skip-serialized across FFI) reach the
-    // hook in Rust memory. Skipped when no identity payload was supplied or
-    // no identity.resolve hook is registered.
     let merged_extensions: Extensions = if identity_len > 0
         && inner
             .manager
@@ -1088,7 +1002,6 @@ pub unsafe extern "C" fn cpex_invoke_resolved(
         base_extensions
     };
 
-    // ---- Hook invoke with the identity-enriched extensions ----
     let (result, bg) = match run_safely(
         inner
             .manager
@@ -1185,10 +1098,6 @@ unsafe fn finish_pipeline_result(
     RC_OK
 }
 
-// ---------------------------------------------------------------------------
-// Background Tasks
-// ---------------------------------------------------------------------------
-
 /// Wait for all background tasks to complete.
 ///
 /// Returns MessagePack-encoded errors (empty array if none).
@@ -1221,7 +1130,11 @@ pub unsafe extern "C" fn cpex_wait_background(
 
     if bg_handle.is_null() {
         let empty: Vec<cpex_core::error::PluginErrorRecord> = Vec::new();
-        let (ptr, len) = alloc_bytes(&rmp_serde::to_vec_named(&empty).unwrap());
+        let empty_bytes = match rmp_serde::to_vec_named(&empty) {
+            Ok(b) => b,
+            Err(_) => return RC_SERIALIZE_ERROR,
+        };
+        let (ptr, len) = alloc_bytes(&empty_bytes);
         *errors_msgpack_out = ptr;
         *errors_len_out = len;
         return RC_OK;
@@ -1268,10 +1181,6 @@ pub unsafe extern "C" fn cpex_free_background(bg_handle: *mut CpexBackgroundTask
     }
 }
 
-// ---------------------------------------------------------------------------
-// Context Table
-// ---------------------------------------------------------------------------
-
 /// Free a context table handle.
 ///
 /// # Safety
@@ -1283,10 +1192,6 @@ pub unsafe extern "C" fn cpex_free_context_table(ct: *mut CpexContextTableInner)
     }
 }
 
-// ---------------------------------------------------------------------------
-// Memory Management
-// ---------------------------------------------------------------------------
-
 /// Free a byte buffer allocated by the FFI layer.
 ///
 /// # Safety
@@ -1297,13 +1202,10 @@ pub unsafe extern "C" fn cpex_free_bytes(ptr: *mut u8, len: c_int) {
     if ptr.is_null() || len <= 0 {
         return;
     }
-    let layout = std::alloc::Layout::from_size_align(len as usize, 1).unwrap();
+    let layout = std::alloc::Layout::from_size_align(len as usize, 1)
+        .expect("align 1 is always valid and len (a positive c_int) is far under isize::MAX");
     std::alloc::dealloc(ptr, layout);
 }
-
-// ---------------------------------------------------------------------------
-// FFI Result Types — serialized to MessagePack for the caller
-// ---------------------------------------------------------------------------
 
 /// Pipeline result serialized across the FFI boundary.
 /// Matches the Go `PipelineResult` struct field names.
@@ -1350,10 +1252,6 @@ mod serde_bytes_opt {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Generic Payload — wraps a deserialized MessagePack value
-// ---------------------------------------------------------------------------
-
 /// A generic payload that wraps a deserialized serde_json::Value.
 ///
 /// Used for FFI dispatch when the concrete payload type isn't known
@@ -1366,16 +1264,6 @@ pub struct GenericPayload {
 
 cpex_core::impl_plugin_payload!(GenericPayload);
 
-// ---------------------------------------------------------------------------
-// FFI unit tests
-// ---------------------------------------------------------------------------
-//
-// These tests call the `extern "C"` functions directly from Rust to
-// exercise the FFI safety layer (catch_unwind, return-code mapping,
-// payload-type validation) without needing a Go test harness. The
-// reviewer flagged that `cpex-ffi` had zero `#[cfg(test)]` coverage —
-// this seeds the file with regressions for the highest-value invariants.
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1387,8 +1275,6 @@ mod tests {
     use cpex_core::hooks::trait_def::HookTypeDef;
     use cpex_core::hooks::PluginResult;
     use cpex_core::plugin::{Plugin, PluginConfig, PluginMode};
-
-    // --- Test scaffolding -----------------------------------------------------
 
     /// Test hook type using GenericPayload — that's the type
     /// PAYLOAD_GENERIC produces at the FFI deserialization boundary,
@@ -1498,8 +1384,6 @@ mod tests {
         }
         rc
     }
-
-    // --- Tests ----------------------------------------------------------------
 
     /// Panic in a plugin must be caught at the FFI boundary and mapped
     /// to `RC_PANIC` rather than unwinding across `extern "C"` (UB on

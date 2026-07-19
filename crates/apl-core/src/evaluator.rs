@@ -206,10 +206,6 @@ fn looks_like_attribute_ref(s: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.')
 }
 
-// =====================================================================
-// Async effect evaluator (policy: / post_policy: walks Vec<Effect>)
-// =====================================================================
-
 /// Walk an Effect list against the bag, dispatching PDP calls via `pdp`
 /// and plugin invocations via `plugins`. Returns the phase's overall
 /// decision.
@@ -1115,10 +1111,6 @@ async fn dispatch_field_op(
     }
 }
 
-// =====================================================================
-// Pipe-chain evaluator (args: / result: field pipelines)
-// =====================================================================
-
 /// Result of running a pipeline against one field's value.
 ///
 /// `Pass`: every stage succeeded; the original value should be kept.
@@ -1158,8 +1150,9 @@ pub struct PipelineEvaluation {
 /// `Stage::Plugin` fires so the invoker knows which field is in focus.
 /// Pass `""` for standalone pipeline runs that aren't part of a field rule.
 ///
-/// `Stage::Validate { name }` is currently a no-op with a TODO — the named
-/// validator registry lands in a later step.
+/// `Stage::Validate { name }` has no named-validator registry backing it;
+/// it always denies with a message pointing operators at `regex(...)` or
+/// `plugin(...)` instead.
 pub async fn evaluate_pipeline(
     pipeline: &Pipeline,
     value: &serde_json::Value,
@@ -1174,7 +1167,6 @@ pub async fn evaluate_pipeline(
 
     for (idx, stage) in pipeline.stages.iter().enumerate() {
         match stage {
-            // ----- Validators -----
             Stage::Type(tc) => {
                 if !type_check(tc, &current) {
                     return PipelineEvaluation {
@@ -1313,7 +1305,6 @@ pub async fn evaluate_pipeline(
                 };
             },
 
-            // ----- Transforms -----
             Stage::Mask { keep_last } => {
                 let Some(s) = current.as_str() else {
                     return PipelineEvaluation {
@@ -1363,7 +1354,6 @@ pub async fn evaluate_pipeline(
                 replaced = true;
             },
 
-            // ----- Effects -----
             Stage::Taint { label, scopes } => {
                 taints.push(TaintEvent {
                     label: label.clone(),
@@ -1563,8 +1553,6 @@ mod tests {
         Expression::Condition(c)
     }
 
-    // ----- Decision-level semantics -----
-
     #[test]
     fn empty_rules_allow() {
         let mut bag = AttributeBag::new();
@@ -1641,8 +1629,6 @@ mod tests {
         assert_eq!(evaluate_rules(&rules, &bag), Decision::Allow);
     }
 
-    // ----- Predicate semantics -----
-
     #[test]
     fn missing_key_is_false() {
         let mut bag = AttributeBag::new();
@@ -1696,8 +1682,6 @@ mod tests {
         ));
         assert!(eval_expression(&Expression::Not(Box::new(b)), &bag));
     }
-
-    // ----- Comparison operators -----
 
     #[test]
     fn int_comparisons() {
@@ -1834,8 +1818,6 @@ mod tests {
         ));
     }
 
-    // ----- Realistic end-to-end -----
-
     #[test]
     fn hr_compensation_scenario() {
         // From the HR demo: alice (hr role + view_ssn perm) requests compensation
@@ -1902,10 +1884,6 @@ mod tests {
             d => panic!("expected r2 deny, got {:?}", d),
         }
     }
-
-    // ===================================================================
-    // Pipe-chain evaluator tests
-    // ===================================================================
 
     use crate::pipeline::{Stage, TypeCheck};
     use serde_json::json;
@@ -2199,8 +2177,6 @@ mod tests {
         }
     }
 
-    // ----- Regex stage -----
-
     #[tokio::test]
     async fn pipeline_regex_match_passes() {
         let mut bag = AttributeBag::new();
@@ -2258,8 +2234,6 @@ mod tests {
             other => panic!("expected Deny on non-string regex input, got {:?}", other),
         }
     }
-
-    // ----- Taint and Scan stages -----
 
     #[tokio::test]
     async fn pipeline_taint_records_event() {
@@ -2390,8 +2364,6 @@ mod tests {
             }]
         );
     }
-
-    // ----- Plugin stage in pipe chain -----
 
     /// Pipe-context plugin invoker that returns canned outcomes by name.
     struct PipePlugin {
@@ -2550,10 +2522,6 @@ mod tests {
         }
     }
 
-    // ===================================================================
-    // 5c additions: Exists, InSet, Always
-    // ===================================================================
-
     #[test]
     fn exists_distinguishes_missing_from_falsy() {
         let mut bag = AttributeBag::new();
@@ -2674,10 +2642,6 @@ mod tests {
             d => panic!("expected Deny, got {:?}", d),
         }
     }
-
-    // ===================================================================
-    // 5c-v/vi: async step evaluator with mock resolvers
-    // ===================================================================
 
     use crate::step::{
         PdpCall, PdpDecision, PdpDialect, PdpError, PdpResolver, PluginError, PluginInvocation,
@@ -3178,8 +3142,6 @@ mod tests {
         );
     }
 
-    // ----- E2: FieldOp end-to-end through evaluate_steps -----
-
     #[tokio::test]
     async fn field_op_in_do_redacts_args_during_pre_phase() {
         // Sketches the demo case: when condition holds, redact args.ssn
@@ -3305,8 +3267,6 @@ mod tests {
             other => panic!("expected Deny, got {:?}", other),
         }
     }
-
-    // ----- E3: Sequential / Parallel orchestration -----
 
     #[tokio::test]
     async fn sequential_runs_effects_in_order_until_deny() {
@@ -3479,8 +3439,6 @@ mod tests {
             other => panic!("expected Deny, got {:?}", other),
         }
     }
-
-    // ----- Effect::Elicit (human-in-the-loop) -----
 
     /// Run a single `Effect::Elicit` against the given invoker + bag.
     /// Seeds the `user.manager` attribute (the `from` these tests use) so

@@ -457,6 +457,7 @@ mod tests {
     #[tokio::test]
     async fn jwks_http_url_rejected_at_build_async() {
         let src = DecodingKeySource::JwksUrl {
+            // aislop-ignore-next-line ai-slop/hardcoded-url -- RFC 2606 example domain, test fixture only
             url: "http://idp.example/jwks".into(),
             insecure_http: false,
             refresh_secs: 3600,

@@ -42,7 +42,8 @@ import "C"
 // creation and therefore does NOT support APL — use the default-manager
 // flow instead:
 //
-//	mgr, _ := NewPluginManagerDefault()
+//	mgr, err := NewPluginManagerDefault()
+//	if err != nil { ... }
 //	mgr.EnableAPL()
 //	mgr.LoadConfig(yaml)
 //	mgr.Initialize()

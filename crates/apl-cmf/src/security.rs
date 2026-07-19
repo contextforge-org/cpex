@@ -57,7 +57,6 @@ use crate::constants::{
 
 /// Flatten a `SecurityExtension` into the bag.
 pub fn extract_security(sec: &SecurityExtension, bag: &mut AttributeBag) {
-    // ----- Subject (caller identity) -----
     if let Some(subject) = &sec.subject {
         let mut authenticated = false;
         if let Some(id) = &subject.id {
@@ -94,22 +93,18 @@ pub fn extract_security(sec: &SecurityExtension, bag: &mut AttributeBag) {
         }
     }
 
-    // ----- Client (OAuth application identity) -----
     if let Some(client) = &sec.client {
         extract_client(client, bag);
     }
 
-    // ----- Inbound caller's attested workload identity -----
     if let Some(caller) = &sec.caller_workload {
         extract_workload("caller_workload", caller, bag);
     }
 
-    // ----- Our own attested workload identity (outbound) -----
     if let Some(this_w) = &sec.this_workload {
         extract_workload("this_workload", this_w, bag);
     }
 
-    // ----- Other security fields -----
     if let Some(m) = &sec.auth_method {
         bag.set("auth_method", m.clone());
     }
@@ -364,16 +359,13 @@ mod tests {
         assert_eq!(bag.get_bool("role.guest"), Some(true));
     }
 
-    // -----------------------------------------------------------------
-    // Client (OAuth application identity) bag namespace
-    // -----------------------------------------------------------------
-
     fn agent_client() -> ClientExtension {
         ClientExtension {
             client_id: "agent-app".into(),
             client_name: Some("Agent App".into()),
             trust_level: ClientTrustLevel::FirstParty,
             authorized_scopes: vec!["read".into(), "write".into()],
+            // aislop-ignore-next-line ai-slop/hardcoded-url -- RFC 2606 example domain, test fixture only
             authorized_audiences: vec!["https://api.example.com".into()],
             roles: vec!["partner".into()],
             permissions: vec!["call_tool".into()],
@@ -414,6 +406,7 @@ mod tests {
         extract_client(&agent_client(), &mut bag);
         assert!(bag.set_contains("client.authorized_scopes", "read"));
         assert!(bag.set_contains("client.authorized_scopes", "write"));
+        // aislop-ignore-next-line ai-slop/hardcoded-url -- RFC 2606 example domain, test fixture only
         assert!(bag.set_contains("client.authorized_audiences", "https://api.example.com",));
         assert!(bag.set_contains("client.teams", "acme"));
     }
@@ -440,10 +433,6 @@ mod tests {
         extract_client(&client, &mut bag);
         assert_eq!(bag.get_string("client.trust_level"), Some("partner-tier-A"));
     }
-
-    // -----------------------------------------------------------------
-    // Workload (extract_workload helper — both prefixes)
-    // -----------------------------------------------------------------
 
     fn workload_fixture() -> WorkloadIdentity {
         WorkloadIdentity {
@@ -491,10 +480,6 @@ mod tests {
         );
         assert_eq!(bag.get_string("caller_workload.spiffe_id"), None);
     }
-
-    // -----------------------------------------------------------------
-    // extract_security orchestrates all four identity slots
-    // -----------------------------------------------------------------
 
     #[test]
     fn extract_security_populates_all_four_identity_namespaces() {

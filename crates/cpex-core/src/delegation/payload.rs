@@ -157,11 +157,6 @@ pub struct AttenuationConfig {
 /// clones and return the updated payload).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DelegationPayload {
-    // ----- Input (private — caller-supplied, never mutated by handlers) -----
-    /// The caller's current credential — the one a token-exchange
-    /// handler will swap for a downstream-scoped credential. Cleared
-    /// on drop via `Zeroizing`. `#[serde(skip)]` — never appears in
-    /// serialized output.
     #[serde(skip)]
     bearer_token: Zeroizing<String>,
 
@@ -194,12 +189,6 @@ pub struct DelegationPayload {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     route_attenuation: Option<AttenuationConfig>,
 
-    // ----- Output (pub — handlers populate via direct assignment on clones) -----
-    /// The minted outbound credential. `None` until a handler
-    /// produces one. Carries the raw bytes (cleared on drop), the
-    /// header the proxy plugin should attach it under, the
-    /// audience it was minted for, the effective scopes, and the
-    /// expiry timestamp.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delegated_token: Option<RawDelegatedToken>,
 
@@ -260,8 +249,6 @@ impl DelegationPayload {
         }
     }
 
-    // -------- Input builders --------
-
     pub fn with_target_type(mut self, t: TargetType) -> Self {
         self.target_type = t;
         self
@@ -291,8 +278,6 @@ impl DelegationPayload {
         self.route_attenuation = Some(cfg);
         self
     }
-
-    // -------- Input read accessors --------
 
     /// The caller's bearer token — borrowed, no way to move or
     /// replace the underlying `Zeroizing<String>` through this.
@@ -328,8 +313,6 @@ impl DelegationPayload {
         self.route_attenuation.as_ref()
     }
 
-    // -------- Output helpers --------
-
     /// Layer another payload's *output* fields onto this one's,
     /// following "Some replaces None, last write wins per slot."
     /// Input fields are not touched — the running payload's input
@@ -355,8 +338,6 @@ impl DelegationPayload {
             self.metadata.insert(k, v);
         }
     }
-
-    // -------- Host-side application helpers --------
 
     /// Pull the resolved `DelegationPayload` out of a `PipelineResult`
     /// returned by `mgr.invoke_named::<TokenDelegateHook>(...)`.
@@ -515,6 +496,7 @@ mod tests {
         updated.delegated_token = Some(RawDelegatedToken::new(
             "minted-bytes",
             "Authorization",
+            // aislop-ignore-next-line ai-slop/hardcoded-url -- RFC 2606 example domain, test fixture only
             "https://api.example.com",
             vec!["read".into()],
             Utc::now(),

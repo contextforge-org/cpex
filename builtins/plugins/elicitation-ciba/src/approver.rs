@@ -120,8 +120,6 @@ impl CibaApprover {
         })
     }
 
-    // ---------------- dispatch ----------------
-
     async fn do_dispatch(&self, payload: &ElicitationPayload) -> PluginResult<ElicitationPayload> {
         let login_hint = payload.from();
         if login_hint.is_empty() {
@@ -228,8 +226,6 @@ impl CibaApprover {
         out.expires_at = expires_at;
         PluginResult::modify_payload(out)
     }
-
-    // ---------------- check ----------------
 
     async fn do_check(&self, payload: &ElicitationPayload) -> PluginResult<ElicitationPayload> {
         let id = match payload.elicitation_id() {
@@ -344,8 +340,6 @@ impl CibaApprover {
         PluginResult::modify_payload(out)
     }
 
-    // ---------------- validate ----------------
-
     async fn do_validate(&self, payload: &ElicitationPayload) -> PluginResult<ElicitationPayload> {
         let id = match payload.elicitation_id() {
             Some(id) => id,
@@ -361,10 +355,10 @@ impl CibaApprover {
             Some(c) => c,
             None => return invalid(payload, "unknown elicitation id"),
         };
-        // The approver claim was extracted from the OP token at `check`
-        // (provenance: it came straight from the OP over our authenticated
-        // TLS poll). Genuineness here = who actually approved matches who we
-        // asked for — a stored-vs-stored comparison, no token at rest.
+        // Both sides of this comparison are values already stored from the
+        // OP's authenticated TLS response, not a token read at rest — this
+        // check only asks whether the approver who resolved matches the
+        // approver who was asked.
         let resolved = match &correlation.resolved_approver {
             Some(a) => a,
             None => {
@@ -416,8 +410,6 @@ impl HookHandler<ElicitationHook> for CibaApprover {
     }
 }
 
-// ----------------- wire shapes -----------------
-
 /// CIBA backchannel auth response (OIDC CIBA core §7.3).
 #[derive(Debug, Deserialize)]
 struct BackchannelResponse {
@@ -442,8 +434,6 @@ struct OAuthError {
     #[serde(default)]
     error: String,
 }
-
-// ----------------- helpers -----------------
 
 fn cfg_err(plugin: &str, msg: String) -> Box<PluginError> {
     Box::new(PluginError::Config {
@@ -506,10 +496,8 @@ fn sanitize_binding_message(purpose: &str) -> String {
 /// unparseable so the caller can fall back to a default.
 fn parse_duration_secs(s: &str) -> Option<u64> {
     let s = s.trim();
-    if s.is_empty() {
-        return None;
-    }
-    let (num, mult) = match s.chars().last().unwrap() {
+    let last = s.chars().last()?;
+    let (num, mult) = match last {
         's' => (&s[..s.len() - 1], 1),
         'm' => (&s[..s.len() - 1], 60),
         'h' => (&s[..s.len() - 1], 3600),
