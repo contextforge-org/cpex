@@ -27,7 +27,13 @@ use cpex_core::{
     delegation::{DelegationPayload, HOOK_TOKEN_DELEGATE},
     error::{PluginError, PluginViolation},
     executor::ErasedResultFields,
-    hooks::payload::PluginPayload,
+    hooks::{
+        payload::PluginPayload,
+        prompts::{PromptPosthookPayload, PromptPrehookPayload},
+        resources::{ResourcePostFetchPayload, ResourcePreFetchPayload},
+        tools::{ToolPostInvokePayload, ToolPreInvokePayload},
+        types::hook_names,
+    },
     identity::{IdentityPayload, HOOK_IDENTITY_RESOLVE},
 };
 
@@ -183,6 +189,41 @@ impl Default for HookPayloadRegistry {
             deserialize_delegation_payload,
         );
 
+        // Legacy (bare-name) hooks — each carries its own typed payload,
+        // mirroring the Python framework's cpex/framework/hooks/* models.
+        // Existing Python plugins register under these bare names and expect
+        // these payload shapes (e.g. ToolPreInvokePayload with `.args`).
+        r.register(
+            hook_names::TOOL_PRE_INVOKE,
+            serialize_tool_pre_invoke_payload,
+            deserialize_tool_pre_invoke_payload,
+        );
+        r.register(
+            hook_names::TOOL_POST_INVOKE,
+            serialize_tool_post_invoke_payload,
+            deserialize_tool_post_invoke_payload,
+        );
+        r.register(
+            hook_names::PROMPT_PRE_FETCH,
+            serialize_prompt_pre_fetch_payload,
+            deserialize_prompt_pre_fetch_payload,
+        );
+        r.register(
+            hook_names::PROMPT_POST_FETCH,
+            serialize_prompt_post_fetch_payload,
+            deserialize_prompt_post_fetch_payload,
+        );
+        r.register(
+            hook_names::RESOURCE_PRE_FETCH,
+            serialize_resource_pre_fetch_payload,
+            deserialize_resource_pre_fetch_payload,
+        );
+        r.register(
+            hook_names::RESOURCE_POST_FETCH,
+            serialize_resource_post_fetch_payload,
+            deserialize_resource_post_fetch_payload,
+        );
+
         r
     }
 }
@@ -237,6 +278,108 @@ fn deserialize_delegation_payload(
     v: serde_json::Value,
 ) -> Result<Box<dyn PluginPayload>, serde_json::Error> {
     Ok(Box::new(serde_json::from_value::<DelegationPayload>(v)?))
+}
+
+// --- Legacy (bare-name) hook payloads ---
+
+fn serialize_tool_pre_invoke_payload(
+    p: &dyn PluginPayload,
+) -> Result<serde_json::Value, serde_json::Error> {
+    let concrete = p
+        .as_any()
+        .downcast_ref::<ToolPreInvokePayload>()
+        .expect("serialize_tool_pre_invoke_payload: downcast failed");
+    serde_json::to_value(concrete)
+}
+
+fn deserialize_tool_pre_invoke_payload(
+    v: serde_json::Value,
+) -> Result<Box<dyn PluginPayload>, serde_json::Error> {
+    Ok(Box::new(serde_json::from_value::<ToolPreInvokePayload>(v)?))
+}
+
+fn serialize_tool_post_invoke_payload(
+    p: &dyn PluginPayload,
+) -> Result<serde_json::Value, serde_json::Error> {
+    let concrete = p
+        .as_any()
+        .downcast_ref::<ToolPostInvokePayload>()
+        .expect("serialize_tool_post_invoke_payload: downcast failed");
+    serde_json::to_value(concrete)
+}
+
+fn deserialize_tool_post_invoke_payload(
+    v: serde_json::Value,
+) -> Result<Box<dyn PluginPayload>, serde_json::Error> {
+    Ok(Box::new(serde_json::from_value::<ToolPostInvokePayload>(v)?))
+}
+
+fn serialize_prompt_pre_fetch_payload(
+    p: &dyn PluginPayload,
+) -> Result<serde_json::Value, serde_json::Error> {
+    let concrete = p
+        .as_any()
+        .downcast_ref::<PromptPrehookPayload>()
+        .expect("serialize_prompt_pre_fetch_payload: downcast failed");
+    serde_json::to_value(concrete)
+}
+
+fn deserialize_prompt_pre_fetch_payload(
+    v: serde_json::Value,
+) -> Result<Box<dyn PluginPayload>, serde_json::Error> {
+    Ok(Box::new(serde_json::from_value::<PromptPrehookPayload>(v)?))
+}
+
+fn serialize_prompt_post_fetch_payload(
+    p: &dyn PluginPayload,
+) -> Result<serde_json::Value, serde_json::Error> {
+    let concrete = p
+        .as_any()
+        .downcast_ref::<PromptPosthookPayload>()
+        .expect("serialize_prompt_post_fetch_payload: downcast failed");
+    serde_json::to_value(concrete)
+}
+
+fn deserialize_prompt_post_fetch_payload(
+    v: serde_json::Value,
+) -> Result<Box<dyn PluginPayload>, serde_json::Error> {
+    Ok(Box::new(serde_json::from_value::<PromptPosthookPayload>(v)?))
+}
+
+fn serialize_resource_pre_fetch_payload(
+    p: &dyn PluginPayload,
+) -> Result<serde_json::Value, serde_json::Error> {
+    let concrete = p
+        .as_any()
+        .downcast_ref::<ResourcePreFetchPayload>()
+        .expect("serialize_resource_pre_fetch_payload: downcast failed");
+    serde_json::to_value(concrete)
+}
+
+fn deserialize_resource_pre_fetch_payload(
+    v: serde_json::Value,
+) -> Result<Box<dyn PluginPayload>, serde_json::Error> {
+    Ok(Box::new(serde_json::from_value::<ResourcePreFetchPayload>(
+        v,
+    )?))
+}
+
+fn serialize_resource_post_fetch_payload(
+    p: &dyn PluginPayload,
+) -> Result<serde_json::Value, serde_json::Error> {
+    let concrete = p
+        .as_any()
+        .downcast_ref::<ResourcePostFetchPayload>()
+        .expect("serialize_resource_post_fetch_payload: downcast failed");
+    serde_json::to_value(concrete)
+}
+
+fn deserialize_resource_post_fetch_payload(
+    v: serde_json::Value,
+) -> Result<Box<dyn PluginPayload>, serde_json::Error> {
+    Ok(Box::new(serde_json::from_value::<ResourcePostFetchPayload>(
+        v,
+    )?))
 }
 
 // ---------------------------------------------------------------------------
@@ -349,5 +492,149 @@ mod tests {
             format!("{:?}", original.message),
             format!("{:?}", roundtripped.message),
         );
+    }
+
+    // --- Legacy (bare-name) hook payloads ---
+
+    #[test]
+    fn tool_pre_invoke_serializes_with_name_and_args() {
+        let r = make_registry();
+        let original = ToolPreInvokePayload {
+            name: "test_tool".to_string(),
+            args: Some(serde_json::json!({"input": "data"})),
+            headers: None,
+        };
+        let json = r
+            .payload_to_json(hook_names::TOOL_PRE_INVOKE, &original)
+            .unwrap();
+        // Shape must match Python ToolPreInvokePayload (name required + args).
+        assert_eq!(json.get("name").and_then(|v| v.as_str()), Some("test_tool"));
+        assert!(json.get("args").is_some());
+        // `headers` omitted when None (Python has default_factory).
+        assert!(json.get("headers").is_none());
+
+        let boxed = r
+            .json_to_payload(hook_names::TOOL_PRE_INVOKE, json)
+            .unwrap();
+        let rt = boxed
+            .as_any()
+            .downcast_ref::<ToolPreInvokePayload>()
+            .unwrap();
+        assert_eq!(rt.name, "test_tool");
+        assert_eq!(rt.args, original.args);
+    }
+
+    #[test]
+    fn round_trip_tool_post_invoke_payload() {
+        let r = make_registry();
+        let original = ToolPostInvokePayload {
+            name: "calculator".to_string(),
+            result: serde_json::json!({"result": 8}),
+        };
+        let json = r
+            .payload_to_json(hook_names::TOOL_POST_INVOKE, &original)
+            .unwrap();
+        assert_eq!(json.get("name").and_then(|v| v.as_str()), Some("calculator"));
+        let boxed = r
+            .json_to_payload(hook_names::TOOL_POST_INVOKE, json)
+            .unwrap();
+        let rt = boxed
+            .as_any()
+            .downcast_ref::<ToolPostInvokePayload>()
+            .unwrap();
+        assert_eq!(rt.name, "calculator");
+        assert_eq!(rt.result, original.result);
+    }
+
+    #[test]
+    fn round_trip_prompt_pre_fetch_payload() {
+        let r = make_registry();
+        let original = PromptPrehookPayload {
+            prompt_id: "greeting".to_string(),
+            args: Some(serde_json::json!({"name": "alice"})),
+        };
+        let json = r
+            .payload_to_json(hook_names::PROMPT_PRE_FETCH, &original)
+            .unwrap();
+        assert_eq!(
+            json.get("prompt_id").and_then(|v| v.as_str()),
+            Some("greeting")
+        );
+        let boxed = r
+            .json_to_payload(hook_names::PROMPT_PRE_FETCH, json)
+            .unwrap();
+        let rt = boxed
+            .as_any()
+            .downcast_ref::<PromptPrehookPayload>()
+            .unwrap();
+        assert_eq!(rt.prompt_id, "greeting");
+        assert_eq!(rt.args, original.args);
+    }
+
+    #[test]
+    fn round_trip_prompt_post_fetch_payload() {
+        let r = make_registry();
+        let original = PromptPosthookPayload {
+            prompt_id: "greeting".to_string(),
+            result: serde_json::json!({"messages": []}),
+        };
+        let json = r
+            .payload_to_json(hook_names::PROMPT_POST_FETCH, &original)
+            .unwrap();
+        let boxed = r
+            .json_to_payload(hook_names::PROMPT_POST_FETCH, json)
+            .unwrap();
+        let rt = boxed
+            .as_any()
+            .downcast_ref::<PromptPosthookPayload>()
+            .unwrap();
+        assert_eq!(rt.prompt_id, "greeting");
+        assert_eq!(rt.result, original.result);
+    }
+
+    #[test]
+    fn round_trip_resource_pre_fetch_payload() {
+        let r = make_registry();
+        let original = ResourcePreFetchPayload {
+            uri: "hr://employees/42".to_string(),
+            metadata: Some(serde_json::json!({"cache": true})),
+        };
+        let json = r
+            .payload_to_json(hook_names::RESOURCE_PRE_FETCH, &original)
+            .unwrap();
+        assert_eq!(
+            json.get("uri").and_then(|v| v.as_str()),
+            Some("hr://employees/42")
+        );
+        let boxed = r
+            .json_to_payload(hook_names::RESOURCE_PRE_FETCH, json)
+            .unwrap();
+        let rt = boxed
+            .as_any()
+            .downcast_ref::<ResourcePreFetchPayload>()
+            .unwrap();
+        assert_eq!(rt.uri, "hr://employees/42");
+        assert_eq!(rt.metadata, original.metadata);
+    }
+
+    #[test]
+    fn round_trip_resource_post_fetch_payload() {
+        let r = make_registry();
+        let original = ResourcePostFetchPayload {
+            uri: "hr://employees/42".to_string(),
+            content: serde_json::json!({"name": "Alice"}),
+        };
+        let json = r
+            .payload_to_json(hook_names::RESOURCE_POST_FETCH, &original)
+            .unwrap();
+        let boxed = r
+            .json_to_payload(hook_names::RESOURCE_POST_FETCH, json)
+            .unwrap();
+        let rt = boxed
+            .as_any()
+            .downcast_ref::<ResourcePostFetchPayload>()
+            .unwrap();
+        assert_eq!(rt.uri, "hr://employees/42");
+        assert_eq!(rt.content, original.content);
     }
 }
