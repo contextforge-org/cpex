@@ -44,14 +44,14 @@ pub use cpex_pdp_cedar_direct::CedarDirectPdpFactory;
 pub use cpex_pdp_cel::CelPdpFactory;
 #[cfg(feature = "audit-logger")]
 pub use cpex_plugin_audit_logger::{AuditLoggerFactory, KIND as AUDIT_KIND};
-#[cfg(feature = "ocsf-audit")]
-pub use cpex_plugin_ocsf_audit::{OcsfAuditFactory, KIND as OCSF_AUDIT_KIND};
 #[cfg(feature = "delegator-oauth")]
 pub use cpex_plugin_delegator_oauth::{OAuthDelegatorFactory, KIND as OAUTH_KIND};
 #[cfg(feature = "elicitation-ciba")]
 pub use cpex_plugin_elicitation_ciba::{CibaApproverFactory, KIND as CIBA_KIND};
 #[cfg(feature = "identity-jwt")]
 pub use cpex_plugin_identity_jwt::{JwtIdentityFactory, KIND as JWT_KIND};
+#[cfg(feature = "ocsf-audit")]
+pub use cpex_plugin_ocsf_audit::{OcsfAuditFactory, KIND as OCSF_AUDIT_KIND};
 #[cfg(feature = "pii-scanner")]
 pub use cpex_plugin_pii_scanner::{PiiScannerFactory, KIND as PII_KIND};
 #[cfg(feature = "valkey")]
