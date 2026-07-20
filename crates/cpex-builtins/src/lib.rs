@@ -44,6 +44,8 @@ pub use cpex_pdp_cedar_direct::CedarDirectPdpFactory;
 pub use cpex_pdp_cel::CelPdpFactory;
 #[cfg(feature = "audit-logger")]
 pub use cpex_plugin_audit_logger::{AuditLoggerFactory, KIND as AUDIT_KIND};
+#[cfg(feature = "ocsf-audit")]
+pub use cpex_plugin_ocsf_audit::{OcsfAuditFactory, KIND as OCSF_AUDIT_KIND};
 #[cfg(feature = "delegator-oauth")]
 pub use cpex_plugin_delegator_oauth::{OAuthDelegatorFactory, KIND as OAUTH_KIND};
 #[cfg(feature = "elicitation-ciba")]
@@ -95,6 +97,7 @@ register_builtins! {
     feature "elicitation-ciba" => cpex_plugin_elicitation_ciba::CibaApproverFactory,
     feature "pii-scanner"      => cpex_plugin_pii_scanner::PiiScannerFactory,
     feature "audit-logger"     => cpex_plugin_audit_logger::AuditLoggerFactory,
+    feature "ocsf-audit"       => cpex_plugin_ocsf_audit::OcsfAuditFactory,
 }
 
 // -----------------------------------------------------------------------------

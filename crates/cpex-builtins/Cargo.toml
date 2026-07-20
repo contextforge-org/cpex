@@ -34,6 +34,7 @@ default = ["pii-scanner", "audit-logger", "identity-jwt", "delegator-oauth", "el
 # Each feature pulls exactly one builtin crate.
 pii-scanner      = ["dep:cpex-plugin-pii-scanner"]
 audit-logger     = ["dep:cpex-plugin-audit-logger"]
+ocsf-audit       = ["dep:cpex-plugin-ocsf-audit"]
 identity-jwt     = ["dep:cpex-plugin-identity-jwt"]
 delegator-oauth  = ["dep:cpex-plugin-delegator-oauth"]
 elicitation-ciba = ["dep:cpex-plugin-elicitation-ciba"]
@@ -54,6 +55,7 @@ apl-cpex = { workspace = true }
 # Builtin extension crates — each behind its feature.
 cpex-plugin-pii-scanner = { workspace = true, optional = true }
 cpex-plugin-audit-logger = { workspace = true, optional = true }
+cpex-plugin-ocsf-audit = { workspace = true, optional = true }
 cpex-plugin-identity-jwt = { workspace = true, optional = true }
 cpex-plugin-delegator-oauth = { workspace = true, optional = true }
 cpex-plugin-elicitation-ciba = { workspace = true, optional = true }

@@ -1,0 +1,42 @@
+# Location: ./builtins/plugins/ocsf-audit/Cargo.toml
+# Copyright 2026 AI Identity
+# SPDX-License-Identifier: Apache-2.0
+# Authors: Jeff Leva
+#
+# cpex-plugin-ocsf-audit — CMF plugin that serializes each dispatched
+# request into an OCSF API Activity event (class 6003, ai_operation +
+# security_control profiles), optionally hash-chained into a
+# tamper-evident attestation (record_integrity) and DSSE-signable.
+# Near-twin of audit-logger (same observation-only, always-allow
+# contract); the difference is the record shape — OCSF instead of a
+# free-form JSON line, so the enforcement record is interoperable and
+# independently verifiable offline.
+
+[package]
+name = "cpex-plugin-ocsf-audit"
+version.workspace      = true
+edition.workspace      = true
+license.workspace      = true
+authors                = ["Jeff Leva"]
+description = "CPEX CMF plugin — emit OCSF API Activity events with a tamper-evident attestation chain."
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+cpex-core = { workspace = true }
+
+async-trait = { workspace = true }
+chrono      = { workspace = true }
+serde       = { workspace = true }
+serde_json  = { workspace = true }
+sha2        = "0.10"
+tracing     = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }
+
+[lints]
+workspace = true
