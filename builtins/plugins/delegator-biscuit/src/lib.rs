@@ -23,8 +23,8 @@
 // Subsequent hops can each append further blocks. Completion blocks
 // (post-execution audit) are a future hook family.
 //
-// Sub-step A scope: module structure only. Real implementation in
-// sub-step B; integration tests in sub-step C.
+// Scope: module structure only. Real implementation and integration
+// tests land later.
 
 pub mod config;
 pub mod delegator;

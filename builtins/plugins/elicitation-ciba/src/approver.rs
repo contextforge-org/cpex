@@ -145,7 +145,7 @@ impl CibaApprover {
         // anti-phishing correlation code shown on both devices, not the
         // full transaction text — the canonical, human-readable `purpose`
         // is recorded upstream (apl-core audit). So derive a valid code
-        // from it. See docs/keycloak-ciba-phase0-runbook.md.
+        // from it.
         let binding_message = payload.purpose().map(sanitize_binding_message);
 
         let mut form: Vec<(&str, &str)> = vec![
@@ -465,9 +465,7 @@ fn invalid(payload: &ElicitationPayload, reason: &str) -> PluginResult<Elicitati
 /// they're approving the same transaction. The full, canonical
 /// human-readable context is the step's `purpose` (kept verbatim in the
 /// apl-core audit record) and is delivered to the approver's device by
-/// the Authentication Channel + intent registry — see
-/// `docs/apl-manager-approval-ciba-design.md` (§ binding_message &
-/// approver-facing context).
+/// the Authentication Channel + intent registry.
 ///
 /// To keep the cue readable rather than mangled, **whitespace runs become
 /// a single `-`** and every *other* disallowed character (`$`, `,`, `'`,

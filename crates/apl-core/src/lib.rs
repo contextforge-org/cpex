@@ -8,10 +8,8 @@
 // This crate is the language nucleus. It does not depend on CPEX directly;
 // the bridge from cpex-core extensions into the AttributeBag lives in
 // `apl-cmf`, and the `PolicyEvaluator` implementation lives in `apl-cpex`.
-//
-// See docs/specs/apl-design.md for the full design.
 
-#![doc = "APL — Authorization Policy Language. See docs/specs/apl-design.md."]
+#![doc = "APL — Authorization Policy Language."]
 
 pub mod attributes;
 pub mod evaluator;

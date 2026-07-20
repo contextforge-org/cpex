@@ -713,7 +713,7 @@ pub unsafe extern "C" fn cpex_plugin_names(
 /// (`result_msgpack_out`, `result_len_out`, `bg_handle_out`) follow
 /// the same discipline: null/zero on error, populated on success.
 ///
-/// Pre-P0-1 the function consumed the input only after validation
+/// Previously the function consumed the input only after validation
 /// passed but before `run_safely`. On `RC_TIMEOUT` / `RC_PANIC` the
 /// input had been consumed but `*context_table_out` was never written,
 /// so the Go wrapper kept its stale handle and a subsequent
@@ -765,7 +765,7 @@ pub unsafe extern "C" fn cpex_invoke(
     // model) and post-validation errors left it consumed without
     // writing `*context_table_out` (a *different* ownership model).
     // Two contracts in one function is exactly what produced the
-    // P0-1 UAF.
+    // use-after-free.
     let input_ctx_table: Option<PluginContextTable> = if context_table.is_null() {
         None
     } else {
@@ -1443,7 +1443,7 @@ mod tests {
 
     /// Panic in a plugin must be caught at the FFI boundary and mapped
     /// to `RC_PANIC` rather than unwinding across `extern "C"` (UB on
-    /// Rust < 1.81; abort on >= 1.81). Direct regression for P0 #2.
+    /// Rust < 1.81; abort on >= 1.81).
     #[test]
     fn cpex_invoke_returns_rc_panic_when_plugin_panics() {
         let mgr = build_test_manager();

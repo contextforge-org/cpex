@@ -278,8 +278,8 @@ pub struct OwnedExtensions {
     pub framework: Option<Arc<FrameworkExtension>>,
     pub meta: Option<Arc<MetaExtension>>,
     /// Raw credentials are shared by Arc here too — write tokens for
-    /// `inbound_tokens` and `delegated_tokens` mutation paths land in
-    /// slice 2 (IdentityResolve) and slice 3 (TokenDelegate). Until
+    /// `inbound_tokens` and `delegated_tokens` mutation paths land with
+    /// the IdentityResolve and TokenDelegate hooks. Until
     /// then, no plugin writes through `OwnedExtensions.raw_credentials`.
     pub raw_credentials: Option<Arc<RawCredentialsExtension>>,
 

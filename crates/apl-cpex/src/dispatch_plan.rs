@@ -25,7 +25,7 @@
 // When APL declares a route-level `plugins.<name>:` block that narrows
 // `capabilities` or changes `on_error`, the plan creates a derived
 // `PluginRef` wrapping the same plugin `Arc<dyn Plugin>` with a merged
-// `TrustedConfig`. Per `feedback_override_isolation.md`: each derived
+// `TrustedConfig`. Each derived
 // PluginRef gets a fresh `AtomicBool` circuit breaker — failures in the
 // override-context plugin don't disable the base, and vice versa.
 //
@@ -222,10 +222,10 @@ impl RouteDispatchPlan {
         // step/field classification — they're a separate hook family.
         // We still apply per-call config overrides via the existing
         // `build_override_entries` pathway, threading the step's
-        // `config_override` as the only override surface (Slice B
-        // doesn't expose per-step caps or on_error overrides on
-        // delegation entries — the on_error lives in the IR step
-        // itself and is honored by the evaluator).
+        // `config_override` as the only override surface (per-step
+        // caps and on_error overrides aren't exposed on delegation
+        // entries — the on_error lives in the IR step itself and is
+        // honored by the evaluator).
         for name in collect_delegate_plugin_names(route) {
             let entries = manager
                 .build_override_entries(&name, None, None, None)
@@ -317,8 +317,8 @@ fn parse_on_error(s: &str) -> Option<OnError> {
 /// `visit` on each. Used by `collect_*_names` below to find Plugin /
 /// Delegate references that may be nested inside `Effect::When`,
 /// `Effect::Sequential`, `Effect::Parallel`, or `Effect::Pdp` reaction
-/// lists. Pre-E4 these were flat — Step::Plugin lived directly under
-/// policy: — so a simple iter() was enough; after E4 the IR is tree-
+/// lists. Previously these were flat — Step::Plugin lived directly under
+/// policy: — so a simple iter() was enough; now the IR is tree-
 /// shaped and the same scan needs recursion.
 fn walk_effects<F: FnMut(&Effect)>(effects: &[Effect], visit: &mut F) {
     for e in effects {

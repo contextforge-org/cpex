@@ -4,7 +4,7 @@
 // Authors: Teryl Taylor
 //
 // `RawCredentialsExtension` — Layer 3 of the three-layer credential
-// storage model (docs/specs/delegation-hooks-rust-spec.md §4.2).
+// storage model.
 // Carries the *raw* token material — bearer JWTs, opaque session
 // strings, SPIFFE-JWT-SVIDs, UCAN tokens, transaction tokens — that
 // IdentityResolve and TokenDelegate handlers need to do their jobs.
@@ -39,8 +39,6 @@
 // security audit story is much simpler when "raw credentials never
 // leave the host process" is an invariant rather than a per-plugin
 // trust decision. Handlers that need raw material must run in-process.
-// See the slice plan and the architecture discussion in
-// `docs/raw-credentials-slice-plan.md` for the reasoning.
 //
 // # Memory hygiene
 //
@@ -227,7 +225,7 @@ impl RawDelegatedToken {
 ///   by `DelegationKey`. Populated by TokenDelegate handlers and
 ///   read by forwarding / proxy plugins.
 ///
-/// `plugin_credentials` (spec §10.7) is intentionally absent until
+/// `plugin_credentials` is intentionally absent until
 /// a plugin-credential consumer exists.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct RawCredentialsExtension {

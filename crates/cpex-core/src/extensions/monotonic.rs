@@ -9,7 +9,7 @@
 // remove(). Declassification requires a DeclassifierToken that only
 // the security subsystem can construct.
 //
-// Mirrors the spec in rust-implementation-spec.md §2.2.
+// Mirrors the reference implementation spec.
 
 use std::collections::HashSet;
 use std::hash::Hash;

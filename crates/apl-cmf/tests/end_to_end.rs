@@ -25,7 +25,7 @@ use serde_json::json;
 
 // `evaluate_route` takes `&Arc<dyn PluginInvoker>` / `&Arc<dyn DelegationInvoker>`
 // so the call paths inside apl-core can `Arc::clone` an owned, 'static reference
-// into each spawned branch (E3.2). All tests pass the same no-op stubs; wrap once.
+// into each spawned branch. All tests pass the same no-op stubs; wrap once.
 fn pdp() -> Arc<dyn PdpResolver> {
     Arc::new(AllowPdp)
 }
@@ -39,7 +39,7 @@ fn elicitations() -> Arc<dyn ElicitationInvoker> {
     Arc::new(NoopElicitationInvoker)
 }
 
-// HR route from unified-config-proposal.md §Example 1.
+// HR route.
 const HR_ROUTE_YAML: &str = r#"
 routes:
   get_employee:

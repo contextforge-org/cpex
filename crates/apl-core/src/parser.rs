@@ -8,10 +8,10 @@
 // Runs once at config load. The IR it produces is what the evaluator walks
 // at request time; the parser is never on the hot path.
 //
-// Grammar anchored in apl-dsl-spec.md §2 (predicates) / §3 (rules) / §8 (EBNF).
-// YAML shape anchored in apl-design.md §5 (`routes:` as map keyed by route_key).
+// Grammar: predicates, rules, EBNF. YAML shape: `routes:` as a map
+// keyed by route_key.
 //
-// Step 5a scope:
+// Scope:
 //   ✓ Predicate grammar: identifiers, literals, comparisons, contains,
 //     & | ! parens, require(...)
 //   ✓ Actions: deny / allow / (default deny on missing)
@@ -40,7 +40,7 @@ pub enum ParseError {
     #[error("rule '{rule}': {msg}")]
     Rule { rule: String, msg: String },
 
-    #[error("unsupported step `{kind}` in rule '{rule}' — defer to step 5b")]
+    #[error("unsupported step `{kind}` in rule '{rule}'")]
     UnsupportedStep { rule: String, kind: String },
 
     #[error("predicate '{predicate}': {msg}")]
@@ -369,7 +369,7 @@ impl<'a> PredParser<'a> {
                     _ => Err(self.err("expected `)`")),
                 }
             },
-            // `require(...)` is a rule-level shorthand per DSL §8 grammar
+            // `require(...)` is a rule-level shorthand per the DSL grammar
             // (`rule = require_call | predicate ...`), not a sub-predicate.
             // Trying to nest it inside `&` / `|` is a grammar error.
             Some(Tok::Require) => Err(self.err(
@@ -382,7 +382,7 @@ impl<'a> PredParser<'a> {
         }
     }
 
-    /// `exists(<identifier>)` — DSL §2.2. Returns true if the key is present
+    /// `exists(<identifier>)`. Returns true if the key is present
     /// in the AttributeBag, regardless of value (distinct from truthiness).
     fn parse_exists(&mut self) -> Result<Expression, ParseError> {
         self.bump(); // exists
@@ -423,7 +423,7 @@ impl<'a> PredParser<'a> {
             _ => unreachable!("parse_atom dispatched here"),
         };
 
-        // `in` and `not in` — two-key set membership (DSL §2.4).
+        // `in` and `not in` — two-key set membership.
         if matches!(self.peek(), Some(Tok::In)) {
             self.bump();
             return self.finish_in_set(key, false);
@@ -502,17 +502,16 @@ impl<'a> PredParser<'a> {
     }
 }
 
-/// Parse a predicate string into the IR. Public for tests + step-5b use.
+/// Parse a predicate string into the IR. Public for tests.
 pub fn parse_predicate(src: &str) -> Result<Expression, ParseError> {
     PredParser::parse(src.trim())
 }
 
 /// Parse a single rule line into a `Rule`.
 ///
-/// Accepted forms (DSL §3.2):
+/// Accepted forms:
 ///   1. `"require(...)"`           →  rule-level shorthand, desugars to
 ///                                    `when: <negated condition> do: deny`
-///                                    per DSL §8.1
 ///   2. `"<predicate>: <action>"`  →  Rule { condition, action }
 ///   3. `"<predicate>"`            →  Rule { condition, action: Deny } (default)
 ///   4. `"<action>"` (action only) →  treated as form 3 (always-true predicate)
@@ -525,7 +524,7 @@ pub fn parse_rule(line: &str, source: &str) -> Result<Rule, ParseError> {
     let trimmed = line.trim();
 
     // require(...) shorthand — special-cased because it desugars to a
-    // negated predicate + Deny action, and the spec grammar (§8) puts it
+    // negated predicate + Deny action, and the spec grammar puts it
     // as a top-level rule alternative, not a sub-predicate.
     if is_require_call(trimmed) {
         let condition = parse_require_rule(trimmed)?;
@@ -572,7 +571,7 @@ pub fn parse_rule(line: &str, source: &str) -> Result<Rule, ParseError> {
                     source: source.to_string(),
                 });
             }
-            // DSL §2 default: bare predicate denies.
+            // Default: bare predicate denies.
             (
                 trimmed,
                 vec![Effect::Deny {
@@ -600,7 +599,7 @@ fn is_require_call(s: &str) -> bool {
 }
 
 /// Parse `require(a)` / `require(a, b, ...)` / `require(a | b | ...)` and
-/// return the desugared "when" expression per DSL §8.1:
+/// return the desugared "when" expression:
 ///
 ///   require(X)             →  IsFalse(X)
 ///   require(X, Y, ...)     →  Or([IsFalse(X), IsFalse(Y), ...])   (deny if any falsy)
@@ -729,8 +728,8 @@ fn split_predicate_action(s: &str) -> Option<(&str, &str)> {
 }
 
 /// Parse the *right* side of a shorthand `predicate: action` rule into a
-/// single-element effects vec. Recognized forms (DSL §3 + the `code`
-/// extension we added in E1):
+/// single-element effects vec. Recognized forms (the `code`
+/// extension we added):
 ///
 ///   * `deny`                    → `vec![Effect::Deny { reason: None, code: None }]`
 ///   * `deny('reason')`          → `vec![Effect::Deny { reason: Some, code: None }]`
@@ -779,7 +778,7 @@ fn try_parse_deny_call(s: &str, rule: &str) -> Result<Option<Effect>, ParseError
         msg: "malformed `deny(...)`".into(),
     })?;
     // Two positional args max. Spec precedent: `deny('reason')` (1 arg);
-    // E1 extension: `deny('reason', 'code')` (2 args). Both quoted.
+    // Extension: `deny('reason', 'code')` (2 args). Both quoted.
     let parts = split_top_level_commas(&inside).map_err(|e| ParseError::Rule {
         rule: rule.to_string(),
         msg: format!("deny(...): {}", e),
@@ -821,7 +820,7 @@ fn strip_string_literal(s: &str, rule: &str) -> Result<String, ParseError> {
 
 /// Parse a single YAML entry from a `pre_invocation` / `post_invocation` list.
 ///
-/// Two YAML shapes (DSL §3.2 + §7):
+/// Two YAML shapes:
 /// - **String entry** — a rule line, taint effect, or plugin call.
 ///   - `"require(authenticated)"` → `Step::Rule`
 ///   - `"delegation.depth > 2: deny"` → `Step::Rule`
@@ -1061,8 +1060,7 @@ fn parse_delegate_call_args(inside: &str, source: &str) -> Result<ParsedDelegate
 }
 
 /// Sugar verb → [`ElicitKind`] table. Each verb desugars to the same
-/// `Step::Elicit` node with the kind fixed. See
-/// `docs/apl-elicitation-hook-design.md` for the per-kind contracts.
+/// `Step::Elicit` node with the kind fixed.
 const ELICIT_VERBS: &[(&str, ElicitKind)] = &[
     ("require_approval", ElicitKind::Approval),
     ("confirm", ElicitKind::Confirm),
@@ -1335,7 +1333,7 @@ fn strip_wrapping_quotes(s: &str) -> &str {
 }
 
 fn parse_step_map(m: &serde_yaml::Mapping, source: &str) -> Result<Step, ParseError> {
-    // Canonical structured rule: `- when: X\n  do: Y` (DSL §3.2).
+    // Canonical structured rule: `- when: X\n  do: Y`.
     // Detected by the presence of *both* `when` and `do` keys — order
     // doesn't matter, and the map can carry extra keys for future
     // extensions (e.g. `id:` for rule identifiers).
@@ -1360,8 +1358,8 @@ fn parse_step_map(m: &serde_yaml::Mapping, source: &str) -> Result<Step, ParseEr
         msg: "PDP step key must be a string".into(),
     })?;
 
-    // Shorthand multi-effect map: `- "predicate": [list]` (DSL §3.1
-    // multi-effect from one predicate). Detected by a single-key map
+    // Shorthand multi-effect map: `- "predicate": [list]` (multi-effect
+    // from one predicate). Detected by a single-key map
     // whose value is a YAML sequence. Single-effect map shorthand
     // (`- "predicate": deny`) still goes through `parse_step_string`
     // via the colon-split, NOT here — by the time we land in this
@@ -1390,7 +1388,7 @@ fn parse_step_map(m: &serde_yaml::Mapping, source: &str) -> Result<Step, ParseEr
         return parse_delegate_step(body_val, source);
     }
 
-    // E3: top-level `sequential:` / `parallel:` orchestration —
+    // Top-level `sequential:` / `parallel:` orchestration —
     // wrap the resulting Effect into an unconditional Rule so the
     // top-level Vec<Step> stays uniform.
     match key.trim() {
@@ -1461,7 +1459,7 @@ fn is_known_pdp_dialect(key: &str) -> bool {
     matches!(base.trim(), "cedar" | "opa" | "authzen" | "nemo" | "cel")
 }
 
-/// Parse the canonical `- when: X` `do: Y` rule form (DSL §3.2). `Y`
+/// Parse the canonical `- when: X` `do: Y` rule form. `Y`
 /// may be a single effect string (`do: deny`) or a list of effect
 /// entries (`do: [plugin(audit), taint(X), deny('msg')]`). Map-form
 /// effects (like a nested `delegate:` block) are allowed inside `do:`
@@ -1514,8 +1512,8 @@ fn parse_when_do_rule(m: &serde_yaml::Mapping, source: &str) -> Result<Step, Par
     }))
 }
 
-/// Parse the shorthand multi-effect map form: `- "predicate": [list]`
-/// (DSL §3 example at line 386). Equivalent to the canonical
+/// Parse the shorthand multi-effect map form: `- "predicate": [list]`.
+/// Equivalent to the canonical
 /// `when: predicate` `do: [list]` shape, just terser.
 fn parse_shorthand_multi_effect(
     predicate: &str,
@@ -1573,7 +1571,7 @@ fn parse_effect_value(val: &serde_yaml::Value, source: &str) -> Result<Effect, P
     match val {
         serde_yaml::Value::String(s) => parse_effect_string(s, source),
         serde_yaml::Value::Mapping(m) => {
-            // E3: `sequential:` / `parallel:` map forms — a single-key
+            // `sequential:` / `parallel:` map forms — a single-key
             // map whose key is `sequential` / `parallel` and whose
             // value is a list of effects.
             if m.len() == 1 {
@@ -1776,9 +1774,9 @@ fn is_valid_field_path(s: &str) -> bool {
 /// `Effect`. The legitimate inputs are `Plugin`, `Delegate`, `Taint`,
 /// and `Rule` (when a control action like `deny`/`allow` was parsed).
 /// Anything else (`Pdp`) is rejected — nested PDP calls inside `do:`
-/// are out of scope for E1.
+/// are out of scope.
 /// Recursively map a top-level `Step` (as produced by `parse_step`) into
-/// an `Effect`. Used at compile_apl_blocks during E4 — keeps `parse_step`'s
+/// an `Effect`. Used at compile_apl_blocks — keeps `parse_step`'s
 /// internal shape for the moment while the public IR collapses to Effect.
 /// All five Step variants map cleanly: Rule → When, Pdp → Pdp (recursive
 /// on reactions), Plugin/Delegate/Taint pass-through.
@@ -1822,12 +1820,12 @@ fn step_to_effect(step: Step, source: &str) -> Result<Effect, ParseError> {
         Step::Elicit(e) => Ok(Effect::Elicit(e)),
         Step::Taint { label, scopes } => Ok(Effect::Taint { label, scopes }),
         Step::Rule(rule) => {
-            // Nested when/do inside a do: list isn't supported in E1
+            // Nested when/do inside a do: list isn't supported
             // — only control effects (allow/deny) flatten cleanly.
             if !matches!(rule.condition, Expression::Always) {
                 return Err(ParseError::Rule {
                     rule: source.to_string(),
-                    msg: "conditional rules nested inside `do:` are not supported in E1 \
+                    msg: "conditional rules nested inside `do:` are not supported \
                           (use a sibling `when:`/`do:` rule instead)"
                         .into(),
                 });
@@ -1850,7 +1848,7 @@ fn step_to_effect(step: Step, source: &str) -> Result<Effect, ParseError> {
         },
         Step::Pdp { .. } => Err(ParseError::Rule {
             rule: source.to_string(),
-            msg: "PDP calls inside `do:` are not supported in E1 (use a sibling \
+            msg: "PDP calls inside `do:` are not supported (use a sibling \
                   step instead)"
                 .into(),
         }),
@@ -2084,7 +2082,7 @@ fn parse_stage(src: &str) -> Result<Stage, ParseError> {
         ("redact", None) => Ok(Stage::Redact { condition: None }),
         ("omit", None) => Ok(Stage::Omit),
         ("hash", None) => Ok(Stage::Hash),
-        // Scan placeholders parse as bare identifiers (DSL §4.5).
+        // Scan placeholders parse as bare identifiers.
         ("pii.redact", None) => Ok(Stage::Scan {
             kind: ScanKind::PiiRedact,
         }),
@@ -2182,7 +2180,7 @@ fn parse_stage_regex(a: &str) -> Stage {
     Stage::Regex { pattern: pat }
 }
 
-// Named-validator dispatch (`validate(name)`) is in the spec (DSL §4.2)
+// Named-validator dispatch (`validate(name)`) is in the spec
 // but not implemented in this build — the evaluator's no-op stub would
 // silently let invalid values through. Reject at compile time so
 // operators notice immediately and reach for one of the working
@@ -2335,7 +2333,7 @@ fn parse_taint(args: &str, src: &str) -> Result<Stage, ParseError> {
     }
 
     let scopes = if parts.len() == 1 {
-        vec![TaintScope::Session] // default per DSL §4.6
+        vec![TaintScope::Session] // default
     } else {
         let scope_arg = parts[1..].join(",");
         let scope_arg = scope_arg.trim();
@@ -2366,7 +2364,7 @@ fn parse_taint_scope(s: &str, src: &str) -> Result<TaintScope, ParseError> {
     }
 }
 
-/// Top-level config — only the bits step 5a understands.
+/// Top-level config — only the bits the parser understands.
 ///
 /// `policy_evaluator:`, `imports:`, `global:`, `defaults:`, `tags:`,
 /// `plugin_dirs:`, `plugin_settings:`, `version:` are all accepted and
@@ -2468,7 +2466,7 @@ pub struct CompiledConfig {
 ///
 /// Routes with no APL fields populated (no `authorization:` /
 /// `pre_invocation:` / `post_invocation:` / `args:` / `result:`) are
-/// **omitted from `routes`**, per apl-design §5
+/// **omitted from `routes`**, per apl-design
 /// "Routes without APL blocks fall back to legacy plugin-chain execution."
 /// A route-level `plugins:` override block alone is not enough — overrides
 /// only have meaning when the route actually dispatches plugins via APL
@@ -2753,7 +2751,7 @@ mod tests {
 
     #[test]
     fn pred_parens_override_precedence() {
-        // `(role.finance | role.admin) & !delegated` from DSL §2.5.
+        // `(role.finance | role.admin) & !delegated`.
         let e = parse_predicate("(role.finance | role.admin) & !delegated").unwrap();
         match e {
             Expression::And(parts) => {
@@ -2767,7 +2765,7 @@ mod tests {
 
     #[test]
     fn pred_require_rejected_as_predicate() {
-        // require() is a rule-level shorthand per DSL §8, not a sub-predicate.
+        // require() is a rule-level shorthand, not a sub-predicate.
         // Trying to use it inside a predicate expression must fail clearly.
         let err = parse_predicate("require(authenticated)").unwrap_err();
         assert!(format!("{}", err).contains("rule-level shorthand"));
@@ -2775,7 +2773,7 @@ mod tests {
 
     #[test]
     fn rule_require_single_arg_desugars_to_isfalse_and_deny() {
-        // require(X)  →  Rule { condition: IsFalse(X), action: Deny }   (DSL §8.1)
+        // require(X)  →  Rule { condition: IsFalse(X), action: Deny }
         let r = parse_rule("require(authenticated)", "test").unwrap();
         assert!(matches!(
             r.effects.as_slice(),
@@ -2794,7 +2792,7 @@ mod tests {
 
     #[test]
     fn rule_require_comma_is_and_desugars_to_or_of_isfalse() {
-        // require(X, Y)  →  Or([IsFalse(X), IsFalse(Y)]) + Deny   (DSL §8.1)
+        // require(X, Y)  →  Or([IsFalse(X), IsFalse(Y)]) + Deny
         // i.e., "deny if any are falsy" = "any are falsy → deny"
         let r = parse_rule("require(role.hr, perm.view_ssn)", "test").unwrap();
         assert_eq!(
@@ -2812,7 +2810,7 @@ mod tests {
 
     #[test]
     fn rule_require_pipe_is_or_desugars_to_and_of_isfalse() {
-        // require(X | Y)  →  And([IsFalse(X), IsFalse(Y)]) + Deny   (DSL §8.1)
+        // require(X | Y)  →  And([IsFalse(X), IsFalse(Y)]) + Deny
         // i.e., "deny only if all are falsy" = "all are falsy → deny"
         let r = parse_rule("require(role.finance | role.admin)", "test").unwrap();
         assert_eq!(
@@ -2927,7 +2925,7 @@ mod tests {
 
     #[test]
     fn rule_predicate_only_defaults_to_deny() {
-        // DSL §2: missing action defaults to deny.
+        // Missing action defaults to deny.
         let r = parse_rule("!authenticated", "test").unwrap();
         assert!(matches!(r.effects.as_slice(), [Effect::Deny { .. }]));
     }
@@ -2941,7 +2939,7 @@ mod tests {
     #[test]
     fn rule_bare_action_unconditional() {
         // Bare `- deny` and `- allow` are unconditional rules with
-        // Expression::Always as the predicate (DSL §3.1).
+        // Expression::Always as the predicate.
         let r = parse_rule("deny", "test").unwrap();
         assert_eq!(r.condition, Expression::Always);
         assert!(matches!(
@@ -3023,8 +3021,8 @@ mod tests {
     fn rule_deny_with_unquoted_arg_rejected() {
         // `deny "reason"` (space-separated, no parens) is not a valid
         // form. The supported reason-carrying shape is
-        // `deny('reason')` / `deny('reason', 'code')` per DSL §3 and
-        // the E1 `code` extension.
+        // `deny('reason')` / `deny('reason', 'code')` and
+        // the `code` extension.
         let err = parse_rule(r#"authenticated: deny "go away""#, "test").unwrap_err();
         assert!(format!("{}", err).contains("unsupported action"));
     }
@@ -3042,7 +3040,7 @@ mod tests {
 
     #[test]
     fn rule_deny_with_reason_and_code_accepted() {
-        // `deny('reason', 'code')` — E1 extension. Both reason and
+        // `deny('reason', 'code')` — extension. Both reason and
         // author-supplied code surface in the violation.
         let r = parse_rule(
             r#"delegation.depth > 2: deny('too deep', 'delegation.depth_exceeded')"#,
@@ -3104,7 +3102,7 @@ mod tests {
 
     #[test]
     fn when_do_single_effect_deny_with_reason_and_code() {
-        // The E1 `deny('reason', 'code')` extension works inside `do:` too.
+        // The `deny('reason', 'code')` extension works inside `do:` too.
         let step = parse_step_yaml(
             "when: delegation.depth > 2\ndo: deny('too deep', 'delegation.depth_exceeded')",
         )
@@ -3247,7 +3245,7 @@ do:
 
     #[test]
     fn when_do_with_field_op_result_redact() {
-        // The headline E2 case: `result.salary | redact` as an effect
+        // The headline case: `result.salary | redact` as an effect
         // inside a do: list, alongside other effect kinds.
         let yaml = r#"
 when: "!perm.view_ssn"
@@ -3728,7 +3726,7 @@ routes:
     fn compile_omits_routes_without_apl_blocks() {
         // A route with no APL blocks (no authorization / pre_invocation /
         // post_invocation / args / result) is a "legacy" route per
-        // apl-design §5 and must be
+        // apl-design and must be
         // omitted from the compiled output. Unknown route keys (e.g.
         // legacy CPEX `priority`) are stashed in `other`, not errored.
         let yaml = r#"
@@ -4266,7 +4264,7 @@ routes:
 
     #[test]
     fn pipeline_omit_with_args_rejected() {
-        // omit has no conditional form per DSL §4.1.
+        // omit has no conditional form.
         let err = parse_pipeline("omit(!perm.x)").unwrap_err();
         assert!(format!("{}", err).contains("omit takes no arguments"));
     }

@@ -329,7 +329,7 @@ impl AnyHookHandler for AplRouteHandler {
             }
         }
 
-        // Slice B: real delegation invoker, sharing the CMF invoker's
+        // Real delegation invoker, sharing the CMF invoker's
         // extensions Mutex so a `delegate(...)` step's writes to
         // raw_credentials / delegation are visible to downstream CMF
         // plugins and to the post phase. Routes that don't declare
@@ -394,8 +394,8 @@ impl AnyHookHandler for AplRouteHandler {
         // pipeline `Stage::Taint`) into `extensions.security.labels`
         // so the existing label-diff flow inside `persist_session`
         // picks them up. Message-scoped taints are filtered out by
-        // `apply_session_taints` — they need their own destination
-        // (see TS2). No-op when no taints emitted.
+        // `apply_session_taints` — they need their own destination.
+        // No-op when no taints emitted.
         invoker.apply_session_taints(&decision.taints).await;
 
         // Commit any session-scoped labels accumulated during this

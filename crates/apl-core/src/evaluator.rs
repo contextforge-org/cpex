@@ -6,13 +6,13 @@
 // APL evaluator — walks the IR against an AttributeBag and returns a Decision.
 //
 // The evaluator is sync and infallible by design. Missing attributes resolve
-// to `false` (DSL spec §2.6); operator type mismatches resolve to `false`.
+// to `false`; operator type mismatches resolve to `false`.
 // The host drives the four phases separately by calling `evaluate_rules` once
 // per declared phase — phase orchestration lives in `apl-cpex`.
 //
-// Semantics anchored in:
-//   - DSL spec apl-dsl-spec.md §2 (operators), §3 (actions), §8.1 (require)
-//   - apl-design.md §7 (native fast-path, sync inside async outer)
+// Semantics:
+//   - operators, actions, require
+//   - native fast-path, sync inside async outer
 
 use std::sync::Arc;
 
@@ -36,7 +36,7 @@ pub enum Decision {
 
 /// Evaluate a phase's rules against the bag.
 ///
-/// Spec §3 semantics:
+/// Spec semantics:
 /// - First `deny` halts; subsequent rules / effects don't run.
 /// - `allow` effects *do not* short-circuit — evaluation continues to
 ///   the next effect (then to the next rule).
@@ -113,7 +113,7 @@ fn eval_condition(cond: &Condition, bag: &AttributeBag) -> bool {
 fn eval_comparison(key: &str, op: CompareOp, lit: &Literal, bag: &AttributeBag) -> bool {
     let attr = match bag.get(key) {
         Some(v) => v,
-        None => return false, // missing → false (spec §2.6)
+        None => return false, // missing → false
     };
 
     match op {
@@ -148,7 +148,7 @@ fn numeric_compare(attr: &AttributeValue, lit: &Literal, op: CompareOp) -> bool 
     // (e.g. `"amount": "25000"`), and a policy author writing
     // `args.amount > 10000` plainly means a numeric comparison. A string
     // that doesn't parse as a number is genuinely non-numeric → false
-    // (order operators don't apply, spec §2.3).
+    // (order operators don't apply).
     let a = match coerce_f64_attr(attr) {
         Some(a) => a,
         None => return false,
@@ -210,7 +210,7 @@ fn looks_like_attribute_ref(s: &str) -> bool {
 /// and plugin invocations via `plugins`. Returns the phase's overall
 /// decision.
 ///
-/// Semantics (DSL §3, §7.5):
+/// Semantics:
 /// - `Effect::When` — evaluate the condition; if true, run the body in
 ///   order with the same first-deny-wins logic.
 /// - `Effect::Pdp` — call resolver; on Allow run `on_allow` reactions and
@@ -230,7 +230,7 @@ fn looks_like_attribute_ref(s: &str) -> bool {
 /// - `Effect::Deny` — halt with the supplied reason/code.
 ///
 /// PDP / plugin errors map to a Deny with the error in the reason, per
-/// the design's fail-closed default (DSL §8.9). Pre-E4 `evaluate_steps`
+/// the design's fail-closed default. `evaluate_steps`
 /// is preserved as a deprecated alias that forwards here.
 #[allow(clippy::too_many_arguments)]
 pub async fn evaluate_effects(
@@ -677,7 +677,7 @@ async fn dispatch_effect(
 /// Drive one [`Effect::Elicit`] step: dispatch on first arrival, check
 /// status on every pass, and on an approved-and-genuine response apply
 /// the runtime's `scope`-over-args sufficiency check before allowing the
-/// phase to continue. See `docs/apl-manager-approval-ciba-design.md`.
+/// phase to continue.
 ///
 /// Failure handling follows the step's `on_error` (default `deny`,
 /// fail-closed). An explicit human *denial* always halts regardless of
@@ -865,7 +865,7 @@ async fn dispatch_elicitation(
 /// [`Effect::validate_parallel_purity`], so at runtime we trust the
 /// IR not to contain mutation effects.
 ///
-/// # Concurrency model (E3.2)
+/// # Concurrency model
 ///
 /// Built on [`cpex_orchestration::run_branches`] — the same JoinSet
 /// + abort-on-deny primitive `cpex-core`'s executor uses for its
@@ -1405,7 +1405,7 @@ pub async fn evaluate_pipeline(
                 }
             },
             Stage::Scan { kind } => {
-                // Spec mapping (apl-dsl-spec §4): scan stages are taint
+                // Spec mapping: scan stages are taint
                 // emitters. The actual PII detection / injection signal
                 // lives in plugin(...) variants of the same scanners; this
                 // stage just records the label so downstream policies can
@@ -1507,7 +1507,7 @@ mod tests {
     // Wrap stateless test invokers in `Arc<dyn ...>` once per call. The
     // public evaluator API takes `&Arc<dyn PluginInvoker>` so internal
     // dispatch (notably `Effect::Parallel`) can `Arc::clone` an owned,
-    // 'static reference into each spawned branch (slice E3.2).
+    // 'static reference into each spawned branch.
     fn null_pipe_plugins() -> Arc<dyn PluginInvoker> {
         Arc::new(NullPipelinePlugins)
     }
@@ -1592,7 +1592,7 @@ mod tests {
 
     #[test]
     fn allow_does_not_short_circuit() {
-        // Spec §3: explicit allow continues evaluation. A later deny still fires.
+        // Explicit allow continues evaluation. A later deny still fires.
         let mut bag = AttributeBag::new();
         bag.set("ok", true);
         bag.set("bad", true);
@@ -1644,7 +1644,7 @@ mod tests {
             },
             &bag
         ));
-        // Comparison on missing → false (spec §2.6).
+        // Comparison on missing → false.
         assert!(!eval_condition(
             &Condition::Comparison {
                 key: "missing".into(),
@@ -1771,7 +1771,7 @@ mod tests {
             },
             &bag,
         ));
-        // Order operators on strings → false (spec §2.3).
+        // Order operators on strings → false.
         assert!(!eval_condition(
             &Condition::Comparison {
                 key: "subject.id".into(),
@@ -2600,7 +2600,7 @@ mod tests {
     #[test]
     fn in_set_missing_keys_resolve_to_false() {
         let mut bag = AttributeBag::new();
-        // Both missing → in = false → not in = true (spec §2.6 missing→false
+        // Both missing → in = false → not in = true (missing→false
         // applies to the underlying `in` lookup; negate flips it).
         assert!(!eval_condition(
             &Condition::InSet {

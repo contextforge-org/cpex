@@ -432,7 +432,7 @@ fn build_filtered_security(
     }
 
     // Our own outbound workload identity — also gated under
-    // `read_workload`, per spec §4.4. Plugins not declaring it never
+    // `read_workload`. Plugins not declaring it never
     // see our gateway's SPIFFE-SVID.
     if let Some(ref tw) = security.this_workload {
         let policy = slot_policy(SlotName::SecurityThisWorkload);

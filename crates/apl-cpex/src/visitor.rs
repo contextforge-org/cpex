@@ -626,7 +626,7 @@ impl ConfigVisitor for AplConfigVisitor {
                 continue;
             }
 
-            // E3.1 — plugin-mode validation for `parallel:` blocks.
+            // Plugin-mode validation for `parallel:` blocks.
             // `apl-core::Effect::validate_parallel_purity` already rejected
             // FieldOp / Delegate at parse time; this pass checks that every
             // `plugin(X)` inside a `parallel:` references a plugin whose

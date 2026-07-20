@@ -8,7 +8,7 @@
 // Carried on DelegationHop alongside `scopes_granted`. Each hop can narrow
 // the details structurally (drop entries, remove actions, add constraints).
 // The narrowing-check helper lives elsewhere (framework enforcement at the
-// TokenDelegate boundary, per docs/specs/delegation-hooks-rust-spec.md §9.6).
+// TokenDelegate boundary).
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;

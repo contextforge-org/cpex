@@ -4,10 +4,10 @@
 // Authors: Ted Habeck
 //
 // PyObject ↔ serde_json::Value traversal, payload resolution, and
-// modified-payload serialization (R6, R3, KD1, KD2, KD5).
+// modified-payload serialization.
 //
 // Never calls Python's `json` module from Rust — all conversion is direct
-// PyObject inspection / construction (#2 / R6).
+// PyObject inspection / construction (#2).
 
 use cpex_core::cmf::MessagePayload;
 use cpex_core::context::PluginContextTable;
@@ -18,7 +18,7 @@ use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyDict, PyFloat, PyInt, PyList, PyString};
 use serde_json::{Map, Value};
 
-/// Wraps any serde_json::Value for hooks that are not `cmf.*` (KD1, KD2).
+/// Wraps any serde_json::Value for hooks that are not `cmf.*`.
 ///
 /// Defined locally because `cpex-core` exports the macro but not the struct
 /// itself (the FFI crate defines its own copy too).
@@ -34,7 +34,7 @@ cpex_core::impl_plugin_payload!(GenericPayload);
 /// Supported types: `bool`, `int`, `float`, `str`, `None`, `list`, `dict`
 /// (with `str` keys). Any other type raises `ValueError` naming the type.
 ///
-/// Recursion is capped at 128 levels (R3). `depth` starts at 0.
+/// Recursion is capped at 128 levels. `depth` starts at 0.
 pub fn pyobj_to_json_value(
     _py: Python<'_>,
     obj: &Bound<'_, PyAny>,
@@ -136,7 +136,7 @@ pub fn json_value_to_pyobj<'py>(py: Python<'py>, v: &Value) -> PyResult<Bound<'p
 /// Build the correct `Box<dyn PluginPayload>` for a hook.
 ///
 /// `cmf.*` hooks → `MessagePayload` (serde-constructed from the value).
-/// All other hook names → `GenericPayload { value }` (KD1, KD2).
+/// All other hook names → `GenericPayload { value }`.
 ///
 /// A `from_value` failure on a CMF payload raises `ValueError` rather than
 /// silently falling through to GenericPayload — the caller sent a cmf hook
@@ -158,7 +158,7 @@ pub fn resolve_payload(hook_name: &str, value: Value) -> PyResult<Box<dyn Plugin
 ///
 /// Returns `None` when the payload type is not in the local registry (unknown
 /// plugin-returned type). The caller should append a synthetic error record to
-/// `PipelineResult.errors` rather than silently dropping the modification (R2).
+/// `PipelineResult.errors` rather than silently dropping the modification.
 ///
 /// Downcast order: `MessagePayload` first (most common for `cmf.*` hooks),
 /// then `GenericPayload` — mirrors cpex-ffi's `serialize_payload` ordering.

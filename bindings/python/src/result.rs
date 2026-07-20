@@ -3,13 +3,13 @@
 // SPDX-License-Identifier: Apache-2.0
 // Authors: Ted Habeck
 //
-// `PyPipelineResult` — read-only Python view of `cpex_core::PipelineResult` (R1, R2, R3).
+// `PyPipelineResult` — read-only Python view of `cpex_core::PipelineResult`.
 //
 // Mirrors the field set of `PipelineResult` exactly. All fields are read-only
 // getters; no setters are exposed.
 //
 // If the modified_payload could not be serialised back to a Python dict the
-// caller appends a synthetic `PluginErrorRecord` to `errors` (R2, #8);
+// caller appends a synthetic `PluginErrorRecord` to `errors` (#8);
 // `modified_payload` is exposed as `None` in that case — mirrors the pattern
 // at `crates/cpex-ffi/src/lib.rs:877`.
 
@@ -136,7 +136,7 @@ impl PyPipelineResult {
 ///
 /// If `modified_payload` is present but cannot be serialised, a synthetic
 /// `PluginErrorRecord` is appended to `errors` and `modified_payload` is
-/// exposed as `None` — mirrors cpex-ffi's behaviour at lib.rs:877 (R2, #8).
+/// exposed as `None` — mirrors cpex-ffi's behaviour at lib.rs:877 (#8).
 pub fn pipeline_result_to_py(mut result: PipelineResult) -> PyResult<PyPipelineResult> {
     // Serialise modified_payload; on failure emit a synthetic error record.
     let modified_payload_value: Option<Value> = match result.modified_payload.take() {

@@ -12,7 +12,7 @@
 // the right order with the right transitions (apply field mutations, halt
 // on deny, thread taints across phases).
 //
-// Phase semantics (anchored in apl-dsl-spec.md §3):
+// Phase semantics:
 //   - args: walk field rules; Replace/Omit mutate `payload.args`; Deny halts
 //   - policy: walk steps; Deny halts
 //   - result: only runs if `payload.result.is_some()`; same as args

@@ -394,7 +394,7 @@ mod tests {
 
     #[test]
     fn tier1_same_session_id_claim_different_subjects_are_distinct() {
-        // The Finding 2 guarantee for T1. An issuer that reuses a
+        // The guarantee for T1. An issuer that reuses a
         // session_id value across multiple principals (multi-tenant
         // naming conventions, counters that don't carry the subject,
         // etc.) must NOT let one principal land in another's session

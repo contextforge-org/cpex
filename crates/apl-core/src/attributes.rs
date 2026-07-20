@@ -16,7 +16,7 @@
 // them and the evaluator picks them up unchanged.
 //
 // Mapping from cpex-core extensions into the bag lives in `apl-cmf`, not
-// here. See docs/specs/apl-design.md §4 for the module layering.
+// here.
 
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};

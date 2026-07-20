@@ -269,7 +269,7 @@ impl Plugin for JwtIdentityResolver {
     /// the KeyStore on a periodic schedule (default 10 min,
     /// configurable per-issuer via `refresh_secs`).
     ///
-    /// **Soft-fail semantics (Slice B):** an unreachable / slow /
+    /// **Soft-fail semantics:** an unreachable / slow /
     /// malformed JWKS at startup logs a warning and leaves the
     /// issuer's KeyStore *empty*. The plugin still loads, the
     /// gateway still boots, and the background refresh task gets
@@ -605,7 +605,7 @@ fn peek_issuer(token: &str) -> Option<String> {
 
 /// Reason `validate_token` couldn't verify the JWT. Wraps the
 /// usual `jsonwebtoken::errors::Error` plus the kid-selection
-/// and JWKS-availability cases introduced by Slice A / B.
+/// and JWKS-availability cases.
 enum ValidateError {
     /// The JWT's header `kid` didn't match any key the issuer's
     /// KeyStore knows about. Distinct from `InvalidSignature` so

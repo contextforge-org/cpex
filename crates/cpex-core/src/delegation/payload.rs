@@ -5,7 +5,7 @@
 //
 // `DelegationPayload` — the unified state struct threaded through the
 // TokenDelegate hook chain. Same input/output split pattern as
-// `IdentityPayload` (slice 2):
+// `IdentityPayload`:
 //
 //   * **Input** (private — host-supplied, never mutated by handlers) —
 //     `bearer_token`, `target_name`, `target_type`, `target_audience`,
@@ -21,7 +21,7 @@
 //
 // # Where this hook fits
 //
-// IdentityResolve (slice 2) is *inbound* — validates the caller's
+// IdentityResolve is *inbound* — validates the caller's
 // credentials at request entry, populates `security.subject` /
 // `security.client` / `security.caller_workload`. TokenDelegate is
 // *outbound* — when a plugin (typically a forwarding proxy) needs to
@@ -34,11 +34,11 @@
 //
 // # Caching
 //
-// Not in this slice. The spec describes a `TokenCacheControl` trait
-// at §9.8 that wraps this hook with `get_or_mint(audience, scopes)`
+// Not implemented yet. The spec describes a `TokenCacheControl` trait
+// that wraps this hook with `get_or_mint(audience, scopes)`
 // semantics — outbound callers ask the trait for a token; the trait
 // hits the cache first and only dispatches through the hook on cache
-// miss. That layer lives one slice later. For now, every
+// miss. That layer comes later. For now, every
 // `mgr.invoke_named::<TokenDelegateHook>(...)` re-runs the chain.
 //
 // # Rejection
@@ -401,7 +401,7 @@ impl DelegationPayload {
 
             // Default to OnBehalfOfUser when the handler didn't
             // populate `delegation_mode`. Backward-compatible with
-            // handlers from sub-step B; future handlers should
+            // earlier handlers; future handlers should
             // populate the field explicitly.
             let mode = self
                 .delegation_mode

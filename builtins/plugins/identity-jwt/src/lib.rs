@@ -11,9 +11,8 @@
 // identity path: validate a Bearer token and extract identity,
 // independent of any PDP step that runs later in the route.
 //
-// Sub-step A scope: data shapes + module structure only. Actual
-// validation logic in sub-step B; multi-issuer + key rotation in
-// sub-step C; integration tests in sub-step D.
+// Scope: data shapes + module structure only. Actual validation
+// logic, multi-issuer + key rotation, and integration tests land later.
 //
 // # Error handling
 //
