@@ -13,25 +13,19 @@ The scenario's `get_compensation` reads from a backend HR system that expects it
 
 ## Delegation as an effect
 
-`delegate` is an effect in the `policy` phase. It names a delegator plugin and the target it mints for:
+`delegate` is an effect in the `authorization.pre_invocation` phase. It names a delegator plugin and the target it mints for:
 
 ```yaml
-policy:
-  - "require(role.hr)"
-  - "delegate(workday-oauth, target: workday-api, audience: workday-api, permissions: [read_compensation])"
-  - "delegation.granted.permissions contains 'read_compensation': allow"
+authorization:
+  pre_invocation:
+    - "require(role.hr)"
+    - "delegate(workday-oauth, target: workday-api, audience: workday-api, permissions: [read_compensation])"
+    - "delegation.granted.permissions contains 'read_compensation': allow"
 ```
 
 The order matters. The `require` gate runs first, so a credential is only minted for a caller who passed authorization. After the exchange, a post-check verifies the credential actually carries the scope requested, and denies the operation if the IdP returned less.
 
-```mermaid
-flowchart LR
-  IN["caller's verified token<br>(audience: agent)"] --> DEL["delegate(workday-oauth)"]
-  DEL -->|"RFC 8693 token exchange"| IDP["IdP token endpoint"]
-  IDP --> OUT["downstream token<br>(audience: workday-api<br>scope: read_compensation)"]
-  OUT --> BE["backend"]
-  CHK["delegation.granted.permissions<br>verified before forward"] -.-> OUT
-```
+![The delegation flow: the caller's verified token enters delegate(workday-oauth), which performs an RFC 8693 exchange at the IdP token endpoint; the resulting downstream token is audience- and scope-limited, delegation.granted.permissions is verified before forward, and only the minted token reaches the backend](images/apl_delegation_flow.png)
 
 ## The delegator plugin
 

@@ -18,9 +18,10 @@ A `taint` effect attaches a label. The scenario marks the session when compensat
 ```yaml
 routes:
   - tool: get_compensation
-    policy:
-      - "require(role.hr)"
-      - "taint(secret, session)"
+    authorization:
+      pre_invocation:
+        - "require(role.hr)"
+        - "taint(secret, session)"
     result:
       ssn: "str | redact(!perm.view_ssn)"
 ```
@@ -39,19 +40,13 @@ A different route, later in the same session, refuses based on the label, even w
 ```yaml
 routes:
   - tool: send_email
-    policy:
-      - "require(perm.email_send)"
-      - "security.labels contains \"secret\": deny('session touched secret data', 'session_tainted')"
+    authorization:
+      pre_invocation:
+        - "require(perm.email_send)"
+        - "security.labels contains \"secret\": deny('session touched secret data', 'session_tainted')"
 ```
 
-```mermaid
-flowchart LR
-  R1["get_compensation"] -->|"taint(secret, session)"| S["session labels:<br>{ secret }"]
-  R2["send_email<br>(clean body)"] --> CHK{"labels contains<br>secret?"}
-  S -.-> CHK
-  CHK -->|yes| DENY["deny<br>session_tainted"]
-  CHK -->|no| OK["allow"]
-```
+![The taint produce-and-consume flow: get_compensation runs taint(secret, session), writing the secret label into session state; later in the same session, send_email with a clean body is checked against that CPEX-owned state and denied with session_tainted when the label is present, allowed otherwise](images/apl_tainting_flow.png)
 
 The email is denied because the session is tainted, not because of anything in its body. The decision is made from CPEX-owned state, so the model cannot route around it by rewording the email.
 

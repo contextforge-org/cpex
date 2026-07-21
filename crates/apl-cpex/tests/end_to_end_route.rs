@@ -32,8 +32,8 @@ use cpex_core::plugin::{Plugin, PluginConfig};
 
 use apl_core::pipeline::TaintScope;
 use apl_core::{
-    compile_config, evaluate_route, AttributeBag, Decision, NoopDelegationInvoker, PdpCall,
-    PdpDecision, PdpDialect, PdpError, PdpResolver, RoutePayload,
+    compile_config, evaluate_route, AttributeBag, Decision, NoopDelegationInvoker,
+    NoopElicitationInvoker, PdpCall, PdpDecision, PdpDialect, PdpError, PdpResolver, RoutePayload,
 };
 
 use apl_cpex::{
@@ -218,7 +218,7 @@ plugins:
     hooks: [cmf.tool_pre_invoke]
 routes:
   get_weather:
-    policy:
+    pre_invocation:
       - "plugin(scope-gate)"
 "#;
 
@@ -248,6 +248,7 @@ routes:
         &(Arc::new(AllowPdp) as Arc<dyn apl_core::PdpResolver>),
         &(invoker.clone() as Arc<dyn apl_core::PluginInvoker>),
         &(Arc::new(NoopDelegationInvoker) as Arc<dyn apl_core::DelegationInvoker>),
+        &(Arc::new(NoopElicitationInvoker) as Arc<dyn apl_core::ElicitationInvoker>),
     )
     .await;
 
@@ -269,7 +270,7 @@ plugins:
     hooks: [cmf.tool_pre_invoke]
 routes:
   get_weather:
-    policy:
+    pre_invocation:
       - "plugin(scope-gate)"
 "#;
 
@@ -299,6 +300,7 @@ routes:
         &(Arc::new(AllowPdp) as Arc<dyn apl_core::PdpResolver>),
         &(invoker.clone() as Arc<dyn apl_core::PluginInvoker>),
         &(Arc::new(NoopDelegationInvoker) as Arc<dyn apl_core::DelegationInvoker>),
+        &(Arc::new(NoopElicitationInvoker) as Arc<dyn apl_core::ElicitationInvoker>),
     )
     .await;
 
@@ -395,7 +397,7 @@ plugins:
     capabilities: [append_labels, read_labels]
 routes:
   classify:
-    policy:
+    pre_invocation:
       - "plugin(tagger)"
 "#;
 
@@ -425,6 +427,7 @@ routes:
         &(Arc::new(AllowPdp) as Arc<dyn apl_core::PdpResolver>),
         &(invoker.clone() as Arc<dyn apl_core::PluginInvoker>),
         &(Arc::new(NoopDelegationInvoker) as Arc<dyn apl_core::DelegationInvoker>),
+        &(Arc::new(NoopElicitationInvoker) as Arc<dyn apl_core::ElicitationInvoker>),
     )
     .await;
 
@@ -482,7 +485,7 @@ plugins:
     capabilities: [append_labels, read_labels]
 routes:
   classify:
-    policy:
+    pre_invocation:
       - "plugin(tagger)"
 "#;
     let cfg = compile_config(yaml).expect("compile_config");
@@ -518,6 +521,7 @@ routes:
         &(Arc::new(AllowPdp) as Arc<dyn apl_core::PdpResolver>),
         &(invoker.clone() as Arc<dyn apl_core::PluginInvoker>),
         &(Arc::new(NoopDelegationInvoker) as Arc<dyn apl_core::DelegationInvoker>),
+        &(Arc::new(NoopElicitationInvoker) as Arc<dyn apl_core::ElicitationInvoker>),
     )
     .await;
     assert_eq!(decision.decision, Decision::Allow);
@@ -548,7 +552,7 @@ async fn apl_taint_step_lands_in_security_labels_and_persists() {
     const YAML: &str = r#"
 routes:
   classify:
-    policy:
+    pre_invocation:
       - "taint(audit, session)"
 "#;
 
@@ -577,6 +581,7 @@ routes:
         &(Arc::new(AllowPdp) as Arc<dyn apl_core::PdpResolver>),
         &(invoker.clone() as Arc<dyn apl_core::PluginInvoker>),
         &(Arc::new(NoopDelegationInvoker) as Arc<dyn apl_core::DelegationInvoker>),
+        &(Arc::new(NoopElicitationInvoker) as Arc<dyn apl_core::ElicitationInvoker>),
     )
     .await;
     assert_eq!(decision.decision, Decision::Allow);
@@ -615,7 +620,7 @@ routes:
 }
 
 // ---------------------------------------------------------------------
-// Fail-closed semantics (U2 / R4, R5, R18; AE1, AE6).
+// Fail-closed semantics.
 //
 // A distributed SessionStore can fail. These tests use an erroring
 // test-double to prove the request fails *closed* — a store error
@@ -664,7 +669,7 @@ plugins:
 routes:
   - tool: get_weather
     apl:
-      policy:
+      pre_invocation:
         - "plugin(tagger)"
 "#;
 
@@ -697,7 +702,7 @@ async fn tagger_manager_with_store(store: Arc<dyn SessionStore>) -> Arc<PluginMa
     mgr
 }
 
-/// AE1: a load failure during hydration fails the request closed *before*
+/// A load failure during hydration fails the request closed *before*
 /// any decision, with the distinguished `session.load_failed` violation.
 #[tokio::test]
 async fn load_failure_fails_request_closed() {
@@ -723,7 +728,7 @@ async fn load_failure_fails_request_closed() {
     );
 }
 
-/// AE6: an append failure after the (Allow) decision flips the request to
+/// An append failure after the (Allow) decision flips the request to
 /// Deny with the distinguished `session.persist_failed` violation — the
 /// accumulated taint is never silently dropped.
 #[tokio::test]
@@ -752,7 +757,112 @@ async fn append_failure_fails_request_closed() {
     );
 }
 
-/// R18 merge precedence: when the policy already Denies AND the append
+// Same tagger route as `TAGGER_ROUTE_YAML`, but with a route-level
+// `response:` block — proves the fail-closed session-store denials
+// (`session.load_failed` / `session.persist_failed`) decorate their
+// violation with the route's custom denyWith too, not just an ordinary
+// `Decision::Deny`.
+const TAGGER_ROUTE_WITH_RESPONSE_YAML: &str = r#"
+plugins:
+  - name: tagger
+    kind: tagger
+    hooks: [cmf.tool_pre_invoke]
+    capabilities: [append_labels, read_labels]
+routes:
+  - tool: get_weather
+    apl:
+      pre_invocation:
+        - "plugin(tagger)"
+    response:
+      status: 503
+      body: "session unavailable"
+"#;
+
+async fn tagger_manager_with_store_and_yaml(
+    store: Arc<dyn SessionStore>,
+    yaml: &str,
+) -> Arc<PluginManager> {
+    let mgr = Arc::new(PluginManager::default());
+    mgr.register_factory("tagger", Box::new(TaintingPluginFactory));
+    register_apl(
+        &mgr,
+        AplOptions {
+            dispatch_cache: Arc::new(DispatchCache::new()),
+            session_store: store,
+            pdps: Vec::new(),
+            pdp_factories: Vec::new(),
+            session_store_factories: Vec::new(),
+            base_capabilities: None,
+        },
+    );
+    mgr.load_config_yaml(yaml).expect("load_config_yaml");
+    mgr.initialize().await.expect("initialize");
+    mgr
+}
+
+/// A `session.load_failed` denial still carries the route's custom
+/// `response:` (denyWith) on its `details` map — the fix that closed prior
+/// review gap #3 must hold for the load-failure fail-closed path, not just
+/// `Decision::Deny`.
+#[tokio::test]
+async fn load_failure_carries_route_response() {
+    let store: Arc<dyn SessionStore> = Arc::new(ErrorSessionStore {
+        fail_load: true,
+        fail_append: false,
+    });
+    let mgr = tagger_manager_with_store_and_yaml(store, TAGGER_ROUTE_WITH_RESPONSE_YAML).await;
+    let (mut ext, _key) = session_ext_and_key("sess-load-fail-resp", "alice");
+    set_tool_meta(&mut ext, "get_weather");
+
+    let (result, _bg) = mgr
+        .invoke_named::<CmfHook>("cmf.tool_pre_invoke", cmf_payload(), ext, None)
+        .await;
+
+    assert!(!result.continue_processing);
+    let violation = result
+        .violation
+        .expect("load failure must surface a violation");
+    assert_eq!(violation.code, "session.load_failed");
+    assert_eq!(
+        violation
+            .details
+            .get(apl_cmf::constants::DETAIL_HTTP_STATUS),
+        Some(&serde_json::json!(503)),
+        "load_failed denial must carry the route's custom response status"
+    );
+}
+
+/// A `session.persist_failed` denial still carries the route's
+/// custom `response:` (denyWith) on its `details` map.
+#[tokio::test]
+async fn persist_failure_carries_route_response() {
+    let store: Arc<dyn SessionStore> = Arc::new(ErrorSessionStore {
+        fail_load: false,
+        fail_append: true,
+    });
+    let mgr = tagger_manager_with_store_and_yaml(store, TAGGER_ROUTE_WITH_RESPONSE_YAML).await;
+    let (mut ext, _key) = session_ext_and_key("sess-append-fail-resp", "alice");
+    set_tool_meta(&mut ext, "get_weather");
+
+    let (result, _bg) = mgr
+        .invoke_named::<CmfHook>("cmf.tool_pre_invoke", cmf_payload(), ext, None)
+        .await;
+
+    assert!(!result.continue_processing);
+    let violation = result
+        .violation
+        .expect("append failure must flip to a Deny with a violation");
+    assert_eq!(violation.code, "session.persist_failed");
+    assert_eq!(
+        violation
+            .details
+            .get(apl_cmf::constants::DETAIL_HTTP_STATUS),
+        Some(&serde_json::json!(503)),
+        "persist_failed denial must carry the route's custom response status"
+    );
+}
+
+/// When the policy already Denies AND the append
 /// fails, the original policy violation is preserved (not overwritten by
 /// `session.persist_failed`) — the request is already denied, so the
 /// append failure surfaces only as the alarm.
@@ -770,7 +880,7 @@ plugins:
 routes:
   - tool: get_weather
     apl:
-      policy:
+      pre_invocation:
         - "plugin(tagger)"
         - "plugin(scope-gate)"
 "#;
@@ -840,7 +950,7 @@ async fn sessionless_request_unaffected_by_store_failure() {
 }
 
 // ---------------------------------------------------------------------
-// Config-driven backend selection (U3 / R2, R3; AE3, AE5).
+// Config-driven backend selection.
 // ---------------------------------------------------------------------
 
 /// Records every load/append so a test can prove which store was active.
@@ -887,7 +997,7 @@ impl apl_cpex::SessionStoreFactory for RecordingFactory {
     }
 }
 
-/// AE5: a `global.apl.session_store { kind: recording-fake }` block makes
+/// A `global.apl.session_store { kind: recording-fake }` block makes
 /// the factory-built store the active one — the default `MemorySessionStore`
 /// passed to `AplOptions` is overridden by config.
 #[tokio::test]
@@ -905,7 +1015,7 @@ global:
 routes:
   - tool: get_weather
     apl:
-      policy:
+      pre_invocation:
         - "plugin(tagger)"
 "#;
 

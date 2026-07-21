@@ -1,0 +1,7 @@
+{"version": 3, "term": {"cols": 80, "rows": 24}, "timestamp": 1784230063, "command": "cargo run -q -p cpex-tutorial --example m03_shaping", "title": "CPEX tutorial: m03-shaping", "env": {"SHELL": "/bin/zsh"}}
+[0.6, "o", "\r\n\u001b[1;36m=== Module 3: Shaping data ===\u001b[0m\r\n\r\n"]
+[1.2, "o", "\u001b[1m\u25b8 anonymous \u2192 get_compensation (result pipeline redacts ssn + salary, masks id)\u001b[0m\r\n"]
+[1.8, "o", "  \u001b[32m\u2713 ALLOWED\u001b[0m  {\"employee_id\":\"**1001\",\"name\":\"Alice Okafor\",\"title\":\"Staff Engineer\",\"salary\":\"[REDACTED]\",\"ssn\":\"[REDACTED]\"}\r\n\r\n"]
+[2.4, "o", "  ssn was transformed (no view_ssn permission) \u2713\r\n  employee_id was masked \u2713\r\n\r\n"]
+[3.0, "o", "Redaction happens on the way OUT, the backend returned the full record; policy shaped it.\r\n"]
+[3.8, "x", "0"]

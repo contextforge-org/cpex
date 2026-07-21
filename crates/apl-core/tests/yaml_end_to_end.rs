@@ -15,9 +15,10 @@
 use std::sync::Arc;
 
 use apl_core::{
-    compile_config, evaluate_route, AttributeBag, Decision, DelegationInvoker, FieldOutcome,
-    NoopDelegationInvoker, PdpCall, PdpDecision, PdpDialect, PdpError, PdpResolver, PluginError,
-    PluginInvocation, PluginInvoker, PluginOutcome, RoutePayload,
+    compile_config, evaluate_route, AttributeBag, Decision, DelegationInvoker, ElicitationInvoker,
+    FieldOutcome, NoopDelegationInvoker, NoopElicitationInvoker, PdpCall, PdpDecision, PdpDialect,
+    PdpError, PdpResolver, PluginError, PluginInvocation, PluginInvoker, PluginOutcome,
+    RoutePayload,
 };
 use async_trait::async_trait;
 use serde_json::json;
@@ -34,6 +35,9 @@ fn plugins() -> Arc<dyn PluginInvoker> {
 fn delegations() -> Arc<dyn DelegationInvoker> {
     Arc::new(NoopDelegationInvoker)
 }
+fn elicitations() -> Arc<dyn ElicitationInvoker> {
+    Arc::new(NoopElicitationInvoker)
+}
 
 // ----- Fixtures: a baseline route used by every scenario below. -----
 
@@ -42,7 +46,7 @@ routes:
   get_employee:
     args:
       employee_id: "str"
-    policy:
+    pre_invocation:
       - "require(authenticated)"
       - "delegation.depth > 2: deny"
     result:
@@ -112,6 +116,7 @@ async fn alice_full_access_sees_unredacted_result_with_masked_id() {
         &pdp(),
         &plugins(),
         &delegations(),
+        &elicitations(),
     )
     .await;
     assert_eq!(r.decision, Decision::Allow);
@@ -157,6 +162,7 @@ async fn mallory_no_perm_no_role_gets_both_fields_redacted() {
         &pdp(),
         &plugins(),
         &delegations(),
+        &elicitations(),
     )
     .await;
     assert_eq!(r.decision, Decision::Allow);
@@ -191,12 +197,13 @@ async fn deep_delegation_denies_at_policy() {
         &pdp(),
         &plugins(),
         &delegations(),
+        &elicitations(),
     )
     .await;
     match r.decision {
         Decision::Deny { rule_source, .. } => {
             assert!(
-                rule_source.contains("policy"),
+                rule_source.contains("pre_invocation"),
                 "got source: {}",
                 rule_source
             );
@@ -233,6 +240,7 @@ async fn unauthenticated_user_is_denied_before_args_mutate_result() {
         &pdp(),
         &plugins(),
         &delegations(),
+        &elicitations(),
     )
     .await;
     assert!(matches!(r.decision, Decision::Deny { .. }));
@@ -262,6 +270,7 @@ async fn args_validator_rejects_wrong_type() {
         &pdp(),
         &plugins(),
         &delegations(),
+        &elicitations(),
     )
     .await;
     match r.decision {
@@ -297,6 +306,7 @@ async fn inbound_only_evaluation_skips_result_phase() {
         &pdp(),
         &plugins(),
         &delegations(),
+        &elicitations(),
     )
     .await;
     assert_eq!(r.decision, Decision::Allow);

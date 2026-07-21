@@ -205,7 +205,7 @@ plugins:
 routes:
   - tool: get_weather
     apl:
-      policy:
+      pre_invocation:
         - "plugin(allow-gate)"
 "#;
     let mgr = build_manager_with_visitor(YAML).await;
@@ -239,7 +239,7 @@ plugins:
 routes:
   - tool: get_weather
     apl:
-      policy:
+      pre_invocation:
         - "plugin(deny-gate)"
 "#;
     let mgr = build_manager_with_visitor(YAML).await;
@@ -281,12 +281,12 @@ plugins:
     hooks: [cmf.tool_pre_invoke]
 global:
   apl:
-    policy:
+    pre_invocation:
       - "plugin(allow-gate)"
 routes:
   - tool: get_weather
     apl:
-      policy:
+      pre_invocation:
         - "plugin(deny-gate)"
 "#;
     let mgr = build_manager_with_visitor(YAML).await;
@@ -318,7 +318,7 @@ global:
   policies:
     pii:
       apl:
-        policy:
+        pre_invocation:
           - "plugin(deny-gate)"
 routes:
   - tool: get_weather
@@ -364,11 +364,11 @@ routes:
     meta:
       scope: vs-a
     apl:
-      policy:
+      pre_invocation:
         - "plugin(deny-gate)"
   - tool: get_weather
     apl:
-      policy:
+      pre_invocation:
         - "plugin(allow-gate)"
 "#;
     let mgr = build_manager_with_visitor(YAML).await;
@@ -435,6 +435,42 @@ routes:
     assert!(result.violation.is_none());
 }
 
+/// A bare `global: { response: {...} }` — a denyWith with no accompanying
+/// `apl:` policy/args block — must load cleanly (the visitor warns and moves
+/// on) rather than panicking or erroring. `visit_global` returns early when
+/// `apl_subblock` finds no APL terms; this guards that the stranded
+/// `response:` on that early-return path is handled, not silently exploded.
+#[tokio::test]
+async fn global_response_without_apl_block_loads_without_error() {
+    const YAML: &str = r#"
+plugins:
+  - name: allow-gate
+    kind: allow-gate
+    hooks: [cmf.tool_pre_invoke]
+global:
+  response:
+    status: 403
+    body: "forbidden"
+routes:
+  - tool: anything
+"#;
+    // The load must not panic or return Err despite the response-only global
+    // block having no installable policy. A request still flows through the
+    // legacy chain (no catch-all handler was installed for the entity-less
+    // path, which is the documented behavior this warns about).
+    let mgr = build_manager_with_visitor(YAML).await;
+
+    let ext = Extensions {
+        meta: Some(Arc::new(meta_for_tool("anything"))),
+        ..Default::default()
+    };
+    let (result, _bg) = mgr
+        .invoke_named::<CmfHook>("cmf.tool_pre_invoke", cmf_payload("hi"), ext, None)
+        .await;
+    assert!(result.continue_processing);
+    assert!(result.violation.is_none());
+}
+
 /// Smoke test that the visitor surfaces a compile error from a malformed
 /// APL block as a `PluginError::Config` out of `load_config_yaml`. Catches
 /// regressions where visitor errors swallow into Ok(_) or panic.
@@ -468,7 +504,7 @@ plugins:
 routes:
   - llm: gpt-4
     apl:
-      policy:
+      pre_invocation:
         - "plugin(allow-gate)"
 "#;
     let mgr = build_manager_with_visitor(YAML).await;
@@ -501,7 +537,7 @@ plugins:
 routes:
   - llm: gpt-4
     apl:
-      post_policy:
+      post_invocation:
         - "plugin(allow-gate)"
 "#;
     let mgr = build_manager_with_visitor(YAML).await;
@@ -532,7 +568,7 @@ plugins:
 routes:
   - prompt: summarize_email
     apl:
-      policy:
+      pre_invocation:
         - "plugin(allow-gate)"
 "#;
     let mgr = build_manager_with_visitor(YAML).await;
@@ -563,7 +599,7 @@ plugins:
 routes:
   - resource: hr://employees/*
     apl:
-      policy:
+      pre_invocation:
         - "plugin(allow-gate)"
 "#;
     let mgr = build_manager_with_visitor(YAML).await;
@@ -607,7 +643,7 @@ plugins:
 routes:
   - llm: gpt-4
     apl:
-      policy:
+      pre_invocation:
         - "plugin(deny-gate)"
 "#;
     let mgr = build_manager_with_visitor(YAML).await;
@@ -651,7 +687,7 @@ plugins:
 routes:
   - tool: get_weather
     apl:
-      policy:
+      pre_invocation:
         - "this-is-not-a-valid-step ::: $$$"
 "#;
     let mgr = Arc::new(PluginManager::default());
@@ -669,7 +705,7 @@ routes:
     );
 }
 
-/// Flat form: a route may declare `policy:` directly, without the `apl:`
+/// Flat form: a route may declare `pre_invocation:` directly, without the `apl:`
 /// wrapper. The visitor recognizes it identically to the wrapped form.
 /// (Also exercises the `run(...)` plugin alias.)
 #[tokio::test]
@@ -681,7 +717,7 @@ plugins:
     hooks: [cmf.tool_pre_invoke]
 routes:
   - tool: get_weather
-    policy:
+    pre_invocation:
       - "run(allow-gate)"
 "#;
     let mgr = build_manager_with_visitor(YAML).await;
@@ -701,7 +737,7 @@ routes:
     );
 }
 
-/// Flat form deny mirrors the wrapped deny path — the route's `policy:`
+/// Flat form deny mirrors the wrapped deny path — the route's `pre_invocation:`
 /// is honored without an `apl:` wrapper and the violation propagates.
 #[tokio::test]
 async fn visitor_flat_route_without_apl_wrapper_denies() {
@@ -712,7 +748,7 @@ plugins:
     hooks: [cmf.tool_pre_invoke]
 routes:
   - tool: get_weather
-    policy:
+    pre_invocation:
       - "plugin(deny-gate)"
 "#;
     let mgr = build_manager_with_visitor(YAML).await;
@@ -742,7 +778,7 @@ routes:
 // map through the real `load_config_yaml` path the unit tests can't hit.
 // =====================================================================
 
-/// A route with a flat `policy:` AND a flat `plugins:` *map* override
+/// A route with a flat `pre_invocation:` AND a flat `plugins:` *map* override
 /// (no `apl:` wrapper) loads through `load_config_yaml` (previously a
 /// hard `invalid type: map, expected a sequence` error) and the policy
 /// still fires — proving the override map and the activating policy
@@ -756,7 +792,7 @@ plugins:
     hooks: [cmf.tool_pre_invoke]
 routes:
   - tool: get_weather
-    policy:
+    pre_invocation:
       - "plugin(deny-gate)"
     plugins:
       deny-gate:
@@ -848,7 +884,7 @@ plugins:
 global:
   defaults:
     tool:
-      policy:
+      pre_invocation:
         - "plugin(deny-gate)"
       plugins:
         deny-gate:

@@ -12,9 +12,9 @@ use std::sync::Arc;
 
 use apl_cmf::BagBuilder;
 use apl_core::{
-    compile_config, evaluate_route, AttributeBag, Decision, DelegationInvoker,
-    NoopDelegationInvoker, PdpCall, PdpDecision, PdpDialect, PdpError, PdpResolver, PluginError,
-    PluginInvocation, PluginInvoker, PluginOutcome, RoutePayload,
+    compile_config, evaluate_route, AttributeBag, Decision, DelegationInvoker, ElicitationInvoker,
+    NoopDelegationInvoker, NoopElicitationInvoker, PdpCall, PdpDecision, PdpDialect, PdpError,
+    PdpResolver, PluginError, PluginInvocation, PluginInvoker, PluginOutcome, RoutePayload,
 };
 use async_trait::async_trait;
 use cpex_core::extensions::{
@@ -35,6 +35,9 @@ fn plugins() -> Arc<dyn PluginInvoker> {
 fn delegations() -> Arc<dyn DelegationInvoker> {
     Arc::new(NoopDelegationInvoker)
 }
+fn elicitations() -> Arc<dyn ElicitationInvoker> {
+    Arc::new(NoopElicitationInvoker)
+}
 
 // HR route from unified-config-proposal.md §Example 1.
 const HR_ROUTE_YAML: &str = r#"
@@ -42,7 +45,7 @@ routes:
   get_employee:
     args:
       employee_id: "str"
-    policy:
+    pre_invocation:
       - "require(authenticated)"
       - "delegation.depth > 2: deny"
     result:
@@ -175,6 +178,7 @@ async fn alice_full_route_through_cmf_bridge() {
         &pdp(),
         &plugins(),
         &delegations(),
+        &elicitations(),
     )
     .await;
     assert_eq!(r.decision, Decision::Allow);
@@ -211,6 +215,7 @@ async fn mallory_gets_both_fields_redacted_through_cmf_bridge() {
         &pdp(),
         &plugins(),
         &delegations(),
+        &elicitations(),
     )
     .await;
     assert_eq!(r.decision, Decision::Allow);
@@ -244,6 +249,7 @@ async fn deep_delegation_denies_through_cmf_bridge() {
         &pdp(),
         &plugins(),
         &delegations(),
+        &elicitations(),
     )
     .await;
     assert!(matches!(r.decision, Decision::Deny { .. }));
@@ -260,7 +266,7 @@ async fn args_attributes_flow_into_bag_for_policy_use() {
     let yaml = r#"
 routes:
   guarded_route:
-    policy:
+    pre_invocation:
       - "args.include_ssn == true: deny"
 "#;
     let routes = compile_config(yaml).unwrap().routes;
@@ -281,11 +287,16 @@ routes:
         &pdp(),
         &plugins(),
         &delegations(),
+        &elicitations(),
     )
     .await;
     match r.decision {
         Decision::Deny { rule_source, .. } => {
-            assert!(rule_source.contains("policy"), "got source {}", rule_source);
+            assert!(
+                rule_source.contains("pre_invocation"),
+                "got source {}",
+                rule_source
+            );
         },
         d => panic!("expected Deny on include_ssn, got {:?}", d),
     }
@@ -314,6 +325,7 @@ async fn anonymous_user_denied_at_authenticated_check() {
         &pdp(),
         &plugins(),
         &delegations(),
+        &elicitations(),
     )
     .await;
     assert!(matches!(r.decision, Decision::Deny { .. }));

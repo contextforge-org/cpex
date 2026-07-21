@@ -23,7 +23,7 @@ Each extension flattens into bag attributes under its namespace, gated by a read
 | Agent | session, conversation, turn, and lineage context | `agent.*` | `read_agent` |
 | Meta | entity metadata: type, name, tags, scope, properties | `meta.*` | `read_meta` |
 | Request | environment, request id, timestamp, trace and span ids | `request.*` | `read_request` |
-| HTTP | request and response headers (lowercased) | `http.request_headers.*`, `http.response_headers.*` | `read_headers`, `write_headers` |
+| HTTP | request line (method, path, host, scheme) and request/response headers (lowercased) | `http.method`, `http.path`, `http.host`, `http.scheme`, `http.request_headers.*`, `http.response_headers.*` | `read_headers`, `write_headers` |
 | LLM | model id, provider, capabilities | `llm.*` | `read_llm` |
 | MCP | tool, resource, or prompt metadata | `mcp.*` (`mcp.tool.*`, `mcp.resource.*`, `mcp.prompt.*`) | `read_mcp` |
 | Completion | stop reason, token counts, model, latency | `completion.*` | `read_completion` |
@@ -64,7 +64,7 @@ plugins:
 | `read_agent` | `agent.*` |
 | `read_meta` | `meta.*` |
 | `read_request` | `request.*` |
-| `read_headers` | `http.request_headers.*`, `http.response_headers.*` |
+| `read_headers` | `http.method`, `http.path`, `http.host`, `http.scheme`, `http.request_headers.*`, `http.response_headers.*` |
 | `read_llm` | `llm.*` |
 | `read_mcp` | `mcp.*` |
 | `read_completion` | `completion.*` |

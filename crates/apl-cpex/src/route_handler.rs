@@ -40,21 +40,49 @@ use cpex_core::manager::PluginManager;
 use cpex_core::plugin::{Plugin, PluginConfig};
 use cpex_core::registry::AnyHookHandler;
 
+use apl_cmf::constants::{DETAIL_HTTP_BODY, DETAIL_HTTP_HEADERS, DETAIL_HTTP_STATUS};
 use apl_cmf::{extract_args, extract_result, BagBuilder};
 use apl_core::evaluator::Decision;
 use apl_core::plugin_decl::PluginRegistry;
 use apl_core::route::{evaluate_post, evaluate_pre, RoutePayload};
-use apl_core::rules::CompiledRoute;
+use apl_core::rules::{CompiledRoute, DenyResponse};
 use apl_core::step::PdpResolver;
 
 use crate::cmf_invoker::CmfPluginInvoker;
 use crate::delegation_invoker::DelegationPluginInvoker;
 use crate::dispatch_plan::DispatchCache;
+use crate::elicitation_invoker::ElicitationPluginInvoker;
 use crate::pdp_router::PdpRouter;
 use crate::session_store::SessionStore;
 
+/// JSON-RPC error code the host emits when a phase suspends on a pending
+/// elicitation: "request not complete — retry echoing the elicitation id."
+/// In the application-reserved JSON-RPC range; carried via
+/// `PluginViolation::proto_error_code` for the host to put on the wire.
+/// The agent SDK keys its pause/resume loop on this code.
+pub const ELICITATION_PENDING_CODE: i64 = -32120;
+
+/// Header an agent echoes on retry to continue a suspended elicitation —
+/// its value is the `elicitation_id` from a prior `-32120`. The handler
+/// seeds it into the bag (`elicitation.id`) before evaluation so the
+/// runtime *checks* the existing elicitation instead of dispatching a new
+/// one. Mirrors how `X-User-Token` carries request-scoped context.
+pub const ELICITATION_ID_HEADER: &str = "X-Policy-Elicitation-Id";
+
+/// JSON-RPC error code emitted when an agent re-checks an approval in
+/// *peek* mode and it has resolved approved: "approved — confirm to apply."
+/// The phase does NOT forward to the tool; the agent confirms with the
+/// requester and re-sends *without* the peek header to actually run it.
+/// Lets a human authorize while the requester separately commits execution.
+pub const ELICITATION_APPROVED_CODE: i64 = -32121;
+
+/// Header an agent sets (alongside `X-Policy-Elicitation-Id`) to *peek* at an
+/// approval — resolve its status without committing the action. Truthy
+/// value ("1"/"true"/anything non-empty) enables it.
+pub const ELICITATION_PEEK_HEADER: &str = "X-Policy-Elicitation-Peek";
+
 /// Which APL phase this handler runs. Pre covers `args` + `policy`; Post
-/// covers `result` + `post_policy`. Set once at construction and never
+/// covers `result` + `post_invocation`. Set once at construction and never
 /// changes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Phase {
@@ -198,7 +226,7 @@ impl AnyHookHandler for AplRouteHandler {
         // (e.g. `extensions_arc`, `persist_session`) deref through the Arc.
         // Hydration loads accumulated session labels. A store failure
         // here happens *before* any policy decision, so we fail the
-        // request closed immediately (R5/R18, F2): deny with a
+        // request closed immediately: deny with a
         // distinguished violation rather than proceeding as if the
         // session carried no taint. Sessionless traffic never reaches
         // the store, so this only denies session-bearing requests.
@@ -220,14 +248,16 @@ impl AnyHookHandler for AplRouteHandler {
                     error = %e,
                     "session label load failed; failing request closed"
                 );
+                let mut v = PluginViolation::new(
+                    "session.load_failed",
+                    "session state could not be loaded",
+                );
+                decorate_denial_response(&mut v, self.route.response.as_ref());
                 return Ok(Box::new(ErasedResultFields {
                     continue_processing: false,
                     modified_payload: None,
                     modified_extensions: None,
-                    violation: Some(PluginViolation::new(
-                        "session.load_failed",
-                        "session state could not be loaded",
-                    )),
+                    violation: Some(v),
                 }));
             },
         };
@@ -241,6 +271,16 @@ impl AnyHookHandler for AplRouteHandler {
             .with_extensions(&post_extensions)
             .with_route_key(&self.route.route_key)
             .build();
+
+        // Phase 5 retry seeding: if the agent echoed an elicitation id (from
+        // a prior `-32120`) in the `X-Policy-Elicitation-Id` header, seed it
+        // into the bag *before* evaluation. `dispatch_elicitation` then takes
+        // the "id present → check" path (poll the existing approval) instead
+        // of dispatching a fresh one. Without this, every retry would open a
+        // new approval and the loop would never resolve.
+        if let Some(elicitation_id) = elicitation_id_from_headers(&post_extensions) {
+            bag.set(apl_core::step::elicitation_bag_keys::ID, elicitation_id);
+        }
 
         // Build `RoutePayload.args` from the message. Per-content shape:
         //   * ToolCall      → arguments map (JSON Object)
@@ -307,8 +347,21 @@ impl AnyHookHandler for AplRouteHandler {
         // erased forms get borrowed into `evaluate_pre`/`evaluate_post`;
         // `dispatch_parallel` can then `Arc::clone` an owned 'static
         // reference into each branch closure.
+        // Elicitation bridge — resolves `require_approval(...)` /
+        // `confirm(...)` steps to `ElicitationHook` plugins by name off
+        // the same plan, sharing the request's Extensions so the handler
+        // reads the same identity. Routes with no elicitation steps have
+        // an empty `elicitation_entries` map; an accidental `Effect::Elicit`
+        // then returns `NotFound`, handled by the step's `on_error`.
+        let elicitations = Arc::new(ElicitationPluginInvoker::new(
+            Arc::clone(&manager),
+            invoker.extensions_arc(),
+            invoker.plan_arc(),
+        ));
+
         let invoker_dyn: Arc<dyn apl_core::step::PluginInvoker> = invoker.clone();
         let delegations_dyn: Arc<dyn apl_core::step::DelegationInvoker> = delegations.clone();
+        let elicitations_dyn: Arc<dyn apl_core::step::ElicitationInvoker> = elicitations.clone();
 
         let decision = match self.phase {
             Phase::Pre => {
@@ -319,6 +372,7 @@ impl AnyHookHandler for AplRouteHandler {
                     &self.pdp,
                     &invoker_dyn,
                     &delegations_dyn,
+                    &elicitations_dyn,
                 )
                 .await
             },
@@ -330,6 +384,7 @@ impl AnyHookHandler for AplRouteHandler {
                     &self.pdp,
                     &invoker_dyn,
                     &delegations_dyn,
+                    &elicitations_dyn,
                 )
                 .await
             },
@@ -345,7 +400,7 @@ impl AnyHookHandler for AplRouteHandler {
 
         // Commit any session-scoped labels accumulated during this
         // request. No-op when there was no session id. The result is
-        // folded into the decision below (R18) — captured here because
+        // folded into the decision below — captured here because
         // `continue_processing`/`violation` are computed after persist.
         let persist_result = invoker.persist_session().await;
 
@@ -394,7 +449,7 @@ impl AnyHookHandler for AplRouteHandler {
             Some(Box::new(updated) as Box<dyn PluginPayload>)
         } else if msg_payload.message.get_text_content() != final_payload.message.get_text_content()
         {
-            // A `policy:` plugin mutated the message directly via
+            // A `pre_invocation:` plugin mutated the message directly via
             // `modify_payload` (not through a field pipeline). Pass
             // the invoker's view through unchanged.
             Some(Box::new(final_payload) as Box<dyn PluginPayload>)
@@ -408,6 +463,18 @@ impl AnyHookHandler for AplRouteHandler {
             None
         };
 
+        // A suspended phase reports `Allow` with a pending bundle — it
+        // must NOT forward. Fail closed with a distinguished violation that
+        // carries the elicitation id (mapped to JSON-RPC `-32120`) so the
+        // suspend is visible and the unapproved call never proceeds.
+        let pending_elicitation = decision.pending.clone();
+
+        // Attach the route's transpiled `denyWith` to a violation at each
+        // genuine-denial site (below) via `decorate_denial_response`, rather
+        // than blanket-decorating whatever `violation` is set. This keeps the
+        // custom response off any future non-denial signal (e.g. an
+        // elicitation/retry/confirm violation) that must reach the host with
+        // its own wire shape intact.
         let (mut continue_processing, mut violation) = match decision.decision {
             Decision::Allow => (true, None),
             Decision::Deny {
@@ -420,11 +487,43 @@ impl AnyHookHandler for AplRouteHandler {
                     rule_source
                 };
                 let reason = reason.unwrap_or_else(|| "access denied".to_string());
-                (false, Some(PluginViolation::new(code, reason)))
+                let mut v = PluginViolation::new(code, reason);
+                decorate_denial_response(&mut v, self.route.response.as_ref());
+                (false, Some(v))
             },
         };
 
-        // Append fail-closed (R18) with merge precedence:
+        if let Some(p) = &pending_elicitation {
+            tracing::info!(
+                route = %self.route.route_key,
+                elicitation_id = %p.id,
+                plugin = %p.plugin_name,
+                "policy suspended on pending elicitation; emitting -32120 (retry)"
+            );
+            // The phase suspended awaiting a human. Do NOT forward. Surface
+            // a structured "request not complete — retry echoing this id"
+            // via the protocol error code the host maps to the wire
+            // (JSON-RPC `-32120`). Left undecorated by `denyWith` — it is a
+            // retry signal, not a denial.
+            continue_processing = false;
+            violation = Some(pending_violation(p));
+        }
+
+        // Peek (confirm-then-apply): the agent re-checked an approval but
+        // asked NOT to commit yet (the `X-Policy-Elicitation-Peek` header). If
+        // the elicitation resolved approved (Allow, not pending), report
+        // "approved — confirm to apply" (-32121) and do NOT forward. The
+        // agent then asks the requester, who re-sends without the peek header
+        // to actually run the tool (the plugin replays the cached approval).
+        if continue_processing
+            && elicitation_peek_from_headers(&post_extensions)
+            && bag.get_string(apl_core::step::elicitation_bag_keys::OUTCOME) == Some("approved")
+        {
+            continue_processing = false;
+            violation = Some(approved_peek_violation(&bag));
+        }
+
+        // Append fail-closed with merge precedence:
         //   - decision Allow + append Err → flip to Deny with a
         //     distinguished `session.persist_failed` violation.
         //   - decision Deny + append Err → keep the original policy
@@ -444,10 +543,12 @@ impl AnyHookHandler for AplRouteHandler {
             );
             if continue_processing {
                 continue_processing = false;
-                violation = Some(PluginViolation::new(
+                let mut v = PluginViolation::new(
                     "session.persist_failed",
                     "session state could not be persisted",
-                ));
+                );
+                decorate_denial_response(&mut v, self.route.response.as_ref());
+                violation = Some(v);
             }
         }
 
@@ -469,6 +570,37 @@ impl AnyHookHandler for AplRouteHandler {
 // =====================================================================
 // Helpers
 // =====================================================================
+
+/// Attach a route's transpiled `denyWith` (status/body/headers) to a
+/// denial `violation`'s `details` map so the host can render a custom HTTP
+/// denial response. Carried via `details` (not new violation fields) to
+/// keep the violation type stable. `None` response leaves the host default.
+///
+/// Call this only from genuine-denial sites — never blanket-apply it to
+/// whatever violation happens to be set, or a non-denial signal (e.g. an
+/// elicitation/retry/confirm) would get stamped with a `403`-shaped
+/// response the host would render instead of the intended wire signal.
+fn decorate_denial_response(violation: &mut PluginViolation, response: Option<&DenyResponse>) {
+    let Some(resp) = response else {
+        return;
+    };
+    if let Some(status) = resp.status {
+        violation
+            .details
+            .insert(DETAIL_HTTP_STATUS.to_string(), serde_json::json!(status));
+    }
+    if let Some(body) = &resp.body {
+        violation
+            .details
+            .insert(DETAIL_HTTP_BODY.to_string(), serde_json::json!(body));
+    }
+    if !resp.headers.is_empty() {
+        violation.details.insert(
+            DETAIL_HTTP_HEADERS.to_string(),
+            serde_json::json!(resp.headers),
+        );
+    }
+}
 
 /// Rewrite the first text part of `msg` with `new_text`. If there is no
 /// text part, append one. Mirrors what `MessagePayload`'s normal
@@ -620,4 +752,138 @@ fn extensions_changed(before: &Extensions, after: &Extensions) -> bool {
         _ => true,
     };
     security_changed || delegation_changed || raw_creds_changed
+}
+
+// ---------------------------------------------------------------------
+// Phase 5: pending elicitation ↔ wire (`-32120`)
+// ---------------------------------------------------------------------
+
+/// Extract the elicitation id an agent echoes on retry from the
+/// `X-Policy-Elicitation-Id` request header. `None` when absent/empty.
+/// Pure so it's unit-testable without the full handler path.
+fn elicitation_id_from_headers(ext: &Extensions) -> Option<String> {
+    ext.http
+        .as_ref()
+        .and_then(|h| h.get_request_header(ELICITATION_ID_HEADER))
+        .filter(|v| !v.is_empty())
+        .map(str::to_string)
+}
+
+/// True when the agent set `X-Policy-Elicitation-Peek` to a truthy value —
+/// it wants to resolve the approval's status without committing the action.
+fn elicitation_peek_from_headers(ext: &Extensions) -> bool {
+    ext.http
+        .as_ref()
+        .and_then(|h| h.get_request_header(ELICITATION_PEEK_HEADER))
+        .is_some_and(|v| !v.is_empty() && !v.eq_ignore_ascii_case("false") && v != "0")
+}
+
+/// Build the `-32121` "approved — confirm to apply" violation for a peek
+/// that resolved approved. Carries the elicitation id + approver in
+/// `details` so the agent can ask the requester and then re-send (without
+/// the peek header) to actually run the tool.
+fn approved_peek_violation(bag: &apl_core::attributes::AttributeBag) -> PluginViolation {
+    use apl_core::step::elicitation_bag_keys as bk;
+    let mut details: std::collections::HashMap<String, Value> = std::collections::HashMap::new();
+    if let Some(id) = bag.get_string(bk::ID) {
+        details.insert("elicitation_id".into(), Value::String(id.to_string()));
+    }
+    if let Some(approver) = bag.get_string(bk::APPROVER) {
+        details.insert("approver".into(), Value::String(approver.to_string()));
+    }
+    PluginViolation::new(
+        "elicitation.approved",
+        "approved — confirm to apply (re-send without the peek header)".to_string(),
+    )
+    .with_proto_error_code(ELICITATION_APPROVED_CODE)
+    .with_details(details)
+}
+
+/// Build the `-32120` violation for a suspended phase: a distinguished
+/// code, the protocol error code the host maps to the wire, and the
+/// elicitation bundle in `details` so the agent can show who's approving /
+/// when it expires and retry by re-sending the id.
+fn pending_violation(p: &apl_core::step::PendingElicitation) -> PluginViolation {
+    let mut details: std::collections::HashMap<String, Value> = std::collections::HashMap::new();
+    details.insert("elicitation_id".into(), Value::String(p.id.clone()));
+    details.insert("plugin".into(), Value::String(p.plugin_name.clone()));
+    for (key, val) in [
+        ("approver", &p.approver),
+        ("channel", &p.channel),
+        ("expires_at", &p.expires_at),
+        ("intent_id", &p.intent_id),
+    ] {
+        if let Some(v) = val {
+            details.insert(key.into(), Value::String(v.clone()));
+        }
+    }
+    PluginViolation::new(
+        "elicitation.pending",
+        format!(
+            "awaiting approval `{}` via `{}` — retry with this id",
+            p.id, p.plugin_name
+        ),
+    )
+    .with_proto_error_code(ELICITATION_PENDING_CODE)
+    .with_details(details)
+}
+
+#[cfg(test)]
+mod phase5_tests {
+    use super::*;
+    use cpex_core::extensions::HttpExtension;
+    use std::sync::Arc;
+
+    fn pending(id: &str) -> apl_core::step::PendingElicitation {
+        apl_core::step::PendingElicitation {
+            id: id.to_string(),
+            plugin_name: "manager-approver".to_string(),
+            approver: Some("alice".to_string()),
+            intent_id: None,
+            channel: Some("ciba".to_string()),
+            expires_at: Some("2026-12-31T00:00:00Z".to_string()),
+            source: "route.payroll.policy[0]".to_string(),
+        }
+    }
+
+    #[test]
+    fn pending_violation_carries_minus32120_and_bundle() {
+        let v = pending_violation(&pending("elic-1"));
+        assert_eq!(v.proto_error_code, Some(ELICITATION_PENDING_CODE));
+        assert_eq!(v.code, "elicitation.pending");
+        assert_eq!(v.details.get("elicitation_id").unwrap(), "elic-1");
+        assert_eq!(v.details.get("approver").unwrap(), "alice");
+        assert_eq!(v.details.get("channel").unwrap(), "ciba");
+        assert_eq!(v.details.get("expires_at").unwrap(), "2026-12-31T00:00:00Z");
+        // Absent optional → not in details.
+        assert!(!v.details.contains_key("intent_id"));
+    }
+
+    #[test]
+    fn elicitation_id_extracted_from_header_case_insensitively() {
+        let mut http = HttpExtension::default();
+        http.set_request_header("x-policy-elicitation-id", "elic-42");
+        let ext = Extensions {
+            http: Some(Arc::new(http)),
+            ..Extensions::default()
+        };
+        assert_eq!(
+            elicitation_id_from_headers(&ext).as_deref(),
+            Some("elic-42")
+        );
+    }
+
+    #[test]
+    fn no_header_yields_none() {
+        // No http extension at all.
+        assert!(elicitation_id_from_headers(&Extensions::default()).is_none());
+        // Header present but empty → treated as absent.
+        let mut http = HttpExtension::default();
+        http.set_request_header(ELICITATION_ID_HEADER, "");
+        let ext = Extensions {
+            http: Some(Arc::new(http)),
+            ..Extensions::default()
+        };
+        assert!(elicitation_id_from_headers(&ext).is_none());
+    }
 }

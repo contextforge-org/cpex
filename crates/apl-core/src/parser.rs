@@ -15,7 +15,8 @@
 //   ✓ Predicate grammar: identifiers, literals, comparisons, contains,
 //     & | ! parens, require(...)
 //   ✓ Actions: deny / allow / (default deny on missing)
-//   ✓ YAML top-level routes: keyed map, policy: / post_policy: blocks
+//   ✓ YAML top-level routes: keyed map, authorization.pre_invocation /
+//     post_invocation blocks (flat pre_invocation:/post_invocation: too)
 //   ✗ Steps (cedar:(), opa(), plugin(), taint()) — rejected with clear errors
 //   ✗ Pipe chains in args:/result: — fields parsed, values stashed as opaque
 //   ✗ `in` / `not in` / `exists()` — need IR variants first; rejected
@@ -29,7 +30,7 @@ use thiserror::Error;
 use crate::pipeline::{FieldRule, Pipeline, ScanKind, Stage, TaintScope, TypeCheck};
 use crate::plugin_decl::{PluginDeclaration, PluginOverride, PluginRegistry};
 use crate::rules::{CompareOp, CompiledRoute, Condition, Effect, Expression, Literal, Rule};
-use crate::step::{DelegateStep, PdpCall, PdpDialect, Step};
+use crate::step::{DelegateStep, ElicitKind, ElicitStep, PdpCall, PdpDialect, Step};
 
 // =====================================================================
 // Errors
@@ -48,6 +49,19 @@ pub enum ParseError {
 
     #[error("predicate '{predicate}': {msg}")]
     Predicate { predicate: String, msg: String },
+
+    #[error("in `{location}`: config field `{old}` was renamed to `{new}` — update your config")]
+    RenamedField {
+        location: String,
+        old: String,
+        new: String,
+    },
+
+    #[error(
+        "in `{location}`: `{phase}` is declared both nested under `authorization:` and flat on \
+         the section — use one form, not both (declaring both runs the effects twice)"
+    )]
+    ConflictingAuthorizationForms { location: String, phase: String },
 }
 
 // =====================================================================
@@ -819,10 +833,10 @@ fn strip_string_literal(s: &str, rule: &str) -> Result<String, ParseError> {
 }
 
 // =====================================================================
-// Step parser (policy: / post_policy: entries — supports steps + rules)
+// Step parser (pre_invocation / post_invocation entries — steps + rules)
 // =====================================================================
 
-/// Parse a single YAML entry from a `policy:` / `post_policy:` list.
+/// Parse a single YAML entry from a `pre_invocation` / `post_invocation` list.
 ///
 /// Two YAML shapes (DSL §3.2 + §7):
 /// - **String entry** — a rule line, taint effect, or plugin call.
@@ -906,6 +920,34 @@ fn parse_step_string(line: &str, source: &str) -> Result<Step, ParseError> {
             on_error: parsed.on_error,
             source: source.to_string(),
         }));
+    }
+
+    // Elicitation sugar verbs — each desugars to `Step::Elicit` with a
+    // fixed `ElicitKind`. All-kwarg form (`from:`, `channel:`, …), same
+    // `key: value` shape as `delegate(...)`. Verbs are matched with the
+    // trailing `(` so `require_approval` / `require_attestation` /
+    // `require_review` / `require_step_up` don't collide on the
+    // `require_` prefix.
+    for (verb, kind) in ELICIT_VERBS {
+        if trimmed.starts_with(&format!("{verb}(")) {
+            let inside = extract_call_args(trimmed, verb).ok_or_else(|| ParseError::Rule {
+                rule: trimmed.to_string(),
+                msg: format!("malformed `{verb}(...)`"),
+            })?;
+            let parsed = parse_elicit_call_args(verb, &inside, source)?;
+            return Ok(Step::Elicit(ElicitStep {
+                kind: *kind,
+                plugin_name: parsed.plugin_name,
+                channel: parsed.channel,
+                from: parsed.from,
+                purpose: parsed.purpose,
+                scope: parsed.scope,
+                timeout: parsed.timeout,
+                config_override: parsed.config_override,
+                on_error: parsed.on_error,
+                source: source.to_string(),
+            }));
+        }
     }
 
     // Otherwise fall through to the rule parser — predicate-and-action.
@@ -1032,6 +1074,157 @@ fn parse_delegate_call_args(inside: &str, source: &str) -> Result<ParsedDelegate
         plugin_name,
         config_override,
         on_error,
+    })
+}
+
+/// Sugar verb → [`ElicitKind`] table. Each verb desugars to the same
+/// `Step::Elicit` node with the kind fixed. See
+/// `docs/apl-elicitation-hook-design.md` for the per-kind contracts.
+const ELICIT_VERBS: &[(&str, ElicitKind)] = &[
+    ("require_approval", ElicitKind::Approval),
+    ("confirm", ElicitKind::Confirm),
+    ("require_step_up", ElicitKind::StepUp),
+    ("require_attestation", ElicitKind::Attestation),
+    ("request_info", ElicitKind::Info),
+    ("require_review", ElicitKind::Review),
+];
+
+/// Intermediate shape produced by [`parse_elicit_call_args`]. The
+/// caller fixes `kind` (from the verb) and `source`, then wraps into
+/// `Step::Elicit`.
+struct ParsedElicitCall {
+    plugin_name: String,
+    from: String,
+    channel: Option<String>,
+    purpose: Option<String>,
+    scope: Option<String>,
+    timeout: Option<String>,
+    on_error: Option<String>,
+    config_override: Option<serde_yaml::Value>,
+}
+
+/// Parse the inside-parens of an elicitation verb,
+/// `verb(plugin_name, from: ..., scope: ..., purpose: ..., timeout: ...)`.
+///
+/// Shape mirrors `delegate(...)`: the **first positional argument is the
+/// `ElicitationHandler` plugin name** (the routing key, resolved
+/// `name → entry`). `from` is a required kwarg (the approver, CIBA
+/// `login_hint`). `channel` is an OPTIONAL audit label — not a routing
+/// key. Recognized keys map to `ElicitStep` fields; `prompt` is an alias
+/// for `purpose` (the elicitation-hook doc uses `prompt` for
+/// `confirm`/`require_attestation`, `purpose` for `require_approval` —
+/// both are the human-readable message). Everything else lands in
+/// `config_override` (e.g. `details_link`) for the plugin.
+fn parse_elicit_call_args(
+    verb: &str,
+    inside: &str,
+    source: &str,
+) -> Result<ParsedElicitCall, ParseError> {
+    let parts = split_top_level_commas(inside).map_err(|msg| ParseError::Rule {
+        rule: format!("{verb}({inside})"),
+        msg: format!("{source}: {msg}"),
+    })?;
+    let mut parts_iter = parts.into_iter();
+
+    // First positional argument: the plugin name (same as delegate()).
+    let plugin_name = parts_iter
+        .next()
+        .map(|s| strip_wrapping_quotes(s.trim()).to_string())
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| ParseError::Rule {
+            rule: format!("{verb}({inside})"),
+            msg: format!(
+                "{source}: `{verb}(...)` requires an ElicitationHandler plugin name \
+                 as the first positional argument"
+            ),
+        })?;
+
+    let mut from: Option<String> = None;
+    let mut channel: Option<String> = None;
+    let mut purpose: Option<String> = None;
+    let mut scope: Option<String> = None;
+    let mut timeout: Option<String> = None;
+    let mut on_error: Option<String> = None;
+    let mut config_map = serde_yaml::Mapping::new();
+
+    // Coerce a parsed value to a string, erroring if it isn't one.
+    let as_string = |value: serde_yaml::Value, key: &str| -> Result<String, ParseError> {
+        match value {
+            serde_yaml::Value::String(s) => Ok(s),
+            other => Err(ParseError::Rule {
+                rule: format!("{verb}(...)"),
+                msg: format!("{source}: `{key}` must be a string, got {other:?}"),
+            }),
+        }
+    };
+
+    for raw_kwarg in parts_iter {
+        let kwarg = raw_kwarg.trim();
+        if kwarg.is_empty() {
+            continue;
+        }
+        let (key, value_str) = kwarg.split_once(':').ok_or_else(|| ParseError::Rule {
+            rule: kwarg.to_string(),
+            msg: format!(
+                "{source}: `{verb}(...)` argument `{kwarg}` must be `key: value` \
+                 (the plugin name is the first positional argument)"
+            ),
+        })?;
+        let key = key.trim();
+        let value_str = value_str.trim();
+        if key.is_empty() {
+            return Err(ParseError::Rule {
+                rule: kwarg.to_string(),
+                msg: format!("{source}: `{verb}(...)` argument has empty key"),
+            });
+        }
+        let value = parse_delegate_value(value_str).map_err(|msg| ParseError::Rule {
+            rule: kwarg.to_string(),
+            msg: format!("{source}: `{key}`: {msg}"),
+        })?;
+        match key {
+            "from" => from = Some(as_string(value, "from")?),
+            "channel" => channel = Some(as_string(value, "channel")?),
+            "scope" => scope = Some(as_string(value, "scope")?),
+            "purpose" | "prompt" => purpose = Some(as_string(value, key)?),
+            "timeout" => timeout = Some(as_string(value, "timeout")?),
+            "on_error" => on_error = Some(as_string(value, "on_error")?),
+            // Reject `plugin:` as a kwarg — it's the positional arg.
+            "plugin" => {
+                return Err(ParseError::Rule {
+                    rule: kwarg.to_string(),
+                    msg: format!(
+                        "{source}: the plugin name is the first positional argument \
+                         of `{verb}(...)`; don't pass it as a kwarg too"
+                    ),
+                });
+            },
+            _ => {
+                config_map.insert(serde_yaml::Value::String(key.to_string()), value);
+            },
+        }
+    }
+
+    let from = from.ok_or_else(|| ParseError::Rule {
+        rule: format!("{verb}({inside})"),
+        msg: format!("{source}: `{verb}(...)` requires `from` (the approver)"),
+    })?;
+
+    let config_override = if config_map.is_empty() {
+        None
+    } else {
+        Some(serde_yaml::Value::Mapping(config_map))
+    };
+
+    Ok(ParsedElicitCall {
+        plugin_name,
+        from,
+        channel,
+        purpose,
+        scope,
+        timeout,
+        on_error,
+        config_override,
     })
 }
 
@@ -1644,6 +1837,7 @@ pub(crate) fn step_to_top_level_effect(step: Step) -> Result<Effect, ParseError>
         },
         Step::Plugin { name } => Ok(Effect::Plugin { name }),
         Step::Delegate(d) => Ok(Effect::Delegate(d)),
+        Step::Elicit(e) => Ok(Effect::Elicit(e)),
         Step::Taint { label, scopes } => Ok(Effect::Taint { label, scopes }),
     }
 }
@@ -1652,6 +1846,7 @@ fn step_to_effect(step: Step, source: &str) -> Result<Effect, ParseError> {
     match step {
         Step::Plugin { name } => Ok(Effect::Plugin { name }),
         Step::Delegate(d) => Ok(Effect::Delegate(d)),
+        Step::Elicit(e) => Ok(Effect::Elicit(e)),
         Step::Taint { label, scopes } => Ok(Effect::Taint { label, scopes }),
         Step::Rule(rule) => {
             // Nested when/do inside a do: list isn't supported in E1
@@ -2200,13 +2395,22 @@ pub struct ConfigYaml {
 
 #[derive(Debug, Default, Deserialize)]
 pub struct RouteYaml {
-    /// Each entry is either a string (rule / plugin / taint) or a
-    /// single-key map (PDP call with reactions). See `parse_step`.
+    /// Flat pre-invocation authorization effects (was `policy:`). Each
+    /// entry is either a string (rule / plugin / taint) or a single-key
+    /// map (PDP call with reactions). See `parse_step`. Merged with any
+    /// `authorization.pre_invocation` entries.
     #[serde(default)]
-    pub policy: Vec<serde_yaml::Value>,
+    pub pre_invocation: Vec<serde_yaml::Value>,
 
+    /// Flat post-invocation authorization effects (was `post_policy:`).
+    /// Merged with any `authorization.post_invocation` entries.
     #[serde(default)]
-    pub post_policy: Vec<serde_yaml::Value>,
+    pub post_invocation: Vec<serde_yaml::Value>,
+
+    /// Nested `authorization:` block — `{ pre_invocation, post_invocation }`.
+    /// Equivalent to the flat forms; entries from both are concatenated.
+    #[serde(default)]
+    pub authorization: Option<AuthorizationYaml>,
 
     /// `args:` field → pipe-chain string. Compiled to per-field pipelines.
     #[serde(default)]
@@ -2222,9 +2426,33 @@ pub struct RouteYaml {
     #[serde(default)]
     pub plugins: HashMap<String, PluginOverride>,
 
-    /// Anything else on the route (meta, taint, when) — stashed.
+    /// Anything else on the route (meta, taint, when) — stashed. Also
+    /// where renamed legacy keys land; `reject_legacy_keys` fails loudly
+    /// on them so a dropped authz block never fails open.
     #[serde(flatten)]
     pub other: HashMap<String, serde_yaml::Value>,
+}
+
+/// Nested `authorization:` block. Both sub-lists are optional and default
+/// to empty; each is compiled the same way as the flat `pre_invocation:` /
+/// `post_invocation:` forms.
+///
+/// `deny_unknown_fields` is load-bearing: without it a legacy key nested
+/// under the wrapper (`authorization: { policy: [...] }`) would be silently
+/// dropped by serde — both lists empty, no error, no authorization enforced
+/// (a fail-open). The top-level `reject_legacy_keys` can't catch it because
+/// the key is consumed as part of the `authorization` value and never lands
+/// in `RouteYaml.other`. Denying unknown fields turns that into a load error
+/// and also catches typos like `pre_invocaton:`. Safe here because the struct
+/// has no `#[serde(flatten)]`.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AuthorizationYaml {
+    #[serde(default)]
+    pub pre_invocation: Vec<serde_yaml::Value>,
+
+    #[serde(default)]
+    pub post_invocation: Vec<serde_yaml::Value>,
 }
 
 /// Output of [`compile_config`] — the routes that have APL blocks plus
@@ -2242,8 +2470,9 @@ pub struct CompiledConfig {
 /// Compile a YAML config into a [`CompiledConfig`] (routes + plugin
 /// registry).
 ///
-/// Routes with no APL fields populated (no `policy:` / `post_policy:` /
-/// `args:` / `result:`) are **omitted from `routes`**, per apl-design §5
+/// Routes with no APL fields populated (no `authorization:` /
+/// `pre_invocation:` / `post_invocation:` / `args:` / `result:`) are
+/// **omitted from `routes`**, per apl-design §5
 /// "Routes without APL blocks fall back to legacy plugin-chain execution."
 /// A route-level `plugins:` override block alone is not enough — overrides
 /// only have meaning when the route actually dispatches plugins via APL
@@ -2265,9 +2494,51 @@ pub fn compile_config(yaml: &str) -> Result<CompiledConfig, ParseError> {
     Ok(CompiledConfig { routes, plugins })
 }
 
+/// Legacy field names, mapped to their replacements. Because unknown keys
+/// land in `RouteYaml.other` via `#[serde(flatten)]`, a config still using
+/// an old name would otherwise be *silently dropped* — dropping a `policy:`
+/// block fails open (no authorization enforced). We reject them loudly
+/// instead. `identity` is renamed in cpex-core config, not here.
+const RENAMED_FIELDS: [(&str, &str); 2] = [
+    (
+        "policy",
+        "authorization.pre_invocation (or flat pre_invocation)",
+    ),
+    (
+        "post_policy",
+        "authorization.post_invocation (or flat post_invocation)",
+    ),
+];
+
+/// Fail loudly if a stashed key is a renamed legacy field, so a dropped
+/// authz block never fails open. Run before the has-APL gate.
+fn reject_legacy_keys(
+    location: &str,
+    other: &HashMap<String, serde_yaml::Value>,
+) -> Result<(), ParseError> {
+    for (old, new) in RENAMED_FIELDS {
+        if other.contains_key(old) {
+            return Err(ParseError::RenamedField {
+                location: location.to_string(),
+                old: old.to_string(),
+                new: new.to_string(),
+            });
+        }
+    }
+    Ok(())
+}
+
 fn compile_route(route_key: &str, raw: RouteYaml) -> Result<Option<CompiledRoute>, ParseError> {
-    let has_apl = !raw.policy.is_empty()
-        || !raw.post_policy.is_empty()
+    // Reject legacy keys *before* the gate: a legacy-only route would
+    // otherwise look empty and be silently omitted (fail open).
+    reject_legacy_keys(route_key, &raw.other)?;
+    let has_authz = raw
+        .authorization
+        .as_ref()
+        .is_some_and(|a| !a.pre_invocation.is_empty() || !a.post_invocation.is_empty());
+    let has_apl = !raw.pre_invocation.is_empty()
+        || !raw.post_invocation.is_empty()
+        || has_authz
         || !raw.args.is_empty()
         || !raw.result.is_empty();
     if !has_apl {
@@ -2276,19 +2547,50 @@ fn compile_route(route_key: &str, raw: RouteYaml) -> Result<Option<CompiledRoute
     Ok(Some(compile_apl_blocks(route_key, raw)?))
 }
 
-/// Compile the APL bodies (policy/post_policy/args/result/plugins) of a
+/// Compile the APL bodies (authorization/args/result/plugins) of a
 /// single block into a `CompiledRoute`. Doesn't gate on "has any APL
 /// fields" — callers that need the gate (compile_config) check first.
 /// `source` is the path prefix baked into rule/pipeline diagnostics
 /// (e.g. `"global.policy.all"`, `"route.get_compensation"`).
+///
+/// The nested `authorization:` block and the flat `pre_invocation:` /
+/// `post_invocation:` forms are equivalent alternatives. Declaring the same
+/// phase in both forms on one section is rejected (it would run the effects
+/// twice); only one form may carry a given phase per section.
 fn compile_apl_blocks(source: &str, raw: RouteYaml) -> Result<CompiledRoute, ParseError> {
+    reject_legacy_keys(source, &raw.other)?;
     let mut route = CompiledRoute::new(source);
-    for (i, entry) in raw.policy.iter().enumerate() {
-        let step = parse_step(entry, &format!("{}.policy[{}]", source, i))?;
+    let (auth_pre, auth_post) = raw
+        .authorization
+        .map(|a| (a.pre_invocation, a.post_invocation))
+        .unwrap_or_default();
+    // Reject declaring the same phase both nested and flat on one section:
+    // the two forms are alternatives, not additive, so merging them would
+    // run each effect twice (a `run(...)` / `delegate(...)` double-fire).
+    // Stacking across *different* scopes (e.g. global nested + route flat)
+    // is fine — those are separate `compile_apl_blocks` calls.
+    if !auth_pre.is_empty() && !raw.pre_invocation.is_empty() {
+        return Err(ParseError::ConflictingAuthorizationForms {
+            location: source.to_string(),
+            phase: "pre_invocation".to_string(),
+        });
+    }
+    if !auth_post.is_empty() && !raw.post_invocation.is_empty() {
+        return Err(ParseError::ConflictingAuthorizationForms {
+            location: source.to_string(),
+            phase: "post_invocation".to_string(),
+        });
+    }
+    for (i, entry) in auth_pre.iter().chain(raw.pre_invocation.iter()).enumerate() {
+        let step = parse_step(entry, &format!("{}.pre_invocation[{}]", source, i))?;
         route.policy.push(step_to_top_level_effect(step)?);
     }
-    for (i, entry) in raw.post_policy.iter().enumerate() {
-        let step = parse_step(entry, &format!("{}.post_policy[{}]", source, i))?;
+    for (i, entry) in auth_post
+        .iter()
+        .chain(raw.post_invocation.iter())
+        .enumerate()
+    {
+        let step = parse_step(entry, &format!("{}.post_invocation[{}]", source, i))?;
         route.post_policy.push(step_to_top_level_effect(step)?);
     }
     for (field, chain) in &raw.args {
@@ -2323,12 +2625,13 @@ fn compile_apl_blocks(source: &str, raw: RouteYaml) -> Result<CompiledRoute, Par
 /// ```yaml
 /// args:
 ///   employee_id: "str"
-/// policy:
-///   - "require(authenticated)"
+/// authorization:
+///   pre_invocation:
+///     - "require(authenticated)"
+///   post_invocation:
+///     - "taint(forward)"
 /// result:
 ///   ssn: "redact(!perm.view_ssn)"
-/// post_policy:
-///   - "taint(forward)"
 /// ```
 ///
 /// Used by external orchestrators (apl-cpex's `AplConfigVisitor`) that
@@ -3296,7 +3599,7 @@ sequential:
         let yaml = r#"
 routes:
   get_compensation:
-    policy:
+    pre_invocation:
       - "require(authenticated)"
       - "require(role.hr | role.finance)"
       - "delegation.depth > 2 & include_ssn: deny"
@@ -3310,9 +3613,150 @@ routes:
     }
 
     #[test]
+    fn authorization_nested_and_flat_forms_are_equivalent() {
+        // The nested `authorization:` block and the flat
+        // `pre_invocation:` / `post_invocation:` forms must compile to
+        // the same route.
+        let nested = r#"
+routes:
+  r:
+    authorization:
+      pre_invocation:
+        - "require(authenticated)"
+      post_invocation:
+        - "taint(audit, session)"
+"#;
+        let flat = r#"
+routes:
+  r:
+    pre_invocation:
+      - "require(authenticated)"
+    post_invocation:
+      - "taint(audit, session)"
+"#;
+        let a = compile_config(nested).unwrap().routes;
+        let b = compile_config(flat).unwrap().routes;
+        let ra = a.get("r").expect("nested route");
+        let rb = b.get("r").expect("flat route");
+        assert_eq!(ra.policy.len(), rb.policy.len());
+        assert_eq!(ra.post_policy.len(), rb.post_policy.len());
+        assert_eq!(ra.policy.len(), 1);
+        assert_eq!(ra.post_policy.len(), 1);
+    }
+
+    #[test]
+    fn legacy_key_nested_under_authorization_is_rejected() {
+        // Fail-closed: a legacy key nested inside the new `authorization:`
+        // wrapper must error, not be silently dropped (which would load a
+        // route with no authorization enforced). Guarded by
+        // `deny_unknown_fields` on `AuthorizationYaml`.
+        let yaml = r#"
+routes:
+  r:
+    authorization:
+      policy:
+        - "require(authenticated)"
+"#;
+        let err = compile_config(yaml).expect_err("nested legacy `policy:` must be rejected");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("policy") || msg.contains("unknown field"),
+            "error should flag the unknown/legacy nested key: {msg}"
+        );
+    }
+
+    #[test]
+    fn authorization_typo_under_wrapper_is_rejected() {
+        // `deny_unknown_fields` also catches typos so they don't silently
+        // no-op the phase.
+        let yaml = r#"
+routes:
+  r:
+    authorization:
+      pre_invocaton:
+        - "require(authenticated)"
+"#;
+        assert!(
+            compile_config(yaml).is_err(),
+            "a typo'd sub-key under `authorization:` must be rejected, not ignored"
+        );
+    }
+
+    #[test]
+    fn same_phase_declared_nested_and_flat_is_rejected() {
+        // The two forms are alternatives, not additive: declaring a phase
+        // both nested and flat on one section would run its effects twice.
+        let yaml = r#"
+routes:
+  r:
+    authorization:
+      pre_invocation:
+        - "require(authenticated)"
+    pre_invocation:
+      - "require(role.hr)"
+"#;
+        let err = compile_config(yaml).expect_err("both-forms-same-section must be rejected");
+        assert!(
+            matches!(err, ParseError::ConflictingAuthorizationForms { ref phase, .. } if phase == "pre_invocation"),
+            "expected ConflictingAuthorizationForms for pre_invocation, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn field_pipeline_error_names_field_path() {
+        // A malformed pipeline under `result:` names `result.<field>` in
+        // the diagnostic so the operator can locate the offending field.
+        let yaml = r#"
+routes:
+  r:
+    result:
+      x: "nonsense"
+"#;
+        let err = compile_config(yaml).unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("result.x"), "expected result.x in: {msg}");
+    }
+
+    #[test]
+    fn legacy_policy_field_names_are_rejected() {
+        // Breaking rename: the old authorization-phase keys must fail
+        // loudly, never be silently dropped (which would fail open).
+        for (old, hint) in [
+            ("policy", "pre_invocation"),
+            ("post_policy", "post_invocation"),
+        ] {
+            let yaml = format!("routes:\n  r:\n    {old}:\n      - \"require(authenticated)\"\n");
+            let err = compile_config(&yaml).expect_err(&format!("legacy `{old}` must be rejected"));
+            let msg = format!("{err}");
+            assert!(
+                msg.contains(old) && msg.contains(hint),
+                "`{old}` rejection should name the replacement `{hint}`: {msg}"
+            );
+        }
+    }
+
+    #[test]
+    fn legacy_only_route_is_not_silently_omitted() {
+        // A route whose *only* APL-ish key is a legacy name would look
+        // empty to the has-APL gate and be dropped — a fail-open. It must
+        // error instead.
+        let yaml = r#"
+routes:
+  ghost:
+    policy:
+      - "require(authenticated)"
+"#;
+        assert!(
+            matches!(compile_config(yaml), Err(ParseError::RenamedField { .. })),
+            "legacy-only route must be rejected, not omitted"
+        );
+    }
+
+    #[test]
     fn compile_omits_routes_without_apl_blocks() {
-        // A route with no APL blocks (no policy / post_policy / args /
-        // result) is a "legacy" route per apl-design §5 and must be
+        // A route with no APL blocks (no authorization / pre_invocation /
+        // post_invocation / args / result) is a "legacy" route per
+        // apl-design §5 and must be
         // omitted from the compiled output. Unknown route keys (e.g.
         // legacy CPEX `priority`) are stashed in `other`, not errored.
         let yaml = r#"
@@ -3320,7 +3764,7 @@ routes:
   legacy:
     priority: 50
   apl_route:
-    policy:
+    pre_invocation:
       - "require(authenticated)"
 "#;
         let routes = compile_config(yaml).unwrap().routes;
@@ -3344,7 +3788,7 @@ imports:
   - "./shared.yaml"
 routes:
   ping:
-    policy:
+    pre_invocation:
       - "require(authenticated)"
 "#;
         let routes = compile_config(yaml).unwrap().routes;
@@ -3356,7 +3800,7 @@ routes:
         let yaml = r#"
 routes:
   bad:
-    policy:
+    pre_invocation:
       - "subject.id == garbage_ident"
 "#;
         let err = compile_config(yaml).unwrap_err();
@@ -3374,7 +3818,7 @@ routes:
         let yaml = r#"
 routes:
   rate_limited:
-    policy:
+    pre_invocation:
       - "plugin(rate_limiter)"
 "#;
         let routes = compile_config(yaml).unwrap().routes;
@@ -3393,7 +3837,7 @@ routes:
         let yaml = r#"
 routes:
   rate_limited:
-    policy:
+    pre_invocation:
       - "run(rate_limiter)"
 "#;
         let routes = compile_config(yaml).unwrap().routes;
@@ -3427,7 +3871,7 @@ routes:
         let yaml = r#"
 routes:
   audit_marked:
-    policy:
+    pre_invocation:
       - "taint(audit, session)"
 "#;
         let routes = compile_config(yaml).unwrap().routes;
@@ -3447,7 +3891,7 @@ routes:
         let yaml = r#"
 routes:
   authz_check:
-    policy:
+    pre_invocation:
       - cedar:
           action: read
           resource: employee
@@ -3485,7 +3929,7 @@ routes:
         let yaml = r#"
 routes:
   authz_check:
-    policy:
+    pre_invocation:
       - cel:
           expr: "subject.id == 'alice' && delegation.depth <= 2"
           on_deny:
@@ -3517,7 +3961,7 @@ routes:
         let yaml = r#"
 routes:
   opa_check:
-    policy:
+    pre_invocation:
       - 'opa("hr/compensation/deny"):':
           on_deny:
             - deny
@@ -3540,7 +3984,7 @@ routes:
         let yaml = r#"
 routes:
   custom_pdp:
-    policy:
+    pre_invocation:
       - my_engine:
           on_deny: [deny]
 "#;
@@ -3560,7 +4004,7 @@ routes:
         let yaml = r#"
 routes:
   get_compensation:
-    policy:
+    pre_invocation:
       - "require(authenticated)"
       - "require(role.hr | role.finance)"
       - "delegation.depth > 2: deny"
@@ -3573,6 +4017,8 @@ routes:
             std::sync::Arc::new(NullPluginInvoker);
         let delegations: std::sync::Arc<dyn crate::DelegationInvoker> =
             std::sync::Arc::new(crate::NoopDelegationInvoker);
+        let elicitations: std::sync::Arc<dyn crate::ElicitationInvoker> =
+            std::sync::Arc::new(crate::NoopElicitationInvoker);
 
         // Alice: authenticated, hr role, depth=1 → allow.
         let mut bag = AttributeBag::new();
@@ -3586,6 +4032,7 @@ routes:
                 &pdp,
                 &plugins,
                 &delegations,
+                &elicitations,
                 crate::DispatchPhase::Pre,
                 &mut crate::route::RoutePayload::new(serde_json::Value::Null)
             )
@@ -3602,6 +4049,7 @@ routes:
             &pdp,
             &plugins,
             &delegations,
+            &elicitations,
             crate::DispatchPhase::Pre,
             &mut crate::route::RoutePayload::new(serde_json::Value::Null),
         )
@@ -3610,8 +4058,8 @@ routes:
         {
             Decision::Deny { rule_source, .. } => {
                 assert!(
-                    rule_source.contains("policy[2]"),
-                    "expected policy[2], got {}",
+                    rule_source.contains("pre_invocation[2]"),
+                    "expected pre_invocation[2], got {}",
                     rule_source
                 );
             },
@@ -3628,6 +4076,7 @@ routes:
             &pdp,
             &plugins,
             &delegations,
+            &elicitations,
             crate::DispatchPhase::Pre,
             &mut crate::route::RoutePayload::new(serde_json::Value::Null),
         )
@@ -3636,8 +4085,8 @@ routes:
         {
             Decision::Deny { rule_source, .. } => {
                 assert!(
-                    rule_source.contains("policy[1]"),
-                    "expected policy[1], got {}",
+                    rule_source.contains("pre_invocation[1]"),
+                    "expected pre_invocation[1], got {}",
                     rule_source
                 );
             },
@@ -3894,8 +4343,8 @@ routes:
 
     #[test]
     fn compile_route_with_only_args_still_compiles() {
-        // A route with no `policy:` but with `args:` validators is still
-        // an APL route (declared_phases is non-empty).
+        // A route with no authorization block but with `args:`
+        // validators is still an APL route (declared_phases non-empty).
         let yaml = r#"
 routes:
   validate_only:
@@ -3935,7 +4384,7 @@ plugins:
     hooks: [tool_post_invoke]
 routes:
   get_compensation:
-    policy:
+    pre_invocation:
       - "plugin(rate_limiter)"
 "#;
         let cfg = compile_config(yaml).unwrap();
@@ -3959,7 +4408,7 @@ plugins:
       max_requests: 100
 routes:
   hot_path:
-    policy:
+    pre_invocation:
       - "plugin(rate_limiter)"
     plugins:
       rate_limiter:
@@ -3994,7 +4443,7 @@ routes:
     #[test]
     fn compile_policy_block_value_parses_apl_body() {
         let yaml = r#"
-policy:
+pre_invocation:
   - "require(authenticated)"
 result:
   ssn: "redact(!perm.view_ssn)"
@@ -4020,14 +4469,14 @@ result:
     #[test]
     fn compile_policy_block_value_threads_source_into_rule_paths() {
         let yaml = r#"
-policy:
+pre_invocation:
   - "require(authenticated)"
 "#;
         let value: serde_yaml::Value = serde_yaml::from_str(yaml).unwrap();
         let compiled = compile_policy_block_value("global.policies.hr", &value).expect("compile");
         match &compiled.policy[0] {
             crate::rules::Effect::When { source, .. } => {
-                assert_eq!(source, "global.policies.hr.policy[0]");
+                assert_eq!(source, "global.policies.hr.pre_invocation[0]");
             },
             other => panic!("expected When, got {:?}", other),
         }
@@ -4294,7 +4743,7 @@ policy:
         let yaml = r#"
 routes:
   get_compensation:
-    policy:
+    pre_invocation:
       - "require(role.hr)"
       - "delegate(workday-oauth, target: workday-api, permissions: [read_compensation])"
       - delegate:
@@ -4330,7 +4779,7 @@ routes:
         let yaml = r#"
 routes:
   get_compensation:
-    policy:
+    pre_invocation:
       - "require(role.hr)"
       - delegate:
           plugin: workday-oauth
@@ -4338,7 +4787,7 @@ routes:
             target: workday-api
             permissions: [read_compensation]
       - "require(authenticated)"
-    post_policy:
+    post_invocation:
       - delegate:
           plugin: audit-biscuit
           on_error: continue
@@ -4352,7 +4801,7 @@ routes:
             panic!("expected Delegate at policy[1], got {:?}", route.policy[1]);
         };
         assert_eq!(ds.plugin_name, "workday-oauth");
-        assert_eq!(ds.source, "get_compensation.policy[1]");
+        assert_eq!(ds.source, "get_compensation.pre_invocation[1]");
 
         // post_policy[0] is the audit-biscuit delegate.
         let crate::rules::Effect::Delegate(post_ds) = &route.post_policy[0] else {
@@ -4360,7 +4809,170 @@ routes:
         };
         assert_eq!(post_ds.plugin_name, "audit-biscuit");
         assert_eq!(post_ds.on_error.as_deref(), Some("continue"));
-        assert_eq!(post_ds.source, "get_compensation.post_policy[0]");
+        assert_eq!(post_ds.source, "get_compensation.post_invocation[0]");
+    }
+
+    // ----- elicitation sugar verbs (require_approval, confirm, …) -----
+
+    fn parse_elicit_str(s: &str) -> crate::step::ElicitStep {
+        let value = serde_yaml::Value::String(s.to_string());
+        let step = parse_step(&value, "test.policy[0]").expect("parse");
+        match step {
+            crate::step::Step::Elicit(e) => e,
+            other => panic!("expected Elicit, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_require_approval_full_kwargs() {
+        let e = parse_elicit_str(
+            "require_approval(manager-approver, from: user.manager, channel: \"ciba\", \
+             scope: \"args.amount <= 25000\", \
+             purpose: \"Approve salary change\", timeout: 24h)",
+        );
+        assert_eq!(e.kind, ElicitKind::Approval);
+        assert_eq!(e.plugin_name, "manager-approver");
+        assert_eq!(e.from, "user.manager");
+        assert_eq!(e.channel.as_deref(), Some("ciba"));
+        assert_eq!(e.scope.as_deref(), Some("args.amount <= 25000"));
+        assert_eq!(e.purpose.as_deref(), Some("Approve salary change"));
+        assert_eq!(e.timeout.as_deref(), Some("24h"));
+        assert!(e.on_error.is_none());
+        assert!(e.config_override.is_none());
+        assert_eq!(e.source, "test.policy[0]");
+    }
+
+    #[test]
+    fn parse_channel_is_optional() {
+        // No `channel:` — it's an audit label, not required for routing.
+        let e = parse_elicit_str("require_approval(manager-approver, from: user.manager)");
+        assert_eq!(e.plugin_name, "manager-approver");
+        assert!(e.channel.is_none());
+    }
+
+    #[test]
+    fn parse_each_verb_maps_to_its_kind() {
+        for (verb, want) in [
+            ("require_approval", ElicitKind::Approval),
+            ("confirm", ElicitKind::Confirm),
+            ("require_step_up", ElicitKind::StepUp),
+            ("require_attestation", ElicitKind::Attestation),
+            ("request_info", ElicitKind::Info),
+            ("require_review", ElicitKind::Review),
+        ] {
+            let e = parse_elicit_str(&format!("{verb}(inband-asker, from: user.sub)"));
+            assert_eq!(e.kind, want, "verb `{verb}`");
+            assert_eq!(e.plugin_name, "inband-asker");
+            assert_eq!(e.from, "user.sub");
+        }
+    }
+
+    #[test]
+    fn parse_confirm_prompt_aliases_purpose() {
+        // The elicitation-hook doc uses `prompt` for confirm; it maps to
+        // the same `purpose` field as `require_approval`.
+        let e =
+            parse_elicit_str("confirm(inband-asker, from: user.sub, prompt: \"Drop the table?\")");
+        assert_eq!(e.kind, ElicitKind::Confirm);
+        assert_eq!(e.purpose.as_deref(), Some("Drop the table?"));
+    }
+
+    #[test]
+    fn parse_unknown_kwarg_goes_to_config_override() {
+        let e = parse_elicit_str(
+            "require_approval(slack-approver, from: user.manager, \
+             details_link: https://approvals.example.com/req)",
+        );
+        let cfg = e.config_override.as_ref().unwrap().as_mapping().unwrap();
+        assert_eq!(
+            cfg.get(serde_yaml::Value::String("details_link".into()))
+                .and_then(|v| v.as_str()),
+            Some("https://approvals.example.com/req"),
+        );
+        // Recognized keys must NOT leak into config_override.
+        assert!(cfg.get(serde_yaml::Value::String("from".into())).is_none());
+    }
+
+    #[test]
+    fn parse_on_error_pulled_out() {
+        let e = parse_elicit_str(
+            "require_approval(manager-approver, from: user.manager, on_error: continue)",
+        );
+        assert_eq!(e.on_error.as_deref(), Some("continue"));
+        assert!(e.config_override.is_none());
+    }
+
+    #[test]
+    fn parse_missing_plugin_name_errors() {
+        let value = serde_yaml::Value::String("require_approval(from: user.manager)".into());
+        let err = parse_step(&value, "test.policy[0]").expect_err("missing plugin name");
+        // `from: user.manager` parses as the positional first arg, so the
+        // missing piece surfaces as the required `from` kwarg.
+        assert!(format!("{err}").contains("requires `from`"), "got: {err}");
+    }
+
+    #[test]
+    fn parse_empty_args_errors() {
+        let value = serde_yaml::Value::String("require_approval()".into());
+        let err = parse_step(&value, "test.policy[0]").expect_err("empty args");
+        assert!(format!("{err}").contains("plugin name"), "got: {err}");
+    }
+
+    #[test]
+    fn parse_plugin_kwarg_rejected() {
+        // Passing `plugin:` as a kwarg is ambiguous with the positional.
+        let value = serde_yaml::Value::String(
+            "require_approval(manager-approver, plugin: other, from: user.manager)".into(),
+        );
+        let err = parse_step(&value, "test.policy[0]").expect_err("plugin kwarg");
+        assert!(format!("{err}").contains("first positional"), "got: {err}");
+    }
+
+    #[test]
+    fn parse_missing_from_errors() {
+        let value = serde_yaml::Value::String("require_approval(manager-approver)".into());
+        let err = parse_step(&value, "test.policy[0]").expect_err("missing from");
+        assert!(format!("{err}").contains("requires `from`"));
+    }
+
+    #[test]
+    fn parse_require_prefixed_verbs_do_not_collide() {
+        // `require_attestation` must not be swallowed by a `require_a*`
+        // partial match — each verb is matched with its trailing `(`.
+        let e = parse_elicit_str("require_attestation(inband-asker, from: user.sub)");
+        assert_eq!(e.kind, ElicitKind::Attestation);
+    }
+
+    #[test]
+    fn compile_route_with_require_approval_in_policy() {
+        // End-to-end: the sugar verb survives compile_config and lands as
+        // an Effect::Elicit at the right phase/source. The `when`-gated
+        // form mirrors the manager-approval design doc.
+        let yaml = r#"
+routes:
+  payroll_adjust:
+    pre_invocation:
+      - "require(authenticated)"
+      - when: "args.amount > 10000"
+        do:
+          - "require_approval(manager-approver, from: user.manager, channel: \"ciba\", scope: \"args.amount <= 25000\", purpose: \"Approve salary change\", timeout: 24h)"
+"#;
+        let cfg = compile_config(yaml).expect("compile");
+        let route = cfg.routes.get("payroll_adjust").expect("route present");
+        assert_eq!(route.policy.len(), 2);
+
+        // policy[1] is the `when` wrapper; its body[0] is the elicitation.
+        let crate::rules::Effect::When { body, .. } = &route.policy[1] else {
+            panic!("expected When at policy[1], got {:?}", route.policy[1]);
+        };
+        let crate::rules::Effect::Elicit(e) = &body[0] else {
+            panic!("expected Elicit in when-body, got {:?}", body[0]);
+        };
+        assert_eq!(e.kind, ElicitKind::Approval);
+        assert_eq!(e.plugin_name, "manager-approver");
+        assert_eq!(e.from, "user.manager");
+        assert_eq!(e.channel.as_deref(), Some("ciba"));
+        assert_eq!(e.scope.as_deref(), Some("args.amount <= 25000"));
     }
 
     // ----- validate(name) compile-time rejection (DSL spec §4.2) -----

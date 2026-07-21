@@ -14,21 +14,22 @@ Take the `get_compensation` route. It is identical whether CPEX fronts the backe
 ```yaml
 routes:
   - tool: get_compensation
-    policy:
-      - "require(role.hr)"
-      - "delegate(workday-oauth, target: workday-api, audience: workday-api, permissions: [read_compensation])"
-      - "taint(secret, session)"
+    authorization:
+      pre_invocation:
+        - "require(role.hr)"
+        - "delegate(workday-oauth, target: workday-api, audience: workday-api, permissions: [read_compensation])"
+        - "taint(secret, session)"
     result:
       ssn: "str | redact(!perm.view_ssn)"
 ```
 
-![CPEX enforcing the same policy at three settings: as a gateway in front of the tool server, as an egress sidecar beside the agent, and in-framework inside the agent runtime](/cpex/images/deployment.png)
+![CPEX enforcing the same policy at three settings: as a gateway in front of the tool server, as an egress sidecar beside the agent, and in-framework inside the agent runtime](images/deployment.png)
 
 As a **gateway**, CPEX sits in front of the tool server and enforces on inbound calls: every request to the backend passes through it. As an **egress sidecar**, CPEX sits beside the agent and enforces on the agent's outbound calls: the agent's tool invocations leave through the sidecar's proxy. **In-framework**, CPEX runs inside the agent runtime and enforces operations as the runtime issues them. The enforcement point moves; the route above runs unchanged in all three.
 
 ## Route forms
 
-A deployment integration usually expresses routes as a list of `- tool:` entries, with the `policy`, `args`, and `result` blocks directly under each. This is the same policy you would write in the map-keyed form (see [Configuration]({{< relref "/docs/configuration" >}})); the wrapping differs, the rules do not. Pick one form per deployment and keep it consistent.
+Routes are a list of `- tool:` entries (or `resource:` / `prompt:` / `llm:`), with the `authorization`, `args`, and `result` blocks under each. This is the form the runtime loads at every placement; the enforcement point changes, the config shape does not. See [Configuration]({{< relref "/docs/configuration" >}}) for the full structure.
 
 ## Placement guidance
 
@@ -38,7 +39,7 @@ A deployment integration usually expresses routes as a list of `- tool:` entries
 | Egress sidecar (outbound) | every call an agent makes, to any backend | you own the agent and want to guard what it can reach |
 | In-framework | operations as the agent runtime issues them | you control the runtime and want enforcement inline |
 
-The decision is about which boundary you control and trust, not about policy capability. Identity resolution, PDP calls, delegation, redaction, and tainting all work the same at each.
+The decision is about which boundary you control and trust, not about policy capability. Identity resolution, PDP calls, delegation, redaction, and tainting all work the same at each. For what each placement does and does not defend against, see the [Threat Model]({{< relref "/docs/threat-model#where-the-boundary-sits-and-what-each-placement-covers" >}}).
 
 ## Inference traffic
 

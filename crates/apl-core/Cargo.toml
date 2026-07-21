@@ -8,7 +8,7 @@
 
 [package]
 name = "apl-core"
-description = "APL — Attribute Policy Language core (compiler + evaluator)"
+description = "APL — Authorization Policy Language core (compiler + evaluator)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -18,6 +18,11 @@ homepage.workspace = true
 keywords.workspace = true
 categories.workspace = true
 rust-version.workspace = true
+
+[package.metadata.cargo-machete]
+# serde is used through its derive macros (Serialize/Deserialize), which
+# cargo-machete's source scan does not reliably detect. It is a real dependency.
+ignored = ["serde"]
 
 [lib]
 # Plain rlib; APL is consumed by other workspace crates (apl-cmf, apl-cpex)

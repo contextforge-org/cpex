@@ -38,8 +38,8 @@ plugins:
     hooks: [cmf.tool_pre_invoke]
 routes:
   - tool: get_weather
-    apl:
-      policy:
+    authorization:
+      pre_invocation:
         - "plugin(auditor)"
 `
 	if err := mgr.LoadConfig(yaml); err != nil {

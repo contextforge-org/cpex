@@ -24,12 +24,15 @@
 //                   workload resolution from raw credentials)
 // - [`delegation`] — TokenDelegate hook family (outbound credential
 //                     minting for downstream calls)
+// - [`elicitation`] — Elicitation hook family (human-in-the-loop:
+//                     approval, confirmation, step-up, …)
 // - [`error`] — Error types, violations, and result types
 
 pub mod cmf;
 pub mod config;
 pub mod context;
 pub mod delegation;
+pub mod elicitation;
 pub mod error;
 pub mod extensions;
 pub mod hooks;

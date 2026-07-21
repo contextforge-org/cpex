@@ -49,31 +49,34 @@ One policy defines three distinct enforcement pipelines, one for each entity.
 routes:
   # HR lookup: gate on role, scope a downstream token, redact by permission, taint the session.
   - tool: get_compensation
-    policy:
-      - "require(role.hr)"
-      - "delegate(workday-oauth, target: workday-api, permissions: [read_compensation])"
-      - "taint(secret, session)"
-      - "run(audit-log)"
+    authorization:
+      pre_invocation:
+        - "require(role.hr)"
+        - "delegate(workday-oauth, target: workday-api, permissions: [read_compensation])"
+        - "taint(secret, session)"
+        - "run(audit-log)"
     result:
       ssn: "str | redact(!perm.view_ssn)"
 
   # Repo search: gate on team, decide with CEL (or Cedar), require the scoped grant.
   - tool: search_repos
-    policy:
-      - "require(team.engineering | team.security)"
-      - cel:
-          expr: "(role.engineer && args.visibility == 'internal') || role.security"
-          on_deny: ["deny('engineers read internal only; security reads any', 'cel.policy_denied')"]
-      - "delegate(github-oauth, target: github-api, permissions: [repo:read:internal])"
-      - "run(audit-log)"
+    authorization:
+      pre_invocation:
+        - "require(team.engineering | team.security)"
+        - cel:
+            expr: "(role.engineer && args.visibility == 'internal') || role.security"
+            on_deny: ["deny('engineers read internal only; security reads any', 'cel.policy_denied')"]
+        - "delegate(github-oauth, target: github-api, permissions: [repo:read:internal])"
+        - "run(audit-log)"
 
   # Outbound email: refuse if the session already touched secret data.
   - tool: send_email
-    policy:
-      - "require(perm.email_send)"
-      - "run(pii-scan)"
-      - "security.labels contains \"secret\": deny('write-down blocked', 'session_tainted')"
-      - "run(audit-log)"
+    authorization:
+      pre_invocation:
+        - "require(perm.email_send)"
+        - "run(pii-scan)"
+        - "security.labels contains \"secret\": deny('write-down blocked', 'session_tainted')"
+        - "run(audit-log)"
 ```
 
 Two examples illustrate the behavior:

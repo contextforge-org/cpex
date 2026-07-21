@@ -29,7 +29,8 @@
 //   AgentExtension                 → agent.*       (session, conversation, lineage)
 //   MetaExtension                  → meta.*
 //   RequestExtension               → request.*
-//   HttpExtension                  → http.request_headers.*, http.response_headers.*
+//   HttpExtension                  → http.method, http.path, http.host, http.scheme,
+//                                     http.request_headers.*, http.response_headers.*
 //   LLMExtension                   → llm.*
 //   MCPExtension                   → mcp.tool.*, mcp.resource.*, mcp.prompt.*
 //   CompletionExtension            → completion.*

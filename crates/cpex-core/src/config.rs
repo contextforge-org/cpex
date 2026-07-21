@@ -161,14 +161,19 @@ pub struct GlobalConfig {
     #[serde(default)]
     pub defaults: HashMap<String, PolicyGroup>,
 
-    /// Global identity dispatch list. Inherited by every route as
-    /// the first layer of identity resolution. Routes can append
-    /// to it (additive, the default) or replace it (with
-    /// `identity.replace_inherited: true` on the route).
+    /// Global authentication dispatch list (YAML key `authentication:`).
+    /// Inherited by every route as the first layer of identity
+    /// resolution. Routes can append to it (additive, the default) or
+    /// replace it (with `authentication.replace_inherited: true` on the
+    /// route).
     ///
-    /// Same YAML shape as the route-level `identity:` block — see
+    /// Same YAML shape as the route-level `authentication:` block — see
     /// `RouteEntry.identity` for the accepted forms.
-    #[serde(default, deserialize_with = "deserialize_route_identity")]
+    #[serde(
+        default,
+        rename = "authentication",
+        deserialize_with = "deserialize_route_identity"
+    )]
     pub identity: Option<crate::identity::RouteIdentityConfig>,
 }
 
@@ -193,12 +198,16 @@ pub struct PolicyGroup {
     #[serde(default, deserialize_with = "deserialize_plugin_refs")]
     pub plugins: Vec<PluginRouteRef>,
 
-    /// Identity dispatch list contributed by this tag bundle.
-    /// Inherited by routes that carry this tag in `meta.tags`,
-    /// stacked between the global identity (first) and the route's
-    /// own identity (last). Same YAML shape as the route-level
-    /// `identity:` block.
-    #[serde(default, deserialize_with = "deserialize_route_identity")]
+    /// Authentication dispatch list contributed by this tag bundle
+    /// (YAML key `authentication:`). Inherited by routes that carry this
+    /// tag in `meta.tags`, stacked between the global authentication
+    /// (first) and the route's own authentication (last). Same YAML shape
+    /// as the route-level `authentication:` block.
+    #[serde(
+        default,
+        rename = "authentication",
+        deserialize_with = "deserialize_route_identity"
+    )]
     pub identity: Option<crate::identity::RouteIdentityConfig>,
 }
 
@@ -325,29 +334,33 @@ pub struct RouteEntry {
     #[serde(default, deserialize_with = "deserialize_plugin_refs")]
     pub plugins: Vec<PluginRouteRef>,
 
-    /// Identity-resolve dispatch list for this route. **Hook-specific**:
-    /// applies ONLY to the `identity.resolve` hook, independent of the
-    /// `plugins:` block above (which is hook-agnostic and means
-    /// different things depending on whether APL is annotating the
-    /// route — `identity:` always means "these plugins fire on
-    /// identity.resolve in this order").
+    /// Authentication dispatch list for this route (YAML key
+    /// `authentication:`). **Hook-specific**: applies ONLY to the
+    /// `identity.resolve` hook, independent of the `plugins:` block above
+    /// (which is hook-agnostic and means different things depending on
+    /// whether APL is annotating the route — `authentication:` always
+    /// means "these plugins fire on identity.resolve in this order").
     ///
     /// Accepts two YAML shapes; both deserialize to the same IR.
     /// See `crate::identity::route_config::RouteIdentityConfig`.
     ///
     /// ```yaml
     /// # List form — common case, additive default
-    /// identity:
+    /// authentication:
     ///   - corp-jwt
     ///   - spiffe-attestor
     ///
     /// # Object form — when the override flag is needed
-    /// identity:
+    /// authentication:
     ///   replace_inherited: true
     ///   steps:
     ///     - legacy-basic-auth
     /// ```
-    #[serde(default, deserialize_with = "deserialize_route_identity")]
+    #[serde(
+        default,
+        rename = "authentication",
+        deserialize_with = "deserialize_route_identity"
+    )]
     pub identity: Option<crate::identity::RouteIdentityConfig>,
 }
 
@@ -355,7 +368,7 @@ pub struct RouteEntry {
 // Custom Deserialize for RouteEntry.identity
 // ---------------------------------------------------------------------------
 
-/// Deserialize `identity:` in a `RouteEntry`. Accepts either a YAML
+/// Deserialize the `authentication:` block in a `RouteEntry`. Accepts either a YAML
 /// list (treated as additive — `replace_inherited: false`) or a
 /// YAML map with `replace_inherited: bool?` + `steps: [...]`. Each
 /// step is either a bare plugin name (string) or a map with
@@ -392,19 +405,19 @@ where
                 .get(serde_yaml::Value::String("steps".to_string()))
                 .ok_or_else(|| {
                     D::Error::custom(
-                        "`identity:` object form requires `steps:` (a list of \
-                         identity steps); did you mean to write the list form?",
+                        "`authentication:` object form requires `steps:` (a list of \
+                         authentication steps); did you mean to write the list form?",
                     )
                 })?;
             let items = steps_val
                 .as_sequence()
-                .ok_or_else(|| D::Error::custom("`identity.steps` must be a list"))?
+                .ok_or_else(|| D::Error::custom("`authentication.steps` must be a list"))?
                 .clone();
             (replace_inherited, items)
         },
         _ => {
             return Err(D::Error::custom(
-                "`identity:` must be a list of steps or an object with \
+                "`authentication:` must be a list of steps or an object with \
                  `steps:` (and optional `replace_inherited:`)",
             ));
         },
@@ -607,11 +620,56 @@ pub fn load_config(path: &Path) -> Result<CpexConfig, Box<PluginError>> {
 
 /// Parse a CPEX config from a YAML string.
 pub fn parse_config(yaml: &str) -> Result<CpexConfig, Box<PluginError>> {
-    let config: CpexConfig = serde_yaml::from_str(yaml).map_err(|e| PluginError::Config {
+    // Scan the raw YAML for renamed legacy keys before the typed parse:
+    // `RouteEntry` / `GlobalConfig` / `PolicyGroup` silently ignore unknown
+    // fields, so a stale `identity:` would otherwise be dropped and its
+    // authentication steps never run — a fail-open.
+    let raw: serde_yaml::Value = serde_yaml::from_str(yaml).map_err(|e| PluginError::Config {
+        message: format!("failed to parse config YAML: {}", e),
+    })?;
+    reject_renamed_identity_key(&raw)?;
+    let config: CpexConfig = serde_yaml::from_value(raw).map_err(|e| PluginError::Config {
         message: format!("failed to parse config YAML: {}", e),
     })?;
     validate_config(&config)?;
     Ok(config)
+}
+
+/// Reject the pre-rename `identity:` key (now `authentication:`) at every
+/// scope it could appear — `global`, `global.policies.<name>`,
+/// `global.defaults.<name>`, and each `routes[]` entry — so a stale config
+/// fails loudly rather than silently dropping its authentication steps.
+fn reject_renamed_identity_key(raw: &serde_yaml::Value) -> Result<(), Box<PluginError>> {
+    fn renamed(scope: &str) -> Box<PluginError> {
+        Box::new(PluginError::Config {
+            message: format!(
+                "in `{scope}`: config field `identity` was renamed to `authentication` — update your config"
+            ),
+        })
+    }
+    if let Some(global) = raw.get("global") {
+        if global.get("identity").is_some() {
+            return Err(renamed("global"));
+        }
+        for section in ["policies", "defaults"] {
+            if let Some(map) = global.get(section).and_then(|m| m.as_mapping()) {
+                for (name, group) in map {
+                    if group.get("identity").is_some() {
+                        let n = name.as_str().unwrap_or("?");
+                        return Err(renamed(&format!("global.{section}.{n}")));
+                    }
+                }
+            }
+        }
+    }
+    if let Some(routes) = raw.get("routes").and_then(|r| r.as_sequence()) {
+        for (i, route) in routes.iter().enumerate() {
+            if route.get("identity").is_some() {
+                return Err(renamed(&format!("routes[{i}]")));
+            }
+        }
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -808,9 +866,10 @@ pub fn resolve_plugins_for_entity(
 
 /// Resolve the identity-resolve dispatch list for a specific
 /// entity. Hook-specific counterpart to [`resolve_plugins_for_entity`]
-/// — consults `global.identity`, tag-bundle `identity` blocks, and
-/// the route's own `identity:` block to determine which plugins fire
-/// on the `identity.resolve` hook for this route.
+/// — consults the global `authentication:` block, tag-bundle
+/// `authentication:` blocks, and the route's own `authentication:` block
+/// to determine which plugins fire on the `identity.resolve` hook for
+/// this route.
 ///
 /// # Inheritance / merge order
 ///
@@ -1621,7 +1680,7 @@ routes:
         assert_eq!(route.when.as_deref(), Some("args.sensitive == true"));
     }
 
-    // ---- route-level `identity:` block ----
+    // ---- route-level `authentication:` block ----
 
     #[test]
     fn parse_route_identity_list_form() {
@@ -1631,7 +1690,7 @@ plugins:
   - { name: spiffe-attestor, kind: builtin, hooks: [identity.resolve] }
 routes:
   - tool: get_weather
-    identity:
+    authentication:
       - corp-jwt
       - spiffe-attestor
 "#;
@@ -1653,7 +1712,7 @@ plugins:
   - { name: legacy-basic-auth, kind: builtin, hooks: [identity.resolve] }
 routes:
   - tool: legacy
-    identity:
+    authentication:
       replace_inherited: true
       steps:
         - legacy-basic-auth
@@ -1672,7 +1731,7 @@ plugins:
   - { name: corp-jwt, kind: builtin, hooks: [identity.resolve] }
 routes:
   - tool: get_weather
-    identity:
+    authentication:
       - name: corp-jwt
         on_error: deny
         config:
@@ -1698,7 +1757,7 @@ plugins:
   - { name: spiffe-attestor, kind: builtin, hooks: [identity.resolve] }
 routes:
   - tool: get_weather
-    identity:
+    authentication:
       - name: corp-jwt
         on_error: deny
       - spiffe-attestor
@@ -1715,7 +1774,7 @@ routes:
         let yaml = r#"
 routes:
   - tool: bad
-    identity:
+    authentication:
       replace_inherited: true
 "#;
         let err = parse_config(yaml).expect_err("object form requires steps");
@@ -1728,7 +1787,7 @@ routes:
         let yaml = r#"
 routes:
   - tool: bad
-    identity:
+    authentication:
       replace_inherited: "yes"
       steps:
         - corp-jwt
@@ -1743,7 +1802,7 @@ routes:
         let yaml = r#"
 routes:
   - tool: bad
-    identity:
+    authentication:
       - ""
 "#;
         let err = parse_config(yaml).expect_err("empty step name should fail");
@@ -1752,11 +1811,31 @@ routes:
     }
 
     #[test]
+    fn legacy_identity_key_is_rejected_at_route_and_global() {
+        // Breaking rename: `identity:` was renamed to `authentication:`.
+        // A stale key must fail loudly, never be silently dropped (which
+        // would skip authentication — a fail-open).
+        for yaml in [
+            "routes:\n  - tool: t\n    identity:\n      - corp-jwt\n",
+            "global:\n  identity:\n    - corp-jwt\n",
+            "global:\n  policies:\n    all:\n      identity:\n        - corp-jwt\n",
+            "global:\n  defaults:\n    tool:\n      identity:\n        - corp-jwt\n",
+        ] {
+            let err = parse_config(yaml).expect_err("legacy identity: must be rejected");
+            let msg = format!("{err}");
+            assert!(
+                msg.contains("identity") && msg.contains("authentication"),
+                "rejection should name the rename: {msg}"
+            );
+        }
+    }
+
+    #[test]
     fn parse_route_identity_scalar_shape_errors() {
         let yaml = r#"
 routes:
   - tool: bad
-    identity: 42
+    authentication: 42
 "#;
         let err = parse_config(yaml).expect_err("scalar identity should fail");
         let msg = format!("{err}");
@@ -1772,7 +1851,7 @@ plugins:
   - { name: corp-jwt, kind: builtin, hooks: [identity.resolve] }
 routes:
   - tool: get_weather
-    identity:
+    authentication:
       - corp-jwt
 "#;
         let cfg = parse_config(yaml).unwrap();
@@ -1804,7 +1883,7 @@ plugins:
   - { name: agent-context, kind: builtin, hooks: [identity.resolve] }
 routes:
   - tool: get_weather
-    identity:
+    authentication:
       - spiffe-attestor
       - corp-jwt
       - agent-context
@@ -1826,7 +1905,7 @@ plugins:
   - { name: corp-jwt, kind: builtin, hooks: [identity.resolve] }
 routes:
   - tool: get_weather
-    identity:
+    authentication:
       - name: corp-jwt
         config:
           audience: my-tool
@@ -1857,7 +1936,7 @@ plugin_settings:
 plugins:
   - { name: corp-jwt, kind: builtin, hooks: [identity.resolve] }
 global:
-  identity:
+  authentication:
     - corp-jwt
 routes:
   - tool: get_weather
@@ -1880,11 +1959,11 @@ plugins:
   - { name: corp-jwt, kind: builtin, hooks: [identity.resolve] }
   - { name: agent-context, kind: builtin, hooks: [identity.resolve] }
 global:
-  identity:
+  authentication:
     - corp-jwt
 routes:
   - tool: get_weather
-    identity:
+    authentication:
       - agent-context
 "#;
         let cfg = parse_config(yaml).unwrap();
@@ -1906,17 +1985,17 @@ plugins:
   - { name: workday-saml, kind: builtin, hooks: [identity.resolve] }
   - { name: agent-context, kind: builtin, hooks: [identity.resolve] }
 global:
-  identity:
+  authentication:
     - corp-jwt
   policies:
     finance:
-      identity:
+      authentication:
         - workday-saml
 routes:
   - tool: get_compensation
     meta:
       tags: [finance]
-    identity:
+    authentication:
       - agent-context
 "#;
         let cfg = parse_config(yaml).unwrap();
@@ -1937,17 +2016,17 @@ plugins:
   - { name: workday-saml, kind: builtin, hooks: [identity.resolve] }
   - { name: legacy-basic-auth, kind: builtin, hooks: [identity.resolve] }
 global:
-  identity:
+  authentication:
     - corp-jwt
   policies:
     finance:
-      identity:
+      authentication:
         - workday-saml
 routes:
   - tool: legacy_endpoint
     meta:
       tags: [finance]
-    identity:
+    authentication:
       replace_inherited: true
       steps:
         - legacy-basic-auth
@@ -1969,11 +2048,11 @@ plugin_settings:
 plugins:
   - { name: corp-jwt, kind: builtin, hooks: [identity.resolve] }
 global:
-  identity:
+  authentication:
     - corp-jwt
 routes:
   - tool: anonymous_endpoint
-    identity:
+    authentication:
       replace_inherited: true
       steps: []
 "#;
@@ -1994,7 +2073,7 @@ plugins:
 global:
   policies:
     finance:
-      identity:
+      authentication:
         - workday-saml
 routes:
   - tool: with_tag
@@ -2030,7 +2109,7 @@ routes:
   - tool: get_weather
     meta:
       scope: tenant-a
-    identity:
+    authentication:
       - corp-jwt
 "#;
         let cfg = parse_config(yaml).unwrap();

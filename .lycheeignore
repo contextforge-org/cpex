@@ -1,0 +1,13 @@
+# Link-checker ignore patterns (lychee). One regex per line, matched against URLs.
+
+# Example / placeholder hosts used in tutorial and config docs; not live endpoints.
+localhost
+127\.0\.0\.1
+.*\.example
+.*\.test
+example\.com
+
+# The repo's own source links (github.com/contextforge-org/cpex/tree|blob/...) only
+# resolve once merged to the default branch, so checking them on a feature branch
+# produces false failures. The repository structure itself validates these paths.
+github\.com/contextforge-org/cpex

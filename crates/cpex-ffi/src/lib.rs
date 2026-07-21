@@ -1704,7 +1704,7 @@ mod tests {
 
     /// Full APL flow through the FFI surface: default manager →
     /// cpex_apl_install (registers bundled factories + APL visitor) →
-    /// cpex_load_config over an `apl:`-annotated YAML using a bundled
+    /// cpex_load_config over an APL-annotated YAML using a bundled
     /// plugin kind (`audit/logger`) → cpex_initialize. Proves the visitor
     /// walk runs (load uses load_config_yaml) and the bundled factory is
     /// reachable, so the plugin actually instantiates.
@@ -1717,8 +1717,8 @@ plugins:
     hooks: [cmf.tool_pre_invoke]
 routes:
   - tool: get_weather
-    apl:
-      policy:
+    authorization:
+      pre_invocation:
         - "plugin(auditor)"
 "#;
         unsafe {

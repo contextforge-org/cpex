@@ -5,7 +5,7 @@ weight: 5
 
 # A Reference Monitor for Agents
 
-An agent backed by an LLM acts across trust domains. It calls tools, invokes other agents over A2A, runs inference, and fetches prompts and resources. The model deciding which operation to run is untrusted: it can be steered by injected content, confused by tool output, or simply wrong. Authorization, delegation, and information-flow control cannot live inside that model.
+An agent backed by an LLM acts across trust domains. It calls tools, invokes other agents over A2A (agent-to-agent), runs inference, and fetches prompts and resources. The model deciding which operation to run is untrusted: it can be steered by injected content, confused by tool output, or simply wrong. Authorization, delegation, and information-flow control cannot live inside that model.
 
 CPEX puts them at the boundary. It is a deterministic reference monitor between the untrusted LLM and the capabilities it invokes. Every operation passes through CPEX, which decides what happens using state the model cannot see or forge.
 
@@ -22,15 +22,16 @@ The LLM never sees these and cannot rewrite them. That is what makes CPEX a refe
 
 ## Policy is configuration
 
-You do not write enforcement logic in application code. You write **APL**: the declarative configuration that defines each operation's enforcement pipeline, attaching its conditions and effects to the operation they govern.
+You do not write enforcement logic in application code. You write **APL** (Authorization Policy Language): the declarative configuration that defines each operation's enforcement pipeline, attaching its conditions and effects to the operation they govern.
 
 ```yaml
 routes:
   - tool: get_compensation
-    policy:
-      - "require(role.hr)"
-      - "delegate(workday-oauth, target: workday-api, permissions: [read_compensation])"
-      - "taint(secret, session)"
+    authorization:
+      pre_invocation:
+        - "require(role.hr)"
+        - "delegate(workday-oauth, target: workday-api, permissions: [read_compensation])"
+        - "taint(secret, session)"
     result:
       ssn: "str | redact(!perm.view_ssn)"
 ```
@@ -53,13 +54,10 @@ APL leads. CMF gives policy a uniform thing to evaluate across tools, A2A, infer
 
 Different controls belong at different points. CPEX runs the same way at each of them, so you place a policy where its enforcement point is, not where the framework forces it.
 
-```mermaid
-flowchart LR
-  soft["soft<br>prompt-level<br>style · tone · refusals"] --> mid["enforcement<br>tool / A2A authorization<br>redaction · delegation"] --> hard["hard<br>infra boundary<br>identity · info-flow · audit"]
-```
+![The policy spectrum: soft prompt-level controls (style, tone, refusals), enforcement-tier tool and A2A authorization (redaction, delegation), and hard infrastructure-boundary controls (identity, info-flow, audit), on an axis from advisory to enforced at the boundary](images/vision_policy_spectrum.png)
 
 A style guardrail at the prompt level and a hard information-flow control at an infrastructure boundary are the same kind of object: an APL policy evaluated by a CPEX reference monitor. Only the placement changes.
 
 ## Where CPEX runs
 
-CPEX is direction-agnostic. It enforces the same policy whether it sits in front of a tool server as a gateway, beside an agent as an egress sidecar, or inside an agent framework. See [Deployment]({{< relref "/docs/deployment" >}}) for the placements and [Overview]({{< relref "/docs/overview" >}}) for the model in motion.
+CPEX is direction-agnostic. It enforces the same policy whether it sits in front of a tool server as a gateway, beside an agent as an egress sidecar, or inside an agent framework. See [Deployment]({{< relref "/docs/deployment" >}}) for the placements, the [Threat Model]({{< relref "/docs/threat-model" >}}) for what each placement covers against an untrusted model, and [Overview]({{< relref "/docs/overview" >}}) for the model in motion.
