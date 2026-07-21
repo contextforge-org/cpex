@@ -25,7 +25,6 @@ use cpex_core::extensions::security::{SecurityExtension, SubjectExtension, Subje
 use cpex_core::manager::PluginManager;
 
 use cpex_wasm_host::factory::WasmPluginFactory;
-use tracing_subscriber;
 
 #[tokio::main]
 async fn main() {

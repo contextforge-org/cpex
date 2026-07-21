@@ -155,6 +155,7 @@ impl SharedEngine {
         >(&mut linker, |state| state)?;
 
         let engine_clone = engine.clone();
+        #[allow(clippy::disallowed_methods)]
         std::thread::spawn(move || loop {
             std::thread::sleep(std::time::Duration::from_millis(1));
             engine_clone.increment_epoch();

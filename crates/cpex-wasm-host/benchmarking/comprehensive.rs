@@ -121,6 +121,7 @@ struct ToolInvokePayload {
 cpex_core::impl_plugin_payload!(ToolInvokePayload);
 cpex_core::impl_wasm_payload!(ToolInvokePayload, "cpex.tool_invoke");
 
+#[allow(dead_code)]
 struct ToolPreInvoke;
 impl HookTypeDef for ToolPreInvoke {
     type Payload = ToolInvokePayload;

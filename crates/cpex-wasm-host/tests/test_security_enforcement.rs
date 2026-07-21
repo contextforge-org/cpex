@@ -96,8 +96,10 @@ fn test_monotonic_violation_when_label_removed() {
     let mut owned = ext.cow_copy();
 
     // Replace security with only one label (removed HIPAA)
-    let mut new_sec = SecurityExtension::default();
-    new_sec.labels = MonotonicSet::from_set(["PII".to_string()].into_iter().collect());
+    let new_sec = SecurityExtension {
+        labels: MonotonicSet::from_set(["PII".to_string()].into_iter().collect()),
+        ..Default::default()
+    };
     owned.security = Some(new_sec);
 
     // With read_labels capability, this should be detected
@@ -113,12 +115,14 @@ fn test_monotonic_passes_when_labels_only_added() {
     let mut owned = ext.cow_copy();
 
     // Add a label (superset of original)
-    let mut new_sec = SecurityExtension::default();
-    new_sec.labels = MonotonicSet::from_set(
-        ["PII".to_string(), "HIPAA".to_string()]
-            .into_iter()
-            .collect(),
-    );
+    let new_sec = SecurityExtension {
+        labels: MonotonicSet::from_set(
+            ["PII".to_string(), "HIPAA".to_string()]
+                .into_iter()
+                .collect(),
+        ),
+        ..Default::default()
+    };
     owned.security = Some(new_sec);
 
     let caps: HashSet<String> = ["read_labels"].iter().map(|s| s.to_string()).collect();
@@ -133,8 +137,10 @@ fn test_monotonic_not_enforced_without_read_labels() {
     let mut owned = ext.cow_copy();
 
     // Remove a label
-    let mut new_sec = SecurityExtension::default();
-    new_sec.labels = MonotonicSet::from_set(["PII".to_string()].into_iter().collect());
+    let new_sec = SecurityExtension {
+        labels: MonotonicSet::from_set(["PII".to_string()].into_iter().collect()),
+        ..Default::default()
+    };
     owned.security = Some(new_sec);
 
     // Without read_labels capability, plugin never saw labels — not a violation
@@ -201,9 +207,12 @@ fn test_unauthorized_labels_write_detected() {
     let mut owned = ext.cow_copy();
 
     // Add a label without append_labels capability
-    let mut new_sec = SecurityExtension::default();
-    new_sec.labels =
-        MonotonicSet::from_set(["PII".to_string(), "NEW".to_string()].into_iter().collect());
+    let new_sec = SecurityExtension {
+        labels: MonotonicSet::from_set(
+            ["PII".to_string(), "NEW".to_string()].into_iter().collect(),
+        ),
+        ..Default::default()
+    };
     owned.security = Some(new_sec);
 
     let caps: HashSet<String> = ["read_labels"].iter().map(|s| s.to_string()).collect();
@@ -221,9 +230,12 @@ fn test_authorized_labels_write_passes() {
     let mut owned = ext.cow_copy();
 
     // Add a label WITH append_labels capability
-    let mut new_sec = SecurityExtension::default();
-    new_sec.labels =
-        MonotonicSet::from_set(["PII".to_string(), "NEW".to_string()].into_iter().collect());
+    let new_sec = SecurityExtension {
+        labels: MonotonicSet::from_set(
+            ["PII".to_string(), "NEW".to_string()].into_iter().collect(),
+        ),
+        ..Default::default()
+    };
     owned.security = Some(new_sec);
 
     let caps: HashSet<String> = ["read_labels", "append_labels"]
@@ -241,9 +253,11 @@ fn test_unauthorized_delegation_write_detected() {
     let mut owned = ext.cow_copy();
 
     // Modify delegation
-    let mut new_deleg = DelegationExtension::default();
-    new_deleg.delegated = true;
-    new_deleg.depth = 1;
+    let new_deleg = DelegationExtension {
+        delegated: true,
+        depth: 1,
+        ..Default::default()
+    };
     owned.delegation = Some(new_deleg);
 
     // Plugin lacks append_delegation capability
@@ -481,8 +495,10 @@ fn test_hidden_delegation_preserved_when_plugin_modifies_http() {
 // ---------------------------------------------------------------------------
 
 fn build_full_extensions() -> Extensions {
-    let mut security = SecurityExtension::default();
-    security.labels = MonotonicSet::from_set(["PII".to_string()].into_iter().collect());
+    let security = SecurityExtension {
+        labels: MonotonicSet::from_set(["PII".to_string()].into_iter().collect()),
+        ..Default::default()
+    };
 
     let mut http = HttpExtension::default();
     http.request_headers
@@ -502,8 +518,10 @@ fn build_full_extensions() -> Extensions {
 }
 
 fn build_extensions_with_labels(labels: &[&str]) -> Extensions {
-    let mut security = SecurityExtension::default();
-    security.labels = MonotonicSet::from_set(labels.iter().map(|s| s.to_string()).collect());
+    let security = SecurityExtension {
+        labels: MonotonicSet::from_set(labels.iter().map(|s| s.to_string()).collect()),
+        ..Default::default()
+    };
 
     Extensions {
         request: Some(Arc::new(RequestExtension {

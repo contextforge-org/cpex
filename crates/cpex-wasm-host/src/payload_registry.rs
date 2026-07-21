@@ -22,10 +22,13 @@ use cpex_core::hooks::payload::{PluginPayload, WasmSerializablePayload};
 // Internal codec — per-type serialize + deserialize closures
 // ---------------------------------------------------------------------------
 
+type SerializeFn = Arc<dyn Fn(&dyn PluginPayload) -> Result<Vec<u8>> + Send + Sync>;
+type DeserializeFn = Arc<dyn Fn(&[u8]) -> Result<Box<dyn PluginPayload>> + Send + Sync>;
+
 struct PayloadCodec {
     type_name: &'static str,
-    serialize: Arc<dyn Fn(&dyn PluginPayload) -> Result<Vec<u8>> + Send + Sync>,
-    deserialize: Arc<dyn Fn(&[u8]) -> Result<Box<dyn PluginPayload>> + Send + Sync>,
+    serialize: SerializeFn,
+    deserialize: DeserializeFn,
 }
 
 // ---------------------------------------------------------------------------

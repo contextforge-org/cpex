@@ -37,7 +37,7 @@ pub struct SandboxPolicy {
 
 /// Resource limits enforced on the WASM store.
 /// None means unlimited (wasmtime defaults apply).
-#[derive(Debug, Clone, Deserialize, serde::Serialize)]
+#[derive(Debug, Clone, Default, Deserialize, serde::Serialize)]
 pub struct ResourceLimits {
     /// Maximum linear memory the plugin can allocate (bytes)
     #[serde(default)]
@@ -56,17 +56,6 @@ pub struct ResourceLimits {
     pub max_tables: Option<usize>,
 }
 
-impl Default for ResourceLimits {
-    fn default() -> Self {
-        Self {
-            max_memory_bytes: None,
-            max_fuel: None,
-            max_execution_time_ms: None,
-            max_instances: None,
-            max_tables: None,
-        }
-    }
-}
 
 /// A single filesystem access rule — grants access to a directory or file with a permission level.
 #[derive(Debug, Clone, Deserialize, serde::Serialize)]
