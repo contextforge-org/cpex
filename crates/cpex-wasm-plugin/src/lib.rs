@@ -356,6 +356,42 @@ register_wasm_plugin!(
     [cpex_core::cmf::CmfHook]
 );
 
+#[cfg(all(feature = "tool-invoke-checker", not(test)))]
+register_wasm_plugin!(
+    plugins::tool_invoke_checker::ToolInvokeCheckerPlugin,
+    [
+        plugins::tool_invoke_checker::ToolPreInvoke,
+        plugins::tool_invoke_checker::ToolPostInvoke,
+    ]
+);
+
+#[cfg(all(feature = "pii-guard", not(test)))]
+register_wasm_plugin!(
+    plugins::pii_guard::PiiGuardPlugin,
+    [plugins::pii_guard::ToolPreInvoke]
+);
+
+#[cfg(all(feature = "audit-logger-custom", not(test)))]
+register_wasm_plugin!(
+    plugins::audit_logger_custom::AuditLoggerCustomPlugin,
+    [
+        plugins::audit_logger_custom::ToolPreInvoke,
+        plugins::audit_logger_custom::ToolPostInvoke,
+    ]
+);
+
+#[cfg(all(feature = "remote-authz", not(test)))]
+register_wasm_plugin!(
+    plugins::remote_authz::RemoteAuthzPlugin,
+    [plugins::remote_authz::ToolPreInvoke]
+);
+
+#[cfg(all(feature = "compute-bench", not(test)))]
+register_wasm_plugin!(
+    plugins::compute_bench::ComputeBenchPlugin,
+    [cpex_core::cmf::CmfHook]
+);
+
 // ---------------------------------------------------------------------------
 // Unit tests — run natively with `cargo test`
 // ---------------------------------------------------------------------------

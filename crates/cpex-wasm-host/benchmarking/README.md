@@ -1,105 +1,236 @@
-# WASM Plugin Benchmarks
+# Benchmarking Guide
 
-Performance benchmarks comparing native plugin invocation vs WASM sandbox execution. Measures the isolation tax of the WASM boundary.
+Step-by-step guide to running the CPEX WASM plugin performance benchmarks. This measures how much overhead the WASM sandbox adds compared to native plugin execution.
 
-## Running
+---
 
-```bash
-# From workspace root
-cargo bench -p cpex-wasm-host
-```
+## What You'll Learn
 
-Results are saved to `target/criterion/` with HTML reports.
+After running these benchmarks, you'll know:
+
+1. **How much slower is WASM than native?** — for identical workloads (noop, real computation, full extensions)
+2. **How long does the first plugin load take?** — cold start includes WASM compilation
+3. **Does the payload format matter?** — custom JSON payload vs structured WIT types
+4. **How does concurrency scale?** — what happens when multiple requests hit the same plugin simultaneously
+
+---
 
 ## Prerequisites
 
-The `noop.wasm` plugin binary must exist at `crates/cpex-wasm-host/wasm/noop.wasm`. Build it with:
+Before you start, make sure you have these installed:
+
+```bash
+# 1. Rust with the WASM target
+rustup target add wasm32-wasip2
+
+# 2. Python 3 + matplotlib (for chart generation — optional)
+pip3 install matplotlib
+
+# 3. Verify you're in the repository root
+cd /path/to/contextforge-plugins-framework
+```
+
+---
+
+## Step 1: Build the WASM Plugin Binaries
+
+The benchmarks load pre-compiled `.wasm` binaries from the `wasm/` directory. You need to build them first.
+
+**Easiest way (builds everything):**
+
+```bash
+cd crates/cpex-wasm-host
+make build-all-plugins build-bench-plugins build-test-plugins
+```
+
+This builds:
+- `noop.wasm` — does nothing, returns immediately (measures pure sandbox overhead)
+- `compute-bench.wasm` — does real work: JSON parsing, string manipulation, hash computation
+- `tool-invoke-checker.wasm` — handles a custom payload type (measures the JSON serde path)
+- All other plugin binaries needed for the full benchmark suite
+
+**Manual way (if you only want specific benchmarks):**
 
 ```bash
 cd crates/cpex-wasm-plugin
+
+# For invocation.rs benchmarks (overhead measurement)
 cargo build --target wasm32-wasip2 --release --features noop --no-default-features
 cp target/wasm32-wasip2/release/cpex_wasm_plugin.wasm ../cpex-wasm-host/wasm/noop.wasm
+
+# For comprehensive.rs benchmarks (real-work comparison)
+cargo build --target wasm32-wasip2 --release --features compute-bench --no-default-features
+cp target/wasm32-wasip2/release/cpex_wasm_plugin.wasm ../cpex-wasm-host/wasm/compute-bench.wasm
+
+# For custom payload benchmark
+cargo build --target wasm32-wasip2 --release --features tool-invoke-checker --no-default-features
+cp target/wasm32-wasip2/release/cpex_wasm_plugin.wasm ../cpex-wasm-host/wasm/tool-invoke-checker.wasm
 ```
 
-If the binary is missing, WASM benchmarks are skipped with a message.
+---
 
-## What's Measured
+## Step 2: Run the Benchmarks
 
-| Benchmark | What it does |
-|-----------|-------------|
-| `native_noop` | Call a native `HookHandler` that returns `allow()` immediately. Baseline. |
-| `native_with_full_extensions` | Same handler, but extensions include security labels + HTTP headers + request metadata. Shows that native calls are zero-cost reference passes. |
-| `conversion_native_to_wit` | Convert payload + extensions + context from native types to WIT types. Measures serialization overhead without WASM execution. |
-| `wasm_noop` | Full WASM round-trip: acquire mutex, reset fuel, reset epoch, convert to WIT, call guest `handle-hook`, convert result back. Minimal payload, empty extensions. |
-| `wasm_with_full_extensions` | Full WASM round-trip with security labels, HTTP headers, and request metadata populated. Measures conversion cost at realistic payload sizes. |
-
-## Typical Results
-
-On Apple M-series (ARM64), release mode:
-
-| Benchmark | Latency | Relative |
-|-----------|---------|----------|
-| `native_noop` | ~86 ns | 1x |
-| `native_with_full_extensions` | ~86 ns | 1x |
-| `conversion_native_to_wit` | ~860 ns | 10x |
-| `wasm_noop` | ~5.0 µs | 58x |
-| `wasm_with_full_extensions` | ~8.1 µs | 94x |
-
-## Interpreting Results
-
-- **5-8 µs per WASM invocation** means ~125,000 plugin calls/second/core — sufficient for most production workloads.
-- **The conversion cost (~860 ns)** accounts for 10-17% of total WASM call time. The rest is wasmtime dispatch overhead (fuel reset, epoch deadline, component call).
-- **Extensions add ~3 µs** (8.1 vs 5.0) proportional to the number of fields being converted (HashMap clones, String allocations, JSON serialization for complex fields).
-- **Native calls are effectively free** (~86 ns) because extensions are passed by reference, not copied.
-
-## Cost Breakdown (approximate)
-
-```
-WASM invocation (~5-8 µs total):
-  ├── Mutex acquire:        ~50 ns
-  ├── Fuel reset:           ~20 ns
-  ├── Epoch deadline reset: ~20 ns
-  ├── Type conversion:      ~860 ns (grows with payload complexity)
-  ├── Wasmtime dispatch:    ~2-3 µs (component call overhead)
-  ├── Guest execution:      ~500 ns (for noop)
-  └── Result conversion:    ~500 ns - 2 µs (grows with modifications)
-```
-
-## Adding New Benchmarks
-
-Add functions to `invocation.rs` following the existing pattern:
-
-```rust
-fn bench_my_scenario(c: &mut Criterion) {
-    let rt = Runtime::new().unwrap();
-    // setup outside measurement...
-
-    c.bench_function("my_scenario", |b| {
-        b.to_async(&rt).iter(|| async {
-            // measured code here
-            black_box(result);
-        });
-    });
-}
-```
-
-Then add to the `criterion_group!` macro at the bottom of the file.
-
-## Comparing Across Runs
-
-Criterion automatically detects regressions. After establishing a baseline:
+From the repository root (or `crates/cpex-wasm-host`):
 
 ```bash
-# First run establishes baseline
-cargo bench -p cpex-wasm-host
-
-# Make changes, then re-run — Criterion reports % change
+# Run ALL benchmarks (both suites)
 cargo bench -p cpex-wasm-host
 ```
 
-Look for lines like:
+This runs two benchmark suites:
+
+### Suite 1: `invocation` — Measures sandbox overhead
+
+| Benchmark | What it measures |
+|-----------|-----------------|
+| `native_noop` | Baseline: calling a native handler directly (no sandbox) |
+| `native_with_full_extensions` | Native handler with realistic extensions (security + HTTP) |
+| `conversion_native_to_wit` | Just the type conversion cost (native types → WIT types) |
+| `wasm_noop` | Full WASM round-trip with minimal payload (pure overhead) |
+| `wasm_with_full_extensions` | Full WASM round-trip with realistic extensions |
+
+### Suite 2: `comprehensive` — Measures real-world scenarios
+
+| Benchmark | What it measures |
+|-----------|-----------------|
+| `cold_start_wasm` | Time to load a `.wasm` file + compile it + run the first call |
+| `compute_native` | Native handler doing real work (JSON parse + string ops + hash) |
+| `compute_wasm` | Same real work through the WASM sandbox |
+| `custom_payload_wasm` | User-defined payload via JSON serde (`HookPayload::Custom`) |
+| `structured_payload_wasm` | Built-in CMF payload via WIT types (`HookPayload::Cmf`) |
+| `concurrent_contention/1` | 1 task calling the sandbox (baseline) |
+| `concurrent_contention/4` | 4 tasks contending on the same sandbox mutex |
+| `concurrent_contention/8` | 8 tasks contending on the same sandbox mutex |
+
+**To run just one suite:**
+
+```bash
+cargo bench -p cpex-wasm-host --bench invocation
+cargo bench -p cpex-wasm-host --bench comprehensive
 ```
-wasm_noop   time: [5.0 µs 5.1 µs 5.2 µs]
-            change: [+2.1% +3.5% +4.8%] (p = 0.02 < 0.05)
-            Performance has regressed.
+
+**To run a specific benchmark:**
+
+```bash
+cargo bench -p cpex-wasm-host -- compute_native
+cargo bench -p cpex-wasm-host -- cold_start
 ```
+
+---
+
+## Step 3: Read the Results
+
+Criterion prints results to the terminal like this:
+
+```
+compute_native          time:   [870 ns 874 ns 878 ns]
+compute_wasm            time:   [10.4 µs 10.5 µs 10.6 µs]
+```
+
+The three numbers are: [lower bound, median, upper bound] of the 95% confidence interval.
+
+**How to interpret:**
+- `compute_native: 874 ns` = calling the handler natively takes ~874 nanoseconds
+- `compute_wasm: 10.5 µs` = same work through WASM takes ~10,500 nanoseconds
+- Ratio: 10,500 / 874 = **~12x overhead** for the sandbox
+
+### HTML Reports
+
+Criterion also generates detailed HTML reports with histograms and regression analysis:
+
+```bash
+open target/criterion/report/index.html
+```
+
+Each benchmark has its own page with:
+- Distribution plot (how spread out the measurements are)
+- Regression comparison (if you've run before, shows improvement/regression)
+- Outlier analysis
+
+---
+
+## Step 4: Generate the Comparison Chart (Optional)
+
+A Python script reads Criterion's JSON output and produces a visual bar chart:
+
+```bash
+cd crates/cpex-wasm-host/benchmarking
+python3 plot_results.py
+```
+
+This produces `performance_comparison.png` in the same directory — a 3-panel chart showing:
+1. Native vs WASM for identical workloads (log scale)
+2. Payload path cost + cold start
+3. Mutex contention scaling
+
+**Requirements:** Python 3 + matplotlib (`pip3 install matplotlib`)
+
+---
+
+## Step 5: One-Command Full Run (Recommended)
+
+If you just want to do everything at once:
+
+```bash
+cd crates/cpex-wasm-host
+make bench-all
+```
+
+This:
+1. Builds all WASM plugin binaries (demo + bench + test plugins)
+2. Runs both benchmark suites
+3. Generates the performance comparison chart
+
+---
+
+## Understanding the Results
+
+### What the numbers mean for your use case
+
+| Your scenario | Plugin calls per request | WASM overhead | Request latency | Impact |
+|---------------|:-----------------------:|:-------------:|:---------------:|:------:|
+| LLM tool invoke | 2-4 calls | 20-40 µs | 200ms - 2s | **< 0.02%** |
+| HTTP API gateway | 3-6 calls | 30-60 µs | 5-50ms | **0.06-1.2%** |
+| Real-time streaming | 100+ calls | 500µs+ | per-token | **Consider native** |
+
+### Key takeaways
+
+- **WASM is 12-120x slower than native** depending on workload and extensions size
+- **Cold start is ~550ms** — load plugins at startup, not per-request
+- **Custom payload vs structured**: nearly identical cost (~5µs each) — JSON serde is not a bottleneck
+- **Mutex contention**: per-call latency stays flat as tasks increase (the mutex serializes, but each call is fast)
+- **For typical usage** (2-4 plugin calls per 200ms+ LLM request): overhead is invisible
+
+### When to choose WASM vs native
+
+| Choose WASM when... | Choose native when... |
+|--------------------|-----------------------|
+| Running untrusted/third-party plugins | Running your own trusted code |
+| Multi-tenant isolation is required | Per-call latency is critical (<1µs) |
+| You need resource limits (fuel, memory, timeout) | You need async I/O in the plugin |
+| Plugins should not access filesystem/network | Plugins need streaming/per-token hooks |
+
+---
+
+## Troubleshooting
+
+| Problem | Solution |
+|---------|----------|
+| `SKIP: noop.wasm not found` | Run `make build-all-plugins build-bench-plugins build-test-plugins` |
+| `SKIP: compute-bench.wasm not found` | Run `make build-bench-plugins` |
+| Benchmark numbers vary wildly | Close other apps, disable Turbo Boost, run multiple times |
+| `cargo bench` shows "0 benchmarks" | Make sure you're running from the workspace root or using `-p cpex-wasm-host` |
+| `python3 plot_results.py` fails | Install matplotlib: `pip3 install matplotlib` |
+| Chart shows "No benchmark results found" | Run `cargo bench -p cpex-wasm-host` first to generate Criterion data |
+
+---
+
+## File Reference
+
+| File | Purpose |
+|------|---------|
+| `invocation.rs` | Benchmark suite 1: measures framework overhead (sandbox crossing cost) |
+| `comprehensive.rs` | Benchmark suite 2: measures real-world scenarios (compute, cold start, contention) |
+| `plot_results.py` | Reads Criterion JSON output, generates `performance_comparison.png` |
+| `performance_comparison.png` | Generated chart — commit this to show results in README |

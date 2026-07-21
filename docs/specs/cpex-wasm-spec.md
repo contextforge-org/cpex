@@ -420,3 +420,202 @@ cargo bench -p cpex-wasm-host
 - Custom extension slot is unrestricted (no capability gating)
 - Metadata field dropped at the erasure boundary (consistent with native)
 - Guest stdio inherited from host (plugins should use `cpex_log!`)
+
+---
+
+## 11. Design Decisions
+
+This section records the key architectural decisions and their rationale across both `cpex-wasm-host` and `cpex-wasm-plugin`.
+
+### 11.1 Transparent Integration via PluginFactory Trait
+
+**Decision:** WASM plugins register with the same `PluginManager` as native plugins via `WasmPluginFactory` implementing cpex-core's `PluginFactory` trait.
+
+**Rationale:** Operators should not need to change their pipeline configuration or dispatch logic when switching between native and WASM plugins. A WASM plugin and a native plugin can coexist in the same hook pipeline, dispatched by the same executor, subject to the same 5-phase execution model. This makes WASM an implementation detail — the security boundary is invisible to the orchestration layer.
+
+**Consequence:** `WasmBridgeHandler` implements `AnyHookHandler` with the same signature as native handlers. The executor calls `.invoke(payload, extensions, ctx)` identically for both.
+
+### 11.2 SharedEngine — One Epoch Ticker Per Factory
+
+**Decision:** All plugins loaded from a single `WasmPluginFactory` share one `wasmtime::Engine` and one epoch ticker thread (1ms resolution). Each plugin gets its own `Store` with independent memory, fuel, and state.
+
+**Rationale:** Epoch interruption requires a dedicated thread that calls `engine.increment_epoch()` in a loop. Without sharing, N plugins would spawn N threads doing identical work. Sharing the engine also enables future optimizations (module caching, ahead-of-time compilation) since compiled modules are engine-scoped.
+
+**Trade-off:** The epoch ticker thread spawned in `SharedEngine::new()` runs forever — there is no shutdown mechanism. This is an acknowledged leak on dynamic factory unload.
+
+### 11.3 Per-Invocation Resource Reset
+
+**Decision:** Both fuel budget and epoch deadline are reset at the start of every `invoke()` call. Memory limits are store-lifetime (not reset).
+
+**Rationale:** Fuel measures instruction cost and must be fresh each call to prevent a long-lived plugin from silently degrading after accumulating work. The epoch deadline is a wall-clock timeout — it must start from zero each invocation or a plugin that ran fast once could time out later despite being well-behaved. Memory, however, is additive (linear memory never shrinks) so the limit is structural.
+
+### 11.4 Dual Payload Path — Structured WIT vs JSON Bytes
+
+**Decision:** Built-in payloads (CMF, Identity, Delegation) use structured WIT types with field-by-field conversion. Custom payload types use `HookPayload::Custom(type_name, json_bytes)`.
+
+**Rationale:** Structured WIT types give zero-parsing overhead for the common case (most plugins handle CMF messages). For extensibility, the `Custom` variant lets users define arbitrary payload types without modifying the WIT contract. The host's `PayloadSerializerRegistry` maps `TypeId` → `(type_name, serialize_fn, deserialize_fn)` so the dispatch is O(1).
+
+**Trade-off:** Custom payloads pay a JSON serialization cost on both sides. The structured path for CMF/Identity/Delegation avoids this.
+
+### 11.5 Capability-Based Extension Filtering (Pre-Invocation)
+
+**Decision:** The executor strips extension slots the plugin has no declared capability for _before_ converting to WIT. The guest never receives unauthorized data.
+
+**Rationale:** Defense at the narrowest possible point. Even if the WIT conversion code has bugs, an unauthorized slot is `None` at the source. This is the primary access control mechanism; post-invocation validation is defense-in-depth.
+
+### 11.6 Post-Invocation 4-Layer Validation (Defense-in-Depth)
+
+**Decision:** After the guest returns, the host validates extension modifications through 4 independent checks before accepting them.
+
+**Layer 1 — Immutable tier:** Arc pointer identity on immutable slots (request, agent, mcp, completion, provenance, llm, framework, meta). A malicious guest that reconstructs a "similar" object is detected because the Arc address differs.
+
+**Layer 2 — Monotonic labels:** Security labels must be a superset of originals. Removal is never valid.
+
+**Layer 3 — Write authorization:** HTTP/labels/delegation mutations require the corresponding write capability. A plugin with `read_headers` but not `write_headers` cannot modify HTTP headers.
+
+**Layer 4 — Filtered slot preservation:** Slots hidden from the guest (filtered out pre-invocation) are preserved unchanged in the result.
+
+**Rationale:** The WASM boundary is a trust boundary. Unlike native plugins (which run in-process and are trusted to some degree), WASM plugins may be third-party. The 4-layer model ensures that even a fully compromised guest cannot escalate privileges beyond its declared capabilities.
+
+### 11.7 Fail-Closed on Decode Errors
+
+**Decision:** If a custom payload intended for a declared handler fails to deserialize, the plugin returns a deny violation (`wasm_payload_decode_error`), not an allow.
+
+**Rationale:** Silently allowing on a decode failure would skip whatever security check this plugin enforces. If an attacker can craft a payload that causes a parse error, they could bypass the plugin entirely. Failing closed ensures the worst case is a false deny (operational disruption), not a false allow (security bypass).
+
+### 11.8 Credential Exclusion from WIT Types
+
+**Decision:** Fields marked `#[serde(skip)]` on native types (raw tokens, bearer tokens, token bytes) are excluded from the WIT type definitions entirely — they do not exist in the schema.
+
+**Rationale:** Credential material should never cross the sandbox boundary. Even with capability gating, a compromised WASM guest could exfiltrate tokens through side channels (timing, memory patterns). By excluding credentials at the schema level, there is no path — intentional or accidental — for tokens to enter the guest's address space.
+
+### 11.9 Feature-Flag-Per-Plugin Binary
+
+**Decision:** Each plugin compiles to a separate `.wasm` binary via Cargo feature flags. The SDK crate has 13+ features, one per plugin.
+
+**Rationale:** The WIT Component Model exports a single world per component. A component can only export one `handle-hook` function. Multiple plugins in one binary would require a dispatch layer inside the guest — adding complexity and defeating the isolation model. One binary per plugin gives clean isolation: each has its own Store, memory space, and fault domain.
+
+**Consequence:** Build commands require `--features <plugin> --no-default-features` and produce one `.wasm` artifact per invocation.
+
+### 11.10 Macro-Driven SDK (`register_wasm_plugin!`)
+
+**Decision:** Plugin authors never touch WIT types directly. The `register_wasm_plugin!` macro generates the complete `Guest` impl, including payload routing, type conversion, and the synchronous async executor.
+
+**Rationale:** The WIT-generated types are mechanically derived and verbose. Plugin authors should write standard `HookHandler<H>` implementations (identical to native plugins) and get WASM compatibility for free. This lowers the barrier to entry and ensures all WASM plugins follow the same dispatch pattern.
+
+**Generated code includes:**
+- `Guest::handle_hook()` with match arms for each payload variant
+- Compile-time dispatch via `downcast_ref` (CMF) and `payload_type_name()` matching (Custom)
+- `__block_on()` — a trivial poll-loop for driving the handler's `async` future synchronously
+
+### 11.11 Synchronous Async Executor (`__block_on`)
+
+**Decision:** WASM plugins use a no-op waker poll loop to drive `HookHandler::handle()` futures to completion synchronously.
+
+**Rationale:** WASM is single-threaded with no ambient async runtime (no tokio, no epoll). However, `HookHandler` is an `async_trait` for API consistency with native plugins. In practice, WASM handlers resolve on the first `poll()` since they cannot await network or timers directly. The trivial executor avoids pulling in an async runtime dependency that cannot function in WASM.
+
+**Trade-off:** If a handler ever yields `Pending` without external stimulus (impossible today), the loop spin-waits until fuel is exhausted. This is acceptable because WASM handlers are designed to be non-blocking.
+
+### 11.12 Network Allowlist via WASI HTTP Hooks
+
+**Decision:** Outbound HTTP requests are intercepted at the `WasiHttpHooks::send_request()` level and checked against a per-plugin hostname allowlist. Requests to non-allowed hosts return `ErrorCode::HttpRequestDenied`.
+
+**Rationale:** Importing `wasi:http/outgoing-handler` enables HTTP but does not inherently restrict destinations. The `NetworkPolicy` hook provides a clean interception point before any network I/O occurs. Matching is by exact hostname or subdomain (e.g., `api.example.com` matches allowed host `example.com`).
+
+**Consequence:** Network policy errors surface as `PluginError::Execution { code: "network_denied" }` — distinguishable from other failures for accurate error reporting.
+
+### 11.13 Filesystem via WASI Preopens (No World-Level Import)
+
+**Decision:** Filesystem access is controlled by WASI preopened directories in the Store context, not by importing `wasi:filesystem` at the WIT world level.
+
+**Rationale:** Importing filesystem interfaces at the world level makes them available unconditionally. Preopens are strictly additive and can be configured per-plugin: a plugin with no preopens has zero filesystem visibility regardless of what the WIT world declares. This gives operators fine-grained path-level control.
+
+### 11.14 JSON-as-String for Recursive/Complex WIT Fields
+
+**Decision:** Fields that are recursive or structurally complex (e.g., `prompt-result.messages`, `tool-call.arguments`, `context entries`) are serialized as JSON strings in the WIT interface.
+
+**Rationale:** WIT does not support recursive types, self-referential structures, or arbitrary-depth nesting. Rather than flattening these into deeply nested WIT records (which would be brittle and hard to evolve), they are encoded as JSON strings. The guest deserializes them locally. This is an explicit trade-off: slightly higher runtime cost for schema flexibility.
+
+### 11.15 Copy-on-Write Extension Mutation Model
+
+**Decision:** The host creates a CoW copy of extensions before passing to the guest. On return, only mutable slots that the guest was authorized to see are overlaid back. Immutable slots preserve their original Arc pointers.
+
+**Rationale:** The executor's mutation model requires that a plugin's modifications are validated before being applied. By operating on a copy, the original is never corrupted — even if validation rejects all changes. This also enables the immutable-tier check (Arc pointer identity comparison).
+
+### 11.16 Cross-Invocation State via WASM Linear Memory
+
+**Decision:** Module-level `static` variables in the guest persist across invocations because the Store (and thus linear memory) is kept alive between calls. The `OnceLock` pattern provides lazy initialization.
+
+**Rationale:** Some plugins need initialization state (config parsing, connection caches, lookup tables) that should not be rebuilt on every call. Since each plugin has a dedicated Store that lives for the factory's lifetime, linear memory serves as persistent storage naturally. No explicit state-management API is needed.
+
+**Constraint:** The guest struct is `Default::default()`-constructed on each call — instance fields do not persist. Only module-level statics survive across invocations.
+
+### 11.17 WIT Keyword Workarounds
+
+**Decision:** Several Rust type names conflict with WIT keywords. These are renamed at the WIT level:
+- `Resource` (Rust enum) → `%resource` (WIT escaped keyword)
+- `Return` (enum variant) → `return-complete` (WIT rename)
+- `Resource` (struct) → `resource-info` (WIT rename)
+
+**Rationale:** WIT reserves `resource` and `return` as keywords. Rather than renaming the Rust types (which would break the native API), the WIT schema uses escaping or alternative names. The conversion layer maps between them.
+
+### 11.18 Structured Host Logging via WIT Import
+
+**Decision:** Guest plugins log through a WIT-imported `host-logging` interface that routes to the host's `tracing` subscriber with a `plugin=<name>` span field. A `cpex_log!` macro provides ergonomic formatting.
+
+**Rationale:** Guest `eprintln!` goes to the host's inherited stdio — unstructured, unattributed, and lost in production. The host-logging import gives structured logs that participate in the operator's observability stack (filtering by plugin name, log level, etc.). In `#[cfg(test)]` mode, the import doesn't exist, so the macro falls back to `eprintln!`.
+
+### 11.19 Error Classification via String Matching
+
+**Decision:** Wasmtime errors are classified into `PluginError` variants by pattern-matching on the error message string (e.g., `"epoch deadline"` → `Timeout`, `"all fuel consumed"` → `Execution { code: "fuel_exhausted" }`).
+
+**Rationale:** Wasmtime does not expose structured error types for all failure modes. The error message is the only reliable signal for distinguishing timeout vs. fuel exhaustion vs. memory limit vs. trap. This enables the executor to apply correct `on_error` policies (circuit breakers, timeout logging, error aggregation) per failure type.
+
+**Acknowledged limitation:** This is fragile across wasmtime version upgrades if error messages change. A future improvement would be to match on wasmtime's `Trap` enum variants where available.
+
+### 11.20 Deny-All Default Policy
+
+**Decision:** When no `sandbox_policy` is configured (or all allowlists are empty), the plugin runs in a fully locked-down sandbox: no filesystem, no network, no environment variables. Resource limits default to unlimited (wasmtime defaults).
+
+**Rationale:** Secure-by-default. An operator who forgets to configure a policy gets maximum isolation, not maximum access. Plugins that need external access must explicitly declare it — the configuration is the audit trail.
+
+### 11.21 Type-Erased Payload Registry
+
+**Decision:** The `PayloadSerializerRegistry` maps `TypeId` → `(type_name, serialize_fn, deserialize_fn)` using closures that capture the concrete type. It is built once at factory creation and shared immutably.
+
+**Rationale:** The `WasmBridgeHandler` receives `&dyn PluginPayload` (type-erased). It needs to:
+1. Determine if the payload type is known
+2. Serialize it to a type-discriminated byte format
+3. Later, deserialize the guest's returned custom payload back to a concrete type
+
+The registry solves this with O(1) `TypeId` lookup and O(1) `type_name` lookup, without requiring the handler to know about every possible payload type at compile time.
+
+### 11.22 Unhandled Payloads Return Allow
+
+**Decision:** If the guest receives a payload variant it has no handler for (e.g., a CMF hook plugin receiving a Delegation payload), it returns `continue_processing: true` with no modifications — equivalent to a no-op allow.
+
+**Rationale:** Consistent with native plugin behavior. A plugin is only registered for specific hooks. If the dispatcher sends it a payload type it doesn't handle (which can happen during pipeline evolution), silently allowing is correct — the plugin is not responsible for that payload type.
+
+**Contrast with 11.7:** Decode errors on a _declared_ handler fail closed. _Undeclared_ payload types pass through. The distinction is: "I handle this type but the data is corrupt" vs. "this type is not my responsibility."
+
+### 11.23 Extensions Record with 11 Typed Slots + Custom Escape Hatch
+
+**Decision:** The WIT `extensions` record has 11 explicitly typed optional slots (request, security, http, meta, agent, mcp, completion, provenance, llm, framework, delegation) plus a `custom: option<string>` for arbitrary JSON.
+
+**Rationale:** Typed slots give the guest structured access to the most common extension data without JSON parsing. The `custom` slot enables forward-compatibility: new extension types can be added without a WIT schema change (at the cost of losing type safety for that slot).
+
+**Trade-off:** The custom slot is unrestricted by the capability model — any plugin can read/write it. This is by design: custom extensions are application-specific and cannot be pre-categorized into the capability taxonomy.
+
+### 11.24 WASI P2 (Preview 2) as the Target Platform
+
+**Decision:** Target `wasm32-wasip2` and use WASI P2 interfaces (version 0.2.6) for all host capabilities.
+
+**Rationale:** WASI P2 provides the Component Model, typed interfaces, and the `outgoing-handler` HTTP pattern. WASI P1 (preview 1) uses a POSIX-like model that doesn't support typed imports/exports or the Component Model. P2 is required for `wit-bindgen` and the `wasmtime::component` API. The 0.2.6 version is the latest stable specification at time of implementation.
+
+### 11.25 Mutex-Protected SandboxManager
+
+**Decision:** Each `WasmBridgeHandler` holds an `Arc<Mutex<SandboxManager>>`. Invocations acquire the lock before calling into WASM.
+
+**Rationale:** A wasmtime `Store` is `!Sync` — it cannot be shared across threads. The Mutex serializes access. Under concurrent load, this means one plugin processes one request at a time (serial execution per plugin). This is an explicit trade-off: simplicity and safety over throughput.
+
+**Future path:** Instance pooling (multiple Stores per plugin, round-robin dispatch) would remove this bottleneck without changing the security model.

@@ -7,6 +7,7 @@
 //! Requires: `wasm/env-test.wasm` built from cpex-wasm-plugin with `--features env-test`
 
 use std::path::PathBuf;
+use std::sync::Once;
 
 use cpex_core::cmf::constants::SCHEMA_VERSION;
 use cpex_core::cmf::{ContentPart, Message, MessagePayload, Role, ToolCall};
@@ -16,6 +17,16 @@ use cpex_core::extensions::container::Extensions;
 use cpex_wasm_host::conversions::{native_context_to_wit, native_extensions_to_wit, native_payload_to_wit};
 use cpex_wasm_host::policy_loader::SandboxPolicy;
 use cpex_wasm_host::sandbox_manager::{SandboxManager, SharedEngine};
+
+static INIT: Once = Once::new();
+fn init_tracing() {
+    INIT.call_once(|| {
+        tracing_subscriber::fmt()
+            .with_test_writer()
+            .with_env_filter("info")
+            .init();
+    });
+}
 
 fn wasm_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("wasm/env-test.wasm")
@@ -52,15 +63,12 @@ fn extract_context(result: &cpex_wasm_host::sandbox_manager::types::HookResult) 
 
 #[tokio::test]
 async fn test_plugin_cannot_see_env_vars_without_policy() {
+    init_tracing();
     let path = wasm_path();
-    if !path.exists() {
-        eprintln!(
-            "SKIP: env-test.wasm not found. Build with:\n  \
-             cd crates/cpex-wasm-plugin && cargo build --target wasm32-wasip2 --release --features env-test --no-default-features\n  \
-             cp target/wasm32-wasip2/release/cpex_wasm_plugin.wasm ../cpex-wasm-host/wasm/env-test.wasm"
-        );
-        return;
-    }
+    assert!(path.exists(),
+        "WASM binary not found: {}. Run `make build-test-plugins` from crates/cpex-wasm-host first.",
+        path.display());
+
 
     // Set a host env var that the plugin will try to read
     std::env::set_var("SECRET_API_KEY", "super-secret-value");
@@ -115,10 +123,11 @@ async fn test_plugin_cannot_see_env_vars_without_policy() {
 
 #[tokio::test]
 async fn test_plugin_sees_only_allowed_env_var() {
+    init_tracing();
     let path = wasm_path();
-    if !path.exists() {
-        return;
-    }
+    assert!(path.exists(),
+        "WASM binary not found: {}. Run `make build-test-plugins` from crates/cpex-wasm-host first.",
+        path.display());
 
     // Set the allowed var and a secret var on the host
     std::env::set_var("CPEX_TEST_ALLOWED", "hello-from-host");

@@ -11,7 +11,7 @@ PROFILE       := release
 ARTIFACT       = $(TARGET_DIR)/$(TARGET)/$(PROFILE)/$(PLUGIN_NAME).wasm
 
 # Plugin features (one binary per feature)
-PLUGINS       := identity-checker header-injector audit-logger
+PLUGINS       := identity-checker header-injector audit-logger tool-invoke-checker pii-guard audit-logger-custom remote-authz
 
 # ---------------------------------------------------------------------------
 # Build targets
@@ -29,7 +29,7 @@ build-debug: ## Build the default plugin (debug, faster compile)
 release: ## Build the default plugin (release, optimized)
 	$(MAKE) build PROFILE=release
 
-build-all: ## Build all three plugin binaries (identity-checker, header-injector, audit-logger)
+build-all: ## Build all plugin binaries and stage to host wasm/ directory
 	@mkdir -p $(HOST_WASM_DIR)
 	@for plugin in $(PLUGINS); do \
 		echo "Building $$plugin..."; \
@@ -80,13 +80,12 @@ clippy: ## Run clippy lints for the wasm target
 # Run demos (from workspace root via the host crate)
 # ---------------------------------------------------------------------------
 
-run-demo: all ## Build, stage, and run the CMF demo
+run-demo: all ## Build, stage, and run the plugin demo
 	cd ../.. && cargo run -p cpex-wasm-host --example wasm_plugin_demo
 
-run-all-demos: all ## Build, stage, and run all three demos
+run-all-demos: build-all ## Build all plugins and run both demos
 	cd ../.. && cargo run -p cpex-wasm-host --example wasm_plugin_demo
-	cd ../.. && cargo run -p cpex-wasm-host --example wasm_identity_resolve_demo
-	cd ../.. && cargo run -p cpex-wasm-host --example wasm_generic_payload_demo
+	cd ../.. && cargo run -p cpex-wasm-host --example wasm_capabilities_demo
 
 # ---------------------------------------------------------------------------
 # Cleanup

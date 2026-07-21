@@ -1,169 +1,297 @@
-// Location: ./crates/cpex-wasm-host/examples/wasm_plugin_demo.rs
-// Copyright 2025
-// SPDX-License-Identifier: Apache-2.0
-// Authors: Shriti Priya
+// WASM Plugin Demo
 //
-// CMF payload WASM plugin demo.
+// End-to-end demo mirroring cpex-core/examples/plugin_demo.rs, but all 4
+// plugins run as sandboxed WASM binaries using a custom (user-defined)
+// payload type.
 //
-// Shows the end-to-end CMF path: a MessagePayload crosses the WASM boundary,
-// the guest IdentityCheckerPlugin (written with HookHandler<CmfHook> — identical
-// to a native plugin) runs the identity check, and the result flows back.
+// Demonstrates:
+//   1. Define a custom payload + hook types (same as native plugin_demo)
+//   2. Register the payload with PayloadSerializerRegistry
+//   3. Load 4 WASM plugins via WasmPluginFactory (one per .wasm binary)
+//   4. Multi-plugin pipeline with priority ordering and different modes
+//   5. Policy groups with tag-based activation (pii, external_authz)
+//   6. Context table threading across pre/post-invoke hooks
+//   7. Fire-and-forget audit logging through WASM sandbox
 //
-// Prerequisites: build the WASM plugin first:
-//   cargo build -p cpex-wasm-plugin --target wasm32-wasip2
-//   cargo run --example wasm_plugin_demo
+// Prerequisites:
+//   cd crates/cpex-wasm-host && make build-all-plugins
 //
-// Run from the workspace root:
+// Run:
 //   cargo run -p cpex-wasm-host --example wasm_plugin_demo
 
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use cpex_core::cmf::{CmfHook, ContentPart, Message, MessagePayload, Role, ToolCall, ToolResult};
+use serde::{Deserialize, Serialize};
+
 use cpex_core::config::parse_config;
+use cpex_core::executor::PipelineResult;
 use cpex_core::extensions::container::Extensions;
-use cpex_core::extensions::http::HttpExtension;
 use cpex_core::extensions::meta::MetaExtension;
-use cpex_core::extensions::request::RequestExtension;
-use cpex_core::extensions::security::{SecurityExtension, SubjectExtension, SubjectType};
+use cpex_core::hooks::trait_def::{HookTypeDef, PluginResult};
 use cpex_core::manager::PluginManager;
 
 use cpex_wasm_host::factory::WasmPluginFactory;
+use cpex_wasm_host::payload_registry::PayloadSerializerRegistry;
+
+// ---------------------------------------------------------------------------
+// Step 1: Define a custom payload and hook types
+//
+// This is the user-defined payload — it can be anything serializable.
+// The same struct exists on each guest plugin for JSON serde roundtrip.
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ToolInvokePayload {
+    tool_name: String,
+    user: String,
+    arguments: String,
+}
+
+cpex_core::impl_plugin_payload!(ToolInvokePayload);
+cpex_core::impl_wasm_payload!(ToolInvokePayload, "cpex.tool_invoke");
+
+struct ToolPreInvoke;
+impl HookTypeDef for ToolPreInvoke {
+    type Payload = ToolInvokePayload;
+    type Result = PluginResult<ToolInvokePayload>;
+    const NAME: &'static str = "tool_pre_invoke";
+}
+
+struct ToolPostInvoke;
+impl HookTypeDef for ToolPostInvoke {
+    type Payload = ToolInvokePayload;
+    type Result = PluginResult<ToolInvokePayload>;
+    const NAME: &'static str = "tool_post_invoke";
+}
+
+// ---------------------------------------------------------------------------
+// Step 2: Build extensions with MetaExtension for route resolution
+// ---------------------------------------------------------------------------
+
+fn make_tool_extensions(tool_name: &str, tags: &[&str]) -> Extensions {
+    Extensions {
+        meta: Some(Arc::new(MetaExtension {
+            entity_type: Some("tool".into()),
+            entity_name: Some(tool_name.into()),
+            tags: tags.iter().map(|s| s.to_string()).collect(),
+            ..Default::default()
+        })),
+        ..Default::default()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Helper to print results
+// ---------------------------------------------------------------------------
+
+fn print_result(_label: &str, result: &PipelineResult) {
+    if result.continue_processing {
+        println!("  Result: ALLOWED");
+    } else {
+        let violation = result.violation.as_ref().unwrap();
+        println!(
+            "  Result: DENIED by '{}' — {} [{}]",
+            violation.plugin_name.as_deref().unwrap_or("unknown"),
+            violation.reason,
+            violation.code,
+        );
+    }
+    println!();
+}
+
+// ---------------------------------------------------------------------------
+// Step 3: Main — load config, register WASM factories, invoke hooks
+// ---------------------------------------------------------------------------
 
 #[tokio::main]
 async fn main() {
-    println!("=== WASM Plugin Demo — CMF MessagePayload ===\n");
+    // Initialize tracing so plugin cpex_log! calls are visible
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::from_default_env()
+                .add_directive("info".parse().unwrap()),
+        )
+        .init();
 
+    println!("=== WASM Plugin Demo ===\n");
+
+    // --- Load config from YAML ---
     let crate_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let config_path = crate_dir.join("config/config.yaml");
+    let config_path = crate_dir.join("config/config_plugin_demo.yaml");
+    let wasm_dir = crate_dir.join("wasm");
 
-    println!("Loading config: {}", config_path.display());
+    println!("--- Loading config from {} ---\n", config_path.display());
     let yaml = std::fs::read_to_string(&config_path)
-        .unwrap_or_else(|e| panic!("failed to read {}: {}", config_path.display(), e));
+        .unwrap_or_else(|e| panic!("Failed to read {}: {}", config_path.display(), e));
     let cpex_config = parse_config(&yaml).unwrap();
 
-    let mgr = PluginManager::default();
-    mgr.register_factory(
-        "wasm://plugin.wasm",
-        Box::new(WasmPluginFactory::with_builtin_payloads(crate_dir.join("wasm"))),
-    );
-    mgr.load_config(cpex_config).unwrap();
-    mgr.initialize().await.unwrap();
-
-    // Build a pre-invoke payload: assistant requesting a tool call.
-    let pre_payload = MessagePayload {
-        message: Message {
-            schema_version: cpex_core::cmf::constants::SCHEMA_VERSION.into(),
-            role: Role::Assistant,
-            content: vec![
-                ContentPart::Text { text: "Looking up compensation data.".into() },
-                ContentPart::ToolCall {
-                    content: ToolCall {
-                        tool_call_id: "tc_001".into(),
-                        name: "get_compensation".into(),
-                        arguments: [("employee_id".to_string(), serde_json::json!(42))].into(),
-                        namespace: None,
-                    },
-                },
-            ],
-            channel: None,
-        },
-    };
-
-    let pre_ext = build_extensions("PII");
-
-    // --- Phase 1: pre-invoke ---
-    println!("=== cmf.tool_pre_invoke ===");
-    let (pre_result, pre_bg) = mgr
-        .invoke_named::<CmfHook>("cmf.tool_pre_invoke", pre_payload, pre_ext, None)
-        .await;
-
-    if pre_result.continue_processing {
-        println!("Pre-invoke: ALLOWED");
-    } else {
-        let reason = pre_result.violation.as_ref().map(|v| v.reason.as_str()).unwrap_or("unknown");
-        println!("Pre-invoke: DENIED — {}", reason);
-        pre_bg.wait_for_background_tasks().await;
-        println!("\n=== Demo complete ===");
-        return;
-    }
-    pre_bg.wait_for_background_tasks().await;
-
-    println!("\n  [tool executes: {{\"salary\": 150000, \"currency\": \"USD\"}}]\n");
-
-    // --- Phase 2: post-invoke with tool result ---
-    println!("=== cmf.tool_post_invoke ===");
-
-    let post_payload = MessagePayload {
-        message: Message {
-            schema_version: cpex_core::cmf::constants::SCHEMA_VERSION.into(),
-            role: Role::Tool,
-            content: vec![ContentPart::ToolResult {
-                content: ToolResult {
-                    tool_call_id: "tc_001".into(),
-                    tool_name: "get_compensation".into(),
-                    content: serde_json::json!({"salary": 150000, "currency": "USD"}),
-                    is_error: false,
-                },
-            }],
-            channel: None,
-        },
-    };
-
-    // Carry forward any modified extensions from pre-invoke; rebuild if none.
-    let post_ext = pre_result.modified_extensions.unwrap_or_else(|| build_extensions("PII"));
-
-    let (post_result, post_bg) = mgr
-        .invoke_named::<CmfHook>(
-            "cmf.tool_post_invoke",
-            post_payload,
-            post_ext,
-            Some(pre_result.context_table),
-        )
-        .await;
-
-    if post_result.continue_processing {
-        println!("Post-invoke: ALLOWED");
-    } else {
-        let reason = post_result.violation.as_ref().map(|v| v.reason.as_str()).unwrap_or("unknown");
-        println!("Post-invoke: DENIED — {}", reason);
-    }
-
-    post_bg.wait_for_background_tasks().await;
-    println!("\n=== Demo complete ===");
-}
-
-fn build_extensions(security_label: &str) -> Extensions {
-    let mut security = SecurityExtension::default();
-    security.add_label(security_label);
-    security.add_label("HR_DATA");
-    security.classification = Some("confidential".into());
-    security.subject = Some(SubjectExtension {
-        id: Some("alice".into()),
-        subject_type: Some(SubjectType::User),
-        roles: ["hr_admin".to_string()].into(),
-        permissions: ["read_compensation".to_string()].into(),
-        ..Default::default()
+    // --- Build payload registry with our custom type ---
+    let registry = Arc::new({
+        let mut r = PayloadSerializerRegistry::new();
+        r.register::<ToolInvokePayload>();
+        r
     });
 
-    let mut http = HttpExtension::default();
-    http.set_header("Authorization", "Bearer eyJ...");
-    http.set_header("X-Request-ID", "req-abc-123");
+    // --- Create manager and register a WASM factory per plugin kind ---
+    let mgr = PluginManager::default();
+    mgr.register_factory(
+        "wasm://tool-invoke-checker.wasm",
+        Box::new(WasmPluginFactory::new(wasm_dir.clone(), registry.clone())),
+    );
+    mgr.register_factory(
+        "wasm://pii-guard.wasm",
+        Box::new(WasmPluginFactory::new(wasm_dir.clone(), registry.clone())),
+    );
+    mgr.register_factory(
+        "wasm://remote-authz.wasm",
+        Box::new(WasmPluginFactory::new(wasm_dir.clone(), registry.clone())),
+    );
+    mgr.register_factory(
+        "wasm://audit-logger-custom.wasm",
+        Box::new(WasmPluginFactory::new(wasm_dir, registry)),
+    );
 
-    Extensions {
-        request: Some(Arc::new(RequestExtension {
-            environment: Some("production".into()),
-            request_id: Some("req-abc-123".into()),
-            ..Default::default()
-        })),
-        security: Some(Arc::new(security)),
-        http: Some(Arc::new(http)),
-        meta: Some(Arc::new(MetaExtension {
-            entity_type: Some("tool".into()),
-            entity_name: Some("get_compensation".into()),
-            tags: ["pii".to_string(), "hr".to_string()].into(),
-            ..Default::default()
-        })),
-        ..Default::default()
-    }
+    mgr.load_config(cpex_config).unwrap();
+
+    println!("\n--- Initializing plugins ---\n");
+    mgr.initialize().await.unwrap();
+
+    println!("\nPlugins loaded: {}", mgr.plugin_count());
+    println!(
+        "Hooks registered: tool_pre_invoke={}, tool_post_invoke={}\n",
+        mgr.has_hooks_for("tool_pre_invoke"),
+        mgr.has_hooks_for("tool_post_invoke"),
+    );
+
+    // =========================================================================
+    // Scenario 1: PII tool without clearance
+    // Expected: identity-resolver allows → pii-guard DENIES
+    // =========================================================================
+    println!("=== Scenario 1: get_compensation (PII tool, no clearance) ===\n");
+    let payload = ToolInvokePayload {
+        tool_name: "get_compensation".into(),
+        user: "alice".into(),
+        arguments: "employee_id=42".into(),
+    };
+    let ext = make_tool_extensions("get_compensation", &[]);
+    let (result, bg) = mgr.invoke::<ToolPreInvoke>(payload, ext, None).await;
+    print_result("get_compensation (no clearance)", &result);
+    bg.wait_for_background_tasks().await;
+
+    // =========================================================================
+    // Scenario 2: PII tool with clearance
+    // Expected: identity-resolver allows → pii-guard allows → audit-logger logs
+    // =========================================================================
+    println!("=== Scenario 2: get_compensation (PII tool, with clearance) ===\n");
+    let payload = ToolInvokePayload {
+        tool_name: "get_compensation".into(),
+        user: "alice".into(),
+        arguments: "employee_id=42".into(),
+    };
+    let ext = make_tool_extensions("get_compensation", &[]);
+    let mut ctx_table = cpex_core::context::PluginContextTable::new();
+    ctx_table
+        .global_state
+        .insert("pii_clearance".into(), serde_json::Value::Bool(true));
+    let (result, bg) = mgr
+        .invoke::<ToolPreInvoke>(payload, ext, Some(ctx_table))
+        .await;
+    print_result("get_compensation (with clearance)", &result);
+    bg.wait_for_background_tasks().await;
+
+    // Thread context table into post-invoke
+    println!("  --- post-invoke for get_compensation ---\n");
+    let payload = ToolInvokePayload {
+        tool_name: "get_compensation".into(),
+        user: "alice".into(),
+        arguments: "employee_id=42".into(),
+    };
+    let ext = make_tool_extensions("get_compensation", &[]);
+    let (post_result, bg) = mgr
+        .invoke::<ToolPostInvoke>(payload, ext, Some(result.context_table))
+        .await;
+    print_result("get_compensation post-invoke", &post_result);
+    bg.wait_for_background_tasks().await;
+
+    // =========================================================================
+    // Scenario 3: Non-PII tool
+    // Expected: identity-resolver allows → audit-logger logs → ALLOWED
+    // =========================================================================
+    println!("=== Scenario 3: list_departments (non-PII tool) ===\n");
+    let payload = ToolInvokePayload {
+        tool_name: "list_departments".into(),
+        user: "bob".into(),
+        arguments: "".into(),
+    };
+    let ext = make_tool_extensions("list_departments", &[]);
+    let (result, bg) = mgr.invoke::<ToolPreInvoke>(payload, ext, None).await;
+    print_result("list_departments", &result);
+    bg.wait_for_background_tasks().await;
+
+    // =========================================================================
+    // Scenario 4: Unknown tool (wildcard route)
+    // Expected: identity-resolver allows → audit-logger logs → ALLOWED
+    // =========================================================================
+    println!("=== Scenario 4: some_other_tool (wildcard route) ===\n");
+    let payload = ToolInvokePayload {
+        tool_name: "some_other_tool".into(),
+        user: "charlie".into(),
+        arguments: "foo=bar".into(),
+    };
+    let ext = make_tool_extensions("some_other_tool", &[]);
+    let (result, bg) = mgr.invoke::<ToolPreInvoke>(payload, ext, None).await;
+    print_result("some_other_tool (wildcard)", &result);
+    bg.wait_for_background_tasks().await;
+
+    // =========================================================================
+    // Scenario 5: Remote authz — cache hit (alice is in ACL)
+    // Expected: identity-resolver allows → remote-authz allows → ALLOWED
+    // =========================================================================
+    println!("=== Scenario 5: query_external_data (remote authz, ACL hit) ===\n");
+    let payload = ToolInvokePayload {
+        tool_name: "query_external_data".into(),
+        user: "alice".into(),
+        arguments: "dataset=sales".into(),
+    };
+    let ext = make_tool_extensions("query_external_data", &[]);
+    let (result, bg) = mgr.invoke::<ToolPreInvoke>(payload, ext, None).await;
+    print_result("query_external_data (alice — in ACL)", &result);
+    bg.wait_for_background_tasks().await;
+
+    // =========================================================================
+    // Scenario 6: Remote authz — cache miss (charlie is NOT in ACL)
+    // Expected: identity-resolver allows → remote-authz DENIES
+    // =========================================================================
+    println!("=== Scenario 6: query_external_data (remote authz, ACL miss) ===\n");
+    let payload = ToolInvokePayload {
+        tool_name: "query_external_data".into(),
+        user: "charlie".into(),
+        arguments: "dataset=sales".into(),
+    };
+    let ext = make_tool_extensions("query_external_data", &[]);
+    let (result, bg) = mgr.invoke::<ToolPreInvoke>(payload, ext, None).await;
+    print_result("query_external_data (charlie — not in ACL)", &result);
+    bg.wait_for_background_tasks().await;
+
+    // =========================================================================
+    // Scenario 7: No user identity
+    // Expected: identity-resolver DENIES (first in pipeline)
+    // =========================================================================
+    println!("=== Scenario 7: list_departments (no user identity) ===\n");
+    let payload = ToolInvokePayload {
+        tool_name: "list_departments".into(),
+        user: "".into(),
+        arguments: "".into(),
+    };
+    let ext = make_tool_extensions("list_departments", &[]);
+    let (result, bg) = mgr.invoke::<ToolPreInvoke>(payload, ext, None).await;
+    print_result("list_departments (no user)", &result);
+    bg.wait_for_background_tasks().await;
+
+    // --- Shutdown ---
+    println!("--- Shutting down ---\n");
+    mgr.shutdown().await;
+
+    println!("=== Demo complete ===");
 }

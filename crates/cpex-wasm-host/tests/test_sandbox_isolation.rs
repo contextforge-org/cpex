@@ -7,6 +7,7 @@
 //! Requires: `wasm/fs-test.wasm` built from cpex-wasm-plugin with `--features fs-test`
 
 use std::path::PathBuf;
+use std::sync::Once;
 
 use cpex_core::cmf::constants::SCHEMA_VERSION;
 use cpex_core::cmf::{ContentPart, Message, MessagePayload, Role, ToolCall};
@@ -15,6 +16,16 @@ use cpex_core::extensions::container::Extensions;
 
 use cpex_wasm_host::conversions::{native_context_to_wit, native_extensions_to_wit, native_payload_to_wit};
 use cpex_wasm_host::sandbox_manager::{SandboxManager, SharedEngine};
+
+static INIT: Once = Once::new();
+fn init_tracing() {
+    INIT.call_once(|| {
+        tracing_subscriber::fmt()
+            .with_test_writer()
+            .with_env_filter("info")
+            .init();
+    });
+}
 
 fn wasm_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("wasm/fs-test.wasm")
@@ -40,15 +51,12 @@ fn make_payload() -> MessagePayload {
 
 #[tokio::test]
 async fn test_plugin_cannot_read_etc_passwd_without_filesystem_policy() {
+    init_tracing();
     let path = wasm_path();
-    if !path.exists() {
-        eprintln!(
-            "SKIP: fs-test.wasm not found. Build with:\n  \
-             cd crates/cpex-wasm-plugin && cargo build --target wasm32-wasip2 --release --features fs-test --no-default-features\n  \
-             cp target/wasm32-wasip2/release/cpex_wasm_plugin.wasm ../cpex-wasm-host/wasm/fs-test.wasm"
-        );
-        return;
-    }
+    assert!(path.exists(),
+        "WASM binary not found: {}. Run `make build-test-plugins` from crates/cpex-wasm-host first.",
+        path.display());
+
 
     // Load plugin with NO filesystem policy (deny-all)
     let shared = SharedEngine::new().unwrap();
@@ -109,10 +117,11 @@ async fn test_plugin_cannot_read_etc_passwd_without_filesystem_policy() {
 
 #[tokio::test]
 async fn test_plugin_cannot_read_etc_passwd_with_unrelated_filesystem_policy() {
+    init_tracing();
     let path = wasm_path();
-    if !path.exists() {
-        return;
-    }
+    assert!(path.exists(),
+        "WASM binary not found: {}. Run `make build-test-plugins` from crates/cpex-wasm-host first.",
+        path.display());
 
     // Load plugin with filesystem policy that only allows /tmp
     let policy = cpex_wasm_host::policy_loader::SandboxPolicy {

@@ -25,9 +25,19 @@ use cpex_core::extensions::security::{SecurityExtension, SubjectExtension, Subje
 use cpex_core::manager::PluginManager;
 
 use cpex_wasm_host::factory::WasmPluginFactory;
+use tracing_subscriber;
 
 #[tokio::main]
 async fn main() {
+    // Initialize tracing so plugin cpex_log! calls are visible.
+    // Set RUST_LOG=info (or debug/trace) to control verbosity.
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::from_default_env()
+                .add_directive("info".parse().unwrap()),
+        )
+        .init();
+
     println!("=== WASM Capabilities Demo ===\n");
 
     let crate_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
