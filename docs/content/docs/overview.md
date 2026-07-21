@@ -9,13 +9,20 @@ weight: 10
 
 Picture one agent serving several people. It answers questions by calling tools (an HR records service, a code repository, an email sender), invoking other agents over A2A, running inference, and fetching prompts and resources. The backends are shared. The callers are not: an HR analyst, an engineer, and a support rep each drive the same agent with different identities and different entitlements.
 
-![One agent serves three users across HR, repo, and email backends; CPEX policy produces a different outcome per identity](/cpex/images/demo_scenario.png)
+![One agent serves three users across HR, repo, and email backends; CPEX policy produces a different outcome per identity](images/demo_scenario.png)
 
-The agent's LLM decides which operation to run. It is untrusted. CPEX sits between it and every capability, and decides what actually happens.
+The **R1–R6** labels in the diagram are the six requirements this scenario places on the enforcement point. Each is a control CPEX applies, and each maps to a later page:
 
-![CPEX mediates every operation an untrusted LLM triggers, evaluating APL policy against identity, delegation, taint, and audit state the model cannot forge](/cpex/images/cpex_overview.png)
+| Label | Requirement | Where |
+|-------|-------------|-------|
+| R1 | Resolve the real user behind the agent | [Identity]({{< relref "/docs/apl/identity" >}}) |
+| R2 | Same request, different data (redact per identity) | [Effects]({{< relref "/docs/apl/effects" >}}) |
+| R3 | Enforce on inputs and results (validate args, shape output) | [APL]({{< relref "/docs/apl" >}}) |
+| R4 | Delegate downstream with a narrower credential | [Delegation]({{< relref "/docs/apl/delegation" >}}) |
+| R5 | Remember the session (carry state across calls) | [Session Tainting]({{< relref "/docs/apl/tainting" >}}) |
+| R6 | Out-of-band elicitations (human approval) | [Elicitation]({{< relref "/docs/apl/elicitation" >}}) |
 
-For each operation, CPEX resolves the caller's identity, evaluates the APL policy attached to that operation, and applies the resulting effects before anything reaches the backend. The same four phases run every time: validate arguments, evaluate policy, transform the result, run post-policy checks.
+The agent's LLM decides which operation to run. It is untrusted. CPEX sits between it and every capability, and decides what actually happens. For each operation, CPEX resolves the caller's identity, evaluates the APL policy attached to that operation, and applies the resulting effects before anything reaches the backend. The same four phases run every time: validate arguments, evaluate policy, transform the result, run post-policy checks.
 
 ## Same request, different data
 
@@ -35,13 +42,7 @@ routes:
 - An HR analyst without `view_ssn` gets the same record with the SSN redacted before it leaves CPEX. The backend never sees the difference; the redaction happens at the boundary.
 - An engineer is denied at `require(role.hr)`. The call never reaches the backend.
 
-```mermaid
-flowchart LR
-  REQ["get_compensation<br>(identical request)"] --> CPEX{{"APL policy"}}
-  CPEX -->|"HR + view_ssn"| FULL["full record"]
-  CPEX -->|"HR, no view_ssn"| RED["record, SSN redacted"]
-  CPEX -->|"not HR"| DENY["denied"]
-```
+![Three identical get_compensation requests pass through CPEX APL policy and produce three outcomes by identity: the full record for HR with view_ssn, the record with SSN redacted for HR without view_ssn, and a deny for non-HR callers](images/overview_outcomes.png)
 
 No application code changed between the three outcomes. The policy did.
 

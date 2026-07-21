@@ -5,7 +5,7 @@ weight: 110
 
 # Testing Policy
 
-Policy is code, and it deserves tests. The behaviors worth covering are the ones the scenario demonstrates: a route allows the right callers, denies the wrong ones, and redacts the right fields. Because APL is declarative and evaluated by `apl-core`, you can test a route by evaluating it against fixture identities and asserting the outcome, without standing up a live backend.
+Policy is code, and it deserves tests. The behaviors worth covering are the ones the scenario demonstrates: a route allows the right callers, denies the wrong ones, redacts the right fields, and carries taint across a session. Because APL is declarative and evaluated by the runtime, you can test a route by loading a policy and driving operations through it, asserting the outcome, without standing up a live backend.
 
 ## What to test
 
@@ -17,15 +17,48 @@ For each route, cover the outcomes its policy produces:
 - **Information flow**: a session that acquired a taint label is blocked on a later operation that gates on it.
 - **Delegation**: a passing caller mints a token with the requested scope, and a post-check denies when the granted scope is short.
 
-## Evaluating a route in a test
+## A table-driven policy test
 
-Compile the config and evaluate a route against an attribute bag standing in for a caller. Assert the decision and the transformed payload. The `apl-core` and `apl-cpex` crates expose the evaluator used by the runtime; their test suites (for example `crates/apl-core/tests`) are the working reference for the exact entry points and fixtures.
+Load a policy into a manager, drive routes through it with a fake backend, and assert the outcome. The tutorial ships this as a working template you can copy: [`examples/tutorial/tests/policy_tests.rs`](https://github.com/contextforge-org/cpex/tree/main/examples/tutorial/tests/policy_tests.rs). The setup is a small helper:
 
-A redaction test, in shape:
+```rust
+async fn manager_with(policy: &str) -> Arc<PluginManager> {
+    let mgr = Arc::new(PluginManager::default());
+    cpex::install_builtins(&mgr);
+    mgr.load_config_yaml(policy).expect("policy should load");
+    mgr.initialize().await.expect("initialize");
+    mgr
+}
+```
 
-- build a bag for an HR caller **with** `perm.view_ssn`, evaluate `get_employee`, assert `ssn` is present;
-- build a bag for an HR caller **without** `perm.view_ssn`, evaluate the same route, assert `ssn` is redacted;
-- build a bag for a non-HR caller, evaluate, assert deny at `require(role.hr)`.
+Then a table keeps the allow/deny matrix readable, one row per case:
+
+```rust
+#[tokio::test]
+async fn external_email_denied_with_custom_code() {
+    let mgr = manager_with(POLICY).await;
+    let outcome = mediate(
+        &mgr,
+        &Caller::anonymous(),
+        "send_email",
+        json!({ "to": "x@evil.example", "external": true }),
+        |args| backends::dispatch("send_email", args),
+    )
+    .await;
+    assert!(matches!(
+        outcome,
+        Outcome::Denied { code, .. } if code == "email.external_blocked"
+    ));
+}
+```
+
+`mediate()` here is the tutorial's harness wrapper around the host dispatch loop, not a CPEX API; in your own host you would drive the same route through your own loop and assert on the result. Anonymous callers are enough to exercise structural rules (authentication gates, argument guards, `result` pipelines) with no IdP. For identity-dependent rules, mint a token the way the tutorial's `idp` helper does.
+
+A stateful taint test follows the same shape but shares one session id across two calls: read a sensitive route, then assert a later `send_email` on the same session is denied on the taint label. Tutorial [module 7]({{< relref "/docs/tutorial/07-tainting" >}}) is the worked example; [module 10]({{< relref "/docs/tutorial/10-testing" >}}) walks through the test file above.
+
+## Scenario checks
+
+Beyond unit tests, each tutorial module binary supports a `--check` flag that runs its scripted scenario and exits non-zero if the outcome drifts. `make tutorial-check` boots the tutorial IdP, runs every module's check, and tears it down. This is a lightweight way to pin end-to-end behavior (including the identity- and delegation-backed paths) in CI.
 
 ## Integration coverage
 
@@ -34,7 +67,8 @@ Unit-evaluating a route proves the policy logic. It does not prove the plugins i
 ## Running
 
 ```bash
-cargo test --workspace
+cargo test -p cpex-tutorial     # the policy tests above
+cargo test --workspace          # everything, including the runtime and APL suites
 ```
 
-See [`crates/cpex-core/examples`](https://github.com/contextforge-org/cpex/tree/main/crates/cpex-core/examples) for runnable programs that load a config and invoke routes, which double as a starting point for integration tests against your own policy.
+Copy [`examples/tutorial/tests/policy_tests.rs`](https://github.com/contextforge-org/cpex/tree/main/examples/tutorial/tests/policy_tests.rs) as the starting point for tests against your own policy.

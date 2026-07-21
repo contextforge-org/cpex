@@ -1,0 +1,56 @@
+# =============================================================================
+# CPEX Tutorial - Keycloak Identity Provider (DEV MODE ONLY)
+# =============================================================================
+# This stack runs Keycloak in development mode for the CPEX tutorial.
+#
+#   * EPHEMERAL: the realm is imported fresh on every `docker compose up` and
+#     is thrown away on `docker compose down`. There is NO persistent database
+#     volume - the realm lives only in memory. `down` is your reset button.
+#   * TUTORIAL-ONLY CREDENTIALS: the admin login (admin/admin), the client
+#     secrets, and the user passwords in realm-export.json are hard-coded and
+#     public. They exist to make the tutorial reproducible.
+#   * NEVER use any part of this stack, or these credentials, in production.
+# =============================================================================
+
+services:
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.3
+    container_name: cpex-tutorial-keycloak
+    command: ["start-dev", "--import-realm"]
+    ports:
+      # Host 8081 -> container 8080. Issuer is http://localhost:8081/realms/cpex-tutorial
+      - "8081:8080"
+    environment:
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: admin
+      # Keycloak 26.2+ ships Standard Token Exchange (RFC 8693, the flow the
+      # delegation module uses) as a default feature, enabled per-client in
+      # the realm export - no KC_FEATURES flag needed. CIBA is also a standard
+      # grant. If a later Keycloak drops these from defaults, re-add them here.
+    volumes:
+      - ./realm-export.json:/opt/keycloak/data/import/realm-export.json:ro
+    healthcheck:
+      # Hit the realm's OIDC discovery document. Once the realm is imported and
+      # the server is serving, this returns 200.
+      test:
+        [
+          "CMD-SHELL",
+          "exec 3<>/dev/tcp/localhost/8080 && printf 'GET /realms/cpex-tutorial/.well-known/openid-configuration HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3 && cat <&3 | grep -q '200 OK'",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 40s
+
+  # ---------------------------------------------------------------------------
+  # Optional Valkey (Redis-compatible) service for the tutorial's Module 7
+  # "swap the session store" exercise. OFF by default.
+  #
+  #   Start with:  docker compose --profile valkey up -d
+  # ---------------------------------------------------------------------------
+  valkey:
+    image: valkey/valkey:8
+    container_name: cpex-tutorial-valkey
+    profiles: ["valkey"]
+    ports:
+      - "6379:6379"

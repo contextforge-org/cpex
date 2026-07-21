@@ -1,0 +1,272 @@
+{
+  "realm": "cpex-tutorial",
+  "enabled": true,
+  "displayName": "CPEX Tutorial",
+  "sslRequired": "none",
+  "registrationAllowed": false,
+  "loginWithEmailAllowed": true,
+  "duplicateEmailsAllowed": false,
+  "resetPasswordAllowed": false,
+  "editUsernameAllowed": false,
+  "accessTokenLifespan": 3600,
+  "roles": {
+    "realm": [
+      { "name": "hr", "description": "HR analysts" },
+      { "name": "engineer", "description": "Engineers" },
+      { "name": "security", "description": "Security team" }
+    ]
+  },
+  "clients": [
+    {
+      "clientId": "cpex-tutorial",
+      "name": "CPEX Tutorial (public user-token client)",
+      "enabled": true,
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": true,
+      "serviceAccountsEnabled": false,
+      "redirectUris": ["*"],
+      "webOrigins": ["*"],
+      "protocol": "openid-connect",
+      "fullScopeAllowed": true,
+      "protocolMappers": [
+        {
+          "name": "realm-roles-flat",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-realm-role-mapper",
+          "consentRequired": false,
+          "config": {
+            "multivalued": "true",
+            "userinfo.token.claim": "true",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "claim.name": "roles",
+            "jsonType.label": "String",
+            "usermodel.realmRoleMapping.rolePrefix": ""
+          }
+        },
+        {
+          "name": "permissions-attr",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-attribute-mapper",
+          "consentRequired": false,
+          "config": {
+            "user.attribute": "permissions",
+            "claim.name": "permissions",
+            "jsonType.label": "String",
+            "multivalued": "true",
+            "aggregate.attrs": "false",
+            "userinfo.token.claim": "true",
+            "id.token.claim": "true",
+            "access.token.claim": "true"
+          }
+        },
+        {
+          "name": "team-attr",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-attribute-mapper",
+          "consentRequired": false,
+          "config": {
+            "user.attribute": "team",
+            "claim.name": "team",
+            "jsonType.label": "String",
+            "multivalued": "true",
+            "aggregate.attrs": "false",
+            "userinfo.token.claim": "true",
+            "id.token.claim": "true",
+            "access.token.claim": "true"
+          }
+        },
+        {
+          "name": "manager-attr",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-attribute-mapper",
+          "consentRequired": false,
+          "config": {
+            "user.attribute": "manager",
+            "claim.name": "manager",
+            "jsonType.label": "String",
+            "multivalued": "false",
+            "aggregate.attrs": "false",
+            "userinfo.token.claim": "true",
+            "id.token.claim": "true",
+            "access.token.claim": "true"
+          }
+        },
+        {
+          "name": "audience-cpex-tutorial",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "cpex-tutorial",
+            "included.custom.audience": "",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          }
+        },
+        {
+          "name": "audience-cpex-gateway",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "cpex-gateway",
+            "included.custom.audience": "",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
+      "clientId": "workday-api",
+      "name": "Workday API (token-exchange target audience)",
+      "enabled": true,
+      "publicClient": false,
+      "bearerOnly": false,
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "secret": "workday-dev-secret",
+      "protocol": "openid-connect",
+      "fullScopeAllowed": true
+    },
+    {
+      "clientId": "github-api",
+      "name": "GitHub API (token-exchange target audience)",
+      "enabled": true,
+      "publicClient": false,
+      "bearerOnly": false,
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "secret": "github-dev-secret",
+      "protocol": "openid-connect",
+      "fullScopeAllowed": true
+    },
+    {
+      "clientId": "cpex-gateway",
+      "name": "CPEX Gateway (token-exchange requester + CIBA client)",
+      "enabled": true,
+      "publicClient": false,
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": true,
+      "serviceAccountsEnabled": true,
+      "secret": "gateway-dev-secret",
+      "protocol": "openid-connect",
+      "fullScopeAllowed": true,
+      "attributes": {
+        "oidc.ciba.grant.enabled": "true",
+        "standard.token.exchange.enabled": "true",
+        "standard.token.exchange.audiences": "workday-api,github-api",
+        "backchannel.logout.session.required": "true"
+      },
+      "protocolMappers": [
+        {
+          "name": "workday-api-as-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "workday-api",
+            "included.custom.audience": "",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          }
+        },
+        {
+          "name": "github-api-as-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "github-api",
+            "included.custom.audience": "",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          }
+        }
+      ]
+    }
+  ],
+  "users": [
+    {
+      "username": "alice",
+      "enabled": true,
+      "emailVerified": true,
+      "email": "alice@cpex-tutorial.local",
+      "firstName": "Alice",
+      "lastName": "Analyst",
+      "attributes": {
+        "permissions": ["view_ssn"],
+        "team": ["compliance"]
+      },
+      "credentials": [
+        { "type": "password", "value": "alice", "temporary": false }
+      ],
+      "realmRoles": ["hr"]
+    },
+    {
+      "username": "dana",
+      "enabled": true,
+      "emailVerified": true,
+      "email": "dana@cpex-tutorial.local",
+      "firstName": "Dana",
+      "lastName": "Analyst",
+      "attributes": {
+        "team": ["compliance"]
+      },
+      "credentials": [
+        { "type": "password", "value": "dana", "temporary": false }
+      ],
+      "realmRoles": ["hr"]
+    },
+    {
+      "username": "evan",
+      "enabled": true,
+      "emailVerified": true,
+      "email": "evan@cpex-tutorial.local",
+      "firstName": "Evan",
+      "lastName": "Engineer",
+      "attributes": {
+        "team": ["engineering"],
+        "manager": ["mona"]
+      },
+      "credentials": [
+        { "type": "password", "value": "evan", "temporary": false }
+      ],
+      "realmRoles": ["engineer"]
+    },
+    {
+      "username": "sam",
+      "enabled": true,
+      "emailVerified": true,
+      "email": "sam@cpex-tutorial.local",
+      "firstName": "Sam",
+      "lastName": "Security",
+      "attributes": {
+        "team": ["security"]
+      },
+      "credentials": [
+        { "type": "password", "value": "sam", "temporary": false }
+      ],
+      "realmRoles": ["security"]
+    },
+    {
+      "username": "mona",
+      "enabled": true,
+      "emailVerified": true,
+      "email": "mona@cpex-tutorial.local",
+      "firstName": "Mona",
+      "lastName": "Manager",
+      "attributes": {
+        "team": ["compliance"]
+      },
+      "credentials": [
+        { "type": "password", "value": "mona", "temporary": false }
+      ],
+      "realmRoles": ["hr"]
+    }
+  ]
+}
