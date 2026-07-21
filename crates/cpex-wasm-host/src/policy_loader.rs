@@ -56,7 +56,6 @@ pub struct ResourceLimits {
     pub max_tables: Option<usize>,
 }
 
-
 /// A single filesystem access rule — grants access to a directory or file with a permission level.
 #[derive(Debug, Clone, Deserialize, serde::Serialize)]
 pub struct FilesystemRule {
