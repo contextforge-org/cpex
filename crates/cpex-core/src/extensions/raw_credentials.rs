@@ -307,14 +307,12 @@ mod tests {
     fn delegation_key_hash_eq_consistency() {
         let k1 = DelegationKey {
             subject_id: "alice".into(),
-            // aislop-ignore-next-line ai-slop/hardcoded-url -- RFC 2606 example domain, test fixture only
             audience: "https://api.example.com".into(),
             scopes: vec!["read".into(), "write".into()],
             mode: DelegationMode::OnBehalfOfUser,
         };
         let k2 = DelegationKey {
             subject_id: "alice".into(),
-            // aislop-ignore-next-line ai-slop/hardcoded-url -- RFC 2606 example domain, test fixture only
             audience: "https://api.example.com".into(),
             scopes: vec!["read".into(), "write".into()],
             mode: DelegationMode::OnBehalfOfUser,

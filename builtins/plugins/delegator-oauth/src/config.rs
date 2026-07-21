@@ -128,14 +128,11 @@ mod tests {
     #[test]
     fn config_deserializes_from_json() {
         let raw = json!({
-            // aislop-ignore-next-line ai-slop/hardcoded-url -- RFC 2606 example domain, test fixture only
             "token_endpoint": "https://auth.example.com/oauth/token",
             "client_id": "gateway",
-            // aislop-ignore-next-line ai-slop/hardcoded-id -- Literal-secret-source test fixture, not a real credential
             "client_secret_source": { "kind": "literal", "secret": "dev-only" },
         });
         let cfg: OAuthDelegatorConfig = serde_json::from_value(raw).unwrap();
-        // aislop-ignore-next-line ai-slop/hardcoded-url -- RFC 2606 example domain, test fixture only
         assert_eq!(cfg.token_endpoint, "https://auth.example.com/oauth/token");
         assert_eq!(cfg.client_id, "gateway");
         assert_eq!(cfg.timeout_seconds, 5);

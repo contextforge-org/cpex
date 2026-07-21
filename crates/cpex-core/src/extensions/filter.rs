@@ -780,7 +780,6 @@ mod tests {
         raw.delegated_tokens.insert(
             DelegationKey {
                 subject_id: "alice".into(),
-                // aislop-ignore-next-line ai-slop/hardcoded-url -- RFC 2606 example domain, test fixture only
                 audience: "https://api.example.com".into(),
                 scopes: vec!["read".into()],
                 mode: DelegationMode::OnBehalfOfUser,
@@ -788,7 +787,6 @@ mod tests {
             RawDelegatedToken::new(
                 "delegated-bytes",
                 "Authorization",
-                // aislop-ignore-next-line ai-slop/hardcoded-url -- RFC 2606 example domain, test fixture only
                 "https://api.example.com",
                 vec!["read".into()],
                 chrono::Utc::now(),

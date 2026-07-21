@@ -365,7 +365,6 @@ mod tests {
             client_name: Some("Agent App".into()),
             trust_level: ClientTrustLevel::FirstParty,
             authorized_scopes: vec!["read".into(), "write".into()],
-            // aislop-ignore-next-line ai-slop/hardcoded-url -- RFC 2606 example domain, test fixture only
             authorized_audiences: vec!["https://api.example.com".into()],
             roles: vec!["partner".into()],
             permissions: vec!["call_tool".into()],
@@ -406,7 +405,6 @@ mod tests {
         extract_client(&agent_client(), &mut bag);
         assert!(bag.set_contains("client.authorized_scopes", "read"));
         assert!(bag.set_contains("client.authorized_scopes", "write"));
-        // aislop-ignore-next-line ai-slop/hardcoded-url -- RFC 2606 example domain, test fixture only
         assert!(bag.set_contains("client.authorized_audiences", "https://api.example.com",));
         assert!(bag.set_contains("client.teams", "acme"));
     }

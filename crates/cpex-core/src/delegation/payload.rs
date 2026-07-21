@@ -505,7 +505,6 @@ mod tests {
         updated.delegated_token = Some(RawDelegatedToken::new(
             "minted-bytes",
             "Authorization",
-            // aislop-ignore-next-line ai-slop/hardcoded-url -- RFC 2606 example domain, test fixture only
             "https://api.example.com",
             vec!["read".into()],
             Utc::now(),

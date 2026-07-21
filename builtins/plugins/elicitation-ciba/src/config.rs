@@ -148,7 +148,6 @@ mod tests {
             "backchannel_endpoint": "https://kc/realms/corp/protocol/openid-connect/ext/ciba/auth",
             "token_endpoint": "https://kc/realms/corp/protocol/openid-connect/token",
             "client_id": "cpex-gateway",
-            // aislop-ignore-next-line ai-slop/hardcoded-id -- Literal-secret-source test fixture, not a real credential
             "client_secret_source": { "kind": "literal", "secret": "dev-only" },
         });
         let cfg: CibaConfig = serde_json::from_value(raw).unwrap();

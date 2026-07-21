@@ -381,7 +381,6 @@ mod tests {
     fn tls_required_error_redacts_credentials() {
         // rediss-less, non-localhost, with embedded creds, tls off → error.
         let err =
-            // aislop-ignore-next-line security/hardcoded-secret -- test fixture proving credentials get redacted, not a real secret
             parse("kind: valkey\nendpoint: redis://user:topsecret@prod.host:6379\n").unwrap_err();
         let msg = format!("{err}");
         assert!(
