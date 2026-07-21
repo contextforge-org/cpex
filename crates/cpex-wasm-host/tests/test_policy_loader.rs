@@ -41,7 +41,9 @@ fn config_has_plugins_list() {
     let raw = std::fs::read_to_string(&config_path).expect("failed to read config.yaml");
     let config: serde_yaml::Value = serde_yaml::from_str(&raw).unwrap();
 
-    let plugins = config["plugins"].as_sequence().expect("plugins should be a list");
+    let plugins = config["plugins"]
+        .as_sequence()
+        .expect("plugins should be a list");
     assert!(!plugins.is_empty(), "plugins list should not be empty");
 }
 

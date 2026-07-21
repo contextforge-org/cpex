@@ -18,6 +18,7 @@ use cpex_core::delegation::payload::{
     DelegationPayload as NativeDelegationPayload, TargetType as NativeTargetType,
 };
 use cpex_core::error::PluginViolation as NativePluginViolation;
+use cpex_core::executor::ErasedResultFields;
 use cpex_core::extensions::agent::AgentExtension as NativeAgentExtension;
 use cpex_core::extensions::authorization::AuthorizationDetail as NativeAuthDetail;
 use cpex_core::extensions::completion::{
@@ -50,9 +51,10 @@ use cpex_core::extensions::security::{
     SubjectExtension as NativeSubjectExtension, SubjectType as NativeSubjectType,
     WorkloadIdentity as NativeWorkloadIdentity,
 };
-use cpex_core::executor::ErasedResultFields;
 use cpex_core::hooks::payload::PluginPayload;
-use cpex_core::identity::payload::{IdentityPayload as NativeIdentityPayload, TokenSource as NativeTokenSource};
+use cpex_core::identity::payload::{
+    IdentityPayload as NativeIdentityPayload, TokenSource as NativeTokenSource,
+};
 
 use crate::payload_registry::PayloadSerializerRegistry;
 use crate::sandbox_manager::types::*;
@@ -62,7 +64,9 @@ use crate::sandbox_manager::types::*;
 // ---------------------------------------------------------------------------
 
 pub fn native_payload_to_wit(payload: &native_msg::MessagePayload) -> MessagePayload {
-    MessagePayload { message: native_message_to_wit(&payload.message) }
+    MessagePayload {
+        message: native_message_to_wit(&payload.message),
+    }
 }
 
 fn native_message_to_wit(msg: &native_msg::Message) -> Message {
@@ -98,22 +102,22 @@ fn native_content_part_to_wit(part: &native_content::ContentPart) -> ContentPart
         native_content::ContentPart::Thinking { text } => ContentPart::Thinking(text.clone()),
         native_content::ContentPart::ToolCall { content } => {
             ContentPart::ToolCall(native_tool_call_to_wit(content))
-        }
+        },
         native_content::ContentPart::ToolResult { content } => {
             ContentPart::ToolResult(native_tool_result_to_wit(content))
-        }
+        },
         native_content::ContentPart::Resource { content } => {
             ContentPart::CmfResource(native_resource_to_wit(content))
-        }
+        },
         native_content::ContentPart::ResourceRef { content } => {
             ContentPart::ResourceRef(native_resource_ref_to_wit(content))
-        }
+        },
         native_content::ContentPart::PromptRequest { content } => {
             ContentPart::PromptRequest(native_prompt_request_to_wit(content))
-        }
+        },
         native_content::ContentPart::PromptResult { content } => {
             ContentPart::PromptResult(native_prompt_result_to_wit(content))
-        }
+        },
         native_content::ContentPart::Image { content } => ContentPart::Image(ImageSource {
             source_type: content.source_type.clone(),
             data: content.data.clone(),
@@ -138,7 +142,7 @@ fn native_content_part_to_wit(part: &native_content::ContentPart) -> ContentPart
                 media_type: content.media_type.clone(),
                 title: content.title.clone(),
             })
-        }
+        },
     }
 }
 
@@ -238,7 +242,11 @@ pub fn native_identity_payload_to_wit(p: &NativeIdentityPayload) -> IdentityPayl
         source,
         source_custom,
         source_header: p.source_header().map(str::to_owned),
-        headers: p.headers().iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+        headers: p
+            .headers()
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect(),
         client_host: p.client_host().map(str::to_owned),
         client_port: p.client_port(),
         subject: p.subject.as_ref().map(native_subject_to_wit),
@@ -283,7 +291,10 @@ pub fn native_delegation_payload_to_wit(p: &NativeDelegationPayload) -> Delegati
         auth_enforced_by,
         route_attenuation: p.route_attenuation().map(native_attenuation_to_wit),
         // token bytes are #[serde(skip)] — omit from WIT
-        delegated_token: p.delegated_token.as_ref().map(native_raw_delegated_token_to_wit),
+        delegated_token: p
+            .delegated_token
+            .as_ref()
+            .map(native_raw_delegated_token_to_wit),
         delegation_update: p.delegation_update.as_ref().map(native_delegation_to_wit),
         delegation_mode: p.delegation_mode.as_ref().map(|m| match m {
             NativeDelegationMode::OnBehalfOfUser => DelegationMode::OnBehalfOfUser,
@@ -334,7 +345,10 @@ pub fn native_extensions_to_wit(ext: &NativeExtensions) -> Extensions {
         llm: ext.llm.as_ref().map(|l| native_llm_to_wit(l)),
         framework: ext.framework.as_ref().map(|f| native_framework_to_wit(f)),
         delegation: ext.delegation.as_ref().map(|d| native_delegation_to_wit(d)),
-        custom: ext.custom.as_ref().and_then(|c| serde_json::to_string(c.as_ref()).ok()),
+        custom: ext
+            .custom
+            .as_ref()
+            .and_then(|c| serde_json::to_string(c.as_ref()).ok()),
     }
 }
 
@@ -357,10 +371,14 @@ fn native_security_to_wit(s: &NativeSecurityExtension) -> SecurityExtension {
         caller_workload: s.caller_workload.as_ref().map(native_workload_to_wit),
         this_workload: s.this_workload.as_ref().map(native_workload_to_wit),
         auth_method: s.auth_method.clone(),
-        objects: s.objects.iter()
+        objects: s
+            .objects
+            .iter()
             .map(|(k, v)| (k.clone(), native_object_profile_to_wit(v)))
             .collect(),
-        data: s.data.iter()
+        data: s
+            .data
+            .iter()
             .map(|(k, v)| (k.clone(), native_data_policy_to_wit(v)))
             .collect(),
     }
@@ -373,7 +391,11 @@ fn native_subject_to_wit(s: &NativeSubjectExtension) -> SubjectExtension {
         roles: s.roles.iter().cloned().collect(),
         permissions: s.permissions.iter().cloned().collect(),
         teams: s.teams.iter().cloned().collect(),
-        claims: s.claims.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+        claims: s
+            .claims
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect(),
     }
 }
 
@@ -404,7 +426,9 @@ fn native_client_to_wit(c: &NativeClientExtension) -> ClientExtension {
         roles: c.roles.clone(),
         permissions: c.permissions.clone(),
         teams: c.teams.clone(),
-        claims: c.claims.iter()
+        claims: c
+            .claims
+            .iter()
             .map(|(k, v)| (k.clone(), serde_json::to_string(v).unwrap_or_default()))
             .collect(),
     }
@@ -445,8 +469,16 @@ fn native_data_policy_to_wit(d: &NativeDataPolicy) -> DataPolicy {
 
 fn native_http_to_wit(h: &NativeHttpExtension) -> HttpExtension {
     HttpExtension {
-        request_headers: h.request_headers.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
-        response_headers: h.response_headers.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+        request_headers: h
+            .request_headers
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect(),
+        response_headers: h
+            .response_headers
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect(),
     }
 }
 
@@ -456,7 +488,11 @@ fn native_meta_to_wit(m: &NativeMetaExtension) -> MetaExtension {
         entity_name: m.entity_name.clone(),
         tags: m.tags.iter().cloned().collect(),
         scope: m.scope.clone(),
-        properties: m.properties.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+        properties: m
+            .properties
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect(),
     }
 }
 
@@ -469,7 +505,9 @@ fn native_agent_to_wit(a: &NativeAgentExtension) -> AgentExtension {
         agent_id: a.agent_id.clone(),
         parent_agent_id: a.parent_agent_id.clone(),
         conversation: a.conversation.as_ref().map(|c| ConversationContext {
-            history: c.history.iter()
+            history: c
+                .history
+                .iter()
                 .map(|v| serde_json::to_string(v).unwrap_or_default())
                 .collect(),
             summary: c.summary.clone(),
@@ -491,11 +529,19 @@ fn native_tool_metadata_to_wit(t: &NativeToolMetadata) -> ToolMetadata {
         name: t.name.clone(),
         title: t.title.clone(),
         description: t.description.clone(),
-        input_schema: t.input_schema.as_ref().and_then(|v| serde_json::to_string(v).ok()),
-        output_schema: t.output_schema.as_ref().and_then(|v| serde_json::to_string(v).ok()),
+        input_schema: t
+            .input_schema
+            .as_ref()
+            .and_then(|v| serde_json::to_string(v).ok()),
+        output_schema: t
+            .output_schema
+            .as_ref()
+            .and_then(|v| serde_json::to_string(v).ok()),
         server_id: t.server_id.clone(),
         namespace: t.namespace.clone(),
-        annotations: t.annotations.iter()
+        annotations: t
+            .annotations
+            .iter()
             .map(|(k, v)| (k.clone(), serde_json::to_string(v).unwrap_or_default()))
             .collect(),
     }
@@ -508,7 +554,9 @@ fn native_resource_metadata_to_wit(r: &NativeResourceMetadata) -> ResourceMetada
         description: r.description.clone(),
         mime_type: r.mime_type.clone(),
         server_id: r.server_id.clone(),
-        annotations: r.annotations.iter()
+        annotations: r
+            .annotations
+            .iter()
             .map(|(k, v)| (k.clone(), serde_json::to_string(v).unwrap_or_default()))
             .collect(),
     }
@@ -518,9 +566,14 @@ fn native_prompt_metadata_to_wit(p: &NativePromptMetadata) -> PromptMetadata {
     PromptMetadata {
         name: p.name.clone(),
         description: p.description.clone(),
-        arguments: p.arguments.as_ref().and_then(|v| serde_json::to_string(v).ok()),
+        arguments: p
+            .arguments
+            .as_ref()
+            .and_then(|v| serde_json::to_string(v).ok()),
         server_id: p.server_id.clone(),
-        annotations: p.annotations.iter()
+        annotations: p
+            .annotations
+            .iter()
             .map(|(k, v)| (k.clone(), serde_json::to_string(v).unwrap_or_default()))
             .collect(),
     }
@@ -591,12 +644,20 @@ fn native_delegation_to_wit(d: &NativeDelegationExtension) -> DelegationExtensio
 fn native_delegation_hop_to_wit(hop: &NativeDelegationHop) -> DelegationHop {
     let (strategy, strategy_custom) = match &hop.strategy {
         None => (None, None),
-        Some(NativeDelegationStrategy::TokenExchange) => (Some(DelegationStrategy::TokenExchange), None),
-        Some(NativeDelegationStrategy::ClientCredentials) => (Some(DelegationStrategy::ClientCredentials), None),
+        Some(NativeDelegationStrategy::TokenExchange) => {
+            (Some(DelegationStrategy::TokenExchange), None)
+        },
+        Some(NativeDelegationStrategy::ClientCredentials) => {
+            (Some(DelegationStrategy::ClientCredentials), None)
+        },
         Some(NativeDelegationStrategy::SpiffeSvid) => (Some(DelegationStrategy::SpiffeSvid), None),
-        Some(NativeDelegationStrategy::Passthrough) => (Some(DelegationStrategy::Passthrough), None),
+        Some(NativeDelegationStrategy::Passthrough) => {
+            (Some(DelegationStrategy::Passthrough), None)
+        },
         Some(NativeDelegationStrategy::Ucan) => (Some(DelegationStrategy::Ucan), None),
-        Some(NativeDelegationStrategy::TransactionToken) => (Some(DelegationStrategy::TransactionToken), None),
+        Some(NativeDelegationStrategy::TransactionToken) => {
+            (Some(DelegationStrategy::TransactionToken), None)
+        },
         Some(NativeDelegationStrategy::Custom(s)) => (None, Some(s.clone())),
         Some(_) => (None, None),
     };
@@ -605,7 +666,9 @@ fn native_delegation_hop_to_wit(hop: &NativeDelegationHop) -> DelegationHop {
         subject_type: hop.subject_type.as_ref().map(native_subject_type_to_wit),
         audience: hop.audience.clone(),
         scopes_granted: hop.scopes_granted.clone(),
-        authorization_details: hop.authorization_details.iter()
+        authorization_details: hop
+            .authorization_details
+            .iter()
             .map(native_auth_detail_to_wit)
             .collect(),
         timestamp: hop.timestamp.to_rfc3339(),
@@ -638,13 +701,17 @@ fn native_auth_detail_to_wit(a: &NativeAuthDetail) -> AuthorizationDetail {
 
 pub fn native_context_to_wit(ctx: &NativePluginContext) -> PluginContext {
     PluginContext {
-        local_state: ctx.local_state.iter()
+        local_state: ctx
+            .local_state
+            .iter()
             .map(|(k, v)| ContextEntry {
                 key: k.clone(),
                 value: serde_json::to_string(v).unwrap_or_default(),
             })
             .collect(),
-        global_state: ctx.global_state.iter()
+        global_state: ctx
+            .global_state
+            .iter()
             .map(|(k, v)| ContextEntry {
                 key: k.clone(),
                 value: serde_json::to_string(v).unwrap_or_default(),
@@ -686,22 +753,26 @@ pub fn wit_hook_result_to_native_filtered(
         result.modified_payload.and_then(|hp| match hp {
             HookPayload::Cmf(mp) => {
                 Some(Box::new(wit_cmf_payload_to_native(mp)) as Box<dyn PluginPayload>)
-            }
+            },
             HookPayload::Identity(ip) => {
                 Some(Box::new(wit_identity_payload_to_native(ip)) as Box<dyn PluginPayload>)
-            }
+            },
             HookPayload::Delegation(dp) => {
                 Some(Box::new(wit_delegation_payload_to_native(dp)) as Box<dyn PluginPayload>)
-            }
+            },
             HookPayload::Custom(gp) => {
                 match registry.deserialize(&gp.payload_type, &gp.payload_data) {
                     Ok(boxed) => Some(boxed),
                     Err(e) => {
-                        tracing::warn!("custom payload writeback failed for '{}': {}", gp.payload_type, e);
+                        tracing::warn!(
+                            "custom payload writeback failed for '{}': {}",
+                            gp.payload_type,
+                            e
+                        );
                         None
-                    }
+                    },
                 }
-            }
+            },
         });
 
     let fields = ErasedResultFields {
@@ -730,11 +801,25 @@ fn wit_violation_to_native(v: PluginViolation) -> NativePluginViolation {
 
 pub fn wit_context_to_native(ctx: PluginContext) -> NativePluginContext {
     NativePluginContext {
-        local_state: ctx.local_state.into_iter()
-            .map(|e| (e.key, serde_json::from_str(&e.value).unwrap_or(serde_json::Value::String(e.value))))
+        local_state: ctx
+            .local_state
+            .into_iter()
+            .map(|e| {
+                (
+                    e.key,
+                    serde_json::from_str(&e.value).unwrap_or(serde_json::Value::String(e.value)),
+                )
+            })
             .collect(),
-        global_state: ctx.global_state.into_iter()
-            .map(|e| (e.key, serde_json::from_str(&e.value).unwrap_or(serde_json::Value::String(e.value))))
+        global_state: ctx
+            .global_state
+            .into_iter()
+            .map(|e| {
+                (
+                    e.key,
+                    serde_json::from_str(&e.value).unwrap_or(serde_json::Value::String(e.value)),
+                )
+            })
             .collect(),
     }
 }
@@ -744,14 +829,20 @@ pub fn wit_context_to_native(ctx: PluginContext) -> NativePluginContext {
 // ---------------------------------------------------------------------------
 
 pub fn wit_cmf_payload_to_native(payload: MessagePayload) -> native_msg::MessagePayload {
-    native_msg::MessagePayload { message: wit_message_to_native(payload.message) }
+    native_msg::MessagePayload {
+        message: wit_message_to_native(payload.message),
+    }
 }
 
 fn wit_message_to_native(msg: Message) -> native_msg::Message {
     native_msg::Message {
         schema_version: msg.schema_version,
         role: wit_role_to_native(msg.role),
-        content: msg.content.into_iter().map(wit_content_part_to_native).collect(),
+        content: msg
+            .content
+            .into_iter()
+            .map(wit_content_part_to_native)
+            .collect(),
         channel: msg.channel.map(wit_channel_to_native),
     }
 }
@@ -884,9 +975,7 @@ pub fn wit_identity_payload_to_native(p: IdentityPayload) -> NativeIdentityPaylo
         TokenSource::Mtls => NativeTokenSource::Mtls,
         TokenSource::SpiffeJwtSvid => NativeTokenSource::SpiffeJwtSvid,
         TokenSource::ApiKey => NativeTokenSource::ApiKey,
-        TokenSource::Custom => {
-            NativeTokenSource::Custom(p.source_custom.unwrap_or_default())
-        }
+        TokenSource::Custom => NativeTokenSource::Custom(p.source_custom.unwrap_or_default()),
     };
     let mut out = NativeIdentityPayload::new("", source);
     if let Some(h) = p.source_header {
@@ -915,11 +1004,13 @@ pub fn wit_identity_payload_to_native(p: IdentityPayload) -> NativeIdentityPaylo
     out.client = p.client.map(wit_client_to_native);
     out.caller_workload = p.caller_workload.map(wit_workload_to_native);
     out.delegation = p.delegation.map(wit_delegation_to_native);
-    out.resolved_at = p.resolved_at
+    out.resolved_at = p
+        .resolved_at
         .as_deref()
         .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
         .map(|dt| dt.with_timezone(&chrono::Utc));
-    out.raw_claims = p.raw_claims
+    out.raw_claims = p
+        .raw_claims
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or_default();
     out
@@ -975,11 +1066,13 @@ pub fn wit_delegation_payload_to_native(p: DelegationPayload) -> NativeDelegatio
         DelegationMode::OnBehalfOfUser => NativeDelegationMode::OnBehalfOfUser,
         DelegationMode::AsGateway => NativeDelegationMode::AsGateway,
     });
-    out.minted_at = p.minted_at
+    out.minted_at = p
+        .minted_at
         .as_deref()
         .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
         .map(|dt| dt.with_timezone(&chrono::Utc));
-    out.metadata = p.metadata
+    out.metadata = p
+        .metadata
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or_default();
     out
@@ -1029,10 +1122,12 @@ fn wit_extensions_to_owned(
         owned.security = ext.security.map(wit_security_to_native);
     }
     if guest_saw_http {
-        owned.http = ext.http.map(|h| Guarded::new(NativeHttpExtension {
-            request_headers: h.request_headers.into_iter().collect(),
-            response_headers: h.response_headers.into_iter().collect(),
-        }));
+        owned.http = ext.http.map(|h| {
+            Guarded::new(NativeHttpExtension {
+                request_headers: h.request_headers.into_iter().collect(),
+                response_headers: h.response_headers.into_iter().collect(),
+            })
+        });
     }
     if guest_saw_delegation {
         owned.delegation = ext.delegation.map(wit_delegation_to_native);
@@ -1066,25 +1161,39 @@ fn wit_security_to_native(s: SecurityExtension) -> NativeSecurityExtension {
         caller_workload: s.caller_workload.map(wit_workload_to_native),
         this_workload: s.this_workload.map(wit_workload_to_native),
         auth_method: s.auth_method,
-        objects: s.objects.into_iter()
-            .map(|(k, v)| (k, NativeObjectSecurityProfile {
-                managed_by: v.managed_by,
-                permissions: v.permissions,
-                trust_domain: v.trust_domain,
-                data_scope: v.data_scope,
-            }))
+        objects: s
+            .objects
+            .into_iter()
+            .map(|(k, v)| {
+                (
+                    k,
+                    NativeObjectSecurityProfile {
+                        managed_by: v.managed_by,
+                        permissions: v.permissions,
+                        trust_domain: v.trust_domain,
+                        data_scope: v.data_scope,
+                    },
+                )
+            })
             .collect(),
-        data: s.data.into_iter()
-            .map(|(k, v)| (k, NativeDataPolicy {
-                apply_labels: v.apply_labels,
-                allowed_actions: v.allowed_actions,
-                denied_actions: v.denied_actions,
-                retention: v.retention.map(|r| NativeRetentionPolicy {
-                    max_age_seconds: r.max_age_seconds,
-                    policy: r.policy,
-                    delete_after: r.delete_after,
-                }),
-            }))
+        data: s
+            .data
+            .into_iter()
+            .map(|(k, v)| {
+                (
+                    k,
+                    NativeDataPolicy {
+                        apply_labels: v.apply_labels,
+                        allowed_actions: v.allowed_actions,
+                        denied_actions: v.denied_actions,
+                        retention: v.retention.map(|r| NativeRetentionPolicy {
+                            max_age_seconds: r.max_age_seconds,
+                            policy: r.policy,
+                            delete_after: r.delete_after,
+                        }),
+                    },
+                )
+            })
             .collect(),
     }
 }
@@ -1107,8 +1216,15 @@ fn wit_client_to_native(c: ClientExtension) -> NativeClientExtension {
         roles: c.roles,
         permissions: c.permissions,
         teams: c.teams,
-        claims: c.claims.into_iter()
-            .map(|(k, v)| (k, serde_json::from_str(&v).unwrap_or(serde_json::Value::String(v))))
+        claims: c
+            .claims
+            .into_iter()
+            .map(|(k, v)| {
+                (
+                    k,
+                    serde_json::from_str(&v).unwrap_or(serde_json::Value::String(v)),
+                )
+            })
             .collect(),
     }
 }
@@ -1117,7 +1233,9 @@ fn wit_workload_to_native(w: WorkloadIdentity) -> NativeWorkloadIdentity {
     NativeWorkloadIdentity {
         spiffe_id: w.spiffe_id,
         trust_domain: w.trust_domain,
-        attested_at: w.attested_at.as_deref()
+        attested_at: w
+            .attested_at
+            .as_deref()
             .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
             .map(|dt| dt.with_timezone(&chrono::Utc)),
         attestor: w.attestor,
@@ -1126,54 +1244,67 @@ fn wit_workload_to_native(w: WorkloadIdentity) -> NativeWorkloadIdentity {
     }
 }
 
-
-
-
-
 fn wit_delegation_to_native(d: DelegationExtension) -> NativeDelegationExtension {
     NativeDelegationExtension {
-        chain: d.chain.into_iter().map(|hop| {
-            let strategy = match (hop.strategy, hop.strategy_custom) {
-                (Some(DelegationStrategy::TokenExchange), _) => Some(NativeDelegationStrategy::TokenExchange),
-                (Some(DelegationStrategy::ClientCredentials), _) => Some(NativeDelegationStrategy::ClientCredentials),
-                (Some(DelegationStrategy::SpiffeSvid), _) => Some(NativeDelegationStrategy::SpiffeSvid),
-                (Some(DelegationStrategy::Passthrough), _) => Some(NativeDelegationStrategy::Passthrough),
-                (Some(DelegationStrategy::Ucan), _) => Some(NativeDelegationStrategy::Ucan),
-                (Some(DelegationStrategy::TransactionToken), _) => Some(NativeDelegationStrategy::TransactionToken),
-                (None, Some(s)) => Some(NativeDelegationStrategy::Custom(s)),
-                (None, None) => None,
-            };
-            NativeDelegationHop {
-                subject_id: hop.subject_id,
-                subject_type: hop.subject_type.map(|st| match st {
-                    SubjectType::User => NativeSubjectType::User,
-                    SubjectType::Agent => NativeSubjectType::Agent,
-                    SubjectType::Service => NativeSubjectType::Service,
-                    SubjectType::System => NativeSubjectType::System,
-                }),
-                audience: hop.audience,
-                scopes_granted: hop.scopes_granted,
-                authorization_details: hop.authorization_details.into_iter()
-                    .map(|a| NativeAuthDetail {
-                        detail_type: a.detail_type,
-                        locations: a.locations,
-                        actions: a.actions,
-                        datatypes: a.datatypes,
-                        identifier: a.identifier,
-                        privileges: a.privileges,
-                        extra: a.extra
-                            .and_then(|s| serde_json::from_str(&s).ok())
-                            .unwrap_or_default(),
-                    })
-                    .collect(),
-                timestamp: DateTime::parse_from_rfc3339(&hop.timestamp)
-                    .map(|dt| dt.with_timezone(&chrono::Utc))
-                    .unwrap_or_else(|_| chrono::Utc::now()),
-                ttl_seconds: hop.ttl_seconds,
-                strategy,
-                from_cache: hop.from_cache,
-            }
-        }).collect(),
+        chain: d
+            .chain
+            .into_iter()
+            .map(|hop| {
+                let strategy = match (hop.strategy, hop.strategy_custom) {
+                    (Some(DelegationStrategy::TokenExchange), _) => {
+                        Some(NativeDelegationStrategy::TokenExchange)
+                    },
+                    (Some(DelegationStrategy::ClientCredentials), _) => {
+                        Some(NativeDelegationStrategy::ClientCredentials)
+                    },
+                    (Some(DelegationStrategy::SpiffeSvid), _) => {
+                        Some(NativeDelegationStrategy::SpiffeSvid)
+                    },
+                    (Some(DelegationStrategy::Passthrough), _) => {
+                        Some(NativeDelegationStrategy::Passthrough)
+                    },
+                    (Some(DelegationStrategy::Ucan), _) => Some(NativeDelegationStrategy::Ucan),
+                    (Some(DelegationStrategy::TransactionToken), _) => {
+                        Some(NativeDelegationStrategy::TransactionToken)
+                    },
+                    (None, Some(s)) => Some(NativeDelegationStrategy::Custom(s)),
+                    (None, None) => None,
+                };
+                NativeDelegationHop {
+                    subject_id: hop.subject_id,
+                    subject_type: hop.subject_type.map(|st| match st {
+                        SubjectType::User => NativeSubjectType::User,
+                        SubjectType::Agent => NativeSubjectType::Agent,
+                        SubjectType::Service => NativeSubjectType::Service,
+                        SubjectType::System => NativeSubjectType::System,
+                    }),
+                    audience: hop.audience,
+                    scopes_granted: hop.scopes_granted,
+                    authorization_details: hop
+                        .authorization_details
+                        .into_iter()
+                        .map(|a| NativeAuthDetail {
+                            detail_type: a.detail_type,
+                            locations: a.locations,
+                            actions: a.actions,
+                            datatypes: a.datatypes,
+                            identifier: a.identifier,
+                            privileges: a.privileges,
+                            extra: a
+                                .extra
+                                .and_then(|s| serde_json::from_str(&s).ok())
+                                .unwrap_or_default(),
+                        })
+                        .collect(),
+                    timestamp: DateTime::parse_from_rfc3339(&hop.timestamp)
+                        .map(|dt| dt.with_timezone(&chrono::Utc))
+                        .unwrap_or_else(|_| chrono::Utc::now()),
+                    ttl_seconds: hop.ttl_seconds,
+                    strategy,
+                    from_cache: hop.from_cache,
+                }
+            })
+            .collect(),
         depth: d.depth,
         origin_subject_id: d.origin_subject_id,
         actor_subject_id: d.actor_subject_id,

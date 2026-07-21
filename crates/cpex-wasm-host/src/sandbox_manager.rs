@@ -13,14 +13,14 @@ use anyhow::{Context, Result};
 use wasmtime::component::{Component, Linker, ResourceTable};
 use wasmtime::{Config, Engine, Store, StoreLimits, StoreLimitsBuilder};
 use wasmtime_wasi::{WasiCtx, WasiCtxView, WasiView};
-use wasmtime_wasi_http::WasiHttpCtx;
-use wasmtime_wasi_http::p2::{WasiHttpCtxView, WasiHttpView};
+use wasmtime_wasi_http::p2::bindings::http::types::ErrorCode;
 use wasmtime_wasi_http::p2::body::HyperOutgoingBody;
 use wasmtime_wasi_http::p2::types::{HostFutureIncomingResponse, OutgoingRequestConfig};
-use wasmtime_wasi_http::p2::{HttpResult, WasiHttpHooks, default_send_request};
-use wasmtime_wasi_http::p2::bindings::http::types::ErrorCode;
+use wasmtime_wasi_http::p2::{default_send_request, HttpResult, WasiHttpHooks};
+use wasmtime_wasi_http::p2::{WasiHttpCtxView, WasiHttpView};
+use wasmtime_wasi_http::WasiHttpCtx;
 
-use crate::policy_loader::{build_wasi_context, SandboxPolicy, ResourceLimits};
+use crate::policy_loader::{build_wasi_context, ResourceLimits, SandboxPolicy};
 
 // Generate Rust bindings from the WIT interface definition.
 // This creates the `Plugin` struct with `call_handle_hook` and the WIT types.
@@ -55,9 +55,10 @@ impl WasiHttpHooks for NetworkPolicy {
             .unwrap_or_default();
 
         // Check exact match or subdomain match (e.g., "api.example.com" matches "example.com")
-        let is_allowed = self.allowed_hosts.iter().any(|allowed| {
-            authority == *allowed || authority.ends_with(&format!(".{}", allowed))
-        });
+        let is_allowed = self
+            .allowed_hosts
+            .iter()
+            .any(|allowed| authority == *allowed || authority.ends_with(&format!(".{}", allowed)));
 
         if !is_allowed {
             return Err(ErrorCode::HttpRequestDenied.into());
@@ -148,7 +149,10 @@ impl SharedEngine {
         let mut linker = Linker::new(&engine);
         wasmtime_wasi::p2::add_to_linker_async(&mut linker)?;
         wasmtime_wasi_http::p2::add_only_http_to_linker_async(&mut linker)?;
-        cpex::plugin::host_logging::add_to_linker::<WasmPluginState, wasmtime::component::HasSelf<WasmPluginState>>(&mut linker, |state| state)?;
+        cpex::plugin::host_logging::add_to_linker::<
+            WasmPluginState,
+            wasmtime::component::HasSelf<WasmPluginState>,
+        >(&mut linker, |state| state)?;
 
         let engine_clone = engine.clone();
         std::thread::spawn(move || loop {
@@ -210,8 +214,9 @@ impl SandboxManager {
         }
         let limits = limits_builder.trap_on_grow_failure(true).build();
 
-        let component = Component::from_file(&self.engine, wasm_path)
-            .map_err(|e| anyhow::anyhow!("failed to load wasm from {}: {}", wasm_path.display(), e))?;
+        let component = Component::from_file(&self.engine, wasm_path).map_err(|e| {
+            anyhow::anyhow!("failed to load wasm from {}: {}", wasm_path.display(), e)
+        })?;
 
         let mut store = Store::new(
             &self.engine,
@@ -234,7 +239,8 @@ impl SandboxManager {
         // prevent long-lived plugins from silently degrading. The initial
         // budget is set here so the plugin can instantiate.
         let fuel_per_invocation = resources.max_fuel.unwrap_or(u64::MAX);
-        store.set_fuel(fuel_per_invocation)
+        store
+            .set_fuel(fuel_per_invocation)
             .map_err(|e| anyhow::anyhow!("failed to set fuel: {}", e))?;
 
         // Apply execution timeout via epoch deadline.
@@ -275,13 +281,12 @@ impl SandboxManager {
         extensions: types::Extensions,
         ctx: types::PluginContext,
     ) -> Result<types::HookResult> {
-        let instance = self
-            .instance
-            .as_mut()
-            .with_context(|| "no plugin loaded")?;
+        let instance = self.instance.as_mut().with_context(|| "no plugin loaded")?;
 
         // Reset fuel per invocation — each call gets a fresh budget
-        instance.store.set_fuel(instance.fuel_per_invocation)
+        instance
+            .store
+            .set_fuel(instance.fuel_per_invocation)
             .map_err(|e| anyhow::anyhow!("failed to reset fuel: {}", e))?;
 
         // Reset epoch deadline per invocation (timeout is per-call)
@@ -300,4 +305,3 @@ impl SandboxManager {
         self.instance.is_some()
     }
 }
-

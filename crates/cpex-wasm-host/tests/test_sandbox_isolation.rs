@@ -14,7 +14,9 @@ use cpex_core::cmf::{ContentPart, Message, MessagePayload, Role, ToolCall};
 use cpex_core::context::PluginContext;
 use cpex_core::extensions::container::Extensions;
 
-use cpex_wasm_host::conversions::{native_context_to_wit, native_extensions_to_wit, native_payload_to_wit};
+use cpex_wasm_host::conversions::{
+    native_context_to_wit, native_extensions_to_wit, native_payload_to_wit,
+};
 use cpex_wasm_host::sandbox_manager::{SandboxManager, SharedEngine};
 
 static INIT: Once = Once::new();
@@ -57,18 +59,14 @@ async fn test_plugin_cannot_read_etc_passwd_without_filesystem_policy() {
         "WASM binary not found: {}. Run `make build-test-plugins` from crates/cpex-wasm-host first.",
         path.display());
 
-
     // Load plugin with NO filesystem policy (deny-all)
     let shared = SharedEngine::new().unwrap();
     let mut mgr = SandboxManager::with_shared_engine(&shared);
-    mgr.load_wasmplugin(&path, None, "fs-test")
-        .await
-        .unwrap();
+    mgr.load_wasmplugin(&path, None, "fs-test").await.unwrap();
 
     let payload = make_payload();
-    let wit_payload = cpex_wasm_host::sandbox_manager::types::HookPayload::Cmf(
-        native_payload_to_wit(&payload),
-    );
+    let wit_payload =
+        cpex_wasm_host::sandbox_manager::types::HookPayload::Cmf(native_payload_to_wit(&payload));
     let wit_ext = native_extensions_to_wit(&Extensions::default());
     let wit_ctx = native_context_to_wit(&PluginContext::default());
 
@@ -81,7 +79,9 @@ async fn test_plugin_cannot_read_etc_passwd_without_filesystem_policy() {
     assert!(result.continue_processing, "plugin should return allow");
 
     // Check the context — plugin writes fs_read_success into local_state
-    let ctx = result.modified_context.expect("plugin should write context");
+    let ctx = result
+        .modified_context
+        .expect("plugin should write context");
     let local_entries: std::collections::HashMap<String, String> = ctx
         .local_state
         .into_iter()
@@ -94,10 +94,13 @@ async fn test_plugin_cannot_read_etc_passwd_without_filesystem_policy() {
 
     // The read MUST have failed — sandbox denied it
     assert_eq!(
-        success_value, "false",
+        success_value,
+        "false",
         "SANDBOX ESCAPE: plugin successfully read /etc/passwd! fs_read_success={}, error={}",
         success_value,
-        local_entries.get("fs_read_error").unwrap_or(&"<none>".to_string())
+        local_entries
+            .get("fs_read_error")
+            .unwrap_or(&"<none>".to_string())
     );
 
     // Verify the error message indicates permission/access denial
@@ -140,9 +143,8 @@ async fn test_plugin_cannot_read_etc_passwd_with_unrelated_filesystem_policy() {
         .unwrap();
 
     let payload = make_payload();
-    let wit_payload = cpex_wasm_host::sandbox_manager::types::HookPayload::Cmf(
-        native_payload_to_wit(&payload),
-    );
+    let wit_payload =
+        cpex_wasm_host::sandbox_manager::types::HookPayload::Cmf(native_payload_to_wit(&payload));
     let wit_ext = native_extensions_to_wit(&Extensions::default());
     let wit_ctx = native_context_to_wit(&PluginContext::default());
 
@@ -153,7 +155,9 @@ async fn test_plugin_cannot_read_etc_passwd_with_unrelated_filesystem_policy() {
 
     assert!(result.continue_processing);
 
-    let ctx = result.modified_context.expect("plugin should write context");
+    let ctx = result
+        .modified_context
+        .expect("plugin should write context");
     let local_entries: std::collections::HashMap<String, String> = ctx
         .local_state
         .into_iter()

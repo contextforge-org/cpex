@@ -99,7 +99,10 @@ pub fn build_wasi_context(sandbox_policy: Option<&SandboxPolicy>) -> Result<Plug
         for rule in &policy.allowed_filesystem {
             let (dir_perms, file_perms) = match rule.permission.as_str() {
                 "read" => (DirPerms::READ, FilePerms::READ),
-                "write" | "mutate" => (DirPerms::READ | DirPerms::MUTATE, FilePerms::READ | FilePerms::WRITE),
+                "write" | "mutate" => (
+                    DirPerms::READ | DirPerms::MUTATE,
+                    FilePerms::READ | FilePerms::WRITE,
+                ),
                 other => anyhow::bail!("unknown filesystem permission: {}", other),
             };
 
@@ -112,8 +115,15 @@ pub fn build_wasi_context(sandbox_policy: Option<&SandboxPolicy>) -> Result<Plug
                     .parent()
                     .ok_or_else(|| anyhow::anyhow!("file '{}' has no parent directory", file))?;
                 builder
-                    .preopened_dir(parent, parent.to_string_lossy().as_ref(), dir_perms, file_perms)
-                    .map_err(|e| anyhow::anyhow!("failed to preopen parent dir for file '{}': {}", file, e))?;
+                    .preopened_dir(
+                        parent,
+                        parent.to_string_lossy().as_ref(),
+                        dir_perms,
+                        file_perms,
+                    )
+                    .map_err(|e| {
+                        anyhow::anyhow!("failed to preopen parent dir for file '{}': {}", file, e)
+                    })?;
             }
         }
 
@@ -149,10 +159,8 @@ mod tests {
     #[test]
     fn test_parse_sandbox_policy_from_config_file() {
         let config_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("config/config.yaml");
-        let raw = fs::read_to_string(&config_path)
-            .expect("failed to read config file");
-        let config: serde_yaml::Value = serde_yaml::from_str(&raw)
-            .expect("failed to parse YAML");
+        let raw = fs::read_to_string(&config_path).expect("failed to read config file");
+        let config: serde_yaml::Value = serde_yaml::from_str(&raw).expect("failed to parse YAML");
 
         let sandbox_policy_value = config["plugins"][0]["config"]["sandbox_policy"].clone();
         let policy: SandboxPolicy = serde_yaml::from_value(sandbox_policy_value)

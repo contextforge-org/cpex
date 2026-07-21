@@ -104,10 +104,12 @@ impl PayloadSerializerRegistry {
     ///
     /// Returns an error if `type_name` has not been registered.
     pub fn deserialize(&self, type_name: &str, bytes: &[u8]) -> Result<Box<dyn PluginPayload>> {
-        let type_id = self
-            .by_type_name
-            .get(type_name)
-            .ok_or_else(|| anyhow!("unknown payload type '{}' in PayloadSerializerRegistry", type_name))?;
+        let type_id = self.by_type_name.get(type_name).ok_or_else(|| {
+            anyhow!(
+                "unknown payload type '{}' in PayloadSerializerRegistry",
+                type_name
+            )
+        })?;
         let codec = self
             .by_type_id
             .get(type_id)

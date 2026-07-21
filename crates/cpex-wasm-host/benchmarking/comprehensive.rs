@@ -9,7 +9,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use criterion::{black_box, criterion_group, criterion_main, Criterion, BenchmarkId};
+use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use tokio::runtime::Runtime;
 use tokio::sync::Mutex;
 
@@ -27,7 +27,9 @@ use cpex_core::extensions::security::SecurityExtension;
 use cpex_core::hooks::trait_def::{HookHandler, HookTypeDef, PluginResult};
 use cpex_core::plugin::{Plugin, PluginConfig};
 
-use cpex_wasm_host::conversions::{native_context_to_wit, native_extensions_to_wit, native_payload_to_wit};
+use cpex_wasm_host::conversions::{
+    native_context_to_wit, native_extensions_to_wit, native_payload_to_wit,
+};
 use cpex_wasm_host::payload_registry::PayloadSerializerRegistry;
 use cpex_wasm_host::sandbox_manager::{SandboxManager, SharedEngine};
 
@@ -49,8 +51,12 @@ impl Plugin for NativeComputePlugin {
             ..Default::default()
         })
     }
-    async fn initialize(&self) -> Result<(), Box<PluginError>> { Ok(()) }
-    async fn shutdown(&self) -> Result<(), Box<PluginError>> { Ok(()) }
+    async fn initialize(&self) -> Result<(), Box<PluginError>> {
+        Ok(())
+    }
+    async fn shutdown(&self) -> Result<(), Box<PluginError>> {
+        Ok(())
+    }
 }
 
 impl HookHandler<CmfHook> for NativeComputePlugin {
@@ -70,7 +76,12 @@ impl HookHandler<CmfHook> for NativeComputePlugin {
         let mut summary = String::with_capacity(256);
         summary.push_str("tool=");
         summary.push_str(
-            payload.message.get_tool_calls().first().map(|tc| tc.name.as_str()).unwrap_or("?"),
+            payload
+                .message
+                .get_tool_calls()
+                .first()
+                .map(|tc| tc.name.as_str())
+                .unwrap_or("?"),
         );
         if let Some(ref sec) = extensions.security {
             for label in sec.labels.iter() {
@@ -85,11 +96,9 @@ impl HookHandler<CmfHook> for NativeComputePlugin {
             }
         }
 
-        let hash: u64 = args_json
-            .bytes()
-            .fold(14695981039346656037u64, |acc, b| {
-                acc.wrapping_mul(1099511628211).wrapping_add(b as u64)
-            });
+        let hash: u64 = args_json.bytes().fold(14695981039346656037u64, |acc, b| {
+            acc.wrapping_mul(1099511628211).wrapping_add(b as u64)
+        });
 
         ctx.set_local("hash", serde_json::json!(hash));
         ctx.set_local("summary_len", serde_json::json!(summary.len()));
@@ -153,7 +162,10 @@ fn make_full_extensions() -> Extensions {
     security.add_label("CONFIDENTIAL");
 
     let mut http = HttpExtension::default();
-    http.set_header("Authorization", "Bearer eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9...");
+    http.set_header(
+        "Authorization",
+        "Bearer eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9...",
+    );
     http.set_header("X-Request-ID", "req-bench-001");
     http.set_header("Content-Type", "application/json");
     http.set_header("X-Correlation-ID", "corr-12345");
@@ -431,12 +443,7 @@ fn bench_concurrent_contention(c: &mut Criterion) {
                                 let wit_ctx = native_context_to_wit(&PluginContext::default());
                                 let mut mgr = sandbox.lock().await;
                                 let result = mgr
-                                    .invoke(
-                                        "cmf.tool_pre_invoke",
-                                        wit_payload,
-                                        wit_ext,
-                                        wit_ctx,
-                                    )
+                                    .invoke("cmf.tool_pre_invoke", wit_payload, wit_ext, wit_ctx)
                                     .await
                                     .unwrap();
                                 black_box(result);

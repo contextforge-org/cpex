@@ -14,7 +14,9 @@ use cpex_core::cmf::{ContentPart, Message, MessagePayload, Role, ToolCall};
 use cpex_core::context::PluginContext;
 use cpex_core::extensions::container::Extensions;
 
-use cpex_wasm_host::conversions::{native_context_to_wit, native_extensions_to_wit, native_payload_to_wit};
+use cpex_wasm_host::conversions::{
+    native_context_to_wit, native_extensions_to_wit, native_payload_to_wit,
+};
 use cpex_wasm_host::policy_loader::SandboxPolicy;
 use cpex_wasm_host::sandbox_manager::{SandboxManager, SharedEngine};
 
@@ -50,7 +52,9 @@ fn make_payload() -> MessagePayload {
     }
 }
 
-fn extract_context(result: &cpex_wasm_host::sandbox_manager::types::HookResult) -> std::collections::HashMap<String, String> {
+fn extract_context(
+    result: &cpex_wasm_host::sandbox_manager::types::HookResult,
+) -> std::collections::HashMap<String, String> {
     result
         .modified_context
         .as_ref()
@@ -69,21 +73,17 @@ async fn test_plugin_cannot_see_env_vars_without_policy() {
         "WASM binary not found: {}. Run `make build-test-plugins` from crates/cpex-wasm-host first.",
         path.display());
 
-
     // Set a host env var that the plugin will try to read
     std::env::set_var("SECRET_API_KEY", "super-secret-value");
 
     // Load with NO env policy (deny-all)
     let shared = SharedEngine::new().unwrap();
     let mut mgr = SandboxManager::with_shared_engine(&shared);
-    mgr.load_wasmplugin(&path, None, "env-test")
-        .await
-        .unwrap();
+    mgr.load_wasmplugin(&path, None, "env-test").await.unwrap();
 
     let payload = make_payload();
-    let wit_payload = cpex_wasm_host::sandbox_manager::types::HookPayload::Cmf(
-        native_payload_to_wit(&payload),
-    );
+    let wit_payload =
+        cpex_wasm_host::sandbox_manager::types::HookPayload::Cmf(native_payload_to_wit(&payload));
     let wit_ext = native_extensions_to_wit(&Extensions::default());
     let wit_ctx = native_context_to_wit(&PluginContext::default());
 
@@ -100,21 +100,27 @@ async fn test_plugin_cannot_see_env_vars_without_policy() {
     let home = entries.get("env_HOME").unwrap_or(&String::new()).clone();
     assert_eq!(
         home, "\"\"",
-        "SANDBOX ESCAPE: plugin can see HOME='{}'", home
+        "SANDBOX ESCAPE: plugin can see HOME='{}'",
+        home
     );
 
     // PATH must be empty
     let path_val = entries.get("env_PATH").unwrap_or(&String::new()).clone();
     assert_eq!(
         path_val, "\"\"",
-        "SANDBOX ESCAPE: plugin can see PATH='{}'", path_val
+        "SANDBOX ESCAPE: plugin can see PATH='{}'",
+        path_val
     );
 
     // SECRET_API_KEY must be empty
-    let secret = entries.get("env_SECRET_API_KEY").unwrap_or(&String::new()).clone();
+    let secret = entries
+        .get("env_SECRET_API_KEY")
+        .unwrap_or(&String::new())
+        .clone();
     assert_eq!(
         secret, "\"\"",
-        "SANDBOX ESCAPE: plugin can see SECRET_API_KEY='{}'", secret
+        "SANDBOX ESCAPE: plugin can see SECRET_API_KEY='{}'",
+        secret
     );
 
     // Clean up
@@ -146,9 +152,8 @@ async fn test_plugin_sees_only_allowed_env_var() {
         .unwrap();
 
     let payload = make_payload();
-    let wit_payload = cpex_wasm_host::sandbox_manager::types::HookPayload::Cmf(
-        native_payload_to_wit(&payload),
-    );
+    let wit_payload =
+        cpex_wasm_host::sandbox_manager::types::HookPayload::Cmf(native_payload_to_wit(&payload));
     let wit_ext = native_extensions_to_wit(&Extensions::default());
     let wit_ctx = native_context_to_wit(&PluginContext::default());
 
@@ -162,21 +167,25 @@ async fn test_plugin_sees_only_allowed_env_var() {
     let entries = extract_context(&result);
 
     // CPEX_TEST_ALLOWED should be visible
-    let allowed = entries.get("env_CPEX_TEST_ALLOWED").unwrap_or(&String::new()).clone();
+    let allowed = entries
+        .get("env_CPEX_TEST_ALLOWED")
+        .unwrap_or(&String::new())
+        .clone();
     assert_eq!(
         allowed, "\"hello-from-host\"",
-        "allowed env var should be visible, got: {}", allowed
+        "allowed env var should be visible, got: {}",
+        allowed
     );
 
     // HOME must still be empty (not in allowed list)
     let home = entries.get("env_HOME").unwrap_or(&String::new()).clone();
-    assert_eq!(
-        home, "\"\"",
-        "HOME should be hidden, got: {}", home
-    );
+    assert_eq!(home, "\"\"", "HOME should be hidden, got: {}", home);
 
     // SECRET_API_KEY must still be empty
-    let secret = entries.get("env_SECRET_API_KEY").unwrap_or(&String::new()).clone();
+    let secret = entries
+        .get("env_SECRET_API_KEY")
+        .unwrap_or(&String::new())
+        .clone();
     assert_eq!(
         secret, "\"\"",
         "SANDBOX ESCAPE: plugin sees SECRET_API_KEY despite not being in allowed_env"

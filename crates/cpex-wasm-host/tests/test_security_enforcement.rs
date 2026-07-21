@@ -28,15 +28,7 @@ fn test_pre_filter_strips_ungated_extensions() {
     // HTTP is visible (has read_headers)
     assert!(filtered.http.is_some());
     // Security labels require read_labels — not granted
-    assert!(
-        filtered.security.is_none()
-            || filtered
-                .security
-                .as_ref()
-                .unwrap()
-                .labels
-                .is_empty()
-    );
+    assert!(filtered.security.is_none() || filtered.security.as_ref().unwrap().labels.is_empty());
     // Agent requires read_agent — not granted
     assert!(filtered.agent.is_none());
     // Delegation requires read_delegation — not granted
@@ -122,8 +114,11 @@ fn test_monotonic_passes_when_labels_only_added() {
 
     // Add a label (superset of original)
     let mut new_sec = SecurityExtension::default();
-    new_sec.labels =
-        MonotonicSet::from_set(["PII".to_string(), "HIPAA".to_string()].into_iter().collect());
+    new_sec.labels = MonotonicSet::from_set(
+        ["PII".to_string(), "HIPAA".to_string()]
+            .into_iter()
+            .collect(),
+    );
     owned.security = Some(new_sec);
 
     let caps: HashSet<String> = ["read_labels"].iter().map(|s| s.to_string()).collect();
@@ -146,7 +141,10 @@ fn test_monotonic_not_enforced_without_read_labels() {
     let caps: HashSet<String> = HashSet::new();
 
     let result = validate_monotonic(&ext, &owned, &caps);
-    assert!(result, "should not enforce monotonic without read_labels cap");
+    assert!(
+        result,
+        "should not enforce monotonic without read_labels cap"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -160,14 +158,19 @@ fn test_unauthorized_http_write_detected() {
 
     // Modify HTTP headers
     let mut new_http = HttpExtension::default();
-    new_http.request_headers.insert("X-Injected".into(), "evil".into());
+    new_http
+        .request_headers
+        .insert("X-Injected".into(), "evil".into());
     owned.http = Some(Guarded::new(new_http));
 
     // Plugin lacks write_headers capability
     let caps: HashSet<String> = ["read_headers"].iter().map(|s| s.to_string()).collect();
 
     let result = validate_write_auth_http(&ext, &owned, &caps);
-    assert!(!result, "should reject HTTP write without write_headers cap");
+    assert!(
+        !result,
+        "should reject HTTP write without write_headers cap"
+    );
 }
 
 #[test]
@@ -177,7 +180,9 @@ fn test_authorized_http_write_passes() {
 
     // Modify HTTP headers
     let mut new_http = HttpExtension::default();
-    new_http.request_headers.insert("X-Processed".into(), "ok".into());
+    new_http
+        .request_headers
+        .insert("X-Processed".into(), "ok".into());
     owned.http = Some(Guarded::new(new_http));
 
     // Plugin HAS write_headers capability
@@ -204,7 +209,10 @@ fn test_unauthorized_labels_write_detected() {
     let caps: HashSet<String> = ["read_labels"].iter().map(|s| s.to_string()).collect();
 
     let result = validate_write_auth_labels(&ext, &owned, &caps);
-    assert!(!result, "should reject label write without append_labels cap");
+    assert!(
+        !result,
+        "should reject label write without append_labels cap"
+    );
 }
 
 #[test]
@@ -242,7 +250,10 @@ fn test_unauthorized_delegation_write_detected() {
     let caps: HashSet<String> = ["read_delegation"].iter().map(|s| s.to_string()).collect();
 
     let result = validate_write_auth_delegation(&ext, &owned, &caps);
-    assert!(!result, "should reject delegation write without append_delegation cap");
+    assert!(
+        !result,
+        "should reject delegation write without append_delegation cap"
+    );
 }
 
 #[test]
@@ -289,11 +300,10 @@ fn validate_write_auth_http(
                 Some(orig) => {
                     new_http.request_headers != orig.request_headers
                         || new_http.response_headers != orig.response_headers
-                }
+                },
                 None => {
-                    !new_http.request_headers.is_empty()
-                        || !new_http.response_headers.is_empty()
-                }
+                    !new_http.request_headers.is_empty() || !new_http.response_headers.is_empty()
+                },
             };
             if http_changed {
                 return false;
@@ -334,7 +344,7 @@ fn validate_write_auth_delegation(
                     new_deleg.chain.len() != orig.chain.len()
                         || new_deleg.depth != orig.depth
                         || new_deleg.delegated != orig.delegated
-                }
+                },
                 None => new_deleg.delegated || !new_deleg.chain.is_empty(),
             };
             if delegation_changed {
@@ -386,8 +396,7 @@ fn test_hidden_http_slot_preserved_when_plugin_modifies_labels() {
     };
 
     let registry = PayloadSerializerRegistry::new();
-    let (fields, _) =
-        wit_hook_result_to_native_filtered(result, &registry, &ext, Some(&filtered));
+    let (fields, _) = wit_hook_result_to_native_filtered(result, &registry, &ext, Some(&filtered));
 
     let owned = fields
         .modified_extensions
@@ -400,7 +409,9 @@ fn test_hidden_http_slot_preserved_when_plugin_modifies_labels() {
     );
     let http = owned.http.as_ref().unwrap().read();
     assert_eq!(
-        http.request_headers.get("Authorization").map(|s| s.as_str()),
+        http.request_headers
+            .get("Authorization")
+            .map(|s| s.as_str()),
         Some("Bearer token"),
         "HTTP headers lost during writeback"
     );
@@ -429,7 +440,10 @@ fn test_hidden_delegation_preserved_when_plugin_modifies_http() {
         .map(|s| s.to_string())
         .collect();
     let filtered = filter_extensions(&ext, &caps);
-    assert!(filtered.delegation.is_none(), "delegation should be filtered");
+    assert!(
+        filtered.delegation.is_none(),
+        "delegation should be filtered"
+    );
     assert!(filtered.http.is_some(), "HTTP should be visible");
 
     // Guest modifies HTTP and returns extensions
@@ -449,8 +463,7 @@ fn test_hidden_delegation_preserved_when_plugin_modifies_http() {
     };
 
     let registry = PayloadSerializerRegistry::new();
-    let (fields, _) =
-        wit_hook_result_to_native_filtered(result, &registry, &ext, Some(&filtered));
+    let (fields, _) = wit_hook_result_to_native_filtered(result, &registry, &ext, Some(&filtered));
 
     let owned = fields
         .modified_extensions
@@ -490,8 +503,7 @@ fn build_full_extensions() -> Extensions {
 
 fn build_extensions_with_labels(labels: &[&str]) -> Extensions {
     let mut security = SecurityExtension::default();
-    security.labels =
-        MonotonicSet::from_set(labels.iter().map(|s| s.to_string()).collect());
+    security.labels = MonotonicSet::from_set(labels.iter().map(|s| s.to_string()).collect());
 
     Extensions {
         request: Some(Arc::new(RequestExtension {

@@ -54,7 +54,11 @@ impl WasmPluginFactory {
             crate::sandbox_manager::SharedEngine::new()
                 .expect("failed to create shared wasmtime engine"),
         );
-        Self { wasm_dir, registry, shared_engine }
+        Self {
+            wasm_dir,
+            registry,
+            shared_engine,
+        }
     }
 
     /// Convenience constructor that pre-registers all built-in payload types:
@@ -74,17 +78,14 @@ impl WasmPluginFactory {
 impl PluginFactory for WasmPluginFactory {
     fn create(&self, config: &PluginConfig) -> Result<PluginInstance, Box<PluginError>> {
         // Parse wasm path from kind (e.g., "wasm://plugin.wasm" → "plugin.wasm")
-        let wasm_filename = config
-            .kind
-            .strip_prefix("wasm://")
-            .ok_or_else(|| {
-                Box::new(PluginError::Config {
-                    message: format!(
-                        "plugin '{}': kind '{}' must start with 'wasm://'",
-                        config.name, config.kind
-                    ),
-                })
-            })?;
+        let wasm_filename = config.kind.strip_prefix("wasm://").ok_or_else(|| {
+            Box::new(PluginError::Config {
+                message: format!(
+                    "plugin '{}': kind '{}' must start with 'wasm://'",
+                    config.name, config.kind
+                ),
+            })
+        })?;
 
         let wasm_path = self.wasm_dir.join(wasm_filename);
 
@@ -94,7 +95,9 @@ impl PluginFactory for WasmPluginFactory {
             .config
             .as_ref()
             .and_then(|v| v.get("sandbox_policy"))
-            .and_then(|v| serde_json::from_value::<crate::policy_loader::SandboxPolicy>(v.clone()).ok());
+            .and_then(|v| {
+                serde_json::from_value::<crate::policy_loader::SandboxPolicy>(v.clone()).ok()
+            });
 
         // Create a SandboxManager backed by the shared engine (one epoch thread for all plugins)
         let sandbox = tokio::task::block_in_place(|| {
@@ -197,16 +200,24 @@ impl AnyHookHandler for WasmBridgeHandler {
         ctx: &mut PluginContext,
     ) -> Result<Box<dyn std::any::Any + Send + Sync>, Box<PluginError>> {
         // Build the WIT payload: structured fast-path for known types, generic fallback via registry
-        let wit_hook_payload = if let Some(cmf) = payload.as_any().downcast_ref::<MessagePayload>() {
+        let wit_hook_payload = if let Some(cmf) = payload.as_any().downcast_ref::<MessagePayload>()
+        {
             crate::sandbox_manager::types::HookPayload::Cmf(native_payload_to_wit(cmf))
         } else if let Some(identity) = payload.as_any().downcast_ref::<IdentityPayload>() {
-            crate::sandbox_manager::types::HookPayload::Identity(native_identity_payload_to_wit(identity))
+            crate::sandbox_manager::types::HookPayload::Identity(native_identity_payload_to_wit(
+                identity,
+            ))
         } else if let Some(delegation) = payload.as_any().downcast_ref::<DelegationPayload>() {
-            crate::sandbox_manager::types::HookPayload::Delegation(native_delegation_payload_to_wit(delegation))
+            crate::sandbox_manager::types::HookPayload::Delegation(
+                native_delegation_payload_to_wit(delegation),
+            )
         } else if self.registry.contains_type_id(payload.as_any().type_id()) {
             let (type_name, bytes) = self.registry.serialize(payload).map_err(|e| {
                 Box::new(PluginError::Config {
-                    message: format!("plugin '{}': payload serialization failed: {}", self.plugin_name, e),
+                    message: format!(
+                        "plugin '{}': payload serialization failed: {}",
+                        self.plugin_name, e
+                    ),
                 })
             })?;
             crate::sandbox_manager::types::HookPayload::Custom(
@@ -240,8 +251,12 @@ impl AnyHookHandler for WasmBridgeHandler {
         // Convert WIT HookResult → type-erased result fields + optional
         // context writeback. Pass `extensions` as the filtered reference so
         // hidden slots are preserved during writeback.
-        let (mut erased_fields, modified_ctx) =
-            wit_hook_result_to_native_filtered(wit_result, &self.registry, extensions, Some(extensions));
+        let (mut erased_fields, modified_ctx) = wit_hook_result_to_native_filtered(
+            wit_result,
+            &self.registry,
+            extensions,
+            Some(extensions),
+        );
 
         // Defense-in-depth: validate extension modifications returned by WASM
         if let Some(ref owned) = erased_fields.modified_extensions {
@@ -297,9 +312,7 @@ fn validate_extension_modifications(
 
     // Check 2: Monotonic labels — can only add, never remove
     if capabilities.contains("read_labels") {
-        if let (Some(ref orig_sec), Some(ref new_sec)) =
-            (&original.security, &owned.security)
-        {
+        if let (Some(ref orig_sec), Some(ref new_sec)) = (&original.security, &owned.security) {
             if !new_sec.labels.is_superset(&orig_sec.labels) {
                 warn!(
                     "[WASM] plugin '{}' hook '{}': violated monotonic tier — \
@@ -319,11 +332,10 @@ fn validate_extension_modifications(
                 Some(orig) => {
                     new_http.request_headers != orig.request_headers
                         || new_http.response_headers != orig.response_headers
-                }
+                },
                 None => {
-                    !new_http.request_headers.is_empty()
-                        || !new_http.response_headers.is_empty()
-                }
+                    !new_http.request_headers.is_empty() || !new_http.response_headers.is_empty()
+                },
             };
             if http_changed {
                 warn!(
@@ -360,7 +372,7 @@ fn validate_extension_modifications(
                     new_deleg.chain.len() != orig.chain.len()
                         || new_deleg.depth != orig.depth
                         || new_deleg.delegated != orig.delegated
-                }
+                },
                 None => new_deleg.delegated || !new_deleg.chain.is_empty(),
             };
             if delegation_changed {
@@ -460,10 +472,14 @@ mod tests {
         let err = anyhow::anyhow!("wasm trap: epoch deadline has elapsed");
         let result = classify_wasm_error("test-plugin", 5000, err);
         match *result {
-            PluginError::Timeout { ref plugin_name, timeout_ms, .. } => {
+            PluginError::Timeout {
+                ref plugin_name,
+                timeout_ms,
+                ..
+            } => {
                 assert_eq!(plugin_name, "test-plugin");
                 assert_eq!(timeout_ms, 5000);
-            }
+            },
             _ => panic!("expected Timeout, got {:?}", result),
         }
     }
@@ -475,7 +491,7 @@ mod tests {
         match *result {
             PluginError::Execution { ref code, .. } => {
                 assert_eq!(code.as_deref(), Some("fuel_exhausted"));
-            }
+            },
             _ => panic!("expected Execution with fuel_exhausted, got {:?}", result),
         }
     }
@@ -487,7 +503,7 @@ mod tests {
         match *result {
             PluginError::Execution { ref code, .. } => {
                 assert_eq!(code.as_deref(), Some("memory_limit"));
-            }
+            },
             _ => panic!("expected Execution with memory_limit, got {:?}", result),
         }
     }
@@ -499,7 +515,7 @@ mod tests {
         match *result {
             PluginError::Execution { ref code, .. } => {
                 assert_eq!(code.as_deref(), Some("wasm_trap"));
-            }
+            },
             _ => panic!("expected Execution with wasm_trap, got {:?}", result),
         }
     }
@@ -511,7 +527,7 @@ mod tests {
         match *result {
             PluginError::Execution { ref code, .. } => {
                 assert_eq!(code.as_deref(), Some("network_denied"));
-            }
+            },
             _ => panic!("expected Execution with network_denied, got {:?}", result),
         }
     }
@@ -521,10 +537,14 @@ mod tests {
         let err = anyhow::anyhow!("something unexpected happened in the component");
         let result = classify_wasm_error("test-plugin", 5000, err);
         match *result {
-            PluginError::Execution { ref code, ref plugin_name, .. } => {
+            PluginError::Execution {
+                ref code,
+                ref plugin_name,
+                ..
+            } => {
                 assert_eq!(plugin_name, "test-plugin");
                 assert!(code.is_none());
-            }
+            },
             _ => panic!("expected generic Execution, got {:?}", result),
         }
     }

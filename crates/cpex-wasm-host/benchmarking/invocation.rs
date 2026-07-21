@@ -13,9 +13,9 @@ use tokio::runtime::Runtime;
 use tokio::sync::Mutex;
 
 use async_trait::async_trait;
+use cpex_core::cmf::constants::SCHEMA_VERSION;
 use cpex_core::cmf::message::MessagePayload;
 use cpex_core::cmf::{CmfHook, ContentPart, Message, Role, ToolCall};
-use cpex_core::cmf::constants::SCHEMA_VERSION;
 use cpex_core::context::PluginContext;
 use cpex_core::error::PluginError;
 use cpex_core::extensions::container::Extensions;
@@ -25,7 +25,9 @@ use cpex_core::extensions::security::SecurityExtension;
 use cpex_core::hooks::trait_def::{HookHandler, PluginResult};
 use cpex_core::plugin::{Plugin, PluginConfig};
 
-use cpex_wasm_host::conversions::{native_context_to_wit, native_extensions_to_wit, native_payload_to_wit};
+use cpex_wasm_host::conversions::{
+    native_context_to_wit, native_extensions_to_wit, native_payload_to_wit,
+};
 use cpex_wasm_host::sandbox_manager::{SandboxManager, SharedEngine};
 
 // ---------------------------------------------------------------------------
@@ -46,8 +48,12 @@ impl Plugin for NativeNoopPlugin {
             ..Default::default()
         })
     }
-    async fn initialize(&self) -> Result<(), Box<PluginError>> { Ok(()) }
-    async fn shutdown(&self) -> Result<(), Box<PluginError>> { Ok(()) }
+    async fn initialize(&self) -> Result<(), Box<PluginError>> {
+        Ok(())
+    }
+    async fn shutdown(&self) -> Result<(), Box<PluginError>> {
+        Ok(())
+    }
 }
 
 impl HookHandler<CmfHook> for NativeNoopPlugin {
@@ -121,11 +127,9 @@ fn bench_native_noop(c: &mut Criterion) {
     c.bench_function("native_noop", |b| {
         b.to_async(&rt).iter(|| async {
             let mut ctx = PluginContext::default();
-            let result = NativeNoopPlugin.handle(
-                black_box(&payload),
-                black_box(&ext),
-                &mut ctx,
-            ).await;
+            let result = NativeNoopPlugin
+                .handle(black_box(&payload), black_box(&ext), &mut ctx)
+                .await;
             black_box(result);
         });
     });
@@ -136,7 +140,10 @@ fn bench_wasm_noop(c: &mut Criterion) {
     let wasm_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("wasm/noop.wasm");
 
     if !wasm_path.exists() {
-        eprintln!("SKIP: noop.wasm not found at {}. Build with:", wasm_path.display());
+        eprintln!(
+            "SKIP: noop.wasm not found at {}. Build with:",
+            wasm_path.display()
+        );
         eprintln!("  cd crates/cpex-wasm-plugin && cargo build --target wasm32-wasip2 --release --features noop --no-default-features");
         return;
     }
@@ -144,7 +151,9 @@ fn bench_wasm_noop(c: &mut Criterion) {
     let sandbox = rt.block_on(async {
         let shared = SharedEngine::new().unwrap();
         let mut mgr = SandboxManager::with_shared_engine(&shared);
-        mgr.load_wasmplugin(&wasm_path, None, "noop-bench").await.unwrap();
+        mgr.load_wasmplugin(&wasm_path, None, "noop-bench")
+            .await
+            .unwrap();
         Arc::new(Mutex::new(mgr))
     });
 
@@ -161,7 +170,8 @@ fn bench_wasm_noop(c: &mut Criterion) {
             let wit_ctx = native_context_to_wit(&PluginContext::default());
             async move {
                 let mut mgr = sandbox.lock().await;
-                let result = mgr.invoke("cmf.tool_pre_invoke", wit_payload, wit_ext, wit_ctx)
+                let result = mgr
+                    .invoke("cmf.tool_pre_invoke", wit_payload, wit_ext, wit_ctx)
                     .await
                     .unwrap();
                 black_box(result);
@@ -181,7 +191,9 @@ fn bench_wasm_with_extensions(c: &mut Criterion) {
     let sandbox = rt.block_on(async {
         let shared = SharedEngine::new().unwrap();
         let mut mgr = SandboxManager::with_shared_engine(&shared);
-        mgr.load_wasmplugin(&wasm_path, None, "noop-bench-ext").await.unwrap();
+        mgr.load_wasmplugin(&wasm_path, None, "noop-bench-ext")
+            .await
+            .unwrap();
         Arc::new(Mutex::new(mgr))
     });
 
@@ -198,7 +210,8 @@ fn bench_wasm_with_extensions(c: &mut Criterion) {
             let wit_ctx = native_context_to_wit(&PluginContext::default());
             async move {
                 let mut mgr = sandbox.lock().await;
-                let result = mgr.invoke("cmf.tool_pre_invoke", wit_payload, wit_ext, wit_ctx)
+                let result = mgr
+                    .invoke("cmf.tool_pre_invoke", wit_payload, wit_ext, wit_ctx)
                     .await
                     .unwrap();
                 black_box(result);
@@ -229,11 +242,9 @@ fn bench_native_with_extensions(c: &mut Criterion) {
     c.bench_function("native_with_full_extensions", |b| {
         b.to_async(&rt).iter(|| async {
             let mut ctx = PluginContext::default();
-            let result = NativeNoopPlugin.handle(
-                black_box(&payload),
-                black_box(&ext),
-                &mut ctx,
-            ).await;
+            let result = NativeNoopPlugin
+                .handle(black_box(&payload), black_box(&ext), &mut ctx)
+                .await;
             black_box(result);
         });
     });
