@@ -1,3 +1,8 @@
+// Location: ./crates/cpex-wasm-host/tests/test_sandbox_isolation.rs
+// Copyright 2026
+// SPDX-License-Identifier: Apache-2.0
+// Authors: Shriti Priya
+//
 //! Integration test: verifies WASM sandbox filesystem isolation.
 //!
 //! Loads a real `.wasm` plugin that attempts to read `/etc/passwd`.

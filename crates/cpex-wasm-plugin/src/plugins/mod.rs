@@ -1,3 +1,8 @@
+// Location: ./crates/cpex-wasm-plugin/src/plugins/mod.rs
+// Copyright 2026
+// SPDX-License-Identifier: Apache-2.0
+// Authors: Shriti Priya
+
 #[cfg(feature = "identity-checker")]
 pub mod identity_checker;
 

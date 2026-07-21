@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# Location: ./crates/cpex-wasm-host/benchmarking/plot_results.py
+# Copyright 2026
+# SPDX-License-Identifier: Apache-2.0
+# Authors: Shriti Priya
 """
 Performance comparison chart generator for CPEX WASM benchmarks.
 

@@ -1,3 +1,8 @@
+// Location: ./crates/cpex-wasm-host/benchmarking/comprehensive.rs
+// Copyright 2026
+// SPDX-License-Identifier: Apache-2.0
+// Authors: Shriti Priya
+//
 //! Comprehensive benchmarks: cold start, real computation, custom payload, concurrency.
 //!
 //! Complements invocation.rs (which measures isolation overhead) with benchmarks

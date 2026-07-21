@@ -1,3 +1,8 @@
+// Location: ./crates/cpex-wasm-plugin/src/plugins/net_test.rs
+// Copyright 2026
+// SPDX-License-Identifier: Apache-2.0
+// Authors: Shriti Priya
+
 use async_trait::async_trait;
 
 use cpex_core::cmf::{CmfHook, MessagePayload};

@@ -1,3 +1,8 @@
+// Location: ./crates/cpex-wasm-host/examples/wasm_plugin_demo.rs
+// Copyright 2026
+// SPDX-License-Identifier: Apache-2.0
+// Authors: Shriti Priya
+//
 // WASM Plugin Demo
 //
 // End-to-end demo mirroring cpex-core/examples/plugin_demo.rs, but all 4

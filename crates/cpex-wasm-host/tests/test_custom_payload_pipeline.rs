@@ -1,3 +1,8 @@
+// Location: ./crates/cpex-wasm-host/tests/test_custom_payload_pipeline.rs
+// Copyright 2026
+// SPDX-License-Identifier: Apache-2.0
+// Authors: Shriti Priya
+//
 //! Integration test: verifies the custom-payload WASM plugin pipeline end-to-end.
 //!
 //! Loads 4 real `.wasm` plugins (tool-invoke-checker, pii-guard, remote-authz,

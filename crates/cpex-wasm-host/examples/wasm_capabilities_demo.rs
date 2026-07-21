@@ -1,3 +1,8 @@
+// Location: ./crates/cpex-wasm-host/examples/wasm_capabilities_demo.rs
+// Copyright 2026
+// SPDX-License-Identifier: Apache-2.0
+// Authors: Shriti Priya
+//
 // WASM Capabilities Demo
 //
 // Demonstrates:

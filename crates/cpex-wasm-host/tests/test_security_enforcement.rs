@@ -1,3 +1,8 @@
+// Location: ./crates/cpex-wasm-host/tests/test_security_enforcement.rs
+// Copyright 2026
+// SPDX-License-Identifier: Apache-2.0
+// Authors: Shriti Priya
+//
 // Tests for defense-in-depth security enforcement in WasmBridgeHandler.
 //
 // These tests validate the four security checks:

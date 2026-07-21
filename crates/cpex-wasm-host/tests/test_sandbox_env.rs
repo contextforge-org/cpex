@@ -1,3 +1,8 @@
+// Location: ./crates/cpex-wasm-host/tests/test_sandbox_env.rs
+// Copyright 2026
+// SPDX-License-Identifier: Apache-2.0
+// Authors: Shriti Priya
+//
 //! Integration test: verifies WASM sandbox environment variable isolation.
 //!
 //! Loads a real `.wasm` plugin that reads env vars (HOME, PATH, SECRET_API_KEY).

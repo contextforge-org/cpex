@@ -1,3 +1,8 @@
+// Location: ./crates/cpex-wasm-host/benchmarking/invocation.rs
+// Copyright 2026
+// SPDX-License-Identifier: Apache-2.0
+// Authors: Shriti Priya
+//
 //! Performance benchmarks: WASM plugin invocation vs native handler.
 //!
 //! Measures the isolation tax of running the same logic through the
