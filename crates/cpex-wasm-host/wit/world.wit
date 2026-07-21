@@ -402,6 +402,10 @@ interface types {
   record http-extension {
     request-headers: list<tuple<string, string>>,
     response-headers: list<tuple<string, string>>,
+    method: option<string>,
+    path: option<string>,
+    host: option<string>,
+    scheme: option<string>,
   }
 
   record meta-extension {

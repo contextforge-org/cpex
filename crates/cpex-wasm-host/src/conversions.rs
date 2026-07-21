@@ -479,6 +479,10 @@ fn native_http_to_wit(h: &NativeHttpExtension) -> HttpExtension {
             .iter()
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect(),
+        method: h.method.clone(),
+        path: h.path.clone(),
+        host: h.host.clone(),
+        scheme: h.scheme.clone(),
     }
 }
 
@@ -1126,6 +1130,10 @@ fn wit_extensions_to_owned(
             Guarded::new(NativeHttpExtension {
                 request_headers: h.request_headers.into_iter().collect(),
                 response_headers: h.response_headers.into_iter().collect(),
+                method: h.method,
+                path: h.path,
+                host: h.host,
+                scheme: h.scheme,
             })
         });
     }
