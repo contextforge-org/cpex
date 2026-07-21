@@ -42,7 +42,7 @@ zeroize = { version = "1.8", features = ["zeroize_derive"] }
 tokio = { workspace = true, optional = true }
 tokio-util = { workspace = true, optional = true }
 arc-swap = { workspace = true, optional = true }
-cpex-orchestration = { path = "../cpex-orchestration", optional = true }
+cpex-orchestration = { workspace = true, optional = true }
 
 [lints]
 workspace = true

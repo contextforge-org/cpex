@@ -211,6 +211,10 @@ pub fn wit_extensions_to_native(ext: Extensions) -> NativeExtensions {
         http: ext.http.map(|h| Arc::new(NativeHttpExtension {
             request_headers: h.request_headers.into_iter().collect(),
             response_headers: h.response_headers.into_iter().collect(),
+            method: h.method,
+            path: h.path,
+            host: h.host,
+            scheme: h.scheme,
         })),
         meta: ext.meta.map(|m| Arc::new(NativeMetaExtension {
             entity_type: m.entity_type,
@@ -710,6 +714,10 @@ fn native_owned_extensions_to_wit(
         http: ext.http.as_ref().map(|h| HttpExtension {
             request_headers: h.read().request_headers.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
             response_headers: h.read().response_headers.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+            method: h.read().method.clone(),
+            path: h.read().path.clone(),
+            host: h.read().host.clone(),
+            scheme: h.read().scheme.clone(),
         }),
         meta: ext.meta.as_ref().map(|m| MetaExtension {
             entity_type: m.entity_type.clone(),

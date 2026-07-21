@@ -55,6 +55,7 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
+#[cfg(feature = "runtime")]
 use crate::executor::PipelineResult;
 use crate::impl_plugin_payload;
 
@@ -274,6 +275,7 @@ impl ElicitationPayload {
 
     // -------- Host-side application helper --------
 
+    #[cfg(feature = "runtime")]
     /// Pull the resolved `ElicitationPayload` out of a `PipelineResult`
     /// returned by `mgr.invoke_entries::<ElicitationHook>(...)`. Returns
     /// `None` when the pipeline was denied or the result's payload wasn't
