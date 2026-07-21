@@ -127,6 +127,7 @@ async fn setup_manager() -> PluginManager {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires pre-built WASM plugins — run `make build-all-plugins` first"]
 async fn test_identity_resolver_denies_empty_user() {
     init_tracing();
     check_binaries_exist();
@@ -148,6 +149,7 @@ async fn test_identity_resolver_denies_empty_user() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires pre-built WASM plugins — run `make build-all-plugins` first"]
 async fn test_pii_guard_denies_without_clearance() {
     init_tracing();
     check_binaries_exist();
@@ -169,6 +171,7 @@ async fn test_pii_guard_denies_without_clearance() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires pre-built WASM plugins — run `make build-all-plugins` first"]
 async fn test_pii_guard_allows_with_clearance() {
     init_tracing();
     check_binaries_exist();
@@ -195,6 +198,7 @@ async fn test_pii_guard_allows_with_clearance() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires pre-built WASM plugins — run `make build-all-plugins` first"]
 async fn test_remote_authz_allows_user_in_acl() {
     init_tracing();
     check_binaries_exist();
@@ -213,6 +217,7 @@ async fn test_remote_authz_allows_user_in_acl() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires pre-built WASM plugins — run `make build-all-plugins` first"]
 async fn test_remote_authz_denies_user_not_in_acl() {
     init_tracing();
     check_binaries_exist();
@@ -234,6 +239,7 @@ async fn test_remote_authz_denies_user_not_in_acl() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires pre-built WASM plugins — run `make build-all-plugins` first"]
 async fn test_non_pii_tool_allowed() {
     init_tracing();
     check_binaries_exist();
@@ -252,6 +258,7 @@ async fn test_non_pii_tool_allowed() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires pre-built WASM plugins — run `make build-all-plugins` first"]
 async fn test_context_table_threads_across_hooks() {
     init_tracing();
     check_binaries_exist();
@@ -291,6 +298,7 @@ async fn test_context_table_threads_across_hooks() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires pre-built WASM plugins — run `make build-all-plugins` first"]
 async fn test_wildcard_route_allowed() {
     init_tracing();
     check_binaries_exist();

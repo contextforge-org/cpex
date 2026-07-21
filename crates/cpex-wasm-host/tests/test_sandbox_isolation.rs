@@ -52,6 +52,7 @@ fn make_payload() -> MessagePayload {
 }
 
 #[tokio::test]
+#[ignore = "requires pre-built WASM plugins — run `make build-test-plugins` first"]
 async fn test_plugin_cannot_read_etc_passwd_without_filesystem_policy() {
     init_tracing();
     let path = wasm_path();
@@ -119,6 +120,7 @@ async fn test_plugin_cannot_read_etc_passwd_without_filesystem_policy() {
 }
 
 #[tokio::test]
+#[ignore = "requires pre-built WASM plugins — run `make build-test-plugins` first"]
 async fn test_plugin_cannot_read_etc_passwd_with_unrelated_filesystem_policy() {
     init_tracing();
     let path = wasm_path();

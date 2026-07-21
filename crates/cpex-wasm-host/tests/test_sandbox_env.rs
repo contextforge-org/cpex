@@ -66,6 +66,7 @@ fn extract_context(
 }
 
 #[tokio::test]
+#[ignore = "requires pre-built WASM plugins — run `make build-test-plugins` first"]
 async fn test_plugin_cannot_see_env_vars_without_policy() {
     init_tracing();
     let path = wasm_path();
@@ -128,6 +129,7 @@ async fn test_plugin_cannot_see_env_vars_without_policy() {
 }
 
 #[tokio::test]
+#[ignore = "requires pre-built WASM plugins — run `make build-test-plugins` first"]
 async fn test_plugin_sees_only_allowed_env_var() {
     init_tracing();
     let path = wasm_path();
