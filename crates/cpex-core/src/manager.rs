@@ -44,10 +44,6 @@ use crate::hooks::HookType;
 use crate::plugin::{Plugin, PluginConfig};
 use crate::registry::{AnyHookHandler, PluginRef, PluginRegistry};
 
-// ---------------------------------------------------------------------------
-// Manager Configuration
-// ---------------------------------------------------------------------------
-
 /// Default upper bound on the routing cache. Caps memory growth from
 /// attacker-controlled entity names without forcing operators to tune.
 pub const DEFAULT_ROUTE_CACHE_MAX_ENTRIES: usize = 10_000;
@@ -73,10 +69,6 @@ impl Default for ManagerConfig {
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// Plugin Manager
-// ---------------------------------------------------------------------------
 
 /// Central plugin lifecycle and dispatch manager.
 ///
@@ -436,10 +428,6 @@ impl PluginManager {
         self.generation.load(Ordering::Acquire)
     }
 
-    // -----------------------------------------------------------------------
-    // Factory Registration
-    // -----------------------------------------------------------------------
-
     /// Register a plugin factory for a given `kind` name.
     ///
     /// The host calls this to tell the manager how to create plugins
@@ -463,10 +451,6 @@ impl PluginManager {
             .unwrap_or_else(|p| p.into_inner())
             .register(kind, factory);
     }
-
-    // -----------------------------------------------------------------------
-    // Config Loading
-    // -----------------------------------------------------------------------
 
     /// Load plugins from a YAML config file.
     ///
@@ -705,10 +689,6 @@ impl PluginManager {
         Ok(manager)
     }
 
-    // -----------------------------------------------------------------------
-    // Registration
-    // -----------------------------------------------------------------------
-
     /// Register a plugin handler for its primary hook name.
     ///
     /// This is the preferred registration method. The framework creates
@@ -805,10 +785,6 @@ impl PluginManager {
         Ok(())
     }
 
-    // -----------------------------------------------------------------------
-    // Lifecycle
-    // -----------------------------------------------------------------------
-
     /// Initialize all registered plugins.
     ///
     /// Calls `plugin.initialize()` on each registered plugin. Must be
@@ -838,7 +814,6 @@ impl PluginManager {
                 if let Err(e) = plugin.initialize().await {
                     error!("Failed to initialize plugin '{}': {}", plugin_name, e);
 
-                    // Clean up already-initialized plugins
                     for init_name in initialized_plugins.iter().rev() {
                         if let Some(pr) = snapshot.registry.get(init_name) {
                             if let Err(shutdown_err) = pr.plugin().shutdown().await {
@@ -909,10 +884,6 @@ impl PluginManager {
         self.initialized.store(false, Ordering::Release);
         info!("PluginManager shutdown complete");
     }
-
-    // -----------------------------------------------------------------------
-    // Hook Invocation — Dynamic (invoke_by_name)
-    // -----------------------------------------------------------------------
 
     /// Invoke a hook by name with a type-erased payload.
     ///
@@ -989,11 +960,6 @@ impl PluginManager {
             )
             .await
     }
-
-    // -----------------------------------------------------------------------
-    // Hook Invocation — Typed (invoke::<H>)
-
-    // -----------------------------------------------------------------------
 
     /// Invoke a typed hook.
     ///
@@ -1209,10 +1175,6 @@ impl PluginManager {
             .await
     }
 
-    // -----------------------------------------------------------------------
-    // Route Annotation
-    // -----------------------------------------------------------------------
-
     /// Override the resolved plugin list for one `(entity_type, entity_name)`
     /// pair on the listed hooks with a single synthetic handler. The handler
     /// takes responsibility for any further plugin dispatch within itself
@@ -1287,10 +1249,6 @@ impl PluginManager {
         });
     }
 
-    // -----------------------------------------------------------------------
-    // Route Filtering
-    // -----------------------------------------------------------------------
-
     /// Filter hook entries based on route resolution, with caching.
     ///
     /// When routing is enabled and extensions.meta provides entity
@@ -1363,7 +1321,6 @@ impl PluginManager {
             },
         };
 
-        // Extract entity info from meta extension
         let meta = match &extensions.meta {
             Some(m) => m,
             None => return Arc::new(entries.to_vec()),
@@ -1793,10 +1750,6 @@ impl PluginManager {
             .len()
     }
 
-    // -----------------------------------------------------------------------
-    // Query Methods
-    // -----------------------------------------------------------------------
-
     /// Whether anything would run for the given hook name — either a
     /// registered plugin handler OR a route annotation targeting that hook.
     ///
@@ -2049,7 +2002,6 @@ mod tests {
             cfg: config.clone(),
         });
 
-        // Clean registration — no AnyHookHandler needed
         mgr.register_handler::<TestHook, _>(plugin, config).unwrap();
         mgr.initialize().await.unwrap();
 
@@ -3204,7 +3156,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_timeout_fires_on_slow_handler() {
-        // Create a manager with a very short timeout
         let config = ManagerConfig {
             executor: crate::executor::ExecutorConfig {
                 timeout_seconds: 1,
@@ -3470,7 +3421,6 @@ mod tests {
                 _extensions: &Extensions,
                 ctx: &mut PluginContext,
             ) -> Result<Box<dyn std::any::Any + Send + Sync>, Box<PluginError>> {
-                // Increment a counter in local_state
                 let count = ctx
                     .get_local("call_count")
                     .and_then(|v| v.as_u64())
@@ -5337,7 +5287,6 @@ routes:
             .unwrap();
         mgr.initialize().await.unwrap();
 
-        // Build extensions with a security label
         let mut security = crate::extensions::SecurityExtension::default();
         security.add_label("ORIGINAL");
 
@@ -5371,7 +5320,6 @@ routes:
             .unwrap();
         mgr.initialize().await.unwrap();
 
-        // Build extensions with a request extension
         let ext = Extensions {
             request: Some(std::sync::Arc::new(crate::extensions::RequestExtension {
                 request_id: Some("original-req-id".into()),
@@ -5441,7 +5389,6 @@ routes:
             .unwrap();
         mgr.initialize().await.unwrap();
 
-        // Build extensions WITH security data
         let mut security = crate::extensions::SecurityExtension::default();
         security.add_label("SECRET");
         security.subject = Some(crate::extensions::security::SubjectExtension {
@@ -5467,14 +5414,6 @@ routes:
         // With filter_extensions, security IS Some but with empty labels and no subject
         // So saw_security will be true, but the content is filtered
     }
-
-    // -----------------------------------------------------------------------
-    // Awaiting handler tests
-    //
-    // `HookHandler<H>` is async by design. These tests cover handlers
-    // that genuinely `.await` inside the body — sleeps, yields, and
-    // co-registration with handlers whose body has no `.await` at all.
-    // -----------------------------------------------------------------------
 
     /// Plugin that genuinely awaits inside its handler. Increments a
     /// shared counter after the await resolves so the test can verify

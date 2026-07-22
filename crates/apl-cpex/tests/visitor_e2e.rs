@@ -475,10 +475,10 @@ routes:
 /// APL block as a `PluginError::Config` out of `load_config_yaml`. Catches
 /// regressions where visitor errors swallow into Ok(_) or panic.
 // ---------------------------------------------------------------------
-// Slice 102 — multi-entity-type route support (llm / prompt / resource)
+// Multi-entity-type route support (llm / prompt / resource)
 // ---------------------------------------------------------------------
 //
-// Pre-Slice-102, the visitor hardcoded annotation on
+// Previously, the visitor hardcoded annotation on
 // `cmf.tool_pre_invoke` / `cmf.tool_post_invoke` regardless of route
 // entity_type — so an `llm:` route would silently bind to the tool
 // hooks and never fire when the host called `invoke_named::<CmfHook>("cmf.llm_input", ...)`.
@@ -525,7 +525,7 @@ routes:
 }
 
 /// Same llm route but post — annotation lands on `cmf.llm_output`.
-/// Pre-Slice-102, this would have annotated on `cmf.tool_post_invoke`
+/// Previously, this would have annotated on `cmf.tool_post_invoke`
 /// and never matched.
 #[tokio::test]
 async fn llm_route_annotates_on_llm_output_hook_for_post_phase() {
@@ -623,7 +623,7 @@ routes:
 }
 
 /// Cross-check: an llm route's APL annotation MUST NOT install on
-/// `cmf.tool_pre_invoke`. Pre-Slice-102, the visitor would have
+/// `cmf.tool_pre_invoke`. Previously, the visitor would have
 /// annotated llm routes on the tool hook by mistake; this test pins
 /// that the bug is gone.
 ///

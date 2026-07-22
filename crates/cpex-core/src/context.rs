@@ -17,17 +17,13 @@
 // Identity, request metadata, tenant scope, etc. live in extensions
 // (MetaExtension, SecurityExtension), not in the context.
 //
-// Mirrors the spec's PluginContext in plugin-framework-spec-v2.md §8.1.
+// Mirrors the spec's PluginContext.
 
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
-
-// ---------------------------------------------------------------------------
-// Plugin Context
-// ---------------------------------------------------------------------------
 
 /// Per-plugin, per-invocation execution context.
 ///
@@ -103,10 +99,6 @@ impl Default for PluginContext {
         Self::new()
     }
 }
-
-// ---------------------------------------------------------------------------
-// Plugin Context Table
-// ---------------------------------------------------------------------------
 
 /// Threaded execution state carried from one hook invocation to the next
 /// within a single request lifecycle (e.g., `pre_invoke` → `post_invoke`).

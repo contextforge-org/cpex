@@ -27,10 +27,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::PluginError;
 
-// ---------------------------------------------------------------------------
-// Plugin Trait
-// ---------------------------------------------------------------------------
-
 /// Core plugin interface — lifecycle management only.
 ///
 /// Every plugin in the CPEX framework — regardless of language or
@@ -103,10 +99,6 @@ pub trait Plugin: Send + Sync {
         Ok(())
     }
 }
-
-// ---------------------------------------------------------------------------
-// Plugin Configuration
-// ---------------------------------------------------------------------------
 
 /// Declared plugin configuration from the unified YAML config.
 ///
@@ -288,10 +280,6 @@ fn default_priority() -> i32 {
     100
 }
 
-// ---------------------------------------------------------------------------
-// Plugin Condition (legacy scoping)
-// ---------------------------------------------------------------------------
-
 /// Condition for when a plugin should execute.
 ///
 /// Narrows plugin scope to specific servers, tenants, tools, prompts,
@@ -439,10 +427,6 @@ impl PluginCondition {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Plugin Mode
-// ---------------------------------------------------------------------------
-
 /// Execution mode — determines a plugin's scheduling behavior and authority.
 ///
 /// The 5-phase model defines both what a plugin *can do* (block, modify)
@@ -517,10 +501,6 @@ impl fmt::Display for PluginMode {
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// Error Handling Mode
-// ---------------------------------------------------------------------------
 
 /// Error handling behavior when a plugin fails.
 ///

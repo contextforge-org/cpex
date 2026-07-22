@@ -12,7 +12,7 @@
 // the right order with the right transitions (apply field mutations, halt
 // on deny, thread taints across phases).
 //
-// Phase semantics (anchored in apl-dsl-spec.md §3):
+// Phase semantics:
 //   - args: walk field rules; Replace/Omit mutate `payload.args`; Deny halts
 //   - policy: walk steps; Deny halts
 //   - result: only runs if `payload.result.is_some()`; same as args
@@ -96,7 +96,6 @@ pub async fn evaluate_pre(
     let mut taints: Vec<TaintEvent> = Vec::new();
     let mut args_modified = false;
 
-    // ----- args -----
     for rule in &route.args {
         let Some(current) = get_dotted(&payload.args, &rule.field).cloned() else {
             continue; // missing field → no pipeline to run
@@ -141,7 +140,6 @@ pub async fn evaluate_pre(
         }
     }
 
-    // ----- policy -----
     let policy_eval = evaluate_effects(
         &route.policy,
         bag,
@@ -185,7 +183,6 @@ pub async fn evaluate_post(
     let mut taints: Vec<TaintEvent> = Vec::new();
     let mut result_modified = false;
 
-    // ----- result (only when a response payload is present) -----
     if let Some(result) = payload.result.as_mut() {
         for rule in &route.result {
             let Some(current) = get_dotted(result, &rule.field).cloned() else {
@@ -232,7 +229,6 @@ pub async fn evaluate_post(
         }
     }
 
-    // ----- post_policy -----
     let post_eval = evaluate_effects(
         &route.post_policy,
         bag,
@@ -296,10 +292,6 @@ pub async fn evaluate_route(
         pending: post.pending,
     }
 }
-
-// =====================================================================
-// Dotted-path JSON helpers
-// =====================================================================
 
 /// Read `root.a.b.c` from a JSON value via dot-separated path. Returns
 /// `None` if any segment is missing or the path crosses a non-object.
@@ -380,8 +372,6 @@ mod tests {
     };
     use async_trait::async_trait;
     use serde_json::json;
-
-    // ----- Fixtures -----
 
     struct AllowPdp;
     #[async_trait]
@@ -481,8 +471,6 @@ mod tests {
             source,
         )
     }
-
-    // ----- Tests -----
 
     #[tokio::test]
     async fn empty_route_allows() {
@@ -871,8 +859,6 @@ mod tests {
         assert_eq!(payload.result.as_ref().unwrap()["ssn"], json!("[REDACTED]"));
     }
 
-    // ----- Helper unit tests -----
-
     #[test]
     fn dotted_get_simple_and_nested() {
         let v = json!({ "a": { "b": { "c": 7 } } });
@@ -902,11 +888,8 @@ mod tests {
         let mut v = json!({ "a": { "b": 1, "c": 2 } });
         assert!(remove_dotted(&mut v, "a.b"));
         assert_eq!(v, json!({ "a": { "c": 2 } }));
-        // Removing a missing leaf returns false.
         assert!(!remove_dotted(&mut v, "a.b"));
     }
-
-    // ----- evaluate_pre / evaluate_post (phase split) -----
 
     #[tokio::test]
     async fn evaluate_pre_runs_args_and_policy_only() {

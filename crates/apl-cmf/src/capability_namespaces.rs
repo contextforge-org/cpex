@@ -48,7 +48,6 @@ struct CapabilityEntry {
 /// `filter_extensions` rules and the per-extension extractor
 /// modules (`security.rs`, `delegation.rs`, etc.).
 const TABLE: &[CapabilityEntry] = &[
-    // ----- Subject identity -----
     CapabilityEntry {
         name: CAP_READ_SUBJECT,
         // `read_subject` exposes id + type only; `authenticated` is
@@ -92,7 +91,6 @@ const TABLE: &[CapabilityEntry] = &[
             BAG_AUTHENTICATED,
         ],
     },
-    // ----- Security extension (non-subject) -----
     CapabilityEntry {
         // Labels are not extracted into discrete bag keys today —
         // they live on `Extensions.security.labels` and plugins
@@ -111,7 +109,6 @@ const TABLE: &[CapabilityEntry] = &[
         // Exposes both inbound caller workload AND this-host workload.
         prefixes: &[BAG_WORKLOAD_PREFIX, BAG_CALLER_WORKLOAD_PREFIX],
     },
-    // ----- Credential material — payload-only, no bag prefixes -----
     CapabilityEntry {
         // Gates `Extensions.raw_credentials.inbound_tokens` — those
         // tokens flow through plugin payloads (IdentityPayload,
@@ -123,12 +120,10 @@ const TABLE: &[CapabilityEntry] = &[
         name: CAP_READ_DELEGATED_TOKENS,
         prefixes: &[],
     },
-    // ----- Delegation chain -----
     CapabilityEntry {
         name: CAP_READ_DELEGATION,
         prefixes: &[BAG_DELEGATION_PREFIX, BAG_DELEGATED],
     },
-    // ----- Other extensions -----
     CapabilityEntry {
         name: CAP_READ_AGENT,
         prefixes: &[BAG_AGENT_PREFIX],
@@ -258,7 +253,6 @@ mod tests {
 
     #[test]
     fn write_capability_returns_empty() {
-        // Write caps don't expose bag-readable state.
         assert!(capability_namespaces(CAP_APPEND_LABELS).is_empty());
         assert!(capability_namespaces(CAP_APPEND_DELEGATION).is_empty());
         assert!(capability_namespaces(CAP_WRITE_HEADERS).is_empty());

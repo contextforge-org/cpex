@@ -19,8 +19,7 @@
 // recognized but no-op in apl-core — actual SessionStore writes happen in
 // `apl-cpex`, which has access to that machinery.
 //
-// Grounded in apl-dsl-spec.md §3 (effects) / §7 (PDP integration) and
-// apl-design.md §8.1 (PdpResolver seam).
+// Covers effects, PDP integration, and the PdpResolver seam.
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -38,16 +37,16 @@ use crate::rules::Rule;
 /// `Step` exists only because `parse_step` builds its nodes
 /// incrementally and the conversion to `Effect::When` /
 /// `Effect::Pdp` happens at the top of `compile_apl_blocks` once
-/// the source position is known. Not part of the public API as of
-/// E4 — external code dispatches on `Effect` everywhere.
+/// the source position is known. Not part of the public API —
+/// external code dispatches on `Effect` everywhere.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum Step {
-    /// Predicate-and-action rule (the existing 5a/5b/5c case).
+    /// Predicate-and-action rule.
     Rule(Rule),
 
     /// External PDP call. `on_deny` / `on_allow` are reaction Step lists
-    /// that fire based on the PDP's decision (DSL §7.5).
+    /// that fire based on the PDP's decision.
     Pdp {
         call: PdpCall,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -63,8 +62,7 @@ pub(crate) enum Step {
     /// `delegate: { plugin: ..., ... }` — mint a downstream delegation
     /// token via a TokenDelegateHook plugin. Populates
     /// `delegation.granted_*` attributes in the bag so subsequent
-    /// rules in the same step list can read them. See
-    /// `docs/apl-identity-delegation-design.md`.
+    /// rules in the same step list can read them.
     Delegate(DelegateStep),
 
     /// `taint(label[, scope])` — apply a taint label. Always succeeds;
@@ -77,8 +75,7 @@ pub(crate) enum Step {
     /// `require_approval(...)` / `confirm(...)` / … — dispatch an
     /// elicitation to a human and resume once resolved. The elicitation
     /// analogue of `Delegate`; resolution is dispatched to an
-    /// `ElicitationHandler` plugin via apl-cpex. See
-    /// `docs/apl-manager-approval-ciba-design.md`.
+    /// `ElicitationHandler` plugin via apl-cpex.
     Elicit(ElicitStep),
 }
 
@@ -148,8 +145,7 @@ pub struct DelegateStep {
 /// runtime applies to the human's response. A single AST node
 /// ([`Step::Elicit`]) covers every kind; the DSL exposes each via a
 /// sugar verb (`require_approval` → `Approval`, `confirm` → `Confirm`,
-/// …) that all parse to the same node. See
-/// `docs/apl-elicitation-hook-design.md` for the per-kind contracts.
+/// …) that all parse to the same node.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ElicitKind {
@@ -200,7 +196,7 @@ impl ElicitKind {
 /// request that hits this step) and *resolution* (a later retry). That
 /// gap is owned by the channel (e.g. Keycloak CIBA), never by a plugin
 /// call: each of dispatch/check/validate is short and synchronous to the
-/// request it runs in. See `docs/apl-manager-approval-ciba-design.md`.
+/// request it runs in.
 ///
 /// # First arrival vs. retry
 ///
@@ -331,10 +327,6 @@ impl PdpDialect {
         }
     }
 }
-
-// =====================================================================
-// Resolver traits
-// =====================================================================
 
 /// External policy-decision dispatch. Implemented by Cedar, OPA HTTP
 /// clients, AuthZen clients, NeMo Guardrails — anything that can answer
@@ -539,10 +531,6 @@ impl DelegationInvoker for NoopDelegationInvoker {
         Err(DelegationError::NotFound(step.plugin_name.clone()))
     }
 }
-
-// =====================================================================
-// Elicitation dispatch
-// =====================================================================
 
 /// Elicitation dispatch — drives a human-in-the-loop step (approval,
 /// confirmation, step-up, …) through a channel plugin. apl-cpex
@@ -817,10 +805,6 @@ impl ElicitationInvoker for AutoApprovingElicitor {
     }
 }
 
-// =====================================================================
-// Resolver results
-// =====================================================================
-
 /// What a PDP returned.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PdpDecision {
@@ -860,10 +844,6 @@ impl PluginOutcome {
     }
 }
 
-// =====================================================================
-// Errors
-// =====================================================================
-
 #[derive(Debug, Error)]
 pub enum PdpError {
     #[error("no PDP resolver registered for dialect {0:?}")]
@@ -881,10 +861,6 @@ pub enum PluginError {
     #[error("plugin dispatch failed: {0}")]
     Dispatch(String),
 }
-
-// =====================================================================
-// Convenience
-// =====================================================================
 
 impl Step {
     /// Wrap a `Rule` as a `Step`. Saves typing in tests and parser code.
@@ -910,8 +886,7 @@ impl Step {
 /// chain attributes (`delegation.depth`, `delegation.origin`,
 /// `delegation.chain`, ...) populated by identity resolver plugins
 /// via `IdentityPayload.delegation` + apply-to-extensions, then
-/// surfaced through apl-cmf's BagBuilder. See
-/// `docs/specs/delegation-hooks-rust-spec.md` §6.3 for that mapping.
+/// surfaced through apl-cmf's BagBuilder.
 ///
 /// The `delegation.granted.*` sub-namespace defined here is for
 /// OUTBOUND results — what came back from a `delegate(...)` step
@@ -942,7 +917,7 @@ pub mod delegation_bag_keys {
 /// On *dispatch* the runtime writes `id` + `status = "pending"` (plus
 /// `approver` / `intent_id` when known). On *resolution* it updates
 /// `status` and sets `outcome`. A phase with a pending elicitation does
-/// not forward (see `docs/apl-manager-approval-ciba-design.md`).
+/// not forward.
 pub mod elicitation_bag_keys {
     /// `String` — the elicitation id the agent echoes on retry. Server-side
     /// key into `{requester, args, scope, original_request_id}`.

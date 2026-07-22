@@ -23,27 +23,19 @@
 //   prevent drift. Tests in `capability_namespaces` flag the
 //   contract.
 
-// =====================================================================
-// Capability names — must match cpex-core's vocabulary
-// =====================================================================
-
-// ----- Subject identity (read) -----
 pub const CAP_READ_SUBJECT: &str = "read_subject";
 pub const CAP_READ_ROLES: &str = "read_roles";
 pub const CAP_READ_PERMISSIONS: &str = "read_permissions";
 pub const CAP_READ_TEAMS: &str = "read_teams";
 pub const CAP_READ_CLAIMS: &str = "read_claims";
 
-// ----- Security extension (non-subject) -----
 pub const CAP_READ_LABELS: &str = "read_labels";
 pub const CAP_READ_CLIENT: &str = "read_client";
 pub const CAP_READ_WORKLOAD: &str = "read_workload";
 
-// ----- Credential material — payload-only, no bag prefixes -----
 pub const CAP_READ_INBOUND_CREDENTIALS: &str = "read_inbound_credentials";
 pub const CAP_READ_DELEGATED_TOKENS: &str = "read_delegated_tokens";
 
-// ----- Per-extension reads -----
 pub const CAP_READ_DELEGATION: &str = "read_delegation";
 pub const CAP_READ_AGENT: &str = "read_agent";
 pub const CAP_READ_META: &str = "read_meta";
@@ -56,12 +48,10 @@ pub const CAP_READ_PROVENANCE: &str = "read_provenance";
 pub const CAP_READ_FRAMEWORK: &str = "read_framework";
 pub const CAP_READ_CUSTOM: &str = "read_custom";
 
-// ----- Write tokens — don't unlock bag attributes -----
 pub const CAP_APPEND_LABELS: &str = "append_labels";
 pub const CAP_APPEND_DELEGATION: &str = "append_delegation";
 pub const CAP_WRITE_HEADERS: &str = "write_headers";
 
-// =====================================================================
 // Bag-attribute prefixes (and exact-match keys) — must match what
 // the apl-cmf extractor modules write.
 //
@@ -69,9 +59,6 @@ pub const CAP_WRITE_HEADERS: &str = "write_headers";
 // (e.g. `BAG_ROLE_PREFIX` matches `role.hr`, `role.admin`).
 // Prefixes WITHOUT a trailing `.` match the exact bag key
 // (e.g. `BAG_AUTHENTICATED` matches only `authenticated`).
-// =====================================================================
-
-// ----- Subject -----
 pub const BAG_SUBJECT_ID: &str = "subject.id";
 pub const BAG_SUBJECT_TYPE: &str = "subject.type";
 pub const BAG_SUBJECT_TEAMS: &str = "subject.teams";
@@ -81,7 +68,7 @@ pub const BAG_PERM_PREFIX: &str = "perm.";
 pub const BAG_TEAM_PREFIX: &str = "team.";
 pub const BAG_CLAIM_PREFIX: &str = "claim.";
 
-// ----- Payload (args / result) -----
+// Payload (args / result).
 //
 // These are the dotted-prefix forms used when apl-cmf::payload flattens
 // the request's args object and the upstream's result object into the
@@ -90,16 +77,13 @@ pub const BAG_CLAIM_PREFIX: &str = "claim.";
 pub const BAG_ARGS_PREFIX: &str = "args.";
 pub const BAG_RESULT_PREFIX: &str = "result.";
 
-// ----- Client + workload -----
 pub const BAG_CLIENT_PREFIX: &str = "client.";
 pub const BAG_WORKLOAD_PREFIX: &str = "workload.";
 pub const BAG_CALLER_WORKLOAD_PREFIX: &str = "caller_workload.";
 
-// ----- Delegation -----
 pub const BAG_DELEGATION_PREFIX: &str = "delegation.";
 pub const BAG_DELEGATED: &str = "delegated";
 
-// ----- Other extensions -----
 pub const BAG_AGENT_PREFIX: &str = "agent.";
 pub const BAG_META_PREFIX: &str = "meta.";
 pub const BAG_REQUEST_PREFIX: &str = "request.";

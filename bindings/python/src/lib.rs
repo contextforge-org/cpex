@@ -7,7 +7,7 @@
 //
 // Module registration and tokio runtime initialization.
 // The runtime is initialized once with a multi-thread builder that honours
-// the `CPEX_PY_WORKER_THREADS` environment variable (KD8), mirroring the
+// the `CPEX_PY_WORKER_THREADS` environment variable, mirroring the
 // `CPEX_FFI_WORKER_THREADS` knob in cpex-ffi.
 
 use pyo3::prelude::*;
@@ -53,7 +53,7 @@ fn _lib(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Initialize the pyo3-async-runtimes tokio runtime with a multi-thread
     // builder so async methods are dispatched onto a real thread pool rather
     // than a single-threaded executor. This must run before any `future_into_py`
-    // call — doing it here at module import time is the correct hook (KD8).
+    // call — doing it here at module import time is the correct hook.
     //
     // This is a separate runtime from cpex-ffi's SHARED_RUNTIME; the
     // shared-budget philosophy is mirrored, not the runtime instance.

@@ -540,7 +540,7 @@ routes:
     assert_eq!(stored, vec!["PII".to_string(), "PRIOR".to_string()]);
 }
 
-/// Slice TS1 proof: an APL `taint(audit, session)` step lands the
+/// Proof: an APL `taint(audit, session)` step lands the
 /// label in `security.labels` (via `apply_session_taints`) AND the
 /// SessionStore (via `persist_session`). No plugin is involved — the
 /// taint comes from the YAML, not from any handler's modify_extensions.

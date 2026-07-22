@@ -15,10 +15,6 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-// ---------------------------------------------------------------------------
-// Plugin Errors
-// ---------------------------------------------------------------------------
-
 /// Top-level error type for the CPEX framework.
 ///
 /// Covers plugin execution failures, policy violations, timeouts,
@@ -93,10 +89,6 @@ impl PluginError {
         Box::new(self)
     }
 }
-
-// ---------------------------------------------------------------------------
-// Plugin Error Record
-// ---------------------------------------------------------------------------
 
 /// A `Clone`-able, serialization-friendly snapshot of a `PluginError`.
 ///
@@ -192,10 +184,6 @@ impl From<&PluginError> for PluginErrorRecord {
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// Plugin Violations
-// ---------------------------------------------------------------------------
 
 /// Structured policy violation returned by a plugin that denies execution.
 ///

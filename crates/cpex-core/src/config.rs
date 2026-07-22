@@ -27,10 +27,6 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use crate::error::PluginError;
 use crate::plugin::PluginConfig;
 
-// ---------------------------------------------------------------------------
-// Top-Level Config
-// ---------------------------------------------------------------------------
-
 /// Top-level CPEX configuration.
 ///
 /// Parsed from a single YAML file. Plugin scoping mode is controlled
@@ -68,10 +64,6 @@ impl CpexConfig {
         self.plugin_settings.routing_enabled
     }
 }
-
-// ---------------------------------------------------------------------------
-// Plugin Settings
-// ---------------------------------------------------------------------------
 
 /// Global plugin settings.
 ///
@@ -140,10 +132,6 @@ fn default_true() -> bool {
     true
 }
 
-// ---------------------------------------------------------------------------
-// Global Config
-// ---------------------------------------------------------------------------
-
 /// Global configuration — applies across all routes.
 ///
 /// Only used when routing is enabled. Contains named policy groups
@@ -177,10 +165,6 @@ pub struct GlobalConfig {
     pub identity: Option<crate::identity::RouteIdentityConfig>,
 }
 
-// ---------------------------------------------------------------------------
-// Policy Group
-// ---------------------------------------------------------------------------
-
 /// A named policy group — plugins to activate and optional metadata.
 ///
 /// The `all` group is reserved and always applied.
@@ -210,10 +194,6 @@ pub struct PolicyGroup {
     )]
     pub identity: Option<crate::identity::RouteIdentityConfig>,
 }
-
-// ---------------------------------------------------------------------------
-// Plugin Ref (route/group plugin reference)
-// ---------------------------------------------------------------------------
 
 /// A reference to a plugin in a route or policy group.
 ///
@@ -294,10 +274,6 @@ where
     }
 }
 
-// ---------------------------------------------------------------------------
-// Route Entry
-// ---------------------------------------------------------------------------
-
 /// A per-entity routing rule.
 ///
 /// Matches one entity type (tool, resource, prompt, or LLM) and
@@ -363,10 +339,6 @@ pub struct RouteEntry {
     )]
     pub identity: Option<crate::identity::RouteIdentityConfig>,
 }
-
-// ---------------------------------------------------------------------------
-// Custom Deserialize for RouteEntry.identity
-// ---------------------------------------------------------------------------
 
 /// Deserialize the `authentication:` block in a `RouteEntry`. Accepts either a YAML
 /// list (treated as additive — `replace_inherited: false`) or a
@@ -491,10 +463,6 @@ fn parse_identity_step(
     }
 }
 
-// ---------------------------------------------------------------------------
-// Route Meta
-// ---------------------------------------------------------------------------
-
 /// Operational metadata on a route entry.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct RouteMeta {
@@ -511,10 +479,6 @@ pub struct RouteMeta {
     #[serde(default)]
     pub properties: HashMap<String, String>,
 }
-
-// ---------------------------------------------------------------------------
-// String or List (for tool matching)
-// ---------------------------------------------------------------------------
 
 /// An entity-name pattern. Holds the original pattern string (for
 /// serialization round-tripping and operator-facing diagnostics) plus a
@@ -672,10 +636,6 @@ fn reject_renamed_identity_key(raw: &serde_yaml::Value) -> Result<(), Box<Plugin
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Validation
-// ---------------------------------------------------------------------------
-
 /// Validate a parsed config for structural correctness.
 ///
 /// This checks only the *structural* plugin activation lists
@@ -758,10 +718,6 @@ fn validate_config(config: &CpexConfig) -> Result<(), Box<PluginError>> {
 
     Ok(())
 }
-
-// ---------------------------------------------------------------------------
-// Route Resolution
-// ---------------------------------------------------------------------------
 
 /// Specificity scores for route matching.
 const SPECIFICITY_EXACT_NAME: usize = 1000;
@@ -1007,7 +963,6 @@ fn find_matching_route<'a>(
     let mut best: Option<(usize, &RouteEntry)> = None;
 
     for route in &config.routes {
-        // Check scope compatibility
         let route_scope = route.meta.as_ref().and_then(|m| m.scope.as_deref());
         let scope_bonus = match (route_scope, request_scope) {
             (None, _) => 0,                          // route is global
@@ -1680,8 +1635,6 @@ routes:
         assert_eq!(route.when.as_deref(), Some("args.sensitive == true"));
     }
 
-    // ---- route-level `authentication:` block ----
-
     #[test]
     fn parse_route_identity_list_form() {
         let yaml = r#"
@@ -1812,9 +1765,8 @@ routes:
 
     #[test]
     fn legacy_identity_key_is_rejected_at_route_and_global() {
-        // Breaking rename: `identity:` was renamed to `authentication:`.
-        // A stale key must fail loudly, never be silently dropped (which
-        // would skip authentication — a fail-open).
+        // The legacy `identity:` key must fail loudly, never be silently
+        // dropped (which would skip authentication — a fail-open).
         for yaml in [
             "routes:\n  - tool: t\n    identity:\n      - corp-jwt\n",
             "global:\n  identity:\n    - corp-jwt\n",
@@ -1841,8 +1793,6 @@ routes:
         let msg = format!("{err}");
         assert!(msg.contains("list of steps"), "got: {msg}");
     }
-
-    // ---- resolve_identity_plugins_for_route ----
 
     #[test]
     fn resolve_identity_returns_empty_when_no_route_matches() {
@@ -1923,8 +1873,6 @@ routes:
             Some("my-tool")
         );
     }
-
-    // ---- Slice C: global + tag-bundle inheritance ----
 
     #[test]
     fn resolve_identity_includes_global_layer_when_route_has_no_block() {
@@ -2121,20 +2069,6 @@ routes:
             resolve_identity_plugins_for_route(&cfg, "tool", "get_weather", Some("tenant-b"));
         assert!(non_matching.is_empty());
     }
-
-    // -----------------------------------------------------------------
-    // `plugins:` accepts both shapes (map-tolerant deserializer)
-    //
-    // A *sequence* is the structural activation list. A *mapping* is the
-    // APL per-plugin override form (consumed by the APL visitor from the
-    // raw YAML), so it deserializes to an empty structural list here.
-    // Before this, a map at route/defaults/policy scope failed the whole
-    // `CpexConfig` parse with "invalid type: map, expected a sequence".
-    //
-    // These exercise deserialization directly (not `parse_config`, which
-    // also runs `validate_config`'s plugin-reference checks) because the
-    // bug being fixed was a *deserialize-time* failure.
-    // -----------------------------------------------------------------
 
     fn deserialize_cfg(yaml: &str) -> Result<CpexConfig, String> {
         serde_yaml::from_str(yaml).map_err(|e| e.to_string())

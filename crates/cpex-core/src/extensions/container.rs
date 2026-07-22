@@ -29,10 +29,6 @@ use super::raw_credentials::RawCredentialsExtension;
 use super::request::RequestExtension;
 use super::security::SecurityExtension;
 
-// ---------------------------------------------------------------------------
-// Extensions — all Arc, fully immutable, zero-copy shareable
-// ---------------------------------------------------------------------------
-
 /// Typed container for all message extensions.
 ///
 /// All slots are `Arc<T>` — fully immutable, zero-copy shareable.
@@ -181,7 +177,6 @@ impl Extensions {
             delegation: self.delegation.as_ref().map(|arc| (**arc).clone()),
             custom: self.custom.as_ref().map(|arc| (**arc).clone()),
 
-            // Write tokens — propagated from the original
             http_write_token: if self.http_write_token.is_some() {
                 Some(WriteToken::new())
             } else {
@@ -258,10 +253,6 @@ impl Extensions {
     }
 }
 
-// ---------------------------------------------------------------------------
-// OwnedExtensions — plugin's writeable workspace
-// ---------------------------------------------------------------------------
-
 /// Owned copy of extensions for plugin modification.
 ///
 /// Returned by `Extensions::cow_copy()`. Immutable slots share
@@ -287,8 +278,8 @@ pub struct OwnedExtensions {
     pub framework: Option<Arc<FrameworkExtension>>,
     pub meta: Option<Arc<MetaExtension>>,
     /// Raw credentials are shared by Arc here too — write tokens for
-    /// `inbound_tokens` and `delegated_tokens` mutation paths land in
-    /// slice 2 (IdentityResolve) and slice 3 (TokenDelegate). Until
+    /// `inbound_tokens` and `delegated_tokens` mutation paths land with
+    /// the IdentityResolve and TokenDelegate hooks. Until
     /// then, no plugin writes through `OwnedExtensions.raw_credentials`.
     pub raw_credentials: Option<Arc<RawCredentialsExtension>>,
 
@@ -298,7 +289,6 @@ pub struct OwnedExtensions {
     pub delegation: Option<DelegationExtension>,
     pub custom: Option<HashMap<String, serde_json::Value>>,
 
-    // Write tokens — propagated from executor
     pub http_write_token: Option<WriteToken>,
     pub labels_write_token: Option<WriteToken>,
     pub delegation_write_token: Option<WriteToken>,
@@ -489,7 +479,6 @@ mod tests {
         use crate::extensions::delegation::DelegationHop;
         use crate::extensions::DelegationExtension;
 
-        // Build extensions with security, http, delegation, custom
         let mut security = SecurityExtension::default();
         security.add_label("PII");
 

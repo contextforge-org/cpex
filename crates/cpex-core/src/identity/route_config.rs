@@ -6,8 +6,6 @@
 // Route-level identity configuration — the parsed shape of a
 // route's `identity:` block in unified-config YAML.
 //
-// See `docs/apl-identity-delegation-design.md` for the full design.
-//
 // # Semantic note
 //
 // Identity binding is **hook-specific**: the `identity:` block
@@ -61,7 +59,7 @@ use serde::{Deserialize, Serialize};
 /// entry list when filtered for this route, and the host's
 /// `IdentityPayload` flows through unchanged (no resolvers fire).
 ///
-/// Inheritance (Slice C, deferred) walks `global → tags → route`
+/// Inheritance (deferred) walks `global → tags → route`
 /// and merges each layer's `RouteIdentityConfig` based on
 /// `replace_inherited`: when `false` (the default), the new layer's
 /// steps append after the inherited ones; when `true`, the new
@@ -78,8 +76,8 @@ pub struct RouteIdentityConfig {
     /// (`identity: { replace_inherited: true, steps: [...] }`).
     /// The list-form YAML always produces `false`.
     ///
-    /// Honored by the inheritance merge once Slice C lands. Slice A
-    /// stores the flag without exercising its merge semantics (no
+    /// Honored by the inheritance merge once that lands. Today the
+    /// flag is stored without exercising its merge semantics (no
     /// inheritance to override yet at route level).
     #[serde(default, skip_serializing_if = "is_false")]
     pub replace_inherited: bool,

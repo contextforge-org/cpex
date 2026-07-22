@@ -7,7 +7,7 @@
 // AttributeBag. This is where the *attribute vocabulary* APL policy
 // authors write against gets defined.
 //
-// Layering (see docs/specs/apl-design.md §4):
+// Layering:
 //
 //   cpex-core  : typed extension data (SecurityExtension, …)
 //   apl-cmf    : ←── this crate, flat-key bridge

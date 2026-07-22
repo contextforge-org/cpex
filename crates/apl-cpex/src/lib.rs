@@ -16,7 +16,7 @@
 //
 // # v0 simplification — single-view-per-Message
 //
-// CMF spec §4.2 distinguishes two messaging patterns:
+// CMF distinguishes two messaging patterns:
 //   - LLM wire format — bundled multi-part Messages (thinking + text +
 //     tool_call(s)) — many MessageViews per Message.
 //   - Framework/protocol format (MCP, A2A, LangGraph) — single

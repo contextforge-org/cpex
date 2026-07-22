@@ -30,11 +30,11 @@ use jsonwebtoken::{Algorithm, DecodingKey};
 ///
 /// A KeyStore with no entries at all (`by_kid.is_empty() && fallback.is_none()`)
 /// is a valid runtime state — it represents "JWKS fetch failed,
-/// retry pending" in the soft-fail design (Slice B). Today every
+/// retry pending" in the soft-fail design. Today every
 /// construction path populates at least one slot before the store
 /// is reachable from the resolver.
 ///
-/// # Update discipline (Slice B refresh)
+/// # Update discipline (refresh)
 ///
 /// When the periodic refresh task lands, the intended pattern is
 /// **whole-store replacement** — the refresh fetches a fresh JWKS,
@@ -55,8 +55,8 @@ pub struct KeyStore {
 }
 
 impl KeyStore {
-    /// Empty store. Only useful for the soft-fail placeholder path
-    /// (Slice B); current code always populates before exposing.
+    /// Empty store. Only useful for the soft-fail placeholder path;
+    /// current code always populates before exposing.
     pub fn empty() -> Self {
         Self {
             by_kid: HashMap::new(),

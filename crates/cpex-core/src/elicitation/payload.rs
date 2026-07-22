@@ -102,7 +102,6 @@ pub enum ElicitationOutcomeKind {
 /// updated payload).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ElicitationPayload {
-    // ----- Input (private — bridge-supplied, never mutated by handlers) -----
     /// Which touch-point this is.
     operation: ElicitationOp,
 
@@ -139,7 +138,6 @@ pub struct ElicitationPayload {
     /// selected by name).
     channel: Option<String>,
 
-    // ----- Output (pub — handlers populate via direct assignment on clones) -----
     /// Correlation id minted on `Dispatch`. The agent echoes it on retry.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
@@ -211,8 +209,6 @@ impl ElicitationPayload {
         }
     }
 
-    // -------- Input builders --------
-
     /// Set the correlation id (check / validate operations).
     pub fn with_elicitation_id(mut self, id: impl Into<String>) -> Self {
         self.elicitation_id = Some(id.into());
@@ -238,8 +234,6 @@ impl ElicitationPayload {
         self.channel = Some(channel.into());
         self
     }
-
-    // -------- Input read accessors --------
 
     pub fn operation(&self) -> ElicitationOp {
         self.operation

@@ -22,10 +22,6 @@ use super::content::*;
 use super::enums::{Channel, Role};
 use crate::hooks::trait_def::PluginResult;
 
-// ---------------------------------------------------------------------------
-// Message
-// ---------------------------------------------------------------------------
-
 /// Canonical CMF message representing a single turn in a conversation.
 ///
 /// All content is carried as typed ContentPart variants. Extensions
@@ -211,10 +207,6 @@ impl Message {
     }
 }
 
-// ---------------------------------------------------------------------------
-// MessagePayload — PluginPayload wrapper
-// ---------------------------------------------------------------------------
-
 /// CMF Message wrapped as a PluginPayload for hook dispatch.
 ///
 /// This is the payload type for all `cmf.*` hooks. Plugins that
@@ -228,10 +220,6 @@ pub struct MessagePayload {
 
 crate::impl_plugin_payload!(MessagePayload);
 crate::impl_wasm_payload!(MessagePayload, "cmf.message");
-
-// ---------------------------------------------------------------------------
-// CmfHook — Hook Type Definition
-// ---------------------------------------------------------------------------
 
 crate::define_hook! {
     /// CMF message evaluation hook.

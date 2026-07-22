@@ -10,13 +10,13 @@
 // consumes the IR plus an AttributeBag and returns a decision.
 //
 // IR types are kept small and pure-data — no dependencies on cpex-core
-// extensions, no evaluation logic. See docs/specs/apl-design.md §7.
+// extensions, no evaluation logic.
 
 use serde::{Deserialize, Serialize};
 
 /// Comparison operators in DSL predicates.
 ///
-/// `In` / `NotIn` are intentionally absent: the DSL spec §2.4 has them as
+/// `In` / `NotIn` are intentionally absent: the DSL spec has them as
 /// `value_key in set_key` — both sides are attribute references, not a
 /// key-vs-literal shape. They'll land as a dedicated `Condition` variant
 /// when the parser arrives.
@@ -79,7 +79,7 @@ impl From<String> for Literal {
 /// The DSL's `require(...)` keyword is **not** represented here — it's a
 /// rule-level shorthand for "deny when the condition fails," and the parser
 /// desugars it into `Not` / `And` / `Or` over `IsFalse` expressions plus
-/// an `Action::Deny`. See DSL spec §8.1 desugarings.
+/// an `Action::Deny`. See the DSL spec desugarings.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Condition {
     Comparison {
@@ -95,14 +95,14 @@ pub enum Condition {
     },
     /// DSL `exists(key)` — true iff the key is present in the
     /// AttributeBag, regardless of its value. Distinct from `IsTrue`
-    /// (which only succeeds for truthy values). Per DSL §2.2.
+    /// (which only succeeds for truthy values).
     Exists {
         key: String,
     },
     /// DSL `value_key in set_key` (negate=false) / `value_key not in set_key`
     /// (negate=true). Both operands are attribute keys, not literals — the
     /// scalar at `value_key` is checked for membership in the StringSet at
-    /// `set_key`. Per DSL §2.4. Returns `false` if either key is missing or
+    /// `set_key`. Returns `false` if either key is missing or
     /// the types don't match (scalar must resolve to a string).
     InSet {
         value_key: String,
@@ -113,8 +113,8 @@ pub enum Condition {
 
 /// Compound predicate.
 ///
-/// `Always` is the implicit-true predicate for bare-effect rules
-/// (DSL §3.1): `- plugin(rate_limiter)` / `- taint(audit)` / unconditional
+/// `Always` is the implicit-true predicate for bare-effect rules:
+/// `- plugin(rate_limiter)` / `- taint(audit)` / unconditional
 /// `- deny` / `- allow`. It's never produced by predicate-string parsing
 /// — only by rule-level forms where no `when:` is supplied.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -126,17 +126,17 @@ pub enum Expression {
     Always,
 }
 
-/// One thing a matching rule does. Mirrors DSL spec §3 effect classes:
+/// One thing a matching rule does. Mirrors the DSL effect classes:
 ///
 ///   * Control — `Allow`, `Deny`
 ///   * Label — `Taint`
 ///   * Host — `Plugin`, `Delegate`
 ///
 /// Content effects (`redact`, `mask`, `omit`, `hash`) and orchestration
-/// (`Sequential`, `Parallel`) land in later slices (E2 / E3).
+/// (`Sequential`, `Parallel`) land in later work.
 ///
 /// PDP calls (`cedar:(…)`, `opa(…)`, …) remain top-level [`Step`]
-/// variants for now; folding them into `Effect` is an E4 cleanup.
+/// variants for now; folding them into `Effect` is a cleanup.
 ///
 /// # Inside a `Vec<Effect>` (a rule's `effects` body)
 ///
@@ -179,14 +179,13 @@ pub enum Effect {
     /// confirmation, step-up, …) through a channel plugin, hold pending
     /// state across the agent's retries, validate the response, resume.
     /// The elicitation analogue of `Delegate`. See
-    /// `docs/apl-manager-approval-ciba-design.md` and
     /// [`crate::step::ElicitStep`].
     Elicit(crate::step::ElicitStep),
     Taint {
         label: String,
         scopes: Vec<crate::pipeline::TaintScope>,
     },
-    /// Content effect (DSL §3) — apply a pipe chain (`redact`, `mask`,
+    /// Content effect — apply a pipe chain (`redact`, `mask`,
     /// `omit`, `hash`, validators, transforms) to a field in the
     /// route's args or result. The author writes
     /// `result.salary | redact` inside a `do:` body; the parser
@@ -238,7 +237,7 @@ pub enum Effect {
         source: String,
     },
     /// External PDP call. `on_allow` / `on_deny` are reaction effect
-    /// lists fired against the PDP's decision (DSL §7.5). Replaces
+    /// lists fired against the PDP's decision. Replaces
     /// `Step::Pdp { ... }` — `args`-shape stays identical.
     Pdp {
         call: crate::step::PdpCall,
@@ -372,7 +371,7 @@ impl From<Rule> for Effect {
 
 /// One of the four lifecycle phases the evaluator runs per route.
 ///
-/// See docs/specs/apl-design.md §3 — the `PolicyEvaluator` trait has one
+/// The `PolicyEvaluator` trait has one
 /// async method per phase. `declared_phases()` lets the host skip phases
 /// the route doesn't use.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -444,7 +443,7 @@ pub struct DenyResponse {
 /// `args` and `result` are per-field pipelines (validators + transforms).
 /// `policy` and `post_policy` are step lists — predicate-and-action rules
 /// plus PDP calls, plugin invocations, and taint effects. See
-/// apl-dsl-spec §1.2 / §4 / §7.
+/// apl-dsl-spec.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct CompiledRoute {
     pub route_key: String,
@@ -888,8 +887,6 @@ mod tests {
             ]
         );
     }
-
-    // ----- E3: parallel-purity validation -----
 
     #[test]
     fn validate_parallel_pure_block_passes() {
