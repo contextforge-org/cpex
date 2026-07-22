@@ -390,7 +390,7 @@ async fn current_payload_reflects_accumulated_mutations() {
 // TrustedConfig. cpex-core's executor then enforces the narrower caps
 // in its single per-entry `filter_extensions` pass — no double filter,
 // no second clone of security. The base plugin's circuit breaker stays
-// isolated per `feedback_override_isolation.md`.
+// isolated.
 // ---------------------------------------------------------------------
 
 /// Capture-plugin fixture — records the Extensions it actually receives
@@ -584,12 +584,12 @@ async fn route_override_caps_narrow_what_plugin_sees() {
 }
 
 // ---------------------------------------------------------------------
-// Slice 101 — hook routing table regression
+// Hook routing table regression
 // ---------------------------------------------------------------------
 //
 // Multi-hook plugin selection bug regression: a plugin registered
 // under BOTH `cmf.tool_pre_invoke` and `cmf.tool_post_invoke` must
-// dispatch to the right entry per phase. Before Slice 101 the
+// dispatch to the right entry per phase. Previously the
 // dispatch plan classified both as "step" and arbitrary "first
 // non-field wins" picked one for every dispatch — silent wrong
 // routing when policy and post_policy needed different handlers.

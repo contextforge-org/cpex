@@ -329,7 +329,7 @@ impl AnyHookHandler for AplRouteHandler {
             }
         }
 
-        // Slice B: real delegation invoker, sharing the CMF invoker's
+        // Real delegation invoker, sharing the CMF invoker's
         // extensions Mutex so a `delegate(...)` step's writes to
         // raw_credentials / delegation are visible to downstream CMF
         // plugins and to the post phase. Routes that don't declare
@@ -394,8 +394,8 @@ impl AnyHookHandler for AplRouteHandler {
         // pipeline `Stage::Taint`) into `extensions.security.labels`
         // so the existing label-diff flow inside `persist_session`
         // picks them up. Message-scoped taints are filtered out by
-        // `apply_session_taints` — they need their own destination
-        // (see TS2). No-op when no taints emitted.
+        // `apply_session_taints` — they need their own destination.
+        // No-op when no taints emitted.
         invoker.apply_session_taints(&decision.taints).await;
 
         // Commit any session-scoped labels accumulated during this
@@ -566,10 +566,6 @@ impl AnyHookHandler for AplRouteHandler {
         "cmf"
     }
 }
-
-// =====================================================================
-// Helpers
-// =====================================================================
 
 /// Attach a route's transpiled `denyWith` (status/body/headers) to a
 /// denial `violation`'s `details` map so the host can render a custom HTTP
@@ -753,10 +749,6 @@ fn extensions_changed(before: &Extensions, after: &Extensions) -> bool {
     };
     security_changed || delegation_changed || raw_creds_changed
 }
-
-// ---------------------------------------------------------------------
-// Phase 5: pending elicitation ↔ wire (`-32120`)
-// ---------------------------------------------------------------------
 
 /// Extract the elicitation id an agent echoes on retry from the
 /// `X-Policy-Elicitation-Id` request header. `None` when absent/empty.

@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Authors: Teryl Taylor
 //
-// End-to-end test for `Step::Delegate` dispatch (Slice B).
+// End-to-end test for `Step::Delegate` dispatch.
 //
 // Verifies the full flow:
 //   * APL parser produces a `Step::Delegate` from policy YAML.
@@ -286,7 +286,7 @@ async fn delegate_step_grants_visible_to_downstream_require() {
     });
 
     // APL semantics: `allow` rules don't short-circuit — only `deny`
-    // halts (spec §3). So the assertion shape is "deny if NOT granted",
+    // halts. So the assertion shape is "deny if NOT granted",
     // which falls through to the implicit allow at end-of-steps when
     // the delegate succeeded.
     let yaml = r#"

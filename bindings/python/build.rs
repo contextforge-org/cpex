@@ -12,7 +12,7 @@
 // the approach used by maturin itself.
 //
 // Under maturin `CARGO_FEATURE_EXTENSION_MODULE` is set, so we skip the flag
-// to avoid a duplicate that maturin already injects (KD3).
+// to avoid a duplicate that maturin already injects.
 
 fn main() {
     #[cfg(target_os = "macos")]

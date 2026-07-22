@@ -23,8 +23,7 @@
 //
 //   - Obligations — Cedar 4.10 doesn't have first-class obligations.
 //     Policy annotations could carry them (`@obligation(...)`) but
-//     wiring the annotation vocabulary is deferred — see
-//     `docs/specs/cedar-context-contract.md`.
+//     wiring the annotation vocabulary is deferred.
 //
 // # Fail-closed on evaluation errors
 //

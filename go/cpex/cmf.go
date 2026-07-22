@@ -17,10 +17,6 @@ package cpex
 
 import "github.com/vmihailenco/msgpack/v5"
 
-// ---------------------------------------------------------------------------
-// CMF Message Types
-// ---------------------------------------------------------------------------
-
 // MessagePayload wraps a Message for FFI transport.
 // Matches Rust's cpex_core::cmf::MessagePayload.
 type MessagePayload struct {
@@ -44,10 +40,6 @@ func NewMessage(role string, content ...ContentPart) Message {
 		Content:       content,
 	}
 }
-
-// ---------------------------------------------------------------------------
-// Content Parts — tagged union via content_type discriminator
-// ---------------------------------------------------------------------------
 
 // ContentPart represents one element in a Message's content list.
 // Uses custom msgpack marshaling to produce the tagged-union wire format:
@@ -187,10 +179,6 @@ func (cp *ContentPart) DecodeMsgpack(dec *msgpack.Decoder) error {
 	return nil
 }
 
-// ---------------------------------------------------------------------------
-// Content Part Constructors
-// ---------------------------------------------------------------------------
-
 // Constructor functions are named `NewXPart` to avoid shadowing the
 // matching `XContent` field on ContentPart. Previously a constructor
 // like `ToolCallContent(tc)` had the same name as the field
@@ -258,10 +246,6 @@ func NewDocumentPart(doc DocumentSource) ContentPart {
 	return ContentPart{ContentType: ContentTypeDocument, DocumentContent: &doc}
 }
 
-// ---------------------------------------------------------------------------
-// Domain Objects
-// ---------------------------------------------------------------------------
-
 // ToolCall represents a tool invocation request.
 type ToolCall struct {
 	ToolCallID string         `msgpack:"tool_call_id"`
@@ -322,10 +306,6 @@ type PromptResult struct {
 	ErrorMessage    string    `msgpack:"error_message,omitempty"`
 }
 
-// ---------------------------------------------------------------------------
-// Media Source Types
-// ---------------------------------------------------------------------------
-
 // ImageSource holds image data (URL or base64).
 type ImageSource struct {
 	SourceType string `msgpack:"type"`
@@ -356,10 +336,6 @@ type DocumentSource struct {
 	MediaType  string `msgpack:"media_type,omitempty"`
 	Title      string `msgpack:"title,omitempty"`
 }
-
-// ---------------------------------------------------------------------------
-// Decode helpers — extract typed domain objects from a decoded `any` value.
-// ---------------------------------------------------------------------------
 
 // decodeAs re-encodes a decoded msgpack value and unmarshals it into a
 // typed struct, letting the struct's msgpack tags drive field selection.

@@ -41,10 +41,6 @@ use crate::hooks::trait_def::HookTypeDef;
 use crate::hooks::HookType;
 use crate::plugin::{Plugin, PluginConfig, PluginMode};
 
-// ---------------------------------------------------------------------------
-// Plugin Ref — trusted wrapper
-// ---------------------------------------------------------------------------
-
 /// Manager-owned wrapper that pairs a plugin with its authoritative config.
 ///
 /// The `trusted_config` comes from the config loader / manager — never
@@ -158,10 +154,6 @@ impl PluginRef {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Type-Erased Hook Handler
-// ---------------------------------------------------------------------------
-
 /// Type-erased interface for calling a hook handler.
 ///
 /// The executor uses this to dispatch hooks without knowing the
@@ -196,10 +188,6 @@ pub trait AnyHookHandler: Send + Sync {
     fn hook_type_name(&self) -> &'static str;
 }
 
-// ---------------------------------------------------------------------------
-// Hook Entry — PluginRef + handler paired together
-// ---------------------------------------------------------------------------
-
 /// A registered hook handler paired with its PluginRef.
 ///
 /// The executor uses `plugin_ref` for scheduling decisions (mode,
@@ -217,10 +205,6 @@ pub struct HookEntry {
     /// The type-erased handler for this specific hook.
     pub handler: Arc<dyn AnyHookHandler>,
 }
-
-// ---------------------------------------------------------------------------
-// Plugin Registry
-// ---------------------------------------------------------------------------
 
 /// Manages registered plugin instances and hook handler mappings.
 ///
@@ -412,12 +396,10 @@ impl PluginRegistry {
     pub fn unregister(&mut self, name: &str) -> Option<Arc<PluginRef>> {
         let plugin_ref = self.plugins.remove(name)?;
 
-        // Remove from hook index
         for entries in self.hook_index.values_mut() {
             entries.retain(|e| e.plugin_ref.name() != name);
         }
 
-        // Clean up empty hook entries
         self.hook_index.retain(|_, entries| !entries.is_empty());
 
         Some(plugin_ref)
@@ -484,10 +466,6 @@ impl Default for PluginRegistry {
         Self::new()
     }
 }
-
-// ---------------------------------------------------------------------------
-// Group HookEntries by mode (used by the executor)
-// ---------------------------------------------------------------------------
 
 /// Groups a list of HookEntries by their execution mode.
 ///

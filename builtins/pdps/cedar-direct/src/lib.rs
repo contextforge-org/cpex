@@ -71,8 +71,7 @@
 //   - `context.security`   — `{ labels: [...], classification }`.
 //
 // Operators document this layout in their Cedar schema; policy authors
-// rely on it. See `docs/specs/cedar-context-contract.md` for the
-// authoritative shape.
+// rely on it.
 //
 // # Schema (optional)
 //

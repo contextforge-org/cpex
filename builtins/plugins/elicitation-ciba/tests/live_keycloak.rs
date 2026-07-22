@@ -5,10 +5,9 @@
 //
 // Phase 0 verification — runs the *automatable* half of the CIBA flow
 // (dispatch → check-pending) against a REAL Keycloak, so "Phase 0
-// verified" is a repeatable test, not just the manual runbook
-// (`docs/keycloak-ciba-phase0-runbook.md`).
+// verified" is a repeatable test, not just the manual runbook.
 //
-// The approval step (§5.3 of the runbook) is decoupled and human-driven,
+// The approval step is decoupled and human-driven,
 // so it can't be asserted here — but dispatch + the first poll exercise
 // the realm/client/auth config end-to-end, which is what usually breaks.
 //
@@ -40,7 +39,7 @@ fn env(name: &str) -> Option<String> {
 }
 
 #[tokio::test]
-#[ignore = "requires a live Keycloak configured per docs/keycloak-ciba-phase0-runbook.md"]
+#[ignore = "requires a live Keycloak"]
 async fn live_dispatch_then_pending() {
     let (Some(backchannel), Some(token), Some(client_id), Some(secret), Some(login_hint)) = (
         env("CIBA_BACKCHANNEL_ENDPOINT"),
@@ -78,7 +77,7 @@ async fn live_dispatch_then_pending() {
     let approver = CibaApprover::new(cfg).expect("construct approver");
     let ext = Extensions::default();
 
-    // 1. dispatch → backchannel auth request (runbook §5.1).
+    // 1. dispatch → backchannel auth request.
     let dispatch = ElicitationPayload::new(ElicitationOp::Dispatch, "approval", &login_hint)
         .with_purpose("Phase 0 verification — please ignore");
     let mut ctx = PluginContext::new();
@@ -97,7 +96,7 @@ async fn live_dispatch_then_pending() {
     assert_eq!(dispatched.approver.as_deref(), Some(login_hint.as_str()));
     eprintln!("dispatch OK — auth_req_id = {id}");
 
-    // 2. check → token poll before approval (runbook §5.2). Without a
+    // 2. check → token poll before approval. Without a
     //    completed decoupled approval this must report Pending.
     let check =
         ElicitationPayload::new(ElicitationOp::Check, "approval", "").with_elicitation_id(&id);

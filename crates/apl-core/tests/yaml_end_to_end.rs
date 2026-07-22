@@ -8,8 +8,8 @@
 // only (`compile_config` + `evaluate_route` + traits) and serves as the
 // authoritative "if this passes, apl-core works as a unit" check.
 //
-// The fixture follows Example 1 from unified-config-proposal.md, adapted to
-// the map-keyed `routes:` shape that the parser actually accepts (the spec's
+// The fixture is a representative HR route, adapted to
+// the map-keyed `routes:` shape that the parser actually accepts (the
 // list-with-matchers form is a deferred shape).
 
 use std::sync::Arc;

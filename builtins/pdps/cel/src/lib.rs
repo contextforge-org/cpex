@@ -68,7 +68,7 @@
 // `false → Deny`. A non-boolean result, an undeclared-variable reference,
 // a compile error, or any other evaluation error is **fail-closed → Deny**
 // with the cause in `PdpDecision.diagnostics` (matches APL's PDP
-// fail-closed default; DSL §8.9). Operators can flip a *runtime* error
+// fail-closed default). Operators can flip a *runtime* error
 // (undeclared variable, type error, non-boolean) to allow-through via
 // `on_error: allow` in the PDP config block, but the default is `deny`.
 // Compile errors are never flippable — see `resolver::OnError`.

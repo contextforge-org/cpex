@@ -18,10 +18,6 @@ use super::container::Extensions;
 use super::security::{SecurityExtension, SubjectExtension};
 use super::tiers::{AccessPolicy, Capability, MutabilityTier, SlotPolicy};
 
-// ---------------------------------------------------------------------------
-// Slot Registry — static policies per extension slot
-// ---------------------------------------------------------------------------
-
 /// Extension slot identifiers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SlotName {
@@ -215,10 +211,6 @@ pub fn slot_policy(slot: SlotName) -> SlotPolicy {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Capability Checking
-// ---------------------------------------------------------------------------
-
 /// Check if a set of capabilities grants read access to a slot.
 fn has_read_access(policy: &SlotPolicy, capabilities: &HashSet<String>) -> bool {
     if policy.access == AccessPolicy::Unrestricted {
@@ -268,10 +260,6 @@ fn cap_str(cap: Capability) -> String {
         .trim_matches('"')
         .to_string()
 }
-
-// ---------------------------------------------------------------------------
-// Filter Extensions
-// ---------------------------------------------------------------------------
 
 /// Build a Extensions containing only slots the plugin can access.
 ///
@@ -444,10 +432,8 @@ fn build_filtered_security(
     }
 
     // Our own outbound workload identity — also gated under
-    // `read_workload`. Plugins not declaring it never see our
-    // gateway's SPIFFE-SVID (previously this slot was always-visible
-    // under the old `agent` name; the cap gating is intentional new
-    // behavior, per spec §4.4).
+    // `read_workload`. Plugins not declaring it never
+    // see our gateway's SPIFFE-SVID.
     if let Some(ref tw) = security.this_workload {
         let policy = slot_policy(SlotName::SecurityThisWorkload);
         if has_read_access(&policy, capabilities) {
@@ -681,10 +667,6 @@ mod tests {
         assert!(filtered.delegation.unwrap().delegated);
     }
 
-    // -----------------------------------------------------------------
-    // New identity-slot capability gating (slice 1 step C)
-    // -----------------------------------------------------------------
-
     /// Builds a SecurityExtension carrying all four identity principal
     /// slots — subject, client, caller_workload, this_workload.
     /// Used by the new-slot cap-gating tests.
@@ -784,10 +766,6 @@ mod tests {
         // No leak into client.
         assert!(sec.client.is_none());
     }
-
-    // -----------------------------------------------------------------
-    // RawCredentialsExtension capability gating
-    // -----------------------------------------------------------------
 
     fn extensions_with_raw_credentials() -> Extensions {
         use crate::extensions::raw_credentials::{

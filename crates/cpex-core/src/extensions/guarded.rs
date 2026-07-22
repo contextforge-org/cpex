@@ -10,7 +10,7 @@
 // Write access requires the framework to issue a WriteToken based on
 // the plugin's declared capabilities.
 //
-// Mirrors the spec in rust-implementation-spec.md §2.3.
+// Mirrors the reference implementation spec.
 
 use serde::{Deserialize, Serialize};
 
@@ -134,7 +134,6 @@ mod tests {
         // Read — no token needed
         assert!(guarded.read().map.is_empty());
 
-        // Write — token required
         guarded
             .write(&token)
             .map

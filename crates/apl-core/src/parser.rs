@@ -8,10 +8,10 @@
 // Runs once at config load. The IR it produces is what the evaluator walks
 // at request time; the parser is never on the hot path.
 //
-// Grammar anchored in apl-dsl-spec.md §2 (predicates) / §3 (rules) / §8 (EBNF).
-// YAML shape anchored in apl-design.md §5 (`routes:` as map keyed by route_key).
+// Grammar: predicates, rules, EBNF. YAML shape: `routes:` as a map
+// keyed by route_key.
 //
-// Step 5a scope:
+// Scope:
 //   ✓ Predicate grammar: identifiers, literals, comparisons, contains,
 //     & | ! parens, require(...)
 //   ✓ Actions: deny / allow / (default deny on missing)
@@ -32,10 +32,6 @@ use crate::plugin_decl::{PluginDeclaration, PluginOverride, PluginRegistry};
 use crate::rules::{CompareOp, CompiledRoute, Condition, Effect, Expression, Literal, Rule};
 use crate::step::{DelegateStep, ElicitKind, ElicitStep, PdpCall, PdpDialect, Step};
 
-// =====================================================================
-// Errors
-// =====================================================================
-
 #[derive(Debug, Error)]
 pub enum ParseError {
     #[error("YAML parse error: {0}")]
@@ -44,7 +40,7 @@ pub enum ParseError {
     #[error("rule '{rule}': {msg}")]
     Rule { rule: String, msg: String },
 
-    #[error("unsupported step `{kind}` in rule '{rule}' — defer to step 5b")]
+    #[error("unsupported step `{kind}` in rule '{rule}'")]
     UnsupportedStep { rule: String, kind: String },
 
     #[error("predicate '{predicate}': {msg}")]
@@ -63,10 +59,6 @@ pub enum ParseError {
     )]
     ConflictingAuthorizationForms { location: String, phase: String },
 }
-
-// =====================================================================
-// Lexer
-// =====================================================================
 
 #[derive(Debug, Clone, PartialEq)]
 enum Tok {
@@ -297,10 +289,6 @@ fn is_ident_cont(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_' || b == b'.'
 }
 
-// =====================================================================
-// Predicate parser (Pratt-style; precedence () > ! > & > |)
-// =====================================================================
-
 struct PredParser<'a> {
     src: &'a str,
     toks: Vec<Tok>,
@@ -343,7 +331,7 @@ impl<'a> PredParser<'a> {
             parts.push(self.parse_and()?);
         }
         Ok(if parts.len() == 1 {
-            parts.pop().unwrap()
+            parts.pop().expect("parts.len() == 1 was checked above")
         } else {
             Expression::Or(parts)
         })
@@ -356,7 +344,7 @@ impl<'a> PredParser<'a> {
             parts.push(self.parse_unary()?);
         }
         Ok(if parts.len() == 1 {
-            parts.pop().unwrap()
+            parts.pop().expect("parts.len() == 1 was checked above")
         } else {
             Expression::And(parts)
         })
@@ -381,7 +369,7 @@ impl<'a> PredParser<'a> {
                     _ => Err(self.err("expected `)`")),
                 }
             },
-            // `require(...)` is a rule-level shorthand per DSL §8 grammar
+            // `require(...)` is a rule-level shorthand per the DSL grammar
             // (`rule = require_call | predicate ...`), not a sub-predicate.
             // Trying to nest it inside `&` / `|` is a grammar error.
             Some(Tok::Require) => Err(self.err(
@@ -394,7 +382,7 @@ impl<'a> PredParser<'a> {
         }
     }
 
-    /// `exists(<identifier>)` — DSL §2.2. Returns true if the key is present
+    /// `exists(<identifier>)`. Returns true if the key is present
     /// in the AttributeBag, regardless of value (distinct from truthiness).
     fn parse_exists(&mut self) -> Result<Expression, ParseError> {
         self.bump(); // exists
@@ -435,7 +423,7 @@ impl<'a> PredParser<'a> {
             _ => unreachable!("parse_atom dispatched here"),
         };
 
-        // `in` and `not in` — two-key set membership (DSL §2.4).
+        // `in` and `not in` — two-key set membership.
         if matches!(self.peek(), Some(Tok::In)) {
             self.bump();
             return self.finish_in_set(key, false);
@@ -514,21 +502,16 @@ impl<'a> PredParser<'a> {
     }
 }
 
-/// Parse a predicate string into the IR. Public for tests + step-5b use.
+/// Parse a predicate string into the IR. Public for tests.
 pub fn parse_predicate(src: &str) -> Result<Expression, ParseError> {
     PredParser::parse(src.trim())
 }
 
-// =====================================================================
-// Rule parser
-// =====================================================================
-
 /// Parse a single rule line into a `Rule`.
 ///
-/// Accepted forms (DSL §3.2):
+/// Accepted forms:
 ///   1. `"require(...)"`           →  rule-level shorthand, desugars to
 ///                                    `when: <negated condition> do: deny`
-///                                    per DSL §8.1
 ///   2. `"<predicate>: <action>"`  →  Rule { condition, action }
 ///   3. `"<predicate>"`            →  Rule { condition, action: Deny } (default)
 ///   4. `"<action>"` (action only) →  treated as form 3 (always-true predicate)
@@ -541,7 +524,7 @@ pub fn parse_rule(line: &str, source: &str) -> Result<Rule, ParseError> {
     let trimmed = line.trim();
 
     // require(...) shorthand — special-cased because it desugars to a
-    // negated predicate + Deny action, and the spec grammar (§8) puts it
+    // negated predicate + Deny action, and the spec grammar puts it
     // as a top-level rule alternative, not a sub-predicate.
     if is_require_call(trimmed) {
         let condition = parse_require_rule(trimmed)?;
@@ -588,7 +571,7 @@ pub fn parse_rule(line: &str, source: &str) -> Result<Rule, ParseError> {
                     source: source.to_string(),
                 });
             }
-            // DSL §2 default: bare predicate denies.
+            // Default: bare predicate denies.
             (
                 trimmed,
                 vec![Effect::Deny {
@@ -616,7 +599,7 @@ fn is_require_call(s: &str) -> bool {
 }
 
 /// Parse `require(a)` / `require(a, b, ...)` / `require(a | b | ...)` and
-/// return the desugared "when" expression per DSL §8.1:
+/// return the desugared "when" expression:
 ///
 ///   require(X)             →  IsFalse(X)
 ///   require(X, Y, ...)     →  Or([IsFalse(X), IsFalse(Y), ...])   (deny if any falsy)
@@ -688,7 +671,10 @@ fn parse_require_rule(line: &str) -> Result<Expression, ParseError> {
         .map(|k| Expression::Condition(Condition::IsFalse { key: k }))
         .collect();
     if falses.len() == 1 {
-        return Ok(falses.into_iter().next().unwrap());
+        return Ok(falses
+            .into_iter()
+            .next()
+            .expect("falses.len() == 1 was checked above"));
     }
     Ok(match sep {
         Some(Tok::Or) => Expression::And(falses), // require(X | Y) → !X & !Y
@@ -742,8 +728,8 @@ fn split_predicate_action(s: &str) -> Option<(&str, &str)> {
 }
 
 /// Parse the *right* side of a shorthand `predicate: action` rule into a
-/// single-element effects vec. Recognized forms (DSL §3 + the `code`
-/// extension we added in E1):
+/// single-element effects vec. Recognized forms (the `code`
+/// extension we added):
 ///
 ///   * `deny`                    → `vec![Effect::Deny { reason: None, code: None }]`
 ///   * `deny('reason')`          → `vec![Effect::Deny { reason: Some, code: None }]`
@@ -792,7 +778,7 @@ fn try_parse_deny_call(s: &str, rule: &str) -> Result<Option<Effect>, ParseError
         msg: "malformed `deny(...)`".into(),
     })?;
     // Two positional args max. Spec precedent: `deny('reason')` (1 arg);
-    // E1 extension: `deny('reason', 'code')` (2 args). Both quoted.
+    // Extension: `deny('reason', 'code')` (2 args). Both quoted.
     let parts = split_top_level_commas(&inside).map_err(|e| ParseError::Rule {
         rule: rule.to_string(),
         msg: format!("deny(...): {}", e),
@@ -832,13 +818,9 @@ fn strip_string_literal(s: &str, rule: &str) -> Result<String, ParseError> {
     }
 }
 
-// =====================================================================
-// Step parser (pre_invocation / post_invocation entries — steps + rules)
-// =====================================================================
-
 /// Parse a single YAML entry from a `pre_invocation` / `post_invocation` list.
 ///
-/// Two YAML shapes (DSL §3.2 + §7):
+/// Two YAML shapes:
 /// - **String entry** — a rule line, taint effect, or plugin call.
 ///   - `"require(authenticated)"` → `Step::Rule`
 ///   - `"delegation.depth > 2: deny"` → `Step::Rule`
@@ -1078,8 +1060,7 @@ fn parse_delegate_call_args(inside: &str, source: &str) -> Result<ParsedDelegate
 }
 
 /// Sugar verb → [`ElicitKind`] table. Each verb desugars to the same
-/// `Step::Elicit` node with the kind fixed. See
-/// `docs/apl-elicitation-hook-design.md` for the per-kind contracts.
+/// `Step::Elicit` node with the kind fixed.
 const ELICIT_VERBS: &[(&str, ElicitKind)] = &[
     ("require_approval", ElicitKind::Approval),
     ("confirm", ElicitKind::Confirm),
@@ -1352,7 +1333,7 @@ fn strip_wrapping_quotes(s: &str) -> &str {
 }
 
 fn parse_step_map(m: &serde_yaml::Mapping, source: &str) -> Result<Step, ParseError> {
-    // Canonical structured rule: `- when: X\n  do: Y` (DSL §3.2).
+    // Canonical structured rule: `- when: X\n  do: Y`.
     // Detected by the presence of *both* `when` and `do` keys — order
     // doesn't matter, and the map can carry extra keys for future
     // extensions (e.g. `id:` for rule identifiers).
@@ -1368,14 +1349,17 @@ fn parse_step_map(m: &serde_yaml::Mapping, source: &str) -> Result<Step, ParseEr
                 .into(),
         });
     }
-    let (key_val, body_val) = m.iter().next().unwrap();
+    let (key_val, body_val) = m
+        .iter()
+        .next()
+        .expect("m.len() == 1 was checked above, so an entry must exist");
     let key = key_val.as_str().ok_or_else(|| ParseError::Rule {
         rule: format!("{:?}", key_val),
         msg: "PDP step key must be a string".into(),
     })?;
 
-    // Shorthand multi-effect map: `- "predicate": [list]` (DSL §3.1
-    // multi-effect from one predicate). Detected by a single-key map
+    // Shorthand multi-effect map: `- "predicate": [list]` (multi-effect
+    // from one predicate). Detected by a single-key map
     // whose value is a YAML sequence. Single-effect map shorthand
     // (`- "predicate": deny`) still goes through `parse_step_string`
     // via the colon-split, NOT here — by the time we land in this
@@ -1404,7 +1388,7 @@ fn parse_step_map(m: &serde_yaml::Mapping, source: &str) -> Result<Step, ParseEr
         return parse_delegate_step(body_val, source);
     }
 
-    // E3: top-level `sequential:` / `parallel:` orchestration —
+    // Top-level `sequential:` / `parallel:` orchestration —
     // wrap the resulting Effect into an unconditional Rule so the
     // top-level Vec<Step> stays uniform.
     match key.trim() {
@@ -1461,22 +1445,6 @@ fn parse_step_map(m: &serde_yaml::Mapping, source: &str) -> Result<Step, ParseEr
     })
 }
 
-/// Parse a `delegate:` step body into a `Step::Delegate`. Accepted
-/// YAML shape:
-///
-/// ```yaml
-/// - delegate:
-///     plugin: workday-oauth          # required — TokenDelegateHook plugin name
-///     config:                         # optional — per-call config override
-///       target: workday-api
-///       permissions: [read_compensation]
-///     on_error: deny                  # optional — deny | continue (default deny)
-/// ```
-///
-// =====================================================================
-// Effect / when-do parsing (E1)
-// =====================================================================
-
 /// Lookup helper — `serde_yaml::Mapping::contains_key` only matches when
 /// the search key is a `Value`, so we wrap the string conversion.
 fn has_key(m: &serde_yaml::Mapping, key: &str) -> bool {
@@ -1491,7 +1459,7 @@ fn is_known_pdp_dialect(key: &str) -> bool {
     matches!(base.trim(), "cedar" | "opa" | "authzen" | "nemo" | "cel")
 }
 
-/// Parse the canonical `- when: X` `do: Y` rule form (DSL §3.2). `Y`
+/// Parse the canonical `- when: X` `do: Y` rule form. `Y`
 /// may be a single effect string (`do: deny`) or a list of effect
 /// entries (`do: [plugin(audit), taint(X), deny('msg')]`). Map-form
 /// effects (like a nested `delegate:` block) are allowed inside `do:`
@@ -1544,8 +1512,8 @@ fn parse_when_do_rule(m: &serde_yaml::Mapping, source: &str) -> Result<Step, Par
     }))
 }
 
-/// Parse the shorthand multi-effect map form: `- "predicate": [list]`
-/// (DSL §3 example at line 386). Equivalent to the canonical
+/// Parse the shorthand multi-effect map form: `- "predicate": [list]`.
+/// Equivalent to the canonical
 /// `when: predicate` `do: [list]` shape, just terser.
 fn parse_shorthand_multi_effect(
     predicate: &str,
@@ -1603,11 +1571,14 @@ fn parse_effect_value(val: &serde_yaml::Value, source: &str) -> Result<Effect, P
     match val {
         serde_yaml::Value::String(s) => parse_effect_string(s, source),
         serde_yaml::Value::Mapping(m) => {
-            // E3: `sequential:` / `parallel:` map forms — a single-key
+            // `sequential:` / `parallel:` map forms — a single-key
             // map whose key is `sequential` / `parallel` and whose
             // value is a list of effects.
             if m.len() == 1 {
-                let (k, v) = m.iter().next().unwrap();
+                let (k, v) = m
+                    .iter()
+                    .next()
+                    .expect("m.len() == 1 was checked above, so an entry must exist");
                 if let Some(key_str) = k.as_str() {
                     match key_str.trim() {
                         "sequential" => return parse_sequential_effect(v, source),
@@ -1688,7 +1659,7 @@ fn parse_effect_string(s: &str, source: &str) -> Result<Effect, ParseError> {
     let trimmed = s.trim();
     if let Some(mut effects) = try_bare_action(trimmed) {
         if effects.len() == 1 {
-            return Ok(effects.pop().unwrap());
+            return Ok(effects.pop().expect("effects.len() == 1 was checked above"));
         }
     }
     if let Some(effect) = try_parse_deny_call(trimmed, s)? {
@@ -1803,9 +1774,9 @@ fn is_valid_field_path(s: &str) -> bool {
 /// `Effect`. The legitimate inputs are `Plugin`, `Delegate`, `Taint`,
 /// and `Rule` (when a control action like `deny`/`allow` was parsed).
 /// Anything else (`Pdp`) is rejected — nested PDP calls inside `do:`
-/// are out of scope for E1.
+/// are out of scope.
 /// Recursively map a top-level `Step` (as produced by `parse_step`) into
-/// an `Effect`. Used at compile_apl_blocks during E4 — keeps `parse_step`'s
+/// an `Effect`. Used at compile_apl_blocks — keeps `parse_step`'s
 /// internal shape for the moment while the public IR collapses to Effect.
 /// All five Step variants map cleanly: Rule → When, Pdp → Pdp (recursive
 /// on reactions), Plugin/Delegate/Taint pass-through.
@@ -1849,12 +1820,12 @@ fn step_to_effect(step: Step, source: &str) -> Result<Effect, ParseError> {
         Step::Elicit(e) => Ok(Effect::Elicit(e)),
         Step::Taint { label, scopes } => Ok(Effect::Taint { label, scopes }),
         Step::Rule(rule) => {
-            // Nested when/do inside a do: list isn't supported in E1
+            // Nested when/do inside a do: list isn't supported
             // — only control effects (allow/deny) flatten cleanly.
             if !matches!(rule.condition, Expression::Always) {
                 return Err(ParseError::Rule {
                     rule: source.to_string(),
-                    msg: "conditional rules nested inside `do:` are not supported in E1 \
+                    msg: "conditional rules nested inside `do:` are not supported \
                           (use a sibling `when:`/`do:` rule instead)"
                         .into(),
                 });
@@ -1869,17 +1840,33 @@ fn step_to_effect(step: Step, source: &str) -> Result<Effect, ParseError> {
                     ),
                 });
             }
-            Ok(rule.effects.into_iter().next().unwrap())
+            Ok(rule
+                .effects
+                .into_iter()
+                .next()
+                .expect("rule.effects.len() == 1 was checked above"))
         },
         Step::Pdp { .. } => Err(ParseError::Rule {
             rule: source.to_string(),
-            msg: "PDP calls inside `do:` are not supported in E1 (use a sibling \
+            msg: "PDP calls inside `do:` are not supported (use a sibling \
                   step instead)"
                 .into(),
         }),
     }
 }
 
+/// Parse a `delegate:` step body into a `Step::Delegate`. Accepted
+/// YAML shape:
+///
+/// ```yaml
+/// - delegate:
+///     plugin: workday-oauth          # required — TokenDelegateHook plugin name
+///     config:                         # optional — per-call config override
+///       target: workday-api
+///       permissions: [read_compensation]
+///     on_error: deny                  # optional — deny | continue (default deny)
+/// ```
+///
 /// `config:` is opaque — the framework hands it to the named plugin
 /// via the existing per-call config-override pathway. The plugin
 /// owns the typed schema (target / audience / permissions / mode /
@@ -2026,10 +2013,6 @@ fn extract_call_args(line: &str, name: &str) -> Option<String> {
     None
 }
 
-// =====================================================================
-// Pipe-chain parser (args: / result: field pipelines)
-// =====================================================================
-
 /// Parse a pipe-chain string into a `Pipeline`.
 ///
 /// Splits on `|` (outside parens/quotes), trims each stage, parses each.
@@ -2089,7 +2072,6 @@ fn parse_stage(src: &str) -> Result<Stage, ParseError> {
     let (head, args) = split_head_args(s).ok_or_else(|| bad("expected stage identifier"))?;
 
     match (head, args.as_deref()) {
-        // ----- Bare validators / transforms / effects -----
         ("str", None) => Ok(Stage::Type(TypeCheck::Str)),
         ("int", None) => Ok(Stage::Type(TypeCheck::Int)),
         ("bool", None) => Ok(Stage::Type(TypeCheck::Bool)),
@@ -2100,7 +2082,20 @@ fn parse_stage(src: &str) -> Result<Stage, ParseError> {
         ("redact", None) => Ok(Stage::Redact { condition: None }),
         ("omit", None) => Ok(Stage::Omit),
         ("hash", None) => Ok(Stage::Hash),
-        // Scan placeholders parse as bare identifiers (DSL §4.5).
+        ("mask", Some(a)) => parse_stage_mask(a, &bad),
+        ("redact", Some(a)) => parse_stage_redact_cond(a, src),
+        ("hash", Some(_)) => Err(bad("hash takes no arguments")),
+        ("omit", Some(_)) => Err(bad(
+            "omit takes no arguments — for conditional omit, use a policy rule predicate",
+        )),
+        ("len", Some(a)) => parse_stage_len(a, &bad),
+        ("enum", Some(a)) => parse_stage_enum(a, &bad),
+        ("regex", Some(a)) => Ok(parse_stage_regex(a)),
+        ("validate", Some(a)) => Err(parse_stage_validate_rejected(a, &bad)),
+        ("plugin" | "run", Some(a)) => parse_stage_plugin(head, a, &bad),
+        ("taint", Some(a)) => parse_taint(a, src),
+
+        // Scan placeholders parse as bare identifiers.
         ("pii.redact", None) => Ok(Stage::Scan {
             kind: ScanKind::PiiRedact,
         }),
@@ -2111,116 +2106,118 @@ fn parse_stage(src: &str) -> Result<Stage, ParseError> {
             kind: ScanKind::InjectionScan,
         }),
 
-        // ----- Parameterized -----
-        ("mask", Some(a)) => {
-            let n: usize = a
-                .trim()
-                .parse()
-                .map_err(|_| bad(&format!("mask(N) expects integer, got `{}`", a)))?;
-            Ok(Stage::Mask { keep_last: n })
-        },
-        ("redact", Some(a)) => {
-            // redact(!perm.view_ssn) — argument is a predicate expression.
-            let cond = parse_predicate(a).map_err(|e| ParseError::Predicate {
-                predicate: src.to_string(),
-                msg: format!("invalid redact() condition: {}", e),
-            })?;
-            Ok(Stage::Redact {
-                condition: Some(cond),
-            })
-        },
-        ("hash", Some(_)) => Err(bad("hash takes no arguments")),
-        ("omit", Some(_)) => Err(bad(
-            "omit takes no arguments — for conditional omit, use a policy rule predicate",
-        )),
-        ("len", Some(a)) => {
-            let (min, max) = parse_range_inner(a)
-                .ok_or_else(|| bad(&format!("len(...) expects N..M range, got `{}`", a)))?;
-            let to_usize = |v: i64| -> Result<usize, ParseError> {
-                if v < 0 {
-                    Err(bad("len bounds must be non-negative"))
-                } else {
-                    Ok(v as usize)
-                }
-            };
-            Ok(Stage::Length {
-                min: min.map(to_usize).transpose()?,
-                max: max.map(to_usize).transpose()?,
-            })
-        },
-        ("enum", Some(a)) => {
-            let values = split_top_level(a, b',')
-                .into_iter()
-                .map(|v| {
-                    let t = v.trim();
-                    // Allow either bare identifier or quoted string.
-                    if (t.starts_with('"') && t.ends_with('"'))
-                        || (t.starts_with('\'') && t.ends_with('\''))
-                    {
-                        t[1..t.len() - 1].to_string()
-                    } else {
-                        t.to_string()
-                    }
-                })
-                .filter(|s| !s.is_empty())
-                .collect::<Vec<_>>();
-            if values.is_empty() {
-                return Err(bad("enum() requires at least one value"));
-            }
-            Ok(Stage::Enum { values })
-        },
-        ("regex", Some(a)) => {
-            let pattern = a.trim();
-            let pat = if (pattern.starts_with('"') && pattern.ends_with('"'))
-                || (pattern.starts_with('\'') && pattern.ends_with('\''))
-            {
-                pattern[1..pattern.len() - 1].to_string()
-            } else {
-                pattern.to_string()
-            };
-            Ok(Stage::Regex { pattern: pat })
-        },
-        ("validate", Some(a)) => {
-            // Named-validator dispatch (`validate(name)`) is in the
-            // spec (DSL §4.2) but not implemented in this build —
-            // the evaluator's no-op stub would silently let invalid
-            // values through. Reject at compile time so operators
-            // notice immediately and reach for one of the working
-            // alternatives:
-            //
-            //   * `regex("pattern")` — inline named-regex equivalent
-            //   * `plugin(name)` — full plugin dispatch for rich
-            //     validation (Luhn, format-with-context, etc.)
-            //
-            // When the ValidatorRegistry slice lands, this arm flips
-            // back to returning `Stage::Validate { name }`.
-            Err(bad(&format!(
-                "`validate({})` — named-validator dispatch is not implemented \
-                 in this build. Use `regex(\"pattern\")` for a named-regex \
-                 equivalent, or `plugin({})` for richer validation logic.",
-                a.trim(),
-                a.trim(),
-            )))
-        },
-        // `run` is an alias for `plugin` (mirrors the policy-step alias).
-        ("plugin" | "run", Some(a)) => {
-            let name = a.trim();
-            if name.is_empty() {
-                // Mirror the empty-name guard in `parse_step_string` so
-                // both the policy-step and field-stage paths reject a
-                // nameless `plugin()` / `run()` with the same diagnostic.
-                return Err(bad(&format!(
-                    "`{head}(...)`: plugin name must not be empty"
-                )));
-            }
-            Ok(Stage::Plugin {
-                name: name.to_string(),
-            })
-        },
-        ("taint", Some(a)) => parse_taint(a, src),
-
         (other, _) => Err(bad(&format!("unknown stage `{}`", other))),
     }
+}
+
+fn parse_stage_mask(a: &str, bad: &impl Fn(&str) -> ParseError) -> Result<Stage, ParseError> {
+    let n: usize = a
+        .trim()
+        .parse()
+        .map_err(|_| bad(&format!("mask(N) expects integer, got `{}`", a)))?;
+    Ok(Stage::Mask { keep_last: n })
+}
+
+fn parse_stage_redact_cond(a: &str, src: &str) -> Result<Stage, ParseError> {
+    // redact(!perm.view_ssn) — argument is a predicate expression.
+    let cond = parse_predicate(a).map_err(|e| ParseError::Predicate {
+        predicate: src.to_string(),
+        msg: format!("invalid redact() condition: {}", e),
+    })?;
+    Ok(Stage::Redact {
+        condition: Some(cond),
+    })
+}
+
+fn parse_stage_len(a: &str, bad: &impl Fn(&str) -> ParseError) -> Result<Stage, ParseError> {
+    let (min, max) = parse_range_inner(a)
+        .ok_or_else(|| bad(&format!("len(...) expects N..M range, got `{}`", a)))?;
+    let to_usize = |v: i64| -> Result<usize, ParseError> {
+        if v < 0 {
+            Err(bad("len bounds must be non-negative"))
+        } else {
+            Ok(v as usize)
+        }
+    };
+    Ok(Stage::Length {
+        min: min.map(to_usize).transpose()?,
+        max: max.map(to_usize).transpose()?,
+    })
+}
+
+fn parse_stage_enum(a: &str, bad: &impl Fn(&str) -> ParseError) -> Result<Stage, ParseError> {
+    let values = split_top_level(a, b',')
+        .into_iter()
+        .map(|v| {
+            let t = v.trim();
+            // Allow either bare identifier or quoted string.
+            if (t.starts_with('"') && t.ends_with('"'))
+                || (t.starts_with('\'') && t.ends_with('\''))
+            {
+                t[1..t.len() - 1].to_string()
+            } else {
+                t.to_string()
+            }
+        })
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>();
+    if values.is_empty() {
+        return Err(bad("enum() requires at least one value"));
+    }
+    Ok(Stage::Enum { values })
+}
+
+fn parse_stage_regex(a: &str) -> Stage {
+    let pattern = a.trim();
+    let pat = if (pattern.starts_with('"') && pattern.ends_with('"'))
+        || (pattern.starts_with('\'') && pattern.ends_with('\''))
+    {
+        pattern[1..pattern.len() - 1].to_string()
+    } else {
+        pattern.to_string()
+    };
+    Stage::Regex { pattern: pat }
+}
+
+// Named-validator dispatch (`validate(name)`) is in the spec
+// but not implemented in this build — the evaluator's no-op stub would
+// silently let invalid values through. Reject at compile time so
+// operators notice immediately and reach for one of the working
+// alternatives:
+//
+//   * `regex("pattern")` — inline named-regex equivalent
+//   * `plugin(name)` — full plugin dispatch for rich validation (Luhn,
+//     format-with-context, etc.)
+//
+// When the ValidatorRegistry slice lands, this rejection flips back to
+// returning `Stage::Validate { name }`.
+fn parse_stage_validate_rejected(a: &str, bad: &impl Fn(&str) -> ParseError) -> ParseError {
+    bad(&format!(
+        "`validate({})` — named-validator dispatch is not implemented \
+         in this build. Use `regex(\"pattern\")` for a named-regex \
+         equivalent, or `plugin({})` for richer validation logic.",
+        a.trim(),
+        a.trim(),
+    ))
+}
+
+fn parse_stage_plugin(
+    head: &str,
+    a: &str,
+    bad: &impl Fn(&str) -> ParseError,
+) -> Result<Stage, ParseError> {
+    let name = a.trim();
+    if name.is_empty() {
+        // Mirror the empty-name guard in `parse_step_string` so both the
+        // policy-step and field-stage paths reject a nameless `plugin()`
+        // / `run()` with the same diagnostic.
+        return Err(bad(&format!(
+            "`{head}(...)`: plugin name must not be empty"
+        )));
+    }
+    Ok(Stage::Plugin {
+        name: name.to_string(),
+    })
 }
 
 /// Try to parse `s` as a bare range literal: `0..100`, `..500`, `0..`, `0..1M`.
@@ -2335,7 +2332,7 @@ fn parse_taint(args: &str, src: &str) -> Result<Stage, ParseError> {
     }
 
     let scopes = if parts.len() == 1 {
-        vec![TaintScope::Session] // default per DSL §4.6
+        vec![TaintScope::Session] // default
     } else {
         let scope_arg = parts[1..].join(",");
         let scope_arg = scope_arg.trim();
@@ -2366,11 +2363,7 @@ fn parse_taint_scope(s: &str, src: &str) -> Result<TaintScope, ParseError> {
     }
 }
 
-// =====================================================================
-// YAML config
-// =====================================================================
-
-/// Top-level config — only the bits step 5a understands.
+/// Top-level config — only the bits the parser understands.
 ///
 /// `policy_evaluator:`, `imports:`, `global:`, `defaults:`, `tags:`,
 /// `plugin_dirs:`, `plugin_settings:`, `version:` are all accepted and
@@ -2472,7 +2465,7 @@ pub struct CompiledConfig {
 ///
 /// Routes with no APL fields populated (no `authorization:` /
 /// `pre_invocation:` / `post_invocation:` / `args:` / `result:`) are
-/// **omitted from `routes`**, per apl-design §5
+/// **omitted from `routes`**, per apl-design
 /// "Routes without APL blocks fall back to legacy plugin-chain execution."
 /// A route-level `plugins:` override block alone is not enough — overrides
 /// only have meaning when the route actually dispatches plugins via APL
@@ -2651,17 +2644,11 @@ pub fn compile_policy_block_value(
     compile_apl_blocks(source, raw)
 }
 
-// =====================================================================
-// Tests
-// =====================================================================
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::attributes::AttributeBag;
     use crate::evaluator::Decision;
-
-    // ----- Lexer -----
 
     #[test]
     fn lex_basic() {
@@ -2707,8 +2694,6 @@ mod tests {
         let err = Lexer::new("a = 1").tokenize_all().unwrap_err();
         assert!(format!("{}", err).contains("expected `==`"));
     }
-
-    // ----- Predicate parser -----
 
     #[test]
     fn pred_bare_identifier() {
@@ -2765,7 +2750,7 @@ mod tests {
 
     #[test]
     fn pred_parens_override_precedence() {
-        // `(role.finance | role.admin) & !delegated` from DSL §2.5.
+        // `(role.finance | role.admin) & !delegated`.
         let e = parse_predicate("(role.finance | role.admin) & !delegated").unwrap();
         match e {
             Expression::And(parts) => {
@@ -2779,7 +2764,7 @@ mod tests {
 
     #[test]
     fn pred_require_rejected_as_predicate() {
-        // require() is a rule-level shorthand per DSL §8, not a sub-predicate.
+        // require() is a rule-level shorthand, not a sub-predicate.
         // Trying to use it inside a predicate expression must fail clearly.
         let err = parse_predicate("require(authenticated)").unwrap_err();
         assert!(format!("{}", err).contains("rule-level shorthand"));
@@ -2787,7 +2772,7 @@ mod tests {
 
     #[test]
     fn rule_require_single_arg_desugars_to_isfalse_and_deny() {
-        // require(X)  →  Rule { condition: IsFalse(X), action: Deny }   (DSL §8.1)
+        // require(X)  →  Rule { condition: IsFalse(X), action: Deny }
         let r = parse_rule("require(authenticated)", "test").unwrap();
         assert!(matches!(
             r.effects.as_slice(),
@@ -2806,7 +2791,7 @@ mod tests {
 
     #[test]
     fn rule_require_comma_is_and_desugars_to_or_of_isfalse() {
-        // require(X, Y)  →  Or([IsFalse(X), IsFalse(Y)]) + Deny   (DSL §8.1)
+        // require(X, Y)  →  Or([IsFalse(X), IsFalse(Y)]) + Deny
         // i.e., "deny if any are falsy" = "any are falsy → deny"
         let r = parse_rule("require(role.hr, perm.view_ssn)", "test").unwrap();
         assert_eq!(
@@ -2824,7 +2809,7 @@ mod tests {
 
     #[test]
     fn rule_require_pipe_is_or_desugars_to_and_of_isfalse() {
-        // require(X | Y)  →  And([IsFalse(X), IsFalse(Y)]) + Deny   (DSL §8.1)
+        // require(X | Y)  →  And([IsFalse(X), IsFalse(Y)]) + Deny
         // i.e., "deny only if all are falsy" = "all are falsy → deny"
         let r = parse_rule("require(role.finance | role.admin)", "test").unwrap();
         assert_eq!(
@@ -2924,8 +2909,6 @@ mod tests {
         assert!(format!("{}", err).contains("trailing"));
     }
 
-    // ----- Rule parser -----
-
     #[test]
     fn rule_predicate_action_form() {
         let r = parse_rule("delegation.depth > 2: deny", "test").unwrap();
@@ -2941,7 +2924,7 @@ mod tests {
 
     #[test]
     fn rule_predicate_only_defaults_to_deny() {
-        // DSL §2: missing action defaults to deny.
+        // Missing action defaults to deny.
         let r = parse_rule("!authenticated", "test").unwrap();
         assert!(matches!(r.effects.as_slice(), [Effect::Deny { .. }]));
     }
@@ -2955,7 +2938,7 @@ mod tests {
     #[test]
     fn rule_bare_action_unconditional() {
         // Bare `- deny` and `- allow` are unconditional rules with
-        // Expression::Always as the predicate (DSL §3.1).
+        // Expression::Always as the predicate.
         let r = parse_rule("deny", "test").unwrap();
         assert_eq!(r.condition, Expression::Always);
         assert!(matches!(
@@ -3037,8 +3020,8 @@ mod tests {
     fn rule_deny_with_unquoted_arg_rejected() {
         // `deny "reason"` (space-separated, no parens) is not a valid
         // form. The supported reason-carrying shape is
-        // `deny('reason')` / `deny('reason', 'code')` per DSL §3 and
-        // the E1 `code` extension.
+        // `deny('reason')` / `deny('reason', 'code')` and
+        // the `code` extension.
         let err = parse_rule(r#"authenticated: deny "go away""#, "test").unwrap_err();
         assert!(format!("{}", err).contains("unsupported action"));
     }
@@ -3056,7 +3039,7 @@ mod tests {
 
     #[test]
     fn rule_deny_with_reason_and_code_accepted() {
-        // `deny('reason', 'code')` — E1 extension. Both reason and
+        // `deny('reason', 'code')` — extension. Both reason and
         // author-supplied code surface in the violation.
         let r = parse_rule(
             r#"delegation.depth > 2: deny('too deep', 'delegation.depth_exceeded')"#,
@@ -3089,8 +3072,6 @@ mod tests {
         assert!(format!("{}", err).contains("expected a quoted string"));
     }
 
-    // ----- E1: when/do canonical form -----
-
     fn parse_step_yaml(yaml: &str) -> Result<Step, ParseError> {
         let v: serde_yaml::Value = serde_yaml::from_str(yaml).unwrap();
         parse_step(&v, "test")
@@ -3120,7 +3101,7 @@ mod tests {
 
     #[test]
     fn when_do_single_effect_deny_with_reason_and_code() {
-        // The E1 `deny('reason', 'code')` extension works inside `do:` too.
+        // The `deny('reason', 'code')` extension works inside `do:` too.
         let step = parse_step_yaml(
             "when: delegation.depth > 2\ndo: deny('too deep', 'delegation.depth_exceeded')",
         )
@@ -3195,8 +3176,6 @@ do:
         assert!(format!("{}", err).contains("no effects"));
     }
 
-    // ----- E1: shorthand multi-effect map (predicate: [list]) -----
-
     #[test]
     fn shorthand_multi_effect_map() {
         // Shorthand for the canonical when/do form. The predicate is
@@ -3263,11 +3242,9 @@ do:
         assert!(format!("{}", err).contains("no effects"));
     }
 
-    // ----- E2: content effects in do: (field pipe chains) -----
-
     #[test]
     fn when_do_with_field_op_result_redact() {
-        // The headline E2 case: `result.salary | redact` as an effect
+        // The headline case: `result.salary | redact` as an effect
         // inside a do: list, alongside other effect kinds.
         let yaml = r#"
 when: "!perm.view_ssn"
@@ -3359,8 +3336,6 @@ do: "args.card_number | run(luhn)"
     fn field_stage_plugin_empty_name_is_rejected() {
         // `plugin()` / `run()` with no name in a field pipeline must be
         // rejected, mirroring the policy-step path (`parse_step_string`).
-        // Previously the field-stage path accepted it as
-        // `Stage::Plugin { name: "" }`.
         for verb in ["plugin", "run"] {
             let err = parse_stage(&format!("{verb}()")).expect_err("empty name must error");
             let msg = format!("{err}");
@@ -3430,8 +3405,6 @@ do: "args.x | ""#;
         // No top-level pipe even with a `|` inside the parameter set.
         assert_eq!(find_top_level_pipe("mask(a|b)"), None);
     }
-
-    // ----- E3: sequential: / parallel: parsing -----
 
     #[test]
     fn top_level_sequential() {
@@ -3578,8 +3551,6 @@ sequential:
         }
     }
 
-    // ----- Colon-splitting edge cases -----
-
     #[test]
     fn split_respects_quotes_and_parens() {
         // The `:` inside parens / quotes shouldn't be the separator.
@@ -3591,8 +3562,6 @@ sequential:
             panic!("expected Comparison");
         }
     }
-
-    // ----- YAML compilation -----
 
     #[test]
     fn compile_simple_route() {
@@ -3756,7 +3725,7 @@ routes:
     fn compile_omits_routes_without_apl_blocks() {
         // A route with no APL blocks (no authorization / pre_invocation /
         // post_invocation / args / result) is a "legacy" route per
-        // apl-design §5 and must be
+        // apl-design and must be
         // omitted from the compiled output. Unknown route keys (e.g.
         // legacy CPEX `priority`) are stashed in `other`, not errored.
         let yaml = r#"
@@ -3997,8 +3966,6 @@ routes:
         }
     }
 
-    // ----- End-to-end with evaluator -----
-
     #[tokio::test]
     async fn end_to_end_hr_compensation() {
         let yaml = r#"
@@ -4123,8 +4090,6 @@ routes:
             panic!("NullPluginInvoker should not be invoked in pure-rule tests");
         }
     }
-
-    // ----- Pipeline parsing -----
 
     #[test]
     fn pipeline_simple_bare_stages() {
@@ -4298,12 +4263,10 @@ routes:
 
     #[test]
     fn pipeline_omit_with_args_rejected() {
-        // omit has no conditional form per DSL §4.1.
+        // omit has no conditional form.
         let err = parse_pipeline("omit(!perm.x)").unwrap_err();
         assert!(format!("{}", err).contains("omit takes no arguments"));
     }
-
-    // ----- YAML compilation with pipelines -----
 
     #[test]
     fn compile_route_with_args_and_result() {
@@ -4366,8 +4329,6 @@ routes:
         let err = compile_config(yaml).unwrap_err();
         assert!(format!("{}", err).contains("unknown stage"));
     }
-
-    // ----- plugins: block + route-level overrides -----
 
     #[test]
     fn compile_captures_root_plugins_block_into_registry() {
@@ -4438,8 +4399,6 @@ routes:
         assert_eq!(eff.hooks, &["tool_pre_invoke".to_string()]);
     }
 
-    // ----- compile_policy_block_value (single-block compiler for visitors) -----
-
     #[test]
     fn compile_policy_block_value_parses_apl_body() {
         let yaml = r#"
@@ -4481,8 +4440,6 @@ pre_invocation:
             other => panic!("expected When, got {:?}", other),
         }
     }
-
-    // ----- delegate: step parsing -----
 
     #[test]
     fn parse_delegate_step_with_only_plugin() {
@@ -4579,8 +4536,6 @@ pre_invocation:
         let msg = format!("{err}");
         assert!(msg.contains("must be a map"), "got: {msg}");
     }
-
-    // ----- delegate(...) function-call string form -----
 
     #[test]
     fn parse_delegate_string_bare_plugin_name() {
@@ -4812,8 +4767,6 @@ routes:
         assert_eq!(post_ds.source, "get_compensation.post_invocation[0]");
     }
 
-    // ----- elicitation sugar verbs (require_approval, confirm, …) -----
-
     fn parse_elicit_str(s: &str) -> crate::step::ElicitStep {
         let value = serde_yaml::Value::String(s.to_string());
         let step = parse_step(&value, "test.policy[0]").expect("parse");
@@ -4974,8 +4927,6 @@ routes:
         assert_eq!(e.channel.as_deref(), Some("ciba"));
         assert_eq!(e.scope.as_deref(), Some("args.amount <= 25000"));
     }
-
-    // ----- validate(name) compile-time rejection (DSL spec §4.2) -----
 
     #[test]
     fn parse_pipeline_rejects_validate_stage_at_compile_time() {

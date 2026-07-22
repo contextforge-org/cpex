@@ -10,9 +10,7 @@
 // the request; transforms (mask/redact/omit/hash) modify the value; effects
 // (taint) record side information.
 //
-// Grounded in apl-dsl-spec.md §4.
-//
-// Stages whose evaluator behavior is deferred to step 5c (taint dispatch,
+// Stages whose evaluator behavior is deferred (taint dispatch,
 // plugin invocation, regex/named validators, scan placeholders) are still
 // represented in the IR so the parser can produce them — the evaluator
 // recognizes them and returns a clear "deferred" signal rather than crashing.
@@ -64,7 +62,6 @@ pub enum ScanKind {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Stage {
-    // ----- Validators (halt with deny on failure) -----
     Type(TypeCheck),
     /// `regex("pattern")` — parser captures the pattern; evaluator stubbed
     /// until we add the `regex` crate dependency.
@@ -81,7 +78,7 @@ pub enum Stage {
         max: Option<usize>,
     },
     /// Bare range literal `N..M`, `..M`, `N..`, with optional `k`/`K`/`m`/`M`
-    /// numeric suffixes. Integer-only per DSL §4.3.
+    /// numeric suffixes. Integer-only.
     Range {
         min: Option<i64>,
         max: Option<i64>,
@@ -91,7 +88,6 @@ pub enum Stage {
         values: Vec<String>,
     },
 
-    // ----- Transforms (produce a new value) -----
     /// `mask(N)` — replace all but last N chars with `*`.
     Mask {
         keep_last: usize,
@@ -103,12 +99,11 @@ pub enum Stage {
         condition: Option<Expression>,
     },
     /// `omit` — drop the field from output entirely. No conditional form
-    /// per DSL §4.1 — use a policy rule for conditional omit.
+    /// — use a policy rule for conditional omit.
     Omit,
     /// `hash` — replace value with a hash digest.
     Hash,
 
-    // ----- Effects (deferred to step 5c — IR captured, eval stubbed) -----
     Taint {
         label: String,
         scopes: Vec<TaintScope>,

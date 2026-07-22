@@ -227,13 +227,13 @@ impl DecodingKeySource {
     /// The fetch is bounded by `JWKS_FETCH_TIMEOUT` to prevent a
     /// slow or hostile JWKS endpoint from hanging gateway startup
     /// indefinitely. A timed-out fetch surfaces as an error string
-    /// the caller can soft-fail on (Slice B).
+    /// the caller can soft-fail on.
     ///
-    /// **v0 caveat (still open after Slice A):**
+    /// **v0 caveat:**
     ///
     /// * No automatic rotation — the store is bound at initialize
-    ///   time. Slice B adds a background refresh task so IdP key
-    ///   rolls don't require a gateway restart.
+    ///   time. A background refresh task keeps IdP key
+    ///   rolls from requiring a gateway restart.
     pub async fn build_async(&self) -> Result<KeyStore, String> {
         match self {
             Self::JwksUrl {
