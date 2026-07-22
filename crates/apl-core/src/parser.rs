@@ -2082,17 +2082,6 @@ fn parse_stage(src: &str) -> Result<Stage, ParseError> {
         ("redact", None) => Ok(Stage::Redact { condition: None }),
         ("omit", None) => Ok(Stage::Omit),
         ("hash", None) => Ok(Stage::Hash),
-        // Scan placeholders parse as bare identifiers.
-        ("pii.redact", None) => Ok(Stage::Scan {
-            kind: ScanKind::PiiRedact,
-        }),
-        ("pii.detect", None) => Ok(Stage::Scan {
-            kind: ScanKind::PiiDetect,
-        }),
-        ("injection.scan", None) => Ok(Stage::Scan {
-            kind: ScanKind::InjectionScan,
-        }),
-
         ("mask", Some(a)) => parse_stage_mask(a, &bad),
         ("redact", Some(a)) => parse_stage_redact_cond(a, src),
         ("hash", Some(_)) => Err(bad("hash takes no arguments")),
@@ -2103,9 +2092,19 @@ fn parse_stage(src: &str) -> Result<Stage, ParseError> {
         ("enum", Some(a)) => parse_stage_enum(a, &bad),
         ("regex", Some(a)) => Ok(parse_stage_regex(a)),
         ("validate", Some(a)) => Err(parse_stage_validate_rejected(a, &bad)),
-        // `run` is an alias for `plugin` (mirrors the policy-step alias).
         ("plugin" | "run", Some(a)) => parse_stage_plugin(head, a, &bad),
         ("taint", Some(a)) => parse_taint(a, src),
+
+        // Scan placeholders parse as bare identifiers.
+        ("pii.redact", None) => Ok(Stage::Scan {
+            kind: ScanKind::PiiRedact,
+        }),
+        ("pii.detect", None) => Ok(Stage::Scan {
+            kind: ScanKind::PiiDetect,
+        }),
+        ("injection.scan", None) => Ok(Stage::Scan {
+            kind: ScanKind::InjectionScan,
+        }),
 
         (other, _) => Err(bad(&format!("unknown stage `{}`", other))),
     }

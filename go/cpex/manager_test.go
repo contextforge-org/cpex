@@ -1187,13 +1187,13 @@ func TestLoadConfigInvalidYAML(t *testing.T) {
 // handle survives.
 //
 // This test:
-//   1. Performs a successful invoke to get a real ContextTable.
-//   2. Calls InvokeByName again with that ContextTable PLUS an
-//      invalid payload_type that forces Rust to return RC_PARSE_ERROR
-//      AFTER the consumption point.
-//   3. Confirms the second call errored (sanity).
-//   4. Calls Close() on the original ContextTable — must NOT crash.
-//      Pre-fix this was a UAF (free of already-freed memory).
+//  1. Performs a successful invoke to get a real ContextTable.
+//  2. Calls InvokeByName again with that ContextTable PLUS an
+//     invalid payload_type that forces Rust to return RC_PARSE_ERROR
+//     AFTER the consumption point.
+//  3. Confirms the second call errored (sanity).
+//  4. Calls Close() on the original ContextTable — must NOT crash.
+//     Pre-fix this was a UAF (free of already-freed memory).
 func TestInvokeByNameErrorDoesNotUAFContextTable(t *testing.T) {
 	mgr, err := NewPluginManagerDefault()
 	if err != nil {
