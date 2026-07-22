@@ -108,7 +108,7 @@ def supported_kinds_message() -> str:
     )
 
 
-def convert_fqn_kind_in_place(manifest_data: dict[str, Any]) -> dict[str, Any]:
+def convert_fqn_kind_in_place(manifest_data: dict[str, Any], convert: bool = True) -> dict[str, Any]:
     """Auto-convert a bare-FQN plugin manifest to isolated_venv, in place.
 
     When ``manifest_data["kind"]`` is a Python class path rather than a known
@@ -123,15 +123,30 @@ def convert_fqn_kind_in_place(manifest_data: dict[str, Any]) -> dict[str, Any]:
 
     Args:
         manifest_data: Raw manifest dict, mutated in place.
+        convert: When True (the default), auto-convert an FQN ``kind`` and raise
+            on an unsupported (rejected) kind. When False, the conversion is an
+            opt-out no-op: FQN kinds are left untouched so they load in-process,
+            and a rejected kind is logged as a warning and left unchanged instead
+            of raising. This backs the ``--no-convert`` install flag, letting
+            existing 0.1.x plugins keep their declared FQN ``kind``.
 
     Returns:
         The same ``manifest_data`` dict, for convenience.
 
     Raises:
-        ValueError: If ``kind`` is unsupported and not a class-shaped FQN.
+        ValueError: If ``kind`` is unsupported and not a class-shaped FQN, and
+            ``convert`` is True.
     """
     kind = manifest_data.get("kind")
     bucket = classify_plugin_kind(kind)
+
+    if not convert:
+        # Opt-out: leave the manifest untouched. A rejected kind is only a
+        # warning here (it may still be a valid in-process kind the caller
+        # intends to keep) rather than a hard failure.
+        if bucket == KIND_REJECT:
+            logger.warning("Leaving kind %r unconverted (--no-convert): %s", kind, supported_kinds_message())
+        return manifest_data
 
     if bucket == KIND_KNOWN:
         return manifest_data
@@ -875,7 +890,7 @@ class PluginCatalog:
             raise RuntimeError(f"Error reading manifest file: {str(e)}") from e
 
     def _normalize_manifest_data(
-        self, manifest_data: dict[str, Any], package_name: str, version_constraint: str | None
+        self, manifest_data: dict[str, Any], package_name: str, version_constraint: str | None, convert: bool = True
     ) -> PluginManifest:
         """Transform raw manifest dict into validated PluginManifest model.
 
@@ -883,6 +898,9 @@ class PluginCatalog:
             manifest_data: Raw manifest dictionary from YAML.
             package_name: The PyPI package name.
             version_constraint: Optional version constraint.
+            convert: When True (default), auto-convert a bare-FQN ``kind`` to
+                ``isolated_venv``. When False (``--no-convert``), leave the kind
+                untouched and warn (rather than raise) on an unsupported kind.
 
         Returns:
             Validated PluginManifest instance.
@@ -899,8 +917,9 @@ class PluginCatalog:
             if "default_config" not in manifest_data and "default_configs" in manifest_data:
                 manifest_data["default_config"] = manifest_data.pop("default_configs") or {}
 
-            # Auto-convert bare-FQN kinds to isolated_venv (U2).
-            convert_fqn_kind_in_place(manifest_data)
+            # Auto-convert bare-FQN kinds to isolated_venv (U2). Skipped when
+            # convert is False (--no-convert), which also softens reject to warn.
+            convert_fqn_kind_in_place(manifest_data, convert=convert)
 
             # Validate and create manifest
             manifest = PluginManifest(**manifest_data)
@@ -962,9 +981,7 @@ class PluginCatalog:
         plugin_dir = Path(self.plugin_folder) / class_root
         plugin_dir.mkdir(parents=True, exist_ok=True)
         manifest_path = plugin_dir / "plugin-manifest.yaml"
-        manifest_path.write_text(
-            yaml.safe_dump(manifest.model_dump(), default_flow_style=False), encoding="utf-8"
-        )
+        manifest_path.write_text(yaml.safe_dump(manifest.model_dump(), default_flow_style=False), encoding="utf-8")
         logger.info("Persisted converted manifest to %s", manifest_path)
         return manifest_path
 
@@ -1542,6 +1559,7 @@ except Exception as e:
         version_constraint: str | None = None,
         use_pytest: bool = False,
         verify_integrity: bool = True,
+        convert: bool = True,
     ) -> tuple[PluginManifest, Path | None]:
         """Install Python package from PyPI and load its plugin-manifest.yaml.
 
@@ -1581,7 +1599,9 @@ except Exception as e:
             manifest_data = self._load_manifest_file(manifest_path)
 
             # Step 3: Normalize and validate the manifest
-            manifest = self._normalize_manifest_data(manifest_data, plugin_package_name, version_constraint)
+            manifest = self._normalize_manifest_data(
+                manifest_data, plugin_package_name, version_constraint, convert=convert
+            )
 
             package_path = manifest_path.parent
 
@@ -1617,7 +1637,9 @@ except Exception as e:
             if temp_extract_dir.exists():
                 shutil.rmtree(temp_extract_dir.parent)
 
-    def install_from_git(self, url: str, verify_integrity: bool = True) -> tuple[PluginManifest, Path | None]:
+    def install_from_git(
+        self, url: str, verify_integrity: bool = True, convert: bool = True
+    ) -> tuple[PluginManifest, Path | None]:
         """Install Python package from Git repository and load its plugin-manifest.yaml.
 
         This method performs the following steps:
@@ -1743,7 +1765,7 @@ except Exception as e:
             manifest_data = self._load_manifest_file(manifest_path)
 
             # Step 4: Normalize and validate the manifest
-            manifest = self._normalize_manifest_data(manifest_data, package_name, None)
+            manifest = self._normalize_manifest_data(manifest_data, package_name, None, convert=convert)
 
             # Update the manifest with the git repo information
             git_repo: GitRepo = GitRepo(
@@ -1852,7 +1874,7 @@ except Exception as e:
         except Exception as e:
             raise RuntimeError(f"Unexpected error uninstalling {package_name}: {str(e)}") from e
 
-    def install_from_local(self, source: Path) -> tuple[PluginManifest, Path]:
+    def install_from_local(self, source: Path, convert: bool = True) -> tuple[PluginManifest, Path]:
         """Install a plugin from a local source directory.
 
         This method performs the following steps:
@@ -1932,7 +1954,9 @@ except Exception as e:
 
         # Step 2: Load and parse the manifest
         manifest_data = self._load_manifest_file(manifest_path)
-        manifest = self._normalize_manifest_data(manifest_data, pyproject_data["project"]["name"], None)
+        manifest = self._normalize_manifest_data(
+            manifest_data, pyproject_data["project"]["name"], None, convert=convert
+        )
         manifest.local = str(source.resolve())
 
         logger.info("Loaded manifest for plugin: %s (kind: %s)", manifest.name, manifest.kind)

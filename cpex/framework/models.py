@@ -1599,7 +1599,11 @@ class PluginManifest(BaseModel):
 
     Attributes:
         name (str): The name of the plugin.
-        kind (str): The class name (for native plugins) | external | isolated_venv
+        kind (str): The class name (for native plugins) | external | isolated_venv.
+            A bare Python class path (FQN, e.g. ``package.module.ClassName``) is
+            auto-converted to ``isolated_venv`` at install time (moving the FQN into
+            ``default_config.class_name``), unless the install is run with ``--no-convert``,
+            in which case the FQN kind is kept and loaded in-process.
         description (str): A description of the plugin.
         author (str): The author of the plugin.
         version (str): version of the plugin.
