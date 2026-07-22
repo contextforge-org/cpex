@@ -63,6 +63,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
+#[cfg(feature = "runtime")]
 use crate::executor::PipelineResult;
 use crate::extensions::{
     ClientExtension, DelegationExtension, Extensions, RawCredentialsExtension, SecurityExtension,
@@ -275,6 +276,9 @@ impl IdentityPayload {
         }
     }
 
+    // -------- Host-side application helpers --------
+
+    #[cfg(feature = "runtime")]
     /// Pull the resolved `IdentityPayload` out of a `PipelineResult`
     /// returned by `mgr.invoke_named::<IdentityHook>(...)`. Returns
     /// `None` when the pipeline was denied (no `modified_payload`)
@@ -356,6 +360,11 @@ impl IdentityPayload {
 }
 
 impl_plugin_payload!(IdentityPayload);
+
+// WASM transport: `raw_token` is `#[serde(skip)]`, so a WASM handler
+// receives every input except the raw credential bytes — it resolves
+// identity from `headers` / claims and returns the output fields.
+crate::impl_wasm_payload!(IdentityPayload, "cpex.identity");
 
 #[cfg(test)]
 mod tests {

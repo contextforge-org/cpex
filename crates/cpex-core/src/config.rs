@@ -19,6 +19,7 @@
 // enabled, conditions on individual plugins are ignored.
 
 use std::collections::{HashMap, HashSet};
+#[cfg(feature = "runtime")]
 use std::path::Path;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -568,6 +569,11 @@ impl StringOrList {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Config Loading
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "runtime")]
 /// Load and parse a CPEX config from a YAML file.
 pub fn load_config(path: &Path) -> Result<CpexConfig, Box<PluginError>> {
     let content = std::fs::read_to_string(path).map_err(|e| PluginError::Config {

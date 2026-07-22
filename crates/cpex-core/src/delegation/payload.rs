@@ -56,6 +56,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
+#[cfg(feature = "runtime")]
 use crate::executor::PipelineResult;
 use crate::extensions::raw_credentials::DelegationMode;
 use crate::extensions::{
@@ -348,6 +349,9 @@ impl DelegationPayload {
         }
     }
 
+    // -------- Host-side application helpers --------
+
+    #[cfg(feature = "runtime")]
     /// Pull the resolved `DelegationPayload` out of a `PipelineResult`
     /// returned by `mgr.invoke_named::<TokenDelegateHook>(...)`.
     /// Returns `None` when the pipeline was denied or when the result's
@@ -437,6 +441,13 @@ impl DelegationPayload {
 }
 
 impl_plugin_payload!(DelegationPayload);
+
+// WASM transport: `bearer_token` and `delegated_token.token` are
+// `#[serde(skip)]`, so raw credential material never crosses the
+// sandbox boundary. A WASM handler can attenuate scopes and populate
+// `delegation_update` / `metadata`, but token minting that must
+// return the raw token stays in-process.
+crate::impl_wasm_payload!(DelegationPayload, "cpex.delegation");
 
 #[cfg(test)]
 mod tests {

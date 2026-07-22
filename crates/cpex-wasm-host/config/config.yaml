@@ -1,0 +1,43 @@
+# CMF Capabilities Demo Configuration
+#
+# Three plugins with different capabilities see different views
+# of the same extensions. Demonstrates capability-gated access
+# across pre-invoke and post-invoke hooks.
+
+plugin_settings:
+  routing_enabled: true
+
+global:
+  policies:
+    all:
+      plugins: [identity-checker]
+
+plugins:
+  - name: identity-checker
+    kind: wasm://plugin.wasm
+    hooks: [cmf.tool_pre_invoke, cmf.tool_post_invoke, tool_pre_invoke]
+    mode: sequential
+    priority: 10
+    on_error: fail
+    capabilities:
+      - read_labels
+      - read_subject
+      - read_roles   
+    config:
+      # Sandbox policy controls what host resources the WASM plugin can access.
+      # Empty lists = full lockdown (deny-all): no filesystem, no network, no env vars.
+      # The plugin can only operate on data passed via handle-hook arguments.
+      sandbox_policy:
+        allowed_filesystem: []   # No host filesystem access
+        allowed_network: []      # No outbound HTTP allowed
+        allowed_env: []          # No host environment variables exposed
+        resources:
+          max_memory_bytes: 10485760   # 10 MB linear memory cap
+          max_fuel: 1000000000         # ~1 billion instructions (session-level budget)
+          max_execution_time_ms: 5000  # 5 seconds per invocation timeout
+          max_instances: 10            # Max WASM module instances
+          max_tables: 10               # Max WASM tables
+  
+routes:
+  - tool: "*"
+    plugins: []

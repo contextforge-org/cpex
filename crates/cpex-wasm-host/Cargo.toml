@@ -1,0 +1,37 @@
+[package]
+name = "cpex-wasm-host"
+version = "0.1.0"
+edition = "2021"
+description = "WASM plugin host runtime for the CPEX framework — sandboxed wasmtime execution with capability-based access control"
+license = "Apache-2.0"
+authors = ["Shriti Priya"]
+
+[dependencies]
+tokio = { version = "1", features = ["sync", "macros", "io-util", "rt", "rt-multi-thread", "time", "signal", "net"] }
+wasmtime = { version = "45.0", features = ["component-model", "async"] }
+wasmtime-wasi = "45.0"
+wasmtime-wasi-http = { version = "45.0", features = ["default-send-request"] }
+hyper = "1"
+anyhow = "1.0"
+serde = { version = "1", features = ["derive"] }
+serde_yaml = "0.9"
+serde_json = { workspace = true }
+cpex-core = { workspace = true }
+async-trait = "0.1"
+chrono = { version = "0.4", features = ["serde"] }
+tracing = { workspace = true }
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["async_tokio"] }
+async-trait = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+
+[[bench]]
+name = "invocation"
+harness = false
+path = "benchmarking/invocation.rs"
+
+[[bench]]
+name = "comprehensive"
+harness = false
+path = "benchmarking/comprehensive.rs"
