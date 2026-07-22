@@ -19,6 +19,7 @@ members = [
     "crates/apl-cpex",
     "builtins/plugins/pii-scanner",
     "builtins/plugins/audit-logger",
+    "builtins/plugins/ocsf-audit",
     "builtins/plugins/identity-jwt",
     "builtins/plugins/delegator-oauth",
     "builtins/plugins/delegator-biscuit",
@@ -55,6 +56,7 @@ default-members = [
     "crates/apl-cpex",
     "builtins/plugins/pii-scanner",
     "builtins/plugins/audit-logger",
+    "builtins/plugins/ocsf-audit",
     "builtins/plugins/identity-jwt",
     "builtins/plugins/delegator-oauth",
     "builtins/plugins/delegator-biscuit",
@@ -123,6 +125,7 @@ apl-cmf                       = { path = "crates/apl-cmf",                      
 apl-cpex                      = { path = "crates/apl-cpex",                     version = "0.2.2" }
 cpex-plugin-pii-scanner       = { path = "builtins/plugins/pii-scanner",       version = "0.2.2" }
 cpex-plugin-audit-logger      = { path = "builtins/plugins/audit-logger",      version = "0.2.2" }
+cpex-plugin-ocsf-audit        = { path = "builtins/plugins/ocsf-audit",        version = "0.2.2" }
 cpex-plugin-identity-jwt      = { path = "builtins/plugins/identity-jwt",      version = "0.2.2" }
 cpex-plugin-delegator-oauth   = { path = "builtins/plugins/delegator-oauth",   version = "0.2.2" }
 cpex-plugin-delegator-biscuit = { path = "builtins/plugins/delegator-biscuit", version = "0.2.2" }

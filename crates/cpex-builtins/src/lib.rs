@@ -46,6 +46,8 @@ pub use cpex_plugin_delegator_oauth::{OAuthDelegatorFactory, KIND as OAUTH_KIND}
 pub use cpex_plugin_elicitation_ciba::{CibaApproverFactory, KIND as CIBA_KIND};
 #[cfg(feature = "identity-jwt")]
 pub use cpex_plugin_identity_jwt::{JwtIdentityFactory, KIND as JWT_KIND};
+#[cfg(feature = "ocsf-audit")]
+pub use cpex_plugin_ocsf_audit::{OcsfAuditFactory, KIND as OCSF_AUDIT_KIND};
 #[cfg(feature = "pii-scanner")]
 pub use cpex_plugin_pii_scanner::{PiiScannerFactory, KIND as PII_KIND};
 #[cfg(feature = "valkey")]
@@ -87,6 +89,7 @@ register_builtins! {
     feature "elicitation-ciba" => cpex_plugin_elicitation_ciba::CibaApproverFactory,
     feature "pii-scanner"      => cpex_plugin_pii_scanner::PiiScannerFactory,
     feature "audit-logger"     => cpex_plugin_audit_logger::AuditLoggerFactory,
+    feature "ocsf-audit"       => cpex_plugin_ocsf_audit::OcsfAuditFactory,
 }
 
 /// The enabled PDP factories, ready to drop into
