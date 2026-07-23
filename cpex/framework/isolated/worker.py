@@ -174,6 +174,50 @@ async def process_task(task_data, tp: TaskProcessor):
     }
 
 
+def read_task_line(max_content_size: int | None) -> tuple[str, bool]:
+    """Read one task line from stdin, enforcing max_content_size.
+
+    TextIOWrapper.readline takes a positional size hint (readline(size=-1, /));
+    there is no `limit` keyword. readline(size) returns *at most* size chars,
+    stopping early at a newline. So if we read exactly max_content_size chars
+    with no trailing newline, the task was truncated mid-line and the rest is
+    still queued on stdin — if left there it would be mis-read as the next task,
+    desyncing the request_id-demuxed stream. In that case we drain the remainder
+    (bounded, discarded) so the next read starts on a fresh line.
+
+    A line that is exactly max_content_size chars *including* its newline is a
+    complete, valid task, not a truncation — hence the endswith check.
+
+    Returns (line, oversized). When oversized is True the line was truncated and
+    its content should not be parsed; the caller should reject the request. An
+    empty line signals EOF.
+    """
+    if max_content_size:
+        line = sys.stdin.readline(int(max_content_size))
+    else:
+        # on the first read, the plugin_config has not yet been initialized so just read.
+        line = sys.stdin.readline()
+
+    if not (max_content_size and len(line) == max_content_size and not line.endswith("\n")):
+        return line, False
+
+    # Drain the rest of the oversized line in bounded chunks so we never buffer
+    # the giant remainder into memory. Track total drained length so the log
+    # reflects how far over the limit the offending line actually was.
+    drained_len = len(line)
+    while True:
+        remainder = sys.stdin.readline(int(max_content_size))
+        drained_len += len(remainder)
+        if not remainder or remainder.endswith("\n"):
+            break
+    logger.error(
+        "Task line exceeds max content size (max=%d, read at least %d chars); rejecting request",
+        max_content_size,
+        drained_len,
+    )
+    return line, True
+
+
 async def main():
     """Main function - continuously read from stdin, process tasks, write to stdout."""
     logger.info("Worker process started, waiting for tasks...")
@@ -188,16 +232,28 @@ async def main():
             # request_id; a stale id misdelivers the error or hangs the caller).
             request_id = "unknown"
             try:
-                # Read one line at a time
-                if tp.plugin_config and "max_content_size" in tp.plugin_config:
-                    line = sys.stdin.readline(limit=int(tp.plugin_config.max_content_size))
-                else:
-                    # on the first read, the plugin_config has not yet been initialized so just read.
-                    line = sys.stdin.readline()
+                # Read one line at a time. getattr rather than `in`/attribute
+                # access because plugin_config is a PluginConfig model, not a
+                # dict, and it may be None on the first read (config not yet
+                # initialized) or lack the field on older cpex versions.
+                max_content_size = getattr(tp.plugin_config, "max_content_size", None)
+                line, oversized = read_task_line(max_content_size)
                 # Check for EOF
                 if not line:
                     logger.info("EOF received, shutting down worker")
                     break
+
+                # An oversized (truncated) line was already drained from stdin by
+                # read_task_line; its content is not reliably parseable JSON, so
+                # request_id is unrecoverable and stays "unknown". Reject it.
+                if oversized:
+                    error_response = {
+                        "status": "error",
+                        "message": "Task line exceeds max content size",
+                        "request_id": request_id,
+                    }
+                    print(json.dumps(error_response), flush=True)
+                    continue
 
                 # Parse the task
                 task_data = json.loads(line.strip())
@@ -224,18 +280,19 @@ async def main():
 
                 serialized_response = json.dumps(serializable_response)
                 # Send response back to parent (one line per response)
-                if tp.plugin_config:
-                    # workaround until cpex is updated beyond dev11
-                    # cpex is a dependency of the plugin and as such it's PluginConfig does not contain the max_content_size yet.
-                    if "max_content_size" in tp.plugin_config:
-                        if len(serialized_response) > tp.plugin_config.max_content_size:
-                            logger.error("Serialized response exceeds max content size")
-                            error_response = {
-                                "status": "error",
-                                "message": "Serialized response exceeds max content size",
-                                "request_id": request_id,
-                            }
-                            serialized_response = json.dumps(error_response)
+                # workaround until cpex is updated beyond dev11: older cpex
+                # (a dependency of the plugin) has a PluginConfig without
+                # max_content_size, so use getattr rather than `in`/attribute
+                # access. PluginConfig is a model, not a dict, so `in` raises.
+                response_max_content_size = getattr(tp.plugin_config, "max_content_size", None)
+                if response_max_content_size and len(serialized_response) > response_max_content_size:
+                    logger.error("Serialized response exceeds max content size")
+                    error_response = {
+                        "status": "error",
+                        "message": "Serialized response exceeds max content size",
+                        "request_id": request_id,
+                    }
+                    serialized_response = json.dumps(error_response)
                 print(serialized_response, flush=True)
 
             except json.JSONDecodeError as e:
