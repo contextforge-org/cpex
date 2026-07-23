@@ -10,12 +10,8 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Arc;
 
-use cpex_core::{
-    hooks::payload::Extensions,
-    hooks::tools::ToolPreInvokePayload,
-    hooks::types::hook_names,
-    manager::PluginManager,
-};
+use cpex_core::{hooks::payload::Extensions, hooks::types::hook_names, manager::PluginManager};
+use cpex_hosts_python::legacy::hooks::tools::ToolPreInvokePayload;
 use cpex_hosts_python::{HookPayloadRegistry, IsolatedPythonPluginAdapterFactory, KIND};
 
 fn repo_root() -> PathBuf {
