@@ -62,7 +62,6 @@ class TaskProcessor:
         plugin_config: PluginConfig,
     ):
         """Assign locals, and compute hashes."""
-        # self.hook_ref = hook_ref
         self.plugin_ref = plugin_ref
         self.executor = executor
         self.config_hash = self.compute_hash(json_config_or_module_path=json_config)
