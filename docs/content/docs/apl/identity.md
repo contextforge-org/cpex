@@ -50,7 +50,44 @@ So `require(role.hr)` is true when the verified token carried the `hr` role, and
 
 ## Multiple sources
 
-A request often carries more than one identity: the end user and the calling application. Register an identity plugin per source. The bundled JWT plugin takes a `role` (`user` or `client`) and a `header`, so a user token on `X-User-Token` and a client token on `Authorization` resolve into the `subject.*` and `client.*` namespaces respectively. Policy can then require both: `require(authenticated) & client.authorized_scopes contains "tools:invoke"`.
+A request often carries more than one identity: the end user, the calling application, and the calling workload. Register an identity plugin per source. The bundled JWT plugin takes a `role` (`user`, `client`, or `caller_workload`) and a `header`, so each inbound credential resolves into its own namespace:
+
+| `role` | Namespace | Typical credential |
+|--------|-----------|--------------------|
+| `user` | `subject.*` | End-user OIDC token on `X-User-Token` |
+| `client` | `client.*` | OAuth client token on `Authorization` |
+| `caller_workload` | `caller_workload.*` | SPIFFE JWT-SVID on `X-Workload-Token` |
+
+Policy can then require several at once: `require(authenticated) & client.authorized_scopes contains "tools:invoke"`.
+
+### Workload identity
+
+A `role: caller_workload` resolver is the ingress for the **calling agent's** SPIFFE JWT-SVID:
+
+```yaml
+plugins:
+  - name: jwt-workload
+    kind: identity/jwt
+    hooks: [identity.resolve]
+    config:
+      role: caller_workload
+      header: X-Workload-Token
+      trusted_issuers:
+        - issuer: "https://spire.example.com"
+          audiences: ["cpex-gateway"]
+          decoding_key:
+            kind: jwks_url
+            url: "https://spire.example.com/keys"
+```
+
+The SPIFFE ID is read from the SVID's `sub` claim, and the trust domain is derived from it, populating `caller_workload.spiffe_id` and `caller_workload.trust_domain`. A token whose `sub` is not SPIFFE-shaped is **rejected** rather than filed into the workload slot, so anything policy finds there really is an attested workload.
+
+Note the distinction the bag makes between two different machine identities:
+
+- **`caller_workload`** — the attested workload on the inbound network peer. The agent calling *us*. Many different agents call through one gateway.
+- **`this_workload`** — the gateway's *own* attested identity, used for outbound calls. A single principal.
+
+They are not interchangeable, and confusing them is how a token minted for one agent ends up presented by another. Delegation depends on the distinction — see [Delegation]({{< relref "/docs/apl/delegation" >}}).
 
 ## How it connects to the pipeline
 

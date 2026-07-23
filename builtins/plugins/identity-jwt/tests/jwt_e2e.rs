@@ -106,10 +106,30 @@ fn resolver_plugin_config() -> PluginConfig {
     }
 }
 
+/// Role-aware variant of [`resolver_plugin_config`]. `role` and
+/// `header` are the two knobs that decide which identity slot a
+/// resolver instance fills and where it reads its token from — one
+/// instance per inbound credential, so a deployment expecting a user
+/// JWT *and* a workload SVID wires two.
+fn resolver_plugin_config_for(role: &str, header: &str) -> PluginConfig {
+    let mut cfg = resolver_plugin_config();
+    match cfg.config.as_mut() {
+        Some(Value::Object(map)) => {
+            map.insert("role".into(), json!(role));
+            map.insert("header".into(), json!(header));
+        },
+        other => panic!("resolver config should be a JSON object, got {other:?}"),
+    }
+    cfg
+}
+
 /// Build the PluginManager + register the resolver + initialize.
 /// All four scenarios share this skeleton.
 async fn build_manager() -> Arc<PluginManager> {
-    let cfg = resolver_plugin_config();
+    build_manager_with(resolver_plugin_config()).await
+}
+
+async fn build_manager_with(cfg: PluginConfig) -> Arc<PluginManager> {
     let resolver = JwtIdentityResolver::new(cfg.clone()).expect("resolver should construct");
 
     let mgr = Arc::new(PluginManager::default());
@@ -125,11 +145,19 @@ async fn build_manager() -> Arc<PluginManager> {
 
 /// Run a token through the full handler pipeline.
 async fn invoke(token: String) -> cpex_core::executor::PipelineResult {
-    let mgr = build_manager().await;
+    invoke_with(resolver_plugin_config(), token, TokenSource::Bearer).await
+}
+
+async fn invoke_with(
+    cfg: PluginConfig,
+    token: String,
+    source: TokenSource,
+) -> cpex_core::executor::PipelineResult {
+    let mgr = build_manager_with(cfg).await;
     let (result, _bg) = mgr
         .invoke_named::<IdentityHook>(
             HOOK_IDENTITY_RESOLVE,
-            IdentityPayload::new(token, TokenSource::Bearer),
+            IdentityPayload::new(token, source),
             Extensions::default(),
             None,
         )
@@ -189,6 +217,112 @@ async fn valid_jwt_resolves_subject() {
         .expect("user-role token present");
     assert_eq!(&*user_token.token, &token);
     assert!(matches!(user_token.kind, TokenKind::Jwt));
+}
+
+// ---------------------------------------------------------------------
+// Workload role — SPIFFE JWT-SVID ingress
+// ---------------------------------------------------------------------
+
+/// A resolver configured with `role: workload` is the ingress for the
+/// caller's SPIFFE JWT-SVID. It must land the mapped identity in
+/// `caller_workload` (the *calling agent*, distinct from the gateway's
+/// own `this_workload`) and stash the raw bytes under
+/// `TokenRole::CallerWorkload` — the slot a `delegate(...)` step reads from
+/// when a route says `subject: workload` or `actor: workload`.
+///
+/// The stash is tagged `TokenKind::SpiffeJwt`, not the generic `Jwt`:
+/// reaching this point means `map_workload` already accepted the
+/// SPIFFE-shaped `sub`, so the wire format is known, and consumers
+/// that branch on kind shouldn't have to re-parse the token to learn
+/// what the resolver already established.
+#[tokio::test]
+async fn workload_svid_resolves_caller_workload_and_stashes_as_spiffe_jwt() {
+    let svid = mint_jwt(json!({
+        // SPIFFE JWT-SVID convention: the SPIFFE ID lives in `sub`.
+        "sub": "spiffe://corp.example/ns/default/sa/payroll-agent",
+        "iss": TEST_ISSUER,
+        "aud": TEST_AUDIENCE,
+        "exp": now_unix() + 300,
+        "iat": now_unix(),
+    }));
+
+    let result = invoke_with(
+        resolver_plugin_config_for("workload", "X-Workload-Token"),
+        svid.clone(),
+        TokenSource::SpiffeJwtSvid,
+    )
+    .await;
+    assert!(
+        result.continue_processing,
+        "valid SVID should resolve: violation = {:?}",
+        result.violation,
+    );
+
+    let identity =
+        IdentityPayload::from_pipeline_result(&result).expect("payload should be present");
+
+    // Lands in caller_workload — the inbound peer — not subject.
+    let workload = identity
+        .caller_workload
+        .as_ref()
+        .expect("caller_workload populated");
+    assert_eq!(
+        workload.spiffe_id.as_deref(),
+        Some("spiffe://corp.example/ns/default/sa/payroll-agent"),
+    );
+    assert_eq!(workload.trust_domain.as_deref(), Some("corp.example"));
+    assert!(
+        identity.subject.is_none(),
+        "a workload-role resolver must not populate the user slot",
+    );
+
+    // Stashed under the Workload role, tagged as a SPIFFE JWT-SVID,
+    // and attributed to the header it arrived on.
+    let raw = identity
+        .raw_credentials
+        .as_ref()
+        .expect("raw_credentials populated");
+    let workload_token = raw
+        .inbound_tokens
+        .get(&TokenRole::CallerWorkload)
+        .expect("workload-role token present");
+    assert_eq!(&*workload_token.token, &svid);
+    assert_eq!(workload_token.source_header, "X-Workload-Token");
+    assert!(
+        matches!(workload_token.kind, TokenKind::SpiffeJwt),
+        "workload SVID should be tagged SpiffeJwt, got {:?}",
+        workload_token.kind,
+    );
+}
+
+/// A `role: workload` resolver handed a perfectly valid *user* JWT
+/// must refuse it rather than filing a non-SPIFFE identity into the
+/// workload slot. Guards the boundary that makes `subject: workload`
+/// meaningful: whatever is in that slot really is an attested
+/// workload.
+#[tokio::test]
+async fn workload_role_rejects_a_non_spiffe_token() {
+    let user_jwt = mint_jwt(json!({
+        "sub": "alice@corp.com",  // no spiffe:// prefix
+        "iss": TEST_ISSUER,
+        "aud": TEST_AUDIENCE,
+        "exp": now_unix() + 300,
+        "iat": now_unix(),
+    }));
+
+    let result = invoke_with(
+        resolver_plugin_config_for("workload", "X-Workload-Token"),
+        user_jwt,
+        TokenSource::SpiffeJwtSvid,
+    )
+    .await;
+
+    assert!(
+        !result.continue_processing,
+        "a non-SPIFFE token must not resolve as a workload",
+    );
+    let violation = result.violation.expect("violation surfaced");
+    assert_eq!(violation.code, "auth.mapping_failed");
 }
 
 /// Token correctly signed by the test key but its `iss` doesn't

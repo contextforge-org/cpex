@@ -450,9 +450,12 @@ async fn apply_to_extensions_writes_delegated_token_keyed_by_subject() {
         .expect("raw_credentials slot populated");
     assert_eq!(raw.delegated_tokens.len(), 1);
 
-    // The key is synthesized from (subject.id, audience, scopes, mode).
+    // The key is synthesized from
+    // (subject.id, workload, audience, scopes, mode).
     let expected_key = DelegationKey {
         subject_id: "alice@corp.com".into(),
+        // No workload participated in this exchange.
+        workload_id: None,
         audience: "https://hr.example.com".into(),
         // Order matches what StubExchanger produces (required_permissions
         // first, then attenuation capabilities).

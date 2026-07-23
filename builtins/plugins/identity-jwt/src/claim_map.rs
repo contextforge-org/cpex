@@ -35,7 +35,7 @@ use cpex_core::extensions::{ClientExtension, SubjectExtension, WorkloadIdentity}
 ///     `TokenRole::User`.
 ///   * [`map_client`]  — `client_id` plus client-shaped fields, for
 ///     `TokenRole::Client`.
-///   * [`map_workload`] — SPIFFE-style identity, for `TokenRole::Workload`.
+///   * [`map_workload`] — SPIFFE-style identity, for `TokenRole::CallerWorkload`.
 ///
 /// Each defaults to `None` so existing custom mappers stay valid —
 /// they get implicit "this mapper doesn't know how to do that role,"

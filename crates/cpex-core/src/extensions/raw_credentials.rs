@@ -69,9 +69,19 @@ pub enum TokenRole {
     /// The OAuth client / gateway-access token (e.g. `Authorization:
     /// Bearer ...` from a session JWT).
     Client,
-    /// A JWT-SVID presented by the inbound workload, when SPIFFE
-    /// attestation is JWT-based instead of mTLS-based.
-    Workload,
+    /// A JWT-SVID presented by the *calling* workload, when SPIFFE
+    /// attestation is JWT-based instead of mTLS-based. Maps to
+    /// `SecurityExtension.caller_workload`.
+    ///
+    /// Named for the caller specifically: the gateway's own workload
+    /// identity (`this_workload`) is a different principal and never
+    /// appears here, because this map holds *inbound* credentials and
+    /// the gateway's own credential does not arrive on the wire.
+    ///
+    /// `alias = "workload"` keeps configs written before the rename
+    /// working.
+    #[serde(rename = "caller_workload", alias = "workload")]
+    CallerWorkload,
     /// Host-defined role.
     #[serde(untagged)]
     Custom(String),
@@ -95,18 +105,47 @@ pub enum TokenKind {
     TxnToken,
 }
 
-/// Whether a delegated outbound token represents the user's identity
-/// or the gateway's own identity to the downstream service. Affects
-/// scope-narrowing rules and audit-log attribution.
+/// Which principal a delegated outbound token speaks for. Affects
+/// scope-narrowing rules, audit-log attribution, and how
+/// `DelegationKey` partitions the delegated-token cache.
+///
+/// The three variants track three of the four identity slots on
+/// `SecurityExtension` — `subject`, `caller_workload`, and
+/// `this_workload`. Keeping the calling agent distinct from the
+/// gateway matters: they are different principals, they present
+/// different credentials, and a token minted for one must never be
+/// handed to the other.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DelegationMode {
     /// Outbound token represents the original user (RFC 8693
     /// on-behalf-of / actor-token flows, UCAN delegation).
+    /// Corresponds to `SecurityExtension.subject`.
     OnBehalfOfUser,
-    /// Outbound token represents the gateway / agent itself as the
-    /// principal; user identity is conveyed via separate context.
+
+    /// Outbound token represents the *calling* workload — the attested
+    /// agent on the inbound network peer
+    /// (`SecurityExtension.caller_workload`), acting autonomously with
+    /// no user in the loop. The credential exchanged is the caller's
+    /// own JWT-SVID, arriving as `inbound_tokens[TokenRole::CallerWorkload]`.
+    ///
+    /// Distinct from `AsGateway`: many different agents call through
+    /// one gateway, so this mode does *not* identify a single
+    /// principal on its own — `DelegationKey.workload_id` carries the
+    /// specific caller.
+    AsCallerWorkload,
+
+    /// Outbound token represents *this* gateway's own attested
+    /// identity (`SecurityExtension.this_workload`) — used when the
+    /// gateway calls infrastructure it owns, or a downstream that
+    /// trusts only the gateway with user context conveyed separately.
+    ///
+    /// The gateway's SVID is not an inbound credential: it comes from
+    /// the SPIFFE Workload API, not off the wire. Until a source that
+    /// populates `this_workload` exists, no handler produces this
+    /// mode — do not reach for it as a stand-in for
+    /// `AsCallerWorkload`.
     AsGateway,
 }
 
@@ -154,8 +193,19 @@ impl RawInboundToken {
 }
 
 /// Composite key for cached delegated tokens. Token cache lookups
-/// hit on `(subject, audience, scopes, mode)` so different audiences
-/// or scope sets for the same subject mint independent tokens.
+/// hit on `(subject, workload, audience, scopes, mode)` so different
+/// audiences or scope sets for the same subject mint independent
+/// tokens.
+///
+/// # Every distinguishing principal must appear here
+///
+/// A cache key has to carry *everything that makes two token requests
+/// different*, or a lookup returns a credential minted for somebody
+/// else. `subject_id` alone is not enough: a workload-subject exchange
+/// has no user, so `subject_id` is empty for every caller, and two
+/// different agents requesting the same audience and scopes would
+/// otherwise collide on one key — and be served each other's tokens.
+/// `workload_id` is what keeps them apart.
 ///
 /// `scopes` is a `Vec<String>` (not a `HashSet`) because Cedar / OPA
 /// policies frequently care about scope *order* — `["read", "write"]`
@@ -163,7 +213,19 @@ impl RawInboundToken {
 /// Callers that want set semantics should sort before constructing.
 #[derive(Debug, Hash, Eq, PartialEq, Clone, Serialize, Deserialize)]
 pub struct DelegationKey {
+    /// The user the token speaks for. Empty when no user took part
+    /// (a workload acting autonomously).
     pub subject_id: String,
+
+    /// SPIFFE-ID of the calling workload, when one participated in
+    /// the exchange — as the subject (`AsCallerWorkload`) or as the
+    /// RFC 8693 actor alongside a user. `None` when the exchange
+    /// involved no workload credential, which keeps ordinary
+    /// user-only delegations sharing one cache entry instead of
+    /// being needlessly partitioned per caller.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workload_id: Option<String>,
+
     pub audience: String,
     pub scopes: Vec<String>,
     pub mode: DelegationMode,
@@ -307,12 +369,14 @@ mod tests {
     fn delegation_key_hash_eq_consistency() {
         let k1 = DelegationKey {
             subject_id: "alice".into(),
+            workload_id: None,
             audience: "https://api.example.com".into(),
             scopes: vec!["read".into(), "write".into()],
             mode: DelegationMode::OnBehalfOfUser,
         };
         let k2 = DelegationKey {
             subject_id: "alice".into(),
+            workload_id: None,
             audience: "https://api.example.com".into(),
             scopes: vec!["read".into(), "write".into()],
             mode: DelegationMode::OnBehalfOfUser,
@@ -326,6 +390,47 @@ mod tests {
             ..k1.clone()
         };
         assert_ne!(k1, k3);
+    }
+
+    /// The collision `workload_id` exists to prevent: two different
+    /// calling agents doing a workload-subject exchange for the same
+    /// audience and scopes. There is no user, so `subject_id` is empty
+    /// for both — without the workload in the key they'd be one entry
+    /// and the second agent would be served the first agent's token.
+    #[test]
+    fn workload_subject_keys_are_distinct_per_calling_agent() {
+        let payroll = DelegationKey {
+            subject_id: String::new(),
+            workload_id: Some("spiffe://corp/payroll".into()),
+            audience: "https://hr.example.com".into(),
+            scopes: vec!["read".into()],
+            mode: DelegationMode::AsCallerWorkload,
+        };
+        let recruiting = DelegationKey {
+            workload_id: Some("spiffe://corp/recruiting".into()),
+            ..payroll.clone()
+        };
+        assert_ne!(
+            payroll, recruiting,
+            "two agents with no user must not share a cache entry",
+        );
+
+        // Sanity: everything else being equal, the same agent does
+        // reuse its own entry — the key isn't accidentally unique.
+        let payroll_again = payroll.clone();
+        assert_eq!(payroll, payroll_again);
+
+        // And a user-only delegation (no workload involved) stays
+        // distinct from a workload one rather than colliding on the
+        // empty-subject fallback.
+        let user_only = DelegationKey {
+            subject_id: "alice".into(),
+            workload_id: None,
+            audience: "https://hr.example.com".into(),
+            scopes: vec!["read".into()],
+            mode: DelegationMode::OnBehalfOfUser,
+        };
+        assert_ne!(payroll, user_only);
     }
 
     #[test]
