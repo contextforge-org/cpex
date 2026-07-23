@@ -63,6 +63,7 @@ reports/
 corpus/
 tests/fuzz/fuzzers/results/
 .venv
+.cpex
 mcp.db
 # Anchored to repo root — bare `public/` would shadow any nested
 # `public/` directory in source (common in web/frontend code).

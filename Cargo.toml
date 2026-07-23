@@ -17,6 +17,7 @@ members = [
     "crates/apl-core",
     "crates/apl-cmf",
     "crates/apl-cpex",
+    "crates/cpex-hosts-python",
     "builtins/plugins/pii-scanner",
     "builtins/plugins/audit-logger",
     "builtins/plugins/identity-jwt",
@@ -106,6 +107,7 @@ rmp-serde = "1"
 serde_bytes = "0.11"
 chrono = { version = "0.4", features = ["serde"] }
 regex = "1"
+sha2 = "0.10"
 
 # Internal workspace crates — single source of truth for their path + version
 # requirement. Members depend on these via `{ workspace = true }` so a version
