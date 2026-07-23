@@ -2,7 +2,7 @@
 title: "feat: CPEX-backed Authorization for OpenShell L7 Egress"
 type: feat
 status: draft
-date: 2026-07-17
+date: 2026-07-21
 deepened: 2026-07-17
 ---
 
@@ -84,6 +84,245 @@ approval.
   README calls it under active development. Pin an exact reviewed release and
   require normal dependency/security approval rather than using a broad
   `version = "0.2"` range.
+
+## Where CPEX fits in the architecture
+
+CPEX is proposed as a **supervisor-side authorizer** with **gateway-side
+control-plane surface**. Neither component alone is sufficient: the supervisor
+is the only place with process identity, canonicalized request view, and
+per-request latency budget; the gateway is the only place with authenticated
+operator identity, durable bundle storage, and cross-sandbox composition.
+
+```mermaid
+flowchart TB
+    subgraph OPERATOR["Operator surface"]
+        OPCLI["openshell CLI / SDK<br/>(privileged operator role)"]
+    end
+
+    subgraph GATEWAY["Gateway (control plane)"]
+        direction TB
+        API["gRPC API"]
+        INTERCEPT["Interceptor middleware<br/>(pre-existing)"]
+        REGISTRY[("CPEX bundle registry<br/>digest-pinned, immutable")]
+        POLSTORE[("SandboxPolicy store<br/>+ effective-config resolver")]
+        PROVER["openshell-prover<br/>(baseline compatibility check)"]
+        DELIVER["Effective-policy delivery<br/>(revision + bundle bytes + digest)"]
+    end
+
+    subgraph SUPERVISOR["Sandbox supervisor (data plane)"]
+        direction TB
+        POLICYGEN["EffectiveL7Policy<br/>{generation, opa, cpex}"]
+        L4["L4 gate<br/>(host/port, SSRF, process ID)"]
+        BASELINE["Baseline L7 gate<br/>(canonicalize, size, redact)"]
+        MW["Middleware chain<br/>(existing)"]
+        AUTHZ["L7Authorizer trait"]
+        OPA["OPA engine (regorus)"]
+        CPEX_RT["CPEX adapter<br/>+ local PDP<br/>(Cedar or CEL)"]
+        DECIDE{"Decision"}
+        INJECT["Credential injection /<br/>SigV4 signing"]
+        UPSTREAM(["Upstream request"])
+    end
+
+    OPCLI -- "AttachCpexBundle,<br/>PutCpexBundle" --> API
+    API --> INTERCEPT
+    INTERCEPT -- "operator admission +<br/>optional profile source" --> REGISTRY
+    INTERCEPT --> POLSTORE
+    POLSTORE -- "compose with<br/>bundle digest ref" --> PROVER
+    PROVER --> DELIVER
+    REGISTRY -- "bundle bytes<br/>(pinned by digest)" --> DELIVER
+    DELIVER -- "atomic revision" --> POLICYGEN
+
+    UPSTREAM_IN(["Agent egress"]) --> L4 --> BASELINE --> MW --> AUTHZ
+    POLICYGEN -.-> AUTHZ
+    AUTHZ -- "engine: opa" --> OPA --> DECIDE
+    AUTHZ -- "engine: cpex" --> CPEX_RT --> DECIDE
+    DECIDE -- "allow" --> INJECT --> UPSTREAM
+    DECIDE -- "deny" --> OCSF["OCSF HTTP activity<br/>+ DetectionFinding"]
+```
+
+**Placement rationale:**
+
+- Per-request authorization must run inside the supervisor. Only the supervisor
+  sees the calling binary identity, canonicalized request view, and redacted
+  header set. Round-tripping every L7 request to the gateway would violate
+  OpenShell's local-enforcement invariant and add unacceptable latency.
+- CPEX cannot preempt the L4/baseline path. The `L7Authorizer` trait fires
+  only after L4, canonicalization, redaction, and baseline L7 gates admit the
+  request — matching invariant #2 (deny always wins, CPEX never widens).
+- The gateway owns bundle authorship. Bundles are large, digest-pinned, and
+  operator-signed; they belong in durable gateway state, not inline in
+  `SandboxPolicy`. Delivery is atomic within a policy revision so the
+  supervisor never runs a CPEX bundle whose OPA companion is stale.
+- Delivery is one direction. The supervisor never reaches back to fetch a
+  bundle at request time — that would put CPEX bundle egress inside the same
+  sandbox network namespace the proxy is guarding.
+
+## Can CPEX ride the gateway interceptor middleware?
+
+The gateway interceptor middleware
+(`crates/openshell-gateway-interceptors/`, `proto/gateway_interceptor.proto`)
+was merged to let external governance services evaluate **gateway control-plane
+operations** — `CreateSandbox`, `SetPolicy`, `UpdateProvider`, and similar
+allowlisted RPCs — through phases `MODIFY_OPERATION`, `VALIDATE`, and
+`POST_COMMIT`. It is not a data-plane request-authorization mechanism.
+
+### Where the interceptor mechanism *is* a good fit
+
+The interceptor system is genuinely useful for two of the CPEX integration's
+control-plane needs:
+
+1. **Bundle vending via `SnapshotProviderProfiles` precedent.** The manifest
+   already advertises `provider_profiles = true` to expose a snapshot RPC that
+   returns a revision-pinned catalog. The same pattern — a new
+   `SnapshotCpexBundles` RPC or a shared "artifact catalog" abstraction —
+   would let an external CPEX authoring service vend digest-pinned bundles to
+   the gateway on the same manifest, freshness, and duplicate-detection path
+   used by provider profiles today. The gateway remains the authoritative
+   source; the interceptor is a trusted upstream.
+2. **Operator admission for CPEX management RPCs.** New privileged operations
+   like `PutCpexBundle`, `AttachCpexBundle`, or `SetCpexIssuer` should be added
+   to the interceptable-method allowlist. This gives operators a familiar path
+   to reject bundle attachments that violate site policy (e.g. "no bundle
+   without SBOM annotation") using `VALIDATE` phase.
+
+Both uses are within the interceptor system's design intent: control-plane
+governance, ProtoJSON payloads, `fail_open`/`fail_closed` bindings, secret
+field elision, atomic per-binding modifications.
+
+### Where the interceptor mechanism is *not* the right vehicle
+
+CPEX's **per-request L7 admission** — the value the proposal is chasing —
+cannot run through gateway interceptors:
+
+| Constraint | Why it rules out gateway interceptors |
+|---|---|
+| Locus of enforcement | Interceptors run in the gateway process; every agent egress request would need to round-trip out of the sandbox, through the supervisor session, into the gateway, through the interceptor gRPC, and back. That path currently does not exist. |
+| Latency budget | Interceptors are unary RPCs to an external service. Per-request L7 admission needs p95 in the low-milliseconds range with in-process locality. |
+| Visible context | The interceptor payload is a ProtoJSON view of a *gateway operation*, with secret fields elided by the middleware. It is not the sandbox `L7RequestInfo` — no calling-binary identity, no canonicalized request view, no trusted identity provenance. Reshaping it would create a parallel, weakly-typed data plane. |
+| Trust boundary | Interceptors are gateway-configured trusted sources. A per-request PDP call would give the interceptor read access to redacted request views for every sandbox on the gateway, breaking tenant isolation. |
+| Reload semantics | The immutable `EffectiveL7Policy { generation, opa, cpex }` snapshot must be constructed atomically per sandbox. An out-of-process interceptor cannot join that generation guard. |
+
+### Recommendation
+
+Treat the interceptor system as the **control-plane distribution channel** for
+CPEX artifacts and management admission, and keep per-request authorization
+in the supervisor via the `L7Authorizer` trait. Phase 1 RFC should specify
+whether a new `SnapshotCpexBundles` RPC is added to the existing manifest
+service or a broader "trusted artifact source" abstraction is introduced —
+either way, do not overload provider profile snapshotting with bundle
+distribution semantics.
+
+## How a CPEX policy is stored in the data model
+
+CPEX bundles are **not** stored inline in `SandboxPolicy`. They live in a
+separate gateway-owned registry and are referenced by digest from endpoint
+configuration. This mirrors the pattern already established by provider
+profile catalogs and interceptor-vended sources: reference in policy, bytes in
+a versioned catalog with duplicate-ID detection.
+
+### New protobuf surface (illustrative, Phase 1 RFC to finalize)
+
+```proto
+// openshell.sandbox.v1
+message NetworkEndpoint {
+  // ... existing fields ...
+
+  // Optional L7 authorization engine selection. When unset, endpoint uses
+  // the existing OPA-generated L7 rules path. Mutually exclusive with the
+  // `access` preset and inline `rules`.
+  L7Authorization authorization = 20;
+}
+
+message L7Authorization {
+  oneof engine {
+    // Explicit "use OPA" — no bundle reference required.
+    OpaEngine opa = 1;
+    // Reference to a gateway-registered CPEX bundle by content digest.
+    CpexBundleReference cpex = 2;
+  }
+}
+
+message OpaEngine {}
+
+message CpexBundleReference {
+  // Immutable content digest of the registered bundle: "sha256:...".
+  // Validated at policy load; unresolved digests reject the revision.
+  string digest = 1;
+
+  // Local PDP kind selected for this endpoint. The gateway rejects the
+  // revision if the digest's bundle does not declare a matching PDP.
+  CpexPdpKind pdp = 2;
+
+  // Optional bundle version tag for audit/UX only. The digest is authoritative.
+  string version_tag = 3;
+}
+
+enum CpexPdpKind {
+  CPEX_PDP_KIND_UNSPECIFIED = 0;
+  CPEX_PDP_KIND_CEDAR = 1;
+  CPEX_PDP_KIND_CEL = 2;
+}
+```
+
+### Durable storage (gateway)
+
+Two logically separate tables, both operator-owned:
+
+| Table | Purpose | Ownership |
+|---|---|---|
+| `cpex_bundle` | Immutable, content-addressed bundle blobs keyed by digest. Rows are append-only. Columns: `digest` (PK), `bytes`, `pdp_kind`, `size`, `sbom_ref`, `signature`, `uploaded_by`, `uploaded_at`. | Written only by `PutCpexBundle` operator RPC. Not writable by sandboxes, policy proposals, or agent-editable paths. |
+| `cpex_bundle_attachment` | Which sandbox / gateway scope may use which bundle. Enforces that `SandboxPolicy` revisions can only reference an attached bundle. Columns: `scope` (`gateway` or `sandbox:<id>`), `digest`, `attached_by`, `attached_at`. | Written by `AttachCpexBundle` operator RPC. Detachment leaves the bundle row in place but rejects new revisions referencing it. |
+
+Bundle bytes are never modified in place. Rotation is "upload new digest,
+attach it, update endpoint reference, detach old digest." This gives the
+policy advisor and audit trail a stable per-revision identity.
+
+### Sandbox-policy revision lifecycle
+
+1. Operator uploads bundle → `cpex_bundle(digest=sha256:abc…, bytes=…)`.
+2. Operator attaches → `cpex_bundle_attachment(scope='sandbox:s-42', digest=sha256:abc…)`.
+3. Agent or operator submits a `SandboxPolicy` revision with an endpoint
+   whose `authorization.cpex.digest = "sha256:abc…"`.
+4. Gateway policy validator checks:
+   - digest exists in `cpex_bundle`;
+   - digest is attached to the target scope;
+   - declared `pdp` matches `cpex_bundle.pdp_kind`;
+   - baseline compatibility gate (openshell-prover) still passes.
+5. Effective config resolver bundles the revision **plus** the referenced
+   bundle bytes into the same policy generation payload sent to the
+   supervisor. Delivery is atomic per generation.
+6. Supervisor's effective-policy constructor compiles the OPA engine, then
+   compiles the CPEX runtime from the delivered bundle bytes, then publishes
+   `EffectiveL7Policy { generation, opa, cpex }` under the existing
+   `PolicyGenerationGuard`. Any failure keeps the last-known-good generation.
+
+### Why not inline the bytes in `SandboxPolicy`
+
+- **Size.** Bundles can be tens of kilobytes of Cedar/CEL plus schema. Inline
+  APL bloats every policy revision, every policy proposal message, every
+  policy YAML round trip, and the mechanistic mapper's audit history.
+- **Attribution.** Bundle authorship must survive policy revision churn.
+  Content-addressed storage separates "who authored this bundle" from
+  "which sandbox is currently using it."
+- **Agent-proposal safety.** `SubmitPolicyAnalysis` accepts proposals from
+  agents. Inline APL would let an agent-authored chunk change the effective
+  policy engine. Digest reference plus attachment table forces bundle changes
+  through the operator-only path.
+- **Cache and reuse.** Two sandboxes attached to the same bundle digest
+  share compiled CPEX runtime state (per supervisor) and the same audit
+  identity across supervisors.
+
+### Interaction with policy advisor
+
+The policy advisor pipeline (`openshell-prover` + auto-approval gate) treats a
+CPEX-referenced endpoint as a first-class rule. The prover already answers
+categorical questions about baseline reach; it does not evaluate Cedar/CEL
+semantics. Phase 1 must decide whether the prover treats any endpoint with
+`authorization.cpex` as an implicit `capability_expansion` (safer default,
+forces manual review) or extends its model to reason about attached-bundle
+allow sets (more accurate but larger scope). The proposal recommends the
+former for v1: any policy revision that adds or changes a CPEX bundle
+reference bypasses auto-approval.
 
 ## Proposed design constraints
 
