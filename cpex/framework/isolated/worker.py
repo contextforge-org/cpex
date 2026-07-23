@@ -139,15 +139,6 @@ async def process_task(task_data, tp: TaskProcessor):
         # retrieve the context
         context = task_data.get("context")
         hook_type = task_data.get(HOOK_TYPE)
-        # Normalize namespaced hook names (e.g. "cmf.tool_pre_invoke" →
-        # "tool_pre_invoke") so that convention-named plugin methods are found.
-        # Plugins that use @hook("cmf.tool_pre_invoke") decorators are handled
-        # by the bare-name fallback in HookRef; plugins that rely solely on
-        # method-name convention need the bare name here.
-        if hook_type and "." in hook_type:
-            bare = hook_type.rsplit(".", 1)[-1]
-            if not hasattr(tp.plugin_ref.plugin, hook_type) and hasattr(tp.plugin_ref.plugin, bare):
-                hook_type = bare
         plugin_context = PluginContext(
             state=context.get("state"), global_context=context.get("global_context"), metadata=context.get("metadata")
         )
