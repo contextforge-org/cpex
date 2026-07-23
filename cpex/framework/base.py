@@ -441,7 +441,7 @@ class HookRef:
         self._plugin_ref = plugin_ref
         self._hook = hook
 
-        # Try convention-based lookup first (method name matches hook type).
+        # Try convention-based lookup first (method name matches hook type)
         self._func: Callable[[PluginPayload, PluginContext], Awaitable[PluginResult]] | None = getattr(
             plugin_ref.plugin, hook, None
         )
