@@ -442,12 +442,9 @@ class HookRef:
         self._hook = hook
 
         # Try convention-based lookup first (method name matches hook type).
-        # For namespaced hooks like "cmf.tool_pre_invoke", also try the bare
-        # name "tool_pre_invoke" so convention-named methods are found.
-        bare_hook = hook.rsplit(".", 1)[-1] if "." in hook else hook
         self._func: Callable[[PluginPayload, PluginContext], Awaitable[PluginResult]] | None = getattr(
             plugin_ref.plugin, hook, None
-        ) or getattr(plugin_ref.plugin, bare_hook, None)
+        )
 
         # If not found by convention, scan for @hook decorated methods
         if self._func is None:
@@ -458,7 +455,7 @@ class HookRef:
 
                 # Check for @hook decorator metadata
                 metadata = get_hook_metadata(method)
-                if metadata and (metadata.matches(hook) or metadata.matches(bare_hook)):
+                if metadata and metadata.matches(hook):
                     self._func = method
                     break
 
