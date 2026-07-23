@@ -17,6 +17,8 @@
 //        subject_token_type=<configured>
 //        audience=<target>
 //        scope=<space-separated requested scopes>
+//        actor_token=<workload SVID>       (only if payload carries one)
+//        actor_token_type=<configured>     (only if actor_token sent)
 //   3. POST to the IdP's token endpoint with HTTP Basic auth
 //      (client_id / client_secret).
 //   4. Parse the JSON response: `{ access_token, token_type,
@@ -47,7 +49,7 @@ use serde::Deserialize;
 use zeroize::Zeroizing;
 
 use cpex_core::context::PluginContext;
-use cpex_core::delegation::{DelegationPayload, TokenDelegateHook};
+use cpex_core::delegation::{DelegationPayload, DelegationSubject, TokenDelegateHook};
 use cpex_core::error::{PluginError, PluginViolation};
 use cpex_core::extensions::raw_credentials::{DelegationMode, RawDelegatedToken};
 use cpex_core::hooks::payload::Extensions;
@@ -59,6 +61,12 @@ use super::config::OAuthDelegatorConfig;
 /// RFC 8693 token-exchange grant type — the value of
 /// `grant_type` in the form-encoded request body.
 const GRANT_TYPE_TOKEN_EXCHANGE: &str = "urn:ietf:params:oauth:grant-type:token-exchange";
+
+/// RFC 6749 §4.4 client-credentials grant — "give me a token as
+/// myself". Used when the delegation subject is the gateway: there is
+/// no inbound credential to exchange, and the gateway's identity is
+/// the OAuth client identity it already authenticates with.
+const GRANT_TYPE_CLIENT_CREDENTIALS: &str = "client_credentials";
 
 /// Default issued-token-type RFC 8693 returns. We don't rely on it
 /// for behavior — it's reported back to operators in audit logs
@@ -224,8 +232,15 @@ impl HookHandler<TokenDelegateHook> for OAuthDelegator {
         _ext: &Extensions,
         _ctx: &mut PluginContext,
     ) -> PluginResult<DelegationPayload> {
+        // `subject: gateway` means *we* are the principal. There is no
+        // inbound credential to exchange — the gateway's identity is
+        // its OAuth client identity, which it already proves via the
+        // Basic auth header below. The standard grant for "give me a
+        // token as myself" is client_credentials, not token exchange.
+        let as_gateway = *payload.subject() == DelegationSubject::Gateway;
+
         let bearer = payload.bearer_token();
-        if bearer.is_empty() {
+        if bearer.is_empty() && !as_gateway {
             return PluginResult::deny(PluginViolation::new(
                 "delegation.bad_request",
                 "DelegationPayload carried an empty bearer_token — outbound \
@@ -243,15 +258,43 @@ impl HookHandler<TokenDelegateHook> for OAuthDelegator {
 
         let scope = Self::requested_scopes(payload);
 
-        // Build the form-encoded body. RFC 8693 §2.1.
-        let mut form: Vec<(&str, &str)> = vec![
-            ("grant_type", GRANT_TYPE_TOKEN_EXCHANGE),
-            ("subject_token", bearer),
-            ("subject_token_type", &self.typed.subject_token_type),
-            ("audience", audience),
-        ];
+        // Build the form-encoded body: RFC 6749 §4.4 for the gateway
+        // acting as itself, RFC 8693 §2.1 for every exchange on behalf
+        // of somebody else.
+        let mut form: Vec<(&str, &str)> = if as_gateway {
+            vec![
+                ("grant_type", GRANT_TYPE_CLIENT_CREDENTIALS),
+                ("audience", audience),
+            ]
+        } else {
+            vec![
+                ("grant_type", GRANT_TYPE_TOKEN_EXCHANGE),
+                ("subject_token", bearer),
+                ("subject_token_type", &self.typed.subject_token_type),
+                ("audience", audience),
+            ]
+        };
         if !scope.is_empty() {
             form.push(("scope", &scope));
+        }
+
+        // RFC 8693 §2.1 actor_token. Present only when the invoker
+        // attached one (sourced from the inbound SVID in
+        // `RawCredentialsExtension[CallerWorkload]`). Including it
+        // makes the IdP mint a token carrying `act` = actor alongside
+        // `sub` = subject — the delegation is recorded in the token
+        // itself. Absent, the exchange stays single-token.
+        //
+        // Skipped entirely under client_credentials: `actor_token` is
+        // a token-exchange parameter and has no meaning in RFC 6749
+        // §4.4, so sending it would be malformed. A route that wants
+        // the gateway as principal *and* the calling agent recorded in
+        // `act` needs a real subject credential for the gateway —
+        // i.e. its own SVID — rather than client_credentials.
+        let actor_token = payload.actor_token();
+        if !actor_token.is_empty() && !as_gateway {
+            form.push(("actor_token", actor_token));
+            form.push(("actor_token_type", &self.typed.actor_token_type));
         }
 
         // POST to the IdP. Basic auth carries our client credentials.
@@ -385,7 +428,7 @@ impl HookHandler<TokenDelegateHook> for OAuthDelegator {
 
         let mut updated = payload.clone();
         updated.delegated_token = Some(token);
-        updated.delegation_mode = Some(DelegationMode::OnBehalfOfUser);
+        updated.delegation_mode = Some(mode_for_subject(payload.subject()));
         updated.minted_at = Some(Utc::now());
         if let Some(issued) = parsed.issued_token_type {
             updated.metadata.insert(
@@ -400,6 +443,30 @@ impl HookHandler<TokenDelegateHook> for OAuthDelegator {
         }
 
         PluginResult::modify_payload(updated)
+    }
+}
+
+/// Who the minted token speaks for, derived from the exchange's
+/// subject rather than declared independently of it.
+///
+/// A `CallerWorkload` subject means no user was in the picture — the
+/// *calling agent* exchanged its own SPIFFE JWT-SVID, so the
+/// resulting credential speaks for that agent. `Gateway` means we
+/// are the principal. Everything else (a user token, an OAuth client
+/// token) is the ordinary on-behalf-of shape.
+///
+/// This matters beyond bookkeeping: `apply_to_extensions` keys the
+/// delegated-token cache off the mode, so calling a workload-subject
+/// exchange `OnBehalfOfUser` would file the token under a user
+/// identity that never participated.
+fn mode_for_subject(subject: &DelegationSubject) -> DelegationMode {
+    match subject {
+        DelegationSubject::CallerWorkload => DelegationMode::AsCallerWorkload,
+        DelegationSubject::Gateway => DelegationMode::AsGateway,
+        // `DelegationSubject` is #[non_exhaustive]; User, Client and
+        // any future variant all describe a principal the gateway is
+        // acting *for*, so on-behalf-of stays the safe default.
+        _ => DelegationMode::OnBehalfOfUser,
     }
 }
 

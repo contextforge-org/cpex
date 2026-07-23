@@ -62,6 +62,16 @@ pub struct OAuthDelegatorConfig {
     /// deployments must leave this at the default (`false`).
     #[serde(default)]
     pub insecure_http: bool,
+
+    /// The `actor_token_type` we tell the IdP the RFC 8693
+    /// `actor_token` is — a token-type URN. Defaults to
+    /// `...:token-type:jwt` because the actor is almost always a
+    /// JWT-SVID. Only consulted when the `DelegationPayload` carries a
+    /// non-empty `actor_token` (attached upstream by the invoker from
+    /// the inbound workload SVID); otherwise the exchange stays
+    /// single-token and behaves exactly as before.
+    #[serde(default = "default_actor_token_type")]
+    pub actor_token_type: String,
 }
 
 /// Where the gateway's OAuth client secret is loaded from. Three
@@ -86,6 +96,10 @@ pub enum ClientSecretSource {
 
 fn default_subject_token_type() -> String {
     "urn:ietf:params:oauth:token-type:access_token".to_string()
+}
+
+fn default_actor_token_type() -> String {
+    "urn:ietf:params:oauth:token-type:jwt".to_string()
 }
 
 fn default_timeout_seconds() -> u64 {
@@ -137,6 +151,10 @@ mod tests {
         assert_eq!(cfg.client_id, "gateway");
         assert_eq!(cfg.timeout_seconds, 5);
         assert_eq!(cfg.default_outbound_header, "Authorization");
+        // actor_token_type defaults to the JWT token-type URN (the
+        // actor is almost always a JWT-SVID); only used when the
+        // payload carries a non-empty actor_token.
+        assert_eq!(cfg.actor_token_type, "urn:ietf:params:oauth:token-type:jwt");
     }
 
     #[test]
