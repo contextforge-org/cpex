@@ -1,4 +1,4 @@
-// Location: ./crates/cpex-core/src/hooks/resources.rs
+// Location: ./crates/cpex-hosts-python/src/legacy/hooks/resources.rs
 // Copyright 2025
 // SPDX-License-Identifier: Apache-2.0
 // Authors: Ted Habeck
@@ -29,7 +29,7 @@ pub struct ResourcePreFetchPayload {
     pub metadata: Option<serde_json::Value>,
 }
 
-crate::impl_plugin_payload!(ResourcePreFetchPayload);
+cpex_core::impl_plugin_payload!(ResourcePreFetchPayload);
 
 // ---------------------------------------------------------------------------
 // ResourcePostFetchPayload
@@ -47,4 +47,4 @@ pub struct ResourcePostFetchPayload {
     pub content: serde_json::Value,
 }
 
-crate::impl_plugin_payload!(ResourcePostFetchPayload);
+cpex_core::impl_plugin_payload!(ResourcePostFetchPayload);

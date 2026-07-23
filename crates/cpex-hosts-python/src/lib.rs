@@ -12,5 +12,6 @@
 // it via the JSON-lines stdin/stdout protocol.
 
 pub mod isolated;
+pub mod legacy;
 
 pub use isolated::{HookPayloadRegistry, IsolatedPythonPluginAdapterFactory, KIND};

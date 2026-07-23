@@ -1,4 +1,4 @@
-// Location: ./crates/cpex-core/src/hooks/prompts.rs
+// Location: ./crates/cpex-hosts-python/src/legacy/hooks/prompts.rs
 // Copyright 2025
 // SPDX-License-Identifier: Apache-2.0
 // Authors: Ted Habeck
@@ -29,7 +29,7 @@ pub struct PromptPrehookPayload {
     pub args: Option<serde_json::Value>,
 }
 
-crate::impl_plugin_payload!(PromptPrehookPayload);
+cpex_core::impl_plugin_payload!(PromptPrehookPayload);
 
 // ---------------------------------------------------------------------------
 // PromptPosthookPayload
@@ -47,4 +47,4 @@ pub struct PromptPosthookPayload {
     pub result: serde_json::Value,
 }
 
-crate::impl_plugin_payload!(PromptPosthookPayload);
+cpex_core::impl_plugin_payload!(PromptPosthookPayload);

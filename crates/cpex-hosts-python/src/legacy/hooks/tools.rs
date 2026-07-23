@@ -1,4 +1,4 @@
-// Location: ./crates/cpex-core/src/hooks/tools.rs
+// Location: ./crates/cpex-hosts-python/src/legacy/hooks/tools.rs
 // Copyright 2025
 // SPDX-License-Identifier: Apache-2.0
 // Authors: Ted Habeck
@@ -37,7 +37,7 @@ pub struct ToolPreInvokePayload {
     pub headers: Option<HashMap<String, String>>,
 }
 
-crate::impl_plugin_payload!(ToolPreInvokePayload);
+cpex_core::impl_plugin_payload!(ToolPreInvokePayload);
 
 // ---------------------------------------------------------------------------
 // ToolPostInvokePayload
@@ -55,4 +55,4 @@ pub struct ToolPostInvokePayload {
     pub result: serde_json::Value,
 }
 
-crate::impl_plugin_payload!(ToolPostInvokePayload);
+cpex_core::impl_plugin_payload!(ToolPostInvokePayload);

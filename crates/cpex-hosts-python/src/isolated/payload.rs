@@ -27,14 +27,14 @@ use cpex_core::{
     delegation::{DelegationPayload, HOOK_TOKEN_DELEGATE},
     error::{PluginError, PluginViolation},
     executor::ErasedResultFields,
-    hooks::{
-        payload::PluginPayload,
-        prompts::{PromptPosthookPayload, PromptPrehookPayload},
-        resources::{ResourcePostFetchPayload, ResourcePreFetchPayload},
-        tools::{ToolPostInvokePayload, ToolPreInvokePayload},
-        types::hook_names,
-    },
+    hooks::{payload::PluginPayload, types::hook_names},
     identity::{IdentityPayload, HOOK_IDENTITY_RESOLVE},
+};
+
+use crate::legacy::hooks::{
+    prompts::{PromptPosthookPayload, PromptPrehookPayload},
+    resources::{ResourcePostFetchPayload, ResourcePreFetchPayload},
+    tools::{ToolPostInvokePayload, ToolPreInvokePayload},
 };
 
 // ---------------------------------------------------------------------------
