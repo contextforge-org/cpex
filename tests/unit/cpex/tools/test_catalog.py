@@ -1867,6 +1867,52 @@ class TestPluginCatalogInstallFromPypiIsolated:
                     # Plugin package is installed into the venv from PyPI (U4).
                     mock_venv_install.assert_called_once()
 
+    def test_install_from_test_pypi_isolated_venv_uses_extra_index(self, tmp_path, mock_github_env):
+        """test-pypi isolated_venv install pairs test.pypi with real PyPI (#5).
+
+        The isolated venv is fresh and empty, so transitive deps (including cpex
+        itself) must resolve. Installing with --index-url alone would require
+        every dep on test.pypi; an --extra-index-url to real PyPI is required.
+        """
+        catalog = PluginCatalog()
+
+        extract_dir = tmp_path / "extracted"
+        extract_dir.mkdir()
+        plugin_dir = extract_dir / "test_plugin"
+        plugin_dir.mkdir()
+
+        manifest_file = plugin_dir / "plugin-manifest.yaml"
+        manifest_data = {
+            "name": "test_plugin",
+            "version": "1.0.0",
+            "kind": "isolated_venv",
+            "description": "Test isolated plugin",
+            "author": "Test Author",
+            "available_hooks": ["tools"],
+            "default_config": {"requirements_file": "requirements.txt"},
+        }
+        manifest_file.write_text(yaml.safe_dump(manifest_data))
+
+        with patch.object(catalog, "_download_package_to_temp") as mock_download:
+            mock_download.return_value = extract_dir
+            with (
+                patch.object(catalog, "_initialize_isolated_venv") as mock_init,
+                patch.object(catalog, "_install_package_into_venv") as mock_venv_install,
+                patch.object(catalog, "_persist_manifest"),
+            ):
+                mock_init.return_value = tmp_path / "venv"
+
+                catalog.install_from_pypi("test_plugin", ">=1.0.0", use_pytest=True)
+
+                mock_venv_install.assert_called_once()
+                pip_args = mock_venv_install.call_args[0][1]
+                assert "--index-url" in pip_args
+                assert "https://test.pypi.org/simple/" in pip_args
+                assert "--extra-index-url" in pip_args
+                assert "https://pypi.org/simple/" in pip_args
+                # The versioned target is still present.
+                assert "test_plugin>=1.0.0" in pip_args
+
 
 class TestPluginCatalogFindRequirementsInExtractedPackage:
     """Tests for _find_requirements_in_extracted_package method with path traversal protection."""
@@ -3914,7 +3960,13 @@ class TestInstallPackageIntoVenv:
         assert "test_package" in pip_args
 
     def test_persist_manifest_to_plugin_dir(self, tmp_path, mock_github_env):
-        """The converted manifest is written under plugins/<class_root>/ (U5, R3)."""
+        """The converted manifest is written under plugins/<class_root>/ (U5, R3).
+
+        The filename is keyed on the full class name (#4), not the shared
+        class_root, so multi-plugin packages do not collide on one manifest.
+        """
+        from cpex.framework.utils import manifest_filename_for_class
+
         catalog = PluginCatalog()
         catalog.plugin_folder = str(tmp_path / "plugins")
         manifest = create_test_manifest(
@@ -3925,12 +3977,40 @@ class TestInstallPackageIntoVenv:
 
         result = catalog._persist_manifest_to_plugin_dir(manifest)
 
-        expected = Path(catalog.plugin_folder) / "cpex_pii_filter" / "plugin-manifest.yaml"
+        expected = (
+            Path(catalog.plugin_folder)
+            / "cpex_pii_filter"
+            / manifest_filename_for_class("cpex_pii_filter.pii_filter.PIIFilterPlugin")
+        )
         assert result == expected
         assert expected.exists()
         written = yaml.safe_load(expected.read_text())
         assert written["kind"] == "isolated_venv"
         assert written["default_config"]["class_name"] == "cpex_pii_filter.pii_filter.PIIFilterPlugin"
+
+    def test_persist_manifest_multi_plugin_package_no_collision(self, tmp_path, mock_github_env):
+        """Two plugins in one package get distinct manifest files in the shared dir (#4)."""
+        catalog = PluginCatalog()
+        catalog.plugin_folder = str(tmp_path / "plugins")
+
+        manifest_a = create_test_manifest(
+            name="pkg-a",
+            kind="isolated_venv",
+            default_config={"class_name": "cpex_pkg.a.PluginA"},
+        )
+        manifest_b = create_test_manifest(
+            name="pkg-b",
+            kind="isolated_venv",
+            default_config={"class_name": "cpex_pkg.b.PluginB"},
+        )
+
+        path_a = catalog._persist_manifest_to_plugin_dir(manifest_a)
+        path_b = catalog._persist_manifest_to_plugin_dir(manifest_b)
+
+        # Same shared class_root directory, distinct manifest files.
+        assert path_a.parent == path_b.parent
+        assert path_a != path_b
+        assert path_a.exists() and path_b.exists()
 
     def test_persist_manifest_to_plugin_dir_skips_non_isolated(self, tmp_path, mock_github_env):
         """Non-isolated plugins are not persisted to a plugin dir."""

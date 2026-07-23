@@ -35,6 +35,30 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/).
   runs during `cpex plugin catalog update` and persists the converted form to
   `plugin-manifest.yaml` / `plugins/config.yaml` ([#113](https://github.com/contextforge-org/cpex/pull/113)).
 
+### Fixed
+
+- **Isolated worker: error responses could carry a stale `request_id`.** The worker reused a
+  `main()`-local `request_id` across loop iterations, so an error raised before the next task
+  parsed could be tagged with the previous request's id — misdelivering the error to the wrong
+  caller's queue or hanging the real caller until timeout. The id is now reset per iteration
+  ([#113](https://github.com/contextforge-org/cpex/pull/113)).
+- **`cpex plugin install pkg@<constraint>` could wrongly skip.** The repeat-install check
+  dropped the version constraint and, for pypi/test-pypi, compared against a possibly stale
+  catalog entry. An explicit version constraint now always proceeds with the install
+  ([#113](https://github.com/contextforge-org/cpex/pull/113)).
+- **Upgrade no longer force-rebuilds every existing `isolated_venv` venv.** The venv cache now
+  treats a *missing* manifest version/hash signal (metadata written by an earlier CLI) as "no
+  signal" rather than a mismatch, so pre-existing venvs are not wiped and rebuilt on the first
+  run after upgrade ([#113](https://github.com/contextforge-org/cpex/pull/113)).
+- **Multi-plugin packages no longer thrash the venv cache.** The persisted plugin manifest is
+  now keyed on the plugin's full class name instead of the shared package root, so installing
+  one plugin in a package no longer invalidates a sibling plugin's cache hash and triggers a
+  rebuild loop ([#113](https://github.com/contextforge-org/cpex/pull/113)).
+- **test-pypi isolated installs resolve transitive dependencies.** Installing a plugin from
+  test.pypi into a fresh isolated venv now also passes `--extra-index-url https://pypi.org/simple/`,
+  so transitive dependencies (including `cpex` itself) resolve from real PyPI instead of failing
+  when they are absent from test.pypi ([#113](https://github.com/contextforge-org/cpex/pull/113)).
+
 ## [0.1.1] - 2026-06-04
 
 ### Added

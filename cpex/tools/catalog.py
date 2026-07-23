@@ -37,7 +37,7 @@ from cpex.framework.models import (
     PluginVersionRegistry,
     PyPiRepo,
 )
-from cpex.framework.utils import find_package_path
+from cpex.framework.utils import find_package_path, manifest_filename_for_class
 from cpex.tools.integrity import (
     IntegrityVerificationError,
     fetch_pypi_package_hashes,
@@ -980,7 +980,12 @@ class PluginCatalog:
         class_root = class_name.split(".")[0]
         plugin_dir = Path(self.plugin_folder) / class_root
         plugin_dir.mkdir(parents=True, exist_ok=True)
-        manifest_path = plugin_dir / "plugin-manifest.yaml"
+        # Key the manifest filename on the full class name, not the shared
+        # class_root: multiple plugins in one package share this directory (and
+        # its venv), so a single "plugin-manifest.yaml" would collide and make
+        # each install invalidate the others' cache hash. See
+        # manifest_filename_for_class and IsolatedVenvPlugin._manifest_path.
+        manifest_path = plugin_dir / manifest_filename_for_class(class_name)
         manifest_path.write_text(yaml.safe_dump(manifest.model_dump(), default_flow_style=False), encoding="utf-8")
         logger.info("Persisted converted manifest to %s", manifest_path)
         return manifest_path
@@ -1620,7 +1625,22 @@ except Exception as e:
                 tgt = plugin_package_name
                 if version_constraint is not None:
                     tgt = f"{tgt}{version_constraint}"
-                pip_args = ["--index-url", "https://test.pypi.org/simple/", tgt] if use_pytest else [tgt]
+                # Fresh empty venv: unlike the CLI venv install, no dependencies
+                # are pre-resolved here, so transitive deps (including cpex, on
+                # which the whole isolated design rests) must resolve too. Pair
+                # test.pypi with real PyPI as an extra index so those deps are
+                # found even when only the plugin itself lives on test.pypi.
+                pip_args = (
+                    [
+                        "--index-url",
+                        "https://test.pypi.org/simple/",
+                        "--extra-index-url",
+                        "https://pypi.org/simple/",
+                        tgt,
+                    ]
+                    if use_pytest
+                    else [tgt]
+                )
                 self._install_package_into_venv(plugin_path, pip_args)
             else:
                 # For non-isolated plugins, install via pip and find package path

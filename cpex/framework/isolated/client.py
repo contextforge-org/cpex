@@ -27,7 +27,7 @@ from cpex.framework.errors import PluginError, convert_exception_to_error
 from cpex.framework.hooks.registry import get_hook_registry
 from cpex.framework.isolated.venv_comm import VenvProcessCommunicator
 from cpex.framework.models import PluginConfig, PluginContext, PluginErrorModel, PluginPayload, PluginResult
-from cpex.framework.utils import find_package_path
+from cpex.framework.utils import find_package_path, manifest_filename_for_class
 
 logger = logging.getLogger(__name__)
 
@@ -78,8 +78,16 @@ class IsolatedVenvPlugin(Plugin):
         return hasher.hexdigest()
 
     def _manifest_path(self) -> Path:
-        """Path to the plugin's persisted manifest under its plugin directory."""
-        return self.plugin_path / "plugin-manifest.yaml"
+        """Path to the plugin's persisted manifest under its plugin directory.
+
+        The filename is keyed on the full class name so plugins that share a
+        package (and therefore this directory and its venv) do not collide on a
+        single manifest file — which would make each install invalidate the
+        others' cache hash. Must match the write side in
+        PluginCatalog._persist_manifest_to_plugin_dir.
+        """
+        class_name = self.config.config.get("class_name")
+        return self.plugin_path / manifest_filename_for_class(class_name)
 
     def _compute_manifest_hash(self) -> str:
         """Compute SHA256 hash of the persisted plugin-manifest.yaml.
@@ -152,23 +160,30 @@ class IsolatedVenvPlugin(Plugin):
             # Compare manifest version + hash (U5). Either changing invalidates
             # the cache — this is the sole change signal for plugins with no
             # requirements file (whose requirements hash is a constant).
-            current_version = self.config.version
-            cached_version = metadata.get("manifest_version")
-            if cached_version != current_version:
-                logger.info(
-                    "Manifest version changed. Cached: %s, Current: %s", cached_version, current_version
-                )
-                return False
+            #
+            # A *missing* key means the metadata predates these signals (written
+            # by an earlier CLI): treat it as "no signal" and skip the check,
+            # rather than reading .get() -> None as a mismatch. Otherwise every
+            # existing isolated_venv install would be wiped and rebuilt on the
+            # first run after upgrade, contradicting plan R5. Only invalidate
+            # when the key is present and differs.
+            if "manifest_version" in metadata:
+                current_version = self.config.version
+                cached_version = metadata.get("manifest_version")
+                if cached_version != current_version:
+                    logger.info("Manifest version changed. Cached: %s, Current: %s", cached_version, current_version)
+                    return False
 
-            current_manifest_hash = self._compute_manifest_hash()
-            cached_manifest_hash = metadata.get("manifest_hash")
-            if cached_manifest_hash != current_manifest_hash:
-                logger.info(
-                    "Manifest content changed. Cached hash: %s, Current hash: %s",
-                    cached_manifest_hash,
-                    current_manifest_hash,
-                )
-                return False
+            if "manifest_hash" in metadata:
+                current_manifest_hash = self._compute_manifest_hash()
+                cached_manifest_hash = metadata.get("manifest_hash")
+                if cached_manifest_hash != current_manifest_hash:
+                    logger.info(
+                        "Manifest content changed. Cached hash: %s, Current hash: %s",
+                        cached_manifest_hash,
+                        current_manifest_hash,
+                    )
+                    return False
 
             logger.info("Valid venv cache found for %s", venv_path)
             return True

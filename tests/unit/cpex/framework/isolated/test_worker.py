@@ -551,5 +551,68 @@ class TestMainFunction:
         assert mock_process_task.call_count == 2
         assert mock_print.call_count == 2
 
+    @pytest.mark.asyncio
+    @patch("sys.stdin")
+    @patch("builtins.print")
+    @patch("cpex.framework.isolated.worker.process_task")
+    async def test_main_error_uses_current_request_id_not_stale(
+        self, mock_process_task, mock_print, mock_stdin
+    ):
+        """An error on task B must carry B's request_id, never a stale A id.
+
+        Regression: request_id was a main()-local reused across loop iterations,
+        so an error emitted before/without re-setting it could carry the prior
+        request's id. venv_comm demuxes strictly on request_id, so a stale id
+        misdelivers the error or hangs the real caller until timeout.
+        """
+        task_a = {"task_type": "info", "request_id": "req-A"}
+        task_b = {"task_type": "info", "request_id": "req-B"}
+        mock_stdin.readline.side_effect = [
+            json.dumps(task_a) + "\n",
+            json.dumps(task_b) + "\n",
+            "",  # EOF
+        ]
+
+        ok = MagicMock()
+        ok.model_dump.return_value = {"status": "success"}
+        # First task succeeds; second raises before a response is built.
+        mock_process_task.side_effect = [ok, RuntimeError("boom on B")]
+
+        await main()
+
+        # Second print is the error response for task B.
+        error_output = json.loads(mock_print.call_args_list[1][0][0])
+        assert error_output["status"] == "error"
+        assert error_output["request_id"] == "req-B"
+
+    @pytest.mark.asyncio
+    @patch("sys.stdin")
+    @patch("builtins.print")
+    @patch("cpex.framework.isolated.worker.process_task")
+    async def test_main_error_before_parse_reports_unknown(
+        self, mock_process_task, mock_print, mock_stdin
+    ):
+        """A malformed line after a good task reports "unknown", not the prior id.
+
+        The prior task set request_id to a real value; the per-iteration reset
+        ensures a subsequent JSON decode error does not inherit it.
+        """
+        task_a = {"task_type": "info", "request_id": "req-A"}
+        mock_stdin.readline.side_effect = [
+            json.dumps(task_a) + "\n",
+            "not-json\n",
+            "",  # EOF
+        ]
+
+        ok = MagicMock()
+        ok.model_dump.return_value = {"status": "success"}
+        mock_process_task.return_value = ok
+
+        await main()
+
+        error_output = json.loads(mock_print.call_args_list[1][0][0])
+        assert error_output["status"] == "error"
+        assert error_output["request_id"] == "unknown"
+
 
 # Made with Bob

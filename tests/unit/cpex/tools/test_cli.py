@@ -2151,5 +2151,31 @@ class TestShouldSkipReinstall:
         catalog.find.return_value = create_test_manifest(name="native-plugin", version="1.0.0", kind="native")
         assert _should_skip_reinstall("native-plugin", "monorepo", catalog) is True
 
+    def test_pypi_explicit_constraint_never_skips(self, temp_registry_dir):
+        """An explicit version constraint on a pypi source must never skip.
+
+        Regression: the constraint was stripped and unused, and for pypi the
+        catalog is not refreshed, so catalog.find could return a stale entry
+        whose version happens to match the installed one — wrongly skipping a
+        deliberate pin like "foo@==0.3.0". With an explicit constraint we defer
+        to the real install regardless of the (possibly stale) catalog.
+        """
+        _seed_registry(temp_registry_dir, "cpex-test-plugin", "0.2.0")
+        catalog = Mock()
+        # Stale catalog entry that would otherwise trigger a skip.
+        catalog.find.return_value = create_test_manifest(name="cpex-test-plugin", version="0.2.0")
+
+        assert _should_skip_reinstall("cpex-test-plugin@==0.2.0", "pypi", catalog) is False
+        assert _should_skip_reinstall("cpex-test-plugin@==0.2.0", "test-pypi", catalog) is False
+        # The catalog must not even be consulted when a constraint is present.
+        catalog.find.assert_not_called()
+
+    def test_pypi_without_constraint_still_compares(self, temp_registry_dir):
+        """A bare pypi name (no constraint) keeps the existing compare behavior."""
+        _seed_registry(temp_registry_dir, "cpex-test-plugin", "0.2.0")
+        catalog = Mock()
+        catalog.find.return_value = create_test_manifest(name="cpex-test-plugin", version="0.2.0")
+        assert _should_skip_reinstall("cpex-test-plugin", "pypi", catalog) is True
+
 
 # Made with Bob

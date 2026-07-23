@@ -464,9 +464,14 @@ class TestFqnAutoConversionAcceptance:
             assert manifest.kind == "isolated_venv"
             assert manifest.default_config["class_name"] == "fqn_plugin.plugin.FqnPlugin"
 
-            # Persisted to plugins/<class_root>/plugin-manifest.yaml.
+            # Persisted under plugins/<class_root>/ with a per-full-class-name
+            # filename (so multi-plugin packages don't collide — see #4).
+            from cpex.framework.utils import manifest_filename_for_class
+
             written_path = catalog._persist_manifest_to_plugin_dir(manifest)
-            expected = tmp_path / "plugins" / "fqn_plugin" / "plugin-manifest.yaml"
+            expected = (
+                tmp_path / "plugins" / "fqn_plugin" / manifest_filename_for_class("fqn_plugin.plugin.FqnPlugin")
+            )
             assert written_path == expected
             persisted = yaml.safe_load(expected.read_text())
             assert persisted["kind"] == "isolated_venv"

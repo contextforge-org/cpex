@@ -683,8 +683,9 @@ class TestIsolatedVenvPlugin:
         plugin._save_cache_metadata(str(venv_path), None)
         assert plugin._is_venv_cache_valid(str(venv_path), None) is True
 
-        # Write a manifest file so the current hash differs from the cached empty digest.
-        (plugin.plugin_path / "plugin-manifest.yaml").write_text("kind: isolated_venv\nname: p\n")
+        # Write the plugin's manifest (per-class-name path) so the current hash
+        # differs from the cached empty digest.
+        plugin._manifest_path().write_text("kind: isolated_venv\nname: p\n")
 
         assert plugin._is_venv_cache_valid(str(venv_path), None) is False
 
@@ -692,8 +693,47 @@ class TestIsolatedVenvPlugin:
         """Manifest hash is the empty-content digest when no manifest file exists."""
         import hashlib
 
-        # plugin.plugin_path has no plugin-manifest.yaml by default.
+        # plugin.plugin_path has no manifest by default.
         assert plugin._compute_manifest_hash() == hashlib.sha256(b"").hexdigest()
+
+    def test_cache_valid_when_manifest_signals_absent(self, plugin, tmp_path):
+        """Pre-upgrade metadata (no manifest_version/hash keys) stays valid.
+
+        Regression (R5): metadata written by an earlier CLI lacks the manifest
+        signal keys. Reading .get() -> None as a mismatch would wipe and rebuild
+        every existing isolated_venv on first run after upgrade. A *missing* key
+        must be treated as "no signal", not a change.
+        """
+        venv_path = tmp_path / ".venv"
+        venv_path.mkdir()
+
+        # Save current metadata, then strip the manifest signal keys to mimic
+        # metadata produced by a CLI that predates U5.
+        plugin._save_cache_metadata(str(venv_path), None)
+        metadata_path = plugin._get_cache_metadata_path(str(venv_path))
+        metadata = json.loads(metadata_path.read_text())
+        metadata.pop("manifest_version", None)
+        metadata.pop("manifest_hash", None)
+        metadata_path.write_text(json.dumps(metadata))
+
+        # Requirements hash still matches, and the absent signals are ignored:
+        # the cache remains valid (no forced reprovision).
+        assert plugin._is_venv_cache_valid(str(venv_path), None) is True
+
+    def test_manifest_path_keyed_on_full_class_name(self, plugin):
+        """The persisted manifest filename is keyed on the full class name (#4).
+
+        Plugins sharing a package share plugin_path (and its venv); the manifest
+        filename must be unique per class so one plugin's install does not
+        invalidate another's cache hash.
+        """
+        from cpex.framework.utils import manifest_filename_for_class
+
+        expected_name = manifest_filename_for_class("test_plugin.TestPlugin")
+        assert plugin._manifest_path().name == expected_name
+        assert plugin._manifest_path().parent == plugin.plugin_path
+        # Two plugins in the same package resolve to distinct manifest files.
+        assert manifest_filename_for_class("pkg.a.PluginA") != manifest_filename_for_class("pkg.b.PluginB")
 
     @pytest.mark.asyncio
     @patch("cpex.framework.isolated.client.venv.EnvBuilder")

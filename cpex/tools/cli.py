@@ -525,6 +525,17 @@ def _should_skip_reinstall(source: str, install_type: str | None, catalog: Plugi
     if installed is None:
         return False
 
+    # An explicit version constraint (e.g. "foo@==0.3.0") is an intentional
+    # request for a specific version. Never skip in that case: the constraint
+    # is not carried into the comparison below, and for pypi/test-pypi/local
+    # the catalog is deliberately not refreshed (see the install command), so
+    # catalog.find(name) may return a stale, unrelated monorepo entry. Defer to
+    # the real install (and the downstream venv cache key) instead of guessing.
+    if install_type in {"pypi", "test-pypi"}:
+        _, version_constraint = _parse_pypi_source(source)
+        if version_constraint is not None:
+            return False
+
     target_manifest = catalog.find(name)
     target_version = target_manifest.version if target_manifest is not None else None
 

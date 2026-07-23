@@ -159,11 +159,7 @@ async def process_task(task_data, tp: TaskProcessor):
         # payload.args raises AttributeError. This mirrors the response path, which
         # rebuilds results via json_to_result on the client side.
         raw_payload = task_data.get("payload")
-        payload = (
-            tp.plugin_ref.plugin.json_to_payload(hook_type, raw_payload)
-            if raw_payload is not None
-            else None
-        )
+        payload = tp.plugin_ref.plugin.json_to_payload(hook_type, raw_payload) if raw_payload is not None else None
         result = await tp.executor.execute_plugin(
             hook_ref=tp.get_hook_ref(hook_type),
             payload=payload,
@@ -187,6 +183,10 @@ async def main():
         tp = TaskProcessor()
         # Continuously read and process tasks
         while True:
+            # Reset per iteration so an error before the task is parsed never
+            # emits a *previous* request's id (venv_comm demuxes strictly on
+            # request_id; a stale id misdelivers the error or hangs the caller).
+            request_id = "unknown"
             try:
                 # Read one line at a time
                 if tp.plugin_config and "max_content_size" in tp.plugin_config:
@@ -251,8 +251,10 @@ async def main():
                 error_response = {
                     "status": "error",
                     "message": f"Unexpected error: {str(e)}",
-                    # Use the request_id captured above when available so callers can demux.
-                    "request_id": request_id if "request_id" in locals() else "unknown",
+                    # request_id is reset to "unknown" at the top of each loop
+                    # iteration and set once the task line parses, so callers
+                    # can demux without risk of a stale id from a prior request.
+                    "request_id": request_id,
                 }
                 print(json.dumps(error_response), flush=True)
 
