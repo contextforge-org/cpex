@@ -480,6 +480,79 @@ def _parse_pypi_source(source: str) -> tuple[str, Optional[str]]:
     return package_name, version_constraint
 
 
+def _plugin_name_from_source(source: str, install_type: str | None) -> str:
+    """Extract the plugin/package name from an install source string.
+
+    Handles the per-channel source shapes: pypi ``pkg@constraint``,
+    git ``pkg @ git+url``, and bare names / monorepo search terms.
+
+    Args:
+        source: The install source string.
+        install_type: The install channel type, or None (defaults to monorepo).
+
+    Returns:
+        The plugin/package name portion of the source.
+    """
+    if install_type in {"pypi", "test-pypi"}:
+        name, _ = _parse_pypi_source(source)
+        return name.strip()
+    if " @ " in source:  # git: "Name @ git+url"
+        return source.split(" @ ", 1)[0].strip()
+    return source.strip()
+
+
+def _should_skip_reinstall(source: str, install_type: str | None, catalog: PluginCatalog) -> bool:
+    """Decide whether an install of an already-registered plugin is a no-op (U6).
+
+    When the plugin is not yet installed, returns False (proceed with install).
+    When it is installed, compares the target version (from the catalog, when
+    resolvable) against the recorded installed version and skips only when they
+    match. If the target version cannot be resolved, proceeds with the install
+    so the downstream venv cache key (U5) decides whether work is actually
+    needed. Kind-agnostic — applies to every plugin kind.
+
+    Args:
+        source: The install source string.
+        install_type: The install channel type.
+        catalog: The plugin catalog (already updated for monorepo/git).
+
+    Returns:
+        True to skip the install (already at the requested version), else False.
+    """
+    registry = PluginRegistry()
+    name = _plugin_name_from_source(source, install_type)
+    installed = registry.get(name)
+    if installed is None:
+        return False
+
+    # An explicit version constraint (e.g. "foo@==0.3.0") is an intentional
+    # request for a specific version. Never skip in that case: the constraint
+    # is not carried into the comparison below, and for pypi/test-pypi/local
+    # the catalog is deliberately not refreshed (see the install command), so
+    # catalog.find(name) may return a stale, unrelated monorepo entry. Defer to
+    # the real install (and the downstream venv cache key) instead of guessing.
+    if install_type in {"pypi", "test-pypi"}:
+        _, version_constraint = _parse_pypi_source(source)
+        if version_constraint is not None:
+            return False
+
+    target_manifest = catalog.find(name)
+    target_version = target_manifest.version if target_manifest is not None else None
+
+    if target_version is not None and target_version == installed.version:
+        console.print(f"Plugin {name} is already installed at version {installed.version}.")
+        return True
+
+    if target_version is None:
+        # Cannot resolve a target version to compare; proceed and let the venv
+        # cache key decide whether a rebuild is needed.
+        logger.info("Could not resolve target version for %s; proceeding with install.", name)
+        return False
+
+    console.print(f"Plugin {name} is installed at {installed.version}; installing version {target_version}.")
+    return False
+
+
 def _finalize_installation(
     manifest: PluginManifest, install_type: str, catalog: PluginCatalog, plugin_path: Path | None = None
 ):
@@ -503,12 +576,14 @@ def _finalize_installation(
     update_plugins_config_yaml(manifest=manifest)
 
 
-def _install_from_local(source: str, catalog: PluginCatalog, use_test: bool = False):
+def _install_from_local(source: str, catalog: PluginCatalog, use_test: bool = False, convert: bool = True):
     """Handle local-based installation (not yet implemented).
 
     Args:
         source: local path.
         catalog: The plugin catalog.
+        use_test: Unused for local installations (kept for handler consistency).
+        convert: When False (``--no-convert``), leave a bare-FQN ``kind`` unconverted.
 
     Raises:
         FileNotFoundError: If plugin-manifest.yaml is not found in source or subdirectories.
@@ -516,18 +591,19 @@ def _install_from_local(source: str, catalog: PluginCatalog, use_test: bool = Fa
     """
     install_source = Path(source)
     with console.status(f"Installing plugin from source {source}...", spinner="dots"):
-        manifest, installation_path = catalog.install_from_local(install_source)
+        manifest, installation_path = catalog.install_from_local(install_source, convert=convert)
         _finalize_installation(manifest, "local", catalog, installation_path)
         console.print(f":white_heavy_check_mark: {manifest.name} installation complete.")
 
 
-def _install_from_git(source: str, catalog: PluginCatalog, use_test: bool = False):
+def _install_from_git(source: str, catalog: PluginCatalog, use_test: bool = False, convert: bool = True):
     """Handle git-based installation.
 
     Args:
         source: Git repository URL or path.
         catalog: The plugin catalog.
         use_test: Unused for git installations (kept for consistency).
+        convert: When False (``--no-convert``), leave a bare-FQN ``kind`` unconverted.
     """
     # Get integrity verification setting from catalog settings
     catalog_settings = get_catalog_settings()
@@ -539,18 +615,25 @@ def _install_from_git(source: str, catalog: PluginCatalog, use_test: bool = Fals
         console.log("Package integrity verification: disabled")
 
     with console.status(f"Installing plugin from source {source}...", spinner="dots"):
-        manifest, installation_path = catalog.install_from_git(source, verify_integrity=verify_integrity)
+        manifest, installation_path = catalog.install_from_git(
+            source, verify_integrity=verify_integrity, convert=convert
+        )
         _finalize_installation(manifest, "git", catalog, installation_path)
         console.print(f":white_heavy_check_mark: {manifest.name} installation complete.")
 
 
-def _install_from_monorepo(source: str, catalog: PluginCatalog, use_test: bool = False, assume_yes: bool = False):
+def _install_from_monorepo(
+    source: str, catalog: PluginCatalog, use_test: bool = False, assume_yes: bool = False, convert: bool = True
+):
     """Handle monorepo-based installation.
 
     Args:
         source: Plugin name or search term in the monorepo.
         catalog: The plugin catalog.
         assume_yes: Skip the interactive selection prompt.
+        convert: Accepted for signature parity; monorepo installs use the
+            already-normalized catalog manifest, so conversion happened at
+            ``catalog update`` time and ``--no-convert`` does not apply here.
     """
     logger.info("Trying to install from git monorepo: %s", source)
     available_plugins = catalog.search(source)
@@ -569,13 +652,14 @@ def _install_from_monorepo(source: str, catalog: PluginCatalog, use_test: bool =
     console.print(f":white_heavy_check_mark: {selected_plugin.name} installation complete.")
 
 
-def _install_from_pypi(source: str, catalog: PluginCatalog, use_test: bool = False):
+def _install_from_pypi(source: str, catalog: PluginCatalog, use_test: bool = False, convert: bool = True):
     """Handle PyPI-based installation.
 
     Args:
         source: PyPI package name, optionally with version constraint (e.g., "package@>=1.0.0").
         catalog: The plugin catalog.
         use_test: Whether to use test.pypi.org instead of pypi.org.
+        convert: When False (``--no-convert``), leave a bare-FQN ``kind`` unconverted.
     """
     logger.info("Trying to install from pypi package %s", source)
 
@@ -597,6 +681,7 @@ def _install_from_pypi(source: str, catalog: PluginCatalog, use_test: bool = Fal
             version_constraint=version_constraint,
             use_pytest=use_test,
             verify_integrity=verify_integrity,
+            convert=convert,
         )
 
     if manifest is None:
@@ -607,7 +692,9 @@ def _install_from_pypi(source: str, catalog: PluginCatalog, use_test: bool = Fal
     console.print(f":white_heavy_check_mark: {package_name} installation complete.")
 
 
-def install(source: str, install_type: str | None, catalog: PluginCatalog, assume_yes: bool = False):
+def install(
+    source: str, install_type: str | None, catalog: PluginCatalog, assume_yes: bool = False, convert: bool = True
+):
     """Install a plugin from its associated source.
 
     Args:
@@ -615,6 +702,10 @@ def install(source: str, install_type: str | None, catalog: PluginCatalog, assum
         install_type: The type of installation ("git", "monorepo", or "pypi").
         catalog: The catalog of plugins.
         assume_yes: Skip interactive selection prompt for monorepo installs.
+        convert: When False (``--no-convert``), leave a bare-FQN ``kind`` unconverted
+            so the plugin keeps its declared in-process class path instead of being
+            auto-converted to ``isolated_venv``. Applies to pypi/test-pypi/git/local;
+            monorepo installs use the pre-normalized catalog manifest.
 
     Raises:
         typer.Exit: With EXIT_INVALID_ARGS if install_type is not supported.
@@ -625,7 +716,7 @@ def install(source: str, install_type: str | None, catalog: PluginCatalog, assum
 
     if install_type == "monorepo":
         try:
-            _install_from_monorepo(source, catalog, assume_yes=assume_yes)
+            _install_from_monorepo(source, catalog, assume_yes=assume_yes, convert=convert)
             return
         except Exception as e:
             console.print(f":x: Installation failed: {str(e)}")
@@ -647,7 +738,7 @@ def install(source: str, install_type: str | None, catalog: PluginCatalog, assum
         raise typer.Exit(EXIT_INVALID_ARGS)
 
     try:
-        handler(source, catalog, use_test=True if install_type == "test-pypi" else False)
+        handler(source, catalog, use_test=True if install_type == "test-pypi" else False, convert=convert)
     except Exception as e:
         console.print(f":x: Installation failed: {str(e)}")
         logger.error("Install error: %s", str(e), exc_info=True)
@@ -850,6 +941,17 @@ def plugin(
             help="Output format for read commands: 'text' (default) or 'json'.",
         ),
     ] = "text",
+    no_convert: Annotated[
+        bool,
+        typer.Option(
+            "--no-convert",
+            help=(
+                "On install, do NOT auto-convert a bare Python class path (FQN) 'kind' to an "
+                "isolated_venv plugin; keep the plugin's declared in-process kind. Also softens "
+                "an unknown 'kind' from a hard error to a warning. Applies to pypi/test-pypi/git/local."
+            ),
+        ),
+    ] = False,
 ) -> None:
     """Lists installed plugins"""
     if cmd_action == "info":
@@ -862,12 +964,6 @@ def plugin(
             raise typer.Exit(EXIT_INVALID_ARGS)
         pc = PluginCatalog()
         return uninstall(source, catalog=pc, assume_yes=assume_yes)
-    if cmd_action == "install" and source is not None:
-        registry = PluginRegistry()
-        if registry.has(source):
-            console.print(f"Plugin {source} is already installed.")
-            return
-
     # update the catalog before proceeding with install etc.
     pc = PluginCatalog()
     # optimized github search REST api takes ~14s to search & download all manifests
@@ -880,13 +976,21 @@ def plugin(
             else:
                 console.log("Catalog update completed.")
 
+    # Repeat-install version compare (U6): when a plugin is already registered,
+    # only skip when the requested/catalog version matches the installed version;
+    # otherwise fall through and reinstall (upgrade). This is kind-agnostic and
+    # applies to all plugin kinds.
+    if cmd_action == "install" and source is not None:
+        if _should_skip_reinstall(source, install_type, pc):
+            return
+
     if cmd_action == "versions":
         return versions(source, catalog=pc, fmt=fmt)
 
     if cmd_action == "list":
         return list_registered_plugins(install_type, fmt=fmt)
     if cmd_action == "install" and source is not None:
-        return install(source, install_type, catalog=pc, assume_yes=assume_yes)
+        return install(source, install_type, catalog=pc, assume_yes=assume_yes, convert=not no_convert)
     if cmd_action == "search":
         return search(source, catalog=pc, fmt=fmt)
 

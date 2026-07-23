@@ -36,7 +36,7 @@ class TaskProcessor:
 
     config_hash: str
     module_path_hash: str
-    hook_ref: HookRef
+    plugin_ref: PluginRef
     executor: PluginExecutor
     plugin_config: PluginConfig | None = None
 
@@ -55,18 +55,25 @@ class TaskProcessor:
 
     def initialize(
         self,
-        hook_ref: HookRef,
+        plugin_ref: PluginRef,
         executor: PluginExecutor,
         json_config: str,
         module_path: str,
         plugin_config: PluginConfig,
     ):
         """Assign locals, and compute hashes."""
-        self.hook_ref = hook_ref
+        self.plugin_ref = plugin_ref
         self.executor = executor
         self.config_hash = self.compute_hash(json_config_or_module_path=json_config)
         self.module_path_hash = self.compute_hash(json_config_or_module_path=module_path)
         self.plugin_config = plugin_config
+
+    def get_hook_ref(self, hook_type: str) -> HookRef:
+        """
+        make sure that the hook ref is not stale for the current task data.
+        """
+        hook_ref = HookRef(hook_type, self.plugin_ref)
+        return hook_ref
 
 
 def get_environment_info():
@@ -112,7 +119,6 @@ async def process_task(task_data, tp: TaskProcessor):
         if tp.config_hash != tp.compute_hash(json_config):
             # pull the resolved plugin path and only add the module path if it has the same root
             config: PluginConfig = PluginConfig(**config_raw)
-            hook_type = task_data.get(HOOK_TYPE)
             cls_name: str = task_data.get("class_name")
             mod_name, n_cls_name = parse_class_name(cls_name)
             module: ModuleType = import_module(mod_name)
@@ -121,12 +127,10 @@ async def process_task(task_data, tp: TaskProcessor):
             plugin_type = cast(Type[Plugin], class_)
             plugin = plugin_type(config)
             await plugin.initialize()
-            # now invoke the hook
             plugin_ref = PluginRef(plugin)
-            hook_ref = HookRef(hook_type, plugin_ref)
             executor = PluginExecutor(None, 30)
             tp.initialize(
-                hook_ref=hook_ref,
+                plugin_ref=plugin_ref,
                 executor=executor,
                 json_config=json_config,
                 module_path=json.dumps(resolved_paths),
@@ -134,12 +138,21 @@ async def process_task(task_data, tp: TaskProcessor):
             )
         # retrieve the context
         context = task_data.get("context")
+        hook_type = task_data.get(HOOK_TYPE)
         plugin_context = PluginContext(
             state=context.get("state"), global_context=context.get("global_context"), metadata=context.get("metadata")
         )
+        # The client serializes the payload with model_dump(mode="json") before
+        # sending it over stdin, so it arrives here as a plain dict. Reconstruct
+        # the typed PluginPayload (e.g. ToolPreInvokePayload) before invoking the
+        # plugin — otherwise the hook receives a dict and attribute access such as
+        # payload.args raises AttributeError. This mirrors the response path, which
+        # rebuilds results via json_to_result on the client side.
+        raw_payload = task_data.get("payload")
+        payload = tp.plugin_ref.plugin.json_to_payload(hook_type, raw_payload) if raw_payload is not None else None
         result = await tp.executor.execute_plugin(
-            hook_ref=tp.hook_ref,
-            payload=task_data.get("payload"),
+            hook_ref=tp.get_hook_ref(hook_type),
+            payload=payload,
             local_context=plugin_context,
             violations_as_exceptions=False,
         )
@@ -151,6 +164,50 @@ async def process_task(task_data, tp: TaskProcessor):
     }
 
 
+def read_task_line(max_content_size: int | None) -> tuple[str, bool]:
+    """Read one task line from stdin, enforcing max_content_size.
+
+    TextIOWrapper.readline takes a positional size hint (readline(size=-1, /));
+    there is no `limit` keyword. readline(size) returns *at most* size chars,
+    stopping early at a newline. So if we read exactly max_content_size chars
+    with no trailing newline, the task was truncated mid-line and the rest is
+    still queued on stdin — if left there it would be mis-read as the next task,
+    desyncing the request_id-demuxed stream. In that case we drain the remainder
+    (bounded, discarded) so the next read starts on a fresh line.
+
+    A line that is exactly max_content_size chars *including* its newline is a
+    complete, valid task, not a truncation — hence the endswith check.
+
+    Returns (line, oversized). When oversized is True the line was truncated and
+    its content should not be parsed; the caller should reject the request. An
+    empty line signals EOF.
+    """
+    if max_content_size:
+        line = sys.stdin.readline(int(max_content_size))
+    else:
+        # on the first read, the plugin_config has not yet been initialized so just read.
+        line = sys.stdin.readline()
+
+    if not (max_content_size and len(line) == max_content_size and not line.endswith("\n")):
+        return line, False
+
+    # Drain the rest of the oversized line in bounded chunks so we never buffer
+    # the giant remainder into memory. Track total drained length so the log
+    # reflects how far over the limit the offending line actually was.
+    drained_len = len(line)
+    while True:
+        remainder = sys.stdin.readline(int(max_content_size))
+        drained_len += len(remainder)
+        if not remainder or remainder.endswith("\n"):
+            break
+    logger.error(
+        "Task line exceeds max content size (max=%d, read at least %d chars); rejecting request",
+        max_content_size,
+        drained_len,
+    )
+    return line, True
+
+
 async def main():
     """Main function - continuously read from stdin, process tasks, write to stdout."""
     logger.info("Worker process started, waiting for tasks...")
@@ -160,17 +217,33 @@ async def main():
         tp = TaskProcessor()
         # Continuously read and process tasks
         while True:
+            # Reset per iteration so an error before the task is parsed never
+            # emits a *previous* request's id (venv_comm demuxes strictly on
+            # request_id; a stale id misdelivers the error or hangs the caller).
+            request_id = "unknown"
             try:
-                # Read one line at a time
-                if tp.plugin_config and "max_content_size" in tp.plugin_config:
-                    line = sys.stdin.readline(limit=int(tp.plugin_config.max_content_size))
-                else:
-                    # on the first read, the plugin_config has not yet been initialized so just read.
-                    line = sys.stdin.readline()
+                # Read one line at a time. getattr rather than `in`/attribute
+                # access because plugin_config is a PluginConfig model, not a
+                # dict, and it may be None on the first read (config not yet
+                # initialized) or lack the field on older cpex versions.
+                max_content_size = getattr(tp.plugin_config, "max_content_size", None)
+                line, oversized = read_task_line(max_content_size)
                 # Check for EOF
                 if not line:
                     logger.info("EOF received, shutting down worker")
                     break
+
+                # An oversized (truncated) line was already drained from stdin by
+                # read_task_line; its content is not reliably parseable JSON, so
+                # request_id is unrecoverable and stays "unknown". Reject it.
+                if oversized:
+                    error_response = {
+                        "status": "error",
+                        "message": "Task line exceeds max content size",
+                        "request_id": request_id,
+                    }
+                    print(json.dumps(error_response), flush=True)
+                    continue
 
                 # Parse the task
                 task_data = json.loads(line.strip())
@@ -197,18 +270,19 @@ async def main():
 
                 serialized_response = json.dumps(serializable_response)
                 # Send response back to parent (one line per response)
-                if tp.plugin_config:
-                    # workaround until cpex is updated beyond dev11
-                    # cpex is a dependency of the plugin and as such it's PluginConfig does not contain the max_content_size yet.
-                    if "max_content_size" in tp.plugin_config:
-                        if len(serialized_response) > tp.plugin_config.max_content_size:
-                            logger.error("Serialized response exceeds max content size")
-                            error_response = {
-                                "status": "error",
-                                "message": "Serialized response exceeds max content size",
-                                "request_id": request_id,
-                            }
-                            serialized_response = json.dumps(error_response)
+                # workaround until cpex is updated beyond dev11: older cpex
+                # (a dependency of the plugin) has a PluginConfig without
+                # max_content_size, so use getattr rather than `in`/attribute
+                # access. PluginConfig is a model, not a dict, so `in` raises.
+                response_max_content_size = getattr(tp.plugin_config, "max_content_size", None)
+                if response_max_content_size and len(serialized_response) > response_max_content_size:
+                    logger.error("Serialized response exceeds max content size")
+                    error_response = {
+                        "status": "error",
+                        "message": "Serialized response exceeds max content size",
+                        "request_id": request_id,
+                    }
+                    serialized_response = json.dumps(error_response)
                 print(serialized_response, flush=True)
 
             except json.JSONDecodeError as e:
@@ -224,7 +298,10 @@ async def main():
                 error_response = {
                     "status": "error",
                     "message": f"Unexpected error: {str(e)}",
-                    "request_id": "unknown",
+                    # request_id is reset to "unknown" at the top of each loop
+                    # iteration and set once the task line parses, so callers
+                    # can demux without risk of a stale id from a prior request.
+                    "request_id": request_id,
                 }
                 print(json.dumps(error_response), flush=True)
 

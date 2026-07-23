@@ -28,6 +28,7 @@ import yaml
 from github import Auth, Github
 from packaging.version import InvalidVersion, Version
 
+from cpex.framework.constants import ISOLATED_VENV_PLUGIN_TYPE, KNOWN_PLUGIN_KINDS
 from cpex.framework.models import (
     GitRepo,
     PluginManifest,
@@ -36,7 +37,7 @@ from cpex.framework.models import (
     PluginVersionRegistry,
     PyPiRepo,
 )
-from cpex.framework.utils import find_package_path
+from cpex.framework.utils import find_package_path, manifest_filename_for_class
 from cpex.tools.integrity import (
     IntegrityVerificationError,
     fetch_pypi_package_hashes,
@@ -46,6 +47,133 @@ from cpex.tools.integrity import (
 from cpex.tools.settings import get_catalog_settings
 
 logger = logging.getLogger(__name__)
+
+# Result buckets for classify_plugin_kind.
+KIND_KNOWN = "known"
+KIND_FQN = "fqn"
+KIND_REJECT = "reject"
+
+
+def classify_plugin_kind(kind: str | None) -> str:
+    """Classify a manifest ``kind`` value for install-time handling.
+
+    Buckets:
+        - ``KIND_KNOWN``: ``kind`` is one of the recognized plugin kinds and is
+          handled by the existing install path unchanged.
+        - ``KIND_FQN``: ``kind`` is not a known kind but looks like a Python
+          fully-qualified class path (e.g. ``pkg.module.ClassName``). Such a
+          plugin is auto-converted to ``isolated_venv`` at install time.
+        - ``KIND_REJECT``: ``kind`` is neither a known kind nor a class-shaped
+          FQN (e.g. a typo like ``isolate_venv`` or a single bare token). The
+          caller raises with a message naming the supported kinds.
+
+    Detection is purely shape-based; no import or venv is required. An FQN must
+    have two or more dot-separated segments, each a valid Python identifier,
+    with the final segment starting with an uppercase letter (class convention).
+
+    Args:
+        kind: The manifest ``kind`` value, or None.
+
+    Returns:
+        One of ``KIND_KNOWN``, ``KIND_FQN``, or ``KIND_REJECT``.
+    """
+    if not kind or not kind.strip():
+        return KIND_REJECT
+
+    kind = kind.strip()
+    if kind in KNOWN_PLUGIN_KINDS:
+        return KIND_KNOWN
+
+    segments = kind.split(".")
+    if len(segments) < 2:
+        return KIND_REJECT
+    if not all(seg.isidentifier() for seg in segments):
+        return KIND_REJECT
+    if not segments[-1][:1].isupper():
+        return KIND_REJECT
+
+    return KIND_FQN
+
+
+def supported_kinds_message() -> str:
+    """Return an error message naming the supported plugin kinds.
+
+    Used when a ``kind`` is rejected by :func:`classify_plugin_kind`.
+    """
+    kinds = ", ".join(sorted(KNOWN_PLUGIN_KINDS))
+    return (
+        "Unsupported plugin 'kind'. Expected one of: "
+        f"{kinds}; or a Python class path (e.g. 'package.module.ClassName') "
+        "to auto-convert to an isolated_venv plugin."
+    )
+
+
+def convert_fqn_kind_in_place(manifest_data: dict[str, Any], convert: bool = True) -> dict[str, Any]:
+    """Auto-convert a bare-FQN plugin manifest to isolated_venv, in place.
+
+    When ``manifest_data["kind"]`` is a Python class path rather than a known
+    kind (per :func:`classify_plugin_kind`), the FQN is moved into
+    ``default_config["class_name"]`` and ``kind`` is set to ``isolated_venv``.
+    An existing ``class_name`` is preserved (the explicit value wins; a mismatch
+    is logged). Known kinds pass through untouched. A ``kind`` that is neither
+    known nor a class-shaped FQN raises.
+
+    Assumes legacy ``default_configs`` has already been normalized to
+    ``default_config`` by the caller.
+
+    Args:
+        manifest_data: Raw manifest dict, mutated in place.
+        convert: When True (the default), auto-convert an FQN ``kind`` and raise
+            on an unsupported (rejected) kind. When False, the conversion is an
+            opt-out no-op: FQN kinds are left untouched so they load in-process,
+            and a rejected kind is logged as a warning and left unchanged instead
+            of raising. This backs the ``--no-convert`` install flag, letting
+            existing 0.1.x plugins keep their declared FQN ``kind``.
+
+    Returns:
+        The same ``manifest_data`` dict, for convenience.
+
+    Raises:
+        ValueError: If ``kind`` is unsupported and not a class-shaped FQN, and
+            ``convert`` is True.
+    """
+    kind = manifest_data.get("kind")
+    bucket = classify_plugin_kind(kind)
+
+    if not convert:
+        # Opt-out: leave the manifest untouched. A rejected kind is only a
+        # warning here (it may still be a valid in-process kind the caller
+        # intends to keep) rather than a hard failure.
+        if bucket == KIND_REJECT:
+            logger.warning("Leaving kind %r unconverted (--no-convert): %s", kind, supported_kinds_message())
+        return manifest_data
+
+    if bucket == KIND_KNOWN:
+        return manifest_data
+    if bucket == KIND_REJECT:
+        raise ValueError(supported_kinds_message())
+
+    # KIND_FQN: move the class path into default_config.class_name.
+    default_config = manifest_data.get("default_config")
+    if not isinstance(default_config, dict):
+        default_config = {}
+        manifest_data["default_config"] = default_config
+
+    existing = default_config.get("class_name")
+    if existing:
+        if existing != kind:
+            logger.warning(
+                "Manifest kind '%s' is an FQN but default_config.class_name '%s' "
+                "is already set; keeping the explicit class_name.",
+                kind,
+                existing,
+            )
+    else:
+        default_config["class_name"] = kind
+
+    logger.info("Auto-converting FQN plugin kind '%s' to isolated_venv", kind)
+    manifest_data["kind"] = ISOLATED_VENV_PLUGIN_TYPE
+    return manifest_data
 
 
 class PluginCatalog:
@@ -354,6 +482,20 @@ class PluginCatalog:
         if "default_configs" in manifest_content:
             manifest_content["default_config"] = manifest_content.pop("default_configs") or {}
 
+        # Auto-convert bare-FQN kinds to isolated_venv (U2) so the persisted
+        # catalog manifest reflects the converted kind for the monorepo path.
+        # During catalog population we must not drop a manifest over an
+        # unrecognized kind — leave it unconverted and let the install path
+        # surface the rejection when the user actually installs it.
+        try:
+            convert_fqn_kind_in_place(manifest_content)
+        except ValueError as e:
+            logger.warning(
+                "Leaving kind %r unconverted during catalog scan: %s",
+                manifest_content.get("kind"),
+                str(e),
+            )
+
         return manifest_content
 
     def _process_manifest_item(
@@ -646,7 +788,11 @@ class PluginCatalog:
                     repo_url, manifest.name, verify_integrity=verify_integrity
                 )
                 plugin_path = self._initialize_isolated_venv(manifest, package_path)
-                logger.info("Isolated venv initialized. Plugin will be auto-installed via requirements.txt")
+                # Install the plugin package into the isolated venv from the
+                # monorepo subdirectory source so its class path is importable
+                # even without a requirements file (U4).
+                self._install_package_into_venv(plugin_path, [repo_url])
+                logger.info("Isolated venv initialized and plugin package installed from monorepo source")
             else:
                 # For non-isolated plugins, install normally into CLI's venv
                 logger.info("Installing non-isolated plugin from monorepo: %s", manifest.name)
@@ -744,7 +890,7 @@ class PluginCatalog:
             raise RuntimeError(f"Error reading manifest file: {str(e)}") from e
 
     def _normalize_manifest_data(
-        self, manifest_data: dict[str, Any], package_name: str, version_constraint: str | None
+        self, manifest_data: dict[str, Any], package_name: str, version_constraint: str | None, convert: bool = True
     ) -> PluginManifest:
         """Transform raw manifest dict into validated PluginManifest model.
 
@@ -752,6 +898,9 @@ class PluginCatalog:
             manifest_data: Raw manifest dictionary from YAML.
             package_name: The PyPI package name.
             version_constraint: Optional version constraint.
+            convert: When True (default), auto-convert a bare-FQN ``kind`` to
+                ``isolated_venv``. When False (``--no-convert``), leave the kind
+                untouched and warn (rather than raise) on an unsupported kind.
 
         Returns:
             Validated PluginManifest instance.
@@ -767,6 +916,10 @@ class PluginCatalog:
             # Handle legacy default_configs field
             if "default_config" not in manifest_data and "default_configs" in manifest_data:
                 manifest_data["default_config"] = manifest_data.pop("default_configs") or {}
+
+            # Auto-convert bare-FQN kinds to isolated_venv (U2). Skipped when
+            # convert is False (--no-convert), which also softens reject to warn.
+            convert_fqn_kind_in_place(manifest_data, convert=convert)
 
             # Validate and create manifest
             manifest = PluginManifest(**manifest_data)
@@ -801,6 +954,41 @@ class PluginCatalog:
             logger.info("Successfully saved %s package manifest to plugin catalog", package_name)
         except Exception as e:
             raise RuntimeError(f"Failed to save manifest for {package_name}: {str(e)}") from e
+
+    def _persist_manifest_to_plugin_dir(self, manifest: PluginManifest) -> Path | None:
+        """Persist the (converted) manifest under plugins/<class_root>/.
+
+        For isolated_venv plugins this writes plugin-manifest.yaml into the
+        plugin's own directory (the ``.venv`` sibling), giving a stable on-disk
+        record that the venv cache keys its manifest hash on (U5, R3). The
+        directory is derived from the plugin's ``class_name`` root, matching
+        IsolatedVenvPlugin.plugin_path.
+
+        Args:
+            manifest: The validated (already converted) plugin manifest.
+
+        Returns:
+            The path to the written manifest file, or None when the plugin is
+            not isolated_venv or has no class_name.
+        """
+        if manifest.kind != ISOLATED_VENV_PLUGIN_TYPE:
+            return None
+        class_name = manifest.default_config.get("class_name")
+        if not class_name:
+            return None
+
+        class_root = class_name.split(".")[0]
+        plugin_dir = Path(self.plugin_folder) / class_root
+        plugin_dir.mkdir(parents=True, exist_ok=True)
+        # Key the manifest filename on the full class name, not the shared
+        # class_root: multiple plugins in one package share this directory (and
+        # its venv), so a single "plugin-manifest.yaml" would collide and make
+        # each install invalidate the others' cache hash. See
+        # manifest_filename_for_class and IsolatedVenvPlugin._manifest_path.
+        manifest_path = plugin_dir / manifest_filename_for_class(class_name)
+        manifest_path.write_text(yaml.safe_dump(manifest.model_dump(), default_flow_style=False), encoding="utf-8")
+        logger.info("Persisted converted manifest to %s", manifest_path)
+        return manifest_path
 
     @staticmethod
     def _safe_zip_extract(zip_ref: zipfile.ZipFile, extract_dir: Path) -> None:
@@ -1117,10 +1305,28 @@ class PluginCatalog:
                 config=plugin_config,
                 plugin_dirs=[str(self.plugin_folder)],
             )
+            # requirements_file is optional. Converted FQN plugins have no
+            # requirements file — their package is installed into the venv from
+            # the install channel's source instead (U4). Only copy when the
+            # manifest declares one and it exists in the package.
             # TODO: sec - prevent path traversal on user supplied requirements file path.
-            requirements_file = manifest.default_config.get("requirements_file", "requirements.txt")
-            source_path = self._find_requirements_in_extracted_package(package_path, manifest.name, requirements_file)
-            shutil.copy(source_path, isolated_plugin.plugin_path / requirements_file)
+            requirements_file = manifest.default_config.get("requirements_file")
+            if requirements_file:
+                try:
+                    source_path = self._find_requirements_in_extracted_package(
+                        package_path, manifest.name, requirements_file
+                    )
+                    shutil.copy(source_path, isolated_plugin.plugin_path / requirements_file)
+                except FileNotFoundError:
+                    logger.info(
+                        "No requirements file '%s' found for %s; continuing without one",
+                        requirements_file,
+                        manifest.name,
+                    )
+            # Persist the (converted) manifest into the plugin dir BEFORE venv
+            # init, so the venv cache metadata can hash it as a change signal (U5).
+            self._persist_manifest_to_plugin_dir(manifest)
+
             # Initialize the venv (this will create venv and install requirements)
             import asyncio
             import concurrent.futures
@@ -1251,6 +1457,36 @@ except Exception as e:
 
         return str(python_exe)
 
+    def _install_package_into_venv(self, plugin_path: Path, pip_args: list[str]) -> None:
+        """Install a plugin package into a plugin's isolated venv.
+
+        Used for converted FQN plugins (and any isolated_venv plugin without a
+        self-referencing requirements file): the plugin's package is installed
+        into ``plugin_path/.venv`` from the install channel's own source so the
+        plugin's class path is importable by the worker. When a requirements
+        file is present it is installed first; this layers on top of it.
+
+        Args:
+            plugin_path: The plugin directory containing the ``.venv``.
+            pip_args: Arguments passed after ``pip install`` (e.g. the package
+                spec, a git URL, or ``["-e", "<path>"]``, plus any index flags).
+
+        Raises:
+            RuntimeError: If the install subprocess fails.
+        """
+        venv_python = self._get_venv_python_executable(plugin_path / ".venv")
+        logger.info("Installing plugin package into isolated venv: %s", " ".join(pip_args))
+        try:
+            subprocess.run(
+                [venv_python, "-m", "pip", "install", *pip_args],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=600,
+            )
+        except subprocess.CalledProcessError as e:
+            raise RuntimeError(f"Failed to install plugin package into venv: {e.stderr}") from e
+
     def _handle_plugin_installation(
         self, manifest: PluginManifest, package_path: Path, install_command: list[str] | None = None
     ) -> Path | None:
@@ -1328,6 +1564,7 @@ except Exception as e:
         version_constraint: str | None = None,
         use_pytest: bool = False,
         verify_integrity: bool = True,
+        convert: bool = True,
     ) -> tuple[PluginManifest, Path | None]:
         """Install Python package from PyPI and load its plugin-manifest.yaml.
 
@@ -1367,7 +1604,9 @@ except Exception as e:
             manifest_data = self._load_manifest_file(manifest_path)
 
             # Step 3: Normalize and validate the manifest
-            manifest = self._normalize_manifest_data(manifest_data, plugin_package_name, version_constraint)
+            manifest = self._normalize_manifest_data(
+                manifest_data, plugin_package_name, version_constraint, convert=convert
+            )
 
             package_path = manifest_path.parent
 
@@ -1378,8 +1617,33 @@ except Exception as e:
                 install_command=None,  # Will install separately for non-isolated
             )
 
-            # For non-isolated plugins, install via pip and find package path
-            if manifest.kind != "isolated_venv":
+            if manifest.kind == "isolated_venv":
+                # Install the plugin package into the isolated venv from PyPI so
+                # its class path is importable even without a requirements file (U4).
+                if plugin_path is None:
+                    raise RuntimeError(f"Failed to initialize isolated venv for {manifest.name}")
+                tgt = plugin_package_name
+                if version_constraint is not None:
+                    tgt = f"{tgt}{version_constraint}"
+                # Fresh empty venv: unlike the CLI venv install, no dependencies
+                # are pre-resolved here, so transitive deps (including cpex, on
+                # which the whole isolated design rests) must resolve too. Pair
+                # test.pypi with real PyPI as an extra index so those deps are
+                # found even when only the plugin itself lives on test.pypi.
+                pip_args = (
+                    [
+                        "--index-url",
+                        "https://test.pypi.org/simple/",
+                        "--extra-index-url",
+                        "https://pypi.org/simple/",
+                        tgt,
+                    ]
+                    if use_pytest
+                    else [tgt]
+                )
+                self._install_package_into_venv(plugin_path, pip_args)
+            else:
+                # For non-isolated plugins, install via pip and find package path
                 self._install_package(plugin_package_name, version_constraint, use_pytest)
                 plugin_path = find_package_path(plugin_package_name)
 
@@ -1393,7 +1657,9 @@ except Exception as e:
             if temp_extract_dir.exists():
                 shutil.rmtree(temp_extract_dir.parent)
 
-    def install_from_git(self, url: str, verify_integrity: bool = True) -> tuple[PluginManifest, Path | None]:
+    def install_from_git(
+        self, url: str, verify_integrity: bool = True, convert: bool = True
+    ) -> tuple[PluginManifest, Path | None]:
         """Install Python package from Git repository and load its plugin-manifest.yaml.
 
         This method performs the following steps:
@@ -1519,7 +1785,7 @@ except Exception as e:
             manifest_data = self._load_manifest_file(manifest_path)
 
             # Step 4: Normalize and validate the manifest
-            manifest = self._normalize_manifest_data(manifest_data, package_name, None)
+            manifest = self._normalize_manifest_data(manifest_data, package_name, None, convert=convert)
 
             # Update the manifest with the git repo information
             git_repo: GitRepo = GitRepo(
@@ -1540,18 +1806,10 @@ except Exception as e:
 
             # Install the package from git
             if manifest.kind == "isolated_venv":
-                # Install into isolated venv
+                # Install into isolated venv from the git source (U4).
                 if plugin_path is None:
                     raise RuntimeError(f"Failed to initialize isolated venv for {manifest.name}")
-                venv_python = self._get_venv_python_executable(plugin_path / ".venv")
-                logger.info("Installing package into isolated venv: %s", install_url)
-                subprocess.run(
-                    [venv_python, "-m", "pip", "install", install_url],
-                    check=True,
-                    capture_output=True,
-                    text=True,
-                    timeout=600,
-                )
+                self._install_package_into_venv(plugin_path, [install_url])
                 logger.info("Successfully installed into isolated venv")
             else:
                 # Install into current venv
@@ -1636,7 +1894,7 @@ except Exception as e:
         except Exception as e:
             raise RuntimeError(f"Unexpected error uninstalling {package_name}: {str(e)}") from e
 
-    def install_from_local(self, source: Path) -> tuple[PluginManifest, Path]:
+    def install_from_local(self, source: Path, convert: bool = True) -> tuple[PluginManifest, Path]:
         """Install a plugin from a local source directory.
 
         This method performs the following steps:
@@ -1716,7 +1974,9 @@ except Exception as e:
 
         # Step 2: Load and parse the manifest
         manifest_data = self._load_manifest_file(manifest_path)
-        manifest = self._normalize_manifest_data(manifest_data, pyproject_data["project"]["name"], None)
+        manifest = self._normalize_manifest_data(
+            manifest_data, pyproject_data["project"]["name"], None, convert=convert
+        )
         manifest.local = str(source.resolve())
 
         logger.info("Loaded manifest for plugin: %s (kind: %s)", manifest.name, manifest.kind)
@@ -1745,6 +2005,10 @@ except Exception as e:
                     plugin_dirs=[str(self.plugin_folder)],
                 )
 
+                # Persist the (converted) manifest into the plugin dir BEFORE
+                # venv init so the cache metadata can hash it (U5).
+                self._persist_manifest_to_plugin_dir(manifest)
+
                 # Initialize the venv (creates venv directory structure)
                 import asyncio
                 import concurrent.futures
@@ -1760,19 +2024,9 @@ except Exception as e:
                     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
                         ex.submit(asyncio.run, isolated_plugin.initialize()).result()
 
-                # Get the venv python executable
-                venv_path = isolated_plugin.plugin_path / ".venv"
-                venv_python = self._get_venv_python_executable(venv_path)
-
-                # Install the plugin in editable mode into the isolated venv
-                logger.info("Installing plugin in editable mode into isolated venv: %s", venv_path)
-                subprocess.run(
-                    [venv_python, "-m", "pip", "install", "-e", str(source)],
-                    check=True,
-                    capture_output=True,
-                    text=True,
-                    timeout=600,
-                )
+                # Install the plugin in editable mode into the isolated venv from
+                # the local source (U4).
+                self._install_package_into_venv(isolated_plugin.plugin_path, ["-e", str(source)])
 
                 plugin_path = isolated_plugin.plugin_path
                 logger.info("Successfully installed %s into isolated venv at %s", manifest.name, plugin_path)

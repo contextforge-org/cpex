@@ -15,17 +15,17 @@ import sys
 import tarfile
 import zipfile
 from pathlib import Path
-from unittest import mock
-from unittest.mock import MagicMock, Mock, patch, mock_open
+from unittest.mock import MagicMock, Mock, patch
 
 # Third-Party
 import httpx
 import pytest
 import yaml
 
+from cpex.framework.models import Monorepo, PluginManifest
+
 # First-Party
 from cpex.tools.catalog import PluginCatalog
-from cpex.framework.models import PluginManifest, Monorepo
 
 
 # Helper function to create test manifests
@@ -40,7 +40,11 @@ def create_test_manifest(**kwargs):
         "tags": ["test"],
         "available_hooks": ["tools"],
         "default_config": {},
-        "monorepo": Monorepo(package_source="https://github.com/org/repo#subdirectory=plugin", repo_url="https://github.com/org/repo", package_folder="plugin"),
+        "monorepo": Monorepo(
+            package_source="https://github.com/org/repo#subdirectory=plugin",
+            repo_url="https://github.com/org/repo",
+            package_folder="plugin",
+        ),
     }
     defaults.update(kwargs)
     return PluginManifest(**defaults)
@@ -178,7 +182,7 @@ class TestPluginCatalogSaveOperations:
         catalog.catalog_folder = str(tmp_path / "catalog")
         catalog_dir = tmp_path / "catalog" / "test_plugin"
         catalog_dir.mkdir(parents=True)
-        
+
         manifest_yaml = """
 name: test_plugin
 version: 1.0.0
@@ -191,10 +195,10 @@ default_configs:
 """
         repo_url = httpx.URL("https://github.com/org/repo")
         catalog.save_manifest_content(manifest_yaml, "test_plugin/plugin-manifest.yaml", repo_url)
-        
+
         saved_file = tmp_path / "catalog" / "test_plugin" / "plugin-manifest.yaml"
         assert saved_file.exists()
-        
+
         saved_data = yaml.safe_load(saved_file.read_text())
         assert saved_data["monorepo"]["package_source"] == "https://github.com/org/repo#subdirectory=test_plugin"
         assert "tags" in saved_data
@@ -207,7 +211,7 @@ default_configs:
         catalog.catalog_folder = str(tmp_path / "catalog")
         catalog_dir = tmp_path / "catalog" / "test_plugin"
         catalog_dir.mkdir(parents=True)
-        
+
         manifest_yaml = """
 version: 1.0.0
 kind: native
@@ -219,10 +223,10 @@ default_config:
 """
         repo_url = httpx.URL("https://github.com/org/repo")
         catalog.save_manifest_content(manifest_yaml, "test_plugin/plugin-manifest.yaml", repo_url)
-        
+
         saved_file = tmp_path / "catalog" / "test_plugin" / "plugin-manifest.yaml"
         assert saved_file.exists()
-        
+
         saved_data = yaml.safe_load(saved_file.read_text())
         assert saved_data["name"] == "test_plugin"  # Should be set from path
 
@@ -232,7 +236,7 @@ default_config:
         catalog.catalog_folder = str(tmp_path / "catalog")
         catalog_dir = tmp_path / "catalog" / "test_plugin"
         catalog_dir.mkdir(parents=True)
-        
+
         manifest_yaml = """
 name: test_plugin
 version: 1.0.0
@@ -244,10 +248,10 @@ default_configs: null
 """
         repo_url = httpx.URL("https://github.com/org/repo")
         catalog.save_manifest_content(manifest_yaml, "test_plugin/plugin-manifest.yaml", repo_url)
-        
+
         saved_file = tmp_path / "catalog" / "test_plugin" / "plugin-manifest.yaml"
         assert saved_file.exists()
-        
+
         saved_data = yaml.safe_load(saved_file.read_text())
         assert saved_data["default_config"] == {}  # Should be empty dict
 
@@ -260,7 +264,7 @@ class TestPluginCatalogDownloadOperations:
         with patch("cpex.tools.catalog.httpx.get") as mock_get:
             catalog = PluginCatalog()
             catalog.catalog_folder = str(tmp_path / "catalog")
-            
+
             # Mock the HTTP response
             manifest_content = "name: test\nversion: 1.0.0\nkind: native\ndescription: Test\nauthor: Test\navailable_hooks: [tools]\ndefault_config: {}"
             b64_content = base64.b64encode(manifest_content.encode()).decode()
@@ -268,12 +272,12 @@ class TestPluginCatalogDownloadOperations:
             mock_response.status_code = 200
             mock_response.json.return_value = {"content": b64_content}
             mock_get.return_value = mock_response
-            
+
             repo_url = httpx.URL("https://github.com/org/repo")
             # download_contents calls create_catalog_folder which creates the directory
             # then save_manifest_content writes the file
             catalog.download_contents("https://api.github.com/file", {}, "test_plugin/plugin-manifest.yaml", repo_url)
-            
+
             assert (tmp_path / "catalog" / "test_plugin" / "plugin-manifest.yaml").exists()
 
     def test_download_contents_failure(self, tmp_path, mock_github_env):
@@ -284,14 +288,14 @@ class TestPluginCatalogDownloadOperations:
         ):
             catalog = PluginCatalog()
             catalog.catalog_folder = str(tmp_path / "catalog")
-            
+
             mock_response = Mock()
             mock_response.status_code = 404
             mock_get.return_value = mock_response
-            
+
             repo_url = httpx.URL("https://github.com/org/repo")
             catalog.download_contents("https://api.github.com/file", {}, "test/plugin-manifest.yaml", repo_url)
-            
+
             mock_logger.error.assert_called_once()
 
 
@@ -321,7 +325,7 @@ class TestPluginCatalogLoadOperations:
         """Test load with valid manifest files."""
         catalog_dir = tmp_path / "catalog" / "test_plugin"
         catalog_dir.mkdir(parents=True)
-        
+
         manifest_data = {
             "name": "test_plugin",
             "version": "1.0.0",
@@ -334,11 +338,11 @@ class TestPluginCatalogLoadOperations:
         }
         manifest_file = catalog_dir / "plugin-manifest.yaml"
         manifest_file.write_text(yaml.safe_dump(manifest_data))
-        
+
         catalog = PluginCatalog()
         catalog.catalog_folder = str(tmp_path / "catalog")
         catalog.load()
-        
+
         assert len(catalog.manifests) == 1
         assert catalog.manifests[0].name == "test_plugin"
 
@@ -347,14 +351,14 @@ class TestPluginCatalogLoadOperations:
         with patch("cpex.tools.catalog.logger") as mock_logger:
             catalog_dir = tmp_path / "catalog"
             catalog_dir.mkdir()
-            
+
             manifest_file = catalog_dir / "plugin-manifest.yaml"
             manifest_file.write_text("invalid: yaml: content:")
-            
+
             catalog = PluginCatalog()
             catalog.catalog_folder = str(tmp_path / "catalog")
             catalog.load()
-            
+
             assert len(catalog.manifests) == 0
             mock_logger.error.assert_called()
 
@@ -408,7 +412,7 @@ class TestPluginCatalogSearchOperations:
         """Test search loads manifests if catalog is empty."""
         catalog_dir = tmp_path / "catalog" / "test_plugin"
         catalog_dir.mkdir(parents=True)
-        
+
         manifest_data = {
             "name": "test_plugin",
             "version": "1.0.0",
@@ -421,11 +425,11 @@ class TestPluginCatalogSearchOperations:
         }
         manifest_file = catalog_dir / "plugin-manifest.yaml"
         manifest_file.write_text(yaml.safe_dump(manifest_data))
-        
+
         catalog = PluginCatalog()
         catalog.catalog_folder = str(tmp_path / "catalog")
         result = catalog.search("test")
-        
+
         assert result is not None
         assert len(result) == 1
 
@@ -452,7 +456,7 @@ class TestPluginCatalogInstallFromPypi:
         }
         manifest_file = package_dir / "plugin-manifest.yaml"
         manifest_file.write_text(yaml.safe_dump(manifest_data))
-        
+
         with (
             patch("cpex.tools.catalog.PluginCatalog._download_package_to_temp", return_value=extract_dir),
             patch("cpex.tools.catalog.PluginCatalog._find_manifest_in_extracted_package", return_value=manifest_file),
@@ -466,16 +470,16 @@ class TestPluginCatalogInstallFromPypi:
             mock_dist.name = "test_package"
             mock_dist.files = None  # No files attribute for non-isolated plugins
             mock_distributions.return_value = [mock_dist]
-            
+
             # Setup mock spec for find_spec fallback
             mock_spec = Mock()
             mock_spec.origin = str(package_dir / "__init__.py")
             mock_find_spec.return_value = mock_spec
-            
+
             catalog = PluginCatalog()
             catalog.catalog_folder = str(tmp_path / "catalog")
             manifest, plugin_path = catalog.install_from_pypi("test_package")
-            
+
             # Should call subprocess.run for non-isolated plugin
             mock_subprocess.assert_called_once()
             assert manifest.name == "test_package"
@@ -485,7 +489,9 @@ class TestPluginCatalogInstallFromPypi:
 
     def test_install_from_pypi_install_failure(self, mock_github_env):
         """Test installation failure from PyPI."""
-        with patch("cpex.tools.catalog.PluginCatalog._download_package_to_temp", side_effect=RuntimeError("Download failed")):
+        with patch(
+            "cpex.tools.catalog.PluginCatalog._download_package_to_temp", side_effect=RuntimeError("Download failed")
+        ):
             catalog = PluginCatalog()
             with pytest.raises(RuntimeError, match="Download failed"):
                 catalog.install_from_pypi("test_package")
@@ -508,7 +514,7 @@ class TestPluginCatalogInstallFromPypi:
         }
         manifest_file = package_dir / "plugin-manifest.yaml"
         manifest_file.write_text(yaml.safe_dump(manifest_data))
-        
+
         with (
             patch("cpex.tools.catalog.PluginCatalog._download_package_to_temp", return_value=extract_dir),
             patch("cpex.tools.catalog.PluginCatalog._find_manifest_in_extracted_package", return_value=manifest_file),
@@ -526,10 +532,13 @@ class TestPluginCatalogInstallFromPypi:
         """Test when manifest file is not found in package."""
         extract_dir = tmp_path / "extracted"
         extract_dir.mkdir()
-        
+
         with (
             patch("cpex.tools.catalog.PluginCatalog._download_package_to_temp", return_value=extract_dir),
-            patch("cpex.tools.catalog.PluginCatalog._find_manifest_in_extracted_package", side_effect=FileNotFoundError("plugin-manifest.yaml not found")),
+            patch(
+                "cpex.tools.catalog.PluginCatalog._find_manifest_in_extracted_package",
+                side_effect=FileNotFoundError("plugin-manifest.yaml not found"),
+            ),
             patch("shutil.rmtree"),
         ):
             catalog = PluginCatalog()
@@ -545,7 +554,7 @@ class TestPluginCatalogInstallFromPypi:
         package_dir.mkdir()
         manifest_file = package_dir / "plugin-manifest.yaml"
         manifest_file.write_text("invalid: yaml: content:")
-        
+
         with (
             patch("cpex.tools.catalog.PluginCatalog._download_package_to_temp", return_value=extract_dir),
             patch("cpex.tools.catalog.PluginCatalog._find_manifest_in_extracted_package", return_value=manifest_file),
@@ -567,10 +576,10 @@ class TestPluginCatalogInstallFolderViaPip:
                 monorepo=Monorepo(
                     package_source="https://github.com/org/repo#subdirectory=plugin",
                     repo_url="https://github.com/org/repo",
-                    package_folder="plugin"
+                    package_folder="plugin",
                 )
             )
-            
+
             catalog = PluginCatalog()
             catalog.install_folder_via_pip(manifest)
             mock_subprocess.assert_called_once()
@@ -578,7 +587,7 @@ class TestPluginCatalogInstallFolderViaPip:
     def test_install_folder_via_pip_no_monorepo(self, mock_github_env):
         """Test installation fails when monorepo is None."""
         manifest = create_test_manifest(monorepo=None)
-        
+
         catalog = PluginCatalog()
         with pytest.raises(RuntimeError, match="PluginManifest.monorepo can not be None"):
             catalog.install_folder_via_pip(manifest)
@@ -592,10 +601,10 @@ class TestPluginCatalogInstallFolderViaPip:
                 monorepo=Monorepo(
                     package_source="https://github.com/org/repo#subdirectory=plugin",
                     repo_url="https://github.com/org/repo",
-                    package_folder="plugin"
+                    package_folder="plugin",
                 )
             )
-            
+
             catalog = PluginCatalog()
             with pytest.raises(RuntimeError, match="Failed to install"):
                 catalog.install_folder_via_pip(manifest)
@@ -608,15 +617,15 @@ class TestPluginCatalogSaveManifest:
         """Test saving a manifest to the catalog."""
         catalog_dir = tmp_path / "catalog" / "test_plugin"
         catalog_dir.mkdir(parents=True)
-        
+
         manifest = create_test_manifest(name="test_plugin")
         catalog = PluginCatalog()
         catalog.catalog_folder = str(tmp_path / "catalog")
         catalog.save_manifest(manifest, "test_plugin/plugin-manifest.yaml")
-        
+
         saved_file = tmp_path / "catalog" / "test_plugin" / "plugin-manifest.yaml"
         assert saved_file.exists()
-        
+
         saved_data = yaml.safe_load(saved_file.read_text())
         assert saved_data["name"] == "test_plugin"
 
@@ -627,7 +636,7 @@ class TestPluginCatalogDownloadFile:
     def test_download_file_success(self, mock_github_env):
         """Test successful file download."""
         catalog = PluginCatalog()
-        
+
         # Mock the GitHub repository and file content
         mock_repo = Mock()
         mock_file_content = Mock()
@@ -635,10 +644,10 @@ class TestPluginCatalogDownloadFile:
         mock_file_content.decoded_content = manifest_content.encode()
         mock_repo.get_contents.return_value = mock_file_content
         catalog.gh.get_repo = Mock(return_value=mock_repo)
-        
+
         item = {"path": "test_plugin/plugin-manifest.yaml"}
         result = catalog.download_file("org/repo", item, {}, mock_repo)
-        
+
         assert result == manifest_content
 
     def test_download_file_failure(self, mock_github_env):
@@ -650,7 +659,7 @@ class TestPluginCatalogDownloadFile:
             mock_repo.get_contents.return_value = Exception("Not found")
             item = {"path": "test_plugin/plugin-manifest.yaml"}
             result = catalog.download_file("org/repo", item, {}, mock_repo)
-            
+
             assert result is None
             mock_logger.error.assert_called_once()
 
@@ -662,7 +671,7 @@ class TestPluginCatalogFindAndSavePluginManifest:
         """Test successful finding and saving of plugin manifest."""
         catalog = PluginCatalog()
         catalog.catalog_folder = str(tmp_path / "catalog")
-        
+
         # Mock the search results
         mock_search_result = Mock()
         mock_content_file = Mock()
@@ -670,12 +679,12 @@ class TestPluginCatalogFindAndSavePluginManifest:
         mock_content_file.path = "test_plugin/plugin-manifest.yaml"
         mock_content_file.git_url = "https://api.github.com/repos/org/repo/git/blobs/abc123"
         mock_content_file.html_url = "https://github.com/org/repo/blob/main/test_plugin/plugin-manifest.yaml"
-        
+
         mock_search_result.totalCount = 1
         mock_search_result.__iter__ = Mock(return_value=iter([mock_content_file]))
-        
+
         catalog.gh.search_code = Mock(return_value=mock_search_result)
-        
+
         # Mock the repository and file content
         mock_repo = Mock()
         manifest_content = "name: test\nversion: 1.0.0\nkind: native\ndescription: Test\nauthor: Test\navailable_hooks: [tools]\ndefault_config: {}"
@@ -683,10 +692,10 @@ class TestPluginCatalogFindAndSavePluginManifest:
         mock_file_content.decoded_content = manifest_content.encode()
         mock_repo.get_contents.return_value = mock_file_content
         catalog.gh.get_repo = Mock(return_value=mock_repo)
-        
+
         repo_url = httpx.URL("https://github.com/org/repo")
         catalog.find_and_save_plugin_manifest("test_plugin", "test_plugin", repo_url, {}, mock_repo)
-        
+
         saved_file = tmp_path / "catalog" / "test_plugin" / "plugin-manifest.yaml"
         assert saved_file.exists()
 
@@ -700,26 +709,21 @@ class TestPluginCatalogUpdateCatalogWithPyproject:
             catalog = PluginCatalog()
             catalog.catalog_folder = str(tmp_path / "catalog")
             catalog.monorepos = ["https://github.com/org/repo"]
-            
+
             # Mock search response for pyproject.toml files
             search_response = Mock()
             search_response.status_code = 200
             search_response.json.return_value = {
-                "items": [
-                    {
-                        "name": "pyproject.toml",
-                        "path": "plugin1/pyproject.toml"
-                    }
-                ]
+                "items": [{"name": "pyproject.toml", "path": "plugin1/pyproject.toml"}]
             }
-            
+
             # Mock pyproject.toml content response
             pyproject_content = '[project]\nname = "test_plugin"'
             b64_pyproject = base64.b64encode(pyproject_content.encode()).decode()
             pyproject_response = Mock()
             pyproject_response.status_code = 200
             pyproject_response.json.return_value = {"content": b64_pyproject}
-            
+
             # Mock search response for manifest
             manifest_search_response = Mock()
             manifest_search_response.status_code = 200
@@ -728,22 +732,24 @@ class TestPluginCatalogUpdateCatalogWithPyproject:
                     {
                         "name": "plugin-manifest.yaml",
                         "path": "plugin1/plugin-manifest.yaml",
-                        "git_url": "https://api.github.com/repos/org/repo/git/blobs/abc123"
+                        "git_url": "https://api.github.com/repos/org/repo/git/blobs/abc123",
                     }
                 ]
             }
-            
+
             # Mock manifest content response
-            manifest_content = "name: test\nversion: 1.0.0\nkind: native\ndescription: Test\nauthor: Test\navailable_hooks: [tools]"
+            manifest_content = (
+                "name: test\nversion: 1.0.0\nkind: native\ndescription: Test\nauthor: Test\navailable_hooks: [tools]"
+            )
             b64_manifest = base64.b64encode(manifest_content.encode()).decode()
             manifest_response = Mock()
             manifest_response.status_code = 200
             manifest_response.json.return_value = {"content": b64_manifest}
-            
+
             mock_get.side_effect = [search_response, pyproject_response, manifest_search_response, manifest_response]
-            
+
             catalog.update_catalog_with_pyproject()
-            
+
             assert (tmp_path / "catalog").exists()
 
 
@@ -783,7 +789,7 @@ class TestPluginCatalogInstallFromPypiExtended:
         }
         manifest_file = package_dir / "plugin-manifest.yaml"
         manifest_file.write_text(yaml.safe_dump(manifest_data))
-        
+
         with (
             patch("cpex.tools.catalog.PluginCatalog._download_package_to_temp", return_value=extract_dir),
             patch("cpex.tools.catalog.PluginCatalog._find_manifest_in_extracted_package", return_value=manifest_file),
@@ -796,16 +802,16 @@ class TestPluginCatalogInstallFromPypiExtended:
             mock_dist.name = "test_package"
             mock_dist.files = None  # No files attribute for non-isolated plugins
             mock_distributions.return_value = [mock_dist]
-            
+
             # Setup mock spec for find_spec fallback
             mock_spec = Mock()
             mock_spec.origin = str(package_dir / "__init__.py")
             mock_find_spec.return_value = mock_spec
-            
+
             catalog = PluginCatalog()
             catalog.catalog_folder = str(tmp_path / "catalog")
             manifest, plugin_path = catalog.install_from_pypi("test_package", ">=1.0.0")
-            
+
             mock_subprocess.assert_called_once()
             assert manifest.name == "test_package"
             assert manifest.package_info is not None
@@ -829,7 +835,7 @@ class TestPluginCatalogInstallFromPypiExtended:
         }
         manifest_file = package_dir / "plugin-manifest.yaml"
         manifest_file.write_text(yaml.safe_dump(manifest_data))
-        
+
         with (
             patch("cpex.tools.catalog.PluginCatalog._download_package_to_temp", return_value=extract_dir),
             patch("cpex.tools.catalog.PluginCatalog._find_manifest_in_extracted_package", return_value=manifest_file),
@@ -842,16 +848,16 @@ class TestPluginCatalogInstallFromPypiExtended:
             mock_dist.name = "test_package"
             mock_dist.files = None  # No files attribute for non-isolated plugins
             mock_distributions.return_value = [mock_dist]
-            
+
             # Setup mock spec for find_spec fallback
             mock_spec = Mock()
             mock_spec.origin = str(package_dir / "__init__.py")
             mock_find_spec.return_value = mock_spec
-            
+
             catalog = PluginCatalog()
             catalog.catalog_folder = str(tmp_path / "catalog")
             manifest, plugin_path = catalog.install_from_pypi("test_package")
-            
+
             assert manifest.default_config == {"key": "value"}
 
     def test_install_from_pypi_with_existing_package_info(self, tmp_path, mock_github_env):
@@ -869,14 +875,11 @@ class TestPluginCatalogInstallFromPypiExtended:
             "tags": ["test"],
             "available_hooks": ["tools"],
             "default_config": {},
-            "package_info": {
-                "pypi_package": "old_name",
-                "version_constraint": ">=0.1.0"
-            }
+            "package_info": {"pypi_package": "old_name", "version_constraint": ">=0.1.0"},
         }
         manifest_file = package_dir / "plugin-manifest.yaml"
         manifest_file.write_text(yaml.safe_dump(manifest_data))
-        
+
         with (
             patch("cpex.tools.catalog.PluginCatalog._download_package_to_temp", return_value=extract_dir),
             patch("cpex.tools.catalog.PluginCatalog._find_manifest_in_extracted_package", return_value=manifest_file),
@@ -889,16 +892,16 @@ class TestPluginCatalogInstallFromPypiExtended:
             mock_dist.name = "test_package"
             mock_dist.files = None  # No files attribute for non-isolated plugins
             mock_distributions.return_value = [mock_dist]
-            
+
             # Setup mock spec for find_spec fallback
             mock_spec = Mock()
             mock_spec.origin = str(package_dir / "__init__.py")
             mock_find_spec.return_value = mock_spec
-            
+
             catalog = PluginCatalog()
             catalog.catalog_folder = str(tmp_path / "catalog")
             manifest, plugin_path = catalog.install_from_pypi("test_package", ">=2.0.0")
-            
+
             assert manifest.package_info is not None
             assert manifest.package_info.pypi_package == "test_package"
             assert manifest.package_info.version_constraint == ">=2.0.0"
@@ -921,7 +924,7 @@ class TestPluginCatalogInstallFromPypiExtended:
         }
         manifest_file = package_dir / "plugin-manifest.yaml"
         manifest_file.write_text(yaml.safe_dump(manifest_data))
-        
+
         with (
             patch("cpex.tools.catalog.PluginCatalog._download_package_to_temp", return_value=extract_dir),
             patch("cpex.tools.catalog.PluginCatalog._find_manifest_in_extracted_package", return_value=manifest_file),
@@ -934,22 +937,21 @@ class TestPluginCatalogInstallFromPypiExtended:
             mock_dist.name = "test_package"
             mock_dist.files = None  # No files attribute for non-isolated plugins
             mock_distributions.return_value = [mock_dist]
-            
+
             # Setup mock spec for find_spec fallback
             mock_spec = Mock()
             mock_spec.origin = str(package_dir / "__init__.py")
             mock_find_spec.return_value = mock_spec
-            
+
             catalog = PluginCatalog()
             catalog.catalog_folder = str(tmp_path / "catalog")
             manifest, plugin_path = catalog.install_from_pypi("test_package")
-            
+
             # default_config should be empty dict when default_configs is None
             assert manifest.default_config == {}
 
 
 # Made with Bob
-
 
 
 class TestPluginCatalogProcessPyproject:
@@ -959,18 +961,18 @@ class TestPluginCatalogProcessPyproject:
         """Test _process_pyproject when download fails."""
         catalog = PluginCatalog()
         catalog.catalog_folder = str(tmp_path / "catalog")
-        
+
         # Mock the repository to raise exception
         mock_repo = Mock()
         mock_repo.get_contents = Mock(side_effect=Exception("Download failed"))
-        
+
         item = Mock()
         item.name = "pyproject.toml"
         item.path = "plugin1/pyproject.toml"
-        
+
         repo_url = httpx.URL("https://github.com/org/repo")
         headers = {}
-        
+
         # Should raise exception
         with pytest.raises(Exception, match="Download failed"):
             catalog._process_pyproject(mock_repo, item, repo_url, headers)
@@ -987,7 +989,7 @@ class TestPluginCatalogUpdateCatalogWithPyprojectExtended:
             catalog = PluginCatalog()
             catalog.github_token = None
             result = catalog.update_catalog_with_pyproject()
-            
+
             assert result is True
             mock_logger.error.assert_called_with("No GitHub token set")
 
@@ -999,12 +1001,12 @@ class TestPluginCatalogUpdateCatalogWithPyprojectExtended:
             catalog = PluginCatalog()
             catalog.catalog_folder = str(tmp_path / "catalog")
             catalog.monorepos = ["https://github.com/org/repo"]
-            
+
             # Mock get_repo to raise exception
             catalog.gh.get_repo = Mock(side_effect=Exception("Access denied"))
-            
+
             result = catalog.update_catalog_with_pyproject()
-            
+
             assert result is False
             mock_logger.error.assert_called()
 
@@ -1014,14 +1016,14 @@ class TestPluginCatalogUpdateCatalogWithPyprojectExtended:
             catalog = PluginCatalog()
             catalog.catalog_folder = str(tmp_path / "catalog")
             catalog.monorepos = ["https://github.com/org/repo"]
-            
+
             # Mock successful get_repo but failing search
             mock_repo = Mock()
             catalog.gh.get_repo = Mock(return_value=mock_repo)
             catalog.gh.search_code = Mock(side_effect=Exception("Search failed"))
-            
+
             result = catalog.update_catalog_with_pyproject()
-            
+
             assert result is False
             mock_logger.error.assert_called()
 
@@ -1033,12 +1035,12 @@ class TestPluginCatalogSearchGithubCode:
         """Test _search_github_code when exception occurs."""
         with patch("cpex.tools.catalog.logger") as mock_logger:
             catalog = PluginCatalog()
-            
+
             # Mock search_code to raise exception
             catalog.gh.search_code = Mock(side_effect=Exception("Search error"))
-            
+
             result = catalog._search_github_code("org/repo", "plugins", {})
-            
+
             assert result is None
             mock_logger.error.assert_called()
 
@@ -1051,18 +1053,16 @@ class TestPluginCatalogProcessManifestItem:
         with patch("cpex.tools.catalog.logger") as mock_logger:
             catalog = PluginCatalog()
             catalog.catalog_folder = str(tmp_path / "catalog")
-            
-            item = {
-                "name": "README.md",
-                "path": "plugin1/README.md",
-                "git_url": "https://api.github.com/file"
-            }
-            
+
+            item = {"name": "README.md", "path": "plugin1/README.md", "git_url": "https://api.github.com/file"}
+
             repo_url = httpx.URL("https://github.com/org/repo")
             relpath = tmp_path / "catalog" / "plugin1" / "plugin-manifest.yaml"
             mock_repo = Mock()
-            result = catalog._process_manifest_item(item, "plugin1", "plugin1", repo_url, {}, relpath, "org/repo", gh_repo=mock_repo)
-            
+            result = catalog._process_manifest_item(
+                item, "plugin1", "plugin1", repo_url, {}, relpath, "org/repo", gh_repo=mock_repo
+            )
+
             assert result is False
             mock_logger.warning.assert_called()
 
@@ -1071,21 +1071,23 @@ class TestPluginCatalogProcessManifestItem:
         with patch("cpex.tools.catalog.logger") as mock_logger:
             catalog = PluginCatalog()
             catalog.catalog_folder = str(tmp_path / "catalog")
-            
+
             # Mock download_file to return None
             catalog.download_file = Mock(return_value=None)
-            
+
             item = {
                 "name": "plugin-manifest.yaml",
                 "path": "plugin1/plugin-manifest.yaml",
-                "git_url": "https://api.github.com/file"
+                "git_url": "https://api.github.com/file",
             }
             mock_repo = Mock()
             repo_url = httpx.URL("https://github.com/org/repo")
             relpath = tmp_path / "catalog" / "plugin1" / "plugin-manifest.yaml"
-            
-            result = catalog._process_manifest_item(item, "plugin1", "plugin1", repo_url, {}, relpath, "org/repo", gh_repo=mock_repo)
-            
+
+            result = catalog._process_manifest_item(
+                item, "plugin1", "plugin1", repo_url, {}, relpath, "org/repo", gh_repo=mock_repo
+            )
+
             assert result is False
             mock_logger.error.assert_called()
 
@@ -1097,13 +1099,13 @@ class TestPluginCatalogFindAndSavePluginManifestExtended:
         """Test find_and_save_plugin_manifest when search returns None."""
         catalog = PluginCatalog()
         catalog.catalog_folder = str(tmp_path / "catalog")
-        
+
         # Mock _search_github_code to return None
         catalog._search_github_code = Mock(return_value=None)
         mock_repo = Mock()
         repo_url = httpx.URL("https://github.com/org/repo")
         result = catalog.find_and_save_plugin_manifest("plugin1", "plugin1", repo_url, {}, mock_repo)
-        
+
         assert result is None
 
 
@@ -1206,7 +1208,7 @@ class TestPluginCatalogLoadManifestFile:
         """Test _load_manifest_file when file doesn't exist."""
         catalog = PluginCatalog()
         manifest_path = tmp_path / "nonexistent" / "plugin-manifest.yaml"
-        
+
         with pytest.raises(FileNotFoundError, match="plugin-manifest.yaml not found"):
             catalog._load_manifest_file(manifest_path)
 
@@ -1215,7 +1217,7 @@ class TestPluginCatalogLoadManifestFile:
         catalog = PluginCatalog()
         manifest_path = tmp_path / "plugin-manifest.yaml"
         manifest_path.write_text("invalid: yaml: content:")
-        
+
         with pytest.raises(RuntimeError, match="Failed to parse manifest YAML"):
             catalog._load_manifest_file(manifest_path)
 
@@ -1224,7 +1226,7 @@ class TestPluginCatalogLoadManifestFile:
         catalog = PluginCatalog()
         manifest_path = tmp_path / "plugin-manifest.yaml"
         manifest_path.write_text("- item1\n- item2")
-        
+
         with pytest.raises(RuntimeError, match="Invalid manifest format"):
             catalog._load_manifest_file(manifest_path)
 
@@ -1235,10 +1237,10 @@ class TestPluginCatalogNormalizeManifestData:
     def test_normalize_manifest_data_validation_error(self, mock_github_env):
         """Test _normalize_manifest_data with validation error."""
         catalog = PluginCatalog()
-        
+
         # Invalid manifest data (missing required fields)
         manifest_data = {"name": "test"}
-        
+
         with pytest.raises(RuntimeError, match="Failed to validate manifest"):
             catalog._normalize_manifest_data(manifest_data, "test_package", None)
 
@@ -1250,9 +1252,9 @@ class TestPluginCatalogPersistManifest:
         """Test _persist_manifest when save fails."""
         catalog = PluginCatalog()
         catalog.catalog_folder = str(tmp_path / "nonexistent" / "catalog")
-        
+
         manifest = create_test_manifest()
-        
+
         # Make directory read-only to cause save failure
         with patch("cpex.tools.catalog.PluginCatalog.save_manifest", side_effect=Exception("Save failed")):
             with pytest.raises(RuntimeError, match="Failed to save manifest"):
@@ -1267,7 +1269,7 @@ class TestPluginCatalogInstallPackage:
         with patch("cpex.tools.catalog.subprocess.run") as mock_subprocess:
             catalog = PluginCatalog()
             catalog._install_package("test_package", ">=1.0.0")
-            
+
             mock_subprocess.assert_called_once()
             call_args = mock_subprocess.call_args[0][0]
             assert "test_package>=1.0.0" in " ".join(call_args)
@@ -1280,14 +1282,14 @@ class TestPluginCatalogDownloadFileExtended:
         """Test download_file logs proper error message."""
         with patch("cpex.tools.catalog.logger") as mock_logger:
             catalog = PluginCatalog()
-            
+
             # Mock to raise exception
             catalog.gh.get_repo = Mock(side_effect=Exception("API error"))
             mock_repo = Mock()
             mock_repo.get_contents = Mock(side_effect=Exception("API error"))
             item = {"path": "test/file.yaml"}
             result = catalog.download_file("org/repo", item, {}, gh_repo=mock_repo)
-            
+
             assert result is None
             # Check that error was logged with the item path
             assert mock_logger.error.called
@@ -1299,22 +1301,22 @@ class TestPluginCatalogSearchGithubCodeWithNullMember:
     def test_search_github_code_with_null_member(self, mock_github_env):
         """Test _search_github_code when member is None."""
         catalog = PluginCatalog()
-        
+
         # Mock the search results
         mock_search_results = MagicMock()
         mock_search_results.totalCount = 1
-        
+
         mock_content_file = MagicMock()
         mock_content_file.name = "plugin-manifest.yaml"
         mock_content_file.path = "plugin-manifest.yaml"
         mock_content_file.git_url = "https://api.github.com/repos/org/repo/git/blobs/abc123"
         mock_content_file.html_url = "https://github.com/org/repo/blob/main/plugin-manifest.yaml"
-        
+
         mock_search_results.__iter__ = Mock(return_value=iter([mock_content_file]))
-        
-        with patch.object(catalog.gh, 'search_code', return_value=mock_search_results):
+
+        with patch.object(catalog.gh, "search_code", return_value=mock_search_results):
             result = catalog._search_github_code("org/repo", None, {})
-        
+
         assert result is not None
         assert len(result) == 1
         assert result[0]["name"] == "plugin-manifest.yaml"
@@ -1326,7 +1328,7 @@ class TestPluginCatalogTransformManifestDataWithNullMember:
     def test_transform_manifest_data_with_null_member(self, mock_github_env):
         """Test _transform_manifest_data when member is None."""
         catalog = PluginCatalog()
-        
+
         manifest_content = {
             "version": "1.0.0",
             "kind": "native",
@@ -1334,10 +1336,10 @@ class TestPluginCatalogTransformManifestDataWithNullMember:
             "author": "Test Author",
             "available_hooks": ["tools"],
         }
-        
+
         repo_url = httpx.URL("https://github.com/org/repo")
         result = catalog._transform_manifest_data(manifest_content, "test_plugin", None, repo_url)
-        
+
         assert result["name"] == "test_plugin"
         assert result["monorepo"]["package_source"] == "https://github.com/org/repo"
         assert result["monorepo"]["package_folder"] == ""
@@ -1349,7 +1351,7 @@ class TestPluginCatalogDownloadMonorepoFolderToTemp:
     def test_download_monorepo_folder_success(self, tmp_path, mock_github_env):
         """Test successful download of monorepo folder."""
         catalog = PluginCatalog()
-        
+
         # Create a mock tarball
         mock_tarball = tmp_path / "package.tar.gz"
         with tarfile.open(mock_tarball, "w:gz") as tar:
@@ -1357,74 +1359,70 @@ class TestPluginCatalogDownloadMonorepoFolderToTemp:
             temp_file = tmp_path / "test_file.txt"
             temp_file.write_text("test content")
             tar.add(temp_file, arcname="test_file.txt")
-        
-        with patch('subprocess.run') as mock_run:
+
+        with patch("subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0)
-            
-            with patch('pathlib.Path.glob') as mock_glob:
+
+            with patch("pathlib.Path.glob") as mock_glob:
                 mock_glob.return_value = [mock_tarball]
-                
+
                 result = catalog._download_monorepo_folder_to_temp(
-                    "git+https://github.com/org/repo#subdirectory=plugin",
-                    "test_plugin"
+                    "git+https://github.com/org/repo#subdirectory=plugin", "test_plugin"
                 )
-                
+
                 assert result.exists()
                 assert result.name == "extracted"
 
     def test_download_monorepo_folder_no_files(self, tmp_path, mock_github_env):
         """Test error when no files are downloaded."""
         catalog = PluginCatalog()
-        
-        with patch('subprocess.run') as mock_run:
+
+        with patch("subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0)
-            
-            with patch('pathlib.Path.glob') as mock_glob:
+
+            with patch("pathlib.Path.glob") as mock_glob:
                 mock_glob.return_value = []
-                
+
                 with pytest.raises(RuntimeError) as exc_info:
                     catalog._download_monorepo_folder_to_temp(
-                        "git+https://github.com/org/repo#subdirectory=plugin",
-                        "test_plugin"
+                        "git+https://github.com/org/repo#subdirectory=plugin", "test_plugin"
                     )
-                
+
                 assert "No files downloaded" in str(exc_info.value)
 
     def test_download_monorepo_folder_unsupported_format(self, tmp_path, mock_github_env):
         """Test error with unsupported package format."""
         catalog = PluginCatalog()
-        
+
         # Create a mock file with unsupported extension
         mock_file = tmp_path / "package.unknown"
         mock_file.write_text("test")
-        
-        with patch('subprocess.run') as mock_run:
+
+        with patch("subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0)
-            
-            with patch('pathlib.Path.glob') as mock_glob:
+
+            with patch("pathlib.Path.glob") as mock_glob:
                 mock_glob.return_value = [mock_file]
-                
+
                 with pytest.raises(RuntimeError) as exc_info:
                     catalog._download_monorepo_folder_to_temp(
-                        "git+https://github.com/org/repo#subdirectory=plugin",
-                        "test_plugin"
+                        "git+https://github.com/org/repo#subdirectory=plugin", "test_plugin"
                     )
-                
+
                 assert "Unsupported package format" in str(exc_info.value)
 
     def test_download_monorepo_folder_subprocess_error(self, mock_github_env):
         """Test subprocess error handling."""
         catalog = PluginCatalog()
-        
-        with patch('subprocess.run') as mock_run:
+
+        with patch("subprocess.run") as mock_run:
             mock_run.side_effect = subprocess.CalledProcessError(1, "pip", stderr="Download failed")
-            
+
             with pytest.raises(RuntimeError) as exc_info:
                 catalog._download_monorepo_folder_to_temp(
-                    "git+https://github.com/org/repo#subdirectory=plugin",
-                    "test_plugin"
+                    "git+https://github.com/org/repo#subdirectory=plugin", "test_plugin"
                 )
-            
+
             assert "Failed to download" in str(exc_info.value)
 
 
@@ -1434,23 +1432,23 @@ class TestPluginCatalogDownloadPackageToTemp:
     def test_download_package_with_test_pypi(self, tmp_path, mock_github_env):
         """Test downloading from test.pypi.org."""
         catalog = PluginCatalog()
-        
+
         # Create a mock wheel file
         mock_wheel = tmp_path / "package-1.0.0-py3-none-any.whl"
         with zipfile.ZipFile(mock_wheel, "w") as zf:
             zf.writestr("test_file.txt", "test content")
-        
-        with patch('subprocess.run') as mock_run:
+
+        with patch("subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0)
-            
-            with patch('pathlib.Path.glob') as mock_glob:
+
+            with patch("pathlib.Path.glob") as mock_glob:
                 mock_glob.return_value = [mock_wheel]
-                
+
                 result = catalog._download_package_to_temp("test_plugin", None, use_test=True)
-                
+
                 assert result.exists()
                 assert result.name == "extracted"
-                
+
                 # Verify test.pypi.org was used
                 call_args = mock_run.call_args[0][0]
                 assert "--index-url" in call_args
@@ -1459,34 +1457,34 @@ class TestPluginCatalogDownloadPackageToTemp:
     def test_download_package_no_files_downloaded(self, mock_github_env):
         """Test error when no files are downloaded."""
         catalog = PluginCatalog()
-        
-        with patch('subprocess.run') as mock_run:
+
+        with patch("subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0)
-            
-            with patch('pathlib.Path.glob') as mock_glob:
+
+            with patch("pathlib.Path.glob") as mock_glob:
                 mock_glob.return_value = []
-                
+
                 with pytest.raises(RuntimeError) as exc_info:
                     catalog._download_package_to_temp("test_plugin", None)
-                
+
                 assert "No files downloaded" in str(exc_info.value)
 
     def test_download_package_unsupported_format(self, tmp_path, mock_github_env):
         """Test error with unsupported package format."""
         catalog = PluginCatalog()
-        
+
         mock_file = tmp_path / "package.exe"
         mock_file.write_text("test")
-        
-        with patch('subprocess.run') as mock_run:
+
+        with patch("subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0)
-            
-            with patch('pathlib.Path.glob') as mock_glob:
+
+            with patch("pathlib.Path.glob") as mock_glob:
                 mock_glob.return_value = [mock_file]
-                
+
                 with pytest.raises(RuntimeError) as exc_info:
                     catalog._download_package_to_temp("test_plugin", None)
-                
+
                 assert "Unsupported package format" in str(exc_info.value)
 
 
@@ -1496,13 +1494,13 @@ class TestPluginCatalogFindManifestInExtractedPackage:
     def test_find_manifest_not_found(self, tmp_path, mock_github_env):
         """Test FileNotFoundError when manifest is not found."""
         catalog = PluginCatalog()
-        
+
         extract_dir = tmp_path / "extracted"
         extract_dir.mkdir()
-        
+
         with pytest.raises(FileNotFoundError) as exc_info:
             catalog._find_manifest_in_extracted_package(extract_dir, "test_plugin")
-        
+
         assert "plugin-manifest.yaml not found" in str(exc_info.value)
 
 
@@ -1512,15 +1510,15 @@ class TestPluginCatalogUninstallPackage:
     def test_uninstall_package_success_native(self, mock_github_env):
         """Test successful package uninstallation for native plugin."""
         catalog = PluginCatalog()
-        
+
         # Create a native plugin manifest
         manifest = create_test_manifest(kind="native")
-        
-        with patch('subprocess.run') as mock_run:
+
+        with patch("subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0)
-            
+
             result = catalog.uninstall_package("test_plugin", manifest)
-            
+
             assert result is True
             mock_run.assert_called_once()
             call_args = mock_run.call_args[0][0]
@@ -1535,10 +1533,10 @@ class TestPluginCatalogUninstallPackage:
         """Test successful package uninstallation for isolated_venv plugin."""
         catalog = PluginCatalog()
         catalog.plugin_folder = str(tmp_path / "plugins")
-        
+
         # Create an isolated_venv plugin manifest
         manifest = create_test_manifest(kind="isolated_venv")
-        
+
         # Create mock venv structure
         plugin_path = tmp_path / "plugins" / "test_plugin"
         plugin_path.mkdir(parents=True)
@@ -1547,20 +1545,20 @@ class TestPluginCatalogUninstallPackage:
         venv_bin.mkdir(parents=True)
         venv_python = venv_bin / "python"
         venv_python.touch()
-        
+
         # Mock the IsolatedVenvPlugin
         mock_isolated_plugin = MagicMock()
         mock_isolated_plugin.plugin_path = plugin_path
-        
+
         with (
-            patch('subprocess.run') as mock_run,
-            patch('cpex.framework.isolated.client.IsolatedVenvPlugin', return_value=mock_isolated_plugin),
-            patch.object(catalog, '_get_venv_python_executable', return_value=str(venv_python)),
+            patch("subprocess.run") as mock_run,
+            patch("cpex.framework.isolated.client.IsolatedVenvPlugin", return_value=mock_isolated_plugin),
+            patch.object(catalog, "_get_venv_python_executable", return_value=str(venv_python)),
         ):
             mock_run.return_value = MagicMock(returncode=0)
-            
+
             result = catalog.uninstall_package("test_plugin", manifest)
-            
+
             assert result is True
             mock_run.assert_called_once()
             call_args = mock_run.call_args[0][0]
@@ -1575,26 +1573,26 @@ class TestPluginCatalogUninstallPackage:
         """Test subprocess error during uninstallation."""
         catalog = PluginCatalog()
         manifest = create_test_manifest(kind="native")
-        
-        with patch('subprocess.run') as mock_run:
+
+        with patch("subprocess.run") as mock_run:
             mock_run.side_effect = subprocess.CalledProcessError(1, "pip", stderr="Uninstall failed")
-            
+
             with pytest.raises(RuntimeError) as exc_info:
                 catalog.uninstall_package("test_plugin", manifest)
-            
+
             assert "Failed to uninstall" in str(exc_info.value)
 
     def test_uninstall_package_unexpected_error(self, mock_github_env):
         """Test unexpected error during uninstallation."""
         catalog = PluginCatalog()
         manifest = create_test_manifest(kind="native")
-        
-        with patch('subprocess.run') as mock_run:
+
+        with patch("subprocess.run") as mock_run:
             mock_run.side_effect = Exception("Unexpected error")
-            
+
             with pytest.raises(RuntimeError) as exc_info:
                 catalog.uninstall_package("test_plugin", manifest)
-            
+
             assert "Unexpected error uninstalling" in str(exc_info.value)
 
     def test_uninstall_package_isolated_venv_error(self, tmp_path, mock_github_env):
@@ -1602,7 +1600,7 @@ class TestPluginCatalogUninstallPackage:
         catalog = PluginCatalog()
         catalog.plugin_folder = str(tmp_path / "plugins")
         manifest = create_test_manifest(kind="isolated_venv")
-        
+
         # Create mock venv structure
         plugin_path = tmp_path / "plugins" / "test_plugin"
         plugin_path.mkdir(parents=True)
@@ -1611,21 +1609,21 @@ class TestPluginCatalogUninstallPackage:
         venv_bin.mkdir(parents=True)
         venv_python = venv_bin / "python"
         venv_python.touch()
-        
+
         # Mock the IsolatedVenvPlugin
         mock_isolated_plugin = MagicMock()
         mock_isolated_plugin.plugin_path = plugin_path
-        
+
         with (
-            patch('subprocess.run') as mock_run,
-            patch('cpex.framework.isolated.client.IsolatedVenvPlugin', return_value=mock_isolated_plugin),
-            patch.object(catalog, '_get_venv_python_executable', return_value=str(venv_python)),
+            patch("subprocess.run") as mock_run,
+            patch("cpex.framework.isolated.client.IsolatedVenvPlugin", return_value=mock_isolated_plugin),
+            patch.object(catalog, "_get_venv_python_executable", return_value=str(venv_python)),
         ):
             mock_run.side_effect = subprocess.CalledProcessError(1, "pip", stderr="Uninstall failed")
-            
+
             with pytest.raises(RuntimeError) as exc_info:
                 catalog.uninstall_package("test_plugin", manifest)
-            
+
             assert "Failed to uninstall" in str(exc_info.value)
 
 
@@ -1635,22 +1633,26 @@ class TestPluginCatalogInstallFolderViaPipIsolated:
     def test_install_folder_via_pip_isolated_venv(self, tmp_path, mock_github_env):
         """Test installing an isolated_venv plugin from monorepo."""
         catalog = PluginCatalog()
-        
+
         manifest = create_test_manifest(kind="isolated_venv")
-        
+
         # Mock the download and initialization
-        with patch.object(catalog, '_download_monorepo_folder_to_temp') as mock_download:
+        with patch.object(catalog, "_download_monorepo_folder_to_temp") as mock_download:
             mock_download.return_value = tmp_path / "package"
-            
-            with patch.object(catalog, '_initialize_isolated_venv') as mock_init:
+
+            with (
+                patch.object(catalog, "_initialize_isolated_venv") as mock_init,
+                patch.object(catalog, "_install_package_into_venv") as mock_venv_install,
+            ):
                 mock_init.return_value = tmp_path / "venv"
-                
+
                 result = catalog.install_folder_via_pip(manifest)
-                
+
                 assert result == tmp_path / "venv"
                 mock_download.assert_called_once()
                 mock_init.assert_called_once()
-
+                # Plugin package is installed into the venv from the monorepo source (U4).
+                mock_venv_install.assert_called_once()
 
 
 class TestPluginCatalogProcessPyprojectExtended:
@@ -1659,12 +1661,12 @@ class TestPluginCatalogProcessPyprojectExtended:
     def test_process_pyproject_with_member_none(self, mock_github_env):
         """Test _process_pyproject when member is None (root directory)."""
         catalog = PluginCatalog()
-        
+
         mock_repo = MagicMock()
         mock_item = MagicMock()
         mock_item.path = "pyproject.toml"
         mock_item.name = "pyproject.toml"
-        
+
         # Mock file content
         pyproject_content = """
 [project]
@@ -1672,18 +1674,18 @@ name = "test_plugin"
 version = "1.0.0"
 """
         mock_file_content = MagicMock()
-        mock_file_content.decoded_content = pyproject_content.encode('utf-8')
+        mock_file_content.decoded_content = pyproject_content.encode("utf-8")
         mock_repo.get_contents.return_value = mock_file_content
-        
+
         repo_url = httpx.URL("https://github.com/org/repo")
-        
-        with patch.object(catalog, 'find_and_save_plugin_manifest') as mock_find:
+
+        with patch.object(catalog, "find_and_save_plugin_manifest") as mock_find:
             catalog._process_pyproject(mock_repo, mock_item, repo_url, {})
-            
+
             # Verify find_and_save_plugin_manifest was called with member=None
             mock_find.assert_called_once()
             call_args = mock_find.call_args
-            assert call_args[1]['member'] is None
+            assert call_args[1]["member"] is None
 
 
 class TestPluginCatalogInstallFolderViaPipNonIsolated:
@@ -1692,17 +1694,17 @@ class TestPluginCatalogInstallFolderViaPipNonIsolated:
     def test_install_folder_via_pip_non_isolated(self, mock_github_env):
         """Test installing a non-isolated plugin from monorepo."""
         catalog = PluginCatalog()
-        
+
         manifest = create_test_manifest(kind="native")
-        
-        with patch('subprocess.run') as mock_run:
+
+        with patch("subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0)
-            
+
             result = catalog.install_folder_via_pip(manifest)
-            
+
             # For non-isolated plugins, should return None
             assert result is None
-            
+
             # Verify pip install was called
             mock_run.assert_called_once()
             call_args = mock_run.call_args[0][0]
@@ -1716,12 +1718,12 @@ class TestPluginCatalogInstallPackageEdgeCases:
     def test_install_package_with_null_version_constraint(self, mock_github_env):
         """Test installing package with None version constraint."""
         catalog = PluginCatalog()
-        
-        with patch('subprocess.run') as mock_run:
+
+        with patch("subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0)
-            
+
             catalog._install_package("test_plugin", None, use_test=False)
-            
+
             mock_run.assert_called_once()
             call_args = mock_run.call_args[0][0]
             assert "test_plugin" in call_args
@@ -1730,13 +1732,13 @@ class TestPluginCatalogInstallPackageEdgeCases:
     def test_install_package_unexpected_error(self, mock_github_env):
         """Test unexpected error during package installation."""
         catalog = PluginCatalog()
-        
-        with patch('subprocess.run') as mock_run:
+
+        with patch("subprocess.run") as mock_run:
             mock_run.side_effect = Exception("Unexpected error")
-            
+
             with pytest.raises(RuntimeError) as exc_info:
                 catalog._install_package("test_plugin", None)
-            
+
             assert "Unexpected error installing" in str(exc_info.value)
 
 
@@ -1746,21 +1748,21 @@ class TestPluginCatalogDownloadPackageEdgeCases:
     def test_download_package_with_version_constraint(self, tmp_path, mock_github_env):
         """Test downloading package with version constraint."""
         catalog = PluginCatalog()
-        
+
         mock_wheel = tmp_path / "package-1.0.0-py3-none-any.whl"
         with zipfile.ZipFile(mock_wheel, "w") as zf:
             zf.writestr("test_file.txt", "test content")
-        
-        with patch('subprocess.run') as mock_run:
+
+        with patch("subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0)
-            
-            with patch('pathlib.Path.glob') as mock_glob:
+
+            with patch("pathlib.Path.glob") as mock_glob:
                 mock_glob.return_value = [mock_wheel]
-                
+
                 result = catalog._download_package_to_temp("test_plugin", ">=1.0.0", use_test=False)
-                
+
                 assert result.exists()
-                
+
                 # Verify version constraint was included
                 call_args = mock_run.call_args[0][0]
                 assert any("test_plugin>=1.0.0" in str(arg) for arg in call_args)
@@ -1768,23 +1770,22 @@ class TestPluginCatalogDownloadPackageEdgeCases:
     def test_download_monorepo_zip_format(self, tmp_path, mock_github_env):
         """Test downloading monorepo with zip format."""
         catalog = PluginCatalog()
-        
+
         # Create a mock zip file
         mock_zip = tmp_path / "package.zip"
         with zipfile.ZipFile(mock_zip, "w") as zf:
             zf.writestr("test_file.txt", "test content")
-        
-        with patch('subprocess.run') as mock_run:
+
+        with patch("subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0)
-            
-            with patch('pathlib.Path.glob') as mock_glob:
+
+            with patch("pathlib.Path.glob") as mock_glob:
                 mock_glob.return_value = [mock_zip]
-                
+
                 result = catalog._download_monorepo_folder_to_temp(
-                    "git+https://github.com/org/repo#subdirectory=plugin",
-                    "test_plugin"
+                    "git+https://github.com/org/repo#subdirectory=plugin", "test_plugin"
                 )
-                
+
                 assert result.exists()
                 assert result.name == "extracted"
 
@@ -1795,12 +1796,12 @@ class TestPluginCatalogFindOperations:
     def test_find_case_insensitive(self, tmp_path, mock_github_env):
         """Test that find is case-insensitive."""
         catalog = PluginCatalog()
-        
+
         # Create a manifest with uppercase name
         manifest_dir = tmp_path / "catalog" / "TEST_PLUGIN"
         manifest_dir.mkdir(parents=True)
         manifest_file = manifest_dir / "plugin-manifest.yaml"
-        
+
         manifest_data = {
             "name": "TEST_PLUGIN",
             "version": "1.0.0",
@@ -1812,13 +1813,13 @@ class TestPluginCatalogFindOperations:
             "default_config": {},
         }
         manifest_file.write_text(yaml.safe_dump(manifest_data))
-        
+
         catalog.catalog_folder = str(tmp_path / "catalog")
         catalog.load()
-        
+
         # Search with lowercase should find it
         result = catalog.find("test_plugin")
-        
+
         assert result is not None
         assert result.name == "TEST_PLUGIN"
 
@@ -1829,13 +1830,13 @@ class TestPluginCatalogInstallFromPypiIsolated:
     def test_install_from_pypi_isolated_venv(self, tmp_path, mock_github_env):
         """Test installing an isolated_venv plugin from PyPI."""
         catalog = PluginCatalog()
-        
+
         # Create mock extracted package with manifest
         extract_dir = tmp_path / "extracted"
         extract_dir.mkdir()
         plugin_dir = extract_dir / "test_plugin"
         plugin_dir.mkdir()
-        
+
         manifest_file = plugin_dir / "plugin-manifest.yaml"
         manifest_data = {
             "name": "test_plugin",
@@ -1847,20 +1848,70 @@ class TestPluginCatalogInstallFromPypiIsolated:
             "default_config": {"requirements_file": "requirements.txt"},
         }
         manifest_file.write_text(yaml.safe_dump(manifest_data))
-        
-        with patch.object(catalog, '_download_package_to_temp') as mock_download:
+
+        with patch.object(catalog, "_download_package_to_temp") as mock_download:
             mock_download.return_value = extract_dir
-            
-            with patch.object(catalog, '_initialize_isolated_venv') as mock_init:
+
+            with (
+                patch.object(catalog, "_initialize_isolated_venv") as mock_init,
+                patch.object(catalog, "_install_package_into_venv") as mock_venv_install,
+            ):
                 mock_init.return_value = tmp_path / "venv"
-                
-                with patch.object(catalog, '_persist_manifest'):
+
+                with patch.object(catalog, "_persist_manifest"):
                     manifest, plugin_path = catalog.install_from_pypi("test_plugin")
-                    
+
                     assert manifest.kind == "isolated_venv"
                     assert plugin_path == tmp_path / "venv"
                     mock_init.assert_called_once()
+                    # Plugin package is installed into the venv from PyPI (U4).
+                    mock_venv_install.assert_called_once()
 
+    def test_install_from_test_pypi_isolated_venv_uses_extra_index(self, tmp_path, mock_github_env):
+        """test-pypi isolated_venv install pairs test.pypi with real PyPI (#5).
+
+        The isolated venv is fresh and empty, so transitive deps (including cpex
+        itself) must resolve. Installing with --index-url alone would require
+        every dep on test.pypi; an --extra-index-url to real PyPI is required.
+        """
+        catalog = PluginCatalog()
+
+        extract_dir = tmp_path / "extracted"
+        extract_dir.mkdir()
+        plugin_dir = extract_dir / "test_plugin"
+        plugin_dir.mkdir()
+
+        manifest_file = plugin_dir / "plugin-manifest.yaml"
+        manifest_data = {
+            "name": "test_plugin",
+            "version": "1.0.0",
+            "kind": "isolated_venv",
+            "description": "Test isolated plugin",
+            "author": "Test Author",
+            "available_hooks": ["tools"],
+            "default_config": {"requirements_file": "requirements.txt"},
+        }
+        manifest_file.write_text(yaml.safe_dump(manifest_data))
+
+        with patch.object(catalog, "_download_package_to_temp") as mock_download:
+            mock_download.return_value = extract_dir
+            with (
+                patch.object(catalog, "_initialize_isolated_venv") as mock_init,
+                patch.object(catalog, "_install_package_into_venv") as mock_venv_install,
+                patch.object(catalog, "_persist_manifest"),
+            ):
+                mock_init.return_value = tmp_path / "venv"
+
+                catalog.install_from_pypi("test_plugin", ">=1.0.0", use_pytest=True)
+
+                mock_venv_install.assert_called_once()
+                pip_args = mock_venv_install.call_args[0][1]
+                assert "--index-url" in pip_args
+                assert "https://test.pypi.org/simple/" in pip_args
+                assert "--extra-index-url" in pip_args
+                assert "https://pypi.org/simple/" in pip_args
+                # The versioned target is still present.
+                assert "test_plugin>=1.0.0" in pip_args
 
 
 class TestPluginCatalogFindRequirementsInExtractedPackage:
@@ -1869,7 +1920,7 @@ class TestPluginCatalogFindRequirementsInExtractedPackage:
     def test_find_requirements_success(self, tmp_path, mock_github_env):
         """Test successful finding of requirements file."""
         catalog = PluginCatalog()
-        
+
         # Create a mock extracted package directory with requirements.txt
         extract_dir = tmp_path / "extracted"
         extract_dir.mkdir()
@@ -1877,122 +1928,108 @@ class TestPluginCatalogFindRequirementsInExtractedPackage:
         plugin_dir.mkdir()
         requirements_file = plugin_dir / "requirements.txt"
         requirements_file.write_text("pytest>=7.0.0\n")
-        
+
         # Find the requirements file
-        result = catalog._find_requirements_in_extracted_package(
-            extract_dir, "my_plugin", "requirements.txt"
-        )
-        
+        result = catalog._find_requirements_in_extracted_package(extract_dir, "my_plugin", "requirements.txt")
+
         assert result == requirements_file
         assert result.exists()
 
     def test_find_requirements_not_found(self, tmp_path, mock_github_env):
         """Test FileNotFoundError when requirements file doesn't exist."""
         catalog = PluginCatalog()
-        
+
         extract_dir = tmp_path / "extracted"
         extract_dir.mkdir()
-        
+
         with pytest.raises(FileNotFoundError) as exc_info:
-            catalog._find_requirements_in_extracted_package(
-                extract_dir, "my_plugin", "requirements.txt"
-            )
-        
+            catalog._find_requirements_in_extracted_package(extract_dir, "my_plugin", "requirements.txt")
+
         assert "requirements file requirements.txt not found" in str(exc_info.value)
         assert "my_plugin" in str(exc_info.value)
 
     def test_find_requirements_path_traversal_parent_directory(self, tmp_path, mock_github_env):
         """Test that path traversal with ../ is blocked."""
         catalog = PluginCatalog()
-        
+
         extract_dir = tmp_path / "extracted"
         extract_dir.mkdir()
-        
+
         # Try to access parent directory
         with pytest.raises(ValueError) as exc_info:
-            catalog._find_requirements_in_extracted_package(
-                extract_dir, "my_plugin", "../../../etc/passwd"
-            )
-        
+            catalog._find_requirements_in_extracted_package(extract_dir, "my_plugin", "../../../etc/passwd")
+
         assert "path traversal attempts are not allowed" in str(exc_info.value)
 
     def test_find_requirements_path_traversal_absolute_path(self, tmp_path, mock_github_env):
         """Test that absolute paths are blocked."""
         catalog = PluginCatalog()
-        
+
         extract_dir = tmp_path / "extracted"
         extract_dir.mkdir()
-        
+
         # Try to use absolute path
         with pytest.raises(ValueError) as exc_info:
-            catalog._find_requirements_in_extracted_package(
-                extract_dir, "my_plugin", "/etc/passwd"
-            )
-        
+            catalog._find_requirements_in_extracted_package(extract_dir, "my_plugin", "/etc/passwd")
+
         assert "path traversal attempts are not allowed" in str(exc_info.value)
 
     def test_find_requirements_path_traversal_mixed_separators(self, tmp_path, mock_github_env):
         """Test that mixed path separators are blocked."""
         catalog = PluginCatalog()
-        
+
         extract_dir = tmp_path / "extracted"
         extract_dir.mkdir()
-        
+
         # Try to use backslashes (Windows-style) in suspicious way
         with pytest.raises(ValueError) as exc_info:
-            catalog._find_requirements_in_extracted_package(
-                extract_dir, "my_plugin", "..\\..\\etc\\passwd"
-            )
-        
+            catalog._find_requirements_in_extracted_package(extract_dir, "my_plugin", "..\\..\\etc\\passwd")
+
         assert "path traversal attempts are not allowed" in str(exc_info.value)
 
     def test_find_requirements_path_traversal_encoded(self, tmp_path, mock_github_env):
         """Test that URL-encoded path traversal attempts are blocked."""
         catalog = PluginCatalog()
-        
+
         extract_dir = tmp_path / "extracted"
         extract_dir.mkdir()
-        
+
         # Try various encoded forms
         malicious_paths = [
             "..%2F..%2Fetc%2Fpasswd",
             "..%5c..%5cetc%5cpasswd",
         ]
-        
+
         for malicious_path in malicious_paths:
             with pytest.raises(ValueError) as exc_info:
-                catalog._find_requirements_in_extracted_package(
-                    extract_dir, "my_plugin", malicious_path
-                )
-            
+                catalog._find_requirements_in_extracted_package(extract_dir, "my_plugin", malicious_path)
+
             assert "path traversal" in str(exc_info.value).lower() or "suspicious" in str(exc_info.value).lower()
 
     def test_find_requirements_defense_in_depth(self, tmp_path, mock_github_env):
         """Test defense-in-depth check that file is within extract_dir."""
         catalog = PluginCatalog()
-        
+
         # Create extract directory
         extract_dir = tmp_path / "extracted"
         extract_dir.mkdir()
-        
+
         # Create a file outside the extract directory
         outside_dir = tmp_path / "outside"
         outside_dir.mkdir()
         outside_file = outside_dir / "requirements.txt"
         outside_file.write_text("malicious\n")
-        
+
         # Create a symlink inside extract_dir pointing outside
         # (This tests the defense-in-depth check)
         try:
             symlink_path = extract_dir / "requirements.txt"
             symlink_path.symlink_to(outside_file)
-            
+
             # The rglob should find it, but the defense-in-depth check should catch it
             with pytest.raises(ValueError) as exc_info:
-                catalog._find_requirements_in_extracted_package(
-                    extract_dir, "my_plugin", "requirements.txt"
-                )
-            
+                catalog._find_requirements_in_extracted_package(extract_dir, "my_plugin", "requirements.txt")
+
             assert "outside the package directory" in str(exc_info.value)
         except OSError:
             # Skip test if symlinks aren't supported (e.g., Windows without admin)
@@ -2001,7 +2038,7 @@ class TestPluginCatalogFindRequirementsInExtractedPackage:
     def test_find_requirements_nested_directory(self, tmp_path, mock_github_env):
         """Test finding requirements file in nested directory structure."""
         catalog = PluginCatalog()
-        
+
         # Create nested directory structure
         extract_dir = tmp_path / "extracted"
         extract_dir.mkdir()
@@ -2009,58 +2046,52 @@ class TestPluginCatalogFindRequirementsInExtractedPackage:
         nested_dir.mkdir(parents=True)
         requirements_file = nested_dir / "requirements.txt"
         requirements_file.write_text("pytest>=7.0.0\n")
-        
+
         # Should find the file in nested structure
-        result = catalog._find_requirements_in_extracted_package(
-            extract_dir, "my_plugin", "requirements.txt"
-        )
-        
+        result = catalog._find_requirements_in_extracted_package(extract_dir, "my_plugin", "requirements.txt")
+
         assert result == requirements_file
         assert result.exists()
 
     def test_find_requirements_multiple_files_returns_first(self, tmp_path, mock_github_env):
         """Test that when multiple matching files exist, the first one is returned."""
         catalog = PluginCatalog()
-        
+
         # Create multiple requirements files
         extract_dir = tmp_path / "extracted"
         extract_dir.mkdir()
-        
+
         dir1 = extract_dir / "dir1"
         dir1.mkdir()
         req1 = dir1 / "requirements.txt"
         req1.write_text("first\n")
-        
+
         dir2 = extract_dir / "dir2"
         dir2.mkdir()
         req2 = dir2 / "requirements.txt"
         req2.write_text("second\n")
-        
+
         # Should return one of them (first found by rglob)
-        result = catalog._find_requirements_in_extracted_package(
-            extract_dir, "my_plugin", "requirements.txt"
-        )
-        
+        result = catalog._find_requirements_in_extracted_package(extract_dir, "my_plugin", "requirements.txt")
+
         assert result in [req1, req2]
         assert result.exists()
 
     def test_find_requirements_custom_filename(self, tmp_path, mock_github_env):
         """Test finding a custom requirements filename."""
         catalog = PluginCatalog()
-        
+
         extract_dir = tmp_path / "extracted"
         extract_dir.mkdir()
         plugin_dir = extract_dir / "my_plugin"
         plugin_dir.mkdir()
-        
+
         # Use a custom requirements filename
         custom_req = plugin_dir / "requirements-dev.txt"
         custom_req.write_text("pytest>=7.0.0\n")
-        
-        result = catalog._find_requirements_in_extracted_package(
-            extract_dir, "my_plugin", "requirements-dev.txt"
-        )
-        
+
+        result = catalog._find_requirements_in_extracted_package(extract_dir, "my_plugin", "requirements-dev.txt")
+
         assert result == custom_req
         assert result.exists()
 
@@ -2072,18 +2103,18 @@ class TestPluginCatalogFindAndLoadVersionsJson:
         """Test _find_and_load_versions_json for non-isolated plugin with versions.json."""
         catalog = PluginCatalog()
         catalog.catalog_folder = str(tmp_path / "catalog")
-        
+
         # Create a plugin path with versions.json
         plugin_path = tmp_path / "plugin_package"
         plugin_path.mkdir()
         versions_json = plugin_path / "versions.json"
         versions_data = {"versions": [{"version": "1.0.0", "date": "2024-01-01"}]}
         versions_json.write_text(json.dumps(versions_data))
-        
+
         manifest = create_test_manifest(name="test_plugin", kind="native")
-        
+
         catalog._find_and_load_versions_json(manifest, plugin_path, "test_plugin")
-        
+
         # Check that versions.json was saved to catalog
         catalog_versions = Path(catalog.catalog_folder) / "test_plugin" / "versions.json"
         assert catalog_versions.exists()
@@ -2095,15 +2126,15 @@ class TestPluginCatalogFindAndLoadVersionsJson:
         with patch("cpex.tools.catalog.logger") as mock_logger:
             catalog = PluginCatalog()
             catalog.catalog_folder = str(tmp_path / "catalog")
-            
+
             # Create a plugin path without versions.json
             plugin_path = tmp_path / "plugin_package"
             plugin_path.mkdir()
-            
+
             manifest = create_test_manifest(name="test_plugin", kind="native")
-            
+
             catalog._find_and_load_versions_json(manifest, plugin_path, "test_plugin")
-            
+
             # Check that no versions.json was saved to catalog
             catalog_versions = Path(catalog.catalog_folder) / "test_plugin" / "versions.json"
             assert not catalog_versions.exists()
@@ -2113,20 +2144,20 @@ class TestPluginCatalogFindAndLoadVersionsJson:
         """Test _find_and_load_versions_json for isolated_venv plugin."""
         catalog = PluginCatalog()
         catalog.catalog_folder = str(tmp_path / "catalog")
-        
+
         # Create a venv path
         venv_path = tmp_path / ".venv"
         venv_path.mkdir()
-        
+
         # Mock the subprocess call to find package path
         mock_package_path = tmp_path / "venv_package"
         mock_package_path.mkdir()
         versions_json = mock_package_path / "versions.json"
         versions_data = {"versions": [{"version": "2.0.0", "date": "2024-02-01"}]}
         versions_json.write_text(json.dumps(versions_data))
-        
+
         manifest = create_test_manifest(name="test_plugin", kind="isolated_venv")
-        
+
         with (
             patch.object(catalog, "_get_venv_python_executable", return_value="/fake/python"),
             patch("cpex.tools.catalog.subprocess.run") as mock_run,
@@ -2136,9 +2167,9 @@ class TestPluginCatalogFindAndLoadVersionsJson:
             mock_result.stdout = str(mock_package_path)
             mock_result.stderr = ""
             mock_run.return_value = mock_result
-            
+
             catalog._find_and_load_versions_json(manifest, venv_path, "test_plugin")
-        
+
         # Check that versions.json was saved to catalog
         catalog_versions = Path(catalog.catalog_folder) / "test_plugin" / "versions.json"
         assert catalog_versions.exists()
@@ -2150,21 +2181,21 @@ class TestPluginCatalogFindAndLoadVersionsJson:
         with patch("cpex.tools.catalog.logger") as mock_logger:
             catalog = PluginCatalog()
             catalog.catalog_folder = str(tmp_path / "catalog")
-            
+
             venv_path = tmp_path / ".venv"
             venv_path.mkdir()
-            
+
             manifest = create_test_manifest(name="test_plugin", kind="isolated_venv")
-            
+
             with patch("cpex.tools.catalog.subprocess.run") as mock_run:
                 mock_result = Mock()
                 mock_result.returncode = 1
                 mock_result.stdout = ""
                 mock_result.stderr = "NOT_FOUND"
                 mock_run.return_value = mock_result
-                
+
                 catalog._find_and_load_versions_json(manifest, venv_path, "test_plugin")
-            
+
             # Check that no versions.json was saved
             catalog_versions = Path(catalog.catalog_folder) / "test_plugin" / "versions.json"
             assert not catalog_versions.exists()
@@ -2174,12 +2205,12 @@ class TestPluginCatalogFindAndLoadVersionsJson:
         """Test _find_and_load_versions_json with None plugin_path."""
         catalog = PluginCatalog()
         catalog.catalog_folder = str(tmp_path / "catalog")
-        
+
         manifest = create_test_manifest(name="test_plugin", kind="native")
-        
+
         # Should handle None gracefully
         catalog._find_and_load_versions_json(manifest, None, "test_plugin")
-        
+
         catalog_versions = Path(catalog.catalog_folder) / "test_plugin" / "versions.json"
         assert not catalog_versions.exists()
 
@@ -2188,18 +2219,18 @@ class TestPluginCatalogFindAndLoadVersionsJson:
         with patch("cpex.tools.catalog.logger") as mock_logger:
             catalog = PluginCatalog()
             catalog.catalog_folder = str(tmp_path / "catalog")
-            
+
             plugin_path = tmp_path / "plugin_package"
             plugin_path.mkdir()
-            
+
             manifest = create_test_manifest(name="test_plugin", kind="native")
-            
+
             # Create a versions.json that will cause an error when reading
             versions_json = plugin_path / "versions.json"
             versions_json.write_text("invalid json {{{")
-            
+
             catalog._find_and_load_versions_json(manifest, plugin_path, "test_plugin")
-            
+
             mock_logger.warning.assert_called()
 
 
@@ -2209,14 +2240,14 @@ class TestPluginCatalogGetVenvPythonExecutable:
     def test_get_venv_python_executable_unix(self, tmp_path, mock_github_env):
         """Test _get_venv_python_executable on Unix-like systems."""
         catalog = PluginCatalog()
-        
+
         venv_path = tmp_path / ".venv"
         venv_path.mkdir()
         bin_dir = venv_path / "bin"
         bin_dir.mkdir()
         python_exe = bin_dir / "python"
         python_exe.touch()
-        
+
         with patch("sys.platform", "linux"):
             result = catalog._get_venv_python_executable(venv_path)
             assert result == str(python_exe)
@@ -2224,14 +2255,14 @@ class TestPluginCatalogGetVenvPythonExecutable:
     def test_get_venv_python_executable_windows(self, tmp_path, mock_github_env):
         """Test _get_venv_python_executable on Windows."""
         catalog = PluginCatalog()
-        
+
         venv_path = tmp_path / ".venv"
         venv_path.mkdir()
         scripts_dir = venv_path / "Scripts"
         scripts_dir.mkdir()
         python_exe = scripts_dir / "python.exe"
         python_exe.touch()
-        
+
         with patch("sys.platform", "win32"):
             result = catalog._get_venv_python_executable(venv_path)
             assert result == str(python_exe)
@@ -2239,10 +2270,10 @@ class TestPluginCatalogGetVenvPythonExecutable:
     def test_get_venv_python_executable_not_found(self, tmp_path, mock_github_env):
         """Test _get_venv_python_executable when executable doesn't exist."""
         catalog = PluginCatalog()
-        
+
         venv_path = tmp_path / ".venv"
         venv_path.mkdir()
-        
+
         with pytest.raises(FileNotFoundError, match="Python executable not found"):
             catalog._get_venv_python_executable(venv_path)
 
@@ -2254,13 +2285,13 @@ class TestPluginCatalogInstallFromPypiWithVersionsJson:
         """Test that install_from_pypi calls _find_and_load_versions_json."""
         catalog = PluginCatalog()
         catalog.catalog_folder = str(tmp_path / "catalog")
-        
+
         # Create temporary package structure
         temp_extract = tmp_path / "temp_extract"
         temp_extract.mkdir()
         package_dir = temp_extract / "test_plugin"
         package_dir.mkdir()
-        
+
         manifest_path = package_dir / "plugin-manifest.yaml"
         manifest_data = {
             "name": "test_plugin",
@@ -2270,10 +2301,10 @@ class TestPluginCatalogInstallFromPypiWithVersionsJson:
             "author": "Test",
             "tags": ["test"],
             "available_hooks": ["tools"],
-            "default_config": {}
+            "default_config": {},
         }
         manifest_path.write_text(yaml.dump(manifest_data))
-        
+
         with (
             patch.object(catalog, "_download_package_to_temp", return_value=temp_extract),
             patch.object(catalog, "_install_package"),
@@ -2282,7 +2313,7 @@ class TestPluginCatalogInstallFromPypiWithVersionsJson:
             patch.object(catalog, "update_plugin_version_registry"),
         ):
             manifest, plugin_path = catalog.install_from_pypi("test_plugin")
-            
+
             # Verify _find_and_load_versions_json was called
             mock_find_versions.assert_called_once()
             call_args = mock_find_versions.call_args
@@ -2301,12 +2332,12 @@ class TestPluginCatalogInstallFromLocal:
         """Test installing from local source with manifest in root directory."""
         catalog = PluginCatalog()
         catalog.catalog_folder = str(tmp_path / "catalog")
-        
+
         # Create source directory with pyproject and manifest in root
         source_dir = tmp_path / "my_plugin"
         source_dir.mkdir()
         (source_dir / "pyproject.toml").write_text('[project]\nname = "my_plugin"\nversion = "1.0.0"\n')
-        
+
         manifest_data = {
             "name": "my_plugin",
             "version": "1.0.0",
@@ -2319,7 +2350,7 @@ class TestPluginCatalogInstallFromLocal:
         }
         manifest_file = source_dir / "plugin-manifest.yaml"
         manifest_file.write_text(yaml.safe_dump(manifest_data))
-        
+
         with (
             patch("cpex.tools.catalog.subprocess.run") as mock_subprocess,
             patch("cpex.tools.catalog.find_package_path", return_value=source_dir),
@@ -2328,7 +2359,7 @@ class TestPluginCatalogInstallFromLocal:
             patch.object(catalog, "update_plugin_version_registry"),
         ):
             manifest, plugin_path = catalog.install_from_local(source_dir)
-            
+
             # Verify subprocess was called with pip install -e
             mock_subprocess.assert_called_once()
             call_args = mock_subprocess.call_args[0][0]
@@ -2337,7 +2368,7 @@ class TestPluginCatalogInstallFromLocal:
             assert "install" in call_args
             assert "-e" in call_args
             assert str(source_dir) in call_args
-            
+
             assert manifest.name == "my_plugin"
             assert manifest.kind == "native"
             assert plugin_path == source_dir
@@ -2346,14 +2377,14 @@ class TestPluginCatalogInstallFromLocal:
         """Test installing from local source with manifest in subdirectory."""
         catalog = PluginCatalog()
         catalog.catalog_folder = str(tmp_path / "catalog")
-        
+
         # Create source directory with pyproject and manifest in subdirectory
         source_dir = tmp_path / "my_plugin_project"
         source_dir.mkdir()
         plugin_subdir = source_dir / "my_plugin"
         plugin_subdir.mkdir()
         (plugin_subdir / "pyproject.toml").write_text('[project]\nname = "my_plugin"\nversion = "1.0.0"\n')
-        
+
         manifest_data = {
             "name": "my_plugin",
             "version": "1.0.0",
@@ -2366,7 +2397,7 @@ class TestPluginCatalogInstallFromLocal:
         }
         manifest_file = plugin_subdir / "plugin-manifest.yaml"
         manifest_file.write_text(yaml.safe_dump(manifest_data))
-        
+
         with (
             patch("cpex.tools.catalog.subprocess.run") as mock_subprocess,
             patch("cpex.tools.catalog.find_package_path", return_value=source_dir),
@@ -2375,18 +2406,18 @@ class TestPluginCatalogInstallFromLocal:
             patch.object(catalog, "update_plugin_version_registry"),
         ):
             manifest, plugin_path = catalog.install_from_local(source_dir)
-            
+
             assert manifest.name == "my_plugin"
             mock_subprocess.assert_called_once()
 
     def test_install_from_local_manifest_not_found(self, tmp_path, mock_github_env):
         """Test error when manifest is not found in source or subdirectories."""
         catalog = PluginCatalog()
-        
+
         # Create source directory without pyproject or manifest
         source_dir = tmp_path / "my_plugin"
         source_dir.mkdir()
-        
+
         with pytest.raises(FileNotFoundError, match="pyproject.toml not found"):
             catalog.install_from_local(source_dir)
 
@@ -2395,12 +2426,12 @@ class TestPluginCatalogInstallFromLocal:
         catalog = PluginCatalog()
         catalog.catalog_folder = str(tmp_path / "catalog")
         catalog.plugin_folder = str(tmp_path / "plugins")
-        
+
         # Create source directory with isolated_venv pyproject and manifest
         source_dir = tmp_path / "my_isolated_plugin"
         source_dir.mkdir()
         (source_dir / "pyproject.toml").write_text('[project]\nname = "my_isolated_plugin"\nversion = "1.0.0"\n')
-        
+
         manifest_data = {
             "name": "my_isolated_plugin",
             "version": "1.0.0",
@@ -2413,14 +2444,14 @@ class TestPluginCatalogInstallFromLocal:
         }
         manifest_file = source_dir / "plugin-manifest.yaml"
         manifest_file.write_text(yaml.safe_dump(manifest_data))
-        
+
         # Mock IsolatedVenvPlugin
         mock_isolated_plugin = Mock()
         mock_isolated_plugin.plugin_path = tmp_path / "plugins" / "my_isolated_plugin"
         mock_isolated_plugin.plugin_path.mkdir(parents=True, exist_ok=True)
         venv_path = mock_isolated_plugin.plugin_path / ".venv"
         venv_path.mkdir(parents=True, exist_ok=True)
-        
+
         # Create mock venv python executable
         if sys.platform == "win32":
             python_exe = venv_path / "Scripts" / "python.exe"
@@ -2428,7 +2459,7 @@ class TestPluginCatalogInstallFromLocal:
             python_exe = venv_path / "bin" / "python"
         python_exe.parent.mkdir(parents=True, exist_ok=True)
         python_exe.touch()
-        
+
         with (
             patch("cpex.framework.isolated.client.IsolatedVenvPlugin", return_value=mock_isolated_plugin),
             patch("asyncio.run"),
@@ -2438,7 +2469,7 @@ class TestPluginCatalogInstallFromLocal:
             patch.object(catalog, "update_plugin_version_registry"),
         ):
             manifest, plugin_path = catalog.install_from_local(source_dir)
-            
+
             # Verify subprocess was called with venv python
             mock_subprocess.assert_called_once()
             call_args = mock_subprocess.call_args[0][0]
@@ -2448,7 +2479,7 @@ class TestPluginCatalogInstallFromLocal:
             assert "install" in call_args
             assert "-e" in call_args
             assert str(source_dir) in call_args
-            
+
             assert manifest.name == "my_isolated_plugin"
             assert manifest.kind == "isolated_venv"
             assert plugin_path == mock_isolated_plugin.plugin_path
@@ -2457,12 +2488,12 @@ class TestPluginCatalogInstallFromLocal:
         """Test error handling when pip install fails."""
         catalog = PluginCatalog()
         catalog.catalog_folder = str(tmp_path / "catalog")
-        
+
         # Create source directory with pyproject and manifest
         source_dir = tmp_path / "my_plugin"
         source_dir.mkdir()
         (source_dir / "pyproject.toml").write_text('[project]\nname = "my_plugin"\nversion = "1.0.0"\n')
-        
+
         manifest_data = {
             "name": "my_plugin",
             "version": "1.0.0",
@@ -2475,27 +2506,27 @@ class TestPluginCatalogInstallFromLocal:
         }
         manifest_file = source_dir / "plugin-manifest.yaml"
         manifest_file.write_text(yaml.safe_dump(manifest_data))
-        
+
         with patch("cpex.tools.catalog.subprocess.run") as mock_subprocess:
             mock_subprocess.side_effect = subprocess.CalledProcessError(
                 1, ["pip", "install"], stderr="Installation failed"
             )
-            
+
             with pytest.raises(RuntimeError, match="Failed to install plugin from"):
                 catalog.install_from_local(source_dir)
 
     def test_install_from_local_invalid_manifest(self, tmp_path, mock_github_env):
         """Test error handling when manifest is invalid."""
         catalog = PluginCatalog()
-        
+
         # Create source directory with pyproject and invalid manifest
         source_dir = tmp_path / "my_plugin"
         source_dir.mkdir()
         (source_dir / "pyproject.toml").write_text('[project]\nname = "my_plugin"\nversion = "1.0.0"\n')
-        
+
         manifest_file = source_dir / "plugin-manifest.yaml"
         manifest_file.write_text("invalid: yaml: content:")
-        
+
         with pytest.raises(RuntimeError, match="Failed to parse manifest YAML"):
             catalog.install_from_local(source_dir)
 
@@ -2503,12 +2534,12 @@ class TestPluginCatalogInstallFromLocal:
         """Test that install_from_local calls persist_manifest and update_plugin_version_registry."""
         catalog = PluginCatalog()
         catalog.catalog_folder = str(tmp_path / "catalog")
-        
+
         # Create source directory with pyproject and manifest
         source_dir = tmp_path / "my_plugin"
         source_dir.mkdir()
         (source_dir / "pyproject.toml").write_text('[project]\nname = "my_plugin"\nversion = "1.0.0"\n')
-        
+
         manifest_data = {
             "name": "my_plugin",
             "version": "1.0.0",
@@ -2521,7 +2552,7 @@ class TestPluginCatalogInstallFromLocal:
         }
         manifest_file = source_dir / "plugin-manifest.yaml"
         manifest_file.write_text(yaml.safe_dump(manifest_data))
-        
+
         with (
             patch("cpex.tools.catalog.subprocess.run"),
             patch("cpex.tools.catalog.find_package_path", return_value=source_dir),
@@ -2530,12 +2561,12 @@ class TestPluginCatalogInstallFromLocal:
             patch.object(catalog, "update_plugin_version_registry") as mock_registry,
         ):
             manifest, plugin_path = catalog.install_from_local(source_dir)
-            
+
             # Verify all post-install steps were called
             mock_persist.assert_called_once()
             mock_versions.assert_called_once()
             mock_registry.assert_called_once()
-            
+
             # Verify the manifest was passed correctly
             persist_call_args = mock_persist.call_args[0]
             assert persist_call_args[0].name == "my_plugin"
@@ -2545,12 +2576,12 @@ class TestPluginCatalogInstallFromLocal:
         catalog = PluginCatalog()
         catalog.catalog_folder = str(tmp_path / "catalog")
         catalog.plugin_folder = str(tmp_path / "plugins")
-        
+
         # Create source directory with isolated_venv pyproject and manifest
         source_dir = tmp_path / "my_isolated_plugin"
         source_dir.mkdir()
         (source_dir / "pyproject.toml").write_text('[project]\nname = "my_isolated_plugin"\nversion = "1.0.0"\n')
-        
+
         manifest_data = {
             "name": "my_isolated_plugin",
             "version": "1.0.0",
@@ -2563,13 +2594,13 @@ class TestPluginCatalogInstallFromLocal:
         }
         manifest_file = source_dir / "plugin-manifest.yaml"
         manifest_file.write_text(yaml.safe_dump(manifest_data))
-        
+
         with (
             patch("cpex.framework.isolated.client.IsolatedVenvPlugin") as mock_plugin_class,
             patch("asyncio.run") as mock_asyncio_run,
         ):
             mock_asyncio_run.side_effect = Exception("Venv initialization failed")
-            
+
             with pytest.raises(RuntimeError, match="Failed to install isolated_venv plugin"):
                 catalog.install_from_local(source_dir)
 
@@ -2577,12 +2608,12 @@ class TestPluginCatalogInstallFromLocal:
         """Test that source path is used as fallback when find_package_path returns None."""
         catalog = PluginCatalog()
         catalog.catalog_folder = str(tmp_path / "catalog")
-        
+
         # Create source directory with pyproject and manifest
         source_dir = tmp_path / "my_plugin"
         source_dir.mkdir()
         (source_dir / "pyproject.toml").write_text('[project]\nname = "my_plugin"\nversion = "1.0.0"\n')
-        
+
         manifest_data = {
             "name": "my_plugin",
             "version": "1.0.0",
@@ -2595,7 +2626,7 @@ class TestPluginCatalogInstallFromLocal:
         }
         manifest_file = source_dir / "plugin-manifest.yaml"
         manifest_file.write_text(yaml.safe_dump(manifest_data))
-        
+
         with (
             patch("cpex.tools.catalog.subprocess.run"),
             patch.object(catalog, "_persist_manifest"),
@@ -2603,7 +2634,7 @@ class TestPluginCatalogInstallFromLocal:
             patch.object(catalog, "update_plugin_version_registry"),
         ):
             manifest, plugin_path = catalog.install_from_local(source_dir)
-            
+
             # Non-isolated installs now derive plugin_path from manifest location
             assert plugin_path == source_dir
 
@@ -2611,12 +2642,12 @@ class TestPluginCatalogInstallFromLocal:
         """Test that versions.json is found and loaded correctly."""
         catalog = PluginCatalog()
         catalog.catalog_folder = str(tmp_path / "catalog")
-        
+
         # Create source directory with pyproject and manifest
         source_dir = tmp_path / "my_plugin"
         source_dir.mkdir()
         (source_dir / "pyproject.toml").write_text('[project]\nname = "my_plugin"\nversion = "1.0.0"\n')
-        
+
         manifest_data = {
             "name": "my_plugin",
             "version": "1.0.0",
@@ -2629,11 +2660,11 @@ class TestPluginCatalogInstallFromLocal:
         }
         manifest_file = source_dir / "plugin-manifest.yaml"
         manifest_file.write_text(yaml.safe_dump(manifest_data))
-        
+
         # Create a different path that versions.json returns
         actual_path = tmp_path / "actual_plugin_path"
         actual_path.mkdir()
-        
+
         with (
             patch("cpex.tools.catalog.subprocess.run"),
             patch("cpex.tools.catalog.find_package_path", return_value=source_dir),
@@ -2642,10 +2673,9 @@ class TestPluginCatalogInstallFromLocal:
             patch.object(catalog, "update_plugin_version_registry"),
         ):
             manifest, plugin_path = catalog.install_from_local(source_dir)
-            
+
             # Should return the actual path from versions.json
             assert plugin_path == actual_path
-
 
 
 class TestPluginCatalogInstallFromGit:
@@ -2655,13 +2685,13 @@ class TestPluginCatalogInstallFromGit:
         """Test successful installation from Git using HTTPS URL."""
         catalog = PluginCatalog()
         catalog.catalog_folder = str(tmp_path / "catalog")
-        
+
         # Create mock extracted package with manifest
         extract_dir = tmp_path / "extracted"
         extract_dir.mkdir()
         plugin_dir = extract_dir / "test_plugin"
         plugin_dir.mkdir()
-        
+
         manifest_data = {
             "name": "test_plugin",
             "version": "1.0.0",
@@ -2674,12 +2704,12 @@ class TestPluginCatalogInstallFromGit:
         }
         manifest_file = plugin_dir / "plugin-manifest.yaml"
         manifest_file.write_text(yaml.safe_dump(manifest_data))
-        
+
         # Create a mock archive
         archive_path = tmp_path / "test_plugin-1.0.0.tar.gz"
         with tarfile.open(archive_path, "w:gz") as tar:
             tar.add(plugin_dir, arcname="test_plugin")
-        
+
         with (
             patch("cpex.tools.catalog.subprocess.run") as mock_subprocess,
             patch("cpex.tools.catalog.tempfile.mkdtemp", return_value=str(tmp_path)),
@@ -2695,12 +2725,12 @@ class TestPluginCatalogInstallFromGit:
                     # Simulate pip download creating the archive
                     pass
                 return Mock(returncode=0)
-            
+
             mock_subprocess.side_effect = mock_run
-            
+
             url = "test_plugin @ git+https://github.com/example/test_plugin.git"
             manifest, plugin_path = catalog.install_from_git(url)
-            
+
             assert manifest.name == "test_plugin"
             assert manifest.kind == "native"
             assert plugin_path == plugin_dir
@@ -2711,12 +2741,12 @@ class TestPluginCatalogInstallFromGit:
         """Test successful installation from Git using SSH URL."""
         catalog = PluginCatalog()
         catalog.catalog_folder = str(tmp_path / "catalog")
-        
+
         extract_dir = tmp_path / "extracted"
         extract_dir.mkdir()
         plugin_dir = extract_dir / "test_plugin"
         plugin_dir.mkdir()
-        
+
         manifest_data = {
             "name": "test_plugin",
             "version": "1.0.0",
@@ -2729,11 +2759,11 @@ class TestPluginCatalogInstallFromGit:
         }
         manifest_file = plugin_dir / "plugin-manifest.yaml"
         manifest_file.write_text(yaml.safe_dump(manifest_data))
-        
+
         archive_path = tmp_path / "test_plugin-1.0.0.tar.gz"
         with tarfile.open(archive_path, "w:gz") as tar:
             tar.add(plugin_dir, arcname="test_plugin")
-        
+
         with (
             patch("cpex.tools.catalog.subprocess.run") as mock_subprocess,
             patch("cpex.tools.catalog.tempfile.mkdtemp", return_value=str(tmp_path)),
@@ -2744,11 +2774,11 @@ class TestPluginCatalogInstallFromGit:
             patch("shutil.rmtree"),
         ):
             mock_subprocess.return_value = Mock(returncode=0)
-            
+
             # Use git@ format which is the standard SSH format
             url = "test_plugin @ git+git@github.com:example/test_plugin.git"
             manifest, plugin_path = catalog.install_from_git(url)
-            
+
             assert manifest.name == "test_plugin"
             assert plugin_path == plugin_dir
 
@@ -2756,12 +2786,12 @@ class TestPluginCatalogInstallFromGit:
         """Test installation from Git with specific branch."""
         catalog = PluginCatalog()
         catalog.catalog_folder = str(tmp_path / "catalog")
-        
+
         extract_dir = tmp_path / "extracted"
         extract_dir.mkdir()
         plugin_dir = extract_dir / "test_plugin"
         plugin_dir.mkdir()
-        
+
         manifest_data = {
             "name": "test_plugin",
             "version": "1.0.0",
@@ -2774,11 +2804,11 @@ class TestPluginCatalogInstallFromGit:
         }
         manifest_file = plugin_dir / "plugin-manifest.yaml"
         manifest_file.write_text(yaml.safe_dump(manifest_data))
-        
+
         archive_path = tmp_path / "test_plugin-1.0.0.tar.gz"
         with tarfile.open(archive_path, "w:gz") as tar:
             tar.add(plugin_dir, arcname="test_plugin")
-        
+
         with (
             patch("cpex.tools.catalog.subprocess.run") as mock_subprocess,
             patch("cpex.tools.catalog.tempfile.mkdtemp", return_value=str(tmp_path)),
@@ -2789,10 +2819,10 @@ class TestPluginCatalogInstallFromGit:
             patch("shutil.rmtree"),
         ):
             mock_subprocess.return_value = Mock(returncode=0)
-            
+
             url = "test_plugin @ git+https://github.com/example/test_plugin.git@master"
             manifest, plugin_path = catalog.install_from_git(url)
-            
+
             assert manifest.name == "test_plugin"
             # Verify that the branch was included in the pip install command
             install_call = [call for call in mock_subprocess.call_args_list if "install" in str(call)]
@@ -2802,12 +2832,12 @@ class TestPluginCatalogInstallFromGit:
         """Test installation of isolated_venv plugin from Git."""
         catalog = PluginCatalog()
         catalog.catalog_folder = str(tmp_path / "catalog")
-        
+
         extract_dir = tmp_path / "extracted"
         extract_dir.mkdir()
         plugin_dir = extract_dir / "test_plugin"
         plugin_dir.mkdir()
-        
+
         manifest_data = {
             "name": "test_plugin",
             "version": "1.0.0",
@@ -2820,22 +2850,22 @@ class TestPluginCatalogInstallFromGit:
         }
         manifest_file = plugin_dir / "plugin-manifest.yaml"
         manifest_file.write_text(yaml.safe_dump(manifest_data))
-        
+
         # Create requirements file
         requirements_file = plugin_dir / "requirements.txt"
         requirements_file.write_text("pytest>=7.0.0\n")
-        
+
         archive_path = tmp_path / "test_plugin-1.0.0.tar.gz"
         with tarfile.open(archive_path, "w:gz") as tar:
             tar.add(plugin_dir, arcname="test_plugin")
             tar.add(requirements_file, arcname="test_plugin/requirements.txt")
-        
+
         venv_path = tmp_path / "venv_path"
         venv_path.mkdir()
         venv_bin = venv_path / "venv" / "bin"
         venv_bin.mkdir(parents=True)
         venv_python = venv_bin / "python"
-        
+
         with (
             patch("cpex.tools.catalog.subprocess.run") as mock_subprocess,
             patch("cpex.tools.catalog.tempfile.mkdtemp", return_value=str(tmp_path)),
@@ -2847,10 +2877,10 @@ class TestPluginCatalogInstallFromGit:
             patch("shutil.rmtree"),
         ):
             mock_subprocess.return_value = Mock(returncode=0)
-            
+
             url = "test_plugin @ git+https://github.com/example/test_plugin.git"
             manifest, plugin_path = catalog.install_from_git(url)
-            
+
             assert manifest.kind == "isolated_venv"
             assert plugin_path == venv_path
             # Should call subprocess twice: download and install into isolated venv
@@ -2863,35 +2893,35 @@ class TestPluginCatalogInstallFromGit:
     def test_install_from_git_invalid_url_format(self, mock_github_env):
         """Test error when URL format is invalid (missing @)."""
         catalog = PluginCatalog()
-        
+
         with pytest.raises(ValueError) as exc_info:
             catalog.install_from_git("test_plugin")
-        
+
         assert "Invalid Git URL format" in str(exc_info.value)
         assert "Expected format" in str(exc_info.value)
 
     def test_install_from_git_missing_git_prefix(self, mock_github_env):
         """Test error when git+ prefix is missing."""
         catalog = PluginCatalog()
-        
+
         with pytest.raises(ValueError) as exc_info:
             catalog.install_from_git("test_plugin @ https://github.com/example/test_plugin.git")
-        
+
         assert "Git URL must start with 'git+'" in str(exc_info.value)
 
     def test_install_from_git_invalid_git_url(self, mock_github_env):
         """Test error when Git URL is invalid."""
         catalog = PluginCatalog()
-        
+
         with pytest.raises(ValueError) as exc_info:
             catalog.install_from_git("test_plugin @ git+invalid://not-a-valid-url")
-        
+
         assert "Invalid Git repository URL" in str(exc_info.value)
 
     def test_install_from_git_download_failure(self, tmp_path, mock_github_env):
         """Test error when pip download fails."""
         catalog = PluginCatalog()
-        
+
         with (
             patch("cpex.tools.catalog.subprocess.run") as mock_subprocess,
             patch("cpex.tools.catalog.tempfile.mkdtemp", return_value=str(tmp_path)),
@@ -2900,53 +2930,53 @@ class TestPluginCatalogInstallFromGit:
             mock_subprocess.side_effect = subprocess.CalledProcessError(
                 1, ["pip", "download"], stderr="Download failed"
             )
-            
+
             with pytest.raises(RuntimeError) as exc_info:
                 catalog.install_from_git("test_plugin @ git+https://github.com/example/test_plugin.git")
-            
+
             assert "Failed to install test_plugin from Git" in str(exc_info.value)
 
     def test_install_from_git_no_archive_found(self, tmp_path, mock_github_env):
         """Test error when no archive is found after download."""
         catalog = PluginCatalog()
-        
+
         with (
             patch("cpex.tools.catalog.subprocess.run") as mock_subprocess,
             patch("cpex.tools.catalog.tempfile.mkdtemp", return_value=str(tmp_path)),
             patch("shutil.rmtree"),
         ):
             mock_subprocess.return_value = Mock(returncode=0)
-            
+
             with pytest.raises(RuntimeError) as exc_info:
                 catalog.install_from_git("test_plugin @ git+https://github.com/example/test_plugin.git")
-            
+
             assert "No package archive found" in str(exc_info.value)
 
     def test_install_from_git_manifest_not_found(self, tmp_path, mock_github_env):
         """Test error when manifest is not found in package."""
         catalog = PluginCatalog()
-        
+
         # Create archive without manifest
         extract_dir = tmp_path / "extracted"
         extract_dir.mkdir()
         plugin_dir = extract_dir / "test_plugin"
         plugin_dir.mkdir()
-        
+
         archive_path = tmp_path / "test_plugin-1.0.0.tar.gz"
         with tarfile.open(archive_path, "w:gz") as tar:
             tar.add(plugin_dir, arcname="test_plugin")
-        
+
         with (
             patch("cpex.tools.catalog.subprocess.run") as mock_subprocess,
             patch("cpex.tools.catalog.tempfile.mkdtemp", return_value=str(tmp_path)),
             patch("shutil.rmtree"),
         ):
             mock_subprocess.return_value = Mock(returncode=0)
-            
+
             # The method wraps FileNotFoundError in RuntimeError
             with pytest.raises(RuntimeError) as exc_info:
                 catalog.install_from_git("test_plugin @ git+https://github.com/example/test_plugin.git")
-            
+
             assert "Unexpected error installing test_plugin from Git" in str(exc_info.value)
             assert "plugin-manifest.yaml not found" in str(exc_info.value)
 
@@ -2954,12 +2984,12 @@ class TestPluginCatalogInstallFromGit:
         """Test error when pip install fails."""
         catalog = PluginCatalog()
         catalog.catalog_folder = str(tmp_path / "catalog")
-        
+
         extract_dir = tmp_path / "extracted"
         extract_dir.mkdir()
         plugin_dir = extract_dir / "test_plugin"
         plugin_dir.mkdir()
-        
+
         manifest_data = {
             "name": "test_plugin",
             "version": "1.0.0",
@@ -2972,11 +3002,11 @@ class TestPluginCatalogInstallFromGit:
         }
         manifest_file = plugin_dir / "plugin-manifest.yaml"
         manifest_file.write_text(yaml.safe_dump(manifest_data))
-        
+
         archive_path = tmp_path / "test_plugin-1.0.0.tar.gz"
         with tarfile.open(archive_path, "w:gz") as tar:
             tar.add(plugin_dir, arcname="test_plugin")
-        
+
         with (
             patch("cpex.tools.catalog.subprocess.run") as mock_subprocess,
             patch("cpex.tools.catalog.tempfile.mkdtemp", return_value=str(tmp_path)),
@@ -2987,16 +3017,16 @@ class TestPluginCatalogInstallFromGit:
                 Mock(returncode=0),  # download succeeds
                 subprocess.CalledProcessError(1, ["pip", "install"], stderr="Install failed"),  # install fails
             ]
-            
+
             with pytest.raises(RuntimeError) as exc_info:
                 catalog.install_from_git("test_plugin @ git+https://github.com/example/test_plugin.git")
-            
+
             assert "Failed to install test_plugin from Git" in str(exc_info.value)
 
     def test_install_from_git_cleanup_on_error(self, tmp_path, mock_github_env):
         """Test that temporary directory is cleaned up even on error."""
         catalog = PluginCatalog()
-        
+
         with (
             patch("cpex.tools.catalog.subprocess.run") as mock_subprocess,
             patch("cpex.tools.catalog.tempfile.mkdtemp", return_value=str(tmp_path)),
@@ -3005,10 +3035,10 @@ class TestPluginCatalogInstallFromGit:
             mock_subprocess.side_effect = subprocess.CalledProcessError(
                 1, ["pip", "download"], stderr="Download failed"
             )
-            
+
             with pytest.raises(RuntimeError):
                 catalog.install_from_git("test_plugin @ git+https://github.com/example/test_plugin.git")
-            
+
             # Verify cleanup was called
             mock_rmtree.assert_called_once()
             assert str(tmp_path) in str(mock_rmtree.call_args)
@@ -3017,12 +3047,12 @@ class TestPluginCatalogInstallFromGit:
         """Test installation from Git with zip archive."""
         catalog = PluginCatalog()
         catalog.catalog_folder = str(tmp_path / "catalog")
-        
+
         extract_dir = tmp_path / "extracted"
         extract_dir.mkdir()
         plugin_dir = extract_dir / "test_plugin"
         plugin_dir.mkdir()
-        
+
         manifest_data = {
             "name": "test_plugin",
             "version": "1.0.0",
@@ -3035,12 +3065,12 @@ class TestPluginCatalogInstallFromGit:
         }
         manifest_file = plugin_dir / "plugin-manifest.yaml"
         manifest_file.write_text(yaml.safe_dump(manifest_data))
-        
+
         # Create a zip archive
         archive_path = tmp_path / "test_plugin-1.0.0.zip"
         with zipfile.ZipFile(archive_path, "w") as zipf:
             zipf.write(manifest_file, arcname="test_plugin/plugin-manifest.yaml")
-        
+
         with (
             patch("cpex.tools.catalog.subprocess.run") as mock_subprocess,
             patch("cpex.tools.catalog.tempfile.mkdtemp", return_value=str(tmp_path)),
@@ -3051,22 +3081,22 @@ class TestPluginCatalogInstallFromGit:
             patch("shutil.rmtree"),
         ):
             mock_subprocess.return_value = Mock(returncode=0)
-            
+
             url = "test_plugin @ git+https://github.com/example/test_plugin.git"
             manifest, plugin_path = catalog.install_from_git(url)
-            
+
             assert manifest.name == "test_plugin"
 
     def test_install_from_git_with_wheel(self, tmp_path, mock_github_env):
         """Test installation from Git with wheel archive."""
         catalog = PluginCatalog()
         catalog.catalog_folder = str(tmp_path / "catalog")
-        
+
         extract_dir = tmp_path / "extracted"
         extract_dir.mkdir()
         plugin_dir = extract_dir / "test_plugin"
         plugin_dir.mkdir()
-        
+
         manifest_data = {
             "name": "test_plugin",
             "version": "1.0.0",
@@ -3079,12 +3109,12 @@ class TestPluginCatalogInstallFromGit:
         }
         manifest_file = plugin_dir / "plugin-manifest.yaml"
         manifest_file.write_text(yaml.safe_dump(manifest_data))
-        
+
         # Create a wheel archive (which is a zip file)
         archive_path = tmp_path / "test_plugin-1.0.0-py3-none-any.whl"
         with zipfile.ZipFile(archive_path, "w") as zipf:
             zipf.write(manifest_file, arcname="test_plugin/plugin-manifest.yaml")
-        
+
         with (
             patch("cpex.tools.catalog.subprocess.run") as mock_subprocess,
             patch("cpex.tools.catalog.tempfile.mkdtemp", return_value=str(tmp_path)),
@@ -3095,16 +3125,17 @@ class TestPluginCatalogInstallFromGit:
             patch("shutil.rmtree"),
         ):
             mock_subprocess.return_value = Mock(returncode=0)
-            
+
             url = "test_plugin @ git+https://github.com/example/test_plugin.git"
             manifest, plugin_path = catalog.install_from_git(url)
-            
+
             assert manifest.name == "test_plugin"
 
 
 # ---------------------------------------------------------------------------
 # _extract_package_archive — path traversal guards
 # ---------------------------------------------------------------------------
+
 
 class TestExtractPackageArchivePathTraversal:
     """Verify that _extract_package_archive rejects archives with unsafe member paths."""
@@ -3121,6 +3152,7 @@ class TestExtractPackageArchivePathTraversal:
     def test_tar_traversal_rejected(self, catalog, tmp_path):
         """A tar member whose path escapes extract_dir raises and writes nothing."""
         import io
+
         archive = tmp_path / "evil.tar.gz"
         with tarfile.open(archive, "w:gz") as tf:
             data = b"pwned"
@@ -3139,6 +3171,7 @@ class TestExtractPackageArchivePathTraversal:
     def test_tar_benign_succeeds(self, catalog, tmp_path):
         """A well-formed tar.gz extracts correctly."""
         import io
+
         archive = tmp_path / "good.tar.gz"
         with tarfile.open(archive, "w:gz") as tf:
             data = b"hello"
@@ -3206,6 +3239,7 @@ class TestExtractPackageArchivePathTraversal:
 
         assert (extract_dir / "pkg" / "hello.txt").read_text() == "world"
 
+
 class TestPluginCatalogUpdatePluginVersionRegistry:
     """Tests for PluginCatalog.update_plugin_version_registry method."""
 
@@ -3213,20 +3247,20 @@ class TestPluginCatalogUpdatePluginVersionRegistry:
         """Test creating a new versions.json file when none exists."""
         catalog = PluginCatalog()
         catalog.catalog_folder = str(tmp_path / "catalog")
-        
+
         manifest = create_test_manifest(name="test_plugin", version="1.0.0")
         relpath = Path("plugins/test_plugin")
-        
+
         catalog.update_plugin_version_registry(manifest, relpath)
-        
+
         # Verify file was created
         versions_file = tmp_path / "catalog" / "test_plugin" / "versions.json"
         assert versions_file.exists()
-        
+
         # Verify content
         with versions_file.open("r") as f:
             data = json.load(f)
-        
+
         assert len(data["versions"]) == 1
         assert data["versions"][0]["version"] == "1.0.0"
         assert data["versions"][0]["manifest_file"] == str(relpath)
@@ -3236,22 +3270,22 @@ class TestPluginCatalogUpdatePluginVersionRegistry:
         """Test adding a new version to existing registry."""
         catalog = PluginCatalog()
         catalog.catalog_folder = str(tmp_path / "catalog")
-        
+
         # Create initial version
         manifest1 = create_test_manifest(name="test_plugin", version="1.0.0")
         relpath1 = Path("plugins/test_plugin")
         catalog.update_plugin_version_registry(manifest1, relpath1)
-        
+
         # Add new version
         manifest2 = create_test_manifest(name="test_plugin", version="2.0.0")
         relpath2 = Path("plugins/test_plugin")
         catalog.update_plugin_version_registry(manifest2, relpath2)
-        
+
         # Verify both versions exist
         versions_file = tmp_path / "catalog" / "test_plugin" / "versions.json"
         with versions_file.open("r") as f:
             data = json.load(f)
-        
+
         assert len(data["versions"]) == 2
         versions = [v["version"] for v in data["versions"]]
         assert "1.0.0" in versions
@@ -3262,19 +3296,19 @@ class TestPluginCatalogUpdatePluginVersionRegistry:
         """Test that duplicate versions are not added."""
         catalog = PluginCatalog()
         catalog.catalog_folder = str(tmp_path / "catalog")
-        
+
         manifest = create_test_manifest(name="test_plugin", version="1.0.0")
         relpath = Path("plugins/test_plugin")
-        
+
         # Add same version twice
         catalog.update_plugin_version_registry(manifest, relpath)
         catalog.update_plugin_version_registry(manifest, relpath)
-        
+
         # Verify only one version exists
         versions_file = tmp_path / "catalog" / "test_plugin" / "versions.json"
         with versions_file.open("r") as f:
             data = json.load(f)
-        
+
         assert len(data["versions"]) == 1
         assert data["versions"][0]["version"] == "1.0.0"
 
@@ -3282,24 +3316,24 @@ class TestPluginCatalogUpdatePluginVersionRegistry:
         """Test that latest version is updated correctly when adding versions out of order."""
         catalog = PluginCatalog()
         catalog.catalog_folder = str(tmp_path / "catalog")
-        
+
         # Add version 2.0.0 first
         manifest2 = create_test_manifest(name="test_plugin", version="2.0.0")
         catalog.update_plugin_version_registry(manifest2, Path("plugins/test_plugin"))
-        
+
         # Add version 1.0.0
         manifest1 = create_test_manifest(name="test_plugin", version="1.0.0")
         catalog.update_plugin_version_registry(manifest1, Path("plugins/test_plugin"))
-        
+
         # Add version 3.0.0
         manifest3 = create_test_manifest(name="test_plugin", version="3.0.0")
         catalog.update_plugin_version_registry(manifest3, Path("plugins/test_plugin"))
-        
+
         # Verify latest is 3.0.0
         versions_file = tmp_path / "catalog" / "test_plugin" / "versions.json"
         with versions_file.open("r") as f:
             data = json.load(f)
-        
+
         assert data["latest"]["version"] == "3.0.0"
         assert len(data["versions"]) == 3
 
@@ -3307,20 +3341,20 @@ class TestPluginCatalogUpdatePluginVersionRegistry:
         """Test handling of pre-release versions."""
         catalog = PluginCatalog()
         catalog.catalog_folder = str(tmp_path / "catalog")
-        
+
         # Add stable version
         manifest1 = create_test_manifest(name="test_plugin", version="1.0.0")
         catalog.update_plugin_version_registry(manifest1, Path("plugins/test_plugin"))
-        
+
         # Add pre-release version
         manifest2 = create_test_manifest(name="test_plugin", version="2.0.0rc1")
         catalog.update_plugin_version_registry(manifest2, Path("plugins/test_plugin"))
-        
+
         # Verify latest is the rc version (higher version number)
         versions_file = tmp_path / "catalog" / "test_plugin" / "versions.json"
         with versions_file.open("r") as f:
             data = json.load(f)
-        
+
         assert len(data["versions"]) == 2
         assert data["latest"]["version"] == "2.0.0rc1"
 
@@ -3328,20 +3362,20 @@ class TestPluginCatalogUpdatePluginVersionRegistry:
         """Test handling of development versions."""
         catalog = PluginCatalog()
         catalog.catalog_folder = str(tmp_path / "catalog")
-        
+
         # Add dev version
         manifest1 = create_test_manifest(name="test_plugin", version="1.0.0.dev1")
         catalog.update_plugin_version_registry(manifest1, Path("plugins/test_plugin"))
-        
+
         # Add stable version
         manifest2 = create_test_manifest(name="test_plugin", version="1.0.0")
         catalog.update_plugin_version_registry(manifest2, Path("plugins/test_plugin"))
-        
+
         # Verify latest is stable version
         versions_file = tmp_path / "catalog" / "test_plugin" / "versions.json"
         with versions_file.open("r") as f:
             data = json.load(f)
-        
+
         assert len(data["versions"]) == 2
         assert data["latest"]["version"] == "1.0.0"
 
@@ -3349,12 +3383,12 @@ class TestPluginCatalogUpdatePluginVersionRegistry:
         """Test that existing version data is preserved when adding new versions."""
         catalog = PluginCatalog()
         catalog.catalog_folder = str(tmp_path / "catalog")
-        
+
         # Manually create a versions.json with additional metadata
         versions_dir = tmp_path / "catalog" / "test_plugin"
         versions_dir.mkdir(parents=True)
         versions_file = versions_dir / "versions.json"
-        
+
         initial_data = {
             "latest": {
                 "version": "1.0.0",
@@ -3362,7 +3396,7 @@ class TestPluginCatalogUpdatePluginVersionRegistry:
                 "manifest_file": "plugins/test_plugin",
                 "deprecated": False,
                 "breaking_changes": False,
-                "changelog": "Initial release"
+                "changelog": "Initial release",
             },
             "versions": [
                 {
@@ -3371,20 +3405,20 @@ class TestPluginCatalogUpdatePluginVersionRegistry:
                     "manifest_file": "plugins/test_plugin",
                     "deprecated": False,
                     "breaking_changes": False,
-                    "changelog": "Initial release"
+                    "changelog": "Initial release",
                 }
-            ]
+            ],
         }
         versions_file.write_text(json.dumps(initial_data, indent=2))
-        
+
         # Add new version
         manifest2 = create_test_manifest(name="test_plugin", version="2.0.0")
         catalog.update_plugin_version_registry(manifest2, Path("plugins/test_plugin"))
-        
+
         # Verify old version data is preserved
         with versions_file.open("r") as f:
             data = json.load(f)
-        
+
         assert len(data["versions"]) == 2
         old_version = next(v for v in data["versions"] if v["version"] == "1.0.0")
         assert old_version["changelog"] == "Initial release"
@@ -3394,18 +3428,18 @@ class TestPluginCatalogUpdatePluginVersionRegistry:
         """Test version ordering with complex version strings."""
         catalog = PluginCatalog()
         catalog.catalog_folder = str(tmp_path / "catalog")
-        
+
         # Add versions in random order
         versions = ["1.0.0", "2.0.0rc1", "1.5.0", "2.0.0", "1.0.1", "2.1.0a1"]
         for version in versions:
             manifest = create_test_manifest(name="test_plugin", version=version)
             catalog.update_plugin_version_registry(manifest, Path("plugins/test_plugin"))
-        
+
         # Verify latest is 2.1.0a1 (highest version)
         versions_file = tmp_path / "catalog" / "test_plugin" / "versions.json"
         with versions_file.open("r") as f:
             data = json.load(f)
-        
+
         assert len(data["versions"]) == 6
         assert data["latest"]["version"] == "2.1.0a1"
 
@@ -3413,11 +3447,11 @@ class TestPluginCatalogUpdatePluginVersionRegistry:
         """Test that parent directories are created if they don't exist."""
         catalog = PluginCatalog()
         catalog.catalog_folder = str(tmp_path / "catalog")
-        
+
         # Don't create the directory beforehand
         manifest = create_test_manifest(name="test_plugin", version="1.0.0")
         catalog.update_plugin_version_registry(manifest, Path("plugins/test_plugin"))
-        
+
         # Verify directory and file were created
         versions_file = tmp_path / "catalog" / "test_plugin" / "versions.json"
         assert versions_file.exists()
@@ -3427,13 +3461,13 @@ class TestPluginCatalogUpdatePluginVersionRegistry:
         """Test handling of corrupted existing versions.json file."""
         catalog = PluginCatalog()
         catalog.catalog_folder = str(tmp_path / "catalog")
-        
+
         # Create corrupted versions.json
         versions_dir = tmp_path / "catalog" / "test_plugin"
         versions_dir.mkdir(parents=True)
         versions_file = versions_dir / "versions.json"
         versions_file.write_text("invalid json content")
-        
+
         # Attempt to update should raise an error
         manifest = create_test_manifest(name="test_plugin", version="1.0.0")
         with pytest.raises(json.JSONDecodeError):
@@ -3443,56 +3477,56 @@ class TestPluginCatalogUpdatePluginVersionRegistry:
         """Test that timestamp is in correct ISO format with Z suffix."""
         catalog = PluginCatalog()
         catalog.catalog_folder = str(tmp_path / "catalog")
-        
+
         manifest = create_test_manifest(name="test_plugin", version="1.0.0")
         catalog.update_plugin_version_registry(manifest, Path("plugins/test_plugin"))
-        
+
         versions_file = tmp_path / "catalog" / "test_plugin" / "versions.json"
         with versions_file.open("r") as f:
             data = json.load(f)
-        
+
         released = data["versions"][0]["released"]
         # Verify format: ends with Z and contains T
         assert released.endswith("Z")
         assert "T" in released
         # Verify it's a valid ISO format
         from datetime import datetime
+
         datetime.fromisoformat(released.replace("Z", "+00:00"))
 
     def test_update_plugin_version_registry_with_epoch_versions(self, tmp_path, mock_github_env):
         """Test handling of versions with epochs."""
         catalog = PluginCatalog()
         catalog.catalog_folder = str(tmp_path / "catalog")
-        
+
         # Add version with epoch
         manifest1 = create_test_manifest(name="test_plugin", version="1!1.0.0")
         catalog.update_plugin_version_registry(manifest1, Path("plugins/test_plugin"))
-        
+
         # Add version without epoch (should be lower)
         manifest2 = create_test_manifest(name="test_plugin", version="2.0.0")
         catalog.update_plugin_version_registry(manifest2, Path("plugins/test_plugin"))
-        
+
         # Verify epoch version is latest
         versions_file = tmp_path / "catalog" / "test_plugin" / "versions.json"
         with versions_file.open("r") as f:
             data = json.load(f)
-        
+
         assert data["latest"]["version"] == "1!1.0.0"
 
     def test_update_plugin_version_registry_relpath_stored_correctly(self, tmp_path, mock_github_env):
         """Test that relative path is stored correctly in manifest_file."""
         catalog = PluginCatalog()
         catalog.catalog_folder = str(tmp_path / "catalog")
-        
+
         manifest = create_test_manifest(name="test_plugin", version="1.0.0")
         relpath = Path("custom/path/to/plugin")
-        
+
         catalog.update_plugin_version_registry(manifest, relpath)
-        
+
         versions_file = tmp_path / "catalog" / "test_plugin" / "versions.json"
         with versions_file.open("r") as f:
             data = json.load(f)
-        
 
 
 class TestPluginCatalogVerMethod:
@@ -3568,11 +3602,12 @@ class TestPluginCatalogVerMethod:
     def test_ver_logs_debug_on_invalid_version(self, mock_github_env, caplog):
         """Test that debug log is created for invalid versions."""
         import logging
+
         catalog = PluginCatalog()
-        
+
         with caplog.at_level(logging.DEBUG):
             catalog._ver("not-a-version")
-        
+
         assert "Could not parse version" in caplog.text
         assert "treating as lowest" in caplog.text
 
@@ -3601,7 +3636,7 @@ class TestPluginCatalogVerMethod:
         v1 = catalog._ver("1.0.0")
         v2 = catalog._ver("2.0.0")
         v_invalid = catalog._ver("invalid")
-        
+
         assert v1 < v2
         assert v_invalid < v1
         assert v_invalid == catalog._ver("0")
@@ -3612,7 +3647,7 @@ class TestPluginCatalogVerMethod:
         v_stable = catalog._ver("1.0.0")
         v_rc = catalog._ver("1.0.0rc1")
         v_dev = catalog._ver("1.0.0.dev1")
-        
+
         assert v_dev < v_rc < v_stable
 
     def test_ver_epoch_comparison(self, mock_github_env):
@@ -3620,6 +3655,392 @@ class TestPluginCatalogVerMethod:
         catalog = PluginCatalog()
         v_no_epoch = catalog._ver("2.0.0")
         v_with_epoch = catalog._ver("1!1.0.0")
-        
+
         # Epoch takes precedence
         assert v_with_epoch > v_no_epoch
+
+
+class TestClassifyPluginKind:
+    """Tests for classify_plugin_kind (U1: FQN kind detection)."""
+
+    @pytest.mark.parametrize(
+        "kind",
+        ["builtin", "native", "wasm", "external", "isolated_venv", "PDP"],
+    )
+    def test_known_kinds_classify_as_known(self, kind):
+        """Each recognized kind classifies as KIND_KNOWN."""
+        from cpex.tools.catalog import KIND_KNOWN, classify_plugin_kind
+
+        assert classify_plugin_kind(kind) == KIND_KNOWN
+
+    def test_fqn_class_path_classifies_as_fqn(self):
+        """A dotted class path that is not a known kind is an FQN to convert."""
+        from cpex.tools.catalog import KIND_FQN, classify_plugin_kind
+
+        assert classify_plugin_kind("cpex_pii_filter.pii_filter.PIIFilterPlugin") == KIND_FQN
+
+    def test_single_segment_rejected(self):
+        """A bare token with no dots is not a class path."""
+        from cpex.tools.catalog import KIND_REJECT, classify_plugin_kind
+
+        assert classify_plugin_kind("PIIFilterPlugin") == KIND_REJECT
+
+    def test_typo_kind_rejected(self):
+        """A misspelled known kind is rejected, not silently converted."""
+        from cpex.tools.catalog import KIND_REJECT, classify_plugin_kind
+
+        assert classify_plugin_kind("isolate_venv") == KIND_REJECT
+
+    def test_lowercase_final_segment_rejected(self):
+        """A dotted path whose final segment is not class-shaped is rejected."""
+        from cpex.tools.catalog import KIND_REJECT, classify_plugin_kind
+
+        assert classify_plugin_kind("a.b.c") == KIND_REJECT
+
+    @pytest.mark.parametrize("kind", [None, "", "   "])
+    def test_empty_or_whitespace_rejected(self, kind):
+        """Missing or blank kind is rejected."""
+        from cpex.tools.catalog import KIND_REJECT, classify_plugin_kind
+
+        assert classify_plugin_kind(kind) == KIND_REJECT
+
+    def test_invalid_identifier_segment_rejected(self):
+        """A dotted path with a non-identifier segment is rejected."""
+        from cpex.tools.catalog import KIND_REJECT, classify_plugin_kind
+
+        assert classify_plugin_kind("pkg.1module.ClassName") == KIND_REJECT
+
+    def test_supported_kinds_message_names_all_kinds(self):
+        """The rejection message names every supported kind."""
+        from cpex.tools.catalog import supported_kinds_message
+
+        msg = supported_kinds_message()
+        for kind in ["builtin", "native", "wasm", "external", "isolated_venv", "PDP"]:
+            assert kind in msg
+
+
+class TestConvertFqnKind:
+    """Tests for convert_fqn_kind_in_place and normalize integration (U2)."""
+
+    def test_fqn_manifest_converted(self):
+        """A bare-FQN kind moves into class_name and kind becomes isolated_venv."""
+        from cpex.tools.catalog import convert_fqn_kind_in_place
+
+        data = {
+            "name": "cpex-pii-filter",
+            "kind": "cpex_pii_filter.pii_filter.PIIFilterPlugin",
+            "default_config": {"detect_ssn": True},
+        }
+        convert_fqn_kind_in_place(data)
+
+        assert data["kind"] == "isolated_venv"
+        assert data["default_config"]["class_name"] == "cpex_pii_filter.pii_filter.PIIFilterPlugin"
+        # Other config fields preserved.
+        assert data["default_config"]["detect_ssn"] is True
+
+    def test_fqn_manifest_without_default_config(self):
+        """Conversion creates default_config when absent."""
+        from cpex.tools.catalog import convert_fqn_kind_in_place
+
+        data = {"name": "p", "kind": "pkg.mod.MyPlugin"}
+        convert_fqn_kind_in_place(data)
+
+        assert data["kind"] == "isolated_venv"
+        assert data["default_config"]["class_name"] == "pkg.mod.MyPlugin"
+
+    def test_already_isolated_venv_untouched(self):
+        """An isolated_venv manifest with class_name is idempotent."""
+        from cpex.tools.catalog import convert_fqn_kind_in_place
+
+        data = {
+            "name": "p",
+            "kind": "isolated_venv",
+            "default_config": {"class_name": "pkg.mod.Plugin", "requirements_file": "requirements.txt"},
+        }
+        convert_fqn_kind_in_place(dict(data))  # copy to be safe
+        result = convert_fqn_kind_in_place(data)
+
+        assert result["kind"] == "isolated_venv"
+        assert result["default_config"]["class_name"] == "pkg.mod.Plugin"
+
+    def test_explicit_class_name_wins_over_fqn(self):
+        """When both an FQN kind and class_name exist, keep explicit class_name."""
+        from cpex.tools.catalog import convert_fqn_kind_in_place
+
+        data = {
+            "name": "p",
+            "kind": "pkg.mod.FromKind",
+            "default_config": {"class_name": "pkg.mod.Explicit"},
+        }
+        convert_fqn_kind_in_place(data)
+
+        assert data["kind"] == "isolated_venv"
+        assert data["default_config"]["class_name"] == "pkg.mod.Explicit"
+
+    def test_unknown_non_fqn_kind_raises(self):
+        """A non-FQN unknown kind raises with the supported-kinds message."""
+        from cpex.tools.catalog import convert_fqn_kind_in_place
+
+        data = {"name": "p", "kind": "isolate_venv"}
+        with pytest.raises(ValueError, match="isolated_venv"):
+            convert_fqn_kind_in_place(data)
+
+    def test_no_convert_leaves_fqn_kind_untouched(self):
+        """convert=False (--no-convert) keeps a bare-FQN kind as declared."""
+        from cpex.tools.catalog import convert_fqn_kind_in_place
+
+        data = {"name": "p", "kind": "pkg.mod.MyPlugin", "default_config": {"a": 1}}
+        result = convert_fqn_kind_in_place(data, convert=False)
+
+        # Kind is not rewritten and no class_name is injected.
+        assert result["kind"] == "pkg.mod.MyPlugin"
+        assert "class_name" not in result["default_config"]
+        assert result["default_config"]["a"] == 1
+
+    def test_no_convert_warns_and_passes_through_reject(self, caplog):
+        """convert=False softens an unknown/reject kind from raise to warn."""
+        import logging
+
+        from cpex.tools.catalog import convert_fqn_kind_in_place
+
+        data = {"name": "p", "kind": "isolate_venv"}  # typo -> KIND_REJECT
+        with caplog.at_level(logging.WARNING):
+            result = convert_fqn_kind_in_place(data, convert=False)
+
+        # No exception; kind left unchanged; a warning was emitted.
+        assert result["kind"] == "isolate_venv"
+        assert any("isolated_venv" in rec.message for rec in caplog.records)
+
+    def test_no_convert_known_kind_untouched(self):
+        """convert=False still passes a known kind through unchanged."""
+        from cpex.tools.catalog import convert_fqn_kind_in_place
+
+        data = {"name": "p", "kind": "external"}
+        result = convert_fqn_kind_in_place(data, convert=False)
+        assert result["kind"] == "external"
+
+    def test_normalize_no_convert_keeps_fqn_kind(self, mock_github_env):
+        """_normalize_manifest_data(convert=False) leaves the FQN kind in place."""
+        catalog = PluginCatalog()
+        manifest_data = {
+            "kind": "cpex_pii_filter.pii_filter.PIIFilterPlugin",
+            "description": "PII filter",
+            "author": "ContextForge",
+            "version": "0.3.6",
+            "available_hooks": ["tool_pre_invoke"],
+            "default_config": {"detect_ssn": True},
+        }
+        manifest = catalog._normalize_manifest_data(manifest_data, "cpex-pii-filter", ">=0.3.0", convert=False)
+
+        assert manifest.kind == "cpex_pii_filter.pii_filter.PIIFilterPlugin"
+        assert "class_name" not in manifest.default_config
+
+    def test_normalize_converts_fqn_and_normalizes_default_configs(self, mock_github_env):
+        """_normalize_manifest_data converts FQN after normalizing legacy default_configs."""
+        catalog = PluginCatalog()
+        manifest_data = {
+            "kind": "cpex_pii_filter.pii_filter.PIIFilterPlugin",
+            "description": "PII filter",
+            "author": "ContextForge",
+            "version": "0.3.6",
+            "available_hooks": ["tool_pre_invoke"],
+            "default_configs": {"detect_ssn": True},  # legacy plural key
+        }
+        manifest = catalog._normalize_manifest_data(manifest_data, "cpex-pii-filter", ">=0.3.0")
+
+        assert manifest.kind == "isolated_venv"
+        assert manifest.default_config["class_name"] == "cpex_pii_filter.pii_filter.PIIFilterPlugin"
+        assert manifest.default_config["detect_ssn"] is True
+
+    def test_normalize_rejects_typo_kind(self, mock_github_env):
+        """_normalize_manifest_data surfaces the rejection for a typo'd kind."""
+        catalog = PluginCatalog()
+        manifest_data = {
+            "kind": "isolate_venv",
+            "description": "d",
+            "author": "a",
+            "version": "1.0.0",
+            "available_hooks": [],
+            "default_config": {},
+        }
+        with pytest.raises(RuntimeError, match="isolated_venv"):
+            catalog._normalize_manifest_data(manifest_data, "p", None)
+
+    def test_transform_leaves_unrecognized_kind_unconverted(self, mock_github_env):
+        """Catalog scan must not drop a manifest over an unrecognized kind (Finding #2).
+
+        _transform_manifest_data is used during catalog population; a reject there
+        should leave the kind unconverted rather than raising and silently dropping
+        the plugin. The install path still raises (covered above).
+        """
+        catalog = PluginCatalog()
+        content = {"kind": "some_odd_token", "default_configs": {}}
+        result = catalog._transform_manifest_data(
+            content, name="odd", member=None, repo_url=httpx.URL("https://github.com/org/repo")
+        )
+        # Kind is left as-is; no exception, manifest not dropped.
+        assert result["kind"] == "some_odd_token"
+
+
+class TestInstallPackageIntoVenv:
+    """Tests for installing the plugin package into the isolated venv (U4)."""
+
+    def _isolated_manifest_file(self, tmp_path, requirements_file=None):
+        extract_dir = tmp_path / "extracted"
+        extract_dir.mkdir(exist_ok=True)
+        package_dir = extract_dir / "test_package"
+        package_dir.mkdir(exist_ok=True)
+        default_config = {"class_name": "test_package.mod.Plugin"}
+        if requirements_file:
+            default_config["requirements_file"] = requirements_file
+        manifest_data = {
+            "name": "test_package",
+            "version": "1.0.0",
+            "kind": "isolated_venv",
+            "description": "Test",
+            "author": "Test Author",
+            "tags": ["test"],
+            "available_hooks": ["tool_pre_invoke"],
+            "default_config": default_config,
+        }
+        manifest_file = package_dir / "plugin-manifest.yaml"
+        manifest_file.write_text(yaml.safe_dump(manifest_data))
+        return extract_dir, manifest_file
+
+    def test_helper_builds_pip_install_command(self, tmp_path, mock_github_env):
+        """_install_package_into_venv runs pip install in the venv python with the given args."""
+        catalog = PluginCatalog()
+        plugin_path = tmp_path / "plug"
+        with (
+            patch.object(PluginCatalog, "_get_venv_python_executable", return_value="/venv/bin/python"),
+            patch("cpex.tools.catalog.subprocess.run") as mock_run,
+        ):
+            catalog._install_package_into_venv(plugin_path, ["some-pkg>=1.0"])
+
+        args = mock_run.call_args[0][0]
+        assert args == ["/venv/bin/python", "-m", "pip", "install", "some-pkg>=1.0"]
+
+    def test_pypi_installs_package_into_venv_with_constraint(self, tmp_path, mock_github_env):
+        """PyPI isolated install installs the package into the venv with its version constraint."""
+        extract_dir, manifest_file = self._isolated_manifest_file(tmp_path)
+        with (
+            patch("cpex.tools.catalog.PluginCatalog._download_package_to_temp", return_value=extract_dir),
+            patch("cpex.tools.catalog.PluginCatalog._find_manifest_in_extracted_package", return_value=manifest_file),
+            patch("cpex.tools.catalog.PluginCatalog._handle_plugin_installation", return_value=tmp_path / "plug"),
+            patch("cpex.tools.catalog.PluginCatalog._install_package_into_venv") as mock_venv_install,
+            patch("cpex.tools.catalog.PluginCatalog._finalize_plugin_installation", return_value=tmp_path / "plug"),
+            patch("shutil.rmtree"),
+        ):
+            catalog = PluginCatalog()
+            catalog.catalog_folder = str(tmp_path / "catalog")
+            catalog.install_from_pypi("test_package", version_constraint=">=0.2.0")
+
+        mock_venv_install.assert_called_once()
+        pth, pip_args = mock_venv_install.call_args[0]
+        assert pip_args == ["test_package>=0.2.0"]
+
+    def test_test_pypi_uses_test_index(self, tmp_path, mock_github_env):
+        """test-pypi isolated install passes the test index URL."""
+        extract_dir, manifest_file = self._isolated_manifest_file(tmp_path)
+        with (
+            patch("cpex.tools.catalog.PluginCatalog._download_package_to_temp", return_value=extract_dir),
+            patch("cpex.tools.catalog.PluginCatalog._find_manifest_in_extracted_package", return_value=manifest_file),
+            patch("cpex.tools.catalog.PluginCatalog._handle_plugin_installation", return_value=tmp_path / "plug"),
+            patch("cpex.tools.catalog.PluginCatalog._install_package_into_venv") as mock_venv_install,
+            patch("cpex.tools.catalog.PluginCatalog._finalize_plugin_installation", return_value=tmp_path / "plug"),
+            patch("shutil.rmtree"),
+        ):
+            catalog = PluginCatalog()
+            catalog.catalog_folder = str(tmp_path / "catalog")
+            catalog.install_from_pypi("test_package", use_pytest=True)
+
+        _pth, pip_args = mock_venv_install.call_args[0]
+        assert "--index-url" in pip_args
+        assert "https://test.pypi.org/simple/" in pip_args
+        assert "test_package" in pip_args
+
+    def test_persist_manifest_to_plugin_dir(self, tmp_path, mock_github_env):
+        """The converted manifest is written under plugins/<class_root>/ (U5, R3).
+
+        The filename is keyed on the full class name (#4), not the shared
+        class_root, so multi-plugin packages do not collide on one manifest.
+        """
+        from cpex.framework.utils import manifest_filename_for_class
+
+        catalog = PluginCatalog()
+        catalog.plugin_folder = str(tmp_path / "plugins")
+        manifest = create_test_manifest(
+            name="cpex-pii-filter",
+            kind="isolated_venv",
+            default_config={"class_name": "cpex_pii_filter.pii_filter.PIIFilterPlugin"},
+        )
+
+        result = catalog._persist_manifest_to_plugin_dir(manifest)
+
+        expected = (
+            Path(catalog.plugin_folder)
+            / "cpex_pii_filter"
+            / manifest_filename_for_class("cpex_pii_filter.pii_filter.PIIFilterPlugin")
+        )
+        assert result == expected
+        assert expected.exists()
+        written = yaml.safe_load(expected.read_text())
+        assert written["kind"] == "isolated_venv"
+        assert written["default_config"]["class_name"] == "cpex_pii_filter.pii_filter.PIIFilterPlugin"
+
+    def test_persist_manifest_multi_plugin_package_no_collision(self, tmp_path, mock_github_env):
+        """Two plugins in one package get distinct manifest files in the shared dir (#4)."""
+        catalog = PluginCatalog()
+        catalog.plugin_folder = str(tmp_path / "plugins")
+
+        manifest_a = create_test_manifest(
+            name="pkg-a",
+            kind="isolated_venv",
+            default_config={"class_name": "cpex_pkg.a.PluginA"},
+        )
+        manifest_b = create_test_manifest(
+            name="pkg-b",
+            kind="isolated_venv",
+            default_config={"class_name": "cpex_pkg.b.PluginB"},
+        )
+
+        path_a = catalog._persist_manifest_to_plugin_dir(manifest_a)
+        path_b = catalog._persist_manifest_to_plugin_dir(manifest_b)
+
+        # Same shared class_root directory, distinct manifest files.
+        assert path_a.parent == path_b.parent
+        assert path_a != path_b
+        assert path_a.exists() and path_b.exists()
+
+    def test_persist_manifest_to_plugin_dir_skips_non_isolated(self, tmp_path, mock_github_env):
+        """Non-isolated plugins are not persisted to a plugin dir."""
+        catalog = PluginCatalog()
+        catalog.plugin_folder = str(tmp_path / "plugins")
+        manifest = create_test_manifest(name="p", kind="native")
+
+        assert catalog._persist_manifest_to_plugin_dir(manifest) is None
+
+    def test_monorepo_installs_package_into_venv_from_source(self, tmp_path, mock_github_env):
+        """Monorepo isolated install installs the subdirectory source into the venv."""
+        from cpex.framework.models import Monorepo
+
+        catalog = PluginCatalog()
+        manifest = create_test_manifest(
+            name="test_package",
+            kind="isolated_venv",
+            default_config={"class_name": "test_package.mod.Plugin"},
+        )
+        manifest.monorepo = Monorepo(
+            package_source="https://github.com/org/repo#subdirectory=plugins/test_package",
+            repo_url="https://github.com/org/repo",
+            package_folder="plugins/test_package",
+        )
+        with (
+            patch("cpex.tools.catalog.PluginCatalog._download_monorepo_folder_to_temp", return_value=tmp_path / "pkg"),
+            patch("cpex.tools.catalog.PluginCatalog._initialize_isolated_venv", return_value=tmp_path / "plug"),
+            patch("cpex.tools.catalog.PluginCatalog._install_package_into_venv") as mock_venv_install,
+        ):
+            catalog.install_folder_via_pip(manifest)
+
+        _pth, pip_args = mock_venv_install.call_args[0]
+        assert pip_args == ["git+https://github.com/org/repo#subdirectory=plugins/test_package"]

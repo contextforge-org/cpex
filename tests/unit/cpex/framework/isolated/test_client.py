@@ -91,6 +91,25 @@ class TestIsolatedVenvPlugin:
 
     @pytest.mark.asyncio
     @patch("cpex.framework.isolated.client.venv.EnvBuilder")
+    async def test_create_venv_reuses_cache_with_no_requirements(self, mock_builder_class, plugin, tmp_path):
+        """create_venv reuses a cached venv for a no-requirements plugin (Finding #1 fix).
+
+        With no requirements_file, the manifest version+hash is the sole cache
+        signal. A valid cache must be honored — the venv must NOT be rebuilt.
+        """
+        venv_path = plugin.plugin_path / ".venv"
+        venv_path.mkdir(parents=True, exist_ok=True)
+        # Seed valid cache metadata reflecting the current (no-requirements) state.
+        plugin._save_cache_metadata(str(venv_path), None)
+
+        result = await plugin.create_venv(str(venv_path), requirements_file=None, use_cache=True)
+
+        # Cache hit -> returns False and does NOT rebuild the venv.
+        assert result is False
+        mock_builder_class.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("cpex.framework.isolated.client.venv.EnvBuilder")
     async def test_create_venv_failure(self, mock_builder_class, plugin, tmp_path):
         """Test venv creation failure."""
         venv_path = tmp_path / ".venv"
@@ -116,6 +135,74 @@ class TestIsolatedVenvPlugin:
         mock_comm_class.assert_called_once()
         mock_comm.install_requirements.assert_called_once()
         assert plugin.comm is not None
+
+    @pytest.fixture
+    def config_no_requirements(self, tmp_path):
+        """A plugin config with no requirements_file (converted FQN plugin)."""
+        plugin_dir = tmp_path / "test_plugin"
+        plugin_dir.mkdir(parents=True, exist_ok=True)
+        config_dict = {
+            "name": "test_plugin",
+            "kind": "isolated_venv",
+            "description": "Test plugin",
+            "version": "1.0.0",
+            "author": "Test",
+            "hooks": ["tool_pre_invoke"],
+            "config": {"class_name": "test_plugin.TestPlugin"},  # no requirements_file
+        }
+        return PluginConfig(**config_dict)
+
+    @pytest.fixture
+    def plugin_no_requirements(self, config_no_requirements, tmp_path):
+        instance = IsolatedVenvPlugin(config_no_requirements, plugin_dirs=[tmp_path])
+        instance.plugin_path = tmp_path / "test_plugin"
+        return instance
+
+    @pytest.mark.asyncio
+    @patch("cpex.framework.isolated.client.VenvProcessCommunicator")
+    @patch.object(IsolatedVenvPlugin, "create_venv")
+    async def test_initialize_without_requirements_file(
+        self, mock_create_venv, mock_comm_class, plugin_no_requirements
+    ):
+        """initialize() with no requirements_file creates the venv and skips install."""
+        mock_create_venv.return_value = True  # newly created venv
+        mock_comm = MagicMock()
+        mock_comm_class.return_value = mock_comm
+
+        # Must not raise (previously a KeyError on config['requirements_file']).
+        await plugin_no_requirements.initialize()
+
+        mock_create_venv.assert_called_once()
+        # No requirements file -> install_requirements is skipped.
+        mock_comm.install_requirements.assert_not_called()
+        assert plugin_no_requirements.comm is not None
+
+    @pytest.mark.asyncio
+    @patch("cpex.framework.isolated.client.VenvProcessCommunicator")
+    @patch.object(IsolatedVenvPlugin, "create_venv")
+    async def test_initialize_requirements_file_missing_on_disk(
+        self, mock_create_venv, mock_comm_class, plugin
+    ):
+        """initialize() when the configured requirements file doesn't exist skips install gracefully."""
+        # plugin's config declares requirements.txt but remove the file from disk.
+        req = plugin.plugin_path / "requirements.txt"
+        if req.exists():
+            req.unlink()
+        mock_create_venv.return_value = True
+        mock_comm = MagicMock()
+        mock_comm_class.return_value = mock_comm
+
+        await plugin.initialize()
+
+        mock_comm.install_requirements.assert_not_called()
+        assert plugin.comm is not None
+
+    def test_compute_requirements_hash_none_is_empty_digest(self, plugin):
+        """A None requirements file hashes to the empty-content digest."""
+        import hashlib
+
+        expected = hashlib.sha256(b"").hexdigest()
+        assert plugin._compute_requirements_hash(None) == expected
 
     @pytest.mark.asyncio
     @patch("cpex.framework.isolated.client.get_hook_registry")
@@ -491,13 +578,15 @@ class TestIsolatedVenvPlugin:
         req_file = tmp_path / "requirements.txt"
         req_file.write_text("pytest==7.0.0\n")
 
-        # Create metadata with correct hash
+        # Create metadata with correct hashes, including manifest version + hash.
         req_hash = plugin._compute_requirements_hash(str(req_file))
         metadata_path = plugin._get_cache_metadata_path(str(venv_path))
         metadata = {
             "venv_path": str(venv_path),
             "requirements_file": str(req_file),
             "requirements_hash": req_hash,
+            "manifest_version": plugin.config.version,
+            "manifest_hash": plugin._compute_manifest_hash(),
             "python_version": f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",
         }
         metadata_path.write_text(json.dumps(metadata))
@@ -555,6 +644,96 @@ class TestIsolatedVenvPlugin:
             metadata = json.load(f)
 
         assert metadata["requirements_file"] is None
+
+    def test_save_cache_metadata_records_manifest_version_and_hash(self, plugin, tmp_path):
+        """Cache metadata records manifest version and hash (U5)."""
+        venv_path = tmp_path / ".venv"
+        venv_path.mkdir()
+
+        plugin._save_cache_metadata(str(venv_path), None)
+
+        with open(plugin._get_cache_metadata_path(str(venv_path))) as f:
+            metadata = json.load(f)
+
+        assert metadata["manifest_version"] == plugin.config.version
+        assert metadata["manifest_hash"] == plugin._compute_manifest_hash()
+
+    def test_cache_invalid_on_manifest_version_change(self, plugin, tmp_path):
+        """A manifest version bump invalidates the cache even with same requirements (U5)."""
+        venv_path = tmp_path / ".venv"
+        venv_path.mkdir()
+
+        # Save metadata reflecting the current state.
+        plugin._save_cache_metadata(str(venv_path), None)
+        assert plugin._is_venv_cache_valid(str(venv_path), None) is True
+
+        # Simulate a version bump by rewriting the metadata's manifest_version.
+        metadata_path = plugin._get_cache_metadata_path(str(venv_path))
+        metadata = json.loads(metadata_path.read_text())
+        metadata["manifest_version"] = "0.0.1-old"
+        metadata_path.write_text(json.dumps(metadata))
+
+        assert plugin._is_venv_cache_valid(str(venv_path), None) is False
+
+    def test_cache_invalid_on_manifest_hash_change(self, plugin, tmp_path):
+        """A manifest content change (same version) invalidates the cache (U5)."""
+        venv_path = tmp_path / ".venv"
+        venv_path.mkdir()
+
+        plugin._save_cache_metadata(str(venv_path), None)
+        assert plugin._is_venv_cache_valid(str(venv_path), None) is True
+
+        # Write the plugin's manifest (per-class-name path) so the current hash
+        # differs from the cached empty digest.
+        plugin._manifest_path().write_text("kind: isolated_venv\nname: p\n")
+
+        assert plugin._is_venv_cache_valid(str(venv_path), None) is False
+
+    def test_compute_manifest_hash_empty_when_absent(self, plugin):
+        """Manifest hash is the empty-content digest when no manifest file exists."""
+        import hashlib
+
+        # plugin.plugin_path has no manifest by default.
+        assert plugin._compute_manifest_hash() == hashlib.sha256(b"").hexdigest()
+
+    def test_cache_valid_when_manifest_signals_absent(self, plugin, tmp_path):
+        """Pre-upgrade metadata (no manifest_version/hash keys) stays valid.
+
+        Regression (R5): metadata written by an earlier CLI lacks the manifest
+        signal keys. Reading .get() -> None as a mismatch would wipe and rebuild
+        every existing isolated_venv on first run after upgrade. A *missing* key
+        must be treated as "no signal", not a change.
+        """
+        venv_path = tmp_path / ".venv"
+        venv_path.mkdir()
+
+        # Save current metadata, then strip the manifest signal keys to mimic
+        # metadata produced by a CLI that predates U5.
+        plugin._save_cache_metadata(str(venv_path), None)
+        metadata_path = plugin._get_cache_metadata_path(str(venv_path))
+        metadata = json.loads(metadata_path.read_text())
+        metadata.pop("manifest_version", None)
+        metadata.pop("manifest_hash", None)
+        metadata_path.write_text(json.dumps(metadata))
+
+        # Requirements hash still matches, and the absent signals are ignored:
+        # the cache remains valid (no forced reprovision).
+        assert plugin._is_venv_cache_valid(str(venv_path), None) is True
+
+    def test_manifest_path_keyed_on_full_class_name(self, plugin):
+        """The persisted manifest filename is keyed on the full class name (#4).
+
+        Plugins sharing a package share plugin_path (and its venv); the manifest
+        filename must be unique per class so one plugin's install does not
+        invalidate another's cache hash.
+        """
+        from cpex.framework.utils import manifest_filename_for_class
+
+        expected_name = manifest_filename_for_class("test_plugin.TestPlugin")
+        assert plugin._manifest_path().name == expected_name
+        assert plugin._manifest_path().parent == plugin.plugin_path
+        # Two plugins in the same package resolve to distinct manifest files.
+        assert manifest_filename_for_class("pkg.a.PluginA") != manifest_filename_for_class("pkg.b.PluginB")
 
     @pytest.mark.asyncio
     @patch("cpex.framework.isolated.client.venv.EnvBuilder")

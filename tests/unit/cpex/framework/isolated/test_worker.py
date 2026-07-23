@@ -77,6 +77,10 @@ class TestWorkerFunctions:
         mock_plugin_instance.tool_post_invoke = AsyncMock()
         mock_plugin_instance.tool_exception = AsyncMock()
         mock_plugin_instance.tool_cleanup = AsyncMock()
+        # json_to_payload is a synchronous method; without this override the
+        # AsyncMock parent would auto-create it as an AsyncMock, and process_task
+        # calls it without awaiting (worker.py) — leaking an unawaited coroutine.
+        mock_plugin_instance.json_to_payload = MagicMock()
         mock_plugin_class = MagicMock(return_value=mock_plugin_instance)
 
         mock_module = MagicMock()
@@ -175,6 +179,102 @@ class TestWorkerFunctions:
         self.cleanup_mock_plugin_dirs()
 
     @pytest.mark.asyncio
+    @patch("cpex.framework.isolated.worker.import_module")
+    async def test_process_task_deserializes_payload_to_typed_object(self, mock_import, mock_plugin_dirs):
+        """Regression: the worker must reconstruct the typed payload before invoking the plugin.
+
+        The client serializes the payload with ``model_dump(mode="json")``, so it
+        arrives at the worker as a plain dict. Previously the worker passed that
+        dict straight to the plugin hook, which then failed with
+        ``AttributeError("'dict' object has no attribute 'args'")`` the moment the
+        hook touched ``payload.args``. This test drives a real Plugin subclass
+        through ``process_task`` and asserts the hook receives a genuine
+        ``ToolPreInvokePayload`` with a working ``.args`` attribute.
+        """
+        from cpex.framework.base import Plugin
+        from cpex.framework.hooks.tools import ToolPreInvokePayload, ToolPreInvokeResult
+
+        received = {}
+
+        class RealTypedPlugin(Plugin):
+            """Minimal real plugin that asserts payload typing at runtime."""
+
+            async def tool_pre_invoke(self, payload, context, extensions=None):
+                # Would raise AttributeError before the fix, when payload is a dict.
+                received["type"] = type(payload)
+                received["args"] = payload.args
+                received["name"] = payload.name
+                return ToolPreInvokeResult(continue_processing=True)
+
+        mock_module = MagicMock()
+        mock_module.RealTypedPlugin = RealTypedPlugin
+        mock_import.return_value = mock_module
+
+        config_dict = {"name": "typed_plugin", "kind": "isolated_venv", "config": {}}
+        task_data = {
+            "task_type": "load_and_run_hook",
+            "config": json.dumps(config_dict),
+            "plugin_dirs": mock_plugin_dirs,
+            "class_name": "typed_plugin.RealTypedPlugin",
+            "hook_type": "tool_pre_invoke",
+            # Payload exactly as the client sends it: model_dump(mode="json") output.
+            "payload": {"name": "web_search", "args": {"query": "CPEX framework"}},
+            "context": {"state": {}, "global_context": {"request_id": "req-123"}, "metadata": {}},
+        }
+        tp = TaskProcessor()
+        result = await process_task(task_data, tp)
+
+        assert result is not None
+        assert result.continue_processing is True
+        # The hook must have received a typed payload, not a dict.
+        assert received["type"] is ToolPreInvokePayload
+        assert received["name"] == "web_search"
+        assert received["args"] == {"query": "CPEX framework"}
+        self.cleanup_mock_plugin_dirs()
+
+    @pytest.mark.asyncio
+    @patch("cpex.framework.isolated.worker.import_module")
+    @patch("cpex.framework.isolated.worker.PluginExecutor")
+    async def test_process_task_none_payload_passes_through(
+        self, mock_executor_class, mock_import, mock_plugin_dirs
+    ):
+        """A None payload must be forwarded as None, not run through json_to_payload."""
+        mock_plugin_instance = AsyncMock()
+        mock_plugin_instance.initialize = AsyncMock()
+        mock_plugin_instance.json_to_payload = MagicMock()
+        mock_plugin_class = MagicMock(return_value=mock_plugin_instance)
+
+        mock_module = MagicMock()
+        mock_module.TestPlugin = mock_plugin_class
+        mock_import.return_value = mock_module
+
+        mock_executor = MagicMock()
+        mock_result = MagicMock()
+        mock_executor.execute_plugin = AsyncMock(return_value=mock_result)
+        mock_executor_class.return_value = mock_executor
+
+        config_dict = {"name": "test_plugin", "kind": "isolated_venv", "config": {}}
+        task_data = {
+            "task_type": "load_and_run_hook",
+            "config": json.dumps(config_dict),
+            "plugin_dirs": mock_plugin_dirs,
+            "class_name": "test_plugin.TestPlugin",
+            "hook_type": "tool_pre_invoke",
+            "payload": None,
+            "context": {"state": {}, "global_context": {"request_id": "req-123"}, "metadata": {}},
+        }
+        tp = TaskProcessor()
+        result = await process_task(task_data, tp)
+
+        assert result is not None
+        # json_to_payload must not be invoked for a None payload.
+        mock_plugin_instance.json_to_payload.assert_not_called()
+        # execute_plugin must have been called with payload=None.
+        _, call_kwargs = mock_executor.execute_plugin.call_args
+        assert call_kwargs["payload"] is None
+        self.cleanup_mock_plugin_dirs()
+
+    @pytest.mark.asyncio
     async def test_process_task_unknown_task_type(self):
         """Test processing task with unknown task type."""
         task_data = {"task_type": "unknown_type"}
@@ -199,6 +299,9 @@ class TestWorkerFunctions:
         mock_plugin_instance.prompt_post_fetch = AsyncMock()
         mock_plugin_instance.tool_exception = AsyncMock()
         mock_plugin_instance.tool_cleanup = AsyncMock()
+        # json_to_payload is synchronous — keep it a MagicMock so the AsyncMock
+        # parent doesn't auto-create it as a coroutine that process_task never awaits.
+        mock_plugin_instance.json_to_payload = MagicMock()
 
         mock_plugin_class = MagicMock(return_value=mock_plugin_instance)
 
@@ -333,7 +436,7 @@ class TestMainFunction:
         output_data = json.loads(printed_output)
         assert output_data["status"] == "error"
         assert "Unexpected error: Unexpected error occurred" in output_data["message"]
-        assert output_data["request_id"] == "unknown"
+        assert output_data["request_id"] == "req-789"
 
     @pytest.mark.asyncio
     @patch("sys.stdin")
@@ -447,6 +550,69 @@ class TestMainFunction:
         # Should process both tasks
         assert mock_process_task.call_count == 2
         assert mock_print.call_count == 2
+
+    @pytest.mark.asyncio
+    @patch("sys.stdin")
+    @patch("builtins.print")
+    @patch("cpex.framework.isolated.worker.process_task")
+    async def test_main_error_uses_current_request_id_not_stale(
+        self, mock_process_task, mock_print, mock_stdin
+    ):
+        """An error on task B must carry B's request_id, never a stale A id.
+
+        Regression: request_id was a main()-local reused across loop iterations,
+        so an error emitted before/without re-setting it could carry the prior
+        request's id. venv_comm demuxes strictly on request_id, so a stale id
+        misdelivers the error or hangs the real caller until timeout.
+        """
+        task_a = {"task_type": "info", "request_id": "req-A"}
+        task_b = {"task_type": "info", "request_id": "req-B"}
+        mock_stdin.readline.side_effect = [
+            json.dumps(task_a) + "\n",
+            json.dumps(task_b) + "\n",
+            "",  # EOF
+        ]
+
+        ok = MagicMock()
+        ok.model_dump.return_value = {"status": "success"}
+        # First task succeeds; second raises before a response is built.
+        mock_process_task.side_effect = [ok, RuntimeError("boom on B")]
+
+        await main()
+
+        # Second print is the error response for task B.
+        error_output = json.loads(mock_print.call_args_list[1][0][0])
+        assert error_output["status"] == "error"
+        assert error_output["request_id"] == "req-B"
+
+    @pytest.mark.asyncio
+    @patch("sys.stdin")
+    @patch("builtins.print")
+    @patch("cpex.framework.isolated.worker.process_task")
+    async def test_main_error_before_parse_reports_unknown(
+        self, mock_process_task, mock_print, mock_stdin
+    ):
+        """A malformed line after a good task reports "unknown", not the prior id.
+
+        The prior task set request_id to a real value; the per-iteration reset
+        ensures a subsequent JSON decode error does not inherit it.
+        """
+        task_a = {"task_type": "info", "request_id": "req-A"}
+        mock_stdin.readline.side_effect = [
+            json.dumps(task_a) + "\n",
+            "not-json\n",
+            "",  # EOF
+        ]
+
+        ok = MagicMock()
+        ok.model_dump.return_value = {"status": "success"}
+        mock_process_task.return_value = ok
+
+        await main()
+
+        error_output = json.loads(mock_print.call_args_list[1][0][0])
+        assert error_output["status"] == "error"
+        assert error_output["request_id"] == "unknown"
 
 
 # Made with Bob
