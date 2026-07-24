@@ -128,8 +128,8 @@ flowchart TB
         direction TB
         API["gRPC API"]
         INTERCEPT["Interceptor middleware<br/>(pre-existing)"]
-        REGISTRY[("CPEX bundle registry<br/>digest-pinned, immutable")]
-        POLSTORE[("SandboxPolicy store<br/>+ effective-config resolver")]
+        REGISTRY[("objects store: cpex_bundle type<br/>digest-pinned, immutable")]
+        POLSTORE[("objects store: sandbox_policy type<br/>+ effective-config resolver")]
         PROVER["openshell-prover<br/>(baseline compatibility check)"]
         DELIVER["Effective-policy delivery<br/>(revision + bundle bytes + digest)"]
     end
@@ -297,11 +297,26 @@ distribution semantics.
 
 ## How a CPEX policy is stored in the data model
 
-CPEX bundles are **not** stored inline in `SandboxPolicy`. They live in a
-separate gateway-owned registry and are referenced by digest from endpoint
-configuration. This mirrors the pattern already established by provider
-profile catalogs and interceptor-vended sources: reference in policy, bytes in
-a versioned catalog with duplicate-ID detection.
+CPEX bundles are **not** stored inline in `SandboxPolicy`. They are referenced
+by digest from endpoint configuration, with the bytes held in the gateway's
+generic object store under a new object type. This mirrors the pattern already
+established by provider profile catalogs and interceptor-vended sources:
+reference in policy, bytes in durable gateway state.
+
+The gateway persists every durable entity — sandbox policy revisions
+(`object_type = "sandbox_policy"`), agent-proposed draft chunks
+(`"draft_policy_chunk"`), gateway settings, provider profiles — as rows in one
+generic `objects` table (`crates/openshell-server/src/persistence/`), backed by
+either SQLite or Postgres (the `Store` enum dispatches both) and guarded by an
+optimistic `resource_version` compare-and-swap. The `put(object_type, id, name,
+workspace, payload, …)` surface takes an arbitrary `object_type` string, so a
+CPEX bundle is a new object type in that store rather than a new table,
+migration, or database. The work this proposal adds is the discipline and
+control-plane machinery layered on top of the store (see below): immutable
+digest-addressing, an operator-only write path distinct from the agent-editable
+draft/revision path, a policy-side reference + attachment model, and atomic
+co-delivery with the policy generation. The authorization boundary and the
+reference model are the substance here, not the bytes.
 
 ### New protobuf surface (illustrative, Phase 1 RFC to finalize)
 
@@ -349,12 +364,27 @@ enum CpexPdpKind {
 
 ### Durable storage (gateway)
 
-Two logically separate tables, both operator-owned:
+Bundles use the `objects` store via two new object types, both operator-owned:
 
-| Table | Purpose | Ownership |
-|---|---|---|
-| `cpex_bundle` | Immutable, content-addressed bundle blobs keyed by digest. Rows are append-only. Columns: `digest` (PK), `bytes`, `pdp_kind`, `size`, `sbom_ref`, `signature`, `uploaded_by`, `uploaded_at`. | Written only by `PutCpexBundle` operator RPC. Not writable by sandboxes, policy proposals, or agent-editable paths. |
-| `cpex_bundle_attachment` | Which sandbox / gateway scope may use which bundle. Enforces that `SandboxPolicy` revisions can only reference an attached bundle. Columns: `scope` (`gateway` or `sandbox:<id>`), `digest`, `attached_by`, `attached_at`. | Written by `AttachCpexBundle` operator RPC. Detachment leaves the bundle row in place but rejects new revisions referencing it. |
+| Object type | `id` / key | Payload | Ownership |
+|---|---|---|---|
+| `cpex_bundle` | the content digest (`sha256:…`) | Immutable, content-addressed bundle blob. Payload proto carries `bytes`, `pdp_kind`, `size`, `sbom_ref`, `signature`, `uploaded_by`, `uploaded_at`. | Written only by the `PutCpexBundle` operator RPC. Not writable by sandboxes, policy proposals, or agent-editable paths. |
+| `cpex_attachment` | `scope` (`gateway` or `sandbox:<id>`) + `digest` | Which scope may use which bundle. Enforces that `SandboxPolicy` revisions can only reference an attached bundle. Payload: `digest`, `attached_by`, `attached_at`. | Written by the `AttachCpexBundle` operator RPC. Detachment removes the attachment row but leaves the bundle row in place; new revisions referencing a detached digest are rejected. |
+
+What the store provides, and what the bundle model layers on top:
+
+| Property | Source |
+|---|---|
+| Durable blob keyed by id; SQLite and Postgres backends; workspace scoping | `objects` store / `Store` enum — reused as-is |
+| Optimistic concurrency on writes | `resource_version` CAS — reused as-is |
+| Atomic multi-write transaction (bundle + attachment + metadata) | `put_*_atomic` transaction pattern — reused |
+| Immutable, content-addressed identity (digest as `id`, append-only) | Bundle-specific discipline — the raw `put` is name-keyed with `ON CONFLICT … DO UPDATE` (mutable, last-write-wins), so the bundle write path must reject any mutation of an existing digest and treat a new digest as a new object |
+| Operator-only write path distinct from the agent-proposal path | New privileged RPCs — `cpex_bundle` / `cpex_attachment` are written only by `PutCpexBundle` / `AttachCpexBundle`, never by `SubmitPolicyAnalysis` (which writes `draft_policy_chunk` in the same table) |
+
+The last two rows carry the security boundary. `draft_policy_chunk` is
+*agent-proposable* and lives in the same table, so residence in the `objects`
+store is not itself a security property — bundle safety comes from the
+digest-immutability discipline and the operator-only RPC surface.
 
 Bundle bytes are never modified in place. Rotation is "upload new digest,
 attach it, update endpoint reference, detach old digest." This gives the
@@ -362,14 +392,16 @@ policy advisor and audit trail a stable per-revision identity.
 
 ### Sandbox-policy revision lifecycle
 
-1. Operator uploads bundle → `cpex_bundle(digest=sha256:abc…, bytes=…)`.
-2. Operator attaches → `cpex_bundle_attachment(scope='sandbox:s-42', digest=sha256:abc…)`.
+1. Operator uploads bundle → `PutCpexBundle` writes an object of type
+   `cpex_bundle` with `id = sha256:abc…`, `payload = {bytes, pdp_kind, …}`.
+2. Operator attaches → `AttachCpexBundle` writes a `cpex_attachment` object for
+   `(scope='sandbox:s-42', digest=sha256:abc…)`.
 3. Agent or operator submits a `SandboxPolicy` revision with an endpoint
    whose `authorization.cpex.digest = "sha256:abc…"`.
 4. Gateway policy validator checks:
-   - digest exists in `cpex_bundle`;
-   - digest is attached to the target scope;
-   - declared `pdp` matches `cpex_bundle.pdp_kind`;
+   - a `cpex_bundle` object exists for the digest;
+   - the digest is attached to the target scope (`cpex_attachment`);
+   - the declared `pdp` matches the bundle payload's `pdp_kind`;
    - baseline compatibility gate (openshell-prover) still passes.
 5. Effective config resolver bundles the revision **plus** the referenced
    bundle bytes into the same policy generation payload sent to the
@@ -388,9 +420,12 @@ policy advisor and audit trail a stable per-revision identity.
   Content-addressed storage separates "who authored this bundle" from
   "which sandbox is currently using it."
 - **Agent-proposal safety.** `SubmitPolicyAnalysis` accepts proposals from
-  agents. Inline APL would let an agent-authored chunk change the effective
-  policy engine. Digest reference plus attachment table forces bundle changes
-  through the operator-only path.
+  agents, persisted as `draft_policy_chunk` objects **in the same `objects`
+  table** the bundle would use. Inline APL would let an agent-authored chunk
+  change the effective policy engine. The separation is therefore not "different
+  storage" but "different write path": digest reference plus the operator-only
+  `PutCpexBundle` / `AttachCpexBundle` RPCs keep bundle authorship off the
+  agent-proposal path, while both share the same durable store.
 - **Cache and reuse.** Two sandboxes attached to the same bundle digest
   share compiled CPEX runtime state (per supervisor) and the same audit
   identity across supervisors.
@@ -416,7 +451,7 @@ to prescribe an implementation prematurely.
 | Design area | Constraint and rationale | Proposed approach |
 |---|---|---|
 | Dependency compatibility | CPEX declares `rust-version = 1.96`; OpenShell uses 1.95.0. | First obtain a CPEX release compatible with OpenShell's supported Rust baseline, or upgrade OpenShell through its normal MSRV process. Do not raise the MSRV for this feature alone. |
-| Policy configuration | `policy_local.rs` serves the in-sandbox advisor API; it is not policy ingestion. `SandboxPolicy` proto and strict YAML types reject that field. | Define a typed, versioned protobuf/config surface and propagate it through gateway, supervisor, serialization, merge and proposal validation—or use a separately distributed, operator-owned bundle. |
+| Policy configuration | `policy_local.rs` serves the in-sandbox advisor API; it is not policy ingestion. `SandboxPolicy` proto and strict YAML types reject arbitrary fields. | Add a typed `CpexBundleReference` to the policy proto and store bundle bytes as a new `cpex_bundle` object type in the gateway's `objects` store (reusing the `resource_version` CAS and dual SQLite/Postgres backend). Propagate the reference through gateway, supervisor, serialization, merge, and proposal validation. |
 | Baseline enforcement | L4 routing/SSRF/process checks and the existing generated L7 rules remain OPA-backed. A CPEX endpoint with no conventional rules may be denied before the proposed dispatch executes. | Specify a composition contract: **OpenShell baseline gate AND selected authorization engine**. Add an explicit safe baseline mode for CPEX endpoints, never an implicit empty-rule bypass. |
 | Identity provenance | Outbound credentials are not authenticated identity and may be agent-controlled, opaque, or secret. Treating them as identity could permit spoofing or disclosure. | Accept identity only from a configured trusted source: verified gateway/supervisor attestation, validated issuer/audience/JWKS with bounded cache, or an explicitly configured mTLS/SPIFFE identity. Treat all outbound authorization headers as secrets; do not log, persist, or use them as identity by default. |
 | Policy reload | An independently long-lived runtime can evaluate a stale policy after reload; an OPA guard alone does not prove CPEX configuration is coherent with it. | Build an immutable `EffectiveL7Policy { generation, opa, cpex }`, atomically swap it, and make every evaluation use one snapshot/generation. Close/retry or finish according to explicit reload semantics. |
@@ -474,18 +509,26 @@ all raw headers is not.
 ### Configuration ownership and shape
 
 Do **not** make raw APL an inline field in tenant/agent-editable sandbox policy.
-Choose one of these only after Phase 0:
+The recommended model has two complementary halves — a *reference* in the
+policy and *bytes* in the gateway's existing object store (see "How a CPEX
+policy is stored" for the storage detail):
 
-1. **Preferred initial model — gateway-owned bundle registry:** An operator
-   registers a CPEX bundle by immutable digest and limited configuration. A
-   typed endpoint reference names that registered bundle. The gateway validates
-   it and sends an already-approved, digest-pinned payload to the supervisor.
-2. **Typed sandbox-policy model:** Add a small protobuf `L7Authorization`
-   message and `CpexBundleReference` with an enum engine, opaque *validated*
-   bundle ID/digest, and no inline APL. This requires compatibility/versioning
-   work across API clients and all policy serialization paths.
+1. **Bytes: operator-owned bundle, digest-addressed.** An operator registers a
+   CPEX bundle by immutable digest and limited configuration, stored as a
+   `cpex_bundle` object type in the gateway's existing `objects` store (not a
+   new registry service). The gateway validates it and sends an
+   already-approved, digest-pinned payload to the supervisor.
+2. **Reference: typed sandbox-policy field.** Add a small protobuf
+   `L7Authorization` message and `CpexBundleReference` with an enum engine, an
+   opaque *validated* bundle digest, and no inline APL. This requires
+   compatibility/versioning work across API clients and all policy
+   serialization paths.
 
-Neither model permits endpoint data to configure arbitrary JWKS URLs, PDP URLs,
+These are two halves of one design — (1) is where the bytes live and (2) is how
+a policy points at them; both are needed. Phase 0 decides the *bundle format and
+PDP*.
+
+Neither half permits endpoint data to configure arbitrary JWKS URLs, PDP URLs,
 plugin kinds, or session stores. Those remain operator configuration.
 
 The configuration must be validated transactionally: collect every endpoint
@@ -570,9 +613,11 @@ production code.
 
 - Define the baseline-gate/CPEX composition semantics, precedence, audit mode,
   denial reason taxonomy, reload behavior, identity sources, and retention.
-- Choose the gateway-owned bundle registry or typed protobuf reference model.
-  Include proto compatibility, policy YAML round trips, `PolicyMergeOperation`,
-  provider policy composition, policy advisor visibility, and SDK/CLI impacts.
+- Finalize the bundle object-type schema (payload proto for `cpex_bundle` /
+  `cpex_attachment` in the `objects` store) and the typed `CpexBundleReference`
+  policy field. Include proto compatibility, policy YAML round trips,
+  `PolicyMergeOperation`, provider policy composition, policy advisor
+  visibility, and SDK/CLI impacts.
 - Define authorization boundaries: only privileged gateway/operator APIs can
   create/update bundles, issuers, PDP configuration, or attach a CPEX bundle.
   Ensure agent proposals and provider profiles cannot widen them.
@@ -686,8 +731,11 @@ at the end of this document.
 - Should CPEX be explored as an in-process adapter, an implementation of the
   existing egress-middleware direction, or not adopted until its ecosystem and
   Rust compatibility mature?
-- Is a gateway-owned, digest-pinned bundle registry the appropriate initial
-  ownership model, or should a typed `SandboxPolicy` reference be preferred?
+- The proposal stores bundles as a new object type in the gateway's existing
+  `objects` store, referenced by a typed `SandboxPolicy` digest field (the two
+  are complementary, not alternatives). Is that the right ownership model, and
+  is digest-immutability + an operator-only write path a sufficient boundary
+  given `draft_policy_chunk` proposals already share that store?
 - Which trusted identity source and which single local PDP—Cedar or CEL—best
   match OpenShell deployments and operational constraints?
 - What pilot users, traffic classes, and success/failure SLOs would make a
