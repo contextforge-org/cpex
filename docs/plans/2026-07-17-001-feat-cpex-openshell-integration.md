@@ -678,8 +678,10 @@ Each needs a new design review and independently deployable tests:
 This proposal is intentionally scoped as an operator-owned authorization adapter,
 not a broad replacement of OPA or an attempt to deliver JWT validation, token
 exchange, Cedar/CEL, PII, response transformation, and taint tracking in one
-change. The following existing issues suggest relevant demand and design
-precedent. They also identify questions the community should help resolve:
+change. The questions below are where community input would help most; the
+detailed mapping to OpenShell issues, PRs, and RFCs lives in
+[Relevant issues, PRs, and RFCs (alignment)](#relevant-issues-prs-and-rfcs-alignment)
+at the end of this document.
 
 - Should CPEX be explored as an in-process adapter, an implementation of the
   existing egress-middleware direction, or not adopted until its ecosystem and
@@ -690,34 +692,6 @@ precedent. They also identify questions the community should help resolve:
   match OpenShell deployments and operational constraints?
 - What pilot users, traffic classes, and success/failure SLOs would make a
   shadow-mode evaluation useful?
-
-Relevant alignment and precedent:
-
-- **Positive alignment:**
-  - [#2143](https://github.com/NVIDIA/OpenShell/issues/2143), inbound caller
-    authentication/authorization;
-  - [#1736](https://github.com/NVIDIA/OpenShell/issues/1736), dynamic identity
-    sources for OAuth token exchange;
-  - [#1756](https://github.com/NVIDIA/OpenShell/issues/1756), scope attenuation;
-  - [#1987](https://github.com/NVIDIA/OpenShell/issues/1987), user-subject
-    dynamic token grants;
-  - [#1884](https://github.com/NVIDIA/OpenShell/issues/1884), session and
-    conversation lifecycle;
-  - [#1043](https://github.com/NVIDIA/OpenShell/issues/1043), Privacy Guard;
-  - [#2109](https://github.com/NVIDIA/OpenShell/issues/2109), managed maximum
-    policies.
-- **Strong design precedent:** [#1733](https://github.com/NVIDIA/OpenShell/issues/1733)
-  (sandbox egress middleware), [#2282](https://github.com/NVIDIA/OpenShell/issues/2282)
-  (operator-controlled middleware bindings), and
-  [#2217](https://github.com/NVIDIA/OpenShell/issues/2217) (manifest digest
-  pinning) support an extension model only when operator authority and manifest
-  drift are constrained.
-- **Design concerns this proposal intends to address:** [#1842](https://github.com/NVIDIA/OpenShell/issues/1842)
-  (signed frozen policy bundles), [#1942](https://github.com/NVIDIA/OpenShell/issues/1942)
-  (stale-policy proxy race), and the active L7 security bugs such as
-  [#2251](https://github.com/NVIDIA/OpenShell/issues/2251) indicate that
-  reload atomicity, policy provenance, and basic proxy correctness will be
-  scrutinized before another authorization runtime is trusted.
 
 ### Requested feedback
 
@@ -756,9 +730,7 @@ path.
 
 ## Relevant issues, PRs, and RFCs (alignment)
 
-This section is the comprehensive alignment survey behind the shorter precedent
-list above. It maps the CPEX integration to OpenShell's own issues, PRs, and
-RFCs. State as retrieved on 2026-07-24; re-verify before quoting externally.
+This section maps the CPEX integration to OpenShell's own issues, PRs, and RFCs.
 
 ### Executive summary
 
@@ -770,6 +742,25 @@ generic external PDP directly. The proposal should anchor on the shipped
 [#1938]), and explicitly introduce the missing integration work as new trackers.
 Two production gates dominate: extension-connection authentication ([#2430]) and
 trusted subject/session context propagation (no tracker yet).
+
+### Relevant alignment and precedent
+
+- **Positive alignment.** OpenShell issues that express demand CPEX serves:
+  [#2143] (inbound caller authentication/authorization), [#1736] (dynamic
+  identity sources for OAuth token exchange), [#1756] (scope attenuation),
+  [#1987] (user-subject dynamic token grants), [#1884] (session and conversation
+  lifecycle), [#1043] (Privacy Guard), and [#2109] (managed maximum policies).
+- **Strong design precedent.** [#1733] (sandbox egress middleware), [#2282]
+  (operator-controlled middleware bindings), and [#2217] (manifest digest
+  pinning) support an extension model only when operator authority and manifest
+  drift are constrained.
+- **Design concerns this proposal addresses.** [#1942] (stale-policy proxy
+  race) and active L7 security bugs such as [#2251] (unevaluated pipelined
+  bytes) show that reload atomicity, policy provenance, and basic proxy
+  correctness will be scrutinized before another authorization runtime is
+  trusted. [#1842] (signed frozen policy bundles) has since shipped (closed as
+  completed); it strengthens the CPEX bundle-integrity and digest-pinning story
+  rather than remaining an open concern.
 
 ### Terminology note
 
