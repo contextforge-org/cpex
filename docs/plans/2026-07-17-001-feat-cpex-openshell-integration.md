@@ -54,7 +54,10 @@ This is **not** presented as a drop-in replacement for the existing OPA/
   authorization PDP.
 - CPEX's current `main` / 0.2.x release declares Rust **1.96**. OpenShell pins
   Rust **1.95.0** (`rust-toolchain.toml`) and has workspace MSRV **1.90**
-  (`Cargo.toml`). Cargo will reject this dependency today.
+  (`Cargo.toml`). Cargo will reject this dependency today. This blocks the
+  in-process embed (path 2) only; path 1 (CPEX as a remote service) sidesteps it
+  entirely, since the CPEX service builds with its own toolchain and never links
+  into OpenShell.
 - OpenShell policies are typed `SandboxPolicy` protobufs sent between gateway,
   drivers, and supervisor; arbitrary top-level YAML cannot simply be read from
   `policy_local.rs` or passed through a Rego data map.
@@ -118,6 +121,15 @@ is the only place with process identity, canonicalized request view, and
 per-request latency budget; the gateway is the only place with authenticated
 operator identity, durable bundle storage, and cross-sandbox composition.
 
+The diagram below depicts **path 2 (native embed)**, where CPEX runs in-process
+behind the `L7Authorizer` trait as a peer of OPA, downstream of the middleware
+chain. In **path 1 (remote service)** the control-plane and delivery halves are
+identical, but the supervisor-side decision box changes: CPEX is not a separate
+`L7Authorizer` engine — it is a stage *inside* the `MW` middleware chain,
+reached over the `SupervisorMiddleware` gRPC contract, and the `AUTHZ` / `CPEX
+adapter` boxes collapse into that chain step. The gateway subgraph, delivery,
+and invariants are the same for both paths.
+
 ```mermaid
 flowchart TB
     subgraph OPERATOR["Operator surface"]
@@ -171,9 +183,11 @@ flowchart TB
   sees the calling binary identity, canonicalized request view, and redacted
   header set. Round-tripping every L7 request to the gateway would violate
   OpenShell's local-enforcement invariant and add unacceptable latency.
-- CPEX cannot preempt the L4/baseline path. The `L7Authorizer` trait fires
-  only after L4, canonicalization, redaction, and baseline L7 gates admit the
-  request — matching invariant #2 (deny always wins, CPEX never widens).
+- CPEX cannot preempt the L4/baseline path. Whether reached via the
+  `L7Authorizer` trait (path 2) or as a middleware-chain stage (path 1), CPEX is
+  consulted only after L4, canonicalization, redaction, and baseline L7 gates
+  admit the request — matching invariant #2 (deny always wins, CPEX never
+  widens).
 - The gateway owns bundle authorship. Bundles are large, digest-pinned, and
   operator-signed; they belong in durable gateway state, not inline in
   `SandboxPolicy`. Delivery is atomic within a policy revision so the
@@ -523,6 +537,15 @@ CONNECT L4: process + hostname + port + resolved-IP/SSRF gate (existing OpenShel
   -> upstream request
 ```
 
+Where CPEX sits in this order depends on the integration path (see "Integration
+paths"). In **path 2** (native embed), the middleware chain and the selected
+authorization engine are the two distinct stages shown above: the chain runs
+first, then CPEX decides behind the `L7Authorizer` trait. In **path 1** (remote
+service), there is no separate authorization-engine stage — CPEX is a stage
+*within* the supervisor middleware chain, reached over the `SupervisorMiddleware`
+gRPC contract, and the "selected authorization engine" line collapses into that
+chain step. The rest of the order is identical either way.
+
 CPEX sees a purpose-built request view: method, canonical path, selected
 non-secret headers, host/port, request size, trusted workload identity, and
 (optional) verified subject claims. Header allowlisting is mandatory; forwarding
@@ -559,10 +582,18 @@ validate endpoint/bundle protocol compatibility, then publish the new effective
 policy generation. Any failure rejects the policy revision; it must not result
 in one endpoint silently falling back to OPA or audit mode.
 
-### Minimal internal interface
+### Minimal internal interface (path 2)
 
-First refactor request admission around an engine-neutral, synchronous-or-async
-interface, rather than making each protocol relay know CPEX details:
+This interface applies to **path 2 (native embed)** only. It is the in-process,
+engine-neutral seam inside the supervisor where OPA and an embedded CPEX are
+interchangeable. **Path 1 does not use it**: there, CPEX is a remote stage
+behind the existing `SupervisorMiddleware` gRPC contract, so the decision is
+carried by that contract's `HttpRequestEvaluation` / `HttpRequestResult`
+messages rather than by a new trait.
+
+For path 2, first refactor request admission around an engine-neutral,
+synchronous-or-async interface, rather than making each protocol relay know CPEX
+details:
 
 ```rust
 struct RequestAuthorizationInput<'a> {
@@ -600,9 +631,17 @@ shape. Use a stable engine value such as `cpex-cedar` rather than overloading
 **Goal:** prove that a maintainable and safe embedding exists before changing
 OpenShell policy schemas. The spike is a decision gate, not a commitment to adopt CPEX.
 
+The compile/MSRV items (1, 6) and the "add a dependency" mechanics gate **path 2
+(native embed)**. For **path 1 (remote service)** they do not apply: the spike
+instead stands up CPEX as an out-of-process gRPC service implementing the
+`SupervisorMiddleware` contract, built with its own toolchain, and the toolchain
+gate is replaced by a service/transport and mutual-auth check (see [#2430]). The
+identity, PDP-selection, and threat-model items (3–5) apply to both paths.
+
 1. Create an isolated branch/crate that attempts to compile the exact reviewed
    CPEX release with OpenShell's Rust 1.95.0 toolchain, Linux targets, current
    dependency/license/vulnerability gates, and supervisor image constraints.
+   (Path 2 only; for path 1 substitute a standalone CPEX gRPC service build.)
 2. Implement a 50–100 line host prototype using CPEX's real API:
    `PluginManager`, `register_apl`, `load_config_yaml`, and invocation of
    `cmf.http_request`. Demonstrate a single static allow and deny with the
@@ -657,6 +696,11 @@ maintainer for CPEX version/CVE response ownership.
 ### Phase 2 — internal refactor and test harness
 
 **Goal:** make the existing L7 path safely extensible without enabling CPEX.
+This phase builds the path-2 seam (the `L7Authorizer` interface) and is a
+prerequisite for the native embed only. **Path 1 (remote service) does not
+require it** — it rides the existing `SupervisorMiddleware` chain and can pilot
+without this refactor. The `EffectiveL7Policy` snapshot and OCSF/metrics work
+below benefit both paths and are worth doing regardless.
 
 - Centralize every REST request-admission site, including shared-route,
   forward-proxy, WebSocket-upgrade, and direct proxy paths, behind the new
@@ -680,11 +724,16 @@ redaction guarantees.
 **Goal:** ship only a small, reviewable capability behind an off-by-default
 build and operator feature gate.
 
-- Add an optional, exact-pinned CPEX dependency only after Phase 0 passes.
-  Keep its enabled feature set minimal: core + the selected local PDP. Do not
-  enable JWT, OAuth, PII, audit, Valkey, or CPEX `full` by default.
+- **Path 2 (native embed):** add an optional, exact-pinned CPEX dependency only
+  after Phase 0 passes. Keep its enabled feature set minimal: core + the
+  selected local PDP. Do not enable JWT, OAuth, PII, audit, Valkey, or CPEX
+  `full` by default. **Path 1 (remote service):** no CPEX dependency is added to
+  OpenShell; deploy a pinned CPEX gRPC service and register it as a supervisor
+  middleware. The feature-minimization rule still applies to that service.
 - Implement the adapter against CPEX's real CMF HTTP hook and approved bundle
-  format. Compile/load during effective-policy construction, never per request.
+  format. In path 2, compile/load the runtime during effective-policy
+  construction, never per request; in path 1, the CPEX service loads the
+  delivered bundle at registration/attachment time, likewise never per request.
 - Enable `engine: cpex` only for `protocol: rest`, only when a valid
   operator-owned bundle reference is supplied, and only in an allowlisted
   pilot deployment. All other protocol/feature combinations reject the policy
