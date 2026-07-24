@@ -21,6 +21,31 @@ operator-owned* identity and fine-grained authorization layer for OpenShell's
 L7 egress proxy. Its Cedar/CEL, delegation, elicitation, response transformation, and
 session-state model align with the project's policy, provider, middleware, and multi-tenant roadmaps.
 
+### What CPEX adds beyond the current L7 path
+
+OpenShell's egress policy today evaluates each request statelessly against
+transport coordinates (host, port, method, path). CPEX contributes capabilities
+the current path does not express:
+
+- **Richer authorization and composable policy pipelines** per capability (tool,
+  resource, prompt, A2A method), not only host/port/method/path.
+- **Cross-operation security.** Session tainting and information-flow control
+  that can block a later exfiltration based on what an earlier call read.
+- **Pluggable controls.** Authorization delegated to Cedar, CEL, or an external
+  PDP, with redaction, delegation, and audit as first-class pipeline steps.
+- **Protocol-independent policy.** Policy is expressed once over a canonical
+  message form (CMF) rather than re-encoded per wire format.
+- **Human-in-the-loop elicitation.** Out-of-band approval of sensitive
+  operations, suspended and resumed against the concrete request.
+- **Defense in depth.** CPEX composes with, and never replaces, OpenShell's
+  L4 and baseline L7 gates.
+- **Policy portability.** The same APL policy runs wherever CPEX is embedded:
+  sidecar, gateway, or in-process.
+
+Most of these capabilities are deferred beyond the initial pilot (see the
+Delivery plan). They motivate the integration, but each requires its own threat
+model and approval before it ships.
+
 This is **not** presented as a drop-in replacement for the existing OPA/
 `regorus` policy path. The proposed boundaries are:
 
@@ -156,6 +181,64 @@ flowchart TB
 - Delivery is one direction. The supervisor never reaches back to fetch a
   bundle at request time — that would put CPEX bundle egress inside the same
   sandbox network namespace the proxy is guarding.
+
+## Integration paths
+
+There are three ways to bring CPEX into OpenShell's egress path, in increasing
+order of depth and OpenShell change required.
+
+1. **External supervisor middleware.** Run CPEX as an out-of-process gRPC
+   service invoked by the existing supervisor middleware hook for pre-request
+   authorization, argument transformation, and auditing. This is the least
+   invasive path and it avoids the Rust toolchain conflict entirely, because the
+   service builds with its own toolchain and never links into OpenShell.
+   Limitation: OpenShell's V1 supervisor hook is request-only
+   (`HTTP_REQUEST/PRE_CREDENTIALS`). It cannot carry a response phase, a
+   suspend/pending result, or a credential write, so response redaction,
+   result-derived taint, and elicitation are out of reach on this path.
+2. **Native supervisor integration.** Embed CPEX's Rust runtime directly in the
+   supervisor behind the `L7Authorizer` trait. This gives lower latency,
+   in-process locality, and access to richer trusted context (calling-binary
+   identity, canonicalized request view, policy generation). Cost: it modifies
+   OpenShell and requires reconciling the MSRV gap (CPEX 1.96 vs OpenShell
+   1.95). For a PoC this is a non-issue: bump the fork's toolchain to 1.96.
+   Upstreaming needs the real fix, either CPEX lowering its MSRV or OpenShell
+   advancing it through its own process. Do not raise OpenShell's MSRV for this
+   feature alone.
+3. **Extended middleware contract.** Add post-response hooks and a structured
+   `Suspend` outcome to the supervisor contract so result filtering, taint
+   propagation, and CPEX human-approval (elicitation) flows work end to end.
+   This is the only path that delivers the full capability set, but it changes
+   OpenShell's extension contract and belongs in a hook-system RFC.
+
+**Recommendation.** Demonstrate paths (1) and (2) and make the tradeoffs
+explicit. Path (3) can be deferred as a hook-system RFC redesign if maintainers
+choose: from the perspective of showing CPEX's authorization benefits it has no
+material observable difference from path (2), which can already exercise pre-
+and post-invocation in-process. The phased delivery plan below realizes the
+path (1)/(2) capabilities incrementally and places response and elicitation work
+(which needs path (3) upstream, or a fork for the PoC) in Phase 4.
+
+Regardless of the chosen path, the high-level control flow is the same:
+
+```mermaid
+flowchart TD
+    A["Parsed HTTP/MCP operation"] --> B["CMF conversion"]
+    B --> C["CPEX pre-invocation"]
+    C --> D{"Decision"}
+    D -->|Deny| E["Protocol-aware denial"]
+    D -->|Pending| F["Elicitation response"]
+    D -->|Allow| G["Forward operation"]
+    G --> H["CPEX post-invocation"]
+    H --> I["Filtered result"]
+```
+
+In path (1), the `Pending`/elicitation and post-invocation branches are
+unavailable: the request-only hook cannot forward the operation and resume, nor
+carry a pending result. Paths (2) and (3) enable them (path (2) within a fork of
+OpenShell, path (3) as an upstream contract change). This capability-flow view
+complements the placement diagram above, which shows path (1)/(2) as a
+supervisor-side `L7Authorizer` alongside OPA.
 
 ## Can CPEX ride the gateway interceptor middleware?
 
@@ -670,3 +753,269 @@ establish compatibility with OpenShell's Rust baseline or meet the trusted
 identity and control-plane requirements, it should document that outcome and
 recommend whether the existing middleware or provider-roadmap work is a better
 path.
+
+## Relevant issues, PRs, and RFCs (alignment)
+
+This section is the comprehensive alignment survey behind the shorter precedent
+list above. It maps the CPEX integration to OpenShell's own issues, PRs, and
+RFCs. State as retrieved on 2026-07-24; re-verify before quoting externally.
+
+### Executive summary
+
+There is substantial alignment between OpenShell and the proposed CPEX
+integration, but no OpenShell issue tracks CPEX, AuthZen, COAZ, Cedar, or a
+generic external PDP directly. The proposal should anchor on the shipped
+**supervisor middleware** architecture (RFC 0009 / [#1738], egress middleware /
+[#2027]), interoperate with the existing **MCP/JSON-RPC L7 policy** ([#1865] /
+[#1938]), and explicitly introduce the missing integration work as new trackers.
+Two production gates dominate: extension-connection authentication ([#2430]) and
+trusted subject/session context propagation (no tracker yet).
+
+### Terminology note
+
+OpenShell's tracker does not use "Cedar," "AuthZen," "PDP," "OPA," or "regorus";
+those searches returned no on-topic hits. The community talks in terms of a
+**Policy Provider** ([#1713]), a **Policy Prover** ([#1058]/[#1059] roadmap), and
+a **Policy Advisor** ([#1038]). The regorus/OPA references in this proposal come
+from reading the code, not the issue discourse. Frame CPEX against OpenShell's
+own policy primitives to land with maintainers.
+
+### Themes
+
+1. Egress proxy / L7 proxy / supervisor middleware / content guard / egress adapters
+2. External authorization / policy engine / Policy Provider / PDP
+3. Identity: JWT, SPIFFE, OAuth, token exchange (RFC 8693), scope attenuation, delegation
+4. Session / conversation lifecycle / stateful policy / information-flow / taint
+5. Response inspection / redaction / PII / privacy guard / body transformation
+6. MCP / JSON-RPC egress awareness / protocol-aware policy
+7. Managed permission modes / policy bundles / signed policy / digest pinning / reload atomicity
+8. Gateway interceptors / control-plane extension / operator-controlled middleware bindings
+9. Multi-tenant / workspace resource model / RBAC
+
+### Core foundations already merged
+
+| # | Type | Title | Themes | Why it matters for CPEX |
+|---|------|-------|--------|-------------------------|
+| [#1738] | PR (merged) | RFC 0009: Supervisor Middleware | 1,8 | Defines the primary CPEX integration model: trusted operator extensions with typed supervisor hooks. Anchor the proposal here, not on the still-open RFC 0005. |
+| [#2027] | PR (merged) | feat(supervisor-middleware): add network egress middleware | 1 | External gRPC middleware for bounded HTTP requests before credential injection. The best current CPEX pilot surface. |
+| [#1865] | PR (merged) | feat(l7): add JSON-RPC and MCP policy enforcement | 6 | OpenShell already parses MCP methods and `tools/call` tool names. CPEX extends this to arbitrary argument, identity, session, and external-PDP decisions; it does not introduce the first MCP layer. |
+| [#1938] | PR (merged) | feat(policy): add MCP-aware JSON-RPC L7 governance | 6 | Deeper MCP method-level governance CPEX extends. |
+| [#1784] | PR (merged) | feat(providers): support SPIFFE-backed token grants | 3 | Endpoint-scoped dynamic `client_credentials` grants using supervisor SPIFFE identity. CPEX identity substrate. |
+| [#1927] | PR (merged) | RFC 0010: Gateway Interceptors | 8 | Control-plane extension model. Candidate for validating CPEX bundle references, ownership, provenance. Not the data-plane PDP hook. |
+| [#2005] | PR (merged) | feat(interceptors): initial gateway interceptor implementation + reference example | 8 | Working interceptor impl CPEX could register as (control-plane only). |
+| [#2243] | PR (merged) | feat(workspace): add workspace resource model with scoping, membership | 9 | Multi-tenant scoping/membership landed, but the merged version explicitly **deferred authorization enforcement** (see [#2445]). |
+| [#720] | PR (merged) | OCSF sandbox events | (audit) | Existing structured audit channel into which CPEX decisions map. |
+
+### Top items (ranked, strongest matches)
+
+| # | Type | State | Title | Themes | Why it matters | Cited in proposal? |
+|---|------|-------|-------|--------|----------------|--------------------|
+| [#2430] | Issue | OPEN | Authenticate OpenShell extension service connections | 1,8 | **Largest production blocker.** TLS custom roots, extension JWTs, mTLS, rotation, mutual auth for middleware and interceptors. Note: explicitly excludes end-user delegation/identity, so it authenticates "this supervisor called CPEX," not "Alice authorized this." | No (NEW) |
+| [#1713] | Issue | OPEN | feat: pluggable policy sourcing via a Policy Provider subsystem | 2,7 | External-policy-source extension point. Reading is not yet settled: either a binding point for CPEX-as-policy-source, or only signed-bundle distribution. | No (NEW) |
+| [#2155] | PR | OPEN | RFC 0005: Sandbox proxy egress adapter model | 1 | Future native authorization seam. CPEX does not need to wait for it to build an external middleware pilot. | Yes |
+| [#1733] | Issue | OPEN | Supervisor middleware (umbrella) | 1,8 | Umbrella for the middleware layer where a CPEX reference monitor lives. | Yes |
+| [#2169] | PR | OPEN | feat(examples): add supervisor middleware content guard | 1,5 | Best implementation scaffold for a CPEX prototype: registration, attachment, inspection, allow/deny/redact, limits, timeouts. Also a template/competitor for CPEX response inspection. | Yes |
+| [#2217] | Issue | OPEN | detect/resolve middleware manifest drift with digest pinning + gateway refresh | 7 | CPEX version/config integrity; prevents silent fail-open after manifest drift. | Yes |
+| [#2282] | Issue | OPEN | operator-controlled binding policies to supervisor middleware | 8 | `dynamic`/`allowlist`/`exact` authorization over middleware operation/phase. Essential once CPEX exceeds `HTTP_REQUEST/PRE_CREDENTIALS`. | Yes |
+| [#2283] | Issue | OPEN | provider-profile and typed middleware attachment selectors | 8 | Select CPEX by provider identity or typed traffic class instead of duplicating host lists. Better long-term attachment model. | No (NEW) |
+| [#2109] | Issue | OPEN | Enterprise permission modes with managed maximum policies | 7 | Composition rule: CPEX may narrow OpenShell authority, never widen the managed maximum. | Yes |
+| [#2168] | PR | OPEN | feat(policy): add managed maximum permission modes | 7 | Implementation of [#2109]. Note it proposes removing the legacy `openshell policy prove` surface; do not depend on the OPP CLI roadmap. | Yes |
+| [#1884] | Issue | OPEN | first-class session and conversation lifecycle support | 4 | Session ownership, TTL, policy/provider context, audit correlation. Does not itself implement information-flow labels. | Yes |
+| [#1970] | PR | OPEN | SPIFFE-backed token exchange (addresses [#1987]) | 3 | Active RFC 8693 design preserving user subject + sandbox-agent identity through a two-stage exchange. Overlaps materially with CPEX delegation. | No (NEW) |
+| [#2378] | Issue | OPEN | isolate and declassify authenticated MCP discovery responses | 5,6 | Closest response-side / information-flow work. Says generic response scanning alone is insufficient. | No (NEW) |
+| [#2286] | Issue | OPEN | expose supervisor middleware registrations through Helm values | 8 | Required for a supported Kubernetes deployment of an external CPEX service. | No (NEW) |
+| [#2373] | PR | OPEN | consolidate the proxy egress pipeline | 1 | Active implementation of part of RFC 0005; may create a cleaner future native seam. Pilot need not wait for it. | No (NEW) |
+
+### Direct prerequisites and production gates
+
+The items most important to cite as gates, in rough priority:
+
+1. **[#2430] (authenticate extension connections)** is the largest production
+   blocker. It authenticates the workload/service, not the end user. CPEX
+   deployment as an external service depends on it.
+2. **[#2217] (manifest digest pinning + refresh)** covers CPEX version/config
+   integrity and prevents fail-open after drift.
+3. **[#2282] (operator-controlled binding policies)** becomes essential once CPEX
+   does more than the request-only phase.
+4. **[#2283] (typed attachment selectors)** is the better attachment model for
+   Workday/GitHub/inference/MCP providers.
+5. **[#2286] (Helm registrations)** for supported k8s deployment.
+6. **[#2169] (content-guard example)** is the prototype scaffold.
+7. **[#2373] (egress pipeline consolidation)** may yield a cleaner native seam
+   later; not a blocker for an external pilot.
+
+### Semantic authorization and MCP
+
+| # | State | Proposal implication |
+|---|-------|----------------------|
+| [#1848] | Issue, OPEN | JSONPath predicates for REST bodies. Validates demand for field-level request authorization; CPEX offers a richer version through middleware without adding every predicate to OpenShell's native schema. |
+| [#2174] | Issue, OPEN | Version-aware MCP wire profiles. Prerequisite for trustworthy COAZ-MCP mapping: CPEX must know which MCP revision/session semantics it authorizes. |
+| [#2109] / [#2168] | see above | Managed maximum policies reinforce the narrow-not-widen composition rule. |
+| [#1058] | Issue, OPEN | MCP tool permission modeling. OpenShell's policy-prover roadmap already recognizes semantic tools and tool-to-API mappings; CPEX is the runtime complement. |
+| [#1056] | Issue, OPEN | Cross-sandbox flow verification. Overlaps CPEX information-flow goals but is static multi-sandbox reachability, not runtime session taint. |
+| [#1057] | Issue, OPEN | Messaging platform permission modeling. Relevant to the email/exfiltration scenario and provider-specific permission semantics. |
+| [#2144] | Issue, OPEN | Protocol-aware inbound authorization for gateway-less deployments. CPEX ext-authz analog. |
+
+The older prover roadmap may be changing: [#2168] proposes removing the legacy
+`openshell policy prove` surface. Describe runtime CPEX enforcement as
+complementary to managed policy containment without depending on the current OPP
+CLI roadmap.
+
+### Identity, sessions, and delegation
+
+| # | State | Relevance |
+|---|-------|-----------|
+| [#2445] | PR, DRAFT | Workspace authorization: membership/role enforcement on gateway RPCs. Does not yet propagate a trusted user principal into supervisor middleware requests. Completes the authz [#2243] deferred. |
+| [#1884] | Issue, OPEN | First-class session/conversation lifecycle. Strong alignment with CPEX session taint; does not itself implement information-flow labels. |
+| [#1883] | Issue, OPEN | Request/session-scoped provider credentials. Aligned with per-user short-lived credentials and cleanup. |
+| [#1970] | PR, OPEN | SPIFFE-backed token exchange (addresses [#1987]). Active RFC 8693, preserves user subject and sandbox-agent identity. Overlaps CPEX delegation. |
+| [#1987] | Issue, OPEN | User-subject dynamic token grants for sandbox agents. Delegation-chain input. |
+| [#1755] | Issue, OPEN | General credential broker. Umbrella for gateway-controlled downstream credentials. |
+| [#1756] | Issue, OPEN | Scope attenuation for broker-issued downstream tokens. Matches intent-derived least-privilege credentials. |
+| [#1754] | Issue, OPEN | Entra OBO. Concrete user-principal delegation for Graph/Outlook/SharePoint. |
+| [#1736] | Issue, OPEN | Dynamic token-exchange identity sources. Discusses user tokens, SPIFFE, client assertions, request-scoped middleware exchange. |
+| [#2143] | Issue, OPEN | Inbound caller authentication/authorization (sandbox-to-sandbox). Identity CPEX consumes for decisions. |
+| [#1667] | Issue, OPEN | Entra Agent ID user-principal tokens. |
+| [#2167] | Issue, OPEN | Verify provider-authenticated call ingress. |
+| [#1794] | Issue, OPEN | Pass-through Authorization headers. |
+| [#2285] | PR, OPEN | Anthropic subscription OAuth. Credential-handling context. |
+
+**Recommendation:** CPEX should authorize the operation and derive the requested
+permission/audience intent, while OpenShell retains token custody, exchange,
+caching, and injection. That avoids competing credential brokers and preserves
+OpenShell's credential isolation boundary. Treat the stale draft [#1681] (Okta
+OBO) as not-current; [#1970] is the relevant active implementation.
+
+### Response handling, streaming, and state
+
+- **[#2378]** (authenticated MCP discovery response isolation) is the closest
+  response-side work: protocol correlation, normalization, declassification,
+  bounds, policy intersection, safe audit. Says generic response scanning alone
+  is insufficient.
+- **[#2428]** (WebSocket message middleware) proposes `before_forward` and
+  `before_return` hooks; could eventually support CPEX policy/redaction for
+  bidirectional messages.
+- **[#2431]** (streaming HTTP middleware) addresses large requests, HTTP/2, gRPC,
+  but explicitly excludes response-body inspection in its first iteration.
+- **[#2459]** / **[#2465]** (provider-aware inference-body sanitization) is
+  adjacent evidence for provider-aware transformations, though inference-specific.
+- **[#1694]** (L7 proxy request transformation middleware) is an older
+  post-credential/in-process proposal, superseded by the shipped middleware
+  ([#1738]/[#2027]); de-emphasize.
+
+There is no generic HTTP/MCP response middleware issue capable of implementing
+the proposal's identity-aware Workday response redaction. Mark that as a later
+phase and a needed new tracker.
+
+### Audit and operations
+
+- **[#1933]** (centralized audit/event log) covers events from built-in and
+  bring-your-own extensions.
+- **[#1055]** (enterprise observability) covers OCSF, JSONL audit, telemetry,
+  dashboards.
+- **[#1758]** (OpenTelemetry trace correlation) calls for `agent_id`,
+  `session_id`, `user_principal`, tool, policy decision, broker action,
+  downstream request, and response correlation. Strong fit for CPEX decision
+  attribution.
+
+### Enforcement-integrity bugs (motivation)
+
+- **[#2251]** (forward proxy forwards unevaluated pipelined request bytes) is an
+  enforcement-bypass bug; CPEX must ensure no unevaluated bytes pass. Motivates
+  the no-unevaluated-bytes invariant.
+- **[#1942]** (startup stale-policy forward proxy race) motivates the
+  reload-atomicity / fail-closed invariant.
+- **[#1636]** (revalidate pending policy proposals when effective policy changes)
+  is the same reload-atomicity concern on the control plane.
+
+Expect maintainer scrutiny against these before another authorization runtime is
+trusted.
+
+### Weak / peripheral (context only)
+
+- Interceptor history/docs: [#1919] (CLOSED), [#2397] (PR, MERGED guide).
+- MCP/JSON-RPC depth: [#1793] (CLOSED), [#2082] (CLOSED batch), [#2083] (PR reject batches).
+- Content-inspection precursors, superseded by merged middleware: [#1272], [#1906], [#1022] (all CLOSED).
+- Policy tooling/governance: [#1059] Policy Prover, [#1038] Policy Advisor, [#1062] agent-driven policy mgmt, [#2025] max-policies-for-spawned-agents, [#1839] audit2allow.
+- Tenancy beyond [#2243]/[#2445]: [#1145] / [#1722] / [#1795].
+- Proxy internals CPEX rides on: [#2384] DNS-routed proxy, [#2385] shared proxy placement, [#2389] (PR) shared L7 endpoint validation.
+
+[#720]: https://github.com/NVIDIA/OpenShell/pull/720
+[#1022]: https://github.com/NVIDIA/OpenShell/issues/1022
+[#1038]: https://github.com/NVIDIA/OpenShell/issues/1038
+[#1043]: https://github.com/NVIDIA/OpenShell/issues/1043
+[#1055]: https://github.com/NVIDIA/OpenShell/issues/1055
+[#1056]: https://github.com/NVIDIA/OpenShell/issues/1056
+[#1057]: https://github.com/NVIDIA/OpenShell/issues/1057
+[#1058]: https://github.com/NVIDIA/OpenShell/issues/1058
+[#1059]: https://github.com/NVIDIA/OpenShell/issues/1059
+[#1062]: https://github.com/NVIDIA/OpenShell/issues/1062
+[#1145]: https://github.com/NVIDIA/OpenShell/issues/1145
+[#1272]: https://github.com/NVIDIA/OpenShell/issues/1272
+[#1414]: https://github.com/NVIDIA/OpenShell/pull/1414
+[#1515]: https://github.com/NVIDIA/OpenShell/pull/1515
+[#1636]: https://github.com/NVIDIA/OpenShell/issues/1636
+[#1667]: https://github.com/NVIDIA/OpenShell/issues/1667
+[#1681]: https://github.com/NVIDIA/OpenShell/pull/1681
+[#1694]: https://github.com/NVIDIA/OpenShell/issues/1694
+[#1713]: https://github.com/NVIDIA/OpenShell/issues/1713
+[#1722]: https://github.com/NVIDIA/OpenShell/issues/1722
+[#1733]: https://github.com/NVIDIA/OpenShell/issues/1733
+[#1736]: https://github.com/NVIDIA/OpenShell/issues/1736
+[#1738]: https://github.com/NVIDIA/OpenShell/pull/1738
+[#1754]: https://github.com/NVIDIA/OpenShell/issues/1754
+[#1755]: https://github.com/NVIDIA/OpenShell/issues/1755
+[#1756]: https://github.com/NVIDIA/OpenShell/issues/1756
+[#1758]: https://github.com/NVIDIA/OpenShell/issues/1758
+[#1781]: https://github.com/NVIDIA/OpenShell/pull/1781
+[#1784]: https://github.com/NVIDIA/OpenShell/pull/1784
+[#1793]: https://github.com/NVIDIA/OpenShell/issues/1793
+[#1794]: https://github.com/NVIDIA/OpenShell/issues/1794
+[#1795]: https://github.com/NVIDIA/OpenShell/issues/1795
+[#1839]: https://github.com/NVIDIA/OpenShell/issues/1839
+[#1842]: https://github.com/NVIDIA/OpenShell/issues/1842
+[#1848]: https://github.com/NVIDIA/OpenShell/issues/1848
+[#1865]: https://github.com/NVIDIA/OpenShell/pull/1865
+[#1883]: https://github.com/NVIDIA/OpenShell/issues/1883
+[#1884]: https://github.com/NVIDIA/OpenShell/issues/1884
+[#1906]: https://github.com/NVIDIA/OpenShell/issues/1906
+[#1919]: https://github.com/NVIDIA/OpenShell/issues/1919
+[#1927]: https://github.com/NVIDIA/OpenShell/pull/1927
+[#1933]: https://github.com/NVIDIA/OpenShell/issues/1933
+[#1938]: https://github.com/NVIDIA/OpenShell/pull/1938
+[#1942]: https://github.com/NVIDIA/OpenShell/issues/1942
+[#1970]: https://github.com/NVIDIA/OpenShell/pull/1970
+[#1987]: https://github.com/NVIDIA/OpenShell/issues/1987
+[#2005]: https://github.com/NVIDIA/OpenShell/pull/2005
+[#2025]: https://github.com/NVIDIA/OpenShell/issues/2025
+[#2027]: https://github.com/NVIDIA/OpenShell/pull/2027
+[#2082]: https://github.com/NVIDIA/OpenShell/issues/2082
+[#2083]: https://github.com/NVIDIA/OpenShell/pull/2083
+[#2109]: https://github.com/NVIDIA/OpenShell/issues/2109
+[#2143]: https://github.com/NVIDIA/OpenShell/issues/2143
+[#2144]: https://github.com/NVIDIA/OpenShell/issues/2144
+[#2155]: https://github.com/NVIDIA/OpenShell/pull/2155
+[#2167]: https://github.com/NVIDIA/OpenShell/issues/2167
+[#2168]: https://github.com/NVIDIA/OpenShell/pull/2168
+[#2169]: https://github.com/NVIDIA/OpenShell/pull/2169
+[#2174]: https://github.com/NVIDIA/OpenShell/issues/2174
+[#2184]: https://github.com/NVIDIA/OpenShell/pull/2184
+[#2217]: https://github.com/NVIDIA/OpenShell/issues/2217
+[#2243]: https://github.com/NVIDIA/OpenShell/pull/2243
+[#2251]: https://github.com/NVIDIA/OpenShell/issues/2251
+[#2282]: https://github.com/NVIDIA/OpenShell/issues/2282
+[#2283]: https://github.com/NVIDIA/OpenShell/issues/2283
+[#2285]: https://github.com/NVIDIA/OpenShell/pull/2285
+[#2286]: https://github.com/NVIDIA/OpenShell/issues/2286
+[#2373]: https://github.com/NVIDIA/OpenShell/pull/2373
+[#2378]: https://github.com/NVIDIA/OpenShell/issues/2378
+[#2384]: https://github.com/NVIDIA/OpenShell/issues/2384
+[#2385]: https://github.com/NVIDIA/OpenShell/issues/2385
+[#2389]: https://github.com/NVIDIA/OpenShell/pull/2389
+[#2397]: https://github.com/NVIDIA/OpenShell/pull/2397
+[#2428]: https://github.com/NVIDIA/OpenShell/issues/2428
+[#2430]: https://github.com/NVIDIA/OpenShell/issues/2430
+[#2431]: https://github.com/NVIDIA/OpenShell/issues/2431
+[#2445]: https://github.com/NVIDIA/OpenShell/pull/2445
+[#2459]: https://github.com/NVIDIA/OpenShell/issues/2459
+[#2465]: https://github.com/NVIDIA/OpenShell/pull/2465
