@@ -187,15 +187,20 @@ flowchart TB
 There are three ways to bring CPEX into OpenShell's egress path, in increasing
 order of depth and OpenShell change required.
 
-1. **External supervisor middleware.** Run CPEX as an out-of-process gRPC
-   service invoked by the existing supervisor middleware hook for pre-request
-   authorization, argument transformation, and auditing. This is the least
-   invasive path and it avoids the Rust toolchain conflict entirely, because the
-   service builds with its own toolchain and never links into OpenShell.
-   Limitation: OpenShell's V1 supervisor hook is request-only
-   (`HTTP_REQUEST/PRE_CREDENTIALS`). It cannot carry a response phase, a
-   suspend/pending result, or a credential write, so response redaction,
-   result-derived taint, and elicitation are out of reach on this path.
+1. **CPEX as a remote service behind the supervisor-middleware contract.**
+   OpenShell's supervisor-middleware framework (`ChainRunner` and the
+   `SupervisorMiddleware` gRPC contract in
+   `openshell-core::proto::middleware::v1`) drives the chain; CPEX runs as an
+   out-of-process gRPC service implementing the server side of that contract,
+   and a `RemoteMiddlewareService` chain stage (`remote.rs`) is the gRPC client
+   that calls it for pre-request authorization, argument transformation, and
+   auditing. This is the least invasive path and it avoids the Rust toolchain
+   conflict entirely, because the CPEX service builds with its own toolchain and
+   never links into OpenShell. Limitation: OpenShell's V1 supervisor hook is
+   request-only (`HTTP_REQUEST/PRE_CREDENTIALS`). It cannot carry a response
+   phase, a suspend/pending result, or a credential write, so response
+   redaction, result-derived taint, and elicitation are out of reach on this
+   path.
 2. **Native supervisor integration.** Embed CPEX's Rust runtime directly in the
    supervisor behind the `L7Authorizer` trait. This gives lower latency,
    in-process locality, and access to richer trusted context (calling-binary
@@ -218,6 +223,23 @@ material observable difference from path (2), which can already exercise pre-
 and post-invocation in-process. The phased delivery plan below realizes the
 path (1)/(2) capabilities incrementally and places response and elicitation work
 (which needs path (3) upstream, or a fork for the PoC) in Phase 4.
+
+**Layering.** The role decomposition is the same in paths 1 and 2; only where
+CPEX runs changes:
+
+| Role | Component |
+|---|---|
+| **PEP** — enforces the decision (drop or forward) | OpenShell supervisor / L7 proxy |
+| **Middleware chain** — invokes the decision hook | OpenShell `ChainRunner`; in path 1 a `RemoteMiddlewareService` gRPC client stage, in path 2 the `L7Authorizer` trait |
+| **Reference monitor** — runs the APL pipeline, returns allow/deny/mutate | CPEX (remote gRPC service in path 1; in-process runtime in path 2) |
+| **PDP** — raw policy evaluation | Cedar or CEL, inside CPEX |
+
+CPEX is the reference-monitor service that the middleware chain calls, and it
+embeds a Cedar/CEL PDP one layer below its own boundary. Path (2) differs from
+path (1) by proximity, not role: in-process locality (lower latency, no gRPC
+hop), access to trusted context the remote contract does not carry
+(calling-binary identity, canonicalized request view, policy generation), and
+reach into the post-invocation phase without the extended contract of path (3).
 
 Regardless of the chosen path, the high-level control flow is the same:
 
