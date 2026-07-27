@@ -7,7 +7,7 @@ topic: config-hot-reload
 
 ## Summary
 
-Add a file watcher that automatically reloads CPEX configuration on disk changes by calling the existing validate-before-swap load path, robust to both Kubernetes ConfigMap symlink swaps and direct editor saves, on by default with a config opt-out, and observable through structured logs, the generation counter, reload metrics, and a status callback.
+Add a file watcher that automatically reloads CPEX configuration on disk changes through a transactional, single-publish reload path, robust to both Kubernetes ConfigMap symlink swaps and direct editor saves, opt-in via a programmatic activation call on the manager (not a config attribute), and observable through structured logs, the generation counter, reload metrics, watcher liveness, and a status callback.
 
 ---
 
@@ -57,9 +57,9 @@ The atomic-swap machinery to avoid this already exists in `crates/cpex-core/src/
 - R5. Reload rebuilds the whole `CpexConfig`, recreating all plugin instances; in-memory plugin state (rate-limiter counters, cached connections, etc.) is reset on every reload. This caveat must be documented for operators.
 
 **Activation and lifecycle**
-- R6. Hot-reload is on by default and disabled through an opt-out field in the config document. When disabled, no watcher runs.
-- R7. Watching attaches only when config is loaded from a file path. Configs loaded from a string and embedding hosts that pass no path never watch.
-- R8. A reload whose new config flips the opt-out takes effect: turning it off stops the watcher; turning it back on re-establishes it.
+- R6. Hot-reload is opt-in and activated only through a programmatic activation call on the manager. It is off by default and cannot be enabled from the watched config file itself (a config attribute would let anyone who can write the file also turn watching on, which is unsafe for an enforcement plane).
+- R7. Watching attaches only through the programmatic activation call (which supplies the path). Ordinary string/path loads that do not call it never watch.
+- R8. The host starts and stops watching through the API; there is no config flag that toggles it.
 - R13. A watcher-side failure (watched path temporarily missing, transient OS watch error) must not crash the process; it is logged and the watch is re-established where possible.
 
 **Observability**
@@ -76,7 +76,7 @@ The atomic-swap machinery to avoid this already exists in `crates/cpex-core/src/
 - AE2. **Covers R4.** Given a request is mid-evaluation when a reload occurs, when the swap happens, then that request finishes on the old config and later requests use the new one.
 - AE3. **Covers R4, R9, R10.** Given a watched policy file, when it is edited to an invalid config, then the swap is rejected, the previous config stays active, the generation counter does not advance, and the rejection is logged with the validation error.
 - AE4. **Covers R2.** Given CPEX running in Kubernetes with the config mounted from a ConfigMap, when the ConfigMap is updated (mount swapped via symlink), then the change is detected and reloaded without a pod restart.
-- AE5. **Covers R6, R8.** Given hot-reload enabled by default, when a reload applies a config that sets the opt-out, then the watcher stops; when a later change (applied by other means) re-enables it, the watcher is re-established.
+- AE5. **Covers R6, R8.** Given a host that has not activated watching, when the config file changes, then nothing reloads; when the host calls the activation API, changes reload; when the host stops watching, later changes no longer reload. The watched file cannot enable its own watching.
 - AE6. **Covers R3.** Given an editor that writes the file several times in quick succession, when the burst occurs, then exactly one reload is performed.
 
 ---
@@ -95,13 +95,14 @@ The atomic-swap machinery to avoid this already exists in `crates/cpex-core/src/
 - Partial or diffed reload that preserves unchanged plugins' in-memory state is out of scope; this feature does a full rebuild.
 - A signal-based (SIGHUP) or admin-API manual reload trigger is out of scope; auto-detection covers both stated deployment modes.
 - Generalizing into a full `ConfigSource` trait with multiple backends (database, remote, etc.) is out of scope; this ships the filesystem case, and the abstraction can follow if a second source appears.
+- Semantic policy validation and content integrity/provenance gating (checksum, signature) are out of scope. Reload checks that a policy parses and compiles, not that it is correct or authorized; the watched path is assumed writable only by principals authorized to change policy. An integrity signal is possible future hardening.
 - Host-driven reload for the `cpex-ffi` embedded case is out of scope as a watch target; embedding hosts that own their config file drive their own reloads.
 
 ---
 
 ## Key Decisions
 
-- On by default, opt-out rather than opt-in: no-downtime policy updates become the default operator experience, and the risky path (a bad edit) is already contained by validate-before-swap, so defaulting on is safe.
+- Opt-in via a programmatic activation call, not a config attribute: validate-before-swap only catches syntactically invalid policy, not a valid-but-permissive one, so auto-applying on by default would let anyone who can write the watched file loosen the enforcement plane with no human gate. Making activation a host code decision (and keeping it out of the watched config) means the file cannot enable its own reloading. Reload safety is a transactional single-publish guarantee: an invalid or partial edit never leaves a request observing a half-applied policy.
 - Full rebuild over instance diffing: matches the existing `load_config_file` behavior and keeps the reference implementation simple; the state-reset caveat is documented instead of engineered around.
 - Watch the containing directory and re-resolve the canonical path: the only approach that catches ConfigMap symlink swaps, and it also covers atomic-rename editor saves, so a single mechanism serves both deployment modes.
 - Reload metrics ride on the status callback plus `tracing` rather than introducing a metrics crate: no metrics facility exists in the tree today, so avoid a premature dependency and let the host wire outcomes into its own metrics system.
