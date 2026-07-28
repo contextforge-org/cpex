@@ -15,12 +15,12 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use cpex_core::context::PluginContext;
 use cpex_core::error::{PluginError, PluginViolation};
+use cpex_core::execution_record::{ControlExecutionStatus, ExecutionSummary};
 use cpex_core::executor::PipelineResult;
 use cpex_core::factory::{PluginFactory, PluginInstance};
 use cpex_core::hooks::adapter::TypedHandlerAdapter;
 use cpex_core::hooks::payload::{Extensions, MetaExtension};
 use cpex_core::hooks::trait_def::{HookHandler, HookTypeDef, PluginResult};
-use cpex_core::execution_record::{ControlExecutionStatus, ExecutionSummary};
 use cpex_core::manager::PluginManager;
 use cpex_core::plugin::{Plugin, PluginConfig};
 
@@ -415,8 +415,14 @@ fn print_result(_label: &str, result: &PipelineResult) {
     );
     for rec in &result.executions {
         let status_icon = match rec.status {
-            ControlExecutionStatus::Completed => if rec.effective_allow { "✓" } else { "✗" },
-            ControlExecutionStatus::Error   => "!",
+            ControlExecutionStatus::Completed => {
+                if rec.effective_allow {
+                    "✓"
+                } else {
+                    "✗"
+                }
+            },
+            ControlExecutionStatus::Error => "!",
             ControlExecutionStatus::Timeout => "⏱",
             ControlExecutionStatus::Cancelled => "~",
             ControlExecutionStatus::Skipped | ControlExecutionStatus::Disabled => "-",
