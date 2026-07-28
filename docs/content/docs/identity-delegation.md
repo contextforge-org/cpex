@@ -23,15 +23,7 @@ For the conceptual model first, read [Use Cases]({{< relref "use-cases" >}}) and
 
 Every request crosses two identity boundaries:
 
-```
-        inbound                                   outbound
-  ┌──────────────────┐                    ┌──────────────────────┐
-  │  identity.resolve │   route + policy   │     token.delegate    │
-  │  (who called in)  │ ─────────────────▶ │  (whom we call out as)│
-  └──────────────────┘                    └──────────────────────┘
-   validates creds →                        mints the downstream
-   typed identity slots                     credential per the route
-```
+![Two identity boundaries: an inbound identity.resolve box (who is calling in) that validates credentials and lands typed identity slots, an arrow labelled route + policy, and an outbound token.delegate box (who we call out as) that mints the downstream credential per the route + subject; identity is additive across slots while delegation is chosen per route by subject](images/identity_two_boundaries.png)
 
 - **Inbound.** `identity.resolve` plugins each read one credential (from a header)
   and land a typed identity in a slot. They are additive: one request can carry a
