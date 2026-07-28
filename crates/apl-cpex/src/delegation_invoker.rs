@@ -130,10 +130,10 @@ impl DelegationInvoker for DelegationPluginInvoker {
         // (on-behalf-of); `subject: caller_workload` selects the
         // caller's SVID for the no-user, agent-acting-autonomously
         // exchange, `subject: client` the OAuth client token, and
-        // `subject: gateway` means *we* are the principal.
+        // `subject: this_workload` means *we* are the principal.
         //
-        // Gateway is the one subject with no inbound credential to
-        // read — the gateway proves who it is with its own
+        // this_workload is the one subject with no inbound credential to
+        // read — this instance proves who it is with its own
         // credentials, not with anything the caller sent. So
         // `inbound_role()` returns None and the bearer token stays
         // empty *by design*; the handler must not treat that as the
@@ -170,8 +170,8 @@ impl DelegationInvoker for DelegationPluginInvoker {
         // `actor: caller_workload`, attach that inbound credential as
         // the actor_token so the minted token records `act` = actor
         // alongside `sub` = subject. Pairs naturally with
-        // `subject: gateway`: the gateway is the principal the backend
-        // trusts, while `act` records which agent caused the call.
+        // `subject: this_workload`: this instance is the principal the
+        // backend trusts, while `act` records which agent caused the call.
         // An absent credential leaves the exchange single-token.
         if let Some(actor_role) = role_from_cfg(cfg, "actor") {
             let actor_token = current_extensions
@@ -294,7 +294,7 @@ impl DelegationInvoker for DelegationPluginInvoker {
 /// Unlike `subject`, an actor is always an inbound credential: the
 /// actor is by definition a party that presented itself to us. That's
 /// why this returns `TokenRole` while the subject resolves to a
-/// [`DelegationSubject`], which additionally admits `gateway`.
+/// [`DelegationSubject`], which additionally admits `this_workload`.
 ///
 /// `"workload"` is accepted as a legacy spelling of `caller_workload`.
 fn role_from_cfg(cfg: Option<&serde_yaml::Mapping>, key: &str) -> Option<TokenRole> {

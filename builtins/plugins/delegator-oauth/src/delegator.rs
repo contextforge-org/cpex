@@ -41,6 +41,7 @@
 //                                    scopes don't include all
 //                                    requested permissions
 
+use std::borrow::Cow;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -63,9 +64,10 @@ use super::config::OAuthDelegatorConfig;
 const GRANT_TYPE_TOKEN_EXCHANGE: &str = "urn:ietf:params:oauth:grant-type:token-exchange";
 
 /// RFC 6749 §4.4 client-credentials grant — "give me a token as
-/// myself". Used when the delegation subject is the gateway: there is
-/// no inbound credential to exchange, and the gateway's identity is
-/// the OAuth client identity it already authenticates with.
+/// myself". Used when the delegation subject is `this_workload` (this
+/// CPEX instance itself): there is no inbound credential to exchange,
+/// and its identity is the OAuth client identity it already
+/// authenticates with.
 const GRANT_TYPE_CLIENT_CREDENTIALS: &str = "client_credentials";
 
 /// Default issued-token-type RFC 8693 returns. We don't rely on it
@@ -191,6 +193,85 @@ impl OAuthDelegator {
         }
         scopes.join(" ")
     }
+
+    /// Leg 1 of a workload delegation (`subject: caller_workload`):
+    /// authenticate the calling agent by presenting its JWT-SVID as an
+    /// RFC 7523 client assertion, and return the IdP-issued base token.
+    ///
+    /// There is no Basic auth and no `client_id` — the assertion *is*
+    /// the client credential, and the IdP resolves which client from
+    /// the SVID's `sub` (draft-ietf-oauth-spiffe-client-auth). The base
+    /// token this returns then becomes the `subject_token` of the
+    /// ordinary exchange (leg 2), which is where the downstream
+    /// audience/scope — the authority the agent itself lacks — is
+    /// actually granted. Splitting it this way is what keeps the
+    /// enforcement point, not the agent, as the holder of downstream authority.
+    ///
+    /// Errors map to the same `delegation.*` violation codes the
+    /// exchange uses, so a failed leg 1 denies the whole delegation.
+    async fn mint_base_token(&self, svid: &str) -> Result<String, PluginViolation> {
+        let form = [
+            ("grant_type", GRANT_TYPE_CLIENT_CREDENTIALS),
+            (
+                "client_assertion_type",
+                self.typed.workload_assertion_type.as_str(),
+            ),
+            ("client_assertion", svid),
+        ];
+
+        let response = match self
+            .http
+            .post(&self.typed.token_endpoint)
+            .form(&form)
+            .send()
+            .await
+        {
+            Ok(r) => r,
+            Err(e) if e.is_timeout() => {
+                return Err(PluginViolation::new(
+                    "delegation.idp_timeout",
+                    format!(
+                        "workload client_assertion to {} timed out",
+                        self.typed.token_endpoint
+                    ),
+                ));
+            },
+            Err(e) => {
+                return Err(PluginViolation::new(
+                    "delegation.idp_unreachable",
+                    format!(
+                        "workload client_assertion POST to {} failed: {e}",
+                        self.typed.token_endpoint
+                    ),
+                ));
+            },
+        };
+
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            let reason = match serde_json::from_str::<TokenErrorResponse>(&body) {
+                Ok(err) => {
+                    let mut reason = err.error.clone();
+                    if let Some(desc) = err.error_description {
+                        reason.push_str(": ");
+                        reason.push_str(&desc);
+                    }
+                    reason
+                },
+                Err(_) => format!("IdP returned {status}: {body}"),
+            };
+            return Err(PluginViolation::new("delegation.idp_rejected", reason));
+        }
+
+        match response.json::<TokenExchangeResponse>().await {
+            Ok(parsed) => Ok(parsed.access_token),
+            Err(e) => Err(PluginViolation::new(
+                "delegation.bad_response",
+                format!("workload client_assertion response wasn't valid token JSON: {e}"),
+            )),
+        }
+    }
 }
 
 /// Subset of the RFC 8693 response we care about.
@@ -232,15 +313,23 @@ impl HookHandler<TokenDelegateHook> for OAuthDelegator {
         _ext: &Extensions,
         _ctx: &mut PluginContext,
     ) -> PluginResult<DelegationPayload> {
-        // `subject: gateway` means *we* are the principal. There is no
-        // inbound credential to exchange — the gateway's identity is
-        // its OAuth client identity, which it already proves via the
+        // `subject: this_workload` means *we* are the principal. There
+        // is no inbound credential to exchange — this instance's identity
+        // is its OAuth client identity, which it already proves via the
         // Basic auth header below. The standard grant for "give me a
         // token as myself" is client_credentials, not token exchange.
-        let as_gateway = *payload.subject() == DelegationSubject::Gateway;
+        let as_this_workload = *payload.subject() == DelegationSubject::ThisWorkload;
+
+        // `subject: caller_workload` means the calling agent acts as
+        // itself, and `bearer` is its JWT-SVID. An SVID is a *client
+        // credential*, not a `subject_token` — an authorization server
+        // won't accept it as an exchange subject — so leg 1 below trades
+        // it for an ordinary IdP token that the exchange (leg 2) can
+        // then scope down.
+        let is_workload = *payload.subject() == DelegationSubject::CallerWorkload;
 
         let bearer = payload.bearer_token();
-        if bearer.is_empty() && !as_gateway {
+        if bearer.is_empty() && !as_this_workload {
             return PluginResult::deny(PluginViolation::new(
                 "delegation.bad_request",
                 "DelegationPayload carried an empty bearer_token — outbound \
@@ -258,10 +347,24 @@ impl HookHandler<TokenDelegateHook> for OAuthDelegator {
 
         let scope = Self::requested_scopes(payload);
 
-        // Build the form-encoded body: RFC 6749 §4.4 for the gateway
+        // Leg 1 (workload only): the SVID in `bearer` authenticates the
+        // agent as a client; mint the IdP base token here and let the
+        // exchange below run on it. Every other subject exchanges its
+        // own `bearer` directly. `Cow` avoids cloning the (already
+        // borrowed) bearer on the non-workload path.
+        let subject_token: Cow<str> = if is_workload {
+            match self.mint_base_token(bearer).await {
+                Ok(token) => Cow::Owned(token),
+                Err(violation) => return PluginResult::deny(violation),
+            }
+        } else {
+            Cow::Borrowed(bearer)
+        };
+
+        // Build the form-encoded body: RFC 6749 §4.4 for this instance
         // acting as itself, RFC 8693 §2.1 for every exchange on behalf
         // of somebody else.
-        let mut form: Vec<(&str, &str)> = if as_gateway {
+        let mut form: Vec<(&str, &str)> = if as_this_workload {
             vec![
                 ("grant_type", GRANT_TYPE_CLIENT_CREDENTIALS),
                 ("audience", audience),
@@ -269,7 +372,10 @@ impl HookHandler<TokenDelegateHook> for OAuthDelegator {
         } else {
             vec![
                 ("grant_type", GRANT_TYPE_TOKEN_EXCHANGE),
-                ("subject_token", bearer),
+                // On the workload path this is the leg-1 base token, not
+                // the raw SVID; on every other path it's the caller's
+                // own bearer, unchanged.
+                ("subject_token", subject_token.as_ref()),
                 ("subject_token_type", &self.typed.subject_token_type),
                 ("audience", audience),
             ]
@@ -288,11 +394,16 @@ impl HookHandler<TokenDelegateHook> for OAuthDelegator {
         // Skipped entirely under client_credentials: `actor_token` is
         // a token-exchange parameter and has no meaning in RFC 6749
         // §4.4, so sending it would be malformed. A route that wants
-        // the gateway as principal *and* the calling agent recorded in
-        // `act` needs a real subject credential for the gateway —
+        // this instance as principal *and* the calling agent recorded in
+        // `act` needs a real subject credential for this instance —
         // i.e. its own SVID — rather than client_credentials.
+        //
+        // Also skipped on the workload path: there the workload *is* the
+        // subject (via the leg-1 base token), so there is no separate
+        // actor to record. `actor_token` belongs to the on-behalf-of
+        // shape (a user subject with the calling agent as actor).
         let actor_token = payload.actor_token();
-        if !actor_token.is_empty() && !as_gateway {
+        if !actor_token.is_empty() && !as_this_workload && !is_workload {
             form.push(("actor_token", actor_token));
             form.push(("actor_token_type", &self.typed.actor_token_type));
         }
@@ -451,7 +562,7 @@ impl HookHandler<TokenDelegateHook> for OAuthDelegator {
 ///
 /// A `CallerWorkload` subject means no user was in the picture — the
 /// *calling agent* exchanged its own SPIFFE JWT-SVID, so the
-/// resulting credential speaks for that agent. `Gateway` means we
+/// resulting credential speaks for that agent. `ThisWorkload` means we
 /// are the principal. Everything else (a user token, an OAuth client
 /// token) is the ordinary on-behalf-of shape.
 ///
@@ -462,9 +573,9 @@ impl HookHandler<TokenDelegateHook> for OAuthDelegator {
 fn mode_for_subject(subject: &DelegationSubject) -> DelegationMode {
     match subject {
         DelegationSubject::CallerWorkload => DelegationMode::AsCallerWorkload,
-        DelegationSubject::Gateway => DelegationMode::AsGateway,
+        DelegationSubject::ThisWorkload => DelegationMode::AsThisWorkload,
         // `DelegationSubject` is #[non_exhaustive]; User, Client and
-        // any future variant all describe a principal the gateway is
+        // any future variant all describe a principal this instance is
         // acting *for*, so on-behalf-of stays the safe default.
         _ => DelegationMode::OnBehalfOfUser,
     }

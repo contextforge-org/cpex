@@ -130,23 +130,24 @@ pub enum DelegationMode {
     /// no user in the loop. The credential exchanged is the caller's
     /// own JWT-SVID, arriving as `inbound_tokens[TokenRole::CallerWorkload]`.
     ///
-    /// Distinct from `AsGateway`: many different agents call through
-    /// one gateway, so this mode does *not* identify a single
+    /// Distinct from `AsThisWorkload`: many different agents call through
+    /// one enforcement point, so this mode does *not* identify a single
     /// principal on its own — `DelegationKey.workload_id` carries the
     /// specific caller.
     AsCallerWorkload,
 
-    /// Outbound token represents *this* gateway's own attested
+    /// Outbound token represents *this* CPEX instance's own attested
     /// identity (`SecurityExtension.this_workload`) — used when the
-    /// gateway calls infrastructure it owns, or a downstream that
-    /// trusts only the gateway with user context conveyed separately.
+    /// enforcement point calls infrastructure it owns, or a downstream
+    /// that trusts only this instance with user context conveyed
+    /// separately.
     ///
-    /// The gateway's SVID is not an inbound credential: it comes from
+    /// This instance's SVID is not an inbound credential: it comes from
     /// the SPIFFE Workload API, not off the wire. Until a source that
     /// populates `this_workload` exists, no handler produces this
     /// mode — do not reach for it as a stand-in for
     /// `AsCallerWorkload`.
-    AsGateway,
+    AsThisWorkload,
 }
 
 /// One inbound credential, captured at the wire layer and stashed

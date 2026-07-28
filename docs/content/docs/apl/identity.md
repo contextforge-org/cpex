@@ -85,7 +85,7 @@ The SPIFFE ID is read from the SVID's `sub` claim, and the trust domain is deriv
 Note the distinction the bag makes between two different machine identities:
 
 - **`caller_workload`** — the attested workload on the inbound network peer. The agent calling *us*. Many different agents call through one gateway.
-- **`this_workload`** — the gateway's *own* attested identity, used for outbound calls. A single principal.
+- **`this_workload`** — this CPEX instance's *own* attested identity, used for outbound calls. A single principal.
 
 They are not interchangeable, and confusing them is how a token minted for one agent ends up presented by another. Delegation depends on the distinction — see [Delegation]({{< relref "/docs/apl/delegation" >}}).
 

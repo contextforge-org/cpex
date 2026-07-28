@@ -53,10 +53,10 @@ By default a `delegate` step exchanges the **user's** token: the minted credenti
 
 | Key | Meaning | Accepts | Default |
 |-----|---------|---------|---------|
-| `subject` | Whose identity the minted token speaks for. | `user`, `client`, `caller_workload`, `gateway` | `user` |
+| `subject` | Whose identity the minted token speaks for. | `user`, `client`, `caller_workload`, `this_workload` | `user` |
 | `actor` | An additional credential recorded as the RFC 8693 `actor_token`, naming who is *acting*. | `user`, `client`, `caller_workload` | none |
 
-`actor` accepts only inbound credentials, because an actor is by definition a party that presented itself to us. `subject` additionally accepts `gateway` — us — which is the one principal with no inbound credential at all.
+`actor` accepts only inbound credentials, because an actor is by definition a party that presented itself to us. `subject` additionally accepts `this_workload` — us — which is the one principal with no inbound credential at all. (`gateway` is accepted as a deprecated alias of `this_workload`, from before CPEX was decoupled from the gateway shape.)
 
 ### On-behalf-of a user, with the agent named
 
@@ -80,23 +80,23 @@ pre_invocation:
 
 This requires a `role: caller_workload` identity resolver to have populated the SVID slot. With no workload credential present the exchange has no subject token and is denied rather than silently falling back.
 
-### The gateway calling as itself
+### The enforcement point calling as itself
 
-The common MCP-gateway deployment: agents authenticate to the gateway, but the *gateway* is the one holding access to the backend tools. The agent never possesses a credential the backend would accept.
+A common deployment (an MCP gateway is one shape): agents authenticate to CPEX, but *this instance* is the one holding access to the backend tools. The agent never possesses a credential the backend would accept.
 
 ```yaml
 pre_invocation:
   - "require(role.hr)"
-  - "delegate(workday-oauth, target: workday-api, subject: gateway,
+  - "delegate(workday-oauth, target: workday-api, subject: this_workload,
               audience: workday-api, permissions: [read_compensation])"
 ```
 
-`subject: gateway` has no inbound credential to exchange, so the delegator switches from RFC 8693 token exchange to an RFC 6749 §4.4 **`client_credentials`** grant: no `subject_token` is sent, and the gateway's identity is the OAuth client identity it already authenticates with. Nothing extra to configure — the delegator's existing `client_id` / `client_secret` *is* the gateway's identity.
+`subject: this_workload` has no inbound credential to exchange, so the delegator switches from RFC 8693 token exchange to an RFC 6749 §4.4 **`client_credentials`** grant: no `subject_token` is sent, and this instance's identity is the OAuth client identity it already authenticates with. Nothing extra to configure — the delegator's existing `client_id` / `client_secret` *is* this instance's identity.
 
 Two consequences worth understanding before choosing this shape:
 
-- **The gateway is the only enforcement point.** The backend sees a token that says "the gateway" and has no idea which agent triggered the call. Whatever the `require` gates allow is what happens; there is no second opinion downstream. Gate accordingly.
-- **The minted token cannot name the calling agent.** `actor_token` is a token-exchange parameter with no meaning under `client_credentials`, so it is not sent even if the step asks for one. Attribution to the calling agent lives in your audit log, not in the credential. Carrying the agent inside the token requires the gateway to have a real subject credential of its own to exchange — its own SVID — which is not yet wired up.
+- **This instance is the only enforcement point.** The backend sees a token that says "this instance" and has no idea which agent triggered the call. Whatever the `require` gates allow is what happens; there is no second opinion downstream. Gate accordingly.
+- **The minted token cannot name the calling agent.** `actor_token` is a token-exchange parameter with no meaning under `client_credentials`, so it is not sent even if the step asks for one. Attribution to the calling agent lives in your audit log, not in the credential. Carrying the agent inside the token requires this instance to have a real subject credential of its own to exchange — its own SVID — which is not yet wired up.
 
 ### Who the minted token speaks for
 
@@ -107,7 +107,7 @@ Each exchange is attributed to exactly one principal, and the attribution is **d
 | `user` (default) | `on_behalf_of_user` | The end user |
 | `client` | `on_behalf_of_user` | The brokering application |
 | `caller_workload` | `as_caller_workload` | The calling agent |
-| `gateway` | `as_gateway` | The gateway itself |
+| `this_workload` | `as_this_workload` | This instance itself |
 
 There is deliberately **no `mode` key**. If routes could declare the attribution independently of the credential they hand over, a route could claim to act on behalf of a user while exchanging a workload SVID. Deriving it means the operator states one thing — which credential — and the consequence follows.
 

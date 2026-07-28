@@ -69,10 +69,10 @@ use crate::impl_plugin_payload;
 ///
 /// Deliberately a separate type from [`TokenRole`]. `TokenRole` keys
 /// `RawCredentialsExtension.inbound_tokens`, so it can only ever name
-/// a credential that arrived on the wire. `Gateway` names *our own*
-/// identity, which by definition does not arrive on the wire — it has
-/// no inbound slot and no `TokenRole`. Collapsing the two would make
-/// "which workload?" ambiguous all over again.
+/// a credential that arrived on the wire. `ThisWorkload` names *this
+/// instance's own* identity, which by definition does not arrive on the
+/// wire — it has no inbound slot and no `TokenRole`. Collapsing the two
+/// would make "which workload?" ambiguous all over again.
 #[non_exhaustive]
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -85,27 +85,29 @@ pub enum DelegationSubject {
     /// The *calling* workload — an agent acting autonomously, with no
     /// user in the loop. Exchanges the caller's own JWT-SVID.
     CallerWorkload,
-    /// This gateway itself. Used when the gateway holds the access to
-    /// a downstream — the common "gateway owns the tool credentials"
-    /// deployment — and calls it as itself rather than as the caller.
+    /// This CPEX instance's own identity — used when the enforcement
+    /// point holds the downstream access (the "hold the tool credentials
+    /// here" deployment) and calls the downstream as itself rather than
+    /// as the caller. Deployment-agnostic: not a claim that CPEX is a
+    /// gateway.
     ///
-    /// Has no inbound credential to exchange: the gateway proves who
-    /// it is with its own client credentials or its own SVID.
-    Gateway,
+    /// Has no inbound credential to exchange: proves who it is with its
+    /// own client credentials or its own SVID.
+    ThisWorkload,
 }
 
 impl DelegationSubject {
     /// Which inbound credential supplies this subject's token, or
-    /// `None` for [`Gateway`] — nothing the caller sent is being
+    /// `None` for [`ThisWorkload`] — nothing the caller sent is being
     /// exchanged, so there is no inbound slot to read.
     ///
-    /// [`Gateway`]: DelegationSubject::Gateway
+    /// [`ThisWorkload`]: DelegationSubject::ThisWorkload
     pub fn inbound_role(&self) -> Option<TokenRole> {
         match self {
             DelegationSubject::User => Some(TokenRole::User),
             DelegationSubject::Client => Some(TokenRole::Client),
             DelegationSubject::CallerWorkload => Some(TokenRole::CallerWorkload),
-            DelegationSubject::Gateway => None,
+            DelegationSubject::ThisWorkload => None,
         }
     }
 
@@ -113,14 +115,15 @@ impl DelegationSubject {
     /// anything unrecognized so callers apply their own policy rather
     /// than silently substituting a principal for a typo'd one.
     ///
-    /// `"workload"` is accepted as a legacy spelling of
-    /// `caller_workload`.
+    /// `"workload"` is accepted as a legacy spelling of `caller_workload`,
+    /// and `"gateway"` as a deprecated spelling of `this_workload` (the
+    /// keyword was renamed because CPEX is not necessarily a gateway).
     pub fn from_config_str(s: &str) -> Option<Self> {
         match s {
             "user" => Some(DelegationSubject::User),
             "client" => Some(DelegationSubject::Client),
             "caller_workload" | "workload" => Some(DelegationSubject::CallerWorkload),
-            "gateway" => Some(DelegationSubject::Gateway),
+            "this_workload" | "gateway" => Some(DelegationSubject::ThisWorkload),
             _ => None,
         }
     }
@@ -723,23 +726,28 @@ mod tests {
             DelegationSubject::CallerWorkload.inbound_role(),
             Some(TokenRole::CallerWorkload),
         );
-        assert_eq!(DelegationSubject::Gateway.inbound_role(), None);
+        assert_eq!(DelegationSubject::ThisWorkload.inbound_role(), None);
     }
 
     #[test]
-    fn subject_parses_from_config_including_legacy_workload_spelling() {
+    fn subject_parses_from_config_including_legacy_spellings() {
         assert_eq!(
             DelegationSubject::from_config_str("caller_workload"),
             Some(DelegationSubject::CallerWorkload),
         );
-        // Configs written before the rename keep working.
+        // Configs written before the renames keep working.
         assert_eq!(
             DelegationSubject::from_config_str("workload"),
             Some(DelegationSubject::CallerWorkload),
         );
         assert_eq!(
+            DelegationSubject::from_config_str("this_workload"),
+            Some(DelegationSubject::ThisWorkload),
+        );
+        // `gateway` is the deprecated spelling of `this_workload`.
+        assert_eq!(
             DelegationSubject::from_config_str("gateway"),
-            Some(DelegationSubject::Gateway),
+            Some(DelegationSubject::ThisWorkload),
         );
         // A typo resolves to None so the caller applies its own
         // default rather than silently picking a principal.
@@ -973,14 +981,15 @@ mod tests {
             vec!["service:call".into()],
             Utc::now(),
         ));
-        p.delegation_mode = Some(crate::extensions::raw_credentials::DelegationMode::AsGateway);
+        p.delegation_mode =
+            Some(crate::extensions::raw_credentials::DelegationMode::AsThisWorkload);
 
         let updated = p.apply_to_extensions(Extensions::default());
         let raw = updated.raw_credentials.as_ref().unwrap();
         let key = raw.delegated_tokens.keys().next().unwrap();
         assert!(matches!(
             key.mode,
-            crate::extensions::raw_credentials::DelegationMode::AsGateway
+            crate::extensions::raw_credentials::DelegationMode::AsThisWorkload
         ));
     }
 
@@ -1014,11 +1023,11 @@ mod tests {
         // base.delegation_mode = None
         let mut overlay = DelegationPayload::new("", "");
         overlay.delegation_mode =
-            Some(crate::extensions::raw_credentials::DelegationMode::AsGateway);
+            Some(crate::extensions::raw_credentials::DelegationMode::AsThisWorkload);
         base.merge(overlay);
         assert!(matches!(
             base.delegation_mode,
-            Some(crate::extensions::raw_credentials::DelegationMode::AsGateway)
+            Some(crate::extensions::raw_credentials::DelegationMode::AsThisWorkload)
         ));
     }
 

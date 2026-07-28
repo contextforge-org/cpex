@@ -72,6 +72,18 @@ pub struct OAuthDelegatorConfig {
     /// single-token and behaves exactly as before.
     #[serde(default = "default_actor_token_type")]
     pub actor_token_type: String,
+
+    /// The `client_assertion_type` used in leg 1 of a workload
+    /// delegation (`subject: caller_workload`), where the calling
+    /// agent authenticates by presenting its JWT-SVID as an RFC 7523
+    /// client assertion rather than a secret. Defaults to the
+    /// SPIFFE-specific URN from draft-ietf-oauth-spiffe-client-auth —
+    /// NOT the generic `...:jwt-bearer` — because that's what a SPIFFE
+    /// authorization server (e.g. Keycloak's SPIFFE provider) expects.
+    /// Only consulted on the `caller_workload` path; every other
+    /// subject authenticates with the client secret as before.
+    #[serde(default = "default_workload_assertion_type")]
+    pub workload_assertion_type: String,
 }
 
 /// Where the gateway's OAuth client secret is loaded from. Three
@@ -100,6 +112,10 @@ fn default_subject_token_type() -> String {
 
 fn default_actor_token_type() -> String {
     "urn:ietf:params:oauth:token-type:jwt".to_string()
+}
+
+fn default_workload_assertion_type() -> String {
+    "urn:ietf:params:oauth:client-assertion-type:jwt-spiffe".to_string()
 }
 
 fn default_timeout_seconds() -> u64 {
@@ -155,6 +171,12 @@ mod tests {
         // actor is almost always a JWT-SVID); only used when the
         // payload carries a non-empty actor_token.
         assert_eq!(cfg.actor_token_type, "urn:ietf:params:oauth:token-type:jwt");
+        // workload_assertion_type defaults to the SPIFFE-specific
+        // client-assertion URN (leg 1 of a caller_workload delegation).
+        assert_eq!(
+            cfg.workload_assertion_type,
+            "urn:ietf:params:oauth:client-assertion-type:jwt-spiffe"
+        );
     }
 
     #[test]
