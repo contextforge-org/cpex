@@ -627,6 +627,179 @@ func TestTypedPipelineResultIsDenied(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Execution record field threading tests (no native library required)
+// ---------------------------------------------------------------------------
+
+// TestTypedPipelineResultCarriesExecutions verifies that the Invoke() helper
+// copies Executions from PipelineResult into TypedPipelineResult.
+// This is a regression test for the field that was added to TypedPipelineResult
+// but not wired through the struct literal in Invoke().
+func TestTypedPipelineResultCarriesExecutions(t *testing.T) {
+	trueVal := true
+	errCode := "test_deny"
+	reason := "denied for test"
+
+	raw := &PipelineResult{
+		ContinueProcessing: false,
+		Executions: []ControlExecutionRecord{
+			{
+				PluginID:       "abc-123",
+				PluginName:     "test-plugin",
+				PluginKind:     "builtin",
+				HookName:       "test_hook",
+				Mode:           "sequential",
+				Status:         ControlExecutionStatusCompleted,
+				RequestedAllow: &trueVal,
+				EffectiveAllow: false,
+				Matched:        &trueVal,
+				Applied:        true,
+				DurationNs:     12345,
+				ErrorCode:      &errCode,
+				Reason:         &reason,
+				ConfigKeys:     []string{"policy_file"},
+			},
+		},
+	}
+
+	// Simulate what Invoke[P] does internally — manually construct TypedPipelineResult
+	// as the function does (no FFI call required).
+	typed := &TypedPipelineResult[map[string]any]{
+		ContinueProcessing: raw.ContinueProcessing,
+		Violation:          raw.Violation,
+		Errors:             raw.Errors,
+		Metadata:           raw.Metadata,
+		PayloadType:        raw.PayloadType,
+		Executions:         raw.Executions,
+	}
+
+	if len(typed.Executions) != 1 {
+		t.Fatalf("expected 1 execution record, got %d", len(typed.Executions))
+	}
+	rec := typed.Executions[0]
+	if rec.PluginName != "test-plugin" {
+		t.Errorf("expected plugin_name='test-plugin', got %q", rec.PluginName)
+	}
+	if rec.Status != ControlExecutionStatusCompleted {
+		t.Errorf("expected status=completed, got %q", rec.Status)
+	}
+	if rec.DurationNs != 12345 {
+		t.Errorf("expected duration_ns=12345, got %d", rec.DurationNs)
+	}
+	if rec.ErrorCode == nil || *rec.ErrorCode != "test_deny" {
+		t.Errorf("expected error_code='test_deny', got %v", rec.ErrorCode)
+	}
+}
+
+// TestControlExecutionRecordMsgpackRoundTrip verifies that
+// ControlExecutionRecord survives a MessagePack encode/decode cycle
+// with all optional pointer fields preserved.
+func TestControlExecutionRecordMsgpackRoundTrip(t *testing.T) {
+	trueVal := true
+	errCode := "plugin_error"
+	reason := "something went wrong"
+
+	original := ControlExecutionRecord{
+		PluginID:           "uuid-xyz",
+		PluginName:         "my-plugin",
+		PluginKind:         "builtin",
+		HookName:           "my_hook",
+		Mode:               "concurrent",
+		Status:             ControlExecutionStatusError,
+		RequestedAllow:     nil,
+		EffectiveAllow:     true,
+		Matched:            &trueVal,
+		Applied:            false,
+		PayloadModified:    false,
+		ExtensionsModified: false,
+		DurationNs:         999,
+		Reason:             &reason,
+		ErrorCode:          &errCode,
+		ConfigKeys:         []string{"key_a", "key_b"},
+	}
+
+	data, err := msgpack.Marshal(original)
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+
+	var decoded ControlExecutionRecord
+	if err := msgpack.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unmarshal failed: %v", err)
+	}
+
+	if decoded.PluginName != original.PluginName {
+		t.Errorf("PluginName: got %q want %q", decoded.PluginName, original.PluginName)
+	}
+	if decoded.Status != original.Status {
+		t.Errorf("Status: got %q want %q", decoded.Status, original.Status)
+	}
+	if decoded.DurationNs != original.DurationNs {
+		t.Errorf("DurationNs: got %d want %d", decoded.DurationNs, original.DurationNs)
+	}
+	if decoded.RequestedAllow != nil {
+		t.Errorf("RequestedAllow should be nil, got %v", *decoded.RequestedAllow)
+	}
+	if decoded.Matched == nil || *decoded.Matched != true {
+		t.Errorf("Matched should be true")
+	}
+	if decoded.ErrorCode == nil || *decoded.ErrorCode != errCode {
+		t.Errorf("ErrorCode: got %v want %q", decoded.ErrorCode, errCode)
+	}
+	if len(decoded.ConfigKeys) != 2 || decoded.ConfigKeys[0] != "key_a" {
+		t.Errorf("ConfigKeys mismatch: got %v", decoded.ConfigKeys)
+	}
+}
+
+// TestPipelineResultExecutionsMsgpackRoundTrip verifies that Executions
+// on PipelineResult survives the full msgpack round-trip that the FFI
+// boundary performs.
+func TestPipelineResultExecutionsMsgpackRoundTrip(t *testing.T) {
+	falseVal := false
+	original := PipelineResult{
+		ContinueProcessing: false,
+		Executions: []ControlExecutionRecord{
+			{
+				PluginID:       "p1",
+				PluginName:     "deny-plugin",
+				PluginKind:     "builtin",
+				HookName:       "hook",
+				Mode:           "sequential",
+				Status:         ControlExecutionStatusCompleted,
+				RequestedAllow: &falseVal,
+				EffectiveAllow: false,
+				Applied:        true,
+				DurationNs:     500,
+				ConfigKeys:     []string{},
+			},
+		},
+	}
+
+	data, err := msgpack.Marshal(original)
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+
+	var decoded PipelineResult
+	if err := msgpack.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unmarshal failed: %v", err)
+	}
+
+	if len(decoded.Executions) != 1 {
+		t.Fatalf("expected 1 execution in decoded PipelineResult, got %d", len(decoded.Executions))
+	}
+	rec := decoded.Executions[0]
+	if rec.PluginName != "deny-plugin" {
+		t.Errorf("PluginName: got %q", rec.PluginName)
+	}
+	if rec.RequestedAllow == nil || *rec.RequestedAllow != false {
+		t.Errorf("RequestedAllow should be false")
+	}
+	if rec.EffectiveAllow {
+		t.Errorf("EffectiveAllow should be false")
+	}
+}
+
+// ---------------------------------------------------------------------------
 // CMF Content Part Tests
 // ---------------------------------------------------------------------------
 

@@ -876,6 +876,7 @@ pub unsafe extern "C" fn cpex_invoke(
         payload_type: result_payload_type,
         modified_payload: modified_payload_bytes,
         modified_extensions: modified_extensions_bytes,
+        executions: result.executions,
     };
 
     let result_bytes = match rmp_serde::to_vec_named(&ffi_result) {
@@ -1123,6 +1124,7 @@ unsafe fn finish_pipeline_result(
         payload_type: result_payload_type,
         modified_payload: modified_payload_bytes,
         modified_extensions: modified_extensions_bytes,
+        executions: result.executions,
     };
 
     let result_bytes = match rmp_serde::to_vec_named(&ffi_result) {
@@ -1284,6 +1286,10 @@ struct FfiPipelineResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(with = "serde_bytes_opt")]
     modified_extensions: Option<Vec<u8>>,
+    /// Ordered execution records for every control evaluated.
+    /// Empty when no plugins were invoked.
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    executions: Vec<cpex_core::execution_record::ControlExecutionRecord>,
 }
 
 /// Helper for serializing Option<Vec<u8>> as binary in MessagePack.

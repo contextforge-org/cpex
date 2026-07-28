@@ -6,6 +6,7 @@
 //   3. Create plugin factories for config-driven loading
 //   4. Load a YAML config with routing rules
 //   5. Invoke hooks with MetaExtension for route resolution
+//   6. Inspect structured execution records (ControlExecutionRecord)
 //
 // Run with: cargo run --example plugin_demo
 
@@ -14,6 +15,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use cpex_core::context::PluginContext;
 use cpex_core::error::{PluginError, PluginViolation};
+use cpex_core::execution_record::{ControlExecutionStatus, ExecutionSummary};
 use cpex_core::executor::PipelineResult;
 use cpex_core::factory::{PluginFactory, PluginInstance};
 use cpex_core::hooks::adapter::TypedHandlerAdapter;
@@ -398,6 +400,47 @@ fn print_result(_label: &str, result: &PipelineResult) {
             violation.plugin_name.as_deref().unwrap_or("unknown"),
             violation.reason,
             violation.code,
+        );
+    }
+
+    // --- Execution records ---
+    let summary = ExecutionSummary::new(&result.executions);
+    println!(
+        "  Executions: {} total | {} invoked | {} applied | {} matched | {:.3}ms total",
+        summary.result_count(),
+        summary.invocation_count(),
+        summary.applied_count(),
+        summary.matched_count(),
+        summary.total_duration_ns() as f64 / 1_000_000.0,
+    );
+    for rec in &result.executions {
+        let status_icon = match rec.status {
+            ControlExecutionStatus::Completed => {
+                if rec.effective_allow {
+                    "✓"
+                } else {
+                    "✗"
+                }
+            },
+            ControlExecutionStatus::Error => "!",
+            ControlExecutionStatus::Timeout => "⏱",
+            ControlExecutionStatus::Cancelled => "~",
+            ControlExecutionStatus::Skipped | ControlExecutionStatus::Disabled => "-",
+            _ => "?",
+        };
+        println!(
+            "    {} [{:?}] plugin={} mode={} effective_allow={} applied={} duration={:.3}ms{}",
+            status_icon,
+            rec.status,
+            rec.plugin_name,
+            rec.mode,
+            rec.effective_allow,
+            rec.applied,
+            rec.duration_ns as f64 / 1_000_000.0,
+            rec.error_code
+                .as_ref()
+                .map(|c| format!(" code={}", c))
+                .unwrap_or_default(),
         );
     }
     println!();

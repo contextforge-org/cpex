@@ -27,6 +27,8 @@
 // - [`elicitation`] — Elicitation hook family (human-in-the-loop:
 //                     approval, confirmation, step-up, …)
 // - [`error`] — Error types, violations, and result types
+// - [`execution_record`] — ControlExecutionRecord and ExecutionSummary for
+//                           enforcement observability (#130)
 
 pub mod cmf;
 pub mod config;
@@ -34,6 +36,7 @@ pub mod context;
 pub mod delegation;
 pub mod elicitation;
 pub mod error;
+pub mod execution_record;
 pub mod executor;
 pub mod extensions;
 pub mod factory;

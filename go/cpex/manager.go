@@ -568,6 +568,7 @@ func Invoke[P any](
 		Errors:             raw.Errors,
 		Metadata:           raw.Metadata,
 		PayloadType:        raw.PayloadType,
+		Executions:         raw.Executions,
 	}
 
 	// Deserialize modified payload if present
