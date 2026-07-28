@@ -32,6 +32,9 @@ pub struct PyPipelineResult {
     pub errors: Vec<Value>,
     pub metadata: Option<Value>,
     pub context_table: Value,
+    /// Serialized execution records — each entry is a JSON object matching
+    /// `ControlExecutionRecord`. Exposed as a Python list of dicts.
+    pub executions: Vec<Value>,
 }
 
 #[pymethods]
@@ -118,9 +121,24 @@ impl PyPipelineResult {
         })
     }
 
+    #[getter]
+    fn executions<'py>(&self, py: Python<'py>) -> PyResult<Vec<Bound<'py, PyDict>>> {
+        self.executions
+            .iter()
+            .map(|v| {
+                let obj = json_value_to_pyobj(py, v)?;
+                obj.cast_into::<PyDict>().map_err(|_| {
+                    pyo3::exceptions::PyRuntimeError::new_err(
+                        "cpex: execution record entry is not a dict",
+                    )
+                })
+            })
+            .collect()
+    }
+
     fn __repr__(&self) -> String {
         format!(
-            "PipelineResult(continue_processing={}, violation={}, errors={})",
+            "PipelineResult(continue_processing={}, violation={}, errors={}, executions={})",
             self.continue_processing,
             if self.violation.is_some() {
                 "Some(...)"
@@ -128,6 +146,7 @@ impl PyPipelineResult {
                 "None"
             },
             self.errors.len(),
+            self.executions.len(),
         )
     }
 }
@@ -195,6 +214,17 @@ pub fn pipeline_result_to_py(mut result: PipelineResult) -> PyResult<PyPipelineR
         ))
     })?;
 
+    let executions_value: Vec<Value> = result
+        .executions
+        .iter()
+        .map(serde_json::to_value)
+        .collect::<Result<_, _>>()
+        .map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!(
+                "cpex: executions serialization failed: {e}"
+            ))
+        })?;
+
     Ok(PyPipelineResult {
         continue_processing: result.continue_processing,
         modified_payload: modified_payload_value,
@@ -203,5 +233,6 @@ pub fn pipeline_result_to_py(mut result: PipelineResult) -> PyResult<PyPipelineR
         errors: errors_value,
         metadata: result.metadata,
         context_table: context_table_value,
+        executions: executions_value,
     })
 }

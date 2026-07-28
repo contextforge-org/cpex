@@ -13,6 +13,12 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/).
 > - **Fixed**: for any bug fixes.
 > - **Security**: in case of vulnerabilities.
 
+## [Unreleased]
+
+### Added
+
+- **Structured control execution records (`execution_record` module).** The executor now populates a `Vec<ControlExecutionRecord>` on every `PipelineResult` — one record per plugin evaluated. Records carry trusted plugin identity (id, name, kind, hook, mode), execution health (`ControlExecutionStatus`: completed / error / timeout / cancelled / skipped / disabled), the `requested_allow` / `effective_allow` distinction, `matched`, `applied`, `payload_modified`, `extensions_modified`, monotonic `duration_ns`, a bounded `reason`, a stable `error_code`, and config key names (never values). All fields are populated from `PluginRef.trusted_config`; plugins cannot forge them. The `ExecutionSummary` helper derives `invocation_count`, `matched_count`, `applied_count`, `result_count`, and `total_duration_ns` from the record slice. Exposed through the FFI (`FfiPipelineResult.executions`), Go binding (`PipelineResult.Executions`, `TypedPipelineResult.Executions`, `ControlExecutionRecord`, `ControlExecutionStatus`), and Python PyO3 binding (`PipelineResult.executions` getter, `_lib.pyi` stub). Closes [#130](https://github.com/contextforge-org/cpex/issues/130).
+
 ## [0.2.2] - 2026-07-15
 
 ### Added

@@ -27,13 +27,14 @@
 use std::any::Any;
 use std::fmt;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use tokio::time::timeout;
 use tracing::{error, warn};
 
 use crate::context::PluginContextTable;
 use crate::error::PluginError;
+use crate::execution_record::{ControlExecutionRecord, ControlExecutionStatus};
 use crate::extensions::filter_extensions;
 use crate::hooks::payload::{Extensions, PluginPayload, WriteToken};
 use crate::plugin::OnError;
@@ -60,9 +61,9 @@ impl Default for ExecutorConfig {
 
 /// Aggregate result from a full hook invocation across all phases.
 ///
-/// Wraps the final payload, extensions, any violation, and the
-/// context table. Immutable by design — policy decisions cannot be
-/// tampered with after the executor returns them.
+/// Wraps the final payload, extensions, any violation, the context
+/// table, and the structured execution ledger. Immutable by design —
+/// policy decisions cannot be tampered with after the executor returns.
 ///
 /// The caller should pass `context_table` into the next hook
 /// invocation to preserve per-plugin local state across hooks in
@@ -102,6 +103,16 @@ pub struct PipelineResult {
     /// Plugin contexts indexed by plugin ID. Thread this into the
     /// next hook invocation to preserve per-plugin `local_state`.
     pub context_table: PluginContextTable,
+
+    /// Ordered execution record for every control evaluated during
+    /// this hook invocation. Populated by the executor from trusted
+    /// framework state — plugins cannot forge these records.
+    ///
+    /// Records preserve the deterministic plan order within each serial
+    /// phase. Concurrent phase records are appended in input (plan/priority)
+    /// order after all branches resolve. Fire-and-forget records appear
+    /// last, marked `status = Completed` at spawn time (not completion time).
+    pub executions: Vec<ControlExecutionRecord>,
 }
 
 impl PipelineResult {
@@ -119,6 +130,7 @@ impl PipelineResult {
             errors: Vec::new(),
             metadata: None,
             context_table,
+            executions: Vec::new(),
         }
     }
 
@@ -136,6 +148,7 @@ impl PipelineResult {
             errors: Vec::new(),
             metadata: None,
             context_table,
+            executions: Vec::new(),
         }
     }
 
@@ -144,6 +157,12 @@ impl PipelineResult {
     /// / `on_error: disable` plugins.
     pub fn with_errors(mut self, errors: Vec<crate::error::PluginErrorRecord>) -> Self {
         self.errors = errors;
+        self
+    }
+
+    /// Attach execution records collected across all phases.
+    pub fn with_executions(mut self, executions: Vec<ControlExecutionRecord>) -> Self {
+        self.executions = executions;
         self
     }
 
@@ -280,6 +299,17 @@ impl Executor {
         // Group entries by mode (from trusted_config)
         let (sequential, transform, audit, concurrent, fire_and_forget) = group_by_mode(entries);
 
+        // Determine the hook name for records — take it from the first entry.
+        let hook_name: String = entries
+            .first()
+            .map(|e| {
+                // All entries in this call share the same hook name (they were
+                // looked up from the registry by a single hook type). Use the
+                // handler's registered hook type name as the authoritative value.
+                e.handler.hook_type_name().to_string()
+            })
+            .unwrap_or_default();
+
         let mut current_payload = payload;
         let mut current_extensions = extensions;
         // Accumulator for errors from `on_error: ignore` / `on_error:
@@ -288,6 +318,8 @@ impl Executor {
         // observable. Halt-condition errors (Fail, deny) skip this and
         // become the violation directly.
         let mut errors: Vec<crate::error::PluginErrorRecord> = Vec::new();
+        // Accumulator for execution records across all phases.
+        let mut executions: Vec<ControlExecutionRecord> = Vec::new();
 
         if let Some(v) = self
             .run_serial_phase(
@@ -298,12 +330,16 @@ impl Executor {
                 true, // can_block
                 true, // can_modify
                 "SEQUENTIAL",
+                &hook_name,
                 &mut errors,
+                &mut executions,
             )
             .await
         {
             return (
-                PipelineResult::denied(v, current_extensions, ctx_table).with_errors(errors),
+                PipelineResult::denied(v, current_extensions, ctx_table)
+                    .with_errors(errors)
+                    .with_executions(executions),
                 BackgroundTasks::empty(),
             );
         }
@@ -318,7 +354,9 @@ impl Executor {
             false, // can_block
             true,  // can_modify
             "TRANSFORM",
+            &hook_name,
             &mut errors,
+            &mut executions,
         )
         .await;
 
@@ -328,7 +366,9 @@ impl Executor {
             &current_extensions,
             &ctx_table,
             "AUDIT",
+            &hook_name,
             &mut errors,
+            &mut executions,
         )
         .await;
 
@@ -338,13 +378,16 @@ impl Executor {
                 &*current_payload,
                 &current_extensions,
                 &ctx_table,
+                &hook_name,
                 &mut errors,
+                &mut executions,
             )
             .await
         {
             return (
                 PipelineResult::denied(violation, current_extensions, ctx_table)
-                    .with_errors(errors),
+                    .with_errors(errors)
+                    .with_executions(executions),
                 BackgroundTasks::empty(),
             );
         }
@@ -352,17 +395,22 @@ impl Executor {
         // Phase 5: FIRE_AND_FORGET — background, read-only, ignore results.
         // FAF errors don't go in PipelineResult.errors — they're delivered
         // via BackgroundTasks::wait_for_background_tasks() instead.
+        // FAF records are appended here (spawn time) with status=Completed
+        // since we don't have completion handles for individual records.
         let bg_handles = self.spawn_fire_and_forget(
             &fire_and_forget,
             &*current_payload,
             &current_extensions,
             &ctx_table,
+            &hook_name,
+            &mut executions,
             task_tracker,
         );
 
         (
             PipelineResult::allowed_with(current_payload, current_extensions, ctx_table)
-                .with_errors(errors),
+                .with_errors(errors)
+                .with_executions(executions),
             BackgroundTasks::from_handles(bg_handles),
         )
     }
@@ -387,7 +435,9 @@ impl Executor {
         can_block: bool,
         can_modify: bool,
         phase_label: &str,
+        hook_name: &str,
         errors: &mut Vec<crate::error::PluginErrorRecord>,
+        executions: &mut Vec<ControlExecutionRecord>,
     ) -> Option<crate::error::PluginViolation> {
         for entry in entries {
             // Borrow names/ids on the happy path — allocate only when
@@ -427,74 +477,172 @@ impl Executor {
                 filtered.delegation_write_token = Some(WriteToken::new());
             }
 
-            // Execute with timeout — handler borrows payload, gets filtered extensions
+            // Execute with timeout — handler borrows payload, gets filtered extensions.
+            // Monotonic timer wraps the invoke call only (no queue/semaphore wait).
             let timeout_dur = Duration::from_secs(self.config.timeout_seconds);
+            let start = Instant::now();
             let result = timeout(
                 timeout_dur,
                 entry.handler.invoke(&**payload, &filtered, &mut ctx),
             )
             .await;
+            let duration_ns = start.elapsed().as_nanos().min(u64::MAX as u128) as u64;
+
+            // Snapshot trusted identity fields for the record — sourced from
+            // PluginRef (manager-owned), never from plugin-returned metadata.
+            let trusted = entry.plugin_ref.trusted_config();
+            let config_keys =
+                ControlExecutionRecord::collect_config_keys(trusted.config.as_ref());
 
             match result {
                 Ok(Ok(result_box)) => {
-                    if let Some(erased) = extract_erased(result_box) {
-                        if !erased.continue_processing && can_block {
-                            if let Some(mut v) = erased.violation {
+                    // Track whether modifications were applied before merging.
+                    // Use the data pointer from the fat pointer to compare identity.
+                    // as_any() returns &dyn Any (fat ptr); cast to *const () via
+                    // the data-pointer half so the comparison is thin-pointer safe.
+                    let payload_before =
+                        payload.as_any() as *const dyn std::any::Any as *const () as usize;
+                    let mut payload_modified = false;
+                    let mut extensions_modified = false;
+
+                    let (requested_allow, effective_allow, violation_opt) =
+                        if let Some(erased) = extract_erased(result_box) {
+                            let req_allow = erased.continue_processing;
+
+                            if !erased.continue_processing && can_block {
+                                // Synthesize a default violation when the plugin denied
+                                // without providing one — this mirrors the concurrent phase
+                                // and ensures the pipeline always halts on deny.
+                                let mut v = erased.violation.unwrap_or_else(|| {
+                                    let mut v = crate::error::PluginViolation::new(
+                                        "deny",
+                                        format!("Plugin '{}' denied", plugin_name),
+                                    );
+                                    v.plugin_name = Some(plugin_name.to_string());
+                                    v
+                                });
                                 v.plugin_name = Some(plugin_name.to_string());
+                                executions.push(ControlExecutionRecord {
+                                    plugin_id: plugin_id.to_string(),
+                                    plugin_name: plugin_name.to_string(),
+                                    plugin_kind: ControlExecutionRecord::truncate(
+                                        &trusted.kind,
+                                    ),
+                                    hook_name: hook_name.to_string(),
+                                    mode: entry.plugin_ref.mode(),
+                                    status: ControlExecutionStatus::Completed,
+                                    requested_allow: Some(false),
+                                    effective_allow: false,
+                                    matched: Some(true),
+                                    applied: true,
+                                    payload_modified: false,
+                                    extensions_modified: false,
+                                    duration_ns,
+                                    reason: ControlExecutionRecord::truncate_opt(
+                                        Some(v.reason.as_str()),
+                                    ),
+                                    error_code: Some(
+                                        ControlExecutionRecord::truncate(&v.code),
+                                    ),
+                                    config_keys,
+                                });
                                 return Some(v);
                             }
-                        }
 
-                        // Accept modifications
-                        if can_modify {
-                            if let Some(mp) = erased.modified_payload {
-                                *payload = mp;
-                            }
-                            if let Some(owned) = erased.modified_extensions {
-                                let valid = extensions.validate_immutable(&owned);
-                                if !valid {
-                                    warn!(
-                                        "{} plugin '{}' violated immutable tier — \
-                                         modified an immutable extension slot. \
-                                         Extension changes rejected.",
-                                        phase_label, plugin_name
-                                    );
-                                } else if capabilities.contains("read_labels") {
-                                    // Only enforce monotonic labels if the plugin
-                                    // could see them. A plugin without read_labels
-                                    // has empty labels in its filtered view — that's
-                                    // not a removal.
-                                    if let (Some(ref orig_sec), Some(ref new_sec)) =
-                                        (&extensions.security, &owned.security)
-                                    {
-                                        if !new_sec.labels.is_superset(&orig_sec.labels) {
-                                            warn!(
-                                                "{} plugin '{}' violated monotonic tier — \
-                                                 removed a security label. \
-                                                 Extension changes rejected.",
-                                                phase_label, plugin_name
-                                            );
+                            // Accept modifications
+                            if can_modify {
+                                if let Some(mp) = erased.modified_payload {
+                                    // Detect if a new payload object was installed.
+                                    let new_ptr =
+                                        mp.as_any() as *const dyn std::any::Any as *const () as usize;
+                                    *payload = mp;
+                                    payload_modified = new_ptr != payload_before;
+                                }
+                                if let Some(owned) = erased.modified_extensions {
+                                    let valid = extensions.validate_immutable(&owned);
+                                    if !valid {
+                                        warn!(
+                                            "{} plugin '{}' violated immutable tier — \
+                                             modified an immutable extension slot. \
+                                             Extension changes rejected.",
+                                            phase_label, plugin_name
+                                        );
+                                    } else if capabilities.contains("read_labels") {
+                                        if let (Some(ref orig_sec), Some(ref new_sec)) =
+                                            (&extensions.security, &owned.security)
+                                        {
+                                            if !new_sec.labels.is_superset(&orig_sec.labels) {
+                                                warn!(
+                                                    "{} plugin '{}' violated monotonic tier — \
+                                                     removed a security label. \
+                                                     Extension changes rejected.",
+                                                    phase_label, plugin_name
+                                                );
+                                            } else {
+                                                extensions.merge_owned(owned);
+                                                extensions_modified = true;
+                                            }
                                         } else {
                                             extensions.merge_owned(owned);
+                                            extensions_modified = true;
                                         }
                                     } else {
                                         extensions.merge_owned(owned);
+                                        extensions_modified = true;
                                     }
-                                } else {
-                                    extensions.merge_owned(owned);
                                 }
                             }
-                        }
 
-                        // Plugin writes to ctx.global_state are committed back
-                        // to the canonical store via store_context() below.
-                    }
-                    // If extract failed or no modifications — payload unchanged
+                            (Some(req_allow), req_allow, None::<crate::error::PluginViolation>)
+                        } else {
+                            (None, true, None)
+                        };
+
+                    let _ = violation_opt; // already handled above via early return
+                    executions.push(ControlExecutionRecord {
+                        plugin_id: plugin_id.to_string(),
+                        plugin_name: plugin_name.to_string(),
+                        plugin_kind: ControlExecutionRecord::truncate(&trusted.kind),
+                        hook_name: hook_name.to_string(),
+                        mode: entry.plugin_ref.mode(),
+                        status: ControlExecutionStatus::Completed,
+                        requested_allow,
+                        effective_allow,
+                        matched: requested_allow.map(|a| !a || payload_modified || extensions_modified),
+                        applied: payload_modified || extensions_modified || !effective_allow,
+                        payload_modified,
+                        extensions_modified,
+                        duration_ns,
+                        reason: None,
+                        error_code: None,
+                        config_keys,
+                    });
                 },
                 Ok(Err(e)) => {
                     error!("{} plugin '{}' failed: {}", phase_label, plugin_name, e);
-                    match on_error {
+                    let (effective_allow, status) = match on_error {
                         OnError::Fail if can_block => {
+                            // We're about to return a violation — push the record first.
+                            executions.push(ControlExecutionRecord {
+                                plugin_id: plugin_id.to_string(),
+                                plugin_name: plugin_name.to_string(),
+                                plugin_kind: ControlExecutionRecord::truncate(&trusted.kind),
+                                hook_name: hook_name.to_string(),
+                                mode: entry.plugin_ref.mode(),
+                                status: ControlExecutionStatus::Error,
+                                requested_allow: None,
+                                effective_allow: false,
+                                matched: None,
+                                applied: true,
+                                payload_modified: false,
+                                extensions_modified: false,
+                                duration_ns,
+                                reason: ControlExecutionRecord::truncate_opt(Some(
+                                    &e.to_string(),
+                                )),
+                                error_code: Some("plugin_error".to_string()),
+                                config_keys,
+                            });
                             let mut v = crate::error::PluginViolation::new(
                                 "plugin_error",
                                 format!("Plugin '{}' failed: {}", plugin_name, e),
@@ -502,19 +650,17 @@ impl Executor {
                             v.plugin_name = Some(plugin_name.to_string());
                             return Some(v);
                         },
-                        // Any non-halt outcome (Fail-in-non-blocking-phase,
-                        // Ignore, Disable): record the error so the caller
-                        // sees it in PipelineResult.errors instead of
-                        // having to read the warn-log.
                         OnError::Fail => {
                             warn!(
                                 "{} plugin '{}' on_error=fail in non-blocking phase — not halting",
                                 phase_label, plugin_name,
                             );
                             errors.push((&e).into());
+                            (true, ControlExecutionStatus::Error)
                         },
                         OnError::Ignore => {
                             errors.push((&e).into());
+                            (true, ControlExecutionStatus::Error)
                         },
                         OnError::Disable => {
                             warn!(
@@ -523,8 +669,27 @@ impl Executor {
                             );
                             errors.push((&e).into());
                             entry.plugin_ref.disable();
+                            (true, ControlExecutionStatus::Error)
                         },
-                    }
+                    };
+                    executions.push(ControlExecutionRecord {
+                        plugin_id: plugin_id.to_string(),
+                        plugin_name: plugin_name.to_string(),
+                        plugin_kind: ControlExecutionRecord::truncate(&trusted.kind),
+                        hook_name: hook_name.to_string(),
+                        mode: entry.plugin_ref.mode(),
+                        status,
+                        requested_allow: None,
+                        effective_allow,
+                        matched: None,
+                        applied: false,
+                        payload_modified: false,
+                        extensions_modified: false,
+                        duration_ns,
+                        reason: ControlExecutionRecord::truncate_opt(Some(&e.to_string())),
+                        error_code: Some("plugin_error".to_string()),
+                        config_keys,
+                    });
                 },
                 Err(_) => {
                     error!("{} plugin '{}' timed out", phase_label, plugin_name);
@@ -533,8 +698,26 @@ impl Executor {
                         timeout_ms: timeout_dur.as_millis() as u64,
                         proto_error_code: None,
                     };
-                    match on_error {
+                    let (effective_allow, status) = match on_error {
                         OnError::Fail if can_block => {
+                            executions.push(ControlExecutionRecord {
+                                plugin_id: plugin_id.to_string(),
+                                plugin_name: plugin_name.to_string(),
+                                plugin_kind: ControlExecutionRecord::truncate(&trusted.kind),
+                                hook_name: hook_name.to_string(),
+                                mode: entry.plugin_ref.mode(),
+                                status: ControlExecutionStatus::Timeout,
+                                requested_allow: None,
+                                effective_allow: false,
+                                matched: None,
+                                applied: true,
+                                payload_modified: false,
+                                extensions_modified: false,
+                                duration_ns,
+                                reason: Some("plugin timed out".to_string()),
+                                error_code: Some("plugin_timeout".to_string()),
+                                config_keys,
+                            });
                             let mut v = crate::error::PluginViolation::new(
                                 "plugin_timeout",
                                 format!("Plugin '{}' timed out", plugin_name),
@@ -548,9 +731,11 @@ impl Executor {
                                 phase_label, plugin_name,
                             );
                             errors.push((&timeout_err).into());
+                            (true, ControlExecutionStatus::Timeout)
                         },
                         OnError::Ignore => {
                             errors.push((&timeout_err).into());
+                            (true, ControlExecutionStatus::Timeout)
                         },
                         OnError::Disable => {
                             warn!(
@@ -559,8 +744,27 @@ impl Executor {
                             );
                             errors.push((&timeout_err).into());
                             entry.plugin_ref.disable();
+                            (true, ControlExecutionStatus::Timeout)
                         },
-                    }
+                    };
+                    executions.push(ControlExecutionRecord {
+                        plugin_id: plugin_id.to_string(),
+                        plugin_name: plugin_name.to_string(),
+                        plugin_kind: ControlExecutionRecord::truncate(&trusted.kind),
+                        hook_name: hook_name.to_string(),
+                        mode: entry.plugin_ref.mode(),
+                        status,
+                        requested_allow: None,
+                        effective_allow,
+                        matched: None,
+                        applied: false,
+                        payload_modified: false,
+                        extensions_modified: false,
+                        duration_ns,
+                        reason: Some("plugin timed out".to_string()),
+                        error_code: Some("plugin_timeout".to_string()),
+                        config_keys,
+                    });
                 },
             }
 
@@ -582,7 +786,9 @@ impl Executor {
         extensions: &Extensions,
         ctx_table: &PluginContextTable,
         phase_label: &str,
+        hook_name: &str,
         errors: &mut Vec<crate::error::PluginErrorRecord>,
+        executions: &mut Vec<ControlExecutionRecord>,
     ) {
         for entry in entries {
             let plugin_name = entry.plugin_ref.name().to_string();
@@ -602,20 +808,41 @@ impl Executor {
             let filtered = filter_extensions(extensions, &capabilities);
             let timeout_dur = Duration::from_secs(self.config.timeout_seconds);
 
+            let trusted = entry.plugin_ref.trusted_config();
+            let config_keys = ControlExecutionRecord::collect_config_keys(trusted.config.as_ref());
+
+            let start = Instant::now();
             let result = timeout(
                 timeout_dur,
                 entry.handler.invoke(payload, &filtered, &mut ctx),
             )
             .await;
+            let duration_ns = start.elapsed().as_nanos().min(u64::MAX as u128) as u64;
 
             // Audit / fire-and-forget cannot block, so OnError::Fail can't
             // halt the pipeline — but OnError::Disable must still take a
-            // repeatedly-failing plugin out of rotation. The previous code
-            // ignored on_error entirely, so Disable plugins kept failing
-            // forever no matter how many invocations errored. All non-halt
-            // failures also push a record into PipelineResult.errors.
+            // repeatedly-failing plugin out of rotation.
             match result {
-                Ok(Ok(_)) => {}, // read-only — discard result and ext_clone
+                Ok(Ok(_)) => {
+                    executions.push(ControlExecutionRecord {
+                        plugin_id: plugin_id.to_string(),
+                        plugin_name: plugin_name.clone(),
+                        plugin_kind: ControlExecutionRecord::truncate(&trusted.kind),
+                        hook_name: hook_name.to_string(),
+                        mode: entry.plugin_ref.mode(),
+                        status: ControlExecutionStatus::Completed,
+                        requested_allow: Some(true),
+                        effective_allow: true,
+                        matched: None,
+                        applied: false,
+                        payload_modified: false,
+                        extensions_modified: false,
+                        duration_ns,
+                        reason: None,
+                        error_code: None,
+                        config_keys,
+                    });
+                },
                 Ok(Err(e)) => {
                     warn!(
                         "{} plugin '{}' error (ignored): {}",
@@ -629,6 +856,24 @@ impl Executor {
                         );
                         entry.plugin_ref.disable();
                     }
+                    executions.push(ControlExecutionRecord {
+                        plugin_id: plugin_id.to_string(),
+                        plugin_name: plugin_name.clone(),
+                        plugin_kind: ControlExecutionRecord::truncate(&trusted.kind),
+                        hook_name: hook_name.to_string(),
+                        mode: entry.plugin_ref.mode(),
+                        status: ControlExecutionStatus::Error,
+                        requested_allow: None,
+                        effective_allow: true,
+                        matched: None,
+                        applied: false,
+                        payload_modified: false,
+                        extensions_modified: false,
+                        duration_ns,
+                        reason: ControlExecutionRecord::truncate_opt(Some(&e.to_string())),
+                        error_code: Some("plugin_error".to_string()),
+                        config_keys,
+                    });
                 },
                 Err(_) => {
                     warn!(
@@ -648,6 +893,24 @@ impl Executor {
                         );
                         entry.plugin_ref.disable();
                     }
+                    executions.push(ControlExecutionRecord {
+                        plugin_id: plugin_id.to_string(),
+                        plugin_name: plugin_name.clone(),
+                        plugin_kind: ControlExecutionRecord::truncate(&trusted.kind),
+                        hook_name: hook_name.to_string(),
+                        mode: entry.plugin_ref.mode(),
+                        status: ControlExecutionStatus::Timeout,
+                        requested_allow: None,
+                        effective_allow: true,
+                        matched: None,
+                        applied: false,
+                        payload_modified: false,
+                        extensions_modified: false,
+                        duration_ns,
+                        reason: Some("plugin timed out".to_string()),
+                        error_code: Some("plugin_timeout".to_string()),
+                        config_keys,
+                    });
                 },
             }
         }
@@ -674,7 +937,9 @@ impl Executor {
         payload: &dyn PluginPayload,
         extensions: &Extensions,
         ctx_table: &PluginContextTable,
+        hook_name: &str,
         errors: &mut Vec<crate::error::PluginErrorRecord>,
+        executions: &mut Vec<ControlExecutionRecord>,
     ) -> Option<crate::error::PluginViolation> {
         use cpex_orchestration::{run_branches, BranchConfig, BranchOutcome, ErasedBranch};
 
@@ -782,9 +1047,39 @@ impl Executor {
             let entry = &entries[idx];
             let plugin_name = entry.plugin_ref.name();
             let on_error = on_error_by_idx[idx];
+            let trusted = entry.plugin_ref.trusted_config();
+            let config_keys = ControlExecutionRecord::collect_config_keys(trusted.config.as_ref());
+            // Snapshot the configured mode before any on_error handler runs.
+            // entry.plugin_ref.mode() returns PluginMode::Disabled once
+            // disable() is called, so reading it after the match would record
+            // "disabled" instead of the original execution mode ("concurrent").
+            let original_mode = trusted.mode;
+            // Concurrent branches don't expose per-branch duration — we
+            // don't have start times from inside the branch futures.
+            // Use 0 to indicate "not measured at this granularity".
+            let duration_ns: u64 = 0;
 
             match outcome {
-                BranchOutcome::Completed(BranchData::Allow) => {},
+                BranchOutcome::Completed(BranchData::Allow) => {
+                    executions.push(ControlExecutionRecord {
+                        plugin_id: entry.plugin_ref.id().to_string(),
+                        plugin_name: plugin_name.to_string(),
+                        plugin_kind: ControlExecutionRecord::truncate(&trusted.kind),
+                        hook_name: hook_name.to_string(),
+                        mode: original_mode,
+                        status: ControlExecutionStatus::Completed,
+                        requested_allow: Some(true),
+                        effective_allow: true,
+                        matched: None,
+                        applied: false,
+                        payload_modified: false,
+                        extensions_modified: false,
+                        duration_ns,
+                        reason: None,
+                        error_code: None,
+                        config_keys,
+                    });
+                },
                 BranchOutcome::Completed(BranchData::Deny(opt_v)) => {
                     let violation = opt_v.unwrap_or_else(|| {
                         let mut v = crate::error::PluginViolation::new(
@@ -794,30 +1089,73 @@ impl Executor {
                         v.plugin_name = Some(plugin_name.to_string());
                         v
                     });
+                    executions.push(ControlExecutionRecord {
+                        plugin_id: entry.plugin_ref.id().to_string(),
+                        plugin_name: plugin_name.to_string(),
+                        plugin_kind: ControlExecutionRecord::truncate(&trusted.kind),
+                        hook_name: hook_name.to_string(),
+                        mode: original_mode,
+                        status: ControlExecutionStatus::Completed,
+                        requested_allow: Some(false),
+                        effective_allow: false,
+                        matched: Some(true),
+                        applied: true,
+                        payload_modified: false,
+                        extensions_modified: false,
+                        duration_ns,
+                        reason: ControlExecutionRecord::truncate_opt(
+                            Some(violation.reason.as_str()),
+                        ),
+                        error_code: Some(ControlExecutionRecord::truncate(&violation.code)),
+                        config_keys,
+                    });
                     if first_violation.is_none() {
                         first_violation = Some(violation);
                     }
                 },
-                BranchOutcome::Completed(BranchData::Error(e)) => match on_error {
-                    OnError::Fail => {
-                        if first_violation.is_none() {
-                            let mut v = crate::error::PluginViolation::new(
-                                "plugin_error",
-                                format!("Plugin '{}' failed: {}", plugin_name, e),
-                            );
-                            v.plugin_name = Some(plugin_name.to_string());
-                            first_violation = Some(v);
-                        }
-                    },
-                    OnError::Ignore => {
-                        warn!("CONCURRENT plugin '{}' error (ignored): {}", plugin_name, e);
-                        errors.push((&*e).into());
-                    },
-                    OnError::Disable => {
-                        warn!("CONCURRENT plugin '{}' disabled after error", plugin_name);
-                        errors.push((&*e).into());
-                        entry.plugin_ref.disable();
-                    },
+                BranchOutcome::Completed(BranchData::Error(e)) => {
+                    let (effective_allow, error_code) = match on_error {
+                        OnError::Fail => {
+                            if first_violation.is_none() {
+                                let mut v = crate::error::PluginViolation::new(
+                                    "plugin_error",
+                                    format!("Plugin '{}' failed: {}", plugin_name, e),
+                                );
+                                v.plugin_name = Some(plugin_name.to_string());
+                                first_violation = Some(v);
+                            }
+                            (false, "plugin_error")
+                        },
+                        OnError::Ignore => {
+                            warn!("CONCURRENT plugin '{}' error (ignored): {}", plugin_name, e);
+                            errors.push((&*e).into());
+                            (true, "plugin_error")
+                        },
+                        OnError::Disable => {
+                            warn!("CONCURRENT plugin '{}' disabled after error", plugin_name);
+                            errors.push((&*e).into());
+                            entry.plugin_ref.disable();
+                            (true, "plugin_error")
+                        },
+                    };
+                    executions.push(ControlExecutionRecord {
+                        plugin_id: entry.plugin_ref.id().to_string(),
+                        plugin_name: plugin_name.to_string(),
+                        plugin_kind: ControlExecutionRecord::truncate(&trusted.kind),
+                        hook_name: hook_name.to_string(),
+                        mode: original_mode,
+                        status: ControlExecutionStatus::Error,
+                        requested_allow: None,
+                        effective_allow,
+                        matched: None,
+                        applied: !effective_allow,
+                        payload_modified: false,
+                        extensions_modified: false,
+                        duration_ns,
+                        reason: ControlExecutionRecord::truncate_opt(Some(&e.to_string())),
+                        error_code: Some(error_code.to_string()),
+                        config_keys,
+                    });
                 },
                 BranchOutcome::TimedOut => {
                     let timeout_err = crate::error::PluginError::Timeout {
@@ -825,7 +1163,7 @@ impl Executor {
                         timeout_ms: timeout_dur.as_millis() as u64,
                         proto_error_code: None,
                     };
-                    match on_error {
+                    let effective_allow = match on_error {
                         OnError::Fail => {
                             if first_violation.is_none() {
                                 let mut v = crate::error::PluginViolation::new(
@@ -835,17 +1173,38 @@ impl Executor {
                                 v.plugin_name = Some(plugin_name.to_string());
                                 first_violation = Some(v);
                             }
+                            false
                         },
                         OnError::Ignore => {
                             warn!("CONCURRENT plugin '{}' timed out (ignored)", plugin_name);
                             errors.push((&timeout_err).into());
+                            true
                         },
                         OnError::Disable => {
                             warn!("CONCURRENT plugin '{}' disabled after timeout", plugin_name);
                             errors.push((&timeout_err).into());
                             entry.plugin_ref.disable();
+                            true
                         },
-                    }
+                    };
+                    executions.push(ControlExecutionRecord {
+                        plugin_id: entry.plugin_ref.id().to_string(),
+                        plugin_name: plugin_name.to_string(),
+                        plugin_kind: ControlExecutionRecord::truncate(&trusted.kind),
+                        hook_name: hook_name.to_string(),
+                        mode: original_mode,
+                        status: ControlExecutionStatus::Timeout,
+                        requested_allow: None,
+                        effective_allow,
+                        matched: None,
+                        applied: !effective_allow,
+                        payload_modified: false,
+                        extensions_modified: false,
+                        duration_ns,
+                        reason: Some("plugin timed out".to_string()),
+                        error_code: Some("plugin_timeout".to_string()),
+                        config_keys,
+                    });
                 },
                 BranchOutcome::Panicked(s) => {
                     error!("CONCURRENT plugin '{}' task panicked: {}", plugin_name, s);
@@ -857,7 +1216,7 @@ impl Executor {
                         details: std::collections::HashMap::new(),
                         proto_error_code: None,
                     };
-                    match on_error {
+                    let effective_allow = match on_error {
                         OnError::Fail => {
                             if first_violation.is_none() {
                                 let mut v = crate::error::PluginViolation::new(
@@ -867,22 +1226,61 @@ impl Executor {
                                 v.plugin_name = Some(plugin_name.to_string());
                                 first_violation = Some(v);
                             }
+                            false
                         },
                         OnError::Ignore => {
                             warn!("CONCURRENT plugin '{}' panicked (ignored)", plugin_name);
                             errors.push((&panic_err).into());
+                            true
                         },
                         OnError::Disable => {
                             warn!("CONCURRENT plugin '{}' disabled after panic", plugin_name);
                             errors.push((&panic_err).into());
                             entry.plugin_ref.disable();
+                            true
                         },
-                    }
+                    };
+                    executions.push(ControlExecutionRecord {
+                        plugin_id: entry.plugin_ref.id().to_string(),
+                        plugin_name: plugin_name.to_string(),
+                        plugin_kind: ControlExecutionRecord::truncate(&trusted.kind),
+                        hook_name: hook_name.to_string(),
+                        mode: original_mode,
+                        status: ControlExecutionStatus::Error,
+                        requested_allow: None,
+                        effective_allow,
+                        matched: None,
+                        applied: !effective_allow,
+                        payload_modified: false,
+                        extensions_modified: false,
+                        duration_ns,
+                        reason: Some(ControlExecutionRecord::truncate(&s)),
+                        error_code: Some("plugin_panic".to_string()),
+                        config_keys,
+                    });
                 },
                 BranchOutcome::Aborted => {
                     // Cancelled because an earlier branch hit a halt
                     // condition under short_circuit_on_deny. Intentional
-                    // — no error to record.
+                    // — record as Cancelled, no error to record.
+                    executions.push(ControlExecutionRecord {
+                        plugin_id: entry.plugin_ref.id().to_string(),
+                        plugin_name: plugin_name.to_string(),
+                        plugin_kind: ControlExecutionRecord::truncate(&trusted.kind),
+                        hook_name: hook_name.to_string(),
+                        mode: original_mode,
+                        status: ControlExecutionStatus::Cancelled,
+                        requested_allow: None,
+                        effective_allow: true, // not evaluated — pipeline may still allow
+                        matched: None,
+                        applied: false,
+                        payload_modified: false,
+                        extensions_modified: false,
+                        duration_ns,
+                        reason: None,
+                        error_code: None,
+                        config_keys,
+                    });
                 },
             }
         }
@@ -905,6 +1303,8 @@ impl Executor {
         payload: &dyn PluginPayload,
         extensions: &Extensions,
         ctx_table: &PluginContextTable,
+        hook_name: &str,
+        executions: &mut Vec<ControlExecutionRecord>,
         task_tracker: &tokio_util::task::TaskTracker,
     ) -> Vec<(String, tokio::task::JoinHandle<()>)> {
         if entries.is_empty() {
@@ -935,11 +1335,36 @@ impl Executor {
                 .collect();
             let filtered = Arc::new(filter_extensions(extensions, &capabilities));
 
+            // FAF record is appended at spawn time — status=Completed is
+            // optimistic (the actual outcome is unknowable without
+            // completion handles per-record). Duration is 0 for the same
+            // reason: we haven't run yet. The issue spec documents this
+            // explicitly: "fire-and-forget records appear last, marked
+            // status=Completed at spawn time".
+            let trusted = entry.plugin_ref.trusted_config();
+            let config_keys = ControlExecutionRecord::collect_config_keys(trusted.config.as_ref());
+            executions.push(ControlExecutionRecord {
+                plugin_id: entry.plugin_ref.id().to_string(),
+                plugin_name: plugin_name.clone(),
+                plugin_kind: ControlExecutionRecord::truncate(&trusted.kind),
+                hook_name: hook_name.to_string(),
+                mode: entry.plugin_ref.mode(),
+                status: ControlExecutionStatus::Completed,
+                requested_allow: None,
+                effective_allow: true,
+                matched: None,
+                applied: false,
+                payload_modified: false,
+                extensions_modified: false,
+                duration_ns: 0,
+                reason: None,
+                error_code: None,
+                config_keys,
+            });
+
             // Spawn through TaskTracker so `PluginManager::shutdown()`
             // can drain in-flight fire-and-forget tasks before tearing
-            // down. The returned JoinHandle is the same shape as
-            // tokio::spawn's, so callers using BackgroundTasks still
-            // wait_for_background_tasks() over their own handles.
+            // down.
             let handle = task_tracker.spawn(async move {
                 let result =
                     timeout(dur, handler.invoke(&*owned_payload, &filtered, &mut ctx)).await;
@@ -1122,5 +1547,368 @@ mod tests {
             .await;
         assert!(result.continue_processing);
         assert!(result.modified_payload.is_some());
+        assert!(result.executions.is_empty(), "no entries → no records");
+    }
+
+    // ---------------------------------------------------------------------------
+    // Execution record integration tests
+    // ---------------------------------------------------------------------------
+
+    use std::sync::Arc;
+    use crate::plugin::{OnError, PluginConfig, PluginMode};
+    use crate::registry::{AnyHookHandler, HookEntry, PluginRef};
+    use crate::context::PluginContext;
+    use crate::execution_record::ControlExecutionStatus;
+    use async_trait::async_trait;
+
+    fn make_config_for_record(name: &str, mode: PluginMode, on_error: OnError) -> PluginConfig {
+        PluginConfig {
+            name: name.to_string(),
+            kind: "builtin".to_string(),
+            mode,
+            on_error,
+            priority: 100,
+            hooks: vec!["test_hook".to_string()],
+            ..Default::default()
+        }
+    }
+
+    struct TestPlugin2 {
+        cfg: PluginConfig,
+    }
+
+    #[async_trait]
+    impl crate::plugin::Plugin for TestPlugin2 {
+        fn config(&self) -> &PluginConfig { &self.cfg }
+    }
+
+    /// A handler that always allows.
+    struct AllowHandler;
+    #[async_trait]
+    impl AnyHookHandler for AllowHandler {
+        async fn invoke(&self, _p: &dyn PluginPayload, _e: &Extensions, _c: &mut PluginContext)
+            -> Result<Box<dyn std::any::Any + Send + Sync>, Box<crate::error::PluginError>>
+        {
+            let result: PluginResult<TestPayload> = PluginResult::allow();
+            Ok(erase_result(result))
+        }
+        fn hook_type_name(&self) -> &'static str { "test_hook" }
+    }
+
+    /// A handler that always denies.
+    struct DenyHandler;
+    #[async_trait]
+    impl AnyHookHandler for DenyHandler {
+        async fn invoke(&self, _p: &dyn PluginPayload, _e: &Extensions, _c: &mut PluginContext)
+            -> Result<Box<dyn std::any::Any + Send + Sync>, Box<crate::error::PluginError>>
+        {
+            let result: PluginResult<TestPayload> = PluginResult::deny(
+                crate::error::PluginViolation::new("test_deny", "test denied"),
+            );
+            Ok(erase_result(result))
+        }
+        fn hook_type_name(&self) -> &'static str { "test_hook" }
+    }
+
+    /// A handler that always errors.
+    struct ErrorHandler;
+    #[async_trait]
+    impl AnyHookHandler for ErrorHandler {
+        async fn invoke(&self, _p: &dyn PluginPayload, _e: &Extensions, _c: &mut PluginContext)
+            -> Result<Box<dyn std::any::Any + Send + Sync>, Box<crate::error::PluginError>>
+        {
+            Err(crate::error::PluginError::Execution {
+                plugin_name: "error-plugin".into(),
+                message: "deliberate error".into(),
+                source: None,
+                code: Some("test_error".into()),
+                details: std::collections::HashMap::new(),
+                proto_error_code: None,
+            }.boxed())
+        }
+        fn hook_type_name(&self) -> &'static str { "test_hook" }
+    }
+
+    fn make_entry(name: &str, mode: PluginMode, on_error: OnError, handler: Arc<dyn AnyHookHandler>) -> HookEntry {
+        let cfg = make_config_for_record(name, mode, on_error);
+        let plugin: Arc<dyn crate::plugin::Plugin> = Arc::new(TestPlugin2 { cfg: cfg.clone() });
+        let plugin_ref = Arc::new(PluginRef::new(plugin, cfg));
+        HookEntry { plugin_ref, handler }
+    }
+
+    #[tokio::test]
+    async fn test_execution_record_allow() {
+        let executor = Executor::default();
+        let tracker = tokio_util::task::TaskTracker::new();
+        let entry = make_entry("allow-plugin", PluginMode::Sequential, OnError::Fail,
+            Arc::new(AllowHandler));
+        let payload: Box<dyn PluginPayload> = Box::new(TestPayload { value: "x".into() });
+        let (result, _) = executor.execute(&[entry], payload, Extensions::default(), None, &tracker).await;
+
+        assert!(result.continue_processing);
+        assert_eq!(result.executions.len(), 1);
+        let rec = &result.executions[0];
+        assert_eq!(rec.plugin_name, "allow-plugin");
+        assert_eq!(rec.hook_name, "test_hook");
+        assert_eq!(rec.status, ControlExecutionStatus::Completed);
+        assert_eq!(rec.requested_allow, Some(true));
+        assert!(rec.effective_allow);
+        assert!(!rec.applied);
+    }
+
+    #[tokio::test]
+    async fn test_execution_record_deny_sequential() {
+        let executor = Executor::default();
+        let tracker = tokio_util::task::TaskTracker::new();
+        let entry = make_entry("deny-plugin", PluginMode::Sequential, OnError::Fail,
+            Arc::new(DenyHandler));
+        let payload: Box<dyn PluginPayload> = Box::new(TestPayload { value: "x".into() });
+        let (result, _) = executor.execute(&[entry], payload, Extensions::default(), None, &tracker).await;
+
+        assert!(!result.continue_processing);
+        assert_eq!(result.executions.len(), 1);
+        let rec = &result.executions[0];
+        assert_eq!(rec.plugin_name, "deny-plugin");
+        assert_eq!(rec.status, ControlExecutionStatus::Completed);
+        assert_eq!(rec.requested_allow, Some(false));
+        assert!(!rec.effective_allow);
+        assert!(rec.applied);
+        assert_eq!(rec.error_code.as_deref(), Some("test_deny"));
+    }
+
+    #[tokio::test]
+    async fn test_execution_record_error_ignore() {
+        let executor = Executor::default();
+        let tracker = tokio_util::task::TaskTracker::new();
+        let entry = make_entry("error-plugin", PluginMode::Sequential, OnError::Ignore,
+            Arc::new(ErrorHandler));
+        let payload: Box<dyn PluginPayload> = Box::new(TestPayload { value: "x".into() });
+        let (result, _) = executor.execute(&[entry], payload, Extensions::default(), None, &tracker).await;
+
+        assert!(result.continue_processing, "Ignore keeps pipeline alive");
+        assert_eq!(result.executions.len(), 1);
+        let rec = &result.executions[0];
+        assert_eq!(rec.status, ControlExecutionStatus::Error);
+        assert!(rec.effective_allow, "Ignore → effective allow = true");
+        assert_eq!(rec.error_code.as_deref(), Some("plugin_error"));
+    }
+
+    #[tokio::test]
+    async fn test_execution_record_multiple_allows_preserves_order() {
+        let executor = Executor::default();
+        let tracker = tokio_util::task::TaskTracker::new();
+        let e1 = make_entry("first", PluginMode::Sequential, OnError::Fail, Arc::new(AllowHandler));
+        let e2 = make_entry("second", PluginMode::Sequential, OnError::Fail, Arc::new(AllowHandler));
+        let payload: Box<dyn PluginPayload> = Box::new(TestPayload { value: "x".into() });
+        let (result, _) = executor.execute(&[e1, e2], payload, Extensions::default(), None, &tracker).await;
+
+        assert_eq!(result.executions.len(), 2);
+        assert_eq!(result.executions[0].plugin_name, "first");
+        assert_eq!(result.executions[1].plugin_name, "second");
+    }
+
+    #[tokio::test]
+    async fn test_execution_record_audit_phase() {
+        let executor = Executor::default();
+        let tracker = tokio_util::task::TaskTracker::new();
+        let entry = make_entry("audit-plugin", PluginMode::Audit, OnError::Fail,
+            Arc::new(AllowHandler));
+        let payload: Box<dyn PluginPayload> = Box::new(TestPayload { value: "x".into() });
+        let (result, _) = executor.execute(&[entry], payload, Extensions::default(), None, &tracker).await;
+
+        assert!(result.continue_processing);
+        assert_eq!(result.executions.len(), 1);
+        let rec = &result.executions[0];
+        assert_eq!(rec.plugin_name, "audit-plugin");
+        assert_eq!(rec.status, ControlExecutionStatus::Completed);
+        assert!(!rec.applied, "audit cannot modify");
+        assert!(!rec.payload_modified);
+    }
+
+    #[tokio::test]
+    async fn test_execution_record_concurrent_allow() {
+        let executor = Executor::default();
+        let tracker = tokio_util::task::TaskTracker::new();
+        let entry = make_entry("concurrent-plugin", PluginMode::Concurrent, OnError::Fail,
+            Arc::new(AllowHandler));
+        let payload: Box<dyn PluginPayload> = Box::new(TestPayload { value: "x".into() });
+        let (result, _) = executor.execute(&[entry], payload, Extensions::default(), None, &tracker).await;
+
+        assert!(result.continue_processing);
+        assert_eq!(result.executions.len(), 1);
+        let rec = &result.executions[0];
+        assert_eq!(rec.plugin_name, "concurrent-plugin");
+        assert_eq!(rec.status, ControlExecutionStatus::Completed);
+        assert!(rec.effective_allow);
+    }
+
+    #[tokio::test]
+    async fn test_execution_record_concurrent_deny() {
+        let executor = Executor::default();
+        let tracker = tokio_util::task::TaskTracker::new();
+        let entry = make_entry("concurrent-deny", PluginMode::Concurrent, OnError::Fail,
+            Arc::new(DenyHandler));
+        let payload: Box<dyn PluginPayload> = Box::new(TestPayload { value: "x".into() });
+        let (result, _) = executor.execute(&[entry], payload, Extensions::default(), None, &tracker).await;
+
+        assert!(!result.continue_processing);
+        assert_eq!(result.executions.len(), 1);
+        let rec = &result.executions[0];
+        assert_eq!(rec.status, ControlExecutionStatus::Completed);
+        assert!(!rec.effective_allow);
+        assert_eq!(rec.error_code.as_deref(), Some("test_deny"));
+    }
+
+    #[tokio::test]
+    async fn test_execution_record_faf_spawned() {
+        let executor = Executor::default();
+        let tracker = tokio_util::task::TaskTracker::new();
+        let entry = make_entry("faf-plugin", PluginMode::FireAndForget, OnError::Ignore,
+            Arc::new(AllowHandler));
+        let payload: Box<dyn PluginPayload> = Box::new(TestPayload { value: "x".into() });
+        let (result, bg) = executor.execute(&[entry], payload, Extensions::default(), None, &tracker).await;
+
+        // Pipeline allows; FAF record is present at spawn time
+        assert!(result.continue_processing);
+        assert_eq!(result.executions.len(), 1);
+        let rec = &result.executions[0];
+        assert_eq!(rec.plugin_name, "faf-plugin");
+        assert_eq!(rec.status, ControlExecutionStatus::Completed);
+        // duration_ns = 0 at spawn time
+        assert_eq!(rec.duration_ns, 0);
+        // Clean up background tasks
+        tracker.close();
+        let _ = bg.wait_for_background_tasks().await;
+    }
+
+    #[tokio::test]
+    async fn test_execution_record_duration_measured() {
+        let executor = Executor::default();
+        let tracker = tokio_util::task::TaskTracker::new();
+        // Use a handler with a small async sleep to ensure duration > 0
+        struct SleepHandler;
+        #[async_trait]
+        impl AnyHookHandler for SleepHandler {
+            async fn invoke(&self, _p: &dyn PluginPayload, _e: &Extensions, _c: &mut PluginContext)
+                -> Result<Box<dyn std::any::Any + Send + Sync>, Box<crate::error::PluginError>>
+            {
+                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+                let result: PluginResult<TestPayload> = PluginResult::allow();
+                Ok(erase_result(result))
+            }
+            fn hook_type_name(&self) -> &'static str { "test_hook" }
+        }
+        let entry = make_entry("sleep-plugin", PluginMode::Sequential, OnError::Fail,
+            Arc::new(SleepHandler));
+        let payload: Box<dyn PluginPayload> = Box::new(TestPayload { value: "x".into() });
+        let (result, _) = executor.execute(&[entry], payload, Extensions::default(), None, &tracker).await;
+
+        assert_eq!(result.executions.len(), 1);
+        // At least 1ms = 1_000_000 ns
+        assert!(
+            result.executions[0].duration_ns >= 1_000_000,
+            "duration should be at least 1ms, got {}ns",
+            result.executions[0].duration_ns
+        );
+    }
+
+    #[tokio::test]
+    async fn test_execution_record_deny_stops_subsequent() {
+        // A deny in sequential phase stops the pipeline — subsequent plugins
+        // should NOT have execution records (they weren't invoked).
+        let executor = Executor::default();
+        let tracker = tokio_util::task::TaskTracker::new();
+        let e1 = make_entry("deny-first", PluginMode::Sequential, OnError::Fail, Arc::new(DenyHandler));
+        let e2 = make_entry("never-runs", PluginMode::Sequential, OnError::Fail, Arc::new(AllowHandler));
+        let payload: Box<dyn PluginPayload> = Box::new(TestPayload { value: "x".into() });
+        let (result, _) = executor.execute(&[e1, e2], payload, Extensions::default(), None, &tracker).await;
+
+        assert!(!result.continue_processing);
+        // Only the denying plugin's record is present; never-runs was not evaluated.
+        assert_eq!(result.executions.len(), 1);
+        assert_eq!(result.executions[0].plugin_name, "deny-first");
+    }
+
+    /// Regression test for Bug 1: a plugin that returns continue_processing=false
+    /// without a violation object must still halt the pipeline and produce a record
+    /// with effective_allow=false. Previously the inner `if let Some(v)` guard was
+    /// missed, causing the deny to be silently swallowed and the plugin recorded as
+    /// effective_allow=true.
+    #[tokio::test]
+    async fn test_execution_record_deny_without_violation_halts_pipeline() {
+        struct DenyNoViolationHandler;
+        #[async_trait]
+        impl AnyHookHandler for DenyNoViolationHandler {
+            async fn invoke(
+                &self,
+                _p: &dyn PluginPayload,
+                _e: &Extensions,
+                _c: &mut PluginContext,
+            ) -> Result<Box<dyn std::any::Any + Send + Sync>, Box<crate::error::PluginError>> {
+                // Return a deny result with no violation object.
+                let mut r: PluginResult<TestPayload> = PluginResult::allow();
+                r.continue_processing = false;
+                r.violation = None;
+                Ok(erase_result(r))
+            }
+            fn hook_type_name(&self) -> &'static str { "test_hook" }
+        }
+
+        let executor = Executor::default();
+        let tracker = tokio_util::task::TaskTracker::new();
+        let entry = make_entry(
+            "no-violation-deny",
+            PluginMode::Sequential,
+            OnError::Fail,
+            Arc::new(DenyNoViolationHandler),
+        );
+        let payload: Box<dyn PluginPayload> = Box::new(TestPayload { value: "x".into() });
+        let (result, _) = executor
+            .execute(&[entry], payload, Extensions::default(), None, &tracker)
+            .await;
+
+        assert!(!result.continue_processing, "pipeline must be halted");
+        assert_eq!(result.executions.len(), 1, "one record must be emitted");
+        let rec = &result.executions[0];
+        assert_eq!(rec.plugin_name, "no-violation-deny");
+        assert_eq!(rec.status, ControlExecutionStatus::Completed);
+        assert_eq!(rec.requested_allow, Some(false));
+        assert!(!rec.effective_allow, "effective_allow must be false");
+        assert!(rec.applied, "applied must be true on deny");
+        // A synthesized error_code should be present
+        assert!(rec.error_code.is_some(), "error_code must be set");
+    }
+
+    /// Regression test for Bug 2: concurrent-phase execution records must always
+    /// carry the original configured mode ("concurrent"), even when the plugin is
+    /// disabled during that same outcome loop via on_error=disable.
+    #[tokio::test]
+    async fn test_execution_record_concurrent_disable_keeps_original_mode() {
+        let executor = Executor::default();
+        let tracker = tokio_util::task::TaskTracker::new();
+        // ErrorHandler + OnError::Disable → plugin gets disabled during outcome loop
+        let entry = make_entry(
+            "concurrent-disable",
+            PluginMode::Concurrent,
+            OnError::Disable,
+            Arc::new(ErrorHandler),
+        );
+        let payload: Box<dyn PluginPayload> = Box::new(TestPayload { value: "x".into() });
+        let (result, _) = executor
+            .execute(&[entry], payload, Extensions::default(), None, &tracker)
+            .await;
+
+        // Pipeline continues (Disable doesn't halt), but the plugin is now disabled.
+        assert!(result.continue_processing);
+        assert_eq!(result.executions.len(), 1);
+        let rec = &result.executions[0];
+        assert_eq!(rec.plugin_name, "concurrent-disable");
+        assert_eq!(rec.status, ControlExecutionStatus::Error);
+        // Must be Concurrent, not Disabled
+        assert_eq!(
+            rec.mode,
+            PluginMode::Concurrent,
+            "mode must reflect the original configured mode, not the post-disable state"
+        );
     }
 }

@@ -234,6 +234,63 @@ type FrameworkExtension struct {
 	Metadata         map[string]any `msgpack:"metadata,omitempty"`
 }
 
+// ControlExecutionStatus is the execution health of a single control invocation.
+// Separate from the allow/deny policy decision.
+type ControlExecutionStatus string
+
+const (
+	// ControlExecutionStatusCompleted means the plugin ran to completion.
+	ControlExecutionStatusCompleted ControlExecutionStatus = "completed"
+	// ControlExecutionStatusSkipped means the plugin was not invoked (disabled at schedule time).
+	ControlExecutionStatusSkipped ControlExecutionStatus = "skipped"
+	// ControlExecutionStatusError means the plugin returned an error.
+	ControlExecutionStatusError ControlExecutionStatus = "error"
+	// ControlExecutionStatusTimeout means the plugin exceeded its per-invocation timeout.
+	ControlExecutionStatusTimeout ControlExecutionStatus = "timeout"
+	// ControlExecutionStatusCancelled means the plugin task was cancelled (e.g. short-circuit).
+	ControlExecutionStatusCancelled ControlExecutionStatus = "cancelled"
+	// ControlExecutionStatusDisabled means the plugin is runtime-disabled.
+	ControlExecutionStatusDisabled ControlExecutionStatus = "disabled"
+)
+
+// ControlExecutionRecord is a trusted execution record for one control/plugin evaluation.
+// All identity, mode, status, duration, and effective decision fields are populated
+// by the executor from trusted framework state — plugins cannot forge these fields.
+type ControlExecutionRecord struct {
+	// Stable UUID assigned by the registry at registration time.
+	PluginID string `msgpack:"plugin_id"`
+	// Human-readable plugin name from the trusted config.
+	PluginName string `msgpack:"plugin_name"`
+	// Plugin kind string (e.g. "builtin", "python://...").
+	PluginKind string `msgpack:"plugin_kind"`
+	// Hook name this invocation was dispatched for.
+	HookName string `msgpack:"hook_name"`
+	// Execution mode from the trusted config.
+	Mode string `msgpack:"mode"`
+	// Execution health — separate from the allow/deny decision.
+	Status ControlExecutionStatus `msgpack:"status"`
+	// What the plugin result requested (true=allow, false=deny). nil when no result obtained.
+	RequestedAllow *bool `msgpack:"requested_allow,omitempty"`
+	// Effective decision after execution-mode semantics and on_error policy.
+	EffectiveAllow bool `msgpack:"effective_allow"`
+	// Whether the control condition matched, when determinable. nil when not known.
+	Matched *bool `msgpack:"matched,omitempty"`
+	// Whether this control changed the payload, extensions, or effective decision.
+	Applied bool `msgpack:"applied"`
+	// Whether a payload modification was accepted by the framework.
+	PayloadModified bool `msgpack:"payload_modified"`
+	// Whether an extension modification was accepted by the framework.
+	ExtensionsModified bool `msgpack:"extensions_modified"`
+	// Wall-clock execution duration in nanoseconds (monotonic).
+	DurationNs uint64 `msgpack:"duration_ns"`
+	// Bounded, sanitized reason string from a violation or error.
+	Reason *string `msgpack:"reason,omitempty"`
+	// Stable low-cardinality error/violation code.
+	ErrorCode *string `msgpack:"error_code,omitempty"`
+	// Config key names declared in the plugin's trusted config. Values are never included.
+	ConfigKeys []string `msgpack:"config_keys"`
+}
+
 // PluginViolation is a structured policy denial.
 type PluginViolation struct {
 	Code           string         `msgpack:"code"`
@@ -269,6 +326,9 @@ type PipelineResult struct {
 	ModifiedPayload []byte `msgpack:"modified_payload,omitempty"`
 	// Modified extensions as raw MessagePack bytes.
 	ModifiedExtensions []byte `msgpack:"modified_extensions,omitempty"`
+	// Ordered execution records for every control evaluated during this invocation.
+	// Populated by the executor from trusted framework state.
+	Executions []ControlExecutionRecord `msgpack:"executions,omitempty"`
 }
 
 // TypedPipelineResult is a PipelineResult with the modified payload
@@ -281,6 +341,7 @@ type TypedPipelineResult[P any] struct {
 	PayloadType        uint8
 	ModifiedPayload    *P
 	ModifiedExtensions *Extensions
+	Executions         []ControlExecutionRecord
 }
 
 // IsDenied returns true if the pipeline was halted by a plugin.
