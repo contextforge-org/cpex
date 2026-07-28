@@ -1,21 +1,19 @@
 ---
 title: "Identity & Delegation"
-weight: 45
+weight: 55
 ---
 
 # Identity & Delegation
 
 CPEX does two identity jobs on every request: it resolves **who is calling in**
 (inbound identity) and mints **the credential it calls out with** (outbound
-delegation). This page is a recipe book. Find the shape you need — "a user acting
-through an agent", "an agent acting as itself", "a service acting as itself" — copy
-the plugin config and the route layout, and check the support matrix for where it
-has actually been tested.
+delegation). Find the shape you need ("a user acting through an agent", "an agent
+acting as itself", "a service acting as itself"), copy the plugin config and the
+route layout, and check the support matrix for where it has been tested.
 
-CPEX is a policy engine, not a particular product: the same config runs wherever you
-place it (in front of the tools, inside the tool server, or agent-side — see
-[Where to place CPEX](#where-to-place-cpex)). Throughout this page "the enforcement
-point" means "wherever this CPEX instance runs."
+The same config runs wherever you place it: in front of the tools, inside the tool
+server, or agent-side (see [Where to place CPEX](#where-to-place-cpex)). Throughout
+this page "the enforcement point" means "wherever this CPEX instance runs."
 
 For the conceptual model first, read [Use Cases]({{< relref "use-cases" >}}) and
 [Deployment]({{< relref "deployment" >}}); for the full config schema, see
@@ -35,12 +33,12 @@ Every request crosses two identity boundaries:
    typed identity slots                     credential per the route
 ```
 
-- **Inbound** — `identity.resolve` plugins each read one credential (from a header)
+- **Inbound.** `identity.resolve` plugins each read one credential (from a header)
   and land a typed identity in a slot. They are additive: one request can carry a
   user token *and* a workload SVID, both validated.
-- **Outbound** — a `delegate(...)` step in the route runs a `token.delegate` plugin
-  that mints the credential attached to the upstream call. What the minted token
-  *speaks for* is chosen by the step's `subject:`.
+- **Outbound.** A `delegate(...)` step in the route runs a `token.delegate` plugin
+  that mints the credential attached to the upstream call. The step's `subject:`
+  chooses what the minted token *speaks for*.
 
 ## Building blocks
 
@@ -58,12 +56,12 @@ The `subject:` on a `delegate(...)` step decides the OAuth mechanism the delegat
 
 | `subject:` | Minted token speaks for | Mechanism |
 |---|---|---|
-| `user` (default) | the human — on-behalf-of | RFC 8693 token exchange (`subject_token` = the user's token) |
+| `user` (default) | the human, on-behalf-of | RFC 8693 token exchange (`subject_token` = the user's token) |
 | `caller_workload` | the calling agent, as itself | RFC 7523 client assertion (the SVID) → then scope down |
-| `this_workload` | **the CPEX instance's own identity** — as itself, no inbound credential | RFC 6749 §4.4 `client_credentials` |
+| `this_workload` | **the CPEX instance's own identity**, as itself, no inbound credential | RFC 6749 §4.4 `client_credentials` |
 
 > `this_workload` names *this CPEX instance acting as its own identity*, whatever you've
-> deployed it as — it is not a claim that CPEX is a gateway. (`gateway` is accepted as a
+> deployed it as. It does not claim CPEX is a gateway. (`gateway` is accepted as a
 > deprecated alias.)
 
 ### "I want to…" → mechanism
@@ -74,14 +72,14 @@ The `subject:` on a `delegate(...)` step decides the OAuth mechanism the delegat
 | act on behalf of a signed-in user | `subject: user` → token exchange | RFC 8693 |
 | let a workload authenticate as *itself* by its SVID | `subject: caller_workload` → client assertion | RFC 7523 + `draft-ietf-oauth-spiffe-client-auth` |
 | record both the user *and* the calling agent in the token | `subject: user`, `actor: caller_workload` | RFC 8693 `actor_token` |
-| forward a token the caller already obtained | no `delegate` — pass the header through | — |
+| forward a token the caller already obtained | no `delegate`, pass the header through | — |
 
 ---
 
 ## Scoping — how broadly to apply it
 
 CPEX resolves the pipeline for each request across one **broad → narrow stack**, and
-**both identity and policy (including delegation) ride it** — narrower layers add to
+**both identity and policy (including delegation) ride it**. Narrower layers add to
 (or override) broader ones. Pick the broadest layer that's still correct.
 
 The layers, broad to narrow:
@@ -93,13 +91,13 @@ The layers, broad to narrow:
 | **Tag bundle** | routes tagged with `<tag>` | `global.policies.<tag>.authentication` | `global.policies.<tag>.plugins` |
 | **Route (entity)** | one route (a `tool: "*"` route is the catch-all) | route `authentication:` | route `apl:` steps / `plugins:` |
 
-So a `delegate(...)` is **not** route-only. To pick its breadth, put it — or a
-`token.delegate` plugin — at the matching layer:
+So a `delegate(...)` is **not** route-only. To pick its breadth, put it (or a
+`token.delegate` plugin) at the matching layer:
 
 - **every tool** → a `delegate()` in a `tool: "*"` route, or the delegator plugin in
   `defaults.tool` / the `all` group,
 - **a tagged class** → a tag bundle,
-- **one tool** → a specific route (which overrides the `*` default — more specific wins).
+- **one tool** → a specific route (which overrides the `*` default; more specific wins).
 
 ### Identity example (the stack in one config)
 
@@ -114,7 +112,7 @@ routes:
     meta: { tags: [hr-tools] }          # inherits jwt-user + jwt-manager
 ```
 
-**The override** — a route that must stand alone drops the inherited layers:
+**The override.** A route that must stand alone drops the inherited layers:
 
 ```yaml
 routes:
@@ -124,7 +122,7 @@ routes:
       steps: [jwt-workload]             # …authenticate by the SVID alone
 ```
 
-That is exactly what [Recipe 2](#recipe-2--agent-acting-as-itself-by-its-spiffe-svid)
+That is what [Recipe 2](#recipe-2--agent-acting-as-itself-by-its-spiffe-svid)
 uses. (Full tag/bundle/defaults syntax: [Configuration]({{< relref "configuration" >}}).)
 
 ### Rule of thumb
@@ -192,12 +190,12 @@ hold downstream authority. The agent presents its SVID; CPEX brokers a scoped
 downstream token. The agent holds no standing entitlement to the target.
 
 > **The SVID is a JWT, but not an IdP token.** A JWT-SVID is an `ES256` JWT signed by
-> *SPIRE* (validated against SPIRE's JWKS, not your IdP's) — a SPIFFE identity
+> *SPIRE* (validated against SPIRE's JWKS, not your IdP's): a SPIFFE identity
 > credential, not an OAuth access token. It can't be forwarded to the downstream or
 > used as a bearer/subject token as-is; CPEX has to **turn it into an IdP-issued token
-> first** — that's leg 1 below. (Contrast
+> first** (leg 1 below). Contrast
 > [Recipe 5](#recipe-5--scope-a-token-the-agent-already-holds-1-leg), whose input is a
-> token already *minted from* an SVID.)
+> token already *minted from* an SVID.
 
 Add a workload resolver, scoped to the route so only it runs there:
 
@@ -218,7 +216,7 @@ plugins:
 
 routes:
   - tool: get_directory
-    # Authenticate this route SOLELY by the SVID — drop the global user/client
+    # Authenticate this route by the SVID alone: drop the global user/client
     # resolvers. `jwt-workload` is NOT in global.authentication.
     authentication:
       replace_inherited: true
@@ -233,18 +231,18 @@ For `subject: caller_workload`, the OAuth delegator runs **two legs**: leg 1 pre
 the SVID as an RFC 7523 `client_assertion` (type `…:jwt-spiffe`) to authenticate the
 agent as its IdP client; leg 2 exchanges that for the scoped downstream token. The
 IdP side needs a SPIFFE identity provider (validates the SVID against SPIRE's trust
-bundle) and a client bound to that SVID via SPIFFE/federated client authentication —
+bundle) and a client bound to that SVID via SPIFFE/federated client authentication;
 consult your IdP's SPIFFE client-auth docs. **Tested: Keycloak 26.6 (feature
 `spiffe:v1`).**
 
 > Why route-scope it: keeping the workload authority off the agent's own identity,
 > and requiring the enforcement point's credential for the scope-up, is what makes
-> CPEX the trust boundary — a compromised agent can prove who it is but cannot mint
+> CPEX the trust boundary. A compromised agent can prove who it is but cannot mint
 > the downstream token itself.
 
 ### Recipe 3 — A service acting as itself
 
-**When:** CPEX calls a downstream as *itself* — no inbound credential to exchange
+**When:** CPEX calls a downstream as *itself*, with no inbound credential to exchange
 (e.g. a scheduled job, or CPEX's own housekeeping).
 
 ```yaml
@@ -255,26 +253,26 @@ routes:
         - "delegate(svc-oauth, target: workday-api, audience: workday-api, subject: this_workload)"
 ```
 
-`subject: this_workload` switches the delegator to `client_credentials` — no
+`subject: this_workload` switches the delegator to `client_credentials`: no
 `subject_token`, CPEX's own `client_id`/secret is the identity. **Tested: Keycloak
 (client_credentials).**
 
 ### Recipe 4 — Forward a token the caller already has (passthrough)
 
 **When:** the agent authenticated to the IdP itself and hands CPEX a ready token.
-CPEX just validates it inbound and lets the route forward it — no `delegate` step.
+CPEX validates it inbound and lets the route forward it, with no `delegate` step.
 This is the "agent-brokered" case; it needs no delegation code, only that the
 inbound resolver validates the token and the route allows the call.
 
 ### Recipe 5 — Scope a token the agent already holds (1-leg)
 
 **When:** the agent authenticated to the IdP *itself* with its SVID and got back a
-normal JWT — and you still want CPEX to narrow that token per-tool (least privilege
+normal JWT, and you still want CPEX to narrow that token per-tool (least privilege
 at the boundary) without ever handling the SVID.
 
 > **The token is not the SVID.** The agent presented its SVID as a `client_assertion`
-> *upstream* and received an ordinary IdP access token. That token arrives here **just
-> like a user token** — same header, same JWKS validation, `RS256` (an IdP-signed
+> *upstream* and received an ordinary IdP access token. That token arrives here **like
+> a user token**: same header, same JWKS validation, `RS256` (an IdP-signed
 > JWT), *not* the `ES256` SVID. CPEX never sees the SVID; it sees a normal token.
 
 ```yaml
@@ -284,7 +282,7 @@ plugins:
     hooks: [identity.resolve]
     config:
       role: client                 # the agent as an OAuth client
-      header: Authorization        # a normal bearer token — NOT X-Workload-Token
+      header: Authorization        # a normal bearer token, NOT X-Workload-Token
       trusted_issuers:
         - issuer: "https://idp.example.com/realms/corp"
           audiences: ["cpex"]
@@ -297,12 +295,12 @@ routes:
         - "delegate(workday-oauth, target: workday-api, audience: workday-api, permissions: [read_compensation], subject: client)"
 ```
 
-This is a **plain RFC 8693 exchange** — the same engine as
-[Recipe 1](#recipe-1--user-acting-through-an-agent-on-behalf-of), just scoping the
-*agent's* token instead of a user's. **One leg** (the scope) — the agent already did
+This is a **plain RFC 8693 exchange**, the same engine as
+[Recipe 1](#recipe-1--user-acting-through-an-agent-on-behalf-of), scoping the
+*agent's* token instead of a user's. **One leg** (the scope): the agent did
 the authenticate leg upstream, so CPEX doesn't.
 
-**Don't confuse this with Recipe 2.** The trigger is *what the agent presents* —
+**Don't confuse this with Recipe 2.** The trigger is *what the agent presents*:
 an SVID, or a token minted from one:
 
 | Agent presents | Slot → subject | CPEX does | Legs |
@@ -311,9 +309,9 @@ an SVID, or a token minted from one:
 | a **token minted from its SVID** (`RS256`, IdP JWKS) | `client` → `subject: client` | scope only | 1 (this recipe) |
 | a **token already right** for the tool | — | forward as-is | 0 (Recipe 4) |
 
-Using `subject: caller_workload` on an already-minted token would wrongly route it
-down the SVID two-leg (`client_assertion`) path — so match the subject to what
-actually arrived: **an SVID is a `caller_workload`; a JWT minted from it is a
+Using `subject: caller_workload` on an already-minted token misroutes it
+down the SVID two-leg (`client_assertion`) path. Match the subject to what
+arrived: **an SVID is a `caller_workload`; a JWT minted from it is a
 `client` (or `user`) token.**
 
 ---
@@ -327,33 +325,33 @@ The same config runs at any enforcement point. See
 |---|---|---|
 | **In front of the tools** (proxy / gateway) | agents are untrusted; you want one chokepoint | CPEX becomes the trust boundary that holds downstream authority; agents can't bypass it |
 | **In the MCP / tool server** | defense in depth, or no proxy in the path | the resource enforces even if a front door is skipped; validates the caller right at the data |
-| **Agent-side** | the agent is trusted and you want it to self-limit | least-privilege hygiene at the source — not a control against a compromised agent |
+| **Agent-side** | the agent is trusted and you want it to self-limit | least-privilege hygiene at the source, not a control against a compromised agent |
 
 You can run CPEX at more than one point at once (agent hygiene + a chokepoint +
-resource defense-in-depth) — same policy, different boundaries.
+resource defense-in-depth): same policy, different boundaries.
 
 ## IdP support: tested vs. should-work
 
 CPEX's identity/delegation plugins are configured against OAuth/OIDC **standards**,
-not any one vendor. What that means per layer:
+not any one vendor. Per layer:
 
 | Capability | Standard | Tested | Should work (untested) |
 |---|---|---|---|
-| JWT validation (any inbound token) | JWT + JWKS (RFC 7519/7517) | Keycloak | Okta, IBM Verify, Auth0 — any OIDC IdP; point at its JWKS + issuer |
+| JWT validation (any inbound token) | JWT + JWKS (RFC 7519/7517) | Keycloak | Okta, IBM Verify, Auth0, any OIDC IdP; point at its JWKS + issuer |
 | Service token (`client_credentials`) | RFC 6749 §4.4 | Keycloak | broadly supported |
-| On-behalf-of exchange | RFC 8693 | Keycloak (STE v2) | IdPs vary in RFC 8693 support — verify per target |
-| SVID as client credential | RFC 7523 + `draft-ietf-oauth-spiffe-client-auth` | Keycloak 26.6 (`spiffe:v1`) | emerging — an IETF OAuth WG draft; other IdPs not yet confirmed |
+| On-behalf-of exchange | RFC 8693 | Keycloak (STE v2) | IdPs vary in RFC 8693 support; verify per target |
+| SVID as client credential | RFC 7523 + `draft-ietf-oauth-spiffe-client-auth` | Keycloak 26.6 (`spiffe:v1`) | emerging; an IETF OAuth WG draft, other IdPs not yet confirmed |
 
 **If your IdP doesn't (yet) speak SPIFFE**, you are not blocked. CPEX can validate
 the SVID *itself* (it already fetches SPIRE's JWKS in `identity.resolve`), establish
 `caller_workload`, and then mint the downstream token using its *own* credentials
-(`subject: this_workload`) — carrying the workload identity as a claim. That
+(`subject: this_workload`), carrying the workload identity as a claim. That
 "CPEX-validates, CPEX-mints-as-itself" mode works with any OIDC IdP today; only the
 recipe-2 *native* flow needs the IdP to understand SVIDs.
 
 > Testing note: "Tested" means we have run it end-to-end against that IdP.
-> "Should work" means it relies only on standards that IdP documents supporting —
-> treat it as a starting point, not a guarantee, and tell us what you find.
+> "Should work" means it relies only on standards that IdP documents supporting.
+> Treat it as a starting point, not a guarantee, and tell us what you find.
 
 ## What to add next
 
