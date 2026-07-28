@@ -729,6 +729,8 @@ dependencies = [
  "apl-cpex",
  "cpex-builtins",
  "cpex-core",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]

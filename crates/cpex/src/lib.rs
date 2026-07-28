@@ -62,6 +62,12 @@
 //! registration helpers and the concrete factory types are re-exported here
 //! from [`cpex-builtins`](cpex_builtins).
 
+// Host embedding API — the supported construct/evaluate surface a host uses
+// instead of hand-rolling the enforcement loop. Requires the bundled
+// extensions (it wires their factories), so it is gated on `cpex-builtins`.
+#[cfg(feature = "cpex-builtins")]
+pub mod embed;
+
 // Whole-crate re-exports for advanced use (types not surfaced below).
 pub use {apl_cmf, apl_core, apl_cpex, cpex_core};
 

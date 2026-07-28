@@ -68,10 +68,16 @@ apl-core = { workspace = true }
 apl-cmf = { workspace = true }
 apl-cpex = { workspace = true }
 
+# Used by the `embed` host API's public signatures (Value in/out).
+serde_json = { workspace = true }
+
 # Bundled extension set — present only when a builtins feature is enabled.
 # `default-features = false` so the granular plugin features compose; an
 # enabling feature turns on exactly the cpex-builtins features it names.
 cpex-builtins = { workspace = true, optional = true, default-features = false }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
 [lints]
 workspace = true
