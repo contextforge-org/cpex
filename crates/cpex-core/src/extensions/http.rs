@@ -28,6 +28,27 @@ pub struct HttpExtension {
     /// HTTP response headers (from upstream, populated post-invoke).
     #[serde(default)]
     pub response_headers: HashMap<String, String>,
+
+    /// HTTP request method (e.g. `GET`, `POST`). Set by the host when
+    /// the request is HTTP; `None` for non-HTTP transports.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub method: Option<String>,
+
+    /// HTTP request path (e.g. `/api/v1/widgets`). Excludes the query
+    /// string unless the host chooses to include it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+
+    /// HTTP request authority/host. The host MUST populate this from a
+    /// validated authority (e.g. the HTTP/2 `:authority` pseudo-header),
+    /// never a raw client-supplied `Host` header, so host-based policy
+    /// is not bypassable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
+
+    /// HTTP request scheme (`http` / `https`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scheme: Option<String>,
 }
 
 impl HttpExtension {

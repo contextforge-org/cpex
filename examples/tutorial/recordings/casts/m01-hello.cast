@@ -1,0 +1,7 @@
+{"version": 3, "term": {"cols": 80, "rows": 24}, "timestamp": 1784230036, "command": "cargo run -q -p cpex-tutorial --example m01_hello", "title": "CPEX tutorial: m01-hello", "env": {"SHELL": "/bin/zsh"}}
+[0.6, "o", "\r\n\u001b[1;36m=== Module 1: Hello, enforcement ===\u001b[0m\r\n\r\n"]
+[1.2, "o", "\u001b[1m\u25b8 anonymous \u2192 get_compensation (route requires authentication)\u001b[0m\r\n"]
+[1.8, "o", "  \u001b[31m\u2717 DENIED\u001b[0m   [routes.tool:get_compensation.apl.pre_invocation[0]] access denied\r\n\r\n"]
+[2.4, "o", "\u001b[1m\u25b8 anonymous \u2192 search_repos (route has no rule)\u001b[0m\r\n"]
+[3.0, "o", "  \u001b[32m\u2713 ALLOWED\u001b[0m  {\"visibility\":\"public\",\"repositories\":[{\"name\":\"brand-site\",\"visibility\":\"public\"}]}\r\n\r\nThe route decided the outcome, the code above treated both calls identically.\r\n"]
+[3.8, "x", "0"]

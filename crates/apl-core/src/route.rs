@@ -12,7 +12,7 @@
 // the right order with the right transitions (apply field mutations, halt
 // on deny, thread taints across phases).
 //
-// Phase semantics (anchored in apl-dsl-spec.md §3):
+// Phase semantics:
 //   - args: walk field rules; Replace/Omit mutate `payload.args`; Deny halts
 //   - policy: walk steps; Deny halts
 //   - result: only runs if `payload.result.is_some()`; same as args
@@ -30,7 +30,9 @@ use crate::attributes::AttributeBag;
 use crate::evaluator::{evaluate_effects, evaluate_pipeline, Decision, FieldOutcome};
 use crate::pipeline::TaintEvent;
 use crate::rules::CompiledRoute;
-use crate::step::{DelegationInvoker, DispatchPhase, PdpResolver, PluginInvoker};
+use crate::step::{
+    DelegationInvoker, DispatchPhase, ElicitationInvoker, PdpResolver, PluginInvoker,
+};
 
 /// Mutable payload for a route invocation. `args` is the request arguments
 /// object; `result` is the response object (`None` on the inbound path,
@@ -69,6 +71,12 @@ pub struct RouteDecision {
     pub args_modified: bool,
     /// True if any result field was rewritten or omitted.
     pub result_modified: bool,
+    /// Set when a phase suspended on an unresolved elicitation. `Some`
+    /// means the host must emit JSON-RPC `-32120` (retry) and **not**
+    /// forward — `decision` is `Allow` in that case. The host forwards
+    /// only when `decision` is `Allow` AND `pending.is_none()`. See
+    /// [`crate::step::PendingElicitation`].
+    pub pending: Option<crate::step::PendingElicitation>,
 }
 
 /// Run the **pre-invocation** phases: `args` then `policy`. Used by
@@ -88,11 +96,11 @@ pub async fn evaluate_pre(
     pdp: &Arc<dyn PdpResolver>,
     plugins: &Arc<dyn PluginInvoker>,
     delegations: &Arc<dyn DelegationInvoker>,
+    elicitations: &Arc<dyn ElicitationInvoker>,
 ) -> RouteDecision {
     let mut taints: Vec<TaintEvent> = Vec::new();
     let mut args_modified = false;
 
-    // ----- args -----
     for rule in &route.args {
         let Some(current) = get_dotted(&payload.args, &rule.field).cloned() else {
             continue; // missing field → no pipeline to run
@@ -134,18 +142,19 @@ pub async fn evaluate_pre(
                     constraints: Vec::new(),
                     args_modified,
                     result_modified: false,
+                    pending: None,
                 };
             },
         }
     }
 
-    // ----- policy -----
     let policy_eval = evaluate_effects(
         &route.policy,
         bag,
         pdp,
         plugins,
         delegations,
+        elicitations,
         DispatchPhase::Pre,
         payload,
     )
@@ -160,6 +169,7 @@ pub async fn evaluate_pre(
         constraints: policy_eval.constraints,
         args_modified,
         result_modified: false,
+        pending: policy_eval.pending,
     }
 }
 
@@ -177,11 +187,11 @@ pub async fn evaluate_post(
     pdp: &Arc<dyn PdpResolver>,
     plugins: &Arc<dyn PluginInvoker>,
     delegations: &Arc<dyn DelegationInvoker>,
+    elicitations: &Arc<dyn ElicitationInvoker>,
 ) -> RouteDecision {
     let mut taints: Vec<TaintEvent> = Vec::new();
     let mut result_modified = false;
 
-    // ----- result (only when a response payload is present) -----
     if let Some(result) = payload.result.as_mut() {
         for rule in &route.result {
             let Some(current) = get_dotted(result, &rule.field).cloned() else {
@@ -224,19 +234,20 @@ pub async fn evaluate_post(
                         constraints: Vec::new(),
                         args_modified: false,
                         result_modified,
+                        pending: None,
                     };
                 },
             }
         }
     }
 
-    // ----- post_policy -----
     let post_eval = evaluate_effects(
         &route.post_policy,
         bag,
         pdp,
         plugins,
         delegations,
+        elicitations,
         DispatchPhase::Post,
         payload,
     )
@@ -252,6 +263,7 @@ pub async fn evaluate_post(
         constraints: post_eval.constraints,
         args_modified: false,
         result_modified,
+        pending: post_eval.pending,
     }
 }
 
@@ -272,12 +284,17 @@ pub async fn evaluate_route(
     pdp: &Arc<dyn PdpResolver>,
     plugins: &Arc<dyn PluginInvoker>,
     delegations: &Arc<dyn DelegationInvoker>,
+    elicitations: &Arc<dyn ElicitationInvoker>,
 ) -> RouteDecision {
-    let pre = evaluate_pre(route, bag, payload, pdp, plugins, delegations).await;
-    if matches!(pre.decision, Decision::Deny { .. }) {
+    let pre = evaluate_pre(route, bag, payload, pdp, plugins, delegations, elicitations).await;
+    // Halt before the tool call on a pre-side Deny OR a pending
+    // elicitation. Pending means the inbound phase suspended awaiting a
+    // human — the tool must not run, so `post` (which processes the tool's
+    // response) is skipped and the host emits `-32120` from `pre.pending`.
+    if matches!(pre.decision, Decision::Deny { .. }) || pre.pending.is_some() {
         return pre;
     }
-    let post = evaluate_post(route, bag, payload, pdp, plugins, delegations).await;
+    let post = evaluate_post(route, bag, payload, pdp, plugins, delegations, elicitations).await;
     let mut taints = pre.taints;
     taints.extend(post.taints);
     let mut constraints = pre.constraints;
@@ -288,12 +305,9 @@ pub async fn evaluate_route(
         constraints,
         args_modified: pre.args_modified,
         result_modified: post.result_modified,
+        pending: post.pending,
     }
 }
-
-// =====================================================================
-// Dotted-path JSON helpers
-// =====================================================================
 
 /// Read `root.a.b.c` from a JSON value via dot-separated path. Returns
 /// `None` if any segment is missing or the path crosses a non-object.
@@ -369,13 +383,11 @@ mod tests {
     use crate::pipeline::{FieldRule, Pipeline, Stage, TaintScope, TypeCheck};
     use crate::rules::{Effect, Expression, Rule};
     use crate::step::{
-        NoopDelegationInvoker, PdpCall, PdpDecision, PdpDialect, PdpError, PluginError,
-        PluginInvocation, PluginOutcome,
+        NoopDelegationInvoker, NoopElicitationInvoker, PdpCall, PdpDecision, PdpDialect, PdpError,
+        PluginError, PluginInvocation, PluginOutcome,
     };
     use async_trait::async_trait;
     use serde_json::json;
-
-    // ----- Fixtures -----
 
     struct AllowPdp;
     #[async_trait]
@@ -408,6 +420,39 @@ mod tests {
         }
     }
 
+    /// Elicitation invoker that always reports Pending — for the
+    /// route-level suspend test.
+    struct PendingElicitor;
+    #[async_trait]
+    impl ElicitationInvoker for PendingElicitor {
+        async fn dispatch(
+            &self,
+            _step: &crate::step::ElicitStep,
+            _resolved_from: &str,
+        ) -> Result<crate::step::ElicitationDispatch, crate::step::ElicitationError> {
+            Ok(crate::step::ElicitationDispatch {
+                id: "elic-route-1".into(),
+                approver: None,
+                intent_id: None,
+                expires_at: None,
+            })
+        }
+        async fn check(
+            &self,
+            _step: &crate::step::ElicitStep,
+            _id: &str,
+        ) -> Result<crate::step::ElicitationStatus, crate::step::ElicitationError> {
+            Ok(crate::step::ElicitationStatus::Pending)
+        }
+        async fn validate(
+            &self,
+            _step: &crate::step::ElicitStep,
+            _id: &str,
+        ) -> Result<crate::step::ElicitationValidation, crate::step::ElicitationError> {
+            unreachable!("validate must not run while pending")
+        }
+    }
+
     // `evaluate_route` takes `&Arc<dyn PluginInvoker>` / `&Arc<dyn DelegationInvoker>`
     // so the path through `dispatch_parallel` can `Arc::clone` into each
     // spawned branch. These helpers wrap the no-op test stubs once per call.
@@ -419,6 +464,9 @@ mod tests {
     }
     fn delegations() -> Arc<dyn DelegationInvoker> {
         Arc::new(NoopDelegationInvoker)
+    }
+    fn elicitations() -> Arc<dyn ElicitationInvoker> {
+        Arc::new(NoopElicitationInvoker)
     }
 
     fn field_rule(field: &str, stages: Vec<Stage>) -> FieldRule {
@@ -440,8 +488,6 @@ mod tests {
         )
     }
 
-    // ----- Tests -----
-
     #[tokio::test]
     async fn empty_route_allows() {
         let route = CompiledRoute::new("noop");
@@ -454,12 +500,65 @@ mod tests {
             &pdp_arc(),
             &plugins(),
             &delegations(),
+            &elicitations(),
         )
         .await;
         assert_eq!(r.decision, Decision::Allow);
         assert!(!r.args_modified);
         assert!(!r.result_modified);
         assert!(r.taints.is_empty());
+    }
+
+    #[tokio::test]
+    async fn pending_elicitation_suspends_route_and_skips_post() {
+        // A pending elicitation in `policy:` must suspend the whole route:
+        // decision Allow + pending Some, and the `result:` phase (which
+        // would mutate the response) must NOT run.
+        let mut route = CompiledRoute::new("payroll");
+        route.policy.push(Effect::Elicit(crate::step::ElicitStep {
+            kind: crate::step::ElicitKind::Approval,
+            plugin_name: "manager-approver".into(),
+            channel: Some("ciba".into()),
+            from: "user.manager".into(),
+            purpose: None,
+            scope: None,
+            timeout: None,
+            config_override: None,
+            on_error: None,
+            source: "payroll.policy[0]".into(),
+        }));
+        // A result rule that WOULD mask — proves post didn't run if untouched.
+        route
+            .result
+            .push(field_rule("ssn", vec![Stage::Mask { keep_last: 4 }]));
+
+        let elicitor: Arc<dyn ElicitationInvoker> = Arc::new(PendingElicitor);
+        let mut bag = AttributeBag::new();
+        // The step's `from` is an attribute ref — seed it so it resolves
+        // (an unresolved attribute `from` now fails closed by design).
+        bag.set("user.manager", "manager@corp.com");
+        let mut payload = RoutePayload::with_result(json!({}), json!({ "ssn": "123-45-6789" }));
+        let r = evaluate_route(
+            &route,
+            &mut bag,
+            &mut payload,
+            &pdp_arc(),
+            &plugins(),
+            &delegations(),
+            &elicitor,
+        )
+        .await;
+
+        assert_eq!(r.decision, Decision::Allow, "pending is not a deny");
+        let bundle = r.pending.expect("route surfaced the pending bundle");
+        assert_eq!(bundle.id, "elic-route-1");
+        assert_eq!(bundle.plugin_name, "manager-approver");
+        // post never ran → result untouched (no masking applied).
+        assert!(!r.result_modified);
+        assert_eq!(
+            payload.result.as_ref().unwrap()["ssn"],
+            json!("123-45-6789")
+        );
     }
 
     #[tokio::test]
@@ -477,6 +576,7 @@ mod tests {
             &pdp_arc(),
             &plugins(),
             &delegations(),
+            &elicitations(),
         )
         .await;
         assert_eq!(r.decision, Decision::Allow);
@@ -513,6 +613,7 @@ mod tests {
             &pdp_arc(),
             &plugins(),
             &delegations(),
+            &elicitations(),
         )
         .await;
         match r.decision {
@@ -545,6 +646,7 @@ mod tests {
             &pdp_arc(),
             &plugins(),
             &delegations(),
+            &elicitations(),
         )
         .await;
         assert_eq!(r.decision, Decision::Allow);
@@ -564,6 +666,7 @@ mod tests {
             &pdp_arc(),
             &plugins(),
             &delegations(),
+            &elicitations(),
         )
         .await;
         assert_eq!(r.decision, Decision::Allow);
@@ -592,6 +695,7 @@ mod tests {
             &pdp_arc(),
             &plugins(),
             &delegations(),
+            &elicitations(),
         )
         .await;
         match r.decision {
@@ -618,6 +722,7 @@ mod tests {
             &pdp_arc(),
             &plugins(),
             &delegations(),
+            &elicitations(),
         )
         .await;
         assert_eq!(r.decision, Decision::Allow);
@@ -640,6 +745,7 @@ mod tests {
             &pdp_arc(),
             &plugins(),
             &delegations(),
+            &elicitations(),
         )
         .await;
         assert_eq!(r.decision, Decision::Allow);
@@ -678,6 +784,7 @@ mod tests {
             &pdp_arc(),
             &plugins(),
             &delegations(),
+            &elicitations(),
         )
         .await;
         assert_eq!(r.decision, Decision::Allow);
@@ -703,6 +810,7 @@ mod tests {
             &pdp_arc(),
             &plugins(),
             &delegations(),
+            &elicitations(),
         )
         .await;
         assert_eq!(r.decision, Decision::Allow);
@@ -728,6 +836,7 @@ mod tests {
             &pdp_arc(),
             &plugins(),
             &delegations(),
+            &elicitations(),
         )
         .await;
         assert_eq!(r.decision, Decision::Allow);
@@ -754,6 +863,7 @@ mod tests {
             &pdp_arc(),
             &plugins(),
             &delegations(),
+            &elicitations(),
         )
         .await;
         match r.decision {
@@ -764,8 +874,6 @@ mod tests {
         assert!(r.result_modified);
         assert_eq!(payload.result.as_ref().unwrap()["ssn"], json!("[REDACTED]"));
     }
-
-    // ----- Helper unit tests -----
 
     #[test]
     fn dotted_get_simple_and_nested() {
@@ -796,11 +904,8 @@ mod tests {
         let mut v = json!({ "a": { "b": 1, "c": 2 } });
         assert!(remove_dotted(&mut v, "a.b"));
         assert_eq!(v, json!({ "a": { "c": 2 } }));
-        // Removing a missing leaf returns false.
         assert!(!remove_dotted(&mut v, "a.b"));
     }
-
-    // ----- evaluate_pre / evaluate_post (phase split) -----
 
     #[tokio::test]
     async fn evaluate_pre_runs_args_and_policy_only() {
@@ -825,6 +930,7 @@ mod tests {
             &pdp_arc(),
             &plugins(),
             &delegations(),
+            &elicitations(),
         )
         .await;
         assert_eq!(r.decision, Decision::Allow);
@@ -864,6 +970,7 @@ mod tests {
             &pdp_arc(),
             &plugins(),
             &delegations(),
+            &elicitations(),
         )
         .await;
         assert_eq!(r.decision, Decision::Allow);
@@ -901,6 +1008,7 @@ mod tests {
             &pdp_arc(),
             &plugins(),
             &delegations(),
+            &elicitations(),
         )
         .await;
         match r.decision {
@@ -945,6 +1053,7 @@ mod tests {
             &pdp_arc(),
             &plugins(),
             &delegations(),
+            &elicitations(),
         )
         .await;
         assert!(matches!(r.decision, Decision::Deny { .. }));

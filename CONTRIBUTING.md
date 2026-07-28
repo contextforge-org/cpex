@@ -67,6 +67,16 @@ Each source file should carry an Apache-2.0 SPDX header. For Rust:
 // Authors: Your Name
 ```
 
+## Documentation conventions
+
+The docs site is Hugo (in [`docs/`](docs)). A few conventions keep it consistent:
+
+- **Route syntax:** write the flat list form the runtime parses, `routes:` with `- tool: <name>` entries. The map-keyed form is `apl-core`'s standalone/test surface only; see [Configuration](https://contextforge-org.github.io/cpex/docs/configuration/).
+- **Terminology:** "Quick Start" (two words) in prose; `builtin` (one word) for the bundled extensions; "allow/deny" for outcomes. Expand `APL` (Authorization Policy Language), `A2A` (agent-to-agent), `IdP` (identity provider), `PDP`, `CMF`, and `CIBA` on first use in a page.
+- **Images:** reference them relative (`images/foo.png`), not with a hardcoded base path (`/cpex/images/...`). The site render hook resolves them against `baseURL`, so previews and alternate deployments work. Put the file under `docs/static/images/`.
+- **Runnable examples:** prefer linking the tutorial crate (`examples/tutorial`) over maintaining a second partial example; its modules and tests are CI-run.
+- **Voice:** direct and concise; avoid em dashes.
+
 ## crates.io publishing
 
 The library crates publish to crates.io from the `release.yaml` workflow on a

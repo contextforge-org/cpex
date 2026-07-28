@@ -8,10 +8,9 @@
 //
 // ```yaml
 // global:
-//   apl:
-//     pdp:
-//       - kind: cel
-//         on_error: deny          # optional; deny | allow, default deny
+//   pdp:
+//     - kind: cel
+//       on_error: deny          # optional; deny | allow, default deny
 // ```
 //
 // The CEL expression itself lives in each route's `cel: { expr: "..." }`

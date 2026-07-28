@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Authors: Teryl Taylor
 //
-// End-to-end tests for the route-level `authentication:` block (Slice A).
+// End-to-end tests for the route-level `authentication:` block.
 //
 // Verifies the hook-specific binding semantics:
 //   * A route's `authentication:` block is the authoritative dispatch list
@@ -478,7 +478,7 @@ routes:
     );
 }
 
-/// Slice C — end-to-end inheritance: global.identity contributes to
+/// End-to-end inheritance: global.identity contributes to
 /// the dispatch lineup for routes that declare no identity block of
 /// their own. Verifies the dispatch path picks up the global layer.
 #[tokio::test]
@@ -723,7 +723,7 @@ routes:
 // hook family — meaning `filter_extensions(&ext, &caps)` runs before
 // each handler invoke and narrows what the plugin sees to its
 // declared capabilities. These tests pin that behavior for the
-// route-level identity dispatch path (Slice A).
+// route-level identity dispatch path.
 //
 // Identity is unusual in that resolvers typically WRITE state (subject,
 // chain) rather than read it — but they still need read capabilities

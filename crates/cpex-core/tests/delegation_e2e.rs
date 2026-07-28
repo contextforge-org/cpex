@@ -3,8 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Authors: Teryl Taylor
 //
-// End-to-end test for the TokenDelegate hook family — sub-step B of
-// slice 3.
+// End-to-end test for the TokenDelegate hook family.
 //
 // Verifies the host-explicit dispatch model: an outbound caller
 // (typically a forwarding-proxy plugin) constructs a
@@ -478,7 +477,7 @@ async fn apply_to_extensions_writes_delegated_token_keyed_by_subject() {
 /// delegation through downstream CMF dispatch correctly cap-gates
 /// the `delegated_tokens` slot.
 ///
-/// Mirrors the slice 2 `cap_gating_post_apply_through_cmf_dispatch`
+/// Mirrors the `cap_gating_post_apply_through_cmf_dispatch`
 /// test but for the *outbound* leg:
 ///   1. TokenDelegate handler mints a downstream credential.
 ///   2. Host applies the resolved payload back to `Extensions` via

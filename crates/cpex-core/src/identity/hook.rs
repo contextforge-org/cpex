@@ -25,7 +25,7 @@
 //
 // This file defines the *types*. Lifecycle wiring — when the
 // framework calls `invoke_named::<IdentityHook>(...)`, how results
-// merge back into `Extensions` — lands in sub-step B / C of slice 2.
+// merge back into `Extensions` — lands elsewhere.
 
 use crate::hooks::trait_def::PluginResult;
 

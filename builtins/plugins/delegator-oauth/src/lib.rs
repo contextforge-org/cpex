@@ -16,9 +16,8 @@
 // `access_token` becomes the `RawDelegatedToken` the framework
 // stashes under `Extensions.raw_credentials.delegated_tokens`.
 //
-// Sub-step A scope: data shapes + module structure only. Actual
-// HTTP exchange logic in sub-step B; mock-IdP integration tests in
-// sub-step C.
+// Scope: data shapes + module structure only. Actual HTTP exchange
+// logic and mock-IdP integration tests land later.
 
 pub mod config;
 pub mod delegator;

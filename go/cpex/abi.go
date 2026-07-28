@@ -37,6 +37,9 @@ const expectedFFIABIVersion uint32 = 2
 func init() {
 	actual := uint32(C.cpex_ffi_abi_version())
 	if actual != expectedFFIABIVersion {
+		// Intentional panic: init() has no error return, and a mismatched
+		// ABI means every cgo call in this package is already unsound —
+		// there is no error value we could hand back to a caller.
 		panic(fmt.Sprintf(
 			"cpex: FFI ABI version mismatch — Go binding expects %d, "+
 				"linked libcpex_ffi reports %d. Upgrade github.com/"+

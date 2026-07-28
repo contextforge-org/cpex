@@ -281,12 +281,54 @@ examples-build: rust-examples-build go-examples-build
 	@echo "✅  All examples built"
 
 .PHONY: examples-run
-examples-run: examples-build
+examples-run: examples-build tutorial-check-local
 	@$(CARGO) run --example plugin_demo -p cpex-core --quiet >/dev/null
 	@$(CARGO) run --example cmf_capabilities_demo -p cpex-core --quiet >/dev/null
 	@cd $(GO_EXAMPLES_DIR) && $(GO) run . >/dev/null
 	@cd $(GO_EXAMPLES_DIR) && $(GO) run ./cmd/cmf-demo >/dev/null
 	@echo "✅  All examples ran successfully"
+
+# =============================================================================
+# Tutorial (examples/tutorial)
+# =============================================================================
+#
+# The tutorial ships one runnable binary per module, each with a `--check`
+# mode that asserts its scripted scenario. `tutorial-check-local` runs the
+# modules that need no infrastructure; `tutorial-check` additionally brings
+# up the tutorial Keycloak (docker compose) and runs the IdP-backed modules,
+# tearing the stack down afterward. CI runs `tutorial-check`.
+
+TUTORIAL_IDP_COMPOSE = examples/tutorial/idp/docker-compose.yml
+TUTORIAL_NOIDP_MODULES = m01_hello m03_shaping m04_effects m09_custom_plugin m10_testing
+TUTORIAL_IDP_MODULES = m02_identity m05_pdp m06_delegation m07_tainting m08_elicitation capstone
+
+.PHONY: tutorial-check-local
+tutorial-check-local:
+	@for m in $(TUTORIAL_NOIDP_MODULES); do \
+		echo "→ tutorial $$m --check"; \
+		$(CARGO) run -q -p cpex-tutorial --example $$m -- --check >/dev/null || exit 1; \
+	done
+	@echo "✅  Tutorial (no-IdP) checks passed"
+
+.PHONY: tutorial-check
+tutorial-check: tutorial-check-local
+	@echo "→ starting tutorial IdP"
+	@docker compose -f $(TUTORIAL_IDP_COMPOSE) up -d
+	@echo "→ waiting for Keycloak realm to be ready"
+	@$(CARGO) run -q -p cpex-tutorial --example wait_for_idp || { \
+		docker compose -f $(TUTORIAL_IDP_COMPOSE) down; exit 1; }
+	@for m in $(TUTORIAL_IDP_MODULES); do \
+		echo "→ tutorial $$m --check"; \
+		$(CARGO) run -q -p cpex-tutorial --example $$m -- --check || { \
+			docker compose -f $(TUTORIAL_IDP_COMPOSE) down; exit 1; }; \
+	done
+	@docker compose -f $(TUTORIAL_IDP_COMPOSE) down
+	@echo "✅  Tutorial checks passed (incl. IdP-backed modules)"
+
+.PHONY: tutorial-recordings
+tutorial-recordings:
+	@examples/tutorial/recordings/record.sh
+	@echo "Upload each cast to asciinema.org, then embed per examples/tutorial/recordings/README.md"
 
 # =============================================================================
 # CI gate

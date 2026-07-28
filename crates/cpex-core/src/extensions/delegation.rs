@@ -14,8 +14,8 @@ use super::security::SubjectType;
 
 /// Delegation strategy used to mint the credential at this hop.
 ///
-/// The known variants cover the reference implementations in
-/// docs/specs/delegation-hooks-rust-spec.md §9.5. `Custom(String)` is the
+/// The known variants cover the reference implementations.
+/// `Custom(String)` is the
 /// escape hatch for host-defined strategies (UCAN variants, in-house mints).
 /// Marked `#[non_exhaustive]` so new known variants can be added without a
 /// breaking change to host code that exhaustively matches.

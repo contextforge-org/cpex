@@ -1,0 +1,14 @@
+{{- /*
+  Site-level image render hook. Resolves *relative* image destinations
+  (e.g. images/foo.png) through relURL so they respect the site baseURL and
+  do not hardcode a base path. Absolute-path destinations (/cpex/images/...,
+  used by the legacy 0.1.x pages) and remote/fragment URLs pass through
+  unchanged, so relURL is never applied twice.
+*/ -}}
+{{- $destination := .Destination -}}
+{{- $u := urls.Parse .Destination -}}
+{{- if and (not $u.IsAbs) (not (strings.HasPrefix .Destination "/")) (not (strings.HasPrefix .Destination "#")) -}}
+  {{- $destination = .Destination | relURL -}}
+{{- end -}}
+<img src="{{ $destination | safeURL }}" alt="{{ .Text }}" {{ with .Title }}title="{{ . }}"{{ end }}/>
+{{- /**/ -}}

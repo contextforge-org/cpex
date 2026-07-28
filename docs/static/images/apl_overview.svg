@@ -1,0 +1,72 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2060 970" font-family="IBM Plex Sans" xml:space="preserve">
+  <rect width="2060" height="970" fill="#ffffff"/>
+
+  <!-- code panel -->
+  <rect x="30" y="30" width="720" height="910" rx="10" fill="#f5f5f5"/>
+
+  <!-- highlight: pre-invocation block -->
+  <rect x="90" y="366" width="620" height="216" rx="6" fill="#e2eef0"/>
+  <!-- highlight: result block -->
+  <rect x="90" y="602" width="620" height="46" rx="6" fill="#e2eef0"/>
+
+  <g font-family="IBM Plex Mono" font-size="22" fill="#161616">
+    <text x="70" y="90">plugins: &#8230;</text>
+    <text x="70" y="158">global:</text>
+    <text x="70" y="192">  authentication: [jwt-user]</text>
+    <text x="70" y="260">routes:</text>
+    <text x="70" y="294">  - tool: get_compensation</text>
+    <text x="70" y="328">    authorization:</text>
+    <text x="70" y="362">      pre_invocation:</text>
+    <text x="70" y="396">        - require(role.hr)</text>
+    <text x="70" y="430">        - cedar: {&#8230;}</text>
+    <text x="70" y="464">        - delegate(workday-oauth,</text>
+    <text x="70" y="498">            permissions:</text>
+    <text x="70" y="532">              [read_compensation])</text>
+    <text x="70" y="566">        - taint(secret, session)</text>
+    <text x="70" y="634">    result:</text>
+    <text x="70" y="668">      ssn: str | redact(!perm.view_ssn)</text>
+    <text x="70" y="736">  - tool: send_email</text>
+    <text x="70" y="770">    authorization:</text>
+    <text x="70" y="804">      pre_invocation:</text>
+    <text x="70" y="838">        - require(perm.email_send)</text>
+    <text x="70" y="872">        - security.labels contains</text>
+    <text x="70" y="906">            "secret": deny</text>
+  </g>
+
+  <!-- leaders + labels -->
+  <g stroke="#35a3ab" stroke-width="4" stroke-dasharray="2 10" stroke-linecap="round">
+    <line x1="230" y1="82" x2="800" y2="82"/>
+    <line x1="180" y1="150" x2="800" y2="150"/>
+    <line x1="185" y1="252" x2="800" y2="252"/>
+    <line x1="720" y1="474" x2="800" y2="474"/>
+    <line x1="720" y1="625" x2="800" y2="625"/>
+    <line x1="545" y1="864" x2="800" y2="864"/>
+  </g>
+  <g fill="#35a3ab">
+    <circle cx="812" cy="82" r="7"/>
+    <circle cx="812" cy="150" r="7"/>
+    <circle cx="812" cy="252" r="7"/>
+    <circle cx="812" cy="474" r="7"/>
+    <circle cx="812" cy="625" r="7"/>
+    <circle cx="812" cy="864" r="7"/>
+  </g>
+  <g font-size="25" fill="#1c3a5e">
+    <text x="836" y="90">Configure plugins</text>
+    <text x="836" y="158">Global policy and settings</text>
+    <text x="836" y="260">Per-route policy definition</text>
+    <text x="836" y="482">pre-invocation flow</text>
+    <text x="836" y="633">post-invocation (output shaping)</text>
+    <text x="836" y="872">Session tainting</text>
+  </g>
+
+  <!-- effects legend -->
+  <rect x="1250" y="330" width="780" height="480" rx="10" fill="#e9f2f3"/>
+  <g font-family="IBM Plex Mono" font-size="22">
+    <text x="1290" y="404"><tspan font-weight="600" fill="#161616">require(pred)</tspan><tspan fill="#5f5f5f"> # Boolean predicates</tspan></text>
+    <text x="1290" y="472"><tspan font-weight="600" fill="#161616">pdp: {&#8230;}</tspan><tspan fill="#5f5f5f"> # PDP decision (Cedar, CEL, OPA)</tspan></text>
+    <text x="1290" y="540"><tspan font-weight="600" fill="#161616">delegate(&#8230;)</tspan><tspan fill="#5f5f5f"> # token exchange (IdP)</tspan></text>
+    <text x="1290" y="608"><tspan font-weight="600" fill="#161616">require_approval(&#8230;)</tspan><tspan fill="#5f5f5f"> # HIL approval (CIBA)</tspan></text>
+    <text x="1290" y="676"><tspan font-weight="600" fill="#161616">run(plugin)</tspan><tspan fill="#5f5f5f"> # block, transform, observe</tspan></text>
+    <text x="1290" y="744"><tspan font-weight="600" fill="#161616">taint(label, scope)</tspan><tspan fill="#5f5f5f"> # info-flow labels</tspan></text>
+  </g>
+</svg>

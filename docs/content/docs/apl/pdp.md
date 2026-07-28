@@ -16,17 +16,18 @@ The scenario's repository search must allow a read when the caller is an enginee
 A PDP call is an effect in the `authorization.pre_invocation` phase. It names a dialect and passes the request; `on_allow` and `on_deny` react to the decision:
 
 ```yaml
-pre_invocation:
-  - "require(team.engineering | team.security)"
-  - cedar:
-      action: 'Action::"read"'
-      resource:
-        type: Repo
-        id: ${args.repo_name}
-        attributes:
-          visibility: ${args.visibility}
-    on_deny:
-      - "deny('not permitted by repo policy', 'cedar_denied')"
+authorization:
+  pre_invocation:
+    - "require(team.engineering | team.security)"
+    - cedar:
+        action: 'Action::"read"'
+        resource:
+          type: Repo
+          id: ${args.repo_name}
+          attributes:
+            visibility: ${args.visibility}
+      on_deny:
+        - "deny('not permitted by repo policy', 'cedar_denied')"
 ```
 
 The cheap APL gate runs first. Only if it passes does CPEX evaluate the Cedar policy against the request entities. The Cedar policy itself lives in the config:
@@ -65,8 +66,9 @@ This is a deliberate pluggable-resolver surface, not a maturity checklist. APL s
 CEL is the lightest option for inline boolean policy:
 
 ```yaml
-pre_invocation:
-  - cel: { expr: "subject.department == 'compliance' || 'admin' in subject.roles" }
+authorization:
+  pre_invocation:
+    - cel: { expr: "subject.department == 'compliance' || 'admin' in subject.roles" }
 ```
 
 ## How it connects to the pipeline

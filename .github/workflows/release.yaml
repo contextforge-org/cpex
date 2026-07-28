@@ -110,6 +110,7 @@ jobs:
             cpex-plugin-identity-jwt
             cpex-plugin-delegator-oauth
             cpex-plugin-delegator-biscuit
+            cpex-plugin-elicitation-ciba
             cpex-pdp-cedar-direct
             cpex-pdp-cel
             cpex-session-valkey
@@ -118,7 +119,22 @@ jobs:
           )
           for c in "${crates[@]}"; do
             echo "::group::publish $c"
-            cargo publish -p "$c" --locked
+            # Idempotent: a prior run can publish a leading prefix of this
+            # list and then fail further down (e.g. a downstream crate gained
+            # a new dependency that was not yet in the list). crates.io rejects
+            # re-publishing an existing version, so treat "already uploaded" as
+            # success and continue — this lets a re-run of the same tag finish
+            # the remaining crates instead of aborting on the first done one.
+            if out="$(cargo publish -p "$c" --locked 2>&1)"; then
+              printf '%s\n' "$out"
+            else
+              printf '%s\n' "$out"
+              if printf '%s' "$out" | grep -qiE 'already (exists|uploaded)|is already uploaded'; then
+                echo "::notice::$c already published at this version — skipping"
+              else
+                exit 1
+              fi
+            fi
             echo "::endgroup::"
             sleep 15
           done

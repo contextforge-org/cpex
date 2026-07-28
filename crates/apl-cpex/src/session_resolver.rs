@@ -189,10 +189,6 @@ pub fn resolve_session(ext: &Extensions) -> Option<(String, SessionSource)> {
     None
 }
 
-// =====================================================================
-// Tests — one scenario per tier, plus tier-priority assertions.
-// =====================================================================
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -233,8 +229,6 @@ mod tests {
             ..Default::default()
         }
     }
-
-    // --- Tier 0: agent (pre-resolved) ---
 
     #[test]
     fn tier0_agent_session_id_is_subject_bound() {
@@ -361,8 +355,6 @@ mod tests {
         assert_eq!(sid, subject_scoped(Some("alice"), "from-agent").unwrap());
     }
 
-    // --- Tier 1: token_claim ---
-
     #[test]
     fn tier1_token_claim_hits_when_session_id_claim_present() {
         let sec = SecurityExtension {
@@ -402,7 +394,7 @@ mod tests {
 
     #[test]
     fn tier1_same_session_id_claim_different_subjects_are_distinct() {
-        // The Finding 2 guarantee for T1. An issuer that reuses a
+        // The guarantee for T1. An issuer that reuses a
         // session_id value across multiple principals (multi-tenant
         // naming conventions, counters that don't carry the subject,
         // etc.) must NOT let one principal land in another's session
@@ -498,14 +490,12 @@ mod tests {
         assert_eq!(sid, subject_scoped(Some("alice"), "from-claim").unwrap());
     }
 
-    // --- Tier 2 (`X-CPEX-Session-Id` header) is intentionally absent ---
+    // Tier 2 (`X-CPEX-Session-Id` header) is intentionally absent.
     //
     // The Python `SessionResolver` included a header tier; cpex Rust
     // does not. See the module-level doc comment for the threat model.
     // A spoofing-regression guard lives below in
     // `header_x_cpex_session_id_is_ignored`.
-
-    // --- Tier 2: identity ---
 
     #[test]
     fn tier2_identity_derived_when_no_claim() {
@@ -591,8 +581,6 @@ mod tests {
         assert_ne!(sid1, sid2);
     }
 
-    // --- Tier 3: none ---
-
     #[test]
     fn tier3_no_session_when_no_data() {
         let ext = Extensions::default();
@@ -610,8 +598,6 @@ mod tests {
         let ext = extensions_with_security(sec);
         assert!(resolve_session(&ext).is_none());
     }
-
-    // --- Wire-format documentation ---
 
     #[test]
     fn separator_format_collides_when_subject_contains_colon() {
@@ -638,8 +624,6 @@ mod tests {
             "current format collides; if subject IDs can contain colons, switch to length-prefix",
         );
     }
-
-    // --- Spoofing guard (regression test for P0-2) ---
 
     #[test]
     fn header_x_cpex_session_id_is_ignored() {

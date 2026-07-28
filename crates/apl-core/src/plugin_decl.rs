@@ -7,11 +7,7 @@
 // unified-config YAML document, plus the per-route override block and
 // the 2-layer resolver that merges them.
 //
-// Spec: `contextforge-plugins-framework-apl/docs/specs/unified-config-proposal.md`,
-//   §"Plugin Declaration" (lines 173+)
-//   §"Route-Level Plugin Config Overrides" (lines 360+)
-//
-// Layering, per spec:
+// Layering:
 //   - Global declaration  (root `plugins:`)             — full shape
 //   - Route-level override (`routes.<rt>.plugins.<p>:`) — `config`,
 //     `capabilities`, `on_error` only; hooks/kind/source NOT overridable
@@ -50,7 +46,7 @@ pub struct PluginDeclaration {
     /// future versions will choose by invocation context (policy vs
     /// post_policy vs pipe-chain).
     ///
-    /// Per spec §"Hook dispatch": NOT overridable per-route.
+    /// NOT overridable per-route.
     #[serde(default)]
     pub hooks: Vec<String>,
 

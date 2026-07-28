@@ -24,10 +24,6 @@ use crate::error::PluginError;
 use crate::plugin::{Plugin, PluginConfig};
 use crate::registry::AnyHookHandler;
 
-// ---------------------------------------------------------------------------
-// Plugin Factory Trait
-// ---------------------------------------------------------------------------
-
 /// Factory for creating plugin instances from config.
 ///
 /// The host registers factories by `kind` name before loading
@@ -78,10 +74,6 @@ pub struct PluginInstance {
     /// Each entry maps a hook name to the adapter for that hook type.
     pub handlers: Vec<(&'static str, Arc<dyn AnyHookHandler>)>,
 }
-
-// ---------------------------------------------------------------------------
-// Plugin Factory Registry
-// ---------------------------------------------------------------------------
 
 /// Registry of plugin factories keyed by `kind` name.
 ///

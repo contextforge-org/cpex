@@ -435,14 +435,50 @@ routes:
     assert!(result.violation.is_none());
 }
 
+/// A bare `global: { response: {...} }` — a denyWith with no accompanying
+/// `apl:` policy/args block — must load cleanly (the visitor warns and moves
+/// on) rather than panicking or erroring. `visit_global` returns early when
+/// `apl_subblock` finds no APL terms; this guards that the stranded
+/// `response:` on that early-return path is handled, not silently exploded.
+#[tokio::test]
+async fn global_response_without_apl_block_loads_without_error() {
+    const YAML: &str = r#"
+plugins:
+  - name: allow-gate
+    kind: allow-gate
+    hooks: [cmf.tool_pre_invoke]
+global:
+  response:
+    status: 403
+    body: "forbidden"
+routes:
+  - tool: anything
+"#;
+    // The load must not panic or return Err despite the response-only global
+    // block having no installable policy. A request still flows through the
+    // legacy chain (no catch-all handler was installed for the entity-less
+    // path, which is the documented behavior this warns about).
+    let mgr = build_manager_with_visitor(YAML).await;
+
+    let ext = Extensions {
+        meta: Some(Arc::new(meta_for_tool("anything"))),
+        ..Default::default()
+    };
+    let (result, _bg) = mgr
+        .invoke_named::<CmfHook>("cmf.tool_pre_invoke", cmf_payload("hi"), ext, None)
+        .await;
+    assert!(result.continue_processing);
+    assert!(result.violation.is_none());
+}
+
 /// Smoke test that the visitor surfaces a compile error from a malformed
 /// APL block as a `PluginError::Config` out of `load_config_yaml`. Catches
 /// regressions where visitor errors swallow into Ok(_) or panic.
 // ---------------------------------------------------------------------
-// Slice 102 — multi-entity-type route support (llm / prompt / resource)
+// Multi-entity-type route support (llm / prompt / resource)
 // ---------------------------------------------------------------------
 //
-// Pre-Slice-102, the visitor hardcoded annotation on
+// Previously, the visitor hardcoded annotation on
 // `cmf.tool_pre_invoke` / `cmf.tool_post_invoke` regardless of route
 // entity_type — so an `llm:` route would silently bind to the tool
 // hooks and never fire when the host called `invoke_named::<CmfHook>("cmf.llm_input", ...)`.
@@ -489,7 +525,7 @@ routes:
 }
 
 /// Same llm route but post — annotation lands on `cmf.llm_output`.
-/// Pre-Slice-102, this would have annotated on `cmf.tool_post_invoke`
+/// Previously, this would have annotated on `cmf.tool_post_invoke`
 /// and never matched.
 #[tokio::test]
 async fn llm_route_annotates_on_llm_output_hook_for_post_phase() {
@@ -587,7 +623,7 @@ routes:
 }
 
 /// Cross-check: an llm route's APL annotation MUST NOT install on
-/// `cmf.tool_pre_invoke`. Pre-Slice-102, the visitor would have
+/// `cmf.tool_pre_invoke`. Previously, the visitor would have
 /// annotated llm routes on the tool hook by mistake; this test pins
 /// that the bug is gone.
 ///

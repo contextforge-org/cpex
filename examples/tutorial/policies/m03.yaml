@@ -1,0 +1,27 @@
+# Module 3, Shaping data
+#
+# Same backend record, different fields visible per caller. The route
+# allows the call, then a `result:` field pipeline transforms the response
+# on the way out:
+#
+#   * ssn is redacted unless the caller has the view_ssn permission.
+#   * salary is redacted unless the caller has the hr role.
+#   * employee_id is always masked to its last 4 characters.
+#
+# A pipeline entry reads `<field>: "<type> | <op>(<when>)"`. The op runs
+# only when its predicate is true; `redact(!perm.view_ssn)` means "redact
+# when the caller does NOT have view_ssn."
+#
+# In this module the caller is still anonymous (no IdP until you reach
+# module 2, but you can run this one now), so neither perm.view_ssn nor
+# role.hr is set: both redactions fire. Once you have tokens (module 2+),
+# an HR caller with view_ssn sees the full record from the SAME policy.
+
+routes:
+  - tool: get_compensation
+    authorization:
+      pre_invocation: []
+    result:
+      ssn: "str | redact(!perm.view_ssn)"
+      salary: "int | redact(!role.hr)"
+      employee_id: "str | mask(4)"

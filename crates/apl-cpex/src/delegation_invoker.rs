@@ -94,11 +94,11 @@ impl DelegationPluginInvoker {
 #[async_trait]
 impl DelegationInvoker for DelegationPluginInvoker {
     async fn delegate(&self, step: &DelegateStep) -> Result<DelegationOutcome, DelegationError> {
-        // 1. Resolve the plugin's token.delegate entry from the plan.
-        //    Routes that don't reference this plugin in `pre_invocation:` /
-        //    `post_invocation:` at compile time won't have it in the plan
-        //    — surface that as NotFound so the evaluator's on_error
-        //    semantics kick in.
+        // Resolve the plugin's token.delegate entry out of
+        // `self.plan.delegation_entries`. Routes that don't reference this
+        // plugin in `pre_invocation:` / `post_invocation:` at compile time
+        // won't have an entry there — surface that as NotFound so the
+        // evaluator's on_error semantics kick in.
         let entry = self
             .plan
             .delegation_entries
@@ -106,15 +106,14 @@ impl DelegationInvoker for DelegationPluginInvoker {
             .ok_or_else(|| DelegationError::NotFound(step.plugin_name.clone()))?
             .clone();
 
-        // 2. Snapshot extensions to construct the payload + pass into
-        //    invoke_entries. We keep the canonical copy under the
-        //    Mutex; this snapshot is the per-call working copy.
+        // Snapshot extensions to construct the payload and pass into
+        // invoke_entries. The canonical copy stays under the Mutex; this
+        // snapshot is the per-call working copy.
         let current_extensions = self.extensions.lock().await.clone();
 
-        // 3. Pull the inbound bearer token from raw_credentials. v0
-        //    looks for the User-role token; future iterations can
-        //    surface multi-token selection (Client / Workload) via
-        //    step config.
+        // Pull the inbound bearer token from raw_credentials. Looks for
+        // the User-role token; future iterations can surface multi-token
+        // selection (Client / Workload) via step config.
         let bearer_token = current_extensions
             .raw_credentials
             .as_ref()
@@ -122,17 +121,14 @@ impl DelegationInvoker for DelegationPluginInvoker {
             .map(|tok| (*tok.token).clone())
             .unwrap_or_default();
 
-        // 4. Read step args. Step `config_override` is a yaml map per
-        //    the IR — we extract a few well-known keys onto the typed
-        //    DelegationPayload builders. Unknown keys still flow
-        //    through to the plugin via the per-call config-override
-        //    pathway at registration time (already applied when the
-        //    plan was built — plugins consume them from their
-        //    `cfg.config`). For Slice B we keep this mapping minimal:
-        //    `target` is required (delegation needs to know who the
-        //    downstream call is for); `audience`, `permissions`,
-        //    `mode`, `auth_enforced_by` are recognized; everything
-        //    else stays opaque.
+        // Read step args. Step `config_override` is a yaml map per the IR
+        // — extract a few well-known keys onto the typed DelegationPayload
+        // builders. Unknown keys still flow through to the plugin via the
+        // per-call config-override pathway (plugins consume them from
+        // their `cfg.config`). `target` is required (delegation needs to
+        // know who the downstream call is for); `audience`, `permissions`,
+        // `mode`, `auth_enforced_by` are recognized; everything else stays
+        // opaque.
         let cfg = step.config_override.as_ref().and_then(|v| v.as_mapping());
 
         let target_name: String = cfg

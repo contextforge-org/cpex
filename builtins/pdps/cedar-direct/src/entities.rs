@@ -193,10 +193,6 @@ pub fn build_resource(
     })
 }
 
-// =====================================================================
-// Helpers
-// =====================================================================
-
 /// Apply the optional namespace to a bare entity type. `Some("Acme")` +
 /// `"User"` → `"Acme::User"`. `None` → `"User"`. Lets operators with
 /// namespaced schemas (`Acme::User`, `Acme::Document`) work without

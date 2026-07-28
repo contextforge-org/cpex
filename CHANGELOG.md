@@ -13,7 +13,25 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/).
 > - **Fixed**: for any bug fixes.
 > - **Security**: in case of vulnerabilities.
 
-## [Unreleased]
+## [0.2.2] - 2026-07-15
+
+### Added
+
+- **Human-in-the-loop (HIL) elicitation for APL.** A policy can pause an operation to ask a human — manager approval, a confirm, a step-up re-auth, an attestation — and resume once the human responds, without blocking the request path. Sugar verbs (`require_approval` / `confirm` / `require_step_up` / `require_attestation` / `request_info` / `require_review`) desugar to one `Step::Elicit`, resolved by name to an `ElicitationHandler` plugin exactly like `delegate(...)`. While the human hasn't answered, the phase *suspends* (`Decision` stays `Allow` with a pending bundle) and the host emits JSON-RPC `-32120` so the agent retries by echoing the elicitation id; expiry, channel error, denial, or a failed validation fail closed (default `on_error: deny`). The approval is bound to the live request args via an APL `scope:` expression (`args.amount <= 25000`) the runtime checks at resolution — never an LLM summary. Ships a working Keycloak **CIBA** channel plugin (`kind: elicitation/ciba`, in `cpex-builtins` default features). See [Elicitation]({{< relref "/docs/apl/elicitation" >}}). (#115)
+
+### Changed
+
+- **`read_headers` granted to every synthetic policy handler.** The entity-less HTTP catch-all, per-entity routes (tool/prompt/resource), and defaults are now all granted the `read_headers` capability at install time, so `http.*` request attributes (`http.method` / `http.path` / `http.host` / `http.scheme` / `http.request_headers.*`) are available to policy evaluation wherever the host attaches an `HttpExtension`. Previously only the `global` HTTP catch-all had it, so a per-entity rule could not read the HTTP request line. This lets one policy combine `http.*` with entity/`args.*` predicates in a single evaluation (e.g. an MCP tool route that also gates on `http.method`). It is a no-op for hosts that never populate the HTTP extension — there is nothing to read — and `http.host` continues to be sourced from a validated request authority, never a raw client `Host` header.
+- **APL order comparisons now coerce numeric-looking strings.** `numeric_compare` parses string operands as `f64` for order operators (`>`, `>=`, `<`, `<=`), so `args.amount > 10000` fires when the arg arrives as the string `"25000"` — as LLM tool arguments routinely do. This affects **all** order comparisons in the engine, not just elicitation `scope:` bindings: a comparison that previously returned `false` because one side was a numeric string may now evaluate numerically. Equality (`==`) is unchanged, and genuinely non-numeric strings still don't order-compare (they yield `false`, per spec §2.3). (#115)
+
+## [0.2.1] - 2026-07-14
+
+### Added
+
+- **HTTP request-line attributes.** `HttpExtension` now carries optional `method` / `path` / `host` / `scheme`, surfaced in the APL attribute bag as `http.method` / `http.path` / `http.host` / `http.scheme` so CEL/APL predicates can reason over the HTTP request line. They ride the existing `read_headers` capability (the `http` extension slot is gated as a whole). `http.host` must be populated from a validated request authority (e.g. HTTP/2 `:authority`), never a raw client `Host` header, so host-based policy cannot be spoofed.
+- **Custom denial response (`response:` block).** A route — or `global` — may declare a custom HTTP `status` / `body` / `headers` for its denials via a `response:` block (a sibling of `authorization:`). On a deny, these are carried on `PluginViolation.details` (`http.status` / `http.body` / `http.headers`) for the host to render; absent, the host default is unchanged. No new APL grammar and no new `PluginViolation` fields. It is scope-local: a `global` response is not inherited by entity routes, and the block warns (inert) at `defaults` / policy-bundle scope.
+- **Entity-less HTTP authorization.** The catch-all `global` policy now authorizes generic (non-MCP/A2A) HTTP requests that carry no entity, via new reserved coordinates (`http` / `*`) and the `cmf.http_request` hook. A host fires `cmf.http_request` with those coordinates; the global `authorization` (or `args`) block is evaluated with `read_headers` granted, and a global `response:` decorates the denial. Fail-closed session-store denials carry the response too.
+- **Python bindings (PyO3).** Native `cpex` Python package wrapping the cpex-core `PluginManager`, built with maturin/PyO3. ([#70](https://github.com/contextforge-org/cpex/pull/70))
 
 ### Changed
 
@@ -23,6 +41,8 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/).
   - `post_policy:` → `authorization.post_invocation:` (or flat `post_invocation:`)
 
   The two authorization phases may be written either nested under an `authorization:` block or flat directly on the section; the forms are equivalent. The field-pipeline keys `args:` / `result:` are unchanged (they stay aligned with the `args.*` / `result.*` attribute namespaces that predicates and interpolation read). Internal APL IR is unchanged. (#105)
+
+- **Canonical APL config shape in docs.** All documentation, the README, and the bundled examples now use one canonical shape — no `apl:` wrapper, with `authentication:` and `authorization:` as sibling blocks (`pre_invocation:` / `post_invocation:` nested under `authorization:`; `args:` / `result:` / `pdp:` / `session_store:` / `response:` as siblings). Both the `apl:` wrapper and the wrapper-free form remain accepted by the parser; this only standardizes the examples authors copy from.
 
 ## [0.2.0] - 2026-06-26
 
@@ -73,7 +93,8 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/).
 
 - Initial release
 
-[Unreleased]: https://github.com/contextforge-org/cpex/compare/0.2.0...HEAD
+[Unreleased]: https://github.com/contextforge-org/cpex/compare/0.2.1...HEAD
+[0.2.1]: https://github.com/contextforge-org/cpex/compare/0.2.0...0.2.1
 [0.2.0]: https://github.com/contextforge-org/cpex/compare/0.1.1...0.2.0
 [0.1.1]: https://github.com/contextforge-org/cpex/compare/0.1.0...0.1.1
 [0.1.0]: https://github.com/contextforge-org/cpex/releases/tag/0.1.0

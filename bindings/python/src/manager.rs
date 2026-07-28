@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Authors: Ted Habeck
 //
-// `PyPluginManager` — PyO3 wrapper around `cpex_core::PluginManager` (R1, R3, KD4).
+// `PyPluginManager` — PyO3 wrapper around `cpex_core::PluginManager`.
 //
 // Construction is synchronous; lifecycle methods (`initialize`, `shutdown`,
 // `invoke_hook`) are returned as Python awaitables via `future_into_py`.
@@ -14,7 +14,7 @@
 //   [GIL re-acq.] pipeline_result_to_py
 //
 // BackgroundTasks are dropped (not awaited per call); fire-and-forget tasks
-// run on the manager's TaskTracker and are drained by `shutdown()` (KD4).
+// run on the manager's TaskTracker and are drained by `shutdown()`.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -34,7 +34,7 @@ use crate::error::plugin_error_to_pyerr;
 use crate::result::pipeline_result_to_py;
 
 /// Wall-clock timeout for every async call through the PyO3 boundary.
-/// Mirrors `FFI_WALL_CLOCK_TIMEOUT` in cpex-ffi (KD7).
+/// Mirrors `FFI_WALL_CLOCK_TIMEOUT` in cpex-ffi.
 const PY_WALL_CLOCK_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[pyclass(name = "PluginManager")]
@@ -95,7 +95,7 @@ impl PyPluginManager {
         })
     }
 
-    /// Shut down all registered plugins and drain fire-and-forget tasks (KD4).
+    /// Shut down all registered plugins and drain fire-and-forget tasks.
     ///
     /// Returns an awaitable (coroutine).
     fn shutdown<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
@@ -132,7 +132,7 @@ impl PyPluginManager {
     ///   `ValueError`     — payload/extensions/context conversion failure,
     ///                      or depth > 128.
     ///   `RuntimeError`   — plugin execution error or panic at the boundary.
-    ///   `TimeoutError`   — wall-clock timeout exceeded (KD7).
+    ///   `TimeoutError`   — wall-clock timeout exceeded.
     #[pyo3(signature = (hook_name, payload, extensions=None, context_table=None))]
     fn invoke_hook<'py>(
         &self,
@@ -142,7 +142,6 @@ impl PyPluginManager {
         extensions: Option<&Bound<'_, PyAny>>,
         context_table: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Bound<'py, PyAny>> {
-        // --- GIL held: convert all arguments ---
         let payload_value = pyobj_to_json_value(py, payload, 0)?;
         let rust_payload = resolve_payload(hook_name, payload_value)?;
 
@@ -161,7 +160,7 @@ impl PyPluginManager {
         let manager = Arc::clone(&self.inner);
         let hook_name = hook_name.to_string();
 
-        // --- GIL released: async execution with wall-clock timeout (KD7) ---
+        // GIL released: async execution with wall-clock timeout.
         // future_into_py catches panics via tokio's JoinHandle and converts them
         // to pyo3_async_runtimes.RustPanic (a PyException subclass). To keep the
         // documented interface consistent — the docstring promises RuntimeError —
@@ -182,10 +181,6 @@ impl PyPluginManager {
         )
     }
 }
-
-// ---------------------------------------------------------------------------
-// Async helper — extracted so tests can inject a short timeout
-// ---------------------------------------------------------------------------
 
 /// Drives a single `invoke_by_name` call with an isolated tokio task (panic
 /// capture) and a wall-clock timeout, returning a Python-compatible result.
@@ -239,10 +234,6 @@ pub(crate) async fn invoke_with_timeout(
     }
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-//
 // These tests exercise the tokio::spawn + JoinError::is_panic() panic-catching
 // path without requiring a live Python interpreter. They run under plain
 // `cargo test -p cpex-python` (cdylibs produce a separate test binary that
@@ -251,7 +242,6 @@ pub(crate) async fn invoke_with_timeout(
 // The test mirrors the FFI crate's `cpex_invoke_returns_rc_panic_when_plugin_panics`
 // pattern: register a plugin that unconditionally panics, invoke it, verify the
 // panic is caught and surfaced as a JoinError rather than aborting the process.
-
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;

@@ -17,7 +17,7 @@ pub enum BuildError {
     #[error("invalid valkey session_store config: {0}")]
     Config(String),
 
-    /// TLS is mandatory for any non-localhost endpoint (R10): session
+    /// TLS is mandatory for any non-localhost endpoint: session
     /// security labels must not transit a network segment in plaintext.
     #[error(
         "valkey session_store requires TLS for non-localhost endpoint '{0}' \

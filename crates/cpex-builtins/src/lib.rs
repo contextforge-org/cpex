@@ -34,10 +34,6 @@ use apl_core::step::PdpFactory;
 use apl_cpex::{register_apl, AplOptions, SessionStoreFactory};
 use cpex_core::manager::PluginManager;
 
-// -----------------------------------------------------------------------------
-// Feature-gated re-exports of each builtin's factory + KIND
-// -----------------------------------------------------------------------------
-
 #[cfg(feature = "cedar-direct")]
 pub use cpex_pdp_cedar_direct::CedarDirectPdpFactory;
 #[cfg(feature = "cel")]
@@ -46,16 +42,14 @@ pub use cpex_pdp_cel::CelPdpFactory;
 pub use cpex_plugin_audit_logger::{AuditLoggerFactory, KIND as AUDIT_KIND};
 #[cfg(feature = "delegator-oauth")]
 pub use cpex_plugin_delegator_oauth::{OAuthDelegatorFactory, KIND as OAUTH_KIND};
+#[cfg(feature = "elicitation-ciba")]
+pub use cpex_plugin_elicitation_ciba::{CibaApproverFactory, KIND as CIBA_KIND};
 #[cfg(feature = "identity-jwt")]
 pub use cpex_plugin_identity_jwt::{JwtIdentityFactory, KIND as JWT_KIND};
 #[cfg(feature = "pii-scanner")]
 pub use cpex_plugin_pii_scanner::{PiiScannerFactory, KIND as PII_KIND};
 #[cfg(feature = "valkey")]
 pub use cpex_session_valkey::{ValkeyConfig, ValkeySessionStoreFactory, KIND as VALKEY_KIND};
-
-// -----------------------------------------------------------------------------
-// Plugin-factory registration (by-kind axis)
-// -----------------------------------------------------------------------------
 
 /// Generate [`register_builtins`] from a feature → factory table. Each entry
 /// expands to a `#[cfg(feature = ...)]`-gated, **explicit**
@@ -88,15 +82,12 @@ macro_rules! register_builtins {
 }
 
 register_builtins! {
-    feature "identity-jwt"    => cpex_plugin_identity_jwt::JwtIdentityFactory,
-    feature "delegator-oauth" => cpex_plugin_delegator_oauth::OAuthDelegatorFactory,
-    feature "pii-scanner"     => cpex_plugin_pii_scanner::PiiScannerFactory,
-    feature "audit-logger"    => cpex_plugin_audit_logger::AuditLoggerFactory,
+    feature "identity-jwt"     => cpex_plugin_identity_jwt::JwtIdentityFactory,
+    feature "delegator-oauth"  => cpex_plugin_delegator_oauth::OAuthDelegatorFactory,
+    feature "elicitation-ciba" => cpex_plugin_elicitation_ciba::CibaApproverFactory,
+    feature "pii-scanner"      => cpex_plugin_pii_scanner::PiiScannerFactory,
+    feature "audit-logger"     => cpex_plugin_audit_logger::AuditLoggerFactory,
 }
-
-// -----------------------------------------------------------------------------
-// PDP-factory and session-store axes
-// -----------------------------------------------------------------------------
 
 /// The enabled PDP factories, ready to drop into
 /// [`AplOptions::pdp_factories`]. A route's `cedar:` or `cel:` step selects
@@ -127,10 +118,6 @@ pub fn builtin_session_store_factories() -> Vec<Arc<dyn SessionStoreFactory>> {
     factories
 }
 
-// -----------------------------------------------------------------------------
-// One-call install
-// -----------------------------------------------------------------------------
-
 /// Register every enabled plugin factory and install the APL config visitor
 /// on `mgr` with in-process defaults (a `MemorySessionStore` and the default
 /// baseline capabilities). The enabled PDP and session-store factories are
@@ -148,10 +135,6 @@ pub fn install_builtins(mgr: &Arc<PluginManager>) {
 
     let _visitor = register_apl(mgr, opts);
 }
-
-// -----------------------------------------------------------------------------
-// Tests
-// -----------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {

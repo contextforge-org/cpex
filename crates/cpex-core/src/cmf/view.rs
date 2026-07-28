@@ -19,10 +19,6 @@ use super::enums::{ContentType, Role};
 use super::message::Message;
 use crate::hooks::payload::Extensions;
 
-// ---------------------------------------------------------------------------
-// Enums
-// ---------------------------------------------------------------------------
-
 /// Type of content a view represents.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -124,10 +120,6 @@ impl ViewKind {
         matches!(self, ViewKind::Text | ViewKind::Thinking)
     }
 }
-
-// ---------------------------------------------------------------------------
-// MessageView
-// ---------------------------------------------------------------------------
 
 /// Read-only, zero-copy view over a single content part.
 ///
@@ -531,10 +523,6 @@ impl<'a> std::fmt::Debug for MessageView<'a> {
             .finish()
     }
 }
-
-// ---------------------------------------------------------------------------
-// iter_views — decompose a Message into views
-// ---------------------------------------------------------------------------
 
 /// Decompose a Message into individually addressable MessageViews.
 ///

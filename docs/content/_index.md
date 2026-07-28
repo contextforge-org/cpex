@@ -12,7 +12,7 @@ CPEX is a deterministic reference monitor between an agent and every capability 
 
 CPEX composes authorization, delegation, redaction, information-flow tracking, and auditing into a single policy-defined pipeline. Each capability an agent can invoke defines its own enforcement pipeline; APL is the configuration that defines it, executed in two phases: before the operation and after its result.
 
-![CPEX mediates every operation an untrusted LLM triggers, evaluating APL policy against identity, delegation, taint, and audit state the model cannot forge](/cpex/images/cpex_overview.png)
+![CPEX mediates every operation an untrusted LLM triggers, evaluating APL policy against identity, delegation, taint, and audit state the model cannot forge](images/cpex_overview.png)
 
 Existing authorization systems (RBAC, ABAC, Cedar, OPA, AuthZEN) answer whether a request should be allowed. CPEX answers a broader question: what security pipeline should execute for this agent operation. It invokes those engines for the decision and enforces the result.
 

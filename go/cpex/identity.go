@@ -11,9 +11,9 @@
 //	idp := cpex.NewIdentityPayload(cpex.TokenSourceBearer, headers)
 //	res, ct, bg, err := mgr.InvokeByName(
 //	    cpex.HookIdentityResolve, cpex.PayloadIdentity, idp, ext, nil)
-//	// On success the resolved IdentityPayload comes back as res.ModifiedPayload.
+//	// On success res.ModifiedPayload holds the resolved IdentityPayload.
 //	resolved, _ := cpex.DeserializePayload[cpex.IdentityPayload](res)
-//	// resolved.Subject now carries roles / permissions / teams.
+//	// resolved.Subject carries roles / permissions / teams.
 //
 // The resolved Subject / Client / RawCredentials are then applied onto
 // the Extensions passed to the downstream tool/prompt/resource hook so
@@ -29,15 +29,15 @@ import "github.com/vmihailenco/msgpack/v5"
 // crates/cpex-core/src/identity/hook.rs.
 const HookIdentityResolve = "identity.resolve"
 
-// TokenSource values — where a credential was extracted from. Wire form
+// TokenSource values identify where a credential comes from. Wire form
 // is snake_case to match the Rust TokenSource enum
 // (#[serde(rename_all = "snake_case")]).
 const (
-	TokenSourceBearer       = "bearer"
-	TokenSourceUserToken    = "user_token"
-	TokenSourceMTLS         = "mtls"
+	TokenSourceBearer        = "bearer"
+	TokenSourceUserToken     = "user_token"
+	TokenSourceMTLS          = "mtls"
 	TokenSourceSpiffeJwtSvid = "spiffe_jwt_svid"
-	TokenSourceAPIKey       = "api_key"
+	TokenSourceAPIKey        = "api_key"
 )
 
 // IdentityPayload mirrors the Rust IdentityPayload. Input fields
@@ -55,14 +55,12 @@ const (
 // them onto the next hook's Extensions without the bindings needing a
 // typed mirror of every Rust extension.
 type IdentityPayload struct {
-	// ----- Input -----
 	Source       string            `msgpack:"source"`
 	SourceHeader string            `msgpack:"source_header,omitempty"`
 	Headers      map[string]string `msgpack:"headers,omitempty"`
 	ClientHost   string            `msgpack:"client_host,omitempty"`
 	ClientPort   uint16            `msgpack:"client_port,omitempty"`
 
-	// ----- Output -----
 	Subject        *SubjectExtension  `msgpack:"subject,omitempty"`
 	Client         msgpack.RawMessage `msgpack:"client,omitempty"`
 	CallerWorkload msgpack.RawMessage `msgpack:"caller_workload,omitempty"`

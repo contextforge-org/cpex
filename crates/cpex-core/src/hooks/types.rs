@@ -18,10 +18,6 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-// ---------------------------------------------------------------------------
-// Hook Type
-// ---------------------------------------------------------------------------
-
 /// A named hook point in the host's execution lifecycle.
 ///
 /// Wraps a string identifier. Hook types are open — hosts register
@@ -75,12 +71,6 @@ impl From<String> for HookType {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Built-in Hook String Constants
-// ---------------------------------------------------------------------------
-// Canonical string names for built-in hooks. Use these with
-// HookType::new() or pass them directly to APIs that accept &str.
-
 /// Legacy hook names — typed payloads (ToolPreInvokePayload, etc.).
 pub mod hook_names {
     // Tool lifecycle
@@ -120,10 +110,6 @@ pub mod cmf_hook_names {
     pub const RESOURCE_PRE_FETCH: &str = "cmf.resource_pre_fetch";
     pub const RESOURCE_POST_FETCH: &str = "cmf.resource_post_fetch";
 }
-
-// ---------------------------------------------------------------------------
-// Built-in hook type helpers
-// ---------------------------------------------------------------------------
 
 /// Returns all built-in hook types with their canonical string values.
 ///

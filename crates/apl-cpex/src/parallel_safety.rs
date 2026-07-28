@@ -187,10 +187,6 @@ fn is_safe_in_parallel(mode: PluginMode) -> bool {
     )
 }
 
-// =====================================================================
-// Tests
-// =====================================================================
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -236,8 +232,6 @@ mod tests {
         Effect::Parallel(vec![Effect::Plugin { name: name.into() }])
     }
 
-    // --- Allowed modes ---
-
     #[test]
     fn audit_plugin_in_parallel_is_accepted() {
         let reg = MockLookup::new().with("audit_logger", PluginMode::Audit);
@@ -258,8 +252,6 @@ mod tests {
         let route = route_with_policy(vec![rule(vec![parallel_plugin("metrics")])]);
         assert!(validate_parallel_plugin_modes(&route, &reg).is_ok());
     }
-
-    // --- Rejected modes ---
 
     #[test]
     fn sequential_plugin_in_parallel_is_rejected() {
@@ -288,8 +280,6 @@ mod tests {
         assert!(err.contains("ghost"));
     }
 
-    // --- Scoping: only mismatches INSIDE a parallel block are caught ---
-
     #[test]
     fn sequential_plugin_outside_parallel_is_allowed() {
         // The same Sequential-mode plugin is fine at the top level —
@@ -315,8 +305,6 @@ mod tests {
         let err = validate_parallel_plugin_modes(&route, &reg).unwrap_err();
         assert!(err.contains("mutator"));
     }
-
-    // --- Diagnostics: every violation, both phases ---
 
     #[test]
     fn multiple_violations_all_reported() {

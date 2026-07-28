@@ -25,7 +25,7 @@
 // When APL declares a route-level `plugins.<name>:` block that narrows
 // `capabilities` or changes `on_error`, the plan creates a derived
 // `PluginRef` wrapping the same plugin `Arc<dyn Plugin>` with a merged
-// `TrustedConfig`. Per `feedback_override_isolation.md`: each derived
+// `TrustedConfig`. Each derived
 // PluginRef gets a fresh `AtomicBool` circuit breaker — failures in the
 // override-context plugin don't disable the base, and vice versa.
 //
@@ -44,6 +44,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 
 use cpex_core::delegation::HOOK_TOKEN_DELEGATE;
+use cpex_core::elicitation::HOOK_ELICIT;
 use cpex_core::hooks::{lookup_hook_metadata, HookPhase};
 use cpex_core::manager::PluginManager;
 use cpex_core::plugin::OnError;
@@ -119,6 +120,12 @@ pub struct RouteDispatchPlan {
     /// no delegation. Built at plan time to avoid per-request
     /// `find_plugin_entries` lookups in the hot path.
     pub delegation_entries: HashMap<String, HookEntry>,
+    /// Plugin name → resolved `elicit` hook entry for routes that
+    /// declared `require_approval(...)` / `confirm(...)` / … steps. Same
+    /// `name → entry` shape as `delegation_entries` — elicitation routes
+    /// by plugin name, not by `(kind, channel)`. Empty when the route has
+    /// no elicitation.
+    pub elicitation_entries: HashMap<String, HookEntry>,
 }
 
 impl RouteDispatchPlan {
@@ -215,10 +222,10 @@ impl RouteDispatchPlan {
         // step/field classification — they're a separate hook family.
         // We still apply per-call config overrides via the existing
         // `build_override_entries` pathway, threading the step's
-        // `config_override` as the only override surface (Slice B
-        // doesn't expose per-step caps or on_error overrides on
-        // delegation entries — the on_error lives in the IR step
-        // itself and is honored by the evaluator).
+        // `config_override` as the only override surface (per-step
+        // caps and on_error overrides aren't exposed on delegation
+        // entries — the on_error lives in the IR step itself and is
+        // honored by the evaluator).
         for name in collect_delegate_plugin_names(route) {
             let entries = manager
                 .build_override_entries(&name, None, None, None)
@@ -238,6 +245,30 @@ impl RouteDispatchPlan {
                     route = %route.route_key,
                     "APL route references delegate plugin not registered under \
                      token.delegate hook — `delegate(...)` step will fail at dispatch",
+                );
+            }
+        }
+
+        // Resolve `elicit` entries for any plugins the route calls via an
+        // elicitation verb (`require_approval(...)`, `confirm(...)`, …).
+        // Same `name → entry` resolution as delegation — elicitation
+        // routes by plugin name, not `(kind, channel)`.
+        for name in collect_elicit_plugin_names(route) {
+            let entries = manager
+                .build_override_entries(&name, None, None, None)
+                .await;
+            let elicit_entry = entries
+                .into_iter()
+                .find(|(hook_name, _)| hook_name == HOOK_ELICIT);
+            if let Some((_, entry)) = elicit_entry {
+                plan.elicitation_entries.insert(name, entry);
+            } else {
+                tracing::warn!(
+                    plugin = %name,
+                    route = %route.route_key,
+                    "APL route references elicitation plugin not registered under \
+                     elicit hook — `require_approval(...)`/`confirm(...)` step will \
+                     fail at dispatch",
                 );
             }
         }
@@ -286,8 +317,8 @@ fn parse_on_error(s: &str) -> Option<OnError> {
 /// `visit` on each. Used by `collect_*_names` below to find Plugin /
 /// Delegate references that may be nested inside `Effect::When`,
 /// `Effect::Sequential`, `Effect::Parallel`, or `Effect::Pdp` reaction
-/// lists. Pre-E4 these were flat — Step::Plugin lived directly under
-/// policy: — so a simple iter() was enough; after E4 the IR is tree-
+/// lists. Previously these were flat — Step::Plugin lived directly under
+/// policy: — so a simple iter() was enough; now the IR is tree-
 /// shaped and the same scan needs recursion.
 fn walk_effects<F: FnMut(&Effect)>(effects: &[Effect], visit: &mut F) {
     for e in effects {
@@ -320,6 +351,27 @@ pub(crate) fn collect_delegate_plugin_names(route: &CompiledRoute) -> Vec<String
         if let Effect::Delegate(ds) = e {
             if seen.insert(ds.plugin_name.clone()) {
                 out.push(ds.plugin_name.clone());
+            }
+        }
+    };
+    walk_effects(&route.policy, &mut visit);
+    walk_effects(&route.post_policy, &mut visit);
+    out
+}
+
+/// Walk a `CompiledRoute` and return the unique elicitation-plugin names
+/// referenced by any `Effect::Elicit` anywhere in `policy` /
+/// `post_policy` (including nested). Insertion-ordered for build
+/// determinism. Separate from [`collect_plugin_names`] because
+/// elicitation plugins resolve under the `elicit` hook family and the
+/// plan keeps them in their own map.
+pub(crate) fn collect_elicit_plugin_names(route: &CompiledRoute) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut visit = |e: &Effect| {
+        if let Effect::Elicit(es) = e {
+            if seen.insert(es.plugin_name.clone()) {
+                out.push(es.plugin_name.clone());
             }
         }
     };
@@ -400,6 +452,26 @@ pub(crate) fn route_capability_union(
                 caps.insert(cap.clone());
             }
         }
+    }
+    // Elicitation steps (`require_approval(name, ...)`, …) — same reason
+    // as delegation: an elicitation handler that declares e.g.
+    // `read_subject` (to read the approver identity) must not have it
+    // stripped at the AplRouteHandler boundary.
+    let elicit_plugins = collect_elicit_plugin_names(route);
+    for name in &elicit_plugins {
+        if let Some(eff) = EffectivePlugin::resolve(name, registry, &route.plugin_overrides) {
+            for cap in eff.capabilities.as_slice() {
+                caps.insert(cap.clone());
+            }
+        }
+    }
+    // A route with an elicitation step needs `read_headers` on the synthetic
+    // handler so the `X-Policy-Elicitation-Id` retry header survives the
+    // capability filter and reaches the bag (Phase 5 retry-seeding). Without
+    // it, the `http` extension is stripped before the handler reads it and
+    // every retry re-dispatches a fresh elicitation instead of checking.
+    if !elicit_plugins.is_empty() {
+        caps.insert("read_headers".to_string());
     }
     caps
 }

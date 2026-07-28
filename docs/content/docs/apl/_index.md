@@ -7,7 +7,7 @@ weight: 30
 
 APL is the declarative configuration that defines a CPEX enforcement pipeline. Each capability an agent can invoke (a tool, resource, prompt, or A2A method) defines its own pipeline through a **route** that sequences the controls protecting it, evaluated at the boundary. You describe the conditions and the effects; you do not write enforcement logic in application code.
 
-![An APL config: plugins and global settings, then per-entity routes with a pre-invocation flow (require, PDP, delegate, run) and post-invocation result handling (taint, redact), plus session tainting across entities](/cpex/images/apl_overview.png)
+![An APL config: plugins and global settings, then per-entity routes with a pre-invocation flow (require, PDP, delegate, run) and post-invocation result handling (taint, redact), plus session tainting across entities](images/apl_overview.png)
 
 This page covers the configuration: routes, phases, predicates, rules, and field pipelines. The rest of this section goes deeper on each kind of policy:
 
@@ -16,6 +16,7 @@ This page covers the configuration: routes, phases, predicates, rules, and field
 - [Identity & IdP]({{< relref "/docs/apl/identity" >}}): how callers are resolved into the attributes predicates read.
 - [Static Attributes]({{< relref "/docs/apl/attributes" >}}): operator-maintained config facts in the `data.*` namespace.
 - [Delegation]({{< relref "/docs/apl/delegation" >}}): mint scoped downstream credentials via token exchange.
+- [Elicitation]({{< relref "/docs/apl/elicitation" >}}): pause an operation for human approval and resume on retry.
 - [Session Tainting]({{< relref "/docs/apl/tainting" >}}): information-flow control across requests.
 - [Backend Restriction]({{< relref "/docs/apl/restrict" >}}): shape which backends the router may select for a request.
 
@@ -23,10 +24,7 @@ This page covers the configuration: routes, phases, predicates, rules, and field
 
 Policy is organized by **route**: an operation CPEX mediates, identified by the tool, A2A method, or other interface it governs. Each route runs through four phases, in order:
 
-```mermaid
-flowchart LR
-  ARGS["args<br>validate / transform input"] --> POL["authorization.pre_invocation<br>authorize"] --> RES["result<br>transform output"] --> POST["authorization.post_invocation<br>audit / final checks"]
-```
+![The four route phases in order: args validates and transforms input, authorization.pre_invocation authorizes, result redacts and masks output, and authorization.post_invocation runs audit and final checks; the first deny in any phase halts that phase and every later one](images/apl_phases.png)
 
 - **args**: validate and transform request inputs before the operation runs.
 - **authorization.pre_invocation**: authorize the operation. Predicates, PDP calls, delegation, tainting.
@@ -35,7 +33,7 @@ flowchart LR
 
 The first `deny` in any phase halts that phase and every later phase. Nothing reaches the backend after a deny in `args` or `authorization.pre_invocation`.
 
-`authorization` names *when* the phase runs, not a pure allow/deny gate: alongside the decision, `pre_invocation` (and `post_invocation`) can carry obligations and effects — `taint(...)`, `delegate(...)`, and `plugin(...)` (which may transform the payload) — that run as part of the phase. If you find the `authorization:` label too narrow, the equivalent flat `pre_invocation:` / `post_invocation:` keys name the phase by timing instead.
+`authorization` names *when* the phase runs, not a pure allow/deny gate: alongside the decision, `pre_invocation` (and `post_invocation`) can carry obligations and effects — `taint(...)`, `delegate(...)`, and `plugin(...)` (which may transform the payload) — that run as part of the phase.
 
 ```yaml
 routes:
@@ -100,6 +98,42 @@ For richer conditionals, use the `when` / `do` form, where `do` is a single effe
     - "taint(restricted, session)"
     - "plugin(audit-log)"
 ```
+
+## Custom denial response
+
+By default a deny surfaces a reason and code, and the host renders its own denial. A route can instead attach a custom HTTP response — status, body, headers — through a `response:` block, a sibling of the route's `authorization:` block:
+
+```yaml
+routes:
+  - tool: locked
+    authorization:
+      pre_invocation:
+        - "require(authenticated)"
+    response:
+      status: 403
+      body: "{\"error\":\"forbidden\"}"
+      headers:
+        WWW-Authenticate: "Bearer"
+```
+
+All three fields are optional; an absent block leaves the host's default denial unchanged. When the route denies, the status/body/headers are carried on the violation for the host to render on the wire. `response:` is honored at route scope and at `global` scope (below); it is inert — and warns at load time — under `defaults` or a policy bundle. It is scope-local: a `global` `response:` is not inherited by entity routes.
+
+## Authorizing HTTP requests without an entity
+
+Routes key on an MCP / A2A entity — a tool, prompt, resource, or LLM. A generic HTTP request that carries no such entity is authorized by the `global` policy instead: when `global` declares an `authorization:` (or `args:`) block, CPEX evaluates it for these requests, reading the request line (`http.method`, `http.path`, `http.host`, `http.scheme`) and headers. Pair it with a `global` `response:` to return a custom denial.
+
+```yaml
+global:
+  authorization:
+    pre_invocation:
+      - "http.method != 'GET': deny"
+  response:
+    status: 405
+    headers:
+      Allow: "GET"
+```
+
+The host must populate `http.host` from a validated request authority, never a raw client `Host` header, so host-based predicates cannot be spoofed by the caller.
 
 ## Field pipelines
 

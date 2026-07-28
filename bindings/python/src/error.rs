@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Authors: Ted Habeck
 //
-// Maps Rust PluginError variants to Python exception types (R2, KD9).
+// Maps Rust PluginError variants to Python exception types.
 
 use cpex_core::error::PluginError;
 use pyo3::exceptions::{PyRuntimeError, PyTimeoutError, PyValueError};
@@ -11,7 +11,7 @@ use pyo3::PyErr;
 
 /// Convert a `Box<PluginError>` into the appropriate Python exception.
 ///
-/// Mapping (per C2, KD9):
+/// Mapping:
 ///   Config / UnknownHook → `ValueError`   (config/conversion failures)
 ///   Timeout              → `TimeoutError`
 ///   Execution / other    → `RuntimeError`
@@ -36,7 +36,7 @@ pub fn plugin_error_to_pyerr(e: Box<PluginError>) -> PyErr {
         } => PyTimeoutError::new_err(format!(
             "cpex plugin '{plugin_name}' timed out after {timeout_ms}ms"
         )),
-        // Violation is dead on the invoke_by_name path (KD9); treat defensively.
+        // Violation is dead on the invoke_by_name path; treat defensively.
         PluginError::Violation {
             plugin_name,
             violation,

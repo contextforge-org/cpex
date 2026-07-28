@@ -123,14 +123,15 @@ jobs:
       # every publishable member without uploading. Catches publishability
       # regressions (missing version reqs, packaging-excluded files, broken
       # inter-crate deps) on every push/PR, long before a release tag. Mirrors
-      # `make publish-dry` and the release workflow's dry-run. The two
-      # `publish = false` FFI crates are excluded (not part of the registry set).
+      # `make publish-dry` and the release workflow's dry-run. The
+      # `publish = false` crates are excluded (not part of the registry set):
+      # the two FFI crates and the tutorial companion crate.
       - name: cargo package (no upload)
         run: |
           # Drop any pre-seeded registry index/cache so cargo fetches fresh and
           # --locked resolves against a clean index (see note above).
           rm -rf ~/.cargo/registry/index ~/.cargo/registry/cache
-          cargo package --workspace --locked --exclude cpex-ffi --exclude cpex-demo-ffi
+          cargo package --workspace --locked --exclude cpex-ffi --exclude cpex-demo-ffi --exclude cpex-tutorial
 
   docs:
     name: Docs Build

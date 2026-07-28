@@ -267,8 +267,7 @@ pub struct WorkloadIdentity {
 ///
 /// Carries security labels (monotonic add-only), classification,
 /// up to four distinct identity principals, and data-policy metadata.
-/// The four principal slots map to the identity sources documented in
-/// `docs/specs/delegation-hooks-rust-spec.md` §4.1:
+/// The four principal slots map to the identity sources:
 ///
 /// - `subject` — the *user* (or service-as-user) initiating the request
 /// - `client`  — the *OAuth client / application* brokering the request

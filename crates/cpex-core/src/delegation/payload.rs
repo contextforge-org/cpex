@@ -5,7 +5,7 @@
 //
 // `DelegationPayload` — the unified state struct threaded through the
 // TokenDelegate hook chain. Same input/output split pattern as
-// `IdentityPayload` (slice 2):
+// `IdentityPayload`:
 //
 //   * **Input** (private — host-supplied, never mutated by handlers) —
 //     `bearer_token`, `target_name`, `target_type`, `target_audience`,
@@ -21,7 +21,7 @@
 //
 // # Where this hook fits
 //
-// IdentityResolve (slice 2) is *inbound* — validates the caller's
+// IdentityResolve is *inbound* — validates the caller's
 // credentials at request entry, populates `security.subject` /
 // `security.client` / `security.caller_workload`. TokenDelegate is
 // *outbound* — when a plugin (typically a forwarding proxy) needs to
@@ -34,11 +34,11 @@
 //
 // # Caching
 //
-// Not in this slice. The spec describes a `TokenCacheControl` trait
-// at §9.8 that wraps this hook with `get_or_mint(audience, scopes)`
+// Not implemented yet. The spec describes a `TokenCacheControl` trait
+// that wraps this hook with `get_or_mint(audience, scopes)`
 // semantics — outbound callers ask the trait for a token; the trait
 // hits the cache first and only dispatches through the hook on cache
-// miss. That layer lives one slice later. For now, every
+// miss. That layer comes later. For now, every
 // `mgr.invoke_named::<TokenDelegateHook>(...)` re-runs the chain.
 //
 // # Rejection
@@ -157,7 +157,6 @@ pub struct AttenuationConfig {
 /// clones and return the updated payload).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DelegationPayload {
-    // ----- Input (private — caller-supplied, never mutated by handlers) -----
     /// The caller's current credential — the one a token-exchange
     /// handler will swap for a downstream-scoped credential. Cleared
     /// on drop via `Zeroizing`. `#[serde(skip)]` — never appears in
@@ -194,7 +193,6 @@ pub struct DelegationPayload {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     route_attenuation: Option<AttenuationConfig>,
 
-    // ----- Output (pub — handlers populate via direct assignment on clones) -----
     /// The minted outbound credential. `None` until a handler
     /// produces one. Carries the raw bytes (cleared on drop), the
     /// header the proxy plugin should attach it under, the
@@ -260,8 +258,6 @@ impl DelegationPayload {
         }
     }
 
-    // -------- Input builders --------
-
     pub fn with_target_type(mut self, t: TargetType) -> Self {
         self.target_type = t;
         self
@@ -291,8 +287,6 @@ impl DelegationPayload {
         self.route_attenuation = Some(cfg);
         self
     }
-
-    // -------- Input read accessors --------
 
     /// The caller's bearer token — borrowed, no way to move or
     /// replace the underlying `Zeroizing<String>` through this.
@@ -328,8 +322,6 @@ impl DelegationPayload {
         self.route_attenuation.as_ref()
     }
 
-    // -------- Output helpers --------
-
     /// Layer another payload's *output* fields onto this one's,
     /// following "Some replaces None, last write wins per slot."
     /// Input fields are not touched — the running payload's input
@@ -355,8 +347,6 @@ impl DelegationPayload {
             self.metadata.insert(k, v);
         }
     }
-
-    // -------- Host-side application helpers --------
 
     /// Pull the resolved `DelegationPayload` out of a `PipelineResult`
     /// returned by `mgr.invoke_named::<TokenDelegateHook>(...)`.
@@ -411,7 +401,7 @@ impl DelegationPayload {
 
             // Default to OnBehalfOfUser when the handler didn't
             // populate `delegation_mode`. Backward-compatible with
-            // handlers from sub-step B; future handlers should
+            // earlier handlers; future handlers should
             // populate the field explicitly.
             let mode = self
                 .delegation_mode

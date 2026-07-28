@@ -29,10 +29,6 @@ use crate::hooks::trait_def::{HookHandler, HookTypeDef, PluginResult};
 use crate::plugin::Plugin;
 use crate::registry::AnyHookHandler;
 
-// ---------------------------------------------------------------------------
-// Typed Handler Adapter
-// ---------------------------------------------------------------------------
-
 /// Adapts a typed `HookHandler<H>` into the type-erased `AnyHookHandler`
 /// interface used by the executor.
 ///

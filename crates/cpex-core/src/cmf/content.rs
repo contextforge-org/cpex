@@ -18,10 +18,6 @@ use serde::{Deserialize, Serialize};
 use super::enums::ResourceType;
 use super::message::Message;
 
-// ---------------------------------------------------------------------------
-// Domain Objects
-// ---------------------------------------------------------------------------
-
 /// Normalized tool/function invocation request.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolCall {
@@ -158,10 +154,6 @@ pub struct PromptResult {
     pub error_message: Option<String>,
 }
 
-// ---------------------------------------------------------------------------
-// Media Source Types
-// ---------------------------------------------------------------------------
-
 /// Image source data.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ImageSource {
@@ -222,10 +214,6 @@ pub struct DocumentSource {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
 }
-
-// ---------------------------------------------------------------------------
-// ContentPart — Tagged Enum
-// ---------------------------------------------------------------------------
 
 /// A typed content part in a CMF message.
 ///

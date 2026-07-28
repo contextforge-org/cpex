@@ -125,7 +125,7 @@ pub fn parse<'a>(
 /// Build the CPEX-provided context block (everything under
 /// `context.delegation`, `context.meta`, `context.security`) from the
 /// `AttributeBag`. Operators reason about these in Cedar policies via
-/// the well-known paths documented in `docs/specs/cedar-context-contract.md`.
+/// the well-known paths.
 fn build_cpex_context(bag: &AttributeBag) -> Value {
     let mut root = Map::new();
 

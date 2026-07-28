@@ -1,0 +1,63 @@
+# Module 6, Scoped credentials (Delegation)
+#
+# An agent calling a downstream API should not reuse the caller's full
+# token. It should present a narrower, purpose-scoped credential minted for
+# that one call. CPEX does this with a delegate(...) step: an OAuth 2.0
+# token exchange (RFC 8693) that swaps the caller's token for a downstream
+# token scoped to a specific audience.
+#
+# This route authorizes an HR lookup, then mints a downstream token for the
+# `workday-api` audience before the backend call:
+#
+#   1. require(role.hr)                       gate on role first.
+#   2. delegate(workday-oauth, target: ...)   exchange the caller's token
+#                                              for a workday-api token.
+#   3. require(delegation.granted)            proceed only if the exchange
+#                                              succeeded.
+#
+# The exchange runs against the real Keycloak token endpoint. The gateway
+# client (cpex-gateway) is configured to exchange the caller's token for
+# the workday-api / github-api audiences (see idp/realm-export.json:
+# standard.token.exchange.audiences plus the audience mappers).
+
+plugins:
+  - name: keycloak
+    kind: identity/jwt
+    hooks: [identity.resolve]
+    config:
+      claim_mapper: standard
+      trusted_issuers:
+        - issuer: http://localhost:8081/realms/cpex-tutorial
+          audiences: [cpex-tutorial]
+          algorithms: [RS256]
+          decoding_key:
+            kind: jwks_url
+            url: http://localhost:8081/realms/cpex-tutorial/protocol/openid-connect/certs
+            insecure_http: true
+          leeway_seconds: 60
+
+  - name: workday-oauth
+    kind: delegator/oauth
+    hooks: [token.delegate]
+    # The delegator needs to read the caller's inbound token (to exchange
+    # it) and write the minted downstream token. Declaring these here lets
+    # the route surface them to the enforcement boundary; without them the
+    # inbound token is filtered out before the exchange and it fails.
+    capabilities: [read_inbound_credentials, write_delegated_tokens]
+    config:
+      token_endpoint: http://localhost:8081/realms/cpex-tutorial/protocol/openid-connect/token
+      client_id: cpex-gateway
+      client_secret_source:
+        kind: literal
+        secret: gateway-dev-secret
+      insecure_http: true    # localhost speaks http; never in production
+
+routes:
+  - tool: get_compensation
+    authentication:
+      - keycloak
+    authorization:
+      pre_invocation:
+        - "require(role.hr)"
+        - "delegate(workday-oauth, target: workday-api, audience: workday-api)"
+        - "require(delegation.granted)"

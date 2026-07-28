@@ -45,7 +45,7 @@
 //     this to pick the right entry for the current phase context.
 //
 // Lookup is the foundation for `apl-cpex::dispatch_plan`'s entry
-// selection. See `docs/apl-hook-family-expansion.md` Layer 1.
+// selection.
 //
 // # Phase semantics
 //
@@ -161,10 +161,6 @@ impl HookMetadata {
         }
     }
 }
-
-// =====================================================================
-// Built-in registry
-// =====================================================================
 
 /// Built-in hook metadata. Plugin authors and hosts can register
 /// additional entries via [`register_hook_metadata`]. The 8 CMF step

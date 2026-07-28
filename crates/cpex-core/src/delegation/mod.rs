@@ -9,9 +9,9 @@
 // trait machinery (provided by cpex-core's generic hooks layer)
 // plus the hook-specific payload + result types.
 //
-// Sub-step A scope: data shapes + host helpers — no executor
+// Scope: data shapes + host helpers — no executor
 // wiring (that's free via `mgr.invoke_named::<TokenDelegateHook>`),
-// no TokenCacheControl trait (that lands in a follow-up slice with
+// no TokenCacheControl trait (that lands in a follow-up with
 // the cache infrastructure).
 
 pub mod hook;

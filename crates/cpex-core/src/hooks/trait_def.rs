@@ -24,10 +24,6 @@ use crate::error::PluginViolation;
 use crate::hooks::payload::{Extensions, PluginPayload};
 use crate::plugin::Plugin;
 
-// ---------------------------------------------------------------------------
-// HookTypeDef Trait
-// ---------------------------------------------------------------------------
-
 /// Defines a hook's contract: what goes in and what comes out.
 ///
 /// Each hook type is a zero-sized marker struct that implements this
@@ -68,10 +64,6 @@ pub trait HookTypeDef: Send + Sync + 'static {
     /// via `register_for_names()`.
     const NAME: &'static str;
 }
-
-// ---------------------------------------------------------------------------
-// Hook Handler Trait
-// ---------------------------------------------------------------------------
 
 /// Typed handler for a specific hook type.
 ///
@@ -167,10 +159,6 @@ pub trait HookHandler<H: HookTypeDef>: Plugin + Send + Sync {
         ctx: &mut PluginContext,
     ) -> impl std::future::Future<Output = H::Result> + Send;
 }
-
-// ---------------------------------------------------------------------------
-// Plugin Result
-// ---------------------------------------------------------------------------
 
 /// Result returned by a hook handler.
 ///

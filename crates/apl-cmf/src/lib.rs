@@ -7,7 +7,7 @@
 // AttributeBag. This is where the *attribute vocabulary* APL policy
 // authors write against gets defined.
 //
-// Layering (see docs/specs/apl-design.md §4):
+// Layering:
 //
 //   cpex-core  : typed extension data (SecurityExtension, …)
 //   apl-cmf    : ←── this crate, flat-key bridge
@@ -29,7 +29,8 @@
 //   AgentExtension                 → agent.*       (session, conversation, lineage)
 //   MetaExtension                  → meta.*
 //   RequestExtension               → request.*
-//   HttpExtension                  → http.request_headers.*, http.response_headers.*
+//   HttpExtension                  → http.method, http.path, http.host, http.scheme,
+//                                     http.request_headers.*, http.response_headers.*
 //   LLMExtension                   → llm.*
 //   MCPExtension                   → mcp.tool.*, mcp.resource.*, mcp.prompt.*
 //   CompletionExtension            → completion.*

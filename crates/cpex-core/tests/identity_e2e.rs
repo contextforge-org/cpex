@@ -3,8 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Authors: Teryl Taylor
 //
-// End-to-end test for the IdentityResolve hook family — sub-step B
-// of slice 2.
+// End-to-end test for the IdentityResolve hook family.
 //
 // Verifies the host-explicit dispatch model: the host constructs an
 // `IdentityPayload`, calls `mgr.invoke_named::<IdentityHook>(...)`,

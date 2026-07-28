@@ -16,7 +16,7 @@
 //
 // # v0 simplification — single-view-per-Message
 //
-// CMF spec §4.2 distinguishes two messaging patterns:
+// CMF distinguishes two messaging patterns:
 //   - LLM wire format — bundled multi-part Messages (thinking + text +
 //     tool_call(s)) — many MessageViews per Message.
 //   - Framework/protocol format (MCP, A2A, LangGraph) — single
@@ -36,6 +36,7 @@ pub mod candidate_constraint;
 pub mod cmf_invoker;
 pub mod delegation_invoker;
 pub mod dispatch_plan;
+pub mod elicitation_invoker;
 pub mod parallel_safety;
 pub mod pdp_router;
 pub mod register;
@@ -49,8 +50,12 @@ pub use candidate_constraint::{fold_candidate_constraints, ConstraintConflict};
 pub use cmf_invoker::CmfPluginInvoker;
 pub use delegation_invoker::DelegationPluginInvoker;
 pub use dispatch_plan::{DispatchCache, RouteDispatchPlan, RoutePluginEntry};
+pub use elicitation_invoker::ElicitationPluginInvoker;
 pub use pdp_router::PdpRouter;
 pub use register::{register_apl, AplOptions};
-pub use route_handler::{AplRouteHandler, Phase};
+pub use route_handler::{
+    AplRouteHandler, Phase, ELICITATION_APPROVED_CODE, ELICITATION_ID_HEADER,
+    ELICITATION_PEEK_HEADER, ELICITATION_PENDING_CODE,
+};
 pub use session_store::{MemorySessionStore, SessionStore, SessionStoreError, SessionStoreFactory};
 pub use visitor::AplConfigVisitor;

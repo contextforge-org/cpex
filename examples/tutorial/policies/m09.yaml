@@ -1,0 +1,31 @@
+# Module 9, Write your own plugin
+#
+# Builtins cover common needs, but eventually you want a check the bundle
+# does not ship. You write a plugin: a small Rust type that implements a
+# hook handler, register it under a `kind`, then reference it from policy
+# by name with run(...), exactly like a builtin.
+#
+# This route runs a custom `business-hours` guard before allowing an HR
+# lookup. The guard reads the request's `hour` argument and the open/close
+# window from its own config, and denies calls outside business hours.
+#
+#   * hour within [open_hour, close_hour) -> allow
+#   * hour outside the window             -> deny (office.closed)
+#
+# The plugin source is in examples/m09_custom_plugin.rs. Note that the
+# route below looks like any other: a plugin you wrote is referenced the
+# same way as run(audit-log) in module 4.
+
+plugins:
+  - name: business-hours
+    kind: business-hours
+    hooks: [cmf.tool_pre_invoke]
+    config:
+      open_hour: 9
+      close_hour: 17
+
+routes:
+  - tool: get_compensation
+    authorization:
+      pre_invocation:
+        - "run(business-hours)"

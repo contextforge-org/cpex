@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1560 280" font-family="IBM Plex Sans">
+  <defs>
+    <marker id="ah" markerWidth="6" markerHeight="5" refX="4" refY="2.25" orient="auto">
+      <path d="M0,0 L5,2.25 L0,4.5 z" fill="#161616"/>
+    </marker>
+  </defs>
+  <rect width="1560" height="280" fill="#ffffff"/>
+
+  <rect x="40" y="70" width="240" height="140" rx="8" fill="#ece0fb" stroke="#161616" stroke-width="2"/>
+  <text x="160" y="130" font-size="24" fill="#161616" text-anchor="middle" font-family="IBM Plex Mono" font-weight="600">args</text>
+  <text x="160" y="168" font-size="18" fill="#5f5f5f" text-anchor="middle">validate &#183; transform input</text>
+
+  <line x1="285" y1="140" x2="333" y2="140" stroke="#161616" stroke-width="3" marker-end="url(#ah)"/>
+
+  <rect x="345" y="70" width="420" height="140" rx="8" fill="#ece0fb" stroke="#161616" stroke-width="2"/>
+  <text x="555" y="123" font-size="22" fill="#161616" text-anchor="middle" font-family="IBM Plex Mono" font-weight="600">authorization.pre_invocation</text>
+  <text x="555" y="161" font-size="18" fill="#5f5f5f" text-anchor="middle">authorize &#183; PDP &#183; delegate &#183; taint</text>
+
+  <line x1="770" y1="140" x2="818" y2="140" stroke="#161616" stroke-width="3" marker-end="url(#ah)"/>
+
+  <rect x="830" y="70" width="240" height="140" rx="8" fill="#ece0fb" stroke="#161616" stroke-width="2"/>
+  <text x="950" y="130" font-size="24" fill="#161616" text-anchor="middle" font-family="IBM Plex Mono" font-weight="600">result</text>
+  <text x="950" y="168" font-size="18" fill="#5f5f5f" text-anchor="middle">redact &#183; mask output</text>
+
+  <line x1="1075" y1="140" x2="1123" y2="140" stroke="#161616" stroke-width="3" marker-end="url(#ah)"/>
+
+  <rect x="1135" y="70" width="385" height="140" rx="8" fill="#ece0fb" stroke="#161616" stroke-width="2"/>
+  <text x="1327" y="123" font-size="21" fill="#161616" text-anchor="middle" font-family="IBM Plex Mono" font-weight="600">authorization.post_invocation</text>
+  <text x="1327" y="161" font-size="18" fill="#5f5f5f" text-anchor="middle">audit &#183; final checks</text>
+
+  <text x="780" y="252" font-size="18" fill="#5f5f5f" text-anchor="middle" font-style="italic">the first deny in any phase halts that phase and every later one</text>
+</svg>

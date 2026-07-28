@@ -258,7 +258,7 @@ async fn skipping_initialize_rejects_with_untrusted_issuer() {
 }
 
 // =====================================================================
-// P0-5 Slice A: kid-based key selection + JWKS fetch timeout
+// kid-based key selection + JWKS fetch timeout
 // =====================================================================
 
 /// Build a JWKS containing two RSA keys with distinct `kid`s. Used by
@@ -506,7 +506,7 @@ async fn jwks_fetch_times_out_when_endpoint_stalls() {
 }
 
 // =====================================================================
-// P0-5 Slice B: soft-fail at boot + periodic JWKS refresh
+// soft-fail at boot + periodic JWKS refresh
 // =====================================================================
 
 /// JWKS endpoint is unreachable at gateway boot. The plugin must

@@ -1,0 +1,68 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1720 600" font-family="IBM Plex Sans">
+  <defs>
+    <marker id="ah" markerWidth="6" markerHeight="5" refX="4" refY="2.25" orient="auto">
+      <path d="M0,0 L5,2.25 L0,4.5 z" fill="#161616"/>
+    </marker>
+    <marker id="ahg" markerWidth="6" markerHeight="5" refX="4" refY="2.25" orient="auto">
+      <path d="M0,0 L5,2.25 L0,4.5 z" fill="#9e9e9e"/>
+    </marker>
+  </defs>
+  <rect width="1720" height="700" fill="#ffffff"/>
+
+  <!-- out-of-band channel -->
+  <rect x="380" y="45" width="640" height="90" rx="8" fill="#ffffff" stroke="#161616" stroke-width="2"/>
+  <text x="700" y="90" font-size="24" fill="#161616" text-anchor="middle">channel: Keycloak CIBA</text>
+  <text x="700" y="120" font-size="18" fill="#5f5f5f" text-anchor="middle">the approver acts here, out-of-band, hours later if need be</text>
+
+  <line x1="530" y1="240" x2="530" y2="145" stroke="#9e9e9e" stroke-width="4" stroke-dasharray="2 10" stroke-linecap="round" marker-end="url(#ahg)"/>
+  <text x="518" y="196" font-size="17" fill="#5f5f5f" text-anchor="end">open backchannel</text>
+
+  <line x1="880" y1="145" x2="880" y2="235" stroke="#9e9e9e" stroke-width="4" stroke-dasharray="2 10" stroke-linecap="round" marker-end="url(#ahg)"/>
+  <text x="895" y="196" font-size="17" fill="#5f5f5f">status</text>
+
+  <!-- main line -->
+  <rect x="30" y="250" width="200" height="110" rx="8" fill="#ffffff" stroke="#161616" stroke-width="2.5"/>
+  <text x="130" y="313" font-size="24" fill="#161616" text-anchor="middle">agent</text>
+
+  <line x1="230" y1="285" x2="343" y2="285" stroke="#161616" stroke-width="3" marker-end="url(#ah)"/>
+  <text x="287" y="264" font-size="18" fill="#5f5f5f" text-anchor="middle">request</text>
+
+  <rect x="355" y="250" width="350" height="110" rx="8" fill="#ece0fb" stroke="#161616" stroke-width="2"/>
+  <text x="530" y="298" font-size="22" fill="#161616" text-anchor="middle" font-family="IBM Plex Mono" font-weight="600">require_approval(&#8230;)</text>
+  <text x="530" y="332" font-size="18" fill="#5f5f5f" text-anchor="middle">dispatch: register the intent</text>
+
+  <line x1="705" y1="285" x2="808" y2="285" stroke="#161616" stroke-width="3" marker-end="url(#ah)"/>
+  <text x="757" y="264" font-size="18" fill="#5f5f5f" text-anchor="middle">on retry</text>
+
+  <rect x="820" y="250" width="240" height="110" rx="8" fill="#ece0fb" stroke="#161616" stroke-width="2"/>
+  <text x="940" y="298" font-size="22" fill="#161616" text-anchor="middle">check status</text>
+  <text x="940" y="332" font-size="18" fill="#5f5f5f" text-anchor="middle">non-blocking</text>
+
+  <line x1="1060" y1="285" x2="1163" y2="285" stroke="#161616" stroke-width="3" marker-end="url(#ah)"/>
+  <text x="1112" y="264" font-size="18" fill="#5f5f5f" text-anchor="middle">resolved</text>
+
+  <rect x="1175" y="250" width="330" height="110" rx="8" fill="#ece0fb" stroke="#161616" stroke-width="2"/>
+  <text x="1340" y="298" font-size="22" fill="#161616" text-anchor="middle">validate</text>
+  <text x="1340" y="332" font-size="18" fill="#5f5f5f" text-anchor="middle">genuineness + scope over live args</text>
+
+  <line x1="1230" y1="360" x2="1230" y2="463" stroke="#161616" stroke-width="3" marker-end="url(#ah)"/>
+  <text x="1212" y="420" font-size="17" fill="#5f5f5f" text-anchor="end">approved &amp; sufficient</text>
+
+  <rect x="1090" y="475" width="250" height="90" rx="8" fill="#ffffff" stroke="#161616" stroke-width="2.5"/>
+  <text x="1215" y="528" font-size="23" fill="#161616" text-anchor="middle">forward to tool</text>
+
+  <!-- deny branch -->
+  <line x1="1470" y1="360" x2="1470" y2="463" stroke="#161616" stroke-width="3" marker-end="url(#ah)"/>
+  <text x="1488" y="420" font-size="17" fill="#5f5f5f">denied &#183; expired &#183; invalid</text>
+
+  <rect x="1360" y="475" width="220" height="90" rx="8" fill="#ffffff" stroke="#161616" stroke-width="2.5"/>
+  <text x="1470" y="516" font-size="22" fill="#161616" text-anchor="middle">deny</text>
+  <text x="1470" y="546" font-size="17" fill="#5f5f5f" text-anchor="middle">fail closed</text>
+
+  <!-- return loops -->
+  <path d="M 530 360 V 422 Q 530 440 512 440 H 208 Q 190 440 190 422 V 368" fill="none" stroke="#161616" stroke-width="3" marker-end="url(#ah)"/>
+  <text x="330" y="425" font-size="18" fill="#161616" text-anchor="middle"><tspan font-family="IBM Plex Mono" fill="#3b6de8">-32120</tspan> + elicitation id</text>
+
+  <path d="M 940 360 V 492 Q 940 510 922 510 H 108 Q 90 510 90 492 V 368" fill="none" stroke="#161616" stroke-width="3" marker-end="url(#ah)"/>
+  <text x="555" y="495" font-size="18" fill="#161616" text-anchor="middle">pending: agent retries, echoing the id</text>
+</svg>

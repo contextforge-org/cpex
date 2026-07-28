@@ -186,7 +186,7 @@ impl CmfPluginInvoker {
     /// ([`persist_session`] below) picks them up. Filters by
     /// `TaintScope::Session` — Message-scoped taints (and any future
     /// scope) are deliberately ignored here; they have their own
-    /// destination (TBD: TS2 — a labels slot on `MessagePayload`).
+    /// destination (TBD: a labels slot on `MessagePayload`).
     ///
     /// Host (`AplRouteHandler`) calls this once per request after
     /// `evaluate_pre` / `evaluate_post` returns, with the
@@ -225,7 +225,7 @@ impl CmfPluginInvoker {
     /// this exactly once after route evaluation completes.
     ///
     /// An append error is returned so the caller can fail the request
-    /// closed (R18). Because this runs after the policy decision is
+    /// closed. Because this runs after the policy decision is
     /// computed, the route handler converts an append error into a Deny
     /// outcome rather than dropping the accumulated taint silently.
     pub async fn persist_session(&self) -> Result<(), SessionStoreError> {
@@ -385,10 +385,6 @@ impl PluginInvoker for CmfPluginInvoker {
         })
     }
 }
-
-// =====================================================================
-// Helpers
-// =====================================================================
 
 /// Snapshot `extensions.security.labels` as an owned `HashSet<String>`.
 /// Empty when security is absent.
