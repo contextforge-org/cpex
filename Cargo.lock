@@ -780,6 +780,7 @@ dependencies = [
  "cpex-core",
  "cpex-pdp-cedar-direct",
  "cpex-pdp-cel",
+ "cpex-pdp-opa",
  "cpex-plugin-audit-logger",
  "cpex-plugin-delegator-oauth",
  "cpex-plugin-elicitation-ciba",

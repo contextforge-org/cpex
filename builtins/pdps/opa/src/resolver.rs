@@ -21,14 +21,28 @@
 // at most once. The cache follows the workspace "cap + reject + log, never
 // evict" convention.
 //
+// # Inline-module trust boundary
+//
+// A route-step inline module and the operator's global modules are both
+// operator-authored config, but they can be edited by different parties (a
+// central security team owns `global.pdp`; an app team may own a route). To
+// keep an inline module from silently overriding operator policy, an inline
+// module whose Rego package collides with a global-module package is rejected
+// fail-closed (always deny) rather than merged. Inline modules may therefore
+// *add* new packages but cannot redefine or extend a global package's rules.
+// (Global modules still merge with each other per Rego package semantics —
+// they share one trust level.)
+//
 // # Decision contract
 //
 // The configured query must resolve to a boolean, a decision object, or a
 // set/array (see `crate::decision`). Fail-closed by default: an evaluation
-// error routes through `on_error` (default `Deny`); a Rego parse error always
-// denies.
+// error routes through `on_error` (default `Deny`); a Rego parse error, an
+// inline/global package collision, and a cache-full rejection always deny
+// regardless of `on_error` (a compile-time or resource condition must never
+// fail open).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::RwLock;
 
 use async_trait::async_trait;
@@ -45,9 +59,10 @@ use crate::input::bag_to_input;
 /// What to do when a query errors at runtime or yields a value that carries no
 /// decision (a non-bool/object/set result, or a missing decision field). A
 /// `false`/deny result and an undefined result are NOT governed by this — they
-/// are legitimate denials, always honored. Parse/compile errors are never
-/// governed by this either: they always deny (an author bug must never flip to
-/// allow). Mirrors `cpex-pdp-cel`'s `OnError`.
+/// are legitimate denials, always honored. Parse/compile errors, inline/global
+/// package collisions, and cache-full rejections are never governed by this
+/// either: they always deny (an author bug, a trust-boundary violation, or a
+/// resource limit must never flip to allow). Mirrors `cpex-pdp-cel`'s `OnError`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum OnError {
     /// Fail-closed: a degenerate runtime outcome denies. The APL default.
@@ -82,6 +97,10 @@ pub struct OpaResolver {
     /// The base engine, prepared once with all global modules + data. Cloned
     /// per request (cheap — compiled policy/data is `Arc`-shared).
     base_engine: Engine,
+    /// Rego package paths declared by the global modules (e.g. `data.authz`),
+    /// captured at build. A route-step inline module whose package is in this
+    /// set is rejected fail-closed so it cannot override operator policy.
+    global_packages: HashSet<String>,
     /// Cache of prepared engines for inline modules, keyed by module source.
     /// `RwLock` so the steady-state read path is uncontended once a route's
     /// inline module has been prepared.
@@ -156,30 +175,37 @@ impl OpaResolver {
         let decision_field = read_string(map, "decision_field")?.unwrap_or_else(|| "allow".into());
 
         let mut engine = Engine::new();
+        // Track each global module's Rego package (the path `add_policy`
+        // returns) so an inline step module can be rejected if it collides.
+        let mut global_packages = HashSet::new();
 
         // 1. Global modules — inline texts first, then files. Each gets a
         //    unique virtual name so same-package modules merge (Rego
         //    semantics) rather than one overwriting another by filename.
         for (module_index, text) in read_string_seq(map, "modules")?.into_iter().enumerate() {
             let name = format!("global-{module_index}.rego");
-            engine
-                .add_policy(name.clone(), text)
-                .map_err(|e| BuildError::ModuleParse {
-                    name,
-                    cause: e.to_string(),
-                })?;
+            let package =
+                engine
+                    .add_policy(name.clone(), text)
+                    .map_err(|e| BuildError::ModuleParse {
+                        name,
+                        cause: e.to_string(),
+                    })?;
+            global_packages.insert(package);
         }
         for path in read_string_seq(map, "module_files")? {
             let text = std::fs::read_to_string(&path).map_err(|source| BuildError::ModuleFile {
                 path: path.clone(),
                 source,
             })?;
-            engine
-                .add_policy(path.clone(), text)
-                .map_err(|e| BuildError::ModuleParse {
-                    name: path,
-                    cause: e.to_string(),
-                })?;
+            let package =
+                engine
+                    .add_policy(path.clone(), text)
+                    .map_err(|e| BuildError::ModuleParse {
+                        name: path,
+                        cause: e.to_string(),
+                    })?;
+            global_packages.insert(package);
         }
 
         // 2. Data documents — inline mapping first, then files. Both are
@@ -208,6 +234,7 @@ impl OpaResolver {
             on_error,
             decision_field,
             base_engine: engine,
+            global_packages,
             inline_cache: RwLock::new(HashMap::new()),
             max_cache_entries: DEFAULT_MAX_CACHE_ENTRIES,
         })
@@ -250,9 +277,16 @@ impl OpaResolver {
         // Prepare base + inline module. A parse failure here is a compile error
         // (always denies), not a runtime condition.
         let mut engine = self.base_engine.clone();
-        engine
+        let package = engine
             .add_policy(INLINE_MODULE_NAME.to_string(), src.to_string())
             .map_err(|e| EngineError::Compile(e.to_string()))?;
+
+        // Reject an inline module that lands in a global module's package — it
+        // would merge into (and could override) operator policy. Fail-closed:
+        // inline modules may add new packages, never redefine a global one.
+        if self.global_packages.contains(&package) {
+            return Err(EngineError::PackageCollision(package));
+        }
 
         // Insert under the cap — reject past it, never evict (workspace cache
         // convention).
@@ -272,9 +306,11 @@ impl OpaResolver {
         Ok(engine)
     }
 
-    /// Apply `on_error` to a degenerate RUNTIME outcome (eval error, a value
-    /// carrying no decision, or a cache-full rejection). Allow logs at `error!`
-    /// so a misused fail-open flag is never silent in production.
+    /// Apply `on_error` to a degenerate RUNTIME outcome (an eval error or a
+    /// value carrying no decision). Allow logs at `error!` so a misused
+    /// fail-open flag is never silent in production. (Compile errors, package
+    /// collisions, and cache-full rejections do NOT come through here — they
+    /// always deny via `compile_error_decision`.)
     fn on_error_decision(&self, cause: String) -> PdpDecision {
         match self.on_error {
             OnError::Allow => {
@@ -298,12 +334,14 @@ impl OpaResolver {
         }
     }
 
-    /// A Rego compile error always denies, regardless of `on_error` — malformed
-    /// policy is an author bug and must never flip to allow.
+    /// Always deny, regardless of `on_error`, for a non-negotiable failure: a
+    /// Rego compile error (author bug), an inline/global package collision
+    /// (trust-boundary violation), or a cache-full rejection (resource limit).
+    /// None of these is a policy outcome that may fail open.
     fn compile_error_decision(&self, cause: String) -> PdpDecision {
         tracing::error!(
             cause = %cause,
-            "OPA compile error — denying the request regardless of on_error mode."
+            "OPA fail-closed condition — denying the request regardless of on_error mode."
         );
         PdpDecision {
             decision: Decision::Deny {
@@ -315,13 +353,29 @@ impl OpaResolver {
     }
 }
 
-/// Internal — failure shapes from preparing a per-step engine.
+/// Internal — failure shapes from preparing a per-step engine. All three
+/// always deny regardless of `on_error`: a compile error is an author bug, a
+/// package collision is a trust-boundary violation, and a cache-full condition
+/// is a resource limit — none is a legitimate policy outcome that should be
+/// allowed to fail open.
 enum EngineError {
-    /// A Rego parse/compile error in an inline module. Always denies.
+    /// A Rego parse/compile error in an inline module.
     Compile(String),
-    /// The inline-module cache hit its cap. A runtime resource limit routed
-    /// through `on_error`, matching the CEL resolver's cache-full handling.
+    /// The inline module's package collides with a global-module package.
+    PackageCollision(String),
+    /// The inline-module cache hit its cap.
     CacheFull { cap: usize },
+}
+
+/// Outcome of the blocking evaluation task. Held as an owned, `Send` value so
+/// it can cross the `spawn_blocking` boundary; `on_error` is applied by the
+/// caller (which needs `&self` for logging).
+enum EvalOutcome {
+    /// A terminal decision the contract produced directly.
+    Decision(PdpDecision),
+    /// A degenerate runtime outcome (eval error, non-decision value) whose
+    /// disposition depends on `on_error`.
+    OnError(String),
 }
 
 #[async_trait]
@@ -344,33 +398,55 @@ impl PdpResolver for OpaResolver {
             .and_then(|m| m.get(serde_yaml::Value::String("module".into())))
             .and_then(|v| v.as_str());
 
-        // 2. Prepare the engine. Compile errors always deny; a cache-full
-        //    rejection routes through on_error.
-        let mut engine = match self.engine_for(module) {
+        // 2. Prepare the engine. A compile error, a package collision, and a
+        //    cache-full rejection all always deny — none may fail open.
+        let engine = match self.engine_for(module) {
             Ok(engine) => engine,
             Err(EngineError::Compile(cause)) => {
                 return Ok(self.compile_error_decision(format!("OPA inline module: {cause}")));
             },
+            Err(EngineError::PackageCollision(package)) => {
+                return Ok(self.compile_error_decision(format!(
+                    "OPA inline module package `{package}` collides with a global-module \
+                     package; inline modules may not override global policy"
+                )));
+            },
             Err(EngineError::CacheFull { cap }) => {
-                return Ok(self.on_error_decision(format!(
+                return Ok(self.compile_error_decision(format!(
                     "OPA inline-module cache full (cap={cap}); refusing a new module"
                 )));
             },
         };
 
-        // 3. Map the bag into the Rego `input` document.
-        let input = bag_to_input(bag);
-        if let Err(e) = engine.set_input_json(&input.to_string()) {
-            return Ok(self.on_error_decision(format!("OPA failed to set input: {e}")));
-        }
+        // 3. Map the bag into the Rego `input` document, then set input and
+        //    evaluate on a blocking thread — Rego eval is synchronous and can
+        //    be CPU-heavy, and must not monopolize an async worker.
+        let input_json = bag_to_input(bag).to_string();
+        let query = query.to_string();
+        let decision_field = self.decision_field.clone();
+        let outcome = tokio::task::spawn_blocking(move || {
+            let mut engine = engine;
+            if let Err(e) = engine.set_input_json(&input_json) {
+                return EvalOutcome::OnError(format!("OPA failed to set input: {e}"));
+            }
+            match engine.eval_rule(query) {
+                Ok(value) => match map_query_result(&value, &decision_field) {
+                    Mapped::Decision(decision) => EvalOutcome::Decision(decision),
+                    Mapped::Degenerate(cause) => EvalOutcome::OnError(cause),
+                },
+                Err(e) => EvalOutcome::OnError(format!("OPA eval error: {e}")),
+            }
+        })
+        .await;
 
-        // 4. Evaluate the query and map the result to a decision.
-        match engine.eval_rule(query.to_string()) {
-            Ok(value) => match map_query_result(&value, &self.decision_field) {
-                Mapped::Decision(decision) => Ok(decision),
-                Mapped::Degenerate(cause) => Ok(self.on_error_decision(cause)),
+        // 4. Apply on_error to degenerate outcomes; a task panic fails closed
+        //    through on_error too.
+        match outcome {
+            Ok(EvalOutcome::Decision(decision)) => Ok(decision),
+            Ok(EvalOutcome::OnError(cause)) => Ok(self.on_error_decision(cause)),
+            Err(join_err) => {
+                Ok(self.on_error_decision(format!("OPA evaluation task failed: {join_err}")))
             },
-            Err(e) => Ok(self.on_error_decision(format!("OPA eval error: {e}"))),
         }
     }
 }
@@ -770,16 +846,35 @@ msg := "not a decision"
         }
     }
 
-    /// A same-package inline module merges with a global module (Rego
-    /// semantics) — no error on package reuse — and can add a rule.
+    /// An inline module whose package collides with a global-module package is
+    /// rejected fail-closed — it must not be able to merge into (and override)
+    /// operator policy, even under on_error: allow.
     #[tokio::test]
-    async fn inline_module_merges_with_global_package() {
-        let r = resolver(&[ALLOW_WITH_DEFAULT], OnError::Deny);
-        // Add a rule in the same `authz` package via an inline module and query
-        // it. The merge must succeed (not error), and the new rule evaluates.
-        let inline = "package authz\nextra if input.subject.id == \"alice\"\n";
+    async fn inline_module_cannot_override_global_package() {
+        let r = resolver(&[ALLOW_WITH_DEFAULT], OnError::Allow);
+        // A hostile inline module tries to force allow in the operator's `authz`
+        // package. It shares the package, so it is rejected → deny.
+        let inline = "package authz\nallow if true\n";
         let out = r
-            .evaluate(&call("data.authz.extra", Some(inline)), &bag("alice"))
+            .evaluate(&call("data.authz.allow", Some(inline)), &bag("eve"))
+            .await
+            .unwrap();
+        match out.decision {
+            Decision::Deny { reason, .. } => {
+                assert!(reason.unwrap_or_default().contains("collides"));
+            },
+            other => panic!("package collision must deny, got {other:?}"),
+        }
+    }
+
+    /// An inline module in a fresh package (no global collision) is accepted and
+    /// evaluates — inline modules remain a usable feature for additive policy.
+    #[tokio::test]
+    async fn inline_module_in_new_package_is_allowed() {
+        let r = resolver(&[ALLOW_WITH_DEFAULT], OnError::Deny);
+        let inline = "package extra\nallow if input.subject.id == \"alice\"\n";
+        let out = r
+            .evaluate(&call("data.extra.allow", Some(inline)), &bag("alice"))
             .await
             .unwrap();
         assert_eq!(out.decision, Decision::Allow);
@@ -825,6 +920,27 @@ msg := "not a decision"
             .await
             .unwrap();
         assert_eq!(again.decision, Decision::Allow);
+    }
+
+    /// A cache-full rejection is a resource limit, not a policy outcome, so it
+    /// denies even under on_error: allow — it must not fail open.
+    #[tokio::test]
+    async fn inline_cache_cap_denies_even_under_on_error_allow() {
+        let r = resolver(&[], OnError::Allow).with_max_cache_entries(1);
+        let m1 = "package a\nallow if input.subject.id == \"alice\"\n";
+        let m2 = "package b\nallow if input.subject.id == \"alice\"\n";
+        let _ = r
+            .evaluate(&call("data.a.allow", Some(m1)), &bag("alice"))
+            .await
+            .unwrap();
+        let out = r
+            .evaluate(&call("data.b.allow", Some(m2)), &bag("alice"))
+            .await
+            .unwrap();
+        assert!(
+            matches!(out.decision, Decision::Deny { .. }),
+            "cache-full must deny even with on_error: allow",
+        );
     }
 
     /// Many threads sharing one `Arc<OpaResolver>` evaluate concurrently and
