@@ -3,11 +3,63 @@
 // SPDX-License-Identifier: Apache-2.0
 // Authors: Fred Araujo
 //
-// cpex-pdp-opa — `PdpResolver` over the pure-Rust `regorus` Rego interpreter.
+// cpex-pdp-opa — `PdpResolver` over Microsoft's pure-Rust `regorus` Rego
+// interpreter.
 //
-// (Full crate docs land with the resolver in U3/U4.)
+// # Where this lives in the stack
+//
+//   APL evaluator (apl-core)
+//        │  `opa: { query: "data.authz.allow" }` step
+//        ▼
+//   PdpRouter (apl-cpex)        — dispatches by dialect (PdpDialect::Opa)
+//        │  resolver.evaluate(call, bag)
+//        ▼
+//   OpaResolver                 — THIS CRATE
+//        │  bag → Rego input, clone base engine, eval query
+//        ▼
+//   regorus::Engine             — embedded Rego evaluation, no sidecar
+//
+// # Policy source (hybrid)
+//
+// Rego modules and `data` are declared in the `global.pdp` block and parsed
+// once at factory-build time; a route step may also carry an inline `module`.
+// See `resolver::OpaResolver::from_config` for the config shape and
+// `factory::OpaPdpFactory` for how the visitor builds it.
+//
+// # The attribute vocabulary (bag → input)
+//
+// APL's flat, dotted `AttributeBag` (`subject.id`, `delegation.depth`,
+// `session.labels`) is rebuilt into a nested Rego `input` document so authors
+// write `input.subject.id`. See `input::bag_to_input` — the mapping mirrors
+// the CEL resolver's so the vocabulary is identical across backends.
+//
+// # Decision contract
+//
+// The step's `query` must resolve to a boolean, a decision object (whose
+// allow/deny bit is read from `decision_field`, default `allow`), or a
+// set/array (the deny-set idiom: empty → allow, non-empty → deny). An
+// undefined result is a clean deny — Rego's idiomatic "not granted" — never
+// routed through `on_error`. A value carrying no decision, or a genuine eval
+// error, is governed by `on_error` (default `deny`). A Rego parse/compile
+// error always denies. See `decision::map_query_result`.
+//
+// # Evaluation model
+//
+// A base `regorus::Engine` holds the compiled global policy + data. Because
+// the `arc` feature makes that state `Arc`-shared, the resolver clones the base
+// per request (cheap), sets the request `input`, and evaluates — no lock on the
+// hot path. Inline modules get a bounded prepared-engine cache. See
+// `resolver` for the details.
 
+pub mod decision;
+pub mod error;
+pub mod factory;
 pub mod input;
+pub mod resolver;
+
+pub use error::BuildError;
+pub use factory::OpaPdpFactory;
+pub use resolver::{OnError, OpaResolver};
 
 #[cfg(test)]
 mod regorus_api_smoke {

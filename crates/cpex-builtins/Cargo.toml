@@ -29,7 +29,7 @@ rust-version.workspace = true
 [features]
 # The common in-process set: the four hook plugins plus both PDPs. Heavier
 # / external-backend extensions (valkey) stay opt-in via `full`.
-default = ["pii-scanner", "audit-logger", "identity-jwt", "delegator-oauth", "elicitation-ciba", "cedar-direct", "cel"]
+default = ["pii-scanner", "audit-logger", "identity-jwt", "delegator-oauth", "elicitation-ciba", "cedar-direct", "cel", "opa"]
 
 # Each feature pulls exactly one builtin crate.
 pii-scanner      = ["dep:cpex-plugin-pii-scanner"]
@@ -39,6 +39,7 @@ delegator-oauth  = ["dep:cpex-plugin-delegator-oauth"]
 elicitation-ciba = ["dep:cpex-plugin-elicitation-ciba"]
 cedar-direct     = ["dep:cpex-pdp-cedar-direct"]
 cel              = ["dep:cpex-pdp-cel"]
+opa              = ["dep:cpex-pdp-opa"]
 valkey           = ["dep:cpex-session-valkey"]
 
 # Everything wired here, including the Valkey session store (redis client +
@@ -59,6 +60,7 @@ cpex-plugin-delegator-oauth = { workspace = true, optional = true }
 cpex-plugin-elicitation-ciba = { workspace = true, optional = true }
 cpex-pdp-cedar-direct = { workspace = true, optional = true }
 cpex-pdp-cel = { workspace = true, optional = true }
+cpex-pdp-opa = { workspace = true, optional = true }
 cpex-session-valkey = { workspace = true, optional = true }
 
 [dev-dependencies]
