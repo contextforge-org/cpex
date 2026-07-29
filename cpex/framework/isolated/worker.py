@@ -9,24 +9,289 @@ Module that contains plugin server code to invoke hooks in native plugins.
 """
 
 import asyncio
+import contextlib
 import hashlib
 import importlib.metadata
+import io
 import json
 import logging
 import platform
 import sys
+import traceback
 from pathlib import Path
 from types import ModuleType
 from typing import List, Type, cast
 
+from pydantic import SecretStr
+
 from cpex.framework.base import HookRef, Plugin, PluginRef
 from cpex.framework.constants import HOOK_TYPE
+
+# Imported for its import-time side effect: cpex.framework.hooks.identity calls
+# _register_identity_hooks() at module load, and cpex.framework.__init__ does not
+# import it (unlike hooks.tools, hooks.prompts, hooks.resources, hooks.agents,
+# hooks.http). Without this import the identity_resolve and token_delegate hooks
+# are absent from the registry, so json_to_payload raises "No payload defined for
+# hook identity_resolve" and no out-of-process identity or delegation plugin can
+# run at all — credential field or not.
+from cpex.framework.hooks import identity as _identity_hooks  # noqa: F401  (side effect: hook registration)
 from cpex.framework.loader.plugin import ALLOWED_PLUGIN_DIRS
 from cpex.framework.manager import PluginExecutor
-from cpex.framework.models import PluginConfig, PluginContext
+from cpex.framework.models import PluginConfig, PluginContext, PluginPayload
 from cpex.framework.utils import import_module, parse_class_name
 
 logger = logging.getLogger(__name__)
+
+# Hooks that receive raw credentials. These are the only two hook types for
+# which the framework models a raw token on the payload itself
+# (IdentityPayload.raw_token, DelegationPayload.bearer_token), so they are the
+# only two the worker reconstructs. Delivering raw credentials to any other hook
+# would require an Extensions credential slot the framework deliberately lacks.
+IDENTITY_RESOLVE_HOOK = "identity_resolve"
+TOKEN_DELEGATE_HOOK = "token_delegate"
+CREDENTIAL_HOOKS = frozenset({IDENTITY_RESOLVE_HOOK, TOKEN_DELEGATE_HOOK})
+
+# Task field the Rust host attaches the credential object to, and its two
+# per-hook sub-objects. See the Wire Contract in
+# docs/plans/2026-07-28-002-feat-worker-credential-consumption-plan.md.
+CREDENTIAL_FIELD = "credential"
+
+# credential.inbound.kind -> IdentityPayload.source. Token kinds that travel in
+# an Authorization-style header map to "bearer"; anything else falls back to
+# "custom" so a validator can inspect headers itself rather than trusting a
+# source it does not recognize.
+_BEARER_TOKEN_KINDS = frozenset({"jwt", "opaque", "spiffe_jwt", "ucan"})
+_DEFAULT_CREDENTIAL_SOURCE = "custom"
+
+# Placeholder substituted for the plaintext token in any *header* value.
+#
+# IdentityPayload.headers is dict[str, str], not SecretStr — it does NOT redact
+# on serialization. So a header carrying the raw token serializes in the clear
+# wherever the payload is dumped, most notably when a TRANSFORM-mode identity
+# plugin echoes the payload back as modified_payload and the worker serializes
+# the response to the stdout channel the host reads. The plaintext therefore
+# lives on raw_token/bearer_token (which redact) and nowhere else; headers get
+# this placeholder, and a plugin that needs the credential reads raw_token.
+REDACTED_HEADER_VALUE = "**********"
+
+
+class CredentialError(Exception):
+    """A credential field was present but could not yield a usable token.
+
+    Raised to fail closed rather than proceed with an empty ``SecretStr`` that
+    would authenticate downstream as an empty bearer. The message never
+    includes credential contents — see ``process_task``'s handling, which
+    converts this to a fixed error response.
+    """
+
+
+def _credential_source_from_kind(kind: object) -> str:
+    """Map a wire ``kind`` to an ``IdentityPayload.source`` value.
+
+    Args:
+        kind: the credential's ``kind`` field, as it arrived on the wire.
+
+    Returns:
+        "bearer" for known bearer-style token kinds, else "custom".
+    """
+    if isinstance(kind, str) and kind.lower() in _BEARER_TOKEN_KINDS:
+        return "bearer"
+    return _DEFAULT_CREDENTIAL_SOURCE
+
+
+def _scrub_token(value: object, token: str) -> object:
+    """Recursively replace the plaintext token everywhere inside ``value``.
+
+    Header values arrive from ``json.loads`` of the task line, so a "header" can
+    be any JSON type — including a list or nested object. Recursing is what makes
+    the scrub total: a top-level ``isinstance(value, str)`` check silently forwards
+    ``{"Authorization": ["Bearer <token>"]}`` in the clear.
+
+    Args:
+        value: any JSON-shaped value.
+        token: the plaintext token to scrub.
+
+    Returns:
+        A scrubbed copy, structurally the same.
+    """
+    if isinstance(value, str):
+        return value.replace(token, REDACTED_HEADER_VALUE) if token in value else value
+    if isinstance(value, dict):
+        return {_scrub_token(k, token): _scrub_token(v, token) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_scrub_token(item, token) for item in value]
+    return value
+
+
+def _scrub_token_from_headers(headers: dict, token: str) -> dict[str, str]:
+    """Build a ``dict[str, str]`` header map with the plaintext token removed.
+
+    Header values are plain strings that serialize verbatim — ``IdentityPayload``
+    declares ``headers: dict[str, str]``, but the payload is rebuilt with
+    ``model_copy(update=...)``, which pydantic does **not** validate. So an
+    off-type value (a list, a nested object) survives onto the model and then
+    serializes in the clear wherever the payload is dumped — most consequentially
+    when a plugin copies ``payload.headers`` into ``IdentityResult.raw_claims`` for
+    audit, which puts it on the stdout channel the host parses.
+
+    Two defenses, because either alone leaves a hole:
+
+    * **Recursive scrub of keys and values**, so no nesting depth or key position
+      carries the plaintext. Substring replacement (rather than dropping the key)
+      preserves the scheme prefix, so a plugin can still tell ``Bearer`` from
+      ``Basic`` without seeing the credential.
+    * **Coercion to the declared type**, so what lands on the model matches
+      ``dict[str, str]`` and cannot smuggle a container past ``model_copy``.
+
+    Args:
+        headers: the header map to copy, as it arrived on the wire.
+        token: the plaintext token to scrub out of every key and value.
+
+    Returns:
+        A new ``dict[str, str]``, scrubbed and type-coerced.
+    """
+    scrubbed: dict[str, str] = {}
+    for key, value in headers.items():
+        scrubbed_key = _scrub_token(key, token)
+        safe_key = scrubbed_key if isinstance(scrubbed_key, str) else str(scrubbed_key)
+        safe_value = _scrub_token(value, token)
+        # Coerce to str so a container cannot reach the dict[str, str] field via
+        # model_copy's unvalidated update. json.dumps keeps a structured value
+        # legible rather than rendering it as a Python repr.
+        if not isinstance(safe_value, str):
+            try:
+                safe_value = json.dumps(safe_value)
+            except (TypeError, ValueError):  # pragma: no cover - defensive
+                safe_value = str(safe_value)
+        scrubbed[safe_key] = safe_value
+    return scrubbed
+
+
+def _extract_credential_token(credential: object, sub_field: str) -> tuple[str, dict]:
+    """Pull the plaintext token and its sibling fields out of the credential object.
+
+    Args:
+        credential: the raw ``credential`` task field.
+        sub_field: "inbound" for identity, "delegated" for delegation.
+
+    Returns:
+        A ``(token, sub_object)`` tuple. The token is non-empty.
+
+    Raises:
+        CredentialError: if the field is malformed or yields no usable token.
+            The message names only the shape problem, never a value.
+    """
+    if not isinstance(credential, dict):
+        raise CredentialError("credential field is not an object")
+
+    sub = credential.get(sub_field)
+    if not isinstance(sub, dict):
+        raise CredentialError(f"credential.{sub_field} is missing or not an object")
+
+    token = sub.get("token")
+    # strip() rather than a bare truthiness check: a whitespace-only token is a
+    # truthy str, so it would pass — and "Authorization: Bearer    " is not
+    # meaningfully different from an empty bearer to a downstream verifier, which
+    # is exactly what this guard exists to prevent.
+    if not isinstance(token, str) or not token.strip():
+        raise CredentialError(f"credential.{sub_field}.token is missing or empty")
+
+    return token, sub
+
+
+def _require_payload_type(payload: PluginPayload, expected: type, hook_type: str) -> None:
+    """Fail closed unless the payload is the type the hook's secret field lives on.
+
+    Args:
+        payload: the payload about to be reconstructed.
+        expected: the payload class the hook declares.
+        hook_type: the hook being invoked, for the error message.
+
+    Raises:
+        CredentialError: if the payload is not an instance of ``expected``. The
+            message names types only, never a credential value.
+    """
+    if not isinstance(payload, expected):
+        raise CredentialError(
+            f"payload type {type(payload).__name__} does not match hook {hook_type} (expected {expected.__name__})"
+        )
+
+
+def reconstruct_credential_payload(hook_type: str, payload: PluginPayload, credential: object) -> PluginPayload:
+    """Rebuild an identity/delegation payload with the plaintext token restored.
+
+    ``IdentityPayload.raw_token`` and ``DelegationPayload.bearer_token`` are
+    ``SecretStr``, which redacts on serialization — so the payload JSON the
+    worker receives carries ``"**********"``, not the token. The plaintext must
+    therefore come from the separate ``credential`` field the host attaches, and
+    never from the payload JSON.
+
+    ``PluginPayload`` is frozen (``model_config = ConfigDict(frozen=True)``), so
+    the secret cannot be assigned in place; the payload is rebuilt via
+    ``model_copy(update=...)``. ``model_copy`` bypasses validation, which is what
+    we want here: the redacted payload already validated on construction, and we
+    are substituting a same-typed field.
+
+    Args:
+        hook_type: the hook being invoked. Only ``identity_resolve`` and
+            ``token_delegate`` are reconstructed.
+        payload: the payload ``json_to_payload`` rebuilt, with secrets redacted.
+        credential: the raw ``credential`` task field.
+
+    Returns:
+        A new payload carrying the plaintext secret, or ``payload`` unchanged
+        when the hook is not credential-bearing.
+
+    Raises:
+        CredentialError: if the credential field cannot yield a usable token, or
+            if the payload's type does not match the hook.
+    """
+    if hook_type == IDENTITY_RESOLVE_HOOK:
+        # Verify the payload type before writing the secret. model_copy does not
+        # validate, so on a hook_type/payload mismatch the secret would land on a
+        # field the model does not declare while the field the plugin actually
+        # reads keeps its redacted placeholder — a silent fail-open that never
+        # raises. Checking converts that into the intended fail-closed error.
+        _require_payload_type(payload, _identity_hooks.IdentityPayload, hook_type)
+        token, inbound = _extract_credential_token(credential, "inbound")
+        update: dict = {"raw_token": SecretStr(token)}
+
+        # Repopulate source only if the redacted payload lost it, or left it at
+        # the model default — a payload carrying a deliberate non-default source
+        # is authoritative. getattr rather than attribute access because the
+        # declared type here is the PluginPayload base, which has no `source`.
+        existing_source = getattr(payload, "source", None)
+        if not existing_source or existing_source == "bearer":
+            update["source"] = _credential_source_from_kind(inbound.get("kind"))
+
+        # Headers name *where* the credential came from; the credential itself
+        # stays on raw_token. Any header value equal to the plaintext token (or
+        # embedding it, as in "Bearer <token>") is replaced with a placeholder,
+        # because headers do not redact on serialization.
+        headers = inbound.get("headers")
+        if isinstance(headers, dict) and headers:
+            # Host-supplied headers are forwarded, minus the plaintext.
+            update["headers"] = _scrub_token_from_headers(headers, token)
+        elif not getattr(payload, "headers", None):
+            # Synthesize {source_header: <redacted>} so an extractor that keys off
+            # headers still learns which header carried the credential; it reads
+            # the value itself from raw_token.
+            source_header = inbound.get("source_header")
+            if isinstance(source_header, str) and source_header:
+                # Scrub the header *name* too: it is attacker-influenced input as
+                # far as this side of the boundary knows, and a source_header of
+                # "X-<token>" would otherwise put the plaintext in a dict key.
+                safe_header = source_header.replace(token, REDACTED_HEADER_VALUE)
+                update["headers"] = {safe_header: REDACTED_HEADER_VALUE}
+
+        return payload.model_copy(update=update)
+
+    if hook_type == TOKEN_DELEGATE_HOOK:
+        _require_payload_type(payload, _identity_hooks.DelegationPayload, hook_type)
+        token, _ = _extract_credential_token(credential, "delegated")
+        return payload.model_copy(update={"bearer_token": SecretStr(token)})
+
+    return payload
 
 
 class TaskProcessor:
@@ -74,6 +339,264 @@ class TaskProcessor:
         """
         hook_ref = HookRef(hook_type, self.plugin_ref)
         return hook_ref
+
+
+def _payload_secret_value(hook_type: str, payload: PluginPayload) -> str | None:
+    """Read back the plaintext secret the reconstruction just set on the payload.
+
+    Used only to know what string to scrub out of downstream error text. Reading
+    it back off the payload (rather than threading the token through) keeps a
+    single source of truth for what the hook can actually see.
+
+    Args:
+        hook_type: the hook being invoked.
+        payload: the reconstructed payload.
+
+    Returns:
+        The plaintext secret, or None if the hook carries no secret field.
+    """
+    field = "raw_token" if hook_type == IDENTITY_RESOLVE_HOOK else "bearer_token"
+    secret = getattr(payload, field, None)
+    if isinstance(secret, SecretStr):
+        return secret.get_secret_value()
+    return None
+
+
+@contextlib.contextmanager
+def scrubbing_log_factory(token: str):
+    """Redact ``token`` from every log record created inside this context.
+
+    The executor in ``cpex/framework/manager.py`` logs plugin exceptions as
+    ``logger.error("Plugin %s failed with error: %s", name, str(e))``, so a plugin
+    that interpolates its own credential into an exception message lands the
+    plaintext in the log stream before the worker regains control. This closes
+    that sink, and every other logger in the process with it.
+
+    Why the *record factory* rather than a filter on a logger or handler — each
+    of the narrower placements has a hole that a plugin (or one of its
+    dependencies) reaches without trying:
+
+    * A filter on the root **logger** only runs for records logged directly on
+      root. Records propagated from a child logger such as
+      ``cpex.framework.manager`` skip root's filters entirely.
+    * A filter on root's **handlers** misses records that never reach them: when
+      root has no handlers, ``logging.lastResort`` emits to stderr carrying no
+      filters at all; a logger with ``propagate=False`` and its own handler
+      bypasses root; and a handler added — or root's handler list cleared — during
+      the call is not in the snapshot the filter was attached to.
+
+    ``setLogRecordFactory`` is a single global that *every* ``Logger.makeRecord``
+    consults, so it runs before any of those topologies can diverge.
+
+    Two things get scrubbed, and both matter:
+
+    * **The rendered message.** Scrubbing ``record.msg`` and string ``record.args``
+      separately misses any non-string arg — ``logger.error("failed: %s", exc)``
+      renders the token at format time, after a filter has run. Rendering via
+      ``getMessage()`` and storing the result flattens msg+args into one scrubbed
+      string, which is immune to argument type and to nesting.
+    * **The traceback.** ``logging.Formatter`` renders ``exc_info`` separately via
+      ``formatException`` and appends it, so scrubbing the message alone leaves a
+      ``logger.exception()`` traceback carrying the plaintext. Pre-rendering it
+      into ``exc_text`` (which the formatter prefers when non-empty) and clearing
+      ``exc_info`` puts it behind the same scrub.
+
+    Args:
+        token: the plaintext to redact from every record created in the context.
+
+    Yields:
+        None. The previous factory is restored on exit.
+    """
+    previous_factory = logging.getLogRecordFactory()
+
+    def scrubbing_factory(*args, **kwargs) -> logging.LogRecord:
+        """Create a record with the token redacted from message and traceback."""
+        record = previous_factory(*args, **kwargs)
+
+        # Flatten msg + args into one already-rendered, scrubbed string. getMessage
+        # can raise if a caller passed mismatched format args; a logging failure
+        # must not take down a credential task, and an unrendered record cannot
+        # leak through this path anyway.
+        try:
+            rendered = record.getMessage()
+        except Exception:  # pragma: no cover - defensive
+            rendered = str(record.msg)
+        if token in rendered:
+            record.msg = rendered.replace(token, REDACTED_HEADER_VALUE)
+            record.args = ()
+
+        # Pre-render the traceback so it passes through the same scrub. The
+        # formatter uses a non-empty exc_text in preference to re-rendering
+        # exc_info, so clearing exc_info makes the scrubbed text authoritative.
+        if record.exc_info:
+            try:
+                exc_text = "".join(traceback.format_exception(*record.exc_info))
+            except Exception:  # pragma: no cover - defensive
+                exc_text = ""
+            if exc_text:
+                record.exc_text = exc_text.replace(token, REDACTED_HEADER_VALUE)
+                record.exc_info = None
+        if record.exc_text and token in record.exc_text:
+            record.exc_text = record.exc_text.replace(token, REDACTED_HEADER_VALUE)
+
+        # stack_info is likewise formatted separately from the message.
+        if record.stack_info and token in record.stack_info:
+            record.stack_info = record.stack_info.replace(token, REDACTED_HEADER_VALUE)
+
+        return record
+
+    logging.setLogRecordFactory(scrubbing_factory)
+    try:
+        yield
+    finally:
+        # Restore before returning so the scrub cannot outlive this task, nor
+        # retain a reference to the token across a later, unrelated one.
+        logging.setLogRecordFactory(previous_factory)
+
+
+async def execute_hook_scrubbed(
+    tp: TaskProcessor,
+    hook_type: str,
+    payload: PluginPayload | None,
+    plugin_context: PluginContext,
+    plaintext_token: str | None,
+):
+    """Run the hook, scrubbing the plaintext token from every sink it can reach.
+
+    When no plaintext is in play this is a plain pass-through to
+    ``execute_plugin`` — non-credential hooks pay nothing. With a plaintext token
+    live, four sinks need covering:
+
+    * **logs** — via ``scrubbing_log_factory``, because the executor logs
+      ``str(e)`` from a failing plugin before the worker regains control.
+    * **the raised exception** — re-raised as a ``RuntimeError`` carrying scrubbed
+      text, since ``main()``'s handler interpolates ``str(e)`` into both a log
+      line and the stdout response the host reads.
+    * **stdout written by the plugin** — stdout is the *framing channel* the host
+      parses line-by-line, demuxing on ``request_id``. A plugin printing there
+      both leaks and desyncs the stream, so the hook's stdout is redirected away
+      from it for the duration of the call and re-emitted, scrubbed, on stderr.
+    * **the returned result** — ``PluginResult.metadata``,
+      ``IdentityResult.reject_reason``, and ``IdentityResult.raw_claims`` are plain
+      types that ``main()`` serializes straight to stdout. A result echoing the
+      inbound credential fails the task closed rather than shipping it.
+
+    Args:
+        tp: the caching task processor holding the executor and plugin ref.
+        hook_type: the hook to invoke.
+        payload: the (possibly reconstructed) payload.
+        plugin_context: per-call plugin context.
+        plaintext_token: the live plaintext, or None for non-credential hooks.
+
+    Returns:
+        The plugin result from ``execute_plugin``.
+
+    Raises:
+        RuntimeError: replacing any exception whose text carried the plaintext.
+        CredentialError: if the plugin's own result echoes the plaintext.
+    """
+
+    async def _run():
+        """Invoke the hook. Single call site, so the two paths cannot diverge."""
+        return await tp.executor.execute_plugin(
+            hook_ref=tp.get_hook_ref(hook_type),
+            payload=payload,
+            local_context=plugin_context,
+            violations_as_exceptions=False,
+        )
+
+    if plaintext_token is None:
+        return await _run()
+
+    captured_stdout = io.StringIO()
+    captured_stderr = io.StringIO()
+    try:
+        # redirect_std* swap sys.stdout/sys.stderr only; a plugin reaching
+        # os.write(1, ...) is beyond an in-process barrier and out of scope.
+        # stderr needs capturing too: the reference venv_comm.py reader drains and
+        # re-logs worker stderr, so a plugin's direct print(..., file=sys.stderr)
+        # reaches the host's log stream without passing through logging at all.
+        with (
+            scrubbing_log_factory(plaintext_token),
+            contextlib.redirect_stdout(captured_stdout),
+            contextlib.redirect_stderr(captured_stderr),
+        ):
+            result = await _run()
+    except Exception as e:
+        message = str(e)
+        if plaintext_token in message:
+            # Replace rather than re-raise: the original exception's __str__,
+            # __repr__, args, and __cause__ chain all still carry the plaintext,
+            # and main()'s handler stringifies whatever reaches it. `from None`
+            # drops the leaking cause from the traceback chain.
+            raise RuntimeError(
+                f"{type(e).__name__}: {message.replace(plaintext_token, REDACTED_HEADER_VALUE)}"
+            ) from None
+        raise
+    finally:
+        _emit_captured_streams(captured_stdout.getvalue(), captured_stderr.getvalue(), plaintext_token)
+
+    # A plugin must not hand the credential back on a field that serializes in the
+    # clear. Fail closed: a result echoing its own inbound token is a plugin bug,
+    # and shipping it would put the plaintext on the channel the host parses.
+    if _result_contains_token(result, plaintext_token):
+        raise CredentialError("plugin result echoed the inbound credential")
+
+    return result
+
+
+def _emit_captured_streams(captured_out: str, captured_err: str, token: str) -> None:
+    """Re-emit what a plugin wrote to stdout/stderr, scrubbed, on real stderr.
+
+    Diverted rather than discarded, so a plugin's debug output — and any log line
+    its handlers wrote to the redirected stderr — stays visible to whoever reads
+    worker stderr, minus the credential. stdout output is deliberately *not*
+    returned to stdout: that stream is the response-framing channel the host
+    demuxes on ``request_id``, and a plugin-authored line there would be parsed as
+    a response.
+
+    Args:
+        captured_out: whatever the plugin wrote to stdout during the hook call.
+        captured_err: whatever was written to stderr during the hook call.
+        token: the plaintext to redact before re-emitting.
+    """
+    if captured_out:
+        # print() rather than logger: logging may itself be writing into a stream
+        # we just restored, and this must land on real stderr unconditionally.
+        print(
+            "[worker] plugin wrote to stdout during a credential-bearing hook; "
+            "diverted from the response channel: " + captured_out.replace(token, REDACTED_HEADER_VALUE),
+            file=sys.stderr,
+            flush=True,
+        )
+    if captured_err:
+        print(captured_err.replace(token, REDACTED_HEADER_VALUE), file=sys.stderr, end="", flush=True)
+
+
+def _result_contains_token(result: object, token: str) -> bool:
+    """Report whether the plaintext survives into the serialized result.
+
+    Serializing is the check that matters: it is exactly what ``main()`` does
+    before printing to stdout, so it sees the token through whatever plain-typed
+    field carried it (``metadata``, ``reject_reason``, ``raw_claims``, a
+    violation's ``details``) while respecting ``SecretStr`` redaction.
+
+    Args:
+        result: the plugin result.
+        token: the plaintext to look for.
+
+    Returns:
+        True if the token appears in the serialized result.
+    """
+    if result is None:
+        return False
+    try:
+        dumped = result.model_dump(mode="json") if hasattr(result, "model_dump") else result
+        return token in json.dumps(dumped, default=str)
+    except Exception:  # pragma: no cover - defensive
+        # If it will not serialize here it will not serialize in main() either;
+        # that failure surfaces there rather than being reported as a leak.
+        return False
 
 
 def get_environment_info():
@@ -150,13 +673,46 @@ async def process_task(task_data, tp: TaskProcessor):
         # rebuilds results via json_to_result on the client side.
         raw_payload = task_data.get("payload")
         payload = tp.plugin_ref.plugin.json_to_payload(hook_type, raw_payload) if raw_payload is not None else None
-        result = await tp.executor.execute_plugin(
-            hook_ref=tp.get_hook_ref(hook_type),
-            payload=payload,
-            local_context=plugin_context,
-            violations_as_exceptions=False,
-        )
-        return result
+
+        # Identity and delegation payloads carry their raw token as a SecretStr,
+        # which serializes redacted — so the plaintext arrives on a separate
+        # `credential` task field instead and is folded back onto the payload
+        # here, immediately before execution. Reconstruction is opt-in on the
+        # field's presence: a credential-bearing hook with no credential field is
+        # not an error, it just runs with whatever the payload carried.
+        credential = task_data.get(CREDENTIAL_FIELD)
+        # Plaintext held only for the duration of the hook call, and only to scrub
+        # it back out of anything the hook logs, raises, prints, or returns (see
+        # execute_hook_scrubbed). Reset per call, so no token crosses tasks.
+        plaintext_token: str | None = None
+        try:
+            if payload is not None and credential is not None and hook_type in CREDENTIAL_HOOKS:
+                payload = reconstruct_credential_payload(hook_type, payload, credential)
+                plaintext_token = _payload_secret_value(hook_type, payload)
+
+            # The hook runs behind a scrubbing barrier: a plugin is free to
+            # interpolate its own credential into a log line, an exception, a
+            # stdout write, or its returned result, and everything downstream of
+            # here would forward that verbatim onto the channel the host reads.
+            return await execute_hook_scrubbed(
+                tp=tp,
+                hook_type=hook_type,
+                payload=payload,
+                plugin_context=plugin_context,
+                plaintext_token=plaintext_token,
+            )
+        except CredentialError as ce:
+            # Fail closed, for both causes: a credential field that cannot yield a
+            # usable token (proceeding would authenticate downstream as an empty
+            # bearer), and a plugin result that echoed the plaintext (shipping it
+            # would put the credential on stdout). str(ce) is safe to echo —
+            # CredentialError messages name only the problem, never a value.
+            logger.error("Credential handling failed for hook %s: %s", hook_type, str(ce))
+            return {
+                "status": "error",
+                "message": f"Credential reconstruction failed: {str(ce)}",
+                "request_id": task_data.get("request_id", "unknown"),
+            }
     return {
         "status": "error",
         "message": "task type not supported.",
@@ -259,11 +815,19 @@ async def main():
                 # Process the task
                 response = await process_task(task_data, tp)
 
-                # Serialize response
-                if response:
-                    serializable_response = response.model_dump(mode="json")
-                else:  # none case should be a failure rather than success.
+                # Serialize response. process_task returns either a pydantic
+                # result model (the hook path) or a plain dict (the info,
+                # unsupported-task-type, and fail-closed credential paths), so
+                # only call model_dump when there is one to call — otherwise the
+                # dict branches raise AttributeError into the generic handler and
+                # their real message is replaced by a model_dump complaint.
+                if response is None:
+                    # none case should be a failure rather than success.
                     serializable_response = {"status": "success"}
+                elif isinstance(response, dict):
+                    serializable_response = response
+                else:
+                    serializable_response = response.model_dump(mode="json")
 
                 # Add request_id to response
                 serializable_response["request_id"] = request_id
