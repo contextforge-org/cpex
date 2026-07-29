@@ -159,7 +159,7 @@ CPEX is a Cargo workspace of focused crates:
 | [`cpex-builtins`](crates/cpex-builtins) | Feature-gated bundle of builtin plugins, PDPs, session stores |
 | [`cpex-ffi`](crates/cpex-ffi) | C FFI (`cdylib`/`staticlib`) for Go / Python / WASM host bindings |
 | [`apl-core`](crates/apl-core) · [`apl-cmf`](crates/apl-cmf) · [`apl-cpex`](crates/apl-cpex) | APL (Authorization Policy Language): compiler/evaluator, CMF bridge, CPEX integration |
-| `builtins/*` | Bundled plugins (PII scanner, audit logger, JWT identity, OAuth/Biscuit delegation), PDPs (Cedar, CEL), and the Valkey session store |
+| `builtins/*` | Bundled plugins (PII scanner, audit logger, JWT identity, OAuth/Biscuit delegation), PDPs (Cedar, CEL, OPA/Rego), and the Valkey session store |
 
 The C FFI is distributed as signed prebuilt artifacts. See [`crates/cpex-ffi/RELEASE.md`](crates/cpex-ffi/RELEASE.md). Go bindings live in [`go/cpex`](go/cpex).
 

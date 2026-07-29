@@ -143,7 +143,7 @@ impl OpaResolver {
             }
         }
 
-        let on_error = match read_string(map, "on_error").as_deref() {
+        let on_error = match read_string(map, "on_error")?.as_deref() {
             None | Some("deny") => OnError::Deny,
             Some("allow") => OnError::Allow,
             Some(other) => {
@@ -153,7 +153,7 @@ impl OpaResolver {
             },
         };
 
-        let decision_field = read_string(map, "decision_field").unwrap_or_else(|| "allow".into());
+        let decision_field = read_string(map, "decision_field")?.unwrap_or_else(|| "allow".into());
 
         let mut engine = Engine::new();
 
@@ -393,11 +393,19 @@ fn merge_data(
     Ok(())
 }
 
-/// Read an optional string field from a YAML mapping.
-fn read_string(map: &serde_yaml::Mapping, key: &str) -> Option<String> {
-    map.get(serde_yaml::Value::String(key.to_string()))?
-        .as_str()
-        .map(|s| s.to_string())
+/// Read an optional string field from a YAML mapping. A key that is absent (or
+/// explicitly null) yields `None`; a key present with a non-string value is a
+/// config error rather than a silent default, matching the strictness applied
+/// to unknown keys and non-sequence `modules`.
+fn read_string(map: &serde_yaml::Mapping, key: &str) -> Result<Option<String>, BuildError> {
+    match map.get(serde_yaml::Value::String(key.to_string())) {
+        None => Ok(None),
+        Some(serde_yaml::Value::Null) => Ok(None),
+        Some(value) => match value.as_str() {
+            Some(s) => Ok(Some(s.to_string())),
+            None => Err(BuildError::ConfigShape(format!("`{key}` must be a string"))),
+        },
+    }
 }
 
 /// Read an optional sequence-of-strings field. A missing key yields an empty
@@ -505,6 +513,87 @@ data:
     fn modules_must_be_a_sequence() {
         let err = cfg("kind: opa\nmodules: not-a-list\n").unwrap_err();
         assert!(matches!(err, BuildError::ConfigShape(m) if m.contains("modules")));
+    }
+
+    #[test]
+    fn non_string_on_error_is_rejected_not_silently_defaulted() {
+        // A non-string `on_error` (here a list) must fail loudly at load rather
+        // than silently falling back to the deny default.
+        let err = cfg("kind: opa\non_error: [deny]\n").unwrap_err();
+        assert!(matches!(err, BuildError::ConfigShape(m) if m.contains("on_error")));
+    }
+
+    #[test]
+    fn non_string_decision_field_is_rejected() {
+        let err =
+            cfg("kind: opa\ndecision_field: {a: 1}\nmodules:\n  - \"package p\"\n").unwrap_err();
+        assert!(matches!(err, BuildError::ConfigShape(m) if m.contains("decision_field")));
+    }
+
+    /// A distinct temp file path per test, so parallel tests never collide.
+    fn temp_path(name: &str, ext: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("cpex_opa_{}_{}.{ext}", std::process::id(), name))
+    }
+
+    #[test]
+    fn module_files_load_and_evaluate() {
+        let path = temp_path("modfile", "rego");
+        std::fs::write(
+            &path,
+            "package authz\ndefault allow := false\nallow if input.subject.id == \"alice\"\n",
+        )
+        .unwrap();
+        let yaml = format!("kind: opa\nmodule_files:\n  - {}\n", path.display());
+        let r = cfg(&yaml).expect("module_files should load");
+        // Prove the loaded rule actually evaluates.
+        let mut engine = r.base_engine.clone();
+        engine
+            .set_input_json(r#"{"subject":{"id":"alice"}}"#)
+            .unwrap();
+        assert_eq!(
+            engine
+                .eval_rule("data.authz.allow".to_string())
+                .unwrap()
+                .as_bool()
+                .copied()
+                .ok(),
+            Some(true)
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn data_files_load_and_are_readable() {
+        let path = temp_path("datafile", "json");
+        std::fs::write(&path, r#"{"roles":{"alice":["reader"]}}"#).unwrap();
+        let yaml = format!(
+            "kind: opa\nmodules:\n  - |\n    package authz\n    default allow := false\n    allow if \"reader\" in data.roles[input.subject.id]\ndata_files:\n  - {}\n",
+            path.display()
+        );
+        let r = cfg(&yaml).expect("data_files should load");
+        let mut engine = r.base_engine.clone();
+        engine
+            .set_input_json(r#"{"subject":{"id":"alice"}}"#)
+            .unwrap();
+        assert_eq!(
+            engine
+                .eval_rule("data.authz.allow".to_string())
+                .unwrap()
+                .as_bool()
+                .copied()
+                .ok(),
+            Some(true)
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn missing_data_file_names_the_path() {
+        let err = cfg("kind: opa\ndata_files:\n  - /no/such/roles.json\n").unwrap_err();
+        match err {
+            BuildError::DataFile { path, .. } => assert_eq!(path, "/no/such/roles.json"),
+            other => panic!("expected DataFile, got {other:?}"),
+        }
     }
 }
 
@@ -765,5 +854,30 @@ msg := "not a decision"
                 assert!(matches!(decision, Decision::Deny { .. }));
             }
         }
+    }
+
+    #[test]
+    fn with_dialect_override_is_observable() {
+        let r = resolver(&[ALLOW_WITH_DEFAULT], OnError::Deny)
+            .with_dialect(PdpDialect::Custom("opa-strict".into()));
+        assert_eq!(r.dialect(), PdpDialect::Custom("opa-strict".into()));
+    }
+
+    /// Security gate: the `http.send` builtin is excluded from the pinned
+    /// regorus feature set, so an inline policy attempting network egress must
+    /// not succeed — it fails to compile/evaluate and denies. Guards against a
+    /// regorus upgrade or feature-set change silently re-enabling egress.
+    #[tokio::test]
+    async fn disabled_http_builtin_cannot_allow() {
+        let r = resolver(&[], OnError::Deny);
+        let inline = "package net\nallow if http.send({\"method\": \"get\", \"url\": \"http://example.com\"})\n";
+        let out = r
+            .evaluate(&call("data.net.allow", Some(inline)), &bag("alice"))
+            .await
+            .unwrap();
+        assert!(
+            matches!(out.decision, Decision::Deny { .. }),
+            "http.send must be unavailable and deny, not allow",
+        );
     }
 }

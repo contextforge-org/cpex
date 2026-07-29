@@ -309,4 +309,42 @@ mod tests {
             Mapped::Degenerate(_)
         ));
     }
+
+    #[test]
+    fn object_errors_key_lands_in_diagnostics() {
+        let m = map_query_result(
+            &val(r#"{"allow": false, "errors": ["policy failed", "missing role"]}"#),
+            "allow",
+        );
+        match m {
+            Mapped::Decision(d) => {
+                assert!(d.diagnostics.iter().any(|x| x == "policy failed"));
+                assert!(d.diagnostics.iter().any(|x| x == "missing role"));
+            },
+            Mapped::Degenerate(c) => panic!("degenerate: {c}"),
+        }
+    }
+
+    #[test]
+    fn object_id_field_is_rule_source_fallback() {
+        let m = map_query_result(&val(r#"{"allow": false, "id": "rule-42"}"#), "allow");
+        match decision_of(m) {
+            Decision::Deny { rule_source, .. } => assert_eq!(rule_source, "rule-42"),
+            other => panic!("expected Deny, got {other:?}"),
+        }
+    }
+
+    /// The decision field is authoritative: `allow: true` allows even if the
+    /// object also carries a populated `violations` list. Pins the documented
+    /// precedence so a future change to the object path is a conscious choice.
+    #[test]
+    fn allow_true_wins_over_populated_violations() {
+        assert_eq!(
+            decision_of(map_query_result(
+                &val(r#"{"allow": true, "violations": ["ignored"]}"#),
+                "allow"
+            )),
+            Decision::Allow
+        );
+    }
 }
