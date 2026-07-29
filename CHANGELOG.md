@@ -15,6 +15,17 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added
+
+- Structured control execution records for enforcement observability ([#130](https://github.com/contextforge-org/cpex/issues/130))
+  - `ControlExecutionStatus` enum and `ControlExecutionRecord` Pydantic model in `cpex.framework.models`
+  - `PluginResult.executions: list[ControlExecutionRecord]` — one record per plugin evaluated, always present
+  - All five execution phases instrumented: Sequential, Transform, Audit, Concurrent, Fire-and-forget
+  - Identity fields (`plugin_id`, `plugin_name`, `plugin_kind`, `mode`) sourced from trusted `PluginRef` config — plugins cannot forge these
+  - Monotonic per-plugin timing (`duration_ns`); fire-and-forget records use `duration_ns=0` at spawn time
+  - Security bounds: string fields capped at 256 bytes, config key lists capped at 64 entries, config values never stored
+  - `ControlExecutionRecord` and `ControlExecutionStatus` exported from `cpex.framework`
+
 ## [0.1.1] - 2026-06-04
 
 ### Added

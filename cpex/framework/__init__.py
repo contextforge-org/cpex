@@ -68,6 +68,8 @@ from cpex.framework.loader.config import ConfigLoader
 from cpex.framework.loader.plugin import PluginLoader
 from cpex.framework.manager import PluginManager, TenantPluginManager
 from cpex.framework.models import (
+    ControlExecutionRecord,
+    ControlExecutionStatus,
     GlobalContext,
     MCPClientConfig,
     MCPServerConfig,
@@ -156,6 +158,8 @@ __all__ = [
     "MCPClientConfig",
     "MCPServerConfig",
     "ObservabilityProvider",
+    "ControlExecutionRecord",
+    "ControlExecutionStatus",
     "OnError",
     "Plugin",
     "PluginCondition",

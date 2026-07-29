@@ -31,6 +31,7 @@ Examples:
 import asyncio
 import logging
 import threading
+import time
 from dataclasses import dataclass
 from typing import Any, Literal, Optional, Union
 
@@ -49,6 +50,8 @@ from cpex.framework.loader.plugin import PluginLoader
 from cpex.framework.memory import _safe_deepcopy, copyonwrite, wrap_payload_for_isolation
 from cpex.framework.models import (
     Config,
+    ControlExecutionRecord,
+    ControlExecutionStatus,
     GlobalContext,
     OnError,
     PluginContext,
@@ -57,6 +60,9 @@ from cpex.framework.models import (
     PluginMode,
     PluginPayload,
     PluginResult,
+    _collect_config_keys,
+    _truncate,
+    _truncate_opt,
 )
 from cpex.framework.observability import ObservabilityProvider, current_trace_id
 from cpex.framework.registry import PluginInstanceRegistry
@@ -242,6 +248,7 @@ class PluginExecutor:
         current_extensions: Extensions | None = None
         decision_plugin_name: Optional[str] = None
         ctx = ExecutionContext()
+        executions: list[ControlExecutionRecord] = []
 
         # Start hook-chain observability span
         trace_id = current_trace_id.get()
@@ -289,11 +296,14 @@ class PluginExecutor:
             fire_and_forget_refs=fire_and_forget_refs,
             fire_and_forget_semaphore=fire_and_forget_semaphore,
             extensions=extensions,
+            executions=executions,
         )
         current_payload = phase.payload
         decision_plugin_name = phase.decision_plugin
         current_extensions = phase.extensions
         if halt_result is not None:
+            # Attach records collected so far (including FAF scheduled on halt)
+            halt_result[0].executions = list(executions)
             self._end_hook_chain_span(ctx, status="ok")
             return halt_result
 
@@ -316,6 +326,7 @@ class PluginExecutor:
             ctx=ctx,
             current_extensions=current_extensions,
             extensions=extensions,
+            executions=executions,
         )
         current_payload = phase.payload
         decision_plugin_name = phase.decision_plugin
@@ -340,6 +351,7 @@ class PluginExecutor:
             ctx=ctx,
             current_extensions=current_extensions,
             extensions=extensions,
+            executions=executions,
         )
 
         # CONCURRENT: parallel execution with fail-fast on first blocking result
@@ -378,6 +390,27 @@ class PluginExecutor:
                         ref.plugin_ref.name,
                         hook_type,
                     )
+                # Build the concurrent execution record (duration=0: no per-branch timing)
+                trusted = ref.plugin_ref.trusted_config
+                _concurrent_denied = not result.continue_processing
+                executions.append(ControlExecutionRecord(
+                    plugin_id=ref.plugin_ref.uuid,
+                    plugin_name=ref.plugin_ref.name,
+                    plugin_kind=_truncate(trusted.kind),
+                    hook_name=hook_type,
+                    mode=trusted.mode,
+                    status=ControlExecutionStatus.COMPLETED,
+                    requested_allow=result.continue_processing if result.continue_processing else False,
+                    effective_allow=not _concurrent_denied,
+                    matched=True if _concurrent_denied else None,
+                    applied=_concurrent_denied,
+                    payload_modified=False,
+                    extensions_modified=False,
+                    duration_ns=0,
+                    reason=_truncate_opt(result.violation.reason if result.violation else None),
+                    error_code=_truncate(result.violation.code) if result.violation else None,
+                    config_keys=_collect_config_keys(trusted.config),
+                ))
                 if not result.continue_processing:
                     pending = sum(1 for t in concurrent_tasks if not t.done())
                     violation_detail = (
@@ -407,6 +440,7 @@ class PluginExecutor:
                         hook_type,
                         decision_plugin_name,
                         extensions=extensions,
+                        executions=executions,
                     )
                     self._end_hook_chain_span(ctx, status="ok")
                     return halt
@@ -419,6 +453,8 @@ class PluginExecutor:
             res_local_contexts,
             fire_and_forget_semaphore,
             extensions=extensions,
+            executions=executions,
+            hook_type=hook_type,
         )
 
         if hook_type == HTTP_AUTH_CHECK_PERMISSION_HOOK and decision_plugin_name:
@@ -435,6 +471,7 @@ class PluginExecutor:
                 metadata=combined_metadata,
                 background_tasks=bg_tasks,
                 retry_delay_ms=ctx.max_retry_delay_ms,
+                executions=list(executions),
             ),
             res_local_contexts,
         )
@@ -543,6 +580,7 @@ class PluginExecutor:
         fire_and_forget_refs: Optional[list[HookRef]] = None,
         fire_and_forget_semaphore: Optional[asyncio.Semaphore] = None,
         extensions: Optional[Extensions] = None,
+        executions: Optional[list[ControlExecutionRecord]] = None,
     ) -> tuple[
         Optional[tuple[PluginResult, PluginContextTable | None]],
         PhaseState,
@@ -567,6 +605,7 @@ class PluginExecutor:
             ctx: Per-call execution context; counters and stop reason accumulate here.
             fire_and_forget_refs: Fire-and-forget refs to schedule on halt (only used when allow_blocking=True).
             fire_and_forget_semaphore: Semaphore for fire-and-forget tasks (only used when allow_blocking=True).
+            executions: Accumulator list for ControlExecutionRecords; appended in-place.
 
         Returns:
             A tuple of (halt_result, phase_state). halt_result is None if pipeline continues.
@@ -576,22 +615,48 @@ class PluginExecutor:
             effective_payload = current_payload if current_payload is not None else payload
             plugin_input = self._isolate_payload(effective_payload, policy)
 
-            result = await self.execute_plugin(
-                hook_ref,
-                plugin_input,
-                local_context,
-                violations_as_exceptions,
-                global_context,
-                combined_metadata,
-                extensions=extensions,
-            )
+            t_start = time.monotonic_ns()
+            try:
+                result = await self.execute_plugin(
+                    hook_ref,
+                    plugin_input,
+                    local_context,
+                    violations_as_exceptions,
+                    global_context,
+                    combined_metadata,
+                    extensions=extensions,
+                )
+                duration_ns = time.monotonic_ns() - t_start
+                exec_status = ControlExecutionStatus.COMPLETED
+                exec_error_code: Optional[str] = None
+                exec_reason: Optional[str] = None
+            except PluginViolationError:
+                # violations_as_exceptions=True — propagate immediately, no record needed
+                raise
+            except asyncio.TimeoutError:
+                duration_ns = time.monotonic_ns() - t_start
+                exec_status = ControlExecutionStatus.TIMEOUT
+                exec_error_code = "plugin_timeout"
+                exec_reason = f"Plugin {hook_ref.plugin_ref.name} timed out"
+                result = PluginResult(continue_processing=True)
+            except (PluginError, Exception) as _exc:
+                duration_ns = time.monotonic_ns() - t_start
+                exec_status = ControlExecutionStatus.ERROR
+                exec_error_code = "plugin_error"
+                exec_reason = str(_exc)
+                result = PluginResult(continue_processing=True)
+
             ctx.hook_chain_executed += 1
 
             # Propagate retry signal — take the largest delay requested by any plugin
             ctx.max_retry_delay_ms = max(ctx.max_retry_delay_ms, result.retry_delay_ms)
 
+            payload_modified = False
+            extensions_modified = False
+
             if result.modified_payload is not None:
                 if apply_modifications:
+                    prev_payload = current_payload
                     current_payload, decision_plugin_name = self._apply_payload_modification(
                         hook_ref,
                         result,
@@ -602,6 +667,7 @@ class PluginExecutor:
                         decision_plugin_name,
                         apply_to=effective_payload,
                     )
+                    payload_modified = current_payload is not prev_payload
                 else:
                     logger.debug(
                         "%s plugin %s returned modified_payload on hook %s; discarding (%s is observe-only)",
@@ -613,7 +679,55 @@ class PluginExecutor:
 
             # Accumulate modified_extensions (last writer wins)
             if result.modified_extensions is not None:
+                prev_ext = current_extensions
                 current_extensions = result.modified_extensions
+                extensions_modified = current_extensions is not prev_ext
+
+            # Derive matched / applied / effective_allow for the record
+            denied = not result.continue_processing
+            if exec_status == ControlExecutionStatus.COMPLETED:
+                requested_allow: Optional[bool] = result.continue_processing
+                # matched: True if denied, or if payload/extensions were changed
+                # False if clean allow with no mutation, None if error/timeout
+                matched: Optional[bool] = True if denied else (
+                    True if (payload_modified or extensions_modified) else False
+                )
+                effective_allow = not denied
+                rec_applied = denied or payload_modified or extensions_modified
+                rec_error_code = (
+                    _truncate(result.violation.code) if (denied and result.violation) else exec_error_code
+                )
+                rec_reason = (
+                    _truncate_opt(result.violation.reason if (denied and result.violation) else exec_reason)
+                )
+            else:
+                requested_allow = None
+                matched = None
+                effective_allow = True   # error/timeout in non-blocking phase → pipeline continues
+                rec_applied = exec_status in (ControlExecutionStatus.ERROR, ControlExecutionStatus.TIMEOUT) and allow_blocking
+                rec_error_code = exec_error_code
+                rec_reason = _truncate_opt(exec_reason)
+
+            if executions is not None:
+                trusted = hook_ref.plugin_ref.trusted_config
+                executions.append(ControlExecutionRecord(
+                    plugin_id=hook_ref.plugin_ref.uuid,
+                    plugin_name=hook_ref.plugin_ref.name,
+                    plugin_kind=_truncate(trusted.kind),
+                    hook_name=hook_type,
+                    mode=trusted.mode,
+                    status=exec_status,
+                    requested_allow=requested_allow,
+                    effective_allow=effective_allow,
+                    matched=matched,
+                    applied=rec_applied,
+                    payload_modified=payload_modified,
+                    extensions_modified=extensions_modified,
+                    duration_ns=duration_ns,
+                    reason=rec_reason,
+                    error_code=rec_error_code,
+                    config_keys=_collect_config_keys(trusted.config),
+                ))
 
             if not result.continue_processing:
                 violation_detail = f": [{result.violation.code}] {result.violation.reason}" if result.violation else ""
@@ -641,6 +755,7 @@ class PluginExecutor:
                         hook_type,
                         decision_plugin_name,
                         extensions=extensions,
+                        executions=executions,
                     )
                     return halt, state
                 else:
@@ -780,6 +895,7 @@ class PluginExecutor:
         hook_type: str,
         decision_plugin_name: Optional[str],
         extensions: Optional[Extensions] = None,
+        executions: Optional[list[ControlExecutionRecord]] = None,
     ) -> tuple[PluginResult, dict]:
         """Schedule fire-and-forget tasks and build a pipeline-halting result."""
         bg_tasks = self._fire_and_forget_tasks(
@@ -789,6 +905,8 @@ class PluginExecutor:
             res_local_contexts,
             fire_and_forget_semaphore,
             extensions=extensions,
+            executions=executions,
+            hook_type=hook_type,
         )
         if hook_type == HTTP_AUTH_CHECK_PERMISSION_HOOK and decision_plugin_name:
             combined_metadata[DECISION_PLUGIN_METADATA_KEY] = decision_plugin_name
@@ -799,6 +917,7 @@ class PluginExecutor:
                 violation=violation,
                 metadata=combined_metadata,
                 background_tasks=bg_tasks,
+                executions=list(executions) if executions is not None else [],
             ),
             res_local_contexts,
         )
@@ -823,6 +942,8 @@ class PluginExecutor:
         res_local_contexts: dict,
         semaphore: Optional[asyncio.Semaphore],
         extensions: Optional[Extensions] = None,
+        executions: Optional[list[ControlExecutionRecord]] = None,
+        hook_type: str = "",
     ) -> list[asyncio.Task]:
         """Schedule all FIRE_AND_FORGET plugins as fire-and-forget background tasks.
 
@@ -851,6 +972,31 @@ class PluginExecutor:
             )
             local_context = PluginContext(global_context=tmp_gc)
             res_local_contexts[local_context_key] = local_context
+
+            # FAF record appended at spawn time — outcome is unknowable when pipeline returns.
+            # status=Completed is an optimistic placeholder; duration_ns=0 (not yet run).
+            # Identify FAF records by mode == "fire_and_forget", not by status.
+            if executions is not None:
+                trusted = ref.plugin_ref.trusted_config
+                executions.append(ControlExecutionRecord(
+                    plugin_id=ref.plugin_ref.uuid,
+                    plugin_name=ref.plugin_ref.name,
+                    plugin_kind=_truncate(trusted.kind),
+                    hook_name=hook_type,
+                    mode=trusted.mode,
+                    status=ControlExecutionStatus.COMPLETED,
+                    requested_allow=None,
+                    effective_allow=True,
+                    matched=None,
+                    applied=False,
+                    payload_modified=False,
+                    extensions_modified=False,
+                    duration_ns=0,
+                    reason=None,
+                    error_code=None,
+                    config_keys=_collect_config_keys(trusted.config),
+                ))
+
             task = asyncio.create_task(
                 self._run_fire_and_forget_task(ref, task_input, local_context, semaphore, extensions=extensions)
             )
