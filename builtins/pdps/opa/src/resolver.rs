@@ -187,16 +187,7 @@ impl OpaResolver {
         //    `.yaml` data file both work) and merged into the `data` root.
         if let Some(data) = map.get(serde_yaml::Value::String("data".into())) {
             if !data.is_null() {
-                let json = serde_json::to_string(data).map_err(|e| BuildError::DataParse {
-                    name: "data".into(),
-                    cause: e.to_string(),
-                })?;
-                engine
-                    .add_data_json(&json)
-                    .map_err(|e| BuildError::DataParse {
-                        name: "data".into(),
-                        cause: e.to_string(),
-                    })?;
+                merge_data(&mut engine, "data", data)?;
             }
         }
         for path in read_string_seq(map, "data_files")? {
@@ -209,16 +200,7 @@ impl OpaResolver {
                     name: path.clone(),
                     cause: e.to_string(),
                 })?;
-            let json = serde_json::to_string(&parsed).map_err(|e| BuildError::DataParse {
-                name: path.clone(),
-                cause: e.to_string(),
-            })?;
-            engine
-                .add_data_json(&json)
-                .map_err(|e| BuildError::DataParse {
-                    name: path,
-                    cause: e.to_string(),
-                })?;
+            merge_data(&mut engine, &path, &parsed)?;
         }
 
         Ok(Self {
@@ -391,6 +373,24 @@ impl PdpResolver for OpaResolver {
             Err(e) => Ok(self.on_error_decision(format!("OPA eval error: {e}"))),
         }
     }
+}
+
+/// Normalize a YAML/JSON data document to JSON and merge it into the engine's
+/// `data` root. `name` labels the source (`"data"` or a file path) in errors.
+fn merge_data(
+    engine: &mut Engine,
+    name: &str,
+    value: &serde_yaml::Value,
+) -> Result<(), BuildError> {
+    let to_err = |cause: String| BuildError::DataParse {
+        name: name.to_string(),
+        cause,
+    };
+    let json = serde_json::to_string(value).map_err(|e| to_err(e.to_string()))?;
+    engine
+        .add_data_json(&json)
+        .map_err(|e| to_err(e.to_string()))?;
+    Ok(())
 }
 
 /// Read an optional string field from a YAML mapping.
