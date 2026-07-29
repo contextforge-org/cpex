@@ -1,5 +1,5 @@
-// Location: ./crates/cpex-wasm-plugin/src/plugins/pii_guard.rs
-// Copyright 2025
+// Location: ./crates/cpex-wasm-plugin/src/examples/pii_guard.rs
+// Copyright 2026
 // SPDX-License-Identifier: Apache-2.0
 // Authors: Shriti Priya
 //
@@ -8,6 +8,7 @@
 // Mirrors the native PiiGuard from plugin_demo.rs: checks that pii_clearance
 // is set in PluginContext global state before allowing PII-tagged tools.
 // Runs as priority 20 in the sequential pipeline.
+
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};

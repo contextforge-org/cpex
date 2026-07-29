@@ -1,5 +1,5 @@
-// Location: ./crates/cpex-wasm-plugin/src/plugins/audit_logger_custom.rs
-// Copyright 2025
+// Location: ./crates/cpex-wasm-plugin/src/examples/audit_logger_custom.rs
+// Copyright 2026
 // SPDX-License-Identifier: Apache-2.0
 // Authors: Shriti Priya
 //
@@ -7,6 +7,7 @@
 //
 // Mirrors the native AuditLogger from plugin_demo.rs: logs all tool invocations
 // without blocking. Runs as fire_and_forget mode at priority 100.
+
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};

@@ -2,15 +2,24 @@
 name = "cpex-wasm-plugin"
 version = "0.1.0"
 edition = "2021"
-description = "WASM plugin guest SDK for the CPEX framework — register_wasm_plugin! macro, type conversions, and demo plugins"
+description = "WASM plugin guest SDK for the CPEX framework — register_wasm_plugin! macro, prelude, and reference examples"
+publish = false
 license = "Apache-2.0"
 authors = ["Shriti Priya"]
+repository = "https://github.com/contextforge-org/cpex"
+homepage = "https://github.com/contextforge-org/cpex"
+keywords = ["wasm", "plugin", "sdk", "wasi", "cpex"]
+categories = ["wasm", "development-tools"]
+rust-version = "1.78"
 
 [lib]
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "lib"]
 
 [features]
-default = ["identity-checker"]
+default = []
+# ── Demo feature flags (internal) ──────────────────────────────────────────
+# These enable individual demo plugins for compilation. You don't need to
+# touch these — use `make build-demo DEMO=<name>` instead.
 identity-checker = []
 header-injector = []
 audit-logger = []
@@ -24,6 +33,18 @@ pii-guard = []
 audit-logger-custom = []
 remote-authz = []
 compute-bench = []
+fs-sandbox-demo = []
+env-sandbox-demo = []
+resource-test = []
+net-http-test = []
+# Enables all demos for testing — use: cargo test --features test-demos
+test-demos = [
+    "identity-checker", "header-injector", "audit-logger", "token-attenuator",
+    "noop", "fs-test", "net-test", "env-test", "tool-invoke-checker",
+    "pii-guard", "audit-logger-custom", "remote-authz", "compute-bench",
+    "fs-sandbox-demo", "env-sandbox-demo", "resource-test", "net-http-test",
+]
+
 
 [dependencies]
 wit-bindgen = "0.57"
@@ -37,6 +58,7 @@ zeroize = "1"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt"] }
+tempfile = "3"
 
 [package.metadata.component]
 package = "cpex:plugin"

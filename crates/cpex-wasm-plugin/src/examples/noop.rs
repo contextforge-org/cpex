@@ -1,7 +1,8 @@
-// Location: ./crates/cpex-wasm-plugin/src/plugins/noop.rs
+// Location: ./crates/cpex-wasm-plugin/src/examples/noop.rs
 // Copyright 2026
 // SPDX-License-Identifier: Apache-2.0
 // Authors: Shriti Priya
+
 
 use async_trait::async_trait;
 

@@ -1,5 +1,5 @@
 // Location: ./crates/cpex-wasm-plugin/src/conversions.rs
-// Copyright 2025
+// Copyright 2026
 // SPDX-License-Identifier: Apache-2.0
 // Authors: Shriti Priya
 //
@@ -52,6 +52,7 @@ use crate::cpex::plugin::types::*;
 // WIT → Native: MessagePayload
 // ---------------------------------------------------------------------------
 
+/// Convert a WIT MessagePayload to a native cpex-core MessagePayload.
 pub fn wit_payload_to_native(payload: MessagePayload) -> native_msg::MessagePayload {
     native_msg::MessagePayload { message: wit_message_to_native(payload.message) }
 }
@@ -198,6 +199,7 @@ fn wit_resource_type_to_native(rt: ResourceType) -> native_enums::ResourceType {
 // WIT → Native: Extensions (full coverage)
 // ---------------------------------------------------------------------------
 
+/// Convert WIT Extensions to native cpex-core Extensions (Arc-wrapped fields).
 pub fn wit_extensions_to_native(ext: Extensions) -> NativeExtensions {
     NativeExtensions {
         request: ext.request.map(|r| Arc::new(NativeRequestExtension {
@@ -447,7 +449,13 @@ fn wit_delegation_to_native(d: DelegationExtension) -> NativeDelegationExtension
                     .collect(),
                 timestamp: DateTime::parse_from_rfc3339(&hop.timestamp)
                     .map(|dt| dt.with_timezone(&chrono::Utc))
-                    .unwrap_or_else(|_| chrono::Utc::now()),
+                    .unwrap_or_else(|e| {
+                        eprintln!(
+                            "[WASM] failed to parse delegation timestamp '{}': {} — substituting Utc::now()",
+                            hop.timestamp, e
+                        );
+                        chrono::Utc::now()
+                    }),
                 ttl_seconds: hop.ttl_seconds,
                 strategy,
                 from_cache: hop.from_cache,
@@ -457,7 +465,13 @@ fn wit_delegation_to_native(d: DelegationExtension) -> NativeDelegationExtension
         origin_subject_id: d.origin_subject_id,
         actor_subject_id: d.actor_subject_id,
         delegated: d.delegated,
-        age_seconds: d.age_seconds.parse().unwrap_or(0.0),
+        age_seconds: d.age_seconds.parse().unwrap_or_else(|e| {
+            eprintln!(
+                "[WASM] failed to parse delegation age_seconds '{}': {} — defaulting to 0.0",
+                d.age_seconds, e
+            );
+            0.0
+        }),
     }
 }
 
@@ -465,6 +479,7 @@ fn wit_delegation_to_native(d: DelegationExtension) -> NativeDelegationExtension
 // WIT → Native: PluginContext
 // ---------------------------------------------------------------------------
 
+/// Convert a WIT PluginContext to a native cpex-core PluginContext.
 pub fn wit_context_to_native(ctx: PluginContext) -> NativePluginContext {
     NativePluginContext {
         local_state: ctx.local_state.into_iter()
@@ -479,13 +494,6 @@ pub fn wit_context_to_native(ctx: PluginContext) -> NativePluginContext {
 // ---------------------------------------------------------------------------
 // Native → WIT: PluginResult → HookResult
 // ---------------------------------------------------------------------------
-
-pub fn native_result_to_hook_result(
-    result: NativePluginResult<native_msg::MessagePayload>,
-    ctx: &NativePluginContext,
-) -> HookResult {
-    native_result_to_hook_result_generic(result, ctx)
-}
 
 /// Converts a typed `PluginResult<P>` to a WIT HookResult for any payload
 /// type that can cross the WASM boundary. A modified `MessagePayload` goes
@@ -552,6 +560,7 @@ pub(crate) fn native_context_to_wit(ctx: &NativePluginContext) -> PluginContext 
 // Native → WIT: MessagePayload
 // ---------------------------------------------------------------------------
 
+/// Convert a native cpex-core MessagePayload to a WIT MessagePayload.
 pub fn native_payload_to_wit(payload: native_msg::MessagePayload) -> MessagePayload {
     MessagePayload { message: native_message_to_wit(payload.message) }
 }
@@ -677,7 +686,20 @@ fn native_resource_type_to_wit(rt: native_enums::ResourceType) -> ResourceType {
 // Native → WIT: OwnedExtensions (from PluginResult::modified_extensions)
 // ---------------------------------------------------------------------------
 
-fn native_owned_extensions_to_wit(
+/// Convert plugin-modified extensions back to WIT for the host.
+///
+/// LIMITATION: The following extension slots are NOT converted and will be
+/// silently discarded if a plugin modifies them:
+///   - agent, mcp, completion, provenance, llm, framework, delegation, custom
+///   - security.client, security.caller_workload, security.this_workload
+///   - security.objects, security.data
+///
+/// Only these are preserved across the boundary:
+///   - request (environment, request_id, timestamp, trace_id, span_id)
+///   - security (labels, classification, subject, auth_method)
+///   - http (request_headers, response_headers, method, path, host, scheme)
+///   - meta (entity_type, entity_name, tags, scope, properties)
+pub(crate) fn native_owned_extensions_to_wit(
     ext: &cpex_core::extensions::container::OwnedExtensions,
 ) -> Extensions {
     Extensions {
@@ -734,5 +756,663 @@ fn native_owned_extensions_to_wit(
         framework: None,
         delegation: None,
         custom: None,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cpex_core::cmf::constants::SCHEMA_VERSION;
+
+    // ── MessagePayload roundtrip ─────────────────────────────────────────────
+
+    #[test]
+    fn test_payload_roundtrip_text_message() {
+        let native = native_msg::MessagePayload {
+            message: native_msg::Message {
+                schema_version: SCHEMA_VERSION.into(),
+                role: native_enums::Role::User,
+                content: vec![native_content::ContentPart::Text {
+                    text: "hello world".into(),
+                }],
+                channel: None,
+            },
+        };
+
+        let wit = native_payload_to_wit(native.clone());
+        let back = wit_payload_to_native(wit);
+
+        assert_eq!(back.message.schema_version, native.message.schema_version);
+        assert_eq!(back.message.content.len(), 1);
+        match &back.message.content[0] {
+            native_content::ContentPart::Text { text } => assert_eq!(text, "hello world"),
+            _ => panic!("expected Text"),
+        }
+    }
+
+    #[test]
+    fn test_payload_roundtrip_tool_call() {
+        let mut args = HashMap::new();
+        args.insert("key".to_string(), serde_json::json!("value"));
+        args.insert("num".to_string(), serde_json::json!(42));
+
+        let native = native_msg::MessagePayload {
+            message: native_msg::Message {
+                schema_version: SCHEMA_VERSION.into(),
+                role: native_enums::Role::Assistant,
+                content: vec![native_content::ContentPart::ToolCall {
+                    content: native_content::ToolCall {
+                        tool_call_id: "tc_001".into(),
+                        name: "get_data".into(),
+                        arguments: args.clone(),
+                        namespace: Some("mcp".into()),
+                    },
+                }],
+                channel: Some(native_enums::Channel::Final),
+            },
+        };
+
+        let wit = native_payload_to_wit(native);
+        let back = wit_payload_to_native(wit);
+
+        assert_eq!(back.message.channel, Some(native_enums::Channel::Final));
+        match &back.message.content[0] {
+            native_content::ContentPart::ToolCall { content } => {
+                assert_eq!(content.tool_call_id, "tc_001");
+                assert_eq!(content.name, "get_data");
+                assert_eq!(content.arguments, args);
+                assert_eq!(content.namespace, Some("mcp".into()));
+            }
+            _ => panic!("expected ToolCall"),
+        }
+    }
+
+    #[test]
+    fn test_payload_roundtrip_tool_result() {
+        let native = native_msg::MessagePayload {
+            message: native_msg::Message {
+                schema_version: SCHEMA_VERSION.into(),
+                role: native_enums::Role::Tool,
+                content: vec![native_content::ContentPart::ToolResult {
+                    content: native_content::ToolResult {
+                        tool_call_id: "tc_001".into(),
+                        tool_name: "get_data".into(),
+                        content: serde_json::json!({"result": "ok"}),
+                        is_error: false,
+                    },
+                }],
+                channel: None,
+            },
+        };
+
+        let wit = native_payload_to_wit(native);
+        let back = wit_payload_to_native(wit);
+
+        match &back.message.content[0] {
+            native_content::ContentPart::ToolResult { content } => {
+                assert_eq!(content.tool_call_id, "tc_001");
+                assert_eq!(content.tool_name, "get_data");
+                assert_eq!(content.content, serde_json::json!({"result": "ok"}));
+                assert!(!content.is_error);
+            }
+            _ => panic!("expected ToolResult"),
+        }
+    }
+
+    #[test]
+    fn test_payload_roundtrip_all_roles() {
+        let roles = vec![
+            (native_enums::Role::System, Role::System),
+            (native_enums::Role::Developer, Role::Developer),
+            (native_enums::Role::User, Role::User),
+            (native_enums::Role::Assistant, Role::Assistant),
+            (native_enums::Role::Tool, Role::Tool),
+        ];
+
+        for (native_role, _) in roles {
+            let native = native_msg::MessagePayload {
+                message: native_msg::Message {
+                    schema_version: SCHEMA_VERSION.into(),
+                    role: native_role,
+                    content: vec![],
+                    channel: None,
+                },
+            };
+            let wit = native_payload_to_wit(native.clone());
+            let back = wit_payload_to_native(wit);
+            assert_eq!(back.message.role, native.message.role);
+        }
+    }
+
+    // ── PluginContext roundtrip ──────────────────────────────────────────────
+
+    #[test]
+    fn test_context_roundtrip_empty() {
+        let native = NativePluginContext::default();
+        let wit = native_context_to_wit(&native);
+        let back = wit_context_to_native(wit);
+
+        assert!(back.local_state.is_empty());
+        assert!(back.global_state.is_empty());
+    }
+
+    #[test]
+    fn test_context_roundtrip_with_state() {
+        let mut native = NativePluginContext::default();
+        native.set_local("key1", serde_json::json!("value1"));
+        native.set_local("key2", serde_json::json!(42));
+        native.set_global("global_key", serde_json::json!({"nested": true}));
+
+        let wit = native_context_to_wit(&native);
+        let back = wit_context_to_native(wit);
+
+        assert_eq!(back.get_local("key1").unwrap(), &serde_json::json!("value1"));
+        assert_eq!(back.get_local("key2").unwrap(), &serde_json::json!(42));
+        assert_eq!(
+            back.get_global("global_key").unwrap(),
+            &serde_json::json!({"nested": true})
+        );
+    }
+
+    // ── Extensions: WIT → Native ─────────────────────────────────────────────
+
+    #[test]
+    fn test_extensions_empty() {
+        let wit = Extensions {
+            request: None,
+            security: None,
+            http: None,
+            meta: None,
+            agent: None,
+            mcp: None,
+            completion: None,
+            provenance: None,
+            llm: None,
+            framework: None,
+            delegation: None,
+            custom: None,
+        };
+
+        let native = wit_extensions_to_native(wit);
+        assert!(native.request.is_none());
+        assert!(native.security.is_none());
+        assert!(native.http.is_none());
+    }
+
+    #[test]
+    fn test_extensions_security_labels() {
+        let wit = Extensions {
+            security: Some(SecurityExtension {
+                labels: vec!["PII".into(), "SENSITIVE".into()],
+                classification: Some("confidential".into()),
+                subject: None,
+                client: None,
+                caller_workload: None,
+                this_workload: None,
+                auth_method: Some("jwt".into()),
+                objects: vec![],
+                data: vec![],
+            }),
+            request: None,
+            http: None,
+            meta: None,
+            agent: None,
+            mcp: None,
+            completion: None,
+            provenance: None,
+            llm: None,
+            framework: None,
+            delegation: None,
+            custom: None,
+        };
+
+        let native = wit_extensions_to_native(wit);
+        let sec = native.security.unwrap();
+        assert!(sec.has_label("PII"));
+        assert!(sec.has_label("SENSITIVE"));
+        assert_eq!(sec.classification, Some("confidential".into()));
+        assert_eq!(sec.auth_method, Some("jwt".into()));
+    }
+
+    #[test]
+    fn test_extensions_security_subject() {
+        let wit = Extensions {
+            security: Some(SecurityExtension {
+                labels: vec![],
+                classification: None,
+                subject: Some(SubjectExtension {
+                    id: Some("user-123".into()),
+                    subject_type: Some(SubjectType::User),
+                    roles: vec!["admin".into(), "reader".into()],
+                    permissions: vec!["read".into(), "write".into()],
+                    teams: vec!["engineering".into()],
+                    claims: vec![("org".into(), "acme".into())],
+                }),
+                client: None,
+                caller_workload: None,
+                this_workload: None,
+                auth_method: None,
+                objects: vec![],
+                data: vec![],
+            }),
+            request: None,
+            http: None,
+            meta: None,
+            agent: None,
+            mcp: None,
+            completion: None,
+            provenance: None,
+            llm: None,
+            framework: None,
+            delegation: None,
+            custom: None,
+        };
+
+        let native = wit_extensions_to_native(wit);
+        let sec = native.security.unwrap();
+        let sub = sec.subject.as_ref().unwrap();
+        assert_eq!(sub.id, Some("user-123".into()));
+        assert_eq!(sub.subject_type, Some(NativeSubjectType::User));
+        assert!(sub.roles.contains("admin"));
+        assert!(sub.roles.contains("reader"));
+        assert!(sub.permissions.contains("write"));
+        assert!(sub.teams.contains("engineering"));
+        assert_eq!(sub.claims.get("org").unwrap(), "acme");
+    }
+
+    #[test]
+    fn test_extensions_http_headers() {
+        let wit = Extensions {
+            http: Some(HttpExtension {
+                request_headers: vec![
+                    ("Authorization".into(), "Bearer tok".into()),
+                    ("X-Request-ID".into(), "req-1".into()),
+                ],
+                response_headers: vec![("X-Powered-By".into(), "cpex".into())],
+                method: Some("POST".into()),
+                path: Some("/api/v1/tools".into()),
+                host: Some("example.com".into()),
+                scheme: Some("https".into()),
+            }),
+            request: None,
+            security: None,
+            meta: None,
+            agent: None,
+            mcp: None,
+            completion: None,
+            provenance: None,
+            llm: None,
+            framework: None,
+            delegation: None,
+            custom: None,
+        };
+
+        let native = wit_extensions_to_native(wit);
+        let http = native.http.unwrap();
+        assert_eq!(
+            http.request_headers.get("Authorization").unwrap(),
+            "Bearer tok"
+        );
+        assert_eq!(http.request_headers.get("X-Request-ID").unwrap(), "req-1");
+        assert_eq!(
+            http.response_headers.get("X-Powered-By").unwrap(),
+            "cpex"
+        );
+        assert_eq!(http.method, Some("POST".into()));
+        assert_eq!(http.path, Some("/api/v1/tools".into()));
+    }
+
+    #[test]
+    fn test_extensions_request_metadata() {
+        let wit = Extensions {
+            request: Some(RequestExtension {
+                environment: Some("production".into()),
+                request_id: Some("req-abc".into()),
+                timestamp: Some("2026-07-28T12:00:00Z".into()),
+                trace_id: Some("trace-1".into()),
+                span_id: Some("span-1".into()),
+            }),
+            security: None,
+            http: None,
+            meta: None,
+            agent: None,
+            mcp: None,
+            completion: None,
+            provenance: None,
+            llm: None,
+            framework: None,
+            delegation: None,
+            custom: None,
+        };
+
+        let native = wit_extensions_to_native(wit);
+        let req = native.request.unwrap();
+        assert_eq!(req.environment, Some("production".into()));
+        assert_eq!(req.request_id, Some("req-abc".into()));
+        assert_eq!(req.trace_id, Some("trace-1".into()));
+    }
+
+    // ── OwnedExtensions: Native → WIT (and verify what's lost) ───────────────
+
+    #[test]
+    fn test_owned_extensions_security_roundtrip() {
+        use cpex_core::extensions::container::OwnedExtensions;
+
+        let mut sec = NativeSecurityExtension::default();
+        sec.labels = cpex_core::extensions::monotonic::MonotonicSet::from_set(
+            ["PII".to_string(), "AUDIT".to_string()].into_iter().collect(),
+        );
+        sec.subject = Some(NativeSubjectExtension {
+            id: Some("user-1".into()),
+            subject_type: Some(NativeSubjectType::Agent),
+            roles: ["admin".into()].into_iter().collect(),
+            permissions: HashSet::new(),
+            teams: HashSet::new(),
+            claims: HashMap::new(),
+        });
+        sec.auth_method = Some("mtls".into());
+
+        let owned = OwnedExtensions {
+            security: Some(sec),
+            request: None,
+            agent: None,
+            mcp: None,
+            completion: None,
+            provenance: None,
+            llm: None,
+            framework: None,
+            meta: None,
+            raw_credentials: None,
+            http: None,
+            delegation: None,
+            custom: None,
+            http_write_token: None,
+            labels_write_token: None,
+            delegation_write_token: None,
+        };
+
+        let wit = native_owned_extensions_to_wit(&owned);
+        let wit_sec = wit.security.unwrap();
+
+        assert!(wit_sec.labels.contains(&"PII".to_string()));
+        assert!(wit_sec.labels.contains(&"AUDIT".to_string()));
+        assert_eq!(wit_sec.subject.as_ref().unwrap().id, Some("user-1".into()));
+        assert_eq!(
+            wit_sec.subject.as_ref().unwrap().subject_type,
+            Some(SubjectType::Agent)
+        );
+        assert!(wit_sec.subject.as_ref().unwrap().roles.contains(&"admin".to_string()));
+        assert_eq!(wit_sec.auth_method, Some("mtls".into()));
+    }
+
+    #[test]
+    fn test_owned_extensions_http_roundtrip() {
+        use cpex_core::extensions::container::OwnedExtensions;
+        use cpex_core::extensions::guarded::Guarded;
+
+        let http = NativeHttpExtension {
+            request_headers: [("Host".into(), "example.com".into())].into_iter().collect(),
+            response_headers: HashMap::new(),
+            method: Some("GET".into()),
+            path: Some("/test".into()),
+            host: Some("example.com".into()),
+            scheme: Some("https".into()),
+        };
+
+        let owned = OwnedExtensions {
+            http: Some(Guarded::new(http)),
+            security: None,
+            request: None,
+            agent: None,
+            mcp: None,
+            completion: None,
+            provenance: None,
+            llm: None,
+            framework: None,
+            meta: None,
+            raw_credentials: None,
+            delegation: None,
+            custom: None,
+            http_write_token: None,
+            labels_write_token: None,
+            delegation_write_token: None,
+        };
+
+        let wit = native_owned_extensions_to_wit(&owned);
+        let wit_http = wit.http.unwrap();
+
+        assert!(wit_http.request_headers.contains(&("Host".into(), "example.com".into())));
+        assert_eq!(wit_http.method, Some("GET".into()));
+        assert_eq!(wit_http.path, Some("/test".into()));
+    }
+
+    #[test]
+    fn test_owned_extensions_drops_unsupported_fields() {
+        use cpex_core::extensions::container::OwnedExtensions;
+
+        let owned = OwnedExtensions {
+            security: None,
+            request: None,
+            agent: None,
+            mcp: None,
+            completion: None,
+            provenance: None,
+            llm: None,
+            framework: None,
+            meta: None,
+            raw_credentials: None,
+            http: None,
+            delegation: None,
+            custom: None,
+            http_write_token: None,
+            labels_write_token: None,
+            delegation_write_token: None,
+        };
+
+        let wit = native_owned_extensions_to_wit(&owned);
+
+        assert!(wit.agent.is_none());
+        assert!(wit.mcp.is_none());
+        assert!(wit.completion.is_none());
+        assert!(wit.provenance.is_none());
+        assert!(wit.llm.is_none());
+        assert!(wit.framework.is_none());
+        assert!(wit.delegation.is_none());
+        assert!(wit.custom.is_none());
+    }
+
+    // ── Edge cases ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_tool_call_malformed_json_arguments() {
+        let wit_payload = MessagePayload {
+            message: Message {
+                schema_version: SCHEMA_VERSION.into(),
+                role: Role::Assistant,
+                content: vec![ContentPart::ToolCall(ToolCall {
+                    tool_call_id: "tc_1".into(),
+                    name: "test".into(),
+                    arguments: "not valid json{{{".into(),
+                    namespace: None,
+                })],
+                channel: None,
+            },
+        };
+
+        let native = wit_payload_to_native(wit_payload);
+        match &native.message.content[0] {
+            native_content::ContentPart::ToolCall { content } => {
+                assert!(content.arguments.is_empty());
+            }
+            _ => panic!("expected ToolCall"),
+        }
+    }
+
+    #[test]
+    fn test_tool_call_empty_arguments() {
+        let wit_payload = MessagePayload {
+            message: Message {
+                schema_version: SCHEMA_VERSION.into(),
+                role: Role::Assistant,
+                content: vec![ContentPart::ToolCall(ToolCall {
+                    tool_call_id: "tc_1".into(),
+                    name: "test".into(),
+                    arguments: "{}".into(),
+                    namespace: None,
+                })],
+                channel: None,
+            },
+        };
+
+        let native = wit_payload_to_native(wit_payload);
+        match &native.message.content[0] {
+            native_content::ContentPart::ToolCall { content } => {
+                assert!(content.arguments.is_empty());
+            }
+            _ => panic!("expected ToolCall"),
+        }
+    }
+
+    #[test]
+    fn test_unicode_in_tool_name_and_arguments() {
+        let mut args = HashMap::new();
+        args.insert("query".to_string(), serde_json::json!("日本語テスト"));
+
+        let native = native_msg::MessagePayload {
+            message: native_msg::Message {
+                schema_version: SCHEMA_VERSION.into(),
+                role: native_enums::Role::Assistant,
+                content: vec![native_content::ContentPart::ToolCall {
+                    content: native_content::ToolCall {
+                        tool_call_id: "tc_unicode".into(),
+                        name: "검색_도구".into(),
+                        arguments: args.clone(),
+                        namespace: None,
+                    },
+                }],
+                channel: None,
+            },
+        };
+
+        let wit = native_payload_to_wit(native);
+        let back = wit_payload_to_native(wit);
+
+        match &back.message.content[0] {
+            native_content::ContentPart::ToolCall { content } => {
+                assert_eq!(content.name, "검색_도구");
+                assert_eq!(
+                    content.arguments.get("query").unwrap(),
+                    &serde_json::json!("日本語テスト")
+                );
+            }
+            _ => panic!("expected ToolCall"),
+        }
+    }
+
+    #[test]
+    fn test_context_with_nested_json_values() {
+        let mut native = NativePluginContext::default();
+        let complex = serde_json::json!({
+            "array": [1, 2, 3],
+            "nested": {"deep": {"value": true}},
+            "null_field": null
+        });
+        native.set_local("complex", complex.clone());
+
+        let wit = native_context_to_wit(&native);
+        let back = wit_context_to_native(wit);
+
+        assert_eq!(back.get_local("complex").unwrap(), &complex);
+    }
+
+    #[test]
+    fn test_empty_strings_and_vectors() {
+        let native = native_msg::MessagePayload {
+            message: native_msg::Message {
+                schema_version: "".into(),
+                role: native_enums::Role::User,
+                content: vec![],
+                channel: None,
+            },
+        };
+
+        let wit = native_payload_to_wit(native);
+        let back = wit_payload_to_native(wit);
+
+        assert_eq!(back.message.schema_version, "");
+        assert!(back.message.content.is_empty());
+    }
+
+    #[test]
+    fn test_extensions_agent_roundtrip() {
+        let wit = Extensions {
+            agent: Some(AgentExtension {
+                input: Some("user query".into()),
+                session_id: Some("sess-1".into()),
+                conversation_id: Some("conv-1".into()),
+                turn: Some(3),
+                agent_id: Some("agent-1".into()),
+                parent_agent_id: None,
+                conversation: None,
+            }),
+            request: None,
+            security: None,
+            http: None,
+            meta: None,
+            mcp: None,
+            completion: None,
+            provenance: None,
+            llm: None,
+            framework: None,
+            delegation: None,
+            custom: None,
+        };
+
+        let native = wit_extensions_to_native(wit);
+        let agent = native.agent.unwrap();
+        assert_eq!(agent.input, Some("user query".into()));
+        assert_eq!(agent.session_id, Some("sess-1".into()));
+        assert_eq!(agent.turn, Some(3));
+    }
+
+    #[test]
+    fn test_extensions_completion_roundtrip() {
+        let wit = Extensions {
+            completion: Some(CompletionExtension {
+                stop_reason: Some(StopReason::MaxTokens),
+                tokens: Some(TokenUsage {
+                    input_tokens: 100,
+                    output_tokens: 200,
+                    total_tokens: 300,
+                }),
+                model: Some("claude-opus-4".into()),
+                raw_format: None,
+                created_at: Some("2026-07-28T12:00:00Z".into()),
+                latency_ms: Some(1500),
+            }),
+            request: None,
+            security: None,
+            http: None,
+            meta: None,
+            agent: None,
+            mcp: None,
+            provenance: None,
+            llm: None,
+            framework: None,
+            delegation: None,
+            custom: None,
+        };
+
+        let native = wit_extensions_to_native(wit);
+        let comp = native.completion.unwrap();
+        assert_eq!(comp.stop_reason, Some(NativeStopReason::MaxTokens));
+        assert_eq!(comp.tokens.as_ref().unwrap().input_tokens, 100);
+        assert_eq!(comp.tokens.as_ref().unwrap().total_tokens, 300);
+        assert_eq!(comp.model, Some("claude-opus-4".into()));
+        assert_eq!(comp.latency_ms, Some(1500));
     }
 }

@@ -1,7 +1,8 @@
-// Location: ./crates/cpex-wasm-plugin/src/plugins/token_attenuator.rs
+// Location: ./crates/cpex-wasm-plugin/src/examples/token_attenuator.rs
 // Copyright 2026
 // SPDX-License-Identifier: Apache-2.0
 // Authors: Shriti Priya
+
 
 use async_trait::async_trait;
 use chrono::Utc;
@@ -91,5 +92,71 @@ impl HookHandler<TokenDelegateHook> for TokenAttenuatorPlugin {
             resolved.delegated_token.as_ref().unwrap().audience);
 
         PluginResult::modify_payload(resolved)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use cpex_core::context::PluginContext;
+    use cpex_core::delegation::{DelegationPayload, TargetType, TokenDelegateHook};
+    use cpex_core::extensions::container::Extensions;
+    use cpex_core::hooks::trait_def::{HookHandler, PluginResult};
+
+    use super::TokenAttenuatorPlugin;
+
+    #[tokio::test]
+    async fn test_mints_token_for_tool_target() {
+        let payload = DelegationPayload::new("", "get_compensation")
+            .with_target_type(TargetType::Tool)
+            .with_target_audience("hr-service.internal")
+            .with_required_permissions(vec!["read_compensation".into()]);
+        let ext = Extensions::default();
+        let mut ctx = PluginContext::default();
+        let result: PluginResult<_> =
+            <TokenAttenuatorPlugin as HookHandler<TokenDelegateHook>>::handle(
+                &TokenAttenuatorPlugin, &payload, &ext, &mut ctx,
+            ).await;
+        assert!(result.continue_processing, "expected ALLOW");
+        assert!(result.modified_payload.is_some(), "expected modified payload");
+        let modified = result.modified_payload.as_ref().unwrap();
+        let token = modified.delegated_token.as_ref().expect("should mint token");
+        assert_eq!(token.audience, "hr-service.internal");
+        assert_eq!(token.scopes, vec!["read_compensation"]);
+        assert_eq!(token.outbound_header, "Authorization");
+        assert!(modified.minted_at.is_some());
+        assert_eq!(
+            modified.metadata.get("minter").and_then(|v| v.as_str()),
+            Some("token-attenuator-wasm")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_passes_through_non_tool_targets() {
+        let payload = DelegationPayload::new("", "agent-downstream")
+            .with_target_type(TargetType::Agent);
+        let ext = Extensions::default();
+        let mut ctx = PluginContext::default();
+        let result: PluginResult<_> =
+            <TokenAttenuatorPlugin as HookHandler<TokenDelegateHook>>::handle(
+                &TokenAttenuatorPlugin, &payload, &ext, &mut ctx,
+            ).await;
+        assert!(result.continue_processing, "expected ALLOW");
+        assert!(result.modified_payload.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_uses_target_name_as_audience_when_no_explicit_audience() {
+        let payload = DelegationPayload::new("", "fetch-records")
+            .with_target_type(TargetType::Tool);
+        let ext = Extensions::default();
+        let mut ctx = PluginContext::default();
+        let result: PluginResult<_> =
+            <TokenAttenuatorPlugin as HookHandler<TokenDelegateHook>>::handle(
+                &TokenAttenuatorPlugin, &payload, &ext, &mut ctx,
+            ).await;
+        assert!(result.modified_payload.is_some(), "expected modified payload");
+        let token = result.modified_payload.as_ref().unwrap()
+            .delegated_token.as_ref().unwrap();
+        assert_eq!(token.audience, "fetch-records");
     }
 }
