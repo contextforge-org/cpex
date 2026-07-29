@@ -439,14 +439,16 @@ impl PdpResolver for OpaResolver {
         })
         .await;
 
-        // 4. Apply on_error to degenerate outcomes; a task panic fails closed
-        //    through on_error too.
+        // 4. Apply on_error to genuine degenerate outcomes (eval error,
+        //    non-decision value). A task panic/abort is an abnormal
+        //    termination, not a policy outcome, so it always denies regardless
+        //    of on_error — the same fail-closed treatment as compile errors.
         match outcome {
             Ok(EvalOutcome::Decision(decision)) => Ok(decision),
             Ok(EvalOutcome::OnError(cause)) => Ok(self.on_error_decision(cause)),
-            Err(join_err) => {
-                Ok(self.on_error_decision(format!("OPA evaluation task failed: {join_err}")))
-            },
+            Err(join_err) => Ok(
+                self.compile_error_decision(format!("OPA evaluation task panicked: {join_err}"))
+            ),
         }
     }
 }
