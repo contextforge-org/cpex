@@ -1,0 +1,99 @@
+# ============================================================================
+# CPEX APL bundle — OpenShell integration (remote gRPC middleware).
+# PDP: CEL.
+#
+# ⚠ NON-PRODUCTION / DEMO ONLY. This bundle carries a dev-only Keycloak issuer
+#   over plaintext HTTP (`insecure_http: true`). Never use these settings, or
+#   any localhost dev issuer, in production.
+# ============================================================================
+#
+# This bundle is loaded by the `cpex-openshell-middleware` gRPC service, which an
+# unmodified OpenShell supervisor calls as a remote egress middleware. Because
+# the SupervisorMiddleware contract is request-only (HTTP_REQUEST /
+# PRE_CREDENTIALS), only pre-invocation steps run. It composes on top of
+# OpenShell's OPA baseline: OPA admits the egress first, then CPEX narrows.
+#
+# Demonstrates (the request-only subset):
+#   identity gate     — get_compensation requires role.hr: Bob allowed, Alice
+#                       denied (same tool, same host; the verified identity
+#                       decides).
+#   taint exfil block — get_compensation taints the session ("secret"); a later
+#                       send_email on the same session is denied even though its
+#                       host is allowlisted. Cross-call information-flow control
+#                       OpenShell cannot express today. Taint is applied in the
+#                       pre phase, so it works within the request-only contract.
+#   PDP swap          — search_repos gates on a CEL expression here; bundle-cedar
+#                       encodes the same rule in Cedar. Same inputs, same outcome.
+#
+# NOT here (need a response/suspend/credential-write phase the V1 contract does
+# not carry — these are the in-process path's domain): response redaction,
+# RFC 8693 delegated-token injection, CIBA elicitation.
+#
+# Identity is a Keycloak-issued JWT the caller presents in the dedicated
+# X-CPEX-Identity header (validated here; never read from Authorization, which
+# OpenShell strips before calling the middleware anyway).
+
+global:
+  apl:
+    pdp:
+      - kind: cel
+
+plugins:
+  - name: keycloak
+    kind: identity/jwt
+    hooks: [identity.resolve]
+    config:
+      claim_mapper: standard
+      trusted_issuers:
+        - issuer: "http://localhost:8081/realms/cpex-demo"
+          audiences: ["praxis-gateway", "account"]
+          algorithms: ["RS256"]
+          decoding_key:
+            kind: jwks_url
+            url: "http://localhost:8081/realms/cpex-demo/protocol/openid-connect/certs"
+            insecure_http: true   # DEMO ONLY — localhost dev issuer over plaintext
+          leeway_seconds: 60
+
+  - name: audit-log
+    kind: audit/logger
+    hooks: [cmf.tool_pre_invoke]
+    capabilities: [read_subject, read_meta]
+    config:
+      destination: stderr
+
+routes:
+  # HR lookup: gate on role, then taint the session as having read secret data.
+  # (The delegate(...) step is omitted — the request-only contract has no
+  # credential-write channel.)
+  - tool: get_compensation
+    authentication: [keycloak]
+    authorization:
+      pre_invocation:
+        - "require(role.hr)"
+        - "taint(secret, session)"
+        - "run(audit-log)"
+
+  # Repo search: a PDP expression gate. Engineers may read internal repos only;
+  # security may read any. Encoded in CEL here; bundle-cedar encodes the same
+  # rule in Cedar for the PDP-swap demonstration.
+  - tool: search_repos
+    authentication: [keycloak]
+    authorization:
+      pre_invocation:
+        - "require(authenticated)"
+        - cel:
+            expr: "(has(role.engineer) && role.engineer && args.visibility == 'internal') || (has(role.security) && role.security)"
+            on_deny:
+              - "deny('engineers read internal only; security reads any', 'repo.policy_denied')"
+        - "run(audit-log)"
+
+  # Outbound email: refuse if the session already read secret data (write-down).
+  # This is the taint exfil block — it reads the label taint(...) set on an earlier
+  # call in the same session.
+  - tool: send_email
+    authentication: [keycloak]
+    authorization:
+      pre_invocation:
+        - "require(authenticated)"
+        - "security.labels contains \"secret\": deny('write-down blocked: this session read secret data', 'session_tainted')"
+        - "run(audit-log)"

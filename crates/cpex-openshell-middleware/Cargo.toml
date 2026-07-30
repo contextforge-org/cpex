@@ -1,0 +1,70 @@
+# Location: ./crates/cpex-openshell-middleware/Cargo.toml
+# Copyright 2026
+# SPDX-License-Identifier: Apache-2.0
+# Authors: Xiaokui Shu
+#
+# CPEX OpenShell middleware — a standalone gRPC service implementing OpenShell's
+# `SupervisorMiddleware` contract (CPEX as a remote, out-of-process
+# authorizer). It embeds the CPEX runtime via `cpex::embed` and
+# is called by an unmodified OpenShell supervisor as a remote egress middleware,
+# so nothing links CPEX into OpenShell and there is no Rust toolchain conflict.
+#
+# The contract is request-only (HTTP_REQUEST / PRE_CREDENTIALS), so this service
+# demonstrates the pre-invocation subset: identity-gated allow/deny, cross-call
+# taint (exfil block), and a Cedar/CEL PDP swap. Response redaction, RFC 8693
+# token injection, and CIBA elicitation need a response/suspend phase the V1
+# contract does not carry and require an in-process integration.
+
+[package]
+name = "cpex-openshell-middleware"
+description = "CPEX as a remote OpenShell supervisor middleware (gRPC)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+publish = false
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+# The host facade: construct-once embedding API (CpexAuthorizer, Outcome,
+# resolve_identity, invoke) plus the CMF payload/extension types the adapter
+# builds. `builtins` wires the bundled plugin/PDP factories; the granular
+# features name exactly what the bundle references (JWT identity, both
+# PDPs). No oauth/pii/ciba: those drive capabilities this integration omits.
+cpex = { workspace = true, features = ["builtins", "jwt", "cedar", "cel"] }
+
+# The server codegen (`codegen`), the HTTP/2 server (`server`), the request
+# router, and the transport plumbing the generated stub references. `channel`
+# (client) is only needed by tests, enabled there via dev-deps.
+tonic = { workspace = true, features = ["codegen", "transport", "router", "server"] }
+tonic-prost = { workspace = true }
+prost = { workspace = true }
+prost-types = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+clap = { workspace = true, features = ["derive", "env"] }
+
+[build-dependencies]
+tonic-prost-build = { workspace = true }
+# Supplies protoc for codegen: a prebuilt protoc binary + the well-known-type
+# includes (google/protobuf/struct.proto, empty.proto) the vendored contract
+# imports. Being a prebuilt binary (not a from-source build), it needs no system
+# protoc. It also sidesteps cmake, but only incidentally: cmake would only be
+# needed to build protoc from source (e.g. protobuf-src), which produces the same
+# generated code and the same prost runtime — so there's nothing to gain there.
+protoc-bin-vendored = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "time"] }
+# Tests drive the service over a real loopback channel (the gRPC client side).
+tonic = { workspace = true, features = ["channel", "codegen", "transport"] }
+
+[lints]
+workspace = true

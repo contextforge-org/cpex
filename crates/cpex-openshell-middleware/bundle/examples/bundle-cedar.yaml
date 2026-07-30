@@ -1,0 +1,88 @@
+# ============================================================================
+# CPEX APL bundle — OpenShell integration (remote gRPC middleware).
+# PDP: Cedar. This is the PDP-swap counterpart of bundle-cel.yaml: identical
+# routes and outcomes, with the search_repos gate encoded in Cedar instead of
+# CEL. Swapping the PDP is a service restart with a different --bundle.
+#
+# ⚠ NON-PRODUCTION / DEMO ONLY. Dev-only Keycloak issuer over plaintext HTTP
+#   (`insecure_http: true`). Never use in production.
+# ============================================================================
+#
+# See bundle-cel.yaml for the full capability rationale. Summary: loaded by the
+# `cpex-openshell-middleware` gRPC service; request-only (pre-invocation) subset
+# of the capstone — identity gate, taint exfil block, PDP-gated repo read.
+# Response redaction / RFC 8693 injection / CIBA elicitation are out of reach on
+# the request-only contract and are the in-process path's domain.
+
+global:
+  apl:
+    pdp:
+      - kind: cedar-direct
+        policy_text: |
+          @id("engineering-internal-repos")
+          permit(principal, action == Action::"read", resource is Repo)
+          when {
+            principal.roles.contains("engineer") &&
+            resource.visibility == "internal"
+          };
+
+          @id("security-team-any-repo")
+          permit(principal, action == Action::"read", resource is Repo)
+          when { principal.roles.contains("security") };
+
+plugins:
+  - name: keycloak
+    kind: identity/jwt
+    hooks: [identity.resolve]
+    config:
+      claim_mapper: standard
+      trusted_issuers:
+        - issuer: "http://localhost:8081/realms/cpex-demo"
+          audiences: ["praxis-gateway", "account"]
+          algorithms: ["RS256"]
+          decoding_key:
+            kind: jwks_url
+            url: "http://localhost:8081/realms/cpex-demo/protocol/openid-connect/certs"
+            insecure_http: true   # DEMO ONLY — localhost dev issuer over plaintext
+          leeway_seconds: 60
+
+  - name: audit-log
+    kind: audit/logger
+    hooks: [cmf.tool_pre_invoke]
+    capabilities: [read_subject, read_meta]
+    config:
+      destination: stderr
+
+routes:
+  - tool: get_compensation
+    authentication: [keycloak]
+    authorization:
+      pre_invocation:
+        - "require(role.hr)"
+        - "taint(secret, session)"
+        - "run(audit-log)"
+
+  # Same rule as bundle-cel's search_repos, expressed via the Cedar PDP above.
+  - tool: search_repos
+    authentication: [keycloak]
+    authorization:
+      pre_invocation:
+        - "require(authenticated)"
+        - cedar:
+            action: 'Action::"read"'
+            resource:
+              type: Repo
+              id: ${args.repo_name}
+              attributes:
+                visibility: ${args.visibility}
+            on_deny:
+              - "deny('engineers read internal only; security reads any', 'repo.policy_denied')"
+        - "run(audit-log)"
+
+  - tool: send_email
+    authentication: [keycloak]
+    authorization:
+      pre_invocation:
+        - "require(authenticated)"
+        - "security.labels contains \"secret\": deny('write-down blocked: this session read secret data', 'session_tainted')"
+        - "run(audit-log)"
