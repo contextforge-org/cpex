@@ -1854,7 +1854,9 @@ fn parse_string_list(v: &serde_yaml::Value) -> Result<Vec<String>, String> {
 /// are coerced to their string form, matching the label-map contract
 /// (design §2.3.1) — `custom` is equality-matched labels, not typed
 /// values.
-fn parse_label_map(v: &serde_yaml::Value) -> Result<std::collections::BTreeMap<String, String>, String> {
+fn parse_label_map(
+    v: &serde_yaml::Value,
+) -> Result<std::collections::BTreeMap<String, String>, String> {
     let map = v
         .as_mapping()
         .ok_or_else(|| "must be a map of `label: value` pairs".to_string())?;
@@ -2951,7 +2953,9 @@ mod tests {
             .unwrap();
         assert_eq!(
             toks,
-            vec![Tok::Ident("data.tenants[subject.tenant].data_region".into())]
+            vec![Tok::Ident(
+                "data.tenants[subject.tenant].data_region".into()
+            )]
         );
     }
 
@@ -2972,7 +2976,9 @@ mod tests {
 
     #[test]
     fn lex_rejects_unterminated_bracket() {
-        let err = Lexer::new("data.tenants[subject.tenant").tokenize_all().unwrap_err();
+        let err = Lexer::new("data.tenants[subject.tenant")
+            .tokenize_all()
+            .unwrap_err();
         assert!(format!("{}", err).contains("unterminated"), "got: {}", err);
     }
 
@@ -3855,7 +3861,10 @@ restrict:
             panic!("expected Step::Restrict, got {:?}", step);
         };
         use crate::constraint::OnEmpty;
-        assert_eq!(spec.allow_models, lit(&["vllm/*", "anthropic/claude-sonnet-*"]));
+        assert_eq!(
+            spec.allow_models,
+            lit(&["vllm/*", "anthropic/claude-sonnet-*"])
+        );
         assert_eq!(spec.deny_models, lit(&["openai/*"]));
         assert_eq!(spec.allow_regions, lit(&["eu"]));
         assert_eq!(spec.allow_sites, lit(&["site-a"]));
@@ -3900,14 +3909,15 @@ restrict:
     fn restrict_bracketless_reference_parses_unquoted() {
         // A reference with no `[...]` is a clean plain scalar — no quoting
         // needed even in flow form.
-        let step =
-            parse_step_yaml("restrict: { allow_regions: data.tenant_regions }").unwrap();
+        let step = parse_step_yaml("restrict: { allow_regions: data.tenant_regions }").unwrap();
         let Step::Restrict { spec } = step else {
             panic!("expected Step::Restrict");
         };
         assert_eq!(
             spec.allow_regions,
-            Some(crate::constraint::StringSetSpec::Ref("data.tenant_regions".to_string()))
+            Some(crate::constraint::StringSetSpec::Ref(
+                "data.tenant_regions".to_string()
+            ))
         );
     }
 
@@ -3960,14 +3970,22 @@ cedar:
         // A `restrict:` with no constraint fields restricts nothing —
         // author error.
         let err = parse_step_yaml("restrict: {}").unwrap_err();
-        assert!(format!("{}", err).contains("no constraint fields"), "got: {}", err);
+        assert!(
+            format!("{}", err).contains("no constraint fields"),
+            "got: {}",
+            err
+        );
     }
 
     #[test]
     fn restrict_only_on_empty_rejected() {
         // `on_empty` alone still constrains nothing.
         let err = parse_step_yaml("restrict: { on_empty: deny }").unwrap_err();
-        assert!(format!("{}", err).contains("no constraint fields"), "got: {}", err);
+        assert!(
+            format!("{}", err).contains("no constraint fields"),
+            "got: {}",
+            err
+        );
     }
 
     #[test]
@@ -3980,8 +3998,8 @@ cedar:
 
     #[test]
     fn restrict_bad_on_empty_value_rejected() {
-        let err =
-            parse_step_yaml("restrict: { deny_models: [\"openai/*\"], on_empty: maybe }").unwrap_err();
+        let err = parse_step_yaml("restrict: { deny_models: [\"openai/*\"], on_empty: maybe }")
+            .unwrap_err();
         let msg = format!("{}", err);
         assert!(msg.contains("on_empty"), "got: {}", msg);
         assert!(msg.contains("maybe"), "got: {}", msg);

@@ -182,7 +182,10 @@ mod tests {
                 ..c()
             },
         ]);
-        assert_eq!(folded.allow_models, Some(strs(&["anthropic/*", "openai/*"])));
+        assert_eq!(
+            folded.allow_models,
+            Some(strs(&["anthropic/*", "openai/*"]))
+        );
     }
 
     #[test]

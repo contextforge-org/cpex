@@ -257,7 +257,10 @@ fn default_opts() -> AplOptions {
 }
 
 /// Write attribute files to a fresh temp dir; returns the dir + the paths.
-fn write_attr_files(tag: &str, files: &[(&str, &str)]) -> (std::path::PathBuf, Vec<std::path::PathBuf>) {
+fn write_attr_files(
+    tag: &str,
+    files: &[(&str, &str)],
+) -> (std::path::PathBuf, Vec<std::path::PathBuf>) {
     let dir = std::env::temp_dir().join(format!("apl_decl_{}_{}", tag, std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let paths = files
@@ -275,7 +278,10 @@ fn write_attr_files(tag: &str, files: &[(&str, &str)]) -> (std::path::PathBuf, V
 /// no `set_attribute_tree` call — and it flows into the bag.
 #[tokio::test]
 async fn declarative_attribute_files_load_into_bag() {
-    let (dir, paths) = write_attr_files("load", &[("org.yaml", "data:\n  org:\n    default_region: eu\n")]);
+    let (dir, paths) = write_attr_files(
+        "load",
+        &[("org.yaml", "data:\n  org:\n    default_region: eu\n")],
+    );
 
     let yaml = format!(
         r#"
@@ -311,7 +317,10 @@ async fn declarative_multiple_files_merge() {
         "merge",
         &[
             ("org.yaml", "data:\n  org:\n    default_region: us\n"),
-            ("agents.yaml", "data:\n  agents:\n    eu-bot:\n      region: eu\n"),
+            (
+                "agents.yaml",
+                "data:\n  agents:\n    eu-bot:\n      region: eu\n",
+            ),
         ],
     );
 
@@ -337,14 +346,20 @@ routes:
     mgr.load_config_yaml(&yaml).expect("load_config_yaml");
     mgr.initialize().await.expect("initialize");
 
-    assert!(!invoke_as_subject(&mgr, "infer", "eu-bot").await, "eu-bot → deny");
+    assert!(
+        !invoke_as_subject(&mgr, "infer", "eu-bot").await,
+        "eu-bot → deny"
+    );
     std::fs::remove_dir_all(&dir).ok();
 }
 
 /// An injected tree (set_attribute_tree) beats declarative attribute_files.
 #[tokio::test]
 async fn injected_tree_beats_declarative_files() {
-    let (dir, paths) = write_attr_files("prec", &[("org.yaml", "data:\n  org:\n    default_region: eu\n")]);
+    let (dir, paths) = write_attr_files(
+        "prec",
+        &[("org.yaml", "data:\n  org:\n    default_region: eu\n")],
+    );
 
     let yaml = format!(
         r#"

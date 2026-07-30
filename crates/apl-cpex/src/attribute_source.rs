@@ -35,7 +35,6 @@ impl FileAttributeSource {
             paths: paths.into_iter().collect(),
         }
     }
-
 }
 
 impl AttributeSource for FileAttributeSource {
@@ -165,7 +164,10 @@ mod tests {
     #[test]
     fn disjoint_subtrees_combine() {
         let tree = merge_attribute_docs([
-            doc("org.yaml", json!({ "data": { "org": { "default_region": "us" } } })),
+            doc(
+                "org.yaml",
+                json!({ "data": { "org": { "default_region": "us" } } }),
+            ),
             doc(
                 "tenants.yaml",
                 json!({ "data": { "tenants": { "acme-eu": { "data_region": "eu" } } } }),
@@ -174,7 +176,10 @@ mod tests {
         .unwrap();
         let v = tree.as_value();
         assert_eq!(v.pointer("/org/default_region"), Some(&json!("us")));
-        assert_eq!(v.pointer("/tenants/acme-eu/data_region"), Some(&json!("eu")));
+        assert_eq!(
+            v.pointer("/tenants/acme-eu/data_region"),
+            Some(&json!("eu"))
+        );
     }
 
     #[test]
@@ -234,11 +239,8 @@ mod tests {
     #[test]
     fn stray_top_level_key_rejected() {
         // Forgot the `data:` wrapper.
-        let err = merge_attribute_docs([doc(
-            "oops.yaml",
-            json!({ "org": { "region": "us" } }),
-        )])
-        .unwrap_err();
+        let err = merge_attribute_docs([doc("oops.yaml", json!({ "org": { "region": "us" } }))])
+            .unwrap_err();
         match err {
             AttributeError::Parse(msg) => {
                 assert!(msg.contains("stray key"), "got: {}", msg);
@@ -253,7 +255,10 @@ mod tests {
         let tree = merge_attribute_docs([
             doc("empty.yaml", Value::Null),
             doc("nodata.yaml", json!({ "data": null })),
-            doc("real.yaml", json!({ "data": { "org": { "region": "us" } } })),
+            doc(
+                "real.yaml",
+                json!({ "data": { "org": { "region": "us" } } }),
+            ),
         ])
         .unwrap();
         assert_eq!(tree.as_value().pointer("/org/region"), Some(&json!("us")));
@@ -296,9 +301,6 @@ mod tests {
     #[test]
     fn missing_file_is_load_error() {
         let src = FileAttributeSource::new([PathBuf::from("/no/such/attrs.yaml")]);
-        assert!(matches!(
-            src.load().unwrap_err(),
-            AttributeError::Load(_)
-        ));
+        assert!(matches!(src.load().unwrap_err(), AttributeError::Load(_)));
     }
 }
