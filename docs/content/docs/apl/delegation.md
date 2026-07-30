@@ -60,7 +60,9 @@ By default a `delegate` step exchanges the **user's** token: the minted credenti
 
 ### On-behalf-of a user, with the agent named
 
-The common agentic shape: a user asked for something, and an agent is carrying it out. The user is the subject; the calling agent's SVID rides along as the actor, so the minted token carries `act` alongside `sub` and the backend can see both parties.
+The common agentic shape: a user asked for something, and an agent is carrying it out. The user is the subject; the calling agent's SVID rides along as the actor, so CPEX asks the token service to record `act` alongside `sub`, letting the backend see both parties.
+
+Whether `act` lands in the minted token is the token service's call: RFC 8693 distinguishes *impersonation* (subject only, no `act`) from *delegation* (`act` records the actor), and only a service implementing the delegation path emits it. CPEX always sends the delegation request. Notably, Keycloak's Standard Token Exchange (v2) implements impersonation only and silently ignores `actor_token`, so no `act` appears there — capture the actor at the CPEX boundary (audit / downstream header) if your token service doesn't support delegation.
 
 ```yaml
 pre_invocation:

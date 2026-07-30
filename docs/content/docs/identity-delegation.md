@@ -76,33 +76,49 @@ CPEX resolves the pipeline for each request across one **broad → narrow stack*
 
 The layers, broad to narrow:
 
+A **group** is a named, reusable bundle of policy (authentication steps +
+authorization steps + plugins) that routes opt into. The layers, broad to narrow:
+
 | Layer | Applies to | Identity uses… | Policy / delegation uses… |
 |---|---|---|---|
-| **Global** | every request | `global.authentication` | the `all` policy group's `plugins` |
+| **Global** | every request | `global.authentication` | always-on global policy |
 | **Default** (per entity type) | every tool / prompt / resource | — | `global.defaults.<tool\|prompt\|resource>` |
-| **Tag bundle** | routes tagged with `<tag>` | `global.policies.<tag>.authentication` | `global.policies.<tag>.plugins` |
-| **Route (entity)** | one route (a `tool: "*"` route is the catch-all) | route `authentication:` | route `apl:` steps / `plugins:` |
+| **Group** | routes that join `<name>` (via `groups:` or a matching tag) | `groups.<name>.authentication` | `groups.<name>.authorization` / `plugins` |
+| **Route (entity)** | one route (a `tool: "*"` route is the catch-all) | route `authentication:` | route `authorization:` steps / `plugins:` |
 
 So a `delegate(...)` is **not** route-only. To pick its breadth, put it (or a
 `token.delegate` plugin) at the matching layer:
 
 - **every tool** → a `delegate()` in a `tool: "*"` route, or the delegator plugin in
-  `defaults.tool` / the `all` group,
-- **a tagged class** → a tag bundle,
+  `defaults.tool`,
+- **a class of tools** → a group,
 - **one tool** → a specific route (which overrides the `*` default; more specific wins).
 
-### Identity example (the stack in one config)
+### The stack in one config
 
 ```yaml
 global:
   authentication: [jwt-user]            # every request gets user identity
-  policies:
-    hr-tools:
-      authentication: [jwt-manager]     # + manager identity on HR-tagged routes
+
+groups:
+  hr-tools:
+    authentication: [jwt-manager]       # + manager identity for this group
+    authorization:
+      pre_invocation:
+        - "require(role.hr)"            # + policy for this group
+
 routes:
   - tool: get_compensation
-    meta: { tags: [hr-tools] }          # inherits jwt-user + jwt-manager
+    groups: hr-tools                    # join the group: jwt-user + jwt-manager, require(role.hr)
+    authorization:
+      pre_invocation:
+        - "delegate(workday-oauth, target: workday-api, audience: workday-api, permissions: [read_compensation])"
 ```
+
+`groups: hr-tools` is the first-class way to join a group, and it is **sugar over
+tags**: `meta: { tags: [hr-tools] }` is exactly equivalent, and host-injected runtime
+tags join groups the same way. Tags stay the substrate — `groups:` just names the
+common case.
 
 **The override.** A route that must stand alone drops the inherited layers:
 
@@ -110,19 +126,19 @@ routes:
 routes:
   - tool: get_directory
     authentication:
-      replace_inherited: true           # ignore global + tag layers…
+      replace_inherited: true           # ignore global + group layers…
       steps: [jwt-workload]             # …authenticate by the SVID alone
 ```
 
 That is what [Recipe 2](#recipe-2--agent-acting-as-itself-by-its-spiffe-svid)
-uses. (Full tag/bundle/defaults syntax: [Configuration]({{< relref "configuration" >}}).)
+uses. (Full group / defaults syntax: [Configuration]({{< relref "configuration" >}}).)
 
 ### Rule of thumb
 
 | You want… | Put it at |
 |---|---|
 | the same identity everywhere | **global** `authentication` |
-| a recurring identity/plugin set across many tools | a **tag bundle** |
+| a recurring identity/plugin set across many tools | a **group** |
 | one route handled differently, standalone | a **route** (`authentication: replace_inherited` for identity) |
 | one delegation for most tools, exceptions for a few | a **default** (`tool: "*"` route or `defaults.tool`) + specific overrides |
 
@@ -132,6 +148,11 @@ uses. (Full tag/bundle/defaults syntax: [Configuration]({{< relref "configuratio
 
 Each recipe is a drop-in: the plugins it needs, the route layout, and where it has
 been run. All config is [unified-config]({{< relref "configuration" >}}) YAML.
+
+> **Canonical keys.** These recipes write policy under `authorization:` (with
+> `pre_invocation:` / `post_invocation:` inside) — the orchestrator-agnostic spelling.
+> The older `apl:` wrapper is still accepted, and `pre_invocation:` may also be written
+> flat on the route; all three compile identically.
 
 ### Recipe 1 — User acting through an agent (on-behalf-of)
 
@@ -166,7 +187,7 @@ global:
 
 routes:
   - tool: get_compensation
-    apl:
+    authorization:
       pre_invocation:
         - "require(role.hr)"
         - "delegate(workday-oauth, target: workday-api, audience: workday-api, permissions: [read_compensation])"
@@ -213,7 +234,7 @@ routes:
     authentication:
       replace_inherited: true
       steps: [jwt-workload]
-    apl:
+    authorization:
       pre_invocation:
         - "delegate(workday-oauth, target: workday-api, audience: workday-api, permissions: [read_compensation], subject: caller_workload)"
         - "!delegation.granted: deny"
@@ -240,7 +261,7 @@ consult your IdP's SPIFFE client-auth docs. **Tested: Keycloak 26.6 (feature
 ```yaml
 routes:
   - tool: sync_directory
-    apl:
+    authorization:
       pre_invocation:
         - "delegate(svc-oauth, target: workday-api, audience: workday-api, subject: this_workload)"
 ```
@@ -282,7 +303,7 @@ plugins:
           decoding_key: { kind: jwks_url, url: "https://idp.example.com/realms/corp/protocol/openid-connect/certs" }
 routes:
   - tool: get_directory
-    apl:
+    authorization:
       pre_invocation:
         - "delegate(workday-oauth, target: workday-api, audience: workday-api, permissions: [read_compensation], subject: client)"
 ```
@@ -305,6 +326,74 @@ Using `subject: caller_workload` on an already-minted token misroutes it
 down the SVID two-leg (`client_assertion`) path. Match the subject to what
 arrived: **an SVID is a `caller_workload`; a JWT minted from it is a
 `client` (or `user`) token.**
+
+### Recipe 6 — User acting through an agent, with the agent named (dual-principal)
+
+**When:** a human is signed in *and* you want the record to name the agent that
+carried out the call. The minted token speaks for the user (`sub`), and CPEX
+additionally names the calling agent as the RFC 8693 acting party (`act`) — so a token
+service that honors delegation records **both** who authorized the action and who
+performed it. This is the common agentic shape: the human decides, the agent acts.
+(Whether the `act` claim actually lands depends on the token service — see the interop
+note.)
+
+It composes two inbound resolvers you have already met — `jwt-user`
+([Recipe 1](#recipe-1--user-acting-through-an-agent-on-behalf-of)) for the human on
+`X-User-Token`, and `jwt-workload`
+([Recipe 2](#recipe-2--agent-acting-as-itself-by-its-spiffe-svid)) for the agent's
+SVID on `X-Workload-Token`. Both must resolve; both credentials arrive on every call.
+
+```yaml
+global:
+  # define jwt-user (Recipe 1) and jwt-workload (Recipe 2); run both
+  authentication: [jwt-user, jwt-workload]
+
+routes:
+  - tool: get_compensation
+    authorization:
+      pre_invocation:
+        - "require(role.hr)"
+        - "delegate(workday-oauth, target: workday-api, audience: workday-api,
+                    permissions: [read_compensation],
+                    subject: user, actor: caller_workload)"
+```
+
+`subject: user` makes the user's token the RFC 8693 `subject_token` (exactly as
+[Recipe 1](#recipe-1--user-acting-through-an-agent-on-behalf-of)); `actor:
+caller_workload` *additionally* attaches the agent's SVID as the `actor_token`,
+**requesting** that the minted token carry `act` alongside `sub`. It's **one exchange
+call, two principals in the request** — not a second leg. `actor` accepts only inbound
+credentials (`user`, `client`, `caller_workload`): the acting party is by definition
+one that presented itself to CPEX. Whether `act` actually lands in the token is the
+token service's call — see the interop note below.
+
+> **Subject vs. actor.** The *subject* is who the token speaks **for** (whose
+> authority); the *actor* is who is **doing** it (attribution). Least-privilege scoping
+> still follows the subject — the `act` claim records the agent, it doesn't grant it
+> anything.
+
+**CPEX side — implemented and e2e-tested against a mock IdP.** The delegator puts the
+actor on the wire exactly as RFC 8693 delegation prescribes (`actor_token` +
+`actor_token_type`), and omits it cleanly when no actor is configured. That half is
+correct regardless of which token service receives it.
+
+> **Interop: `act` is the token service's job — impersonation vs. delegation.**
+> RFC 8693 (§1.1) exchanges come in two flavors. *Impersonation* returns a token that
+> speaks purely for the subject — indistinguishable from one the subject fetched
+> directly, **no `act` claim**. *Delegation* additionally records the actor in a nested
+> `act`. The `actor_token` parameter is what asks for delegation; only a token service
+> that implements the delegation path emits `act`. **CPEX always sends the delegation
+> request — but the claim only appears if the service honors it.**
+>
+> **Keycloak does not.** Keycloak's Standard Token Exchange (v2, tested here on 26.6)
+> implements impersonation only: it **silently ignores `actor_token`** and returns a
+> subject-only token with no `act`. The tell (probed 2026-07-28, reproducible via
+> `verify-dual-principal.sh` in the CPEX demo): passing even a raw, untrusted-issuer
+> SVID as `actor_token` produces **no error** — Keycloak never parses the parameter, so
+> no mapper or config can surface it. To see `act` end-to-end you need a
+> delegation-capable token service; against Keycloak, capture the acting agent at the
+> CPEX boundary (audit / downstream header) instead — CPEX resolves both principals
+> either way.
 
 ---
 
@@ -348,9 +437,8 @@ recipe-2 *native* flow needs the IdP to understand SVIDs.
 ## What to add next
 
 <!-- Stubs to flesh out as recipes are validated:
-  - Recipe 5 — user + actor: record the calling agent in `act` alongside the user
-    (subject: user, actor: caller_workload) — RFC 8693 actor_token.
-  - Recipe 6 — per-tenant / tag-scoped identity (authentication via tag bundles).
-  - Recipe 7 — vault-backed delegation (exchange a token for a stored API key).
+  - Recipe 7 — per-tenant / tag-scoped identity (authentication via groups / tags).
+  - Recipe 8 — vault-backed delegation (exchange a token for a stored API key).
+  - Live-IdP validation of Recipe 6's actor_token / `act` claim (currently mock-tested).
   - Per-recipe "verified against <IdP> on <date>" as the support matrix grows.
 -->

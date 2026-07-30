@@ -403,7 +403,8 @@ impl HookHandler<TokenDelegateHook> for OAuthDelegator {
         // actor to record. `actor_token` belongs to the on-behalf-of
         // shape (a user subject with the calling agent as actor).
         let actor_token = payload.actor_token();
-        if !actor_token.is_empty() && !as_this_workload && !is_workload {
+        let actor_requested = !actor_token.is_empty() && !as_this_workload && !is_workload;
+        if actor_requested {
             form.push(("actor_token", actor_token));
             form.push(("actor_token_type", &self.typed.actor_token_type));
         }
@@ -529,6 +530,23 @@ impl HookHandler<TokenDelegateHook> for OAuthDelegator {
         };
         let expires_at = Utc::now() + chrono::Duration::seconds(ttl_secs);
 
+        // Best-effort interop check. We asked the IdP to record the calling
+        // agent in `act` (RFC 8693 delegation semantics). If the minted token
+        // is a JWT that carries no `act`, the IdP did impersonation instead —
+        // it accepted the exchange but silently dropped the actor (Keycloak's
+        // Standard Token Exchange behaves this way). The scoped token is still
+        // valid and returned; we only surface the gap so it isn't a silent
+        // no-op the policy author never notices.
+        if actor_requested && jwt_payload_omits_act(&parsed.access_token) {
+            tracing::warn!(
+                target: "cpex::delegation",
+                token_endpoint = %self.typed.token_endpoint,
+                "actor was requested (RFC 8693 actor_token) but the minted token carries no `act` claim; \
+                 the token service may implement impersonation only (e.g. Keycloak Standard Token Exchange) \
+                 and ignored the actor — the acting agent will not appear downstream",
+            );
+        }
+
         let token = RawDelegatedToken::new(
             parsed.access_token,
             self.typed.default_outbound_header.clone(),
@@ -579,6 +597,30 @@ fn mode_for_subject(subject: &DelegationSubject) -> DelegationMode {
         // acting *for*, so on-behalf-of stays the safe default.
         _ => DelegationMode::OnBehalfOfUser,
     }
+}
+
+/// Best-effort: does `access_token` decode as a JWT whose payload has no
+/// `act` claim? Returns `true` only when we can *positively* see a JWT
+/// payload object that lacks `act`. Anything we can't inspect — an opaque
+/// token, a non-base64url segment, a non-JSON payload — returns `false`,
+/// so a caller using this to warn never fires on a token it couldn't read.
+///
+/// The signature is deliberately not verified: this token just came back
+/// from our own trusted IdP roundtrip, and we're only reading a claim to
+/// decide whether to log, not making a trust decision.
+fn jwt_payload_omits_act(access_token: &str) -> bool {
+    use base64::Engine as _;
+    // JWT is `header.payload.signature`; the claims are the middle segment.
+    let Some(payload_b64) = access_token.split('.').nth(1) else {
+        return false;
+    };
+    let Ok(bytes) = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(payload_b64) else {
+        return false;
+    };
+    let Ok(claims) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+        return false;
+    };
+    claims.is_object() && claims.get("act").is_none()
 }
 
 // Silence unused-import warning when only a subset of these is
@@ -644,5 +686,50 @@ mod scheme_tests {
         // shouldn't smuggle a plaintext URL past the gate.
         let err = require_https("  http://idp/", false).unwrap_err();
         assert!(err.contains("must use https"));
+    }
+}
+
+#[cfg(test)]
+mod act_claim_tests {
+    use super::jwt_payload_omits_act;
+    use base64::Engine as _;
+
+    // Build a `header.payload.sig` JWT string from a payload JSON literal.
+    fn jwt(payload: &str) -> String {
+        let b = |s: &str| base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(s.as_bytes());
+        format!("{}.{}.{}", b(r#"{"alg":"none"}"#), b(payload), "sig")
+    }
+
+    #[test]
+    fn payload_with_act_is_not_flagged() {
+        // Delegation honored: `act` present → no warning.
+        let token = jwt(r#"{"sub":"user","act":{"sub":"agent"}}"#);
+        assert!(!jwt_payload_omits_act(&token));
+    }
+
+    #[test]
+    fn payload_without_act_is_flagged() {
+        // Impersonation: subject only, no `act` → this is the case we warn on.
+        let token = jwt(r#"{"sub":"user","aud":"workday-api"}"#);
+        assert!(jwt_payload_omits_act(&token));
+    }
+
+    #[test]
+    fn opaque_token_is_not_flagged() {
+        // Not a JWT (no dots): we can't inspect it, so never warn.
+        assert!(!jwt_payload_omits_act("opaque-reference-token"));
+    }
+
+    #[test]
+    fn non_base64_payload_is_not_flagged() {
+        // Right shape, but the middle segment isn't valid base64url.
+        assert!(!jwt_payload_omits_act("aaa.!!!not-base64!!!.sig"));
+    }
+
+    #[test]
+    fn non_json_payload_is_not_flagged() {
+        // Decodes as base64url but isn't JSON claims — can't tell, don't warn.
+        let b = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(b"not json");
+        assert!(!jwt_payload_omits_act(&format!("aaa.{b}.sig")));
     }
 }
