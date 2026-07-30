@@ -72,6 +72,16 @@ pub(crate) enum Step {
         scopes: Vec<TaintScope>,
     },
 
+    /// `restrict: { ... }` — narrow the backend candidate set. Always
+    /// succeeds; never produces a Deny (accumulating, same family as
+    /// `Taint`). The evaluator collects the emitted constraint; a higher
+    /// layer (apl-cpex) folds it into a `CandidateConstraintExtension`
+    /// the host serializes to its router. See
+    /// `docs/apl-restrict-effect-design.md`.
+    Restrict {
+        spec: crate::constraint::RestrictSpec,
+    },
+
     /// `require_approval(...)` / `confirm(...)` / … — dispatch an
     /// elicitation to a human and resume once resolved. The elicitation
     /// analogue of `Delegate`; resolution is dispatched to an

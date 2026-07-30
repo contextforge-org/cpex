@@ -451,35 +451,53 @@ impl Executor {
                                 *payload = mp;
                             }
                             if let Some(owned) = erased.modified_extensions {
-                                let valid = extensions.validate_immutable(&owned);
-                                if !valid {
+                                // Pointer-equality gate on the truly-immutable
+                                // input slots.
+                                let immutable_ok = extensions.validate_immutable(&owned);
+
+                                // Monotonic security labels: a plugin that can see
+                                // labels (`read_labels`) may only add them, never
+                                // remove. A plugin without `read_labels` saw an empty
+                                // label set in its filtered view, so an absent label
+                                // there is not a removal.
+                                let labels_ok = !capabilities.contains("read_labels")
+                                    || match (&extensions.security, &owned.security) {
+                                        (Some(orig), Some(new)) => {
+                                            new.labels.is_superset(&orig.labels)
+                                        },
+                                        _ => true,
+                                    };
+
+                                // Candidate-constraint authority: the folded routing
+                                // constraint is the policy engine's output. Only a
+                                // holder of `write_candidate_constraint` may create,
+                                // change, or remove it; any other plugin that alters
+                                // the slot (by value) is rejected. A plugin that
+                                // leaves it untouched passes (the common case).
+                                let constraint_ok =
+                                    extensions.candidate_constraint_write_ok(&owned, &capabilities);
+
+                                if !immutable_ok {
                                     warn!(
                                         "{} plugin '{}' violated immutable tier — \
                                          modified an immutable extension slot. \
                                          Extension changes rejected.",
                                         phase_label, plugin_name
                                     );
-                                } else if capabilities.contains("read_labels") {
-                                    // Only enforce monotonic labels if the plugin
-                                    // could see them. A plugin without read_labels
-                                    // has empty labels in its filtered view — that's
-                                    // not a removal.
-                                    if let (Some(ref orig_sec), Some(ref new_sec)) =
-                                        (&extensions.security, &owned.security)
-                                    {
-                                        if !new_sec.labels.is_superset(&orig_sec.labels) {
-                                            warn!(
-                                                "{} plugin '{}' violated monotonic tier — \
-                                                 removed a security label. \
-                                                 Extension changes rejected.",
-                                                phase_label, plugin_name
-                                            );
-                                        } else {
-                                            extensions.merge_owned(owned);
-                                        }
-                                    } else {
-                                        extensions.merge_owned(owned);
-                                    }
+                                } else if !labels_ok {
+                                    warn!(
+                                        "{} plugin '{}' violated monotonic tier — \
+                                         removed a security label. \
+                                         Extension changes rejected.",
+                                        phase_label, plugin_name
+                                    );
+                                } else if !constraint_ok {
+                                    warn!(
+                                        "{} plugin '{}' lacks `write_candidate_constraint` \
+                                         — attempted to modify the policy engine's routing \
+                                         constraint. Extension changes rejected.",
+                                        phase_label, plugin_name
+                                    );
                                 } else {
                                     extensions.merge_owned(owned);
                                 }

@@ -10,7 +10,7 @@
 // OwnedExtensions is the plugin's writeable workspace, created by
 // cow_copy(), returned in PluginResult::modify_extensions().
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
@@ -27,6 +27,7 @@ use super::meta::MetaExtension;
 use super::provenance::ProvenanceExtension;
 use super::raw_credentials::RawCredentialsExtension;
 use super::request::RequestExtension;
+use super::routing::{CandidateConstraintExtension, CAP_WRITE_CANDIDATE_CONSTRAINT};
 use super::security::SecurityExtension;
 
 /// Typed container for all message extensions.
@@ -58,6 +59,13 @@ pub struct Extensions {
     /// Security — labels, classification, subject (frozen as Arc).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub security: Option<Arc<SecurityExtension>>,
+
+    /// Backend candidate constraint emitted by APL `restrict` effects
+    /// (frozen as Arc — cloned out in OwnedExtensions). The policy
+    /// engine writes it; the host router reads it typed to narrow its
+    /// candidate set. A routing directive, never an access decision.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub candidate_constraint: Option<Arc<CandidateConstraintExtension>>,
 
     /// Delegation chain (frozen as Arc).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -122,6 +130,7 @@ impl Clone for Extensions {
             agent: self.agent.clone(),
             http: self.http.clone(),
             security: self.security.clone(),
+            candidate_constraint: self.candidate_constraint.clone(),
             delegation: self.delegation.clone(),
             raw_credentials: self.raw_credentials.clone(),
             mcp: self.mcp.clone(),
@@ -174,6 +183,10 @@ impl Extensions {
             // Mutable/monotonic/guarded — cloned out of Arc into owned
             http: self.http.as_ref().map(|arc| Guarded::new((**arc).clone())),
             security: self.security.as_ref().map(|arc| (**arc).clone()),
+            candidate_constraint: self
+                .candidate_constraint
+                .as_ref()
+                .map(|arc| (**arc).clone()),
             delegation: self.delegation.as_ref().map(|arc| (**arc).clone()),
             custom: self.custom.as_ref().map(|arc| (**arc).clone()),
 
@@ -232,10 +245,30 @@ impl Extensions {
         // as merge-able like `security` and `delegation`.
     }
 
+    /// Whether `modified` may write the `candidate_constraint` slot, given
+    /// the plugin's `capabilities`.
+    ///
+    /// The routing constraint is the policy engine's *output*: only a holder
+    /// of [`CAP_WRITE_CANDIDATE_CONSTRAINT`] may create, change, or remove it.
+    /// A plugin that leaves the slot at its original value (or holds the cap)
+    /// passes; any other plugin that alters it by value is rejected, so a
+    /// downstream plugin cannot overwrite, drop, or forge the constraint.
+    /// Compared by value (not `Arc` pointer) because the slot legitimately
+    /// round-trips through a fresh `Arc` on every merge.
+    pub fn candidate_constraint_write_ok(
+        &self,
+        modified: &OwnedExtensions,
+        capabilities: &HashSet<String>,
+    ) -> bool {
+        capabilities.contains(CAP_WRITE_CANDIDATE_CONSTRAINT)
+            || modified.candidate_constraint.as_ref() == self.candidate_constraint.as_deref()
+    }
+
     /// Merge an OwnedExtensions back into this Extensions.
     pub fn merge_owned(&mut self, owned: OwnedExtensions) {
         self.http = owned.http.map(|g| Arc::new(g.into_inner()));
         self.security = owned.security.map(Arc::new);
+        self.candidate_constraint = owned.candidate_constraint.map(Arc::new);
         self.delegation = owned.delegation.map(Arc::new);
         self.custom = owned.custom.map(Arc::new);
         // `raw_credentials` is shared by Arc in `OwnedExtensions` —
@@ -286,6 +319,7 @@ pub struct OwnedExtensions {
     // Mutable/monotonic/guarded — owned, modifiable
     pub http: Option<Guarded<HttpExtension>>,
     pub security: Option<SecurityExtension>,
+    pub candidate_constraint: Option<CandidateConstraintExtension>,
     pub delegation: Option<DelegationExtension>,
     pub custom: Option<HashMap<String, serde_json::Value>>,
 
@@ -452,6 +486,66 @@ mod tests {
         let ext = Extensions::default();
         let cow = ext.cow_copy();
         assert!(ext.validate_immutable(&cow));
+    }
+
+    // ----- candidate_constraint write authority -----
+
+    fn a_constraint(region: &str) -> CandidateConstraintExtension {
+        CandidateConstraintExtension {
+            allow_regions: Some(vec![region.to_string()]),
+            ..Default::default()
+        }
+    }
+
+    fn caps(list: &[&str]) -> HashSet<String> {
+        list.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn candidate_constraint_unchanged_passes_without_cap() {
+        // A plugin that leaves the slot at its original value is fine even
+        // without the write cap — the common case for every plugin.
+        let mut ext = Extensions::default();
+        ext.candidate_constraint = Some(Arc::new(a_constraint("eu")));
+        let owned = ext.cow_copy(); // carries the same constraint value
+        assert!(ext.candidate_constraint_write_ok(&owned, &caps(&[])));
+    }
+
+    #[test]
+    fn candidate_constraint_overwrite_rejected_without_cap() {
+        let mut ext = Extensions::default();
+        ext.candidate_constraint = Some(Arc::new(a_constraint("eu")));
+        let mut owned = ext.cow_copy();
+        owned.candidate_constraint = Some(a_constraint("us")); // weakened/changed
+        assert!(!ext.candidate_constraint_write_ok(&owned, &caps(&[])));
+        // ...but a cap-holder (the APL engine) may overwrite.
+        assert!(ext.candidate_constraint_write_ok(&owned, &caps(&[CAP_WRITE_CANDIDATE_CONSTRAINT])));
+    }
+
+    #[test]
+    fn candidate_constraint_removal_rejected_without_cap() {
+        let mut ext = Extensions::default();
+        ext.candidate_constraint = Some(Arc::new(a_constraint("eu")));
+        let mut owned = ext.cow_copy();
+        owned.candidate_constraint = None; // dropped the policy engine's constraint
+        assert!(!ext.candidate_constraint_write_ok(&owned, &caps(&[])));
+    }
+
+    #[test]
+    fn candidate_constraint_fabricate_rejected_without_cap() {
+        let ext = Extensions::default(); // no constraint originally
+        let mut owned = ext.cow_copy();
+        owned.candidate_constraint = Some(a_constraint("eu")); // forged
+        assert!(!ext.candidate_constraint_write_ok(&owned, &caps(&[])));
+        // The APL engine, holding the cap, legitimately creates it.
+        assert!(ext.candidate_constraint_write_ok(&owned, &caps(&[CAP_WRITE_CANDIDATE_CONSTRAINT])));
+    }
+
+    #[test]
+    fn candidate_constraint_both_none_passes_without_cap() {
+        let ext = Extensions::default();
+        let owned = ext.cow_copy();
+        assert!(ext.candidate_constraint_write_ok(&owned, &caps(&[])));
     }
 
     #[test]
