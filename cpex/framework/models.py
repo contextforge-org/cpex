@@ -1656,6 +1656,166 @@ class PluginManifest(BaseModel):
         )
 
 
+
+# ---------------------------------------------------------------------------
+# Execution record types (issue #130)
+# ---------------------------------------------------------------------------
+
+#: Maximum byte length for free-form string fields in a record.
+_MAX_STRING_LEN: int = 256
+
+#: Maximum number of config key names per record.
+_MAX_CONFIG_KEYS: int = 64
+
+
+_ELLIPSIS = "…"
+_ELLIPSIS_BYTES = len(_ELLIPSIS.encode("utf-8"))  # 3
+
+
+def _truncate(s: str, max_len: int = _MAX_STRING_LEN) -> str:
+    """Truncate *s* so the UTF-8 encoding stays within *max_len* bytes.
+
+    The result (including the trailing ellipsis when truncated) never exceeds
+    *max_len* bytes when encoded as UTF-8.
+    """
+    encoded = s.encode("utf-8")
+    if len(encoded) <= max_len:
+        return s
+    # Reserve space for the ellipsis suffix
+    cap = max_len - _ELLIPSIS_BYTES
+    return encoded[:cap].decode("utf-8", errors="ignore") + _ELLIPSIS
+
+
+def _truncate_opt(s: Optional[str]) -> Optional[str]:
+    """Truncate an optional string; returns None unchanged."""
+    return _truncate(s) if s is not None else None
+
+
+def _collect_config_keys(config: Optional[dict[str, Any]]) -> list[str]:
+    """Return key names from *config*, bounded to *_MAX_CONFIG_KEYS*. Values are never included."""
+    if not isinstance(config, dict):
+        return []
+    return [_truncate(k) for k in list(config.keys())[:_MAX_CONFIG_KEYS]]
+
+
+class ControlExecutionStatus(StrEnum):
+    """Execution health of a single control invocation.
+
+    Separate from the allow/deny policy decision — a control can complete
+    successfully and still deny the operation.
+
+    Examples:
+        >>> ControlExecutionStatus.COMPLETED
+        <ControlExecutionStatus.COMPLETED: 'completed'>
+        >>> ControlExecutionStatus.ERROR.value
+        'error'
+    """
+
+    COMPLETED = "completed"
+    """Plugin ran to completion (may have allowed or denied).
+    Also used as a spawn-time placeholder for FIRE_AND_FORGET records whose
+    outcome is unknowable when the pipeline result is returned — identify FAF
+    records by ``mode == fire_and_forget``, not by this status."""
+    ERROR = "error"
+    """Plugin returned an error (on_error=ignore/disable) or raised with on_error=fail."""
+    TIMEOUT = "timeout"
+    """Plugin timed out with on_error=ignore or on_error=disable (pipeline continues).
+    on_error=fail timeouts are converted to PluginError and recorded as ERROR."""
+    SKIPPED = "skipped"
+    """Reserved — not currently emitted. Disabled plugins are silently dropped by group_by_mode."""
+    CANCELLED = "cancelled"
+    """Reserved — not currently emitted. Cancelled concurrent siblings produce no record."""
+    DISABLED = "disabled"
+    """Reserved — not currently emitted. Runtime-disabled plugins are silently dropped."""
+
+
+class ControlExecutionRecord(BaseModel):
+    """Trusted execution record for one control/plugin evaluation.
+
+    All identity, mode, status, duration, and effective decision fields are
+    populated by the executor from the trusted ``PluginRef`` configuration —
+    never from plugin-returned metadata.  A plugin cannot forge these fields.
+
+    Cardinality: free-form string fields (``reason``, ``error_code``) are
+    bounded to ``_MAX_STRING_LEN`` bytes. Config key lists are bounded to
+    ``_MAX_CONFIG_KEYS`` entries.  Config *values* are never stored.
+
+    Examples:
+        >>> rec = ControlExecutionRecord(
+        ...     plugin_id="abc",
+        ...     plugin_name="pii-guard",
+        ...     plugin_kind="builtin",
+        ...     hook_name="tool_pre_invoke",
+        ...     mode=PluginMode.SEQUENTIAL,
+        ...     status=ControlExecutionStatus.COMPLETED,
+        ...     effective_allow=True,
+        ... )
+        >>> rec.plugin_name
+        'pii-guard'
+        >>> rec.effective_allow
+        True
+    """
+
+    plugin_id: str
+    """UUID (hex) assigned to this PluginRef at registration time.
+    Stable within one process only — do not use for cross-process joins."""
+
+    plugin_name: str
+    """Human-readable plugin name from the trusted config.
+    Stable across restarts — use as primary grouping key."""
+
+    plugin_kind: str
+    """Plugin kind from the trusted config (e.g. ``"builtin"``, ``"cpex.opa.OpaPlugin"``)."""
+
+    hook_name: str
+    """Hook name this invocation was dispatched for."""
+
+    mode: PluginMode
+    """Execution mode from the trusted config."""
+
+    status: ControlExecutionStatus
+    """Execution health — separate from the allow/deny decision."""
+
+    requested_allow: Optional[bool] = None
+    """What the plugin result requested (``True`` = allow, ``False`` = deny).
+    ``None`` when no result was obtained (error / timeout / cancelled)."""
+
+    effective_allow: bool = True
+    """Effective decision after execution-mode semantics and ``on_error`` policy.
+    This is the authoritative per-control allow/deny outcome."""
+
+    matched: Optional[bool] = None
+    """Whether the control condition matched, when determinable.
+    ``True``  — condition fired.
+    ``False`` — condition did not fire (clean allow, no mutation).
+    ``None``  — result not obtained (error/timeout only); do not treat as ``False``."""
+
+    applied: bool = False
+    """Whether this control changed the payload, extensions, or effective decision."""
+
+    payload_modified: bool = False
+    """Whether a payload modification was accepted by the framework."""
+
+    extensions_modified: bool = False
+    """Whether an extension modification was accepted by the framework."""
+
+    duration_ns: int = 0
+    """Wall-clock execution duration in nanoseconds (monotonic).
+    ``0`` for fire-and-forget records (spawn time) and concurrent records."""
+
+    reason: Optional[str] = None
+    """Bounded reason string from a violation or error.
+    May contain user-provided text — do not log at high verbosity without review."""
+
+    error_code: Optional[str] = None
+    """Stable low-cardinality error/violation code.
+    Preferred over free-form text for dashboards and alerting."""
+
+    config_keys: list[str] = Field(default_factory=list)
+    """Config key *names* from the plugin's trusted config. Values are never included."""
+
+
+
 class PluginErrorModel(BaseModel):
     """A plugin error, used to denote exceptions/errors inside external plugins.
 
@@ -1822,6 +1982,12 @@ class PluginResult(BaseModel, Generic[T]):
                 to await them and collect any errors. This field is excluded from model serialization.
             http_headers (Optional[dict[str, str]]): HTTP headers to include in successful responses.
             retry_delay_ms (int): Milliseconds the gateway should wait before retrying the tool call.
+            executions (list[ControlExecutionRecord]): Structured execution records, one per
+                *evaluated* control during this invocation. Disabled, skipped (condition unmet),
+                and cancelled concurrent siblings produce no record in 0.1.x (see
+                ``ControlExecutionStatus.SKIPPED / DISABLED / CANCELLED``). Populated by the
+                executor from trusted framework state — plugins cannot forge identity, duration,
+                or effective decision fields.
 
      Examples:
         >>> result = PluginResult()
@@ -1859,6 +2025,9 @@ class PluginResult(BaseModel, Generic[T]):
     background_tasks: list[asyncio.Task] = Field(default_factory=list, exclude=True)
     http_headers: Optional[dict[str, str]] = None
     retry_delay_ms: int = 0
+    executions: list[ControlExecutionRecord] = Field(default_factory=list)
+    """Structured execution records — one per plugin evaluated.
+    Always present; empty when no plugins ran for the given hook."""
 
     async def wait_for_background_tasks(self) -> "list[PluginErrorModel]":
         """Await all FIRE_AND_FORGET background tasks and return any errors.
