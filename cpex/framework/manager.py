@@ -420,11 +420,24 @@ class PluginExecutor:
                 concurrent_tasks.append(asyncio.create_task(self._tagged(coro, idx)))
 
             for completed_coro in asyncio.as_completed(concurrent_tasks):
-                result, idx = await completed_coro
+                result, idx, timeout_err = await completed_coro
                 ref, _, _ = concurrent_ctx_list[idx]
                 ctx.hook_chain_executed += 1
                 # Propagate retry signal from concurrent plugins
                 ctx.max_retry_delay_ms = max(ctx.max_retry_delay_ms, result.retry_delay_ms)
+                if timeout_err is not None:
+                    # on_error=ignore/disable timeout: pipeline continues, record TIMEOUT
+                    # (mirrors the serial-phase handler; on_error=fail raises PluginError,
+                    # which is not caught here and propagates fail-closed).
+                    executions.append(_make_execution_record(
+                        ref,
+                        hook_type,
+                        ControlExecutionStatus.TIMEOUT,
+                        effective_allow=True,
+                        reason=_truncate_opt(str(timeout_err)),
+                        error_code="plugin_timeout",
+                    ))
+                    continue
                 if result.modified_payload is not None:
                     logger.debug(
                         "CONCURRENT plugin %s returned modified_payload on hook %s; "
@@ -976,10 +989,20 @@ class PluginExecutor:
             return await coro
 
     @staticmethod
-    async def _tagged(coro: Any, tag: Any) -> tuple[Any, Any]:
-        """Await *coro* and pair the result with *tag* for use with as_completed."""
-        result = await coro
-        return result, tag
+    async def _tagged(coro: Any, tag: Any) -> tuple[Any, Any, Optional["PluginTimeoutError"]]:
+        """Await *coro* and pair the result with *tag* for use with as_completed.
+
+        Catches PluginTimeoutError (raised by execute_plugin for on_error=ignore/disable
+        timeouts) so it never escapes the concurrent as_completed loop unpaired with its
+        tag. The loop records a TIMEOUT execution record and continues. PluginError
+        (on_error=fail) is intentionally not caught here — it must propagate to preserve
+        fail-closed behaviour.
+        """
+        try:
+            result = await coro
+            return result, tag, None
+        except PluginTimeoutError as te:
+            return PluginResult(continue_processing=True), tag, te
 
     def _fire_and_forget_tasks(
         self,

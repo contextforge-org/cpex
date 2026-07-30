@@ -93,6 +93,18 @@ plugins:
     conditions:
       - prompts: ["test_prompt_error"]
 
+  - name: "ConcurrentTimeoutPlugin"
+    kind: "plugins.timeout_plugin.TimeoutPlugin"
+    description: "Always times out — tests concurrent on_error=ignore timeout recording."
+    version: "0.1"
+    author: "ContextForge Team"
+    hooks: ["prompt_pre_fetch"]
+    mode: "concurrent"
+    on_error: "ignore"
+    priority: 800
+    conditions:
+      - prompts: ["test_prompt_concurrent_timeout"]
+
 plugin_dirs:
   - "tests/unit/cpex/fixtures"
 

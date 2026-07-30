@@ -458,3 +458,32 @@ async def test_executions_timeout_ignore_recorded_as_timeout():
 
     await manager.shutdown()
     PluginManager.reset()
+
+
+@pytest.mark.asyncio
+async def test_executions_concurrent_timeout_ignore_does_not_escape():
+    """A concurrent plugin that times out with on_error=ignore must NOT let PluginTimeoutError
+    escape invoke_hook: the pipeline continues and the record is TIMEOUT (mirrors serial phase)."""
+    # timeout=1 so the 3600s sleep in TimeoutPlugin fires within the test
+    manager = PluginManager(_MODES_CONFIG, timeout=1)
+    await manager.initialize()
+
+    # test_prompt_concurrent_timeout routes only to ConcurrentTimeoutPlugin (concurrent, on_error=ignore)
+    prompt = PromptPrehookPayload(prompt_id="test_prompt_concurrent_timeout", args={"user": "hello"})
+    context = GlobalContext(request_id="req-concurrent-timeout")
+    result, _ = await manager.invoke_hook(PromptHookType.PROMPT_PRE_FETCH, prompt, global_context=context)
+
+    assert result.continue_processing   # must not raise / must fail-open-continue for ignore
+    assert len(result.executions) >= 1
+
+    rec = result.executions[0]
+    assert rec.plugin_name == "ConcurrentTimeoutPlugin"
+    assert rec.mode == PluginMode.CONCURRENT
+    assert rec.status == ControlExecutionStatus.TIMEOUT, (
+        f"expected TIMEOUT, got {rec.status!r} — concurrent ignore-timeout must not look like a clean allow"
+    )
+    assert rec.effective_allow is True
+    assert rec.error_code == "plugin_timeout"
+
+    await manager.shutdown()
+    PluginManager.reset()
