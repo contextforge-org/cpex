@@ -68,6 +68,8 @@ from cpex.framework.loader.config import ConfigLoader
 from cpex.framework.loader.plugin import PluginLoader
 from cpex.framework.manager import PluginManager, TenantPluginManager
 from cpex.framework.models import (
+    ControlExecutionRecord,
+    ControlExecutionStatus,
     GlobalContext,
     MCPClientConfig,
     MCPServerConfig,
@@ -135,6 +137,8 @@ __all__ = [
     "AgentPreInvokePayload",
     "AgentPreInvokeResult",
     "ConfigLoader",
+    "ControlExecutionRecord",
+    "ControlExecutionStatus",
     "ExternalPluginServer",
     "get_attr",
     "get_hook_registry",
@@ -181,12 +185,12 @@ __all__ = [
     "ResourcePostFetchResult",
     "ResourcePreFetchPayload",
     "ResourcePreFetchResult",
+    "TenantPluginManager",
     "ToolHookType",
     "ToolPostInvokePayload",
     "ToolPostInvokeResult",
-    "ToolPreInvokeResult",
-    "TenantPluginManager",
     "ToolPreInvokePayload",
+    "ToolPreInvokeResult",
     "TransportType",
     "UserContext",
 ]

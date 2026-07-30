@@ -1,0 +1,116 @@
+plugins:
+  # sequential deny-list: tests concurrent allow/deny and transform via separate plugins
+  - name: "ConcurrentDenyPlugin"
+    kind: "plugins.deny_filter.DenyListPlugin"
+    description: "Deny-list in concurrent mode — blocks on deny-listed words."
+    version: "0.1"
+    author: "ContextForge Team"
+    hooks: ["prompt_pre_fetch"]
+    mode: "concurrent"
+    on_error: "fail"
+    priority: 100
+    conditions:
+      - prompts: ["test_prompt"]
+    config:
+      words:
+        - innovative
+        - groundbreaking
+        - revolutionary
+
+  - name: "ConcurrentAllowPlugin"
+    kind: "plugins.passthrough.PassThroughPlugin"
+    description: "Passthrough in concurrent mode — always allows."
+    version: "0.1"
+    author: "ContextForge Team"
+    hooks: ["prompt_pre_fetch"]
+    mode: "concurrent"
+    on_error: "fail"
+    priority: 200
+    conditions:
+      - prompts: ["test_prompt_allow"]
+
+  - name: "TransformPlugin"
+    kind: "plugins.search_replace.SearchReplacePlugin"
+    description: "Search-replace in transform mode — modifies payload."
+    version: "0.1"
+    author: "ContextForge Team"
+    hooks: ["prompt_pre_fetch"]
+    mode: "transform"
+    on_error: "fail"
+    priority: 300
+    conditions:
+      - prompts: ["test_prompt_transform"]
+    config:
+      words:
+        - search: crap
+          replace: crud
+
+  - name: "AuditPlugin"
+    kind: "plugins.passthrough.PassThroughPlugin"
+    description: "Passthrough in audit mode — observe only."
+    version: "0.1"
+    author: "ContextForge Team"
+    hooks: ["prompt_pre_fetch"]
+    mode: "audit"
+    on_error: "fail"
+    priority: 400
+    conditions:
+      - prompts: ["test_prompt_audit"]
+
+  - name: "FafPlugin"
+    kind: "plugins.passthrough.PassThroughPlugin"
+    description: "Passthrough in fire_and_forget mode."
+    version: "0.1"
+    author: "ContextForge Team"
+    hooks: ["prompt_pre_fetch"]
+    mode: "fire_and_forget"
+    on_error: "fail"
+    priority: 500
+    conditions:
+      - prompts: ["test_prompt_faf"]
+
+  - name: "TimeoutPlugin"
+    kind: "plugins.timeout_plugin.TimeoutPlugin"
+    description: "Always times out — tests on_error=ignore timeout recording."
+    version: "0.1"
+    author: "ContextForge Team"
+    hooks: ["prompt_pre_fetch"]
+    mode: "sequential"
+    on_error: "ignore"
+    priority: 600
+    conditions:
+      - prompts: ["test_prompt_timeout"]
+
+  - name: "ErrorPlugin"
+    kind: "plugins.error.ErrorPlugin"
+    description: "Error plugin — sequential, on_error=fail. Always raises."
+    version: "0.1"
+    author: "ContextForge Team"
+    hooks: ["prompt_pre_fetch"]
+    mode: "sequential"
+    on_error: "fail"
+    priority: 700
+    conditions:
+      - prompts: ["test_prompt_error"]
+
+  - name: "ConcurrentTimeoutPlugin"
+    kind: "plugins.timeout_plugin.TimeoutPlugin"
+    description: "Always times out — tests concurrent on_error=ignore timeout recording."
+    version: "0.1"
+    author: "ContextForge Team"
+    hooks: ["prompt_pre_fetch"]
+    mode: "concurrent"
+    on_error: "ignore"
+    priority: 800
+    conditions:
+      - prompts: ["test_prompt_concurrent_timeout"]
+
+plugin_dirs:
+  - "tests/unit/cpex/fixtures"
+
+plugin_settings:
+  parallel_execution_within_band: true
+  plugin_timeout: 30
+  fail_on_plugin_error: false
+  enable_plugin_api: true
+  plugin_health_check_interval: 60
