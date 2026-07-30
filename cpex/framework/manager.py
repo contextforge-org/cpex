@@ -133,6 +133,48 @@ class PayloadSizeError(ValueError):
     """Raised when a payload exceeds the maximum allowed size."""
 
 
+def _make_execution_record(
+    hook_ref: "HookRef",
+    hook_type: str,
+    status: "ControlExecutionStatus",
+    *,
+    effective_allow: bool,
+    duration_ns: int = 0,
+    requested_allow: Optional[bool] = None,
+    matched: Optional[bool] = None,
+    applied: bool = False,
+    payload_modified: bool = False,
+    extensions_modified: bool = False,
+    reason: Optional[str] = None,
+    error_code: Optional[str] = None,
+) -> "ControlExecutionRecord":
+    """Build a ``ControlExecutionRecord`` from trusted ``PluginRef`` state.
+
+    All identity fields are sourced from ``hook_ref.plugin_ref`` — never from
+    plugin-returned data.  Centralising construction here prevents the field-
+    drift that caused the original ``matched=None`` inconsistency.
+    """
+    trusted = hook_ref.plugin_ref.trusted_config
+    return ControlExecutionRecord(
+        plugin_id=hook_ref.plugin_ref.uuid,
+        plugin_name=hook_ref.plugin_ref.name,
+        plugin_kind=_truncate(trusted.kind),
+        hook_name=hook_type,
+        mode=trusted.mode,
+        status=status,
+        requested_allow=requested_allow,
+        effective_allow=effective_allow,
+        matched=matched,
+        applied=applied,
+        payload_modified=payload_modified,
+        extensions_modified=extensions_modified,
+        duration_ns=duration_ns,
+        reason=reason,
+        error_code=error_code,
+        config_keys=_collect_config_keys(trusted.config),
+    )
+
+
 class PluginExecutor:
     """Executes a list of plugins with timeout protection and error handling.
 
@@ -391,25 +433,17 @@ class PluginExecutor:
                         hook_type,
                     )
                 # Build the concurrent execution record (duration=0: no per-branch timing)
-                trusted = ref.plugin_ref.trusted_config
                 _concurrent_denied = not result.continue_processing
-                executions.append(ControlExecutionRecord(
-                    plugin_id=ref.plugin_ref.uuid,
-                    plugin_name=ref.plugin_ref.name,
-                    plugin_kind=_truncate(trusted.kind),
-                    hook_name=hook_type,
-                    mode=trusted.mode,
-                    status=ControlExecutionStatus.COMPLETED,
-                    requested_allow=result.continue_processing if result.continue_processing else False,
+                executions.append(_make_execution_record(
+                    ref,
+                    hook_type,
+                    ControlExecutionStatus.COMPLETED,
                     effective_allow=not _concurrent_denied,
-                    matched=True if _concurrent_denied else None,
+                    requested_allow=result.continue_processing,
+                    matched=True if _concurrent_denied else False,
                     applied=_concurrent_denied,
-                    payload_modified=False,
-                    extensions_modified=False,
-                    duration_ns=0,
                     reason=_truncate_opt(result.violation.reason if result.violation else None),
                     error_code=_truncate(result.violation.code) if result.violation else None,
-                    config_keys=_collect_config_keys(trusted.config),
                 ))
                 if not result.continue_processing:
                     pending = sum(1 for t in concurrent_tasks if not t.done())
@@ -633,13 +667,31 @@ class PluginExecutor:
             except PluginViolationError:
                 # violations_as_exceptions=True — propagate immediately, no record needed
                 raise
-            except asyncio.TimeoutError:
+            except PluginError as _pe:
+                # execute_plugin re-raises PluginError when on_error=FAIL — must not swallow.
+                # Record the error then re-raise to preserve fail-closed behaviour.
+                duration_ns = time.monotonic_ns() - t_start
+                if executions is not None:
+                    executions.append(_make_execution_record(
+                        hook_ref,
+                        hook_type,
+                        ControlExecutionStatus.ERROR,
+                        effective_allow=False,
+                        duration_ns=duration_ns,
+                        applied=True,
+                        reason=_truncate_opt(str(_pe)),
+                        error_code="plugin_error",
+                    ))
+                raise
+            except PluginTimeoutError as _te:
+                # on_error=IGNORE or DISABLE timeout — pipeline continues, record as TIMEOUT.
                 duration_ns = time.monotonic_ns() - t_start
                 exec_status = ControlExecutionStatus.TIMEOUT
                 exec_error_code = "plugin_timeout"
-                exec_reason = f"Plugin {hook_ref.plugin_ref.name} timed out"
+                exec_reason = str(_te)
                 result = PluginResult(continue_processing=True)
-            except (PluginError, Exception) as _exc:
+            except Exception as _exc:
+                # Unexpected exception that escaped execute_plugin entirely.
                 duration_ns = time.monotonic_ns() - t_start
                 exec_status = ControlExecutionStatus.ERROR
                 exec_error_code = "plugin_error"
@@ -709,24 +761,19 @@ class PluginExecutor:
                 rec_reason = _truncate_opt(exec_reason)
 
             if executions is not None:
-                trusted = hook_ref.plugin_ref.trusted_config
-                executions.append(ControlExecutionRecord(
-                    plugin_id=hook_ref.plugin_ref.uuid,
-                    plugin_name=hook_ref.plugin_ref.name,
-                    plugin_kind=_truncate(trusted.kind),
-                    hook_name=hook_type,
-                    mode=trusted.mode,
-                    status=exec_status,
-                    requested_allow=requested_allow,
+                executions.append(_make_execution_record(
+                    hook_ref,
+                    hook_type,
+                    exec_status,
                     effective_allow=effective_allow,
+                    duration_ns=duration_ns,
+                    requested_allow=requested_allow,
                     matched=matched,
                     applied=rec_applied,
                     payload_modified=payload_modified,
                     extensions_modified=extensions_modified,
-                    duration_ns=duration_ns,
                     reason=rec_reason,
                     error_code=rec_error_code,
-                    config_keys=_collect_config_keys(trusted.config),
                 ))
 
             if not result.continue_processing:
@@ -974,27 +1021,14 @@ class PluginExecutor:
             res_local_contexts[local_context_key] = local_context
 
             # FAF record appended at spawn time — outcome is unknowable when pipeline returns.
-            # status=Completed is an optimistic placeholder; duration_ns=0 (not yet run).
+            # status=COMPLETED is an optimistic placeholder; duration_ns=0 (not yet run).
             # Identify FAF records by mode == "fire_and_forget", not by status.
             if executions is not None:
-                trusted = ref.plugin_ref.trusted_config
-                executions.append(ControlExecutionRecord(
-                    plugin_id=ref.plugin_ref.uuid,
-                    plugin_name=ref.plugin_ref.name,
-                    plugin_kind=_truncate(trusted.kind),
-                    hook_name=hook_type,
-                    mode=trusted.mode,
-                    status=ControlExecutionStatus.COMPLETED,
-                    requested_allow=None,
+                executions.append(_make_execution_record(
+                    ref,
+                    hook_type,
+                    ControlExecutionStatus.COMPLETED,
                     effective_allow=True,
-                    matched=None,
-                    applied=False,
-                    payload_modified=False,
-                    extensions_modified=False,
-                    duration_ns=0,
-                    reason=None,
-                    error_code=None,
-                    config_keys=_collect_config_keys(trusted.config),
                 ))
 
             task = asyncio.create_task(
@@ -1171,6 +1205,11 @@ class PluginExecutor:
             if on_error == OnError.DISABLE:
                 async with self._runtime_disabled_lock:
                     self._runtime_disabled.add(hook_ref.plugin_ref.name)
+            # on_error=IGNORE or DISABLE: pipeline continues, but raise PluginTimeoutError so
+            # _run_serial_phase can record status=TIMEOUT rather than COMPLETED.
+            raise PluginTimeoutError(
+                f"Plugin {hook_ref.plugin_ref.name} exceeded {self.timeout}s timeout"
+            ) from exc
         except PluginViolationError:
             raise
         except PluginError as pe:

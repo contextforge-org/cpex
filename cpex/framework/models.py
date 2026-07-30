@@ -1668,12 +1668,22 @@ _MAX_STRING_LEN: int = 256
 _MAX_CONFIG_KEYS: int = 64
 
 
+_ELLIPSIS = "…"
+_ELLIPSIS_BYTES = len(_ELLIPSIS.encode("utf-8"))  # 3
+
+
 def _truncate(s: str, max_len: int = _MAX_STRING_LEN) -> str:
-    """Truncate *s* to *max_len* bytes, respecting unicode boundaries."""
+    """Truncate *s* so the UTF-8 encoding stays within *max_len* bytes.
+
+    The result (including the trailing ellipsis when truncated) never exceeds
+    *max_len* bytes when encoded as UTF-8.
+    """
     encoded = s.encode("utf-8")
     if len(encoded) <= max_len:
         return s
-    return encoded[:max_len].decode("utf-8", errors="ignore") + "…"
+    # Reserve space for the ellipsis suffix
+    cap = max_len - _ELLIPSIS_BYTES
+    return encoded[:cap].decode("utf-8", errors="ignore") + _ELLIPSIS
 
 
 def _truncate_opt(s: Optional[str]) -> Optional[str]:
@@ -1702,17 +1712,21 @@ class ControlExecutionStatus(StrEnum):
     """
 
     COMPLETED = "completed"
-    """Plugin ran to completion (may have allowed or denied)."""
-    SKIPPED = "skipped"
-    """Plugin was not invoked — disabled at schedule time."""
+    """Plugin ran to completion (may have allowed or denied).
+    Also used as a spawn-time placeholder for FIRE_AND_FORGET records whose
+    outcome is unknowable when the pipeline result is returned — identify FAF
+    records by ``mode == fire_and_forget``, not by this status."""
     ERROR = "error"
-    """Plugin returned an error."""
+    """Plugin returned an error (on_error=ignore/disable) or raised with on_error=fail."""
     TIMEOUT = "timeout"
-    """Plugin exceeded its per-invocation timeout."""
+    """Plugin timed out with on_error=ignore or on_error=disable (pipeline continues).
+    on_error=fail timeouts are converted to PluginError and recorded as ERROR."""
+    SKIPPED = "skipped"
+    """Reserved — not currently emitted. Disabled plugins are silently dropped by group_by_mode."""
     CANCELLED = "cancelled"
-    """Plugin task was cancelled (e.g. short-circuit in concurrent phase)."""
+    """Reserved — not currently emitted. Cancelled concurrent siblings produce no record."""
     DISABLED = "disabled"
-    """Plugin is runtime-disabled (on_error=disable tripped previously)."""
+    """Reserved — not currently emitted. Runtime-disabled plugins are silently dropped."""
 
 
 class ControlExecutionRecord(BaseModel):
@@ -1968,9 +1982,12 @@ class PluginResult(BaseModel, Generic[T]):
                 to await them and collect any errors. This field is excluded from model serialization.
             http_headers (Optional[dict[str, str]]): HTTP headers to include in successful responses.
             retry_delay_ms (int): Milliseconds the gateway should wait before retrying the tool call.
-            executions (list[ControlExecutionRecord]): Structured execution records, one per plugin
-                evaluated during this invocation. Populated by the executor from trusted framework
-                state — plugins cannot forge identity, duration, or effective decision fields.
+            executions (list[ControlExecutionRecord]): Structured execution records, one per
+                *evaluated* control during this invocation. Disabled, skipped (condition unmet),
+                and cancelled concurrent siblings produce no record in 0.1.x (see
+                ``ControlExecutionStatus.SKIPPED / DISABLED / CANCELLED``). Populated by the
+                executor from trusted framework state — plugins cannot forge identity, duration,
+                or effective decision fields.
 
      Examples:
         >>> result = PluginResult()
