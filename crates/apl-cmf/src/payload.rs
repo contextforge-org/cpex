@@ -172,7 +172,10 @@ mod tests {
         extract_data(&tree, &mut bag);
 
         assert_eq!(bag.get_string("data.org.default_region"), Some("us"));
-        assert_eq!(bag.get_string("data.tenants.acme-eu.data_region"), Some("eu"));
+        assert_eq!(
+            bag.get_string("data.tenants.acme-eu.data_region"),
+            Some("eu")
+        );
         // String arrays become a StringSet (ready for `contains` / R3b).
         assert!(bag.set_contains("data.tenants.acme-eu.allowed_models", "anthropic/*"));
         assert!(bag.set_contains("data.tenants.acme-eu.allowed_models", "vllm/*"));

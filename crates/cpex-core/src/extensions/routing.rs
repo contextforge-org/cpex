@@ -191,6 +191,23 @@ impl CandidateConstraintExtension {
     }
 }
 
+/// Capability a plugin must hold to create, change, or remove the
+/// [`CandidateConstraintExtension`] slot (`Extensions.candidate_constraint`).
+///
+/// The slot is the policy engine's routing *output*: the APL engine holds
+/// this capability intrinsically (emitting the constraint is its own job,
+/// like taints), and any other plugin that alters the slot by value without
+/// holding it has its extension modifications rejected by the executor —
+/// so a downstream plugin cannot overwrite, remove, or forge the policy
+/// engine's constraint. A holder that leaves the slot untouched always
+/// passes. Read access is ungated in v1 (the host consumes the constraint
+/// after the pipeline, not through a filtered plugin view).
+///
+/// If a future writer other than the APL engine is introduced, grant it this
+/// capability; multi-writer composition should be monotonic (allow-sets
+/// intersect, deny-sets union) so no writer can weaken another's constraint.
+pub const CAP_WRITE_CANDIDATE_CONSTRAINT: &str = "write_candidate_constraint";
+
 /// Well-known backend label keys the typed constraint fields match
 /// against. Everything else in a backend's label set is `custom`.
 pub const LABEL_MODEL: &str = "model";
@@ -430,6 +447,19 @@ mod tests {
         };
         // Backend tier the host can't rank → excluded, not matched.
         assert!(!c.accepts(&backend(&[("cost_tier", "mystery")]), rank));
+    }
+
+    #[test]
+    fn unrankable_ceiling_fails_closed() {
+        // The *ceiling* itself (the policy value, e.g. a typo'd or
+        // host-unknown `max_cost_tier`) is unrankable. `accepts` must reject
+        // rather than silently drop the ceiling and admit a rankable backend.
+        let c = CandidateConstraintExtension {
+            max_cost_tiers: vec!["mystery".into()],
+            ..Default::default()
+        };
+        // Backend tier is perfectly rankable; only the ceiling is not.
+        assert!(!c.accepts(&backend(&[("cost_tier", "cheap")]), rank));
     }
 
     #[test]

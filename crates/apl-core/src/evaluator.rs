@@ -535,18 +535,30 @@ async fn dispatch_effect(
 
         Effect::Restrict { spec } => {
             // Resolve any `data.*` field references against this request's
-            // bag (design §4.3), then accumulate the literal constraint —
-            // same discipline as `Taint`: never halts, always continues.
-            // An all-empty result is dropped (the parser rejects a literal
-            // empty `restrict:`, but a reference that resolves to nothing
-            // could still leave every field unset). Folding / intersection
-            // of the accumulated constraints happens at the bridge
-            // (apl-cpex → `CandidateConstraintExtension`).
-            let constraint = spec.resolve(bag);
-            if !constraint.is_empty() {
-                constraints.push(constraint);
+            // bag (design §4.3). Allow-list references fail closed by
+            // resolving to the empty set; an unresolvable *deny*-list
+            // reference is an integrity failure that denies the request —
+            // a deny-list we can't resolve must never route unconstrained.
+            //
+            // On success we accumulate the literal constraint — same
+            // discipline as `Taint`: continues, doesn't halt. An all-empty
+            // result is dropped (the parser rejects a literal empty
+            // `restrict:`, but a reference resolving to nothing could still
+            // leave every field unset). Folding / intersection of the
+            // accumulated constraints happens at the bridge (apl-cpex →
+            // `CandidateConstraintExtension`).
+            match spec.resolve(bag) {
+                Ok(constraint) => {
+                    if !constraint.is_empty() {
+                        constraints.push(constraint);
+                    }
+                    EffectOutcome::Continue
+                },
+                Err(e) => EffectOutcome::Halt(Decision::Deny {
+                    reason: Some(e.to_string()),
+                    rule_source: fallback_source.to_string(),
+                }),
             }
-            EffectOutcome::Continue
         },
 
         Effect::FieldOp { path, stages } => {
@@ -1682,13 +1694,34 @@ mod tests {
 
     #[test]
     fn missing_inner_key_keeps_require_fail_closed() {
-        // `require(X)` desugars to IsFalse(X); an unresolvable path is
-        // absent → falsy → IsFalse true → the require denies.
+        // `require(X)` desugars to a *rule* — condition `IsFalse(X)` + deny —
+        // NOT a bare `IsTrue` predicate. An unresolvable interpolated path is
+        // absent → falsy → `IsFalse(X)` is true → the rule fires → deny. This
+        // is the invariant `require` exists for, so drive the real require
+        // path (`parse_rule` + `evaluate_rules`), not `parse_predicate`.
+        let rule =
+            crate::parser::parse_rule("require(data.tenants[subject.tenant].data_region)", "test")
+                .unwrap();
         let bag = AttributeBag::new(); // no subject.tenant, no data.*
-        let expr =
-            crate::parser::parse_predicate("data.tenants[subject.tenant].data_region").unwrap();
-        // Bare identifier predicate is IsTrue → false when unresolvable.
-        assert!(!eval_expression(&expr, &bag));
+        assert!(
+            matches!(evaluate_rules(&[rule], &bag), Decision::Deny { .. }),
+            "require over an unresolvable path must deny (fail closed)",
+        );
+    }
+
+    #[test]
+    fn require_over_resolvable_truthy_path_allows() {
+        // Companion to the fail-closed case: when the interpolated path
+        // resolves to a truthy boolean, `IsFalse(X)` is false → the require
+        // rule does NOT fire → allow. Proves the deny above comes from
+        // unresolvability, not from `require` always denying.
+        let rule =
+            crate::parser::parse_rule("require(data.tenants[subject.tenant].allowed)", "test")
+                .unwrap();
+        let mut bag = AttributeBag::new();
+        bag.set("subject.tenant", "acme");
+        bag.set("data.tenants.acme.allowed", true);
+        assert_eq!(evaluate_rules(&[rule], &bag), Decision::Allow);
     }
 
     #[test]
@@ -1714,7 +1747,10 @@ mod tests {
         let mut bag = AttributeBag::new();
         bag.set("subject.tier", 2i64);
         bag.set("data.limits.2.max_cost", "cheap");
-        assert!(eval_pred("data.limits[subject.tier].max_cost == 'cheap'", &bag));
+        assert!(eval_pred(
+            "data.limits[subject.tier].max_cost == 'cheap'",
+            &bag
+        ));
     }
 
     #[test]
@@ -3387,11 +3423,20 @@ mod tests {
         };
 
         let mut off = AttributeBag::new();
-        assert!(eval(&[gated("eu_resident")], &mut off).await.constraints.is_empty());
+        assert!(eval(&[gated("eu_resident")], &mut off)
+            .await
+            .constraints
+            .is_empty());
 
         let mut on = AttributeBag::new();
         on.set("eu_resident", true);
-        assert_eq!(eval(&[gated("eu_resident")], &mut on).await.constraints.len(), 1);
+        assert_eq!(
+            eval(&[gated("eu_resident")], &mut on)
+                .await
+                .constraints
+                .len(),
+            1
+        );
     }
 
     #[tokio::test]
@@ -3432,7 +3477,9 @@ mod tests {
             "data.agents.support-bot.allowed_models",
             std::collections::HashSet::from(["vllm/*".to_string(), "anthropic/*".to_string()]),
         );
-        let effects = vec![restrict_allow_models_ref("data.agents[subject.id].allowed_models")];
+        let effects = vec![restrict_allow_models_ref(
+            "data.agents[subject.id].allowed_models",
+        )];
         let e = eval(&effects, &mut bag).await;
         assert_eq!(e.constraints.len(), 1);
         // Resolved to the tree's set (sorted).
@@ -3450,7 +3497,9 @@ mod tests {
             "data.agents.research-bot.allowed_models",
             std::collections::HashSet::from(["openai/*".to_string()]),
         );
-        let effects = vec![restrict_allow_models_ref("data.agents[subject.id].allowed_models")];
+        let effects = vec![restrict_allow_models_ref(
+            "data.agents[subject.id].allowed_models",
+        )];
         let e = eval(&effects, &mut bag).await;
         assert_eq!(
             e.constraints[0].allow_models.as_deref(),
@@ -3464,10 +3513,106 @@ mod tests {
         // empty set: a real (impossible) constraint that the host's
         // on_empty then decides, never silently unconstrained.
         let mut bag = AttributeBag::new();
-        let effects = vec![restrict_allow_models_ref("data.agents[subject.id].allowed_models")];
+        let effects = vec![restrict_allow_models_ref(
+            "data.agents[subject.id].allowed_models",
+        )];
         let e = eval(&effects, &mut bag).await;
         assert_eq!(e.constraints.len(), 1);
         assert_eq!(e.constraints[0].allow_models.as_deref(), Some(&[][..]));
+    }
+
+    // ----- R1b: deny_models references fail closed -----
+
+    fn restrict_deny_models_ref(path: &str) -> Effect {
+        use crate::constraint::{RestrictSpec, StringSetSpec};
+        Effect::Restrict {
+            spec: RestrictSpec {
+                deny_models: Some(StringSetSpec::Ref(path.to_string())),
+                ..Default::default()
+            },
+        }
+    }
+
+    fn restrict_deny_models_literal(models: &[&str]) -> Effect {
+        use crate::constraint::{RestrictSpec, StringSetSpec};
+        Effect::Restrict {
+            spec: RestrictSpec {
+                deny_models: Some(StringSetSpec::Literal(
+                    models.iter().map(|s| s.to_string()).collect(),
+                )),
+                ..Default::default()
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn restrict_deny_ref_resolves_and_accumulates() {
+        // A deny-list `data.*` reference that resolves lands in the
+        // constraint like any other field — refs stay supported on deny.
+        let mut bag = AttributeBag::new();
+        bag.set("subject.id", "support-bot");
+        bag.set(
+            "data.agents.support-bot.banned_models",
+            std::collections::HashSet::from(["openai/*".to_string()]),
+        );
+        let effects = vec![restrict_deny_models_ref(
+            "data.agents[subject.id].banned_models",
+        )];
+        let e = eval(&effects, &mut bag).await;
+        assert_eq!(e.decision, Decision::Allow);
+        assert_eq!(e.constraints.len(), 1);
+        assert_eq!(e.constraints[0].deny_models, vec!["openai/*".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn restrict_deny_ref_unresolvable_denies() {
+        // The fail-closed fix: a deny-list reference that can't resolve
+        // (missing subject.id / no tree entry) denies the request rather
+        // than routing with an empty — and thus fail-open — deny-list.
+        let mut bag = AttributeBag::new();
+        let effects = vec![restrict_deny_models_ref(
+            "data.agents[subject.id].banned_models",
+        )];
+        let e = eval(&effects, &mut bag).await;
+        assert!(
+            matches!(e.decision, Decision::Deny { .. }),
+            "got {:?}",
+            e.decision
+        );
+        assert!(e.constraints.is_empty());
+    }
+
+    #[tokio::test]
+    async fn restrict_deny_ref_shape_mismatch_denies() {
+        // A deny reference pointing at a non-set value (here an integer) is a
+        // shape mismatch — unresolved, so it denies rather than silently
+        // vanishing into an empty deny-list.
+        let mut bag = AttributeBag::new();
+        bag.set("subject.id", "support-bot");
+        bag.set("data.agents.support-bot.banned_models", 7i64);
+        let effects = vec![restrict_deny_models_ref(
+            "data.agents[subject.id].banned_models",
+        )];
+        let e = eval(&effects, &mut bag).await;
+        assert!(
+            matches!(e.decision, Decision::Deny { .. }),
+            "got {:?}",
+            e.decision
+        );
+    }
+
+    #[tokio::test]
+    async fn restrict_deny_literal_accumulates() {
+        // A literal deny-list has no resolution step, so it can never fail
+        // open — it simply accumulates.
+        let mut bag = AttributeBag::new();
+        let e = eval(&[restrict_deny_models_literal(&["deprecated/*"])], &mut bag).await;
+        assert_eq!(e.decision, Decision::Allow);
+        assert_eq!(e.constraints.len(), 1);
+        assert_eq!(
+            e.constraints[0].deny_models,
+            vec!["deprecated/*".to_string()]
+        );
     }
 
     // ----- E2: FieldOp end-to-end through evaluate_steps -----

@@ -117,7 +117,10 @@ routes:
     assert!(result.continue_processing);
     let merged = result.modified_extensions.expect("modified_extensions");
     let c = constraint(&merged).expect("candidate_constraint slot");
-    assert_eq!(c.allow_models.as_deref(), Some(&["anthropic/*".to_string()][..])); // intersection
+    assert_eq!(
+        c.allow_models.as_deref(),
+        Some(&["anthropic/*".to_string()][..])
+    ); // intersection
     assert_eq!(c.deny_models, vec!["openai/*".to_string()]); // union
     assert_eq!(c.on_empty, OnEmpty::Deny);
 }
@@ -187,4 +190,42 @@ routes:
     );
     let violation = result.violation.expect("conflict must surface a violation");
     assert_eq!(violation.code, "policy.restrict_conflict");
+}
+
+/// Restricts in separate `parallel:` branches both merge back into the
+/// single folded constraint — accumulation survives the fan-out, driven
+/// end-to-end through the pipeline (not just the evaluator unit path).
+#[tokio::test]
+async fn parallel_branch_restricts_accumulate() {
+    const YAML: &str = r#"
+routes:
+  - tool: infer
+    apl:
+      pre_invocation:
+        - parallel:
+            - restrict: { allow_regions: [eu, us] }
+            - restrict: { deny_models: ["openai/*"] }
+"#;
+    let mgr = build_manager(YAML).await;
+
+    let ext = Extensions {
+        meta: Some(Arc::new(meta_for_tool("infer"))),
+        ..Default::default()
+    };
+    let (result, _bg) = mgr
+        .invoke_named::<CmfHook>("cmf.tool_pre_invoke", cmf_payload("hi"), ext, None)
+        .await;
+
+    assert!(result.continue_processing);
+    let merged = result.modified_extensions.expect("modified_extensions");
+    let c = constraint(&merged).expect("candidate_constraint slot");
+    // Branch A's allow_regions and branch B's deny_models both survive the
+    // fold (order-agnostic — the fold may reorder).
+    let mut regions = c
+        .allow_regions
+        .clone()
+        .expect("allow_regions from branch A");
+    regions.sort();
+    assert_eq!(regions, vec!["eu".to_string(), "us".to_string()]);
+    assert_eq!(c.deny_models, vec!["openai/*".to_string()]);
 }

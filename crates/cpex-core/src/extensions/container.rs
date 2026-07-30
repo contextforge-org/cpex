@@ -10,7 +10,7 @@
 // OwnedExtensions is the plugin's writeable workspace, created by
 // cow_copy(), returned in PluginResult::modify_extensions().
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
@@ -27,7 +27,7 @@ use super::meta::MetaExtension;
 use super::provenance::ProvenanceExtension;
 use super::raw_credentials::RawCredentialsExtension;
 use super::request::RequestExtension;
-use super::routing::CandidateConstraintExtension;
+use super::routing::{CandidateConstraintExtension, CAP_WRITE_CANDIDATE_CONSTRAINT};
 use super::security::SecurityExtension;
 
 /// Typed container for all message extensions.
@@ -243,6 +243,25 @@ impl Extensions {
         // `write_inbound_credentials`), not at this pointer-equality
         // gate. Until cap-tier-aware merge lands, treat raw_credentials
         // as merge-able like `security` and `delegation`.
+    }
+
+    /// Whether `modified` may write the `candidate_constraint` slot, given
+    /// the plugin's `capabilities`.
+    ///
+    /// The routing constraint is the policy engine's *output*: only a holder
+    /// of [`CAP_WRITE_CANDIDATE_CONSTRAINT`] may create, change, or remove it.
+    /// A plugin that leaves the slot at its original value (or holds the cap)
+    /// passes; any other plugin that alters it by value is rejected, so a
+    /// downstream plugin cannot overwrite, drop, or forge the constraint.
+    /// Compared by value (not `Arc` pointer) because the slot legitimately
+    /// round-trips through a fresh `Arc` on every merge.
+    pub fn candidate_constraint_write_ok(
+        &self,
+        modified: &OwnedExtensions,
+        capabilities: &HashSet<String>,
+    ) -> bool {
+        capabilities.contains(CAP_WRITE_CANDIDATE_CONSTRAINT)
+            || modified.candidate_constraint.as_ref() == self.candidate_constraint.as_deref()
     }
 
     /// Merge an OwnedExtensions back into this Extensions.
@@ -467,6 +486,66 @@ mod tests {
         let ext = Extensions::default();
         let cow = ext.cow_copy();
         assert!(ext.validate_immutable(&cow));
+    }
+
+    // ----- candidate_constraint write authority -----
+
+    fn a_constraint(region: &str) -> CandidateConstraintExtension {
+        CandidateConstraintExtension {
+            allow_regions: Some(vec![region.to_string()]),
+            ..Default::default()
+        }
+    }
+
+    fn caps(list: &[&str]) -> HashSet<String> {
+        list.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn candidate_constraint_unchanged_passes_without_cap() {
+        // A plugin that leaves the slot at its original value is fine even
+        // without the write cap — the common case for every plugin.
+        let mut ext = Extensions::default();
+        ext.candidate_constraint = Some(Arc::new(a_constraint("eu")));
+        let owned = ext.cow_copy(); // carries the same constraint value
+        assert!(ext.candidate_constraint_write_ok(&owned, &caps(&[])));
+    }
+
+    #[test]
+    fn candidate_constraint_overwrite_rejected_without_cap() {
+        let mut ext = Extensions::default();
+        ext.candidate_constraint = Some(Arc::new(a_constraint("eu")));
+        let mut owned = ext.cow_copy();
+        owned.candidate_constraint = Some(a_constraint("us")); // weakened/changed
+        assert!(!ext.candidate_constraint_write_ok(&owned, &caps(&[])));
+        // ...but a cap-holder (the APL engine) may overwrite.
+        assert!(ext.candidate_constraint_write_ok(&owned, &caps(&[CAP_WRITE_CANDIDATE_CONSTRAINT])));
+    }
+
+    #[test]
+    fn candidate_constraint_removal_rejected_without_cap() {
+        let mut ext = Extensions::default();
+        ext.candidate_constraint = Some(Arc::new(a_constraint("eu")));
+        let mut owned = ext.cow_copy();
+        owned.candidate_constraint = None; // dropped the policy engine's constraint
+        assert!(!ext.candidate_constraint_write_ok(&owned, &caps(&[])));
+    }
+
+    #[test]
+    fn candidate_constraint_fabricate_rejected_without_cap() {
+        let ext = Extensions::default(); // no constraint originally
+        let mut owned = ext.cow_copy();
+        owned.candidate_constraint = Some(a_constraint("eu")); // forged
+        assert!(!ext.candidate_constraint_write_ok(&owned, &caps(&[])));
+        // The APL engine, holding the cap, legitimately creates it.
+        assert!(ext.candidate_constraint_write_ok(&owned, &caps(&[CAP_WRITE_CANDIDATE_CONSTRAINT])));
+    }
+
+    #[test]
+    fn candidate_constraint_both_none_passes_without_cap() {
+        let ext = Extensions::default();
+        let owned = ext.cow_copy();
+        assert!(ext.candidate_constraint_write_ok(&owned, &caps(&[])));
     }
 
     #[test]

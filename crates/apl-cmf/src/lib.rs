@@ -129,8 +129,12 @@ impl BagBuilder {
     }
 
     /// Flatten a static attribute tree into the `data.*` namespace
-    /// (design §4.2). Typically called once with a shared, startup-loaded
-    /// tree so every request's bag carries the same policy-side constants.
+    /// (design §4.2). The tree is shared and startup-loaded, but this
+    /// re-walks it and re-inserts every leaf into the bag on **each call**
+    /// (a `format!` per node, a `bag.set` per leaf) — so `data.*` reads are
+    /// **not** free on the request hot path. The route handler invokes this
+    /// per request (once per phase), meaning a large tree is re-flattened on
+    /// every request until a per-request caching optimization lands.
     pub fn with_data(mut self, tree: &apl_core::AttributeTree) -> Self {
         extract_data(tree, &mut self.bag);
         self

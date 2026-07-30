@@ -6,8 +6,11 @@
 // Backend candidate-constraint IR for the `restrict` effect.
 //
 // `restrict` narrows the set of backends the host's router/load-balancer
-// may select from — it never picks a backend and never allows/denies the
-// request (see docs/apl-restrict-effect-design.md). It is an accumulating
+// may select from — it never picks a backend (see
+// docs/apl-restrict-effect-design.md). It normally does not allow/deny the
+// request either; the one exception is fail-closed integrity — an
+// unresolvable `deny_models` reference denies, since a deny-list cannot fail
+// open (see `RestrictResolveError`). It is an accumulating
 // effect in the same family as `taint`: the evaluator collects the
 // constraints a route emits into `RouteDecision.constraints`, and the
 // bridge (apl-cpex) folds them into a typed `CandidateConstraintExtension`
@@ -19,6 +22,7 @@
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
 
 use crate::attributes::{AttributeBag, AttributeValue};
 
@@ -135,30 +139,55 @@ pub enum StringSetSpec {
 }
 
 impl StringSetSpec {
-    /// Resolve to a concrete set. A `Literal` is returned as-is; a `Ref`
-    /// looks its path up in the request bag (expanding `[...]`
-    /// interpolation) and reads the `StringSet` there. An absent or
-    /// non-set reference resolves to the **empty set** — fail-closed: an
-    /// allow-list that didn't resolve qualifies no candidate, and the
-    /// host's `on_empty` decides. A single string value is taken as a
-    /// one-element set.
-    fn resolve(&self, bag: &AttributeBag) -> Vec<String> {
+    /// Resolve to a concrete set, or `None` if a reference could not be
+    /// resolved. A `Literal` always resolves (`Some`). A `Ref` looks its
+    /// path up in the request bag (expanding `[...]` interpolation) and
+    /// reads the `StringSet`/`String` there; a **missing key or wrong-shape
+    /// value** yields `None`. A legitimately empty `StringSet` still resolves
+    /// to `Some([])` — "resolved to nothing" is distinct from "couldn't
+    /// resolve," and the caller ([`RestrictSpec::resolve`]) decides what each
+    /// means per field.
+    fn resolve(&self, bag: &AttributeBag) -> Option<Vec<String>> {
         match self {
-            StringSetSpec::Literal(v) => v.clone(),
-            StringSetSpec::Ref(path) => match bag.resolve_key(path) {
-                Some(key) => match bag.get(&key) {
+            StringSetSpec::Literal(v) => Some(v.clone()),
+            StringSetSpec::Ref(path) => {
+                // Interpolation itself failed (e.g. the `[...]` key is absent).
+                let key = bag.resolve_key(path)?;
+                match bag.get(&key) {
                     Some(AttributeValue::StringSet(s)) => {
                         let mut v: Vec<String> = s.iter().cloned().collect();
                         v.sort();
-                        v
+                        Some(v)
                     },
-                    Some(AttributeValue::String(s)) => vec![s.clone()],
-                    _ => Vec::new(),
-                },
-                None => Vec::new(),
+                    Some(AttributeValue::String(s)) => Some(vec![s.clone()]),
+                    // Absent, or present but not a set/string — the reference
+                    // did not resolve to a usable set.
+                    _ => None,
+                }
             },
         }
     }
+}
+
+/// Why a `restrict` effect could not be resolved against the request bag.
+///
+/// Today only an unresolvable `deny_models` reference produces this — a
+/// deny-list whose `data.*` source is missing or the wrong shape. An
+/// allow-list fails closed by *shrinking* to the empty set (`Some([])`), a
+/// value it can represent; a deny-list would have to *grow* to "deny
+/// everything," which the empty vector cannot express. So an unresolvable
+/// deny reference is treated as an integrity failure — the evaluator denies
+/// the request rather than route it with an unknown deny-list.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+#[error(
+    "restrict: `{field}` reference `{path}` did not resolve to a set — denying \
+     (a deny-list cannot fail open)"
+)]
+pub struct RestrictResolveError {
+    /// The `restrict` field that failed to resolve (e.g. `"deny_models"`).
+    pub field: &'static str,
+    /// The `data.*` reference path that did not resolve.
+    pub path: String,
 }
 
 /// The authoring form of a `restrict` effect. Same fields as
@@ -198,20 +227,236 @@ impl RestrictSpec {
     }
 
     /// Resolve every `data.*` reference against the request bag, producing
-    /// the literal `CandidateConstraint` the evaluator accumulates.
-    pub fn resolve(&self, bag: &AttributeBag) -> CandidateConstraint {
-        CandidateConstraint {
-            allow_models: self.allow_models.as_ref().map(|s| s.resolve(bag)),
-            deny_models: self
-                .deny_models
-                .as_ref()
-                .map(|s| s.resolve(bag))
-                .unwrap_or_default(),
-            allow_regions: self.allow_regions.as_ref().map(|s| s.resolve(bag)),
-            allow_sites: self.allow_sites.as_ref().map(|s| s.resolve(bag)),
+    /// the literal `CandidateConstraint` the evaluator accumulates — or a
+    /// [`RestrictResolveError`] if a deny-list reference could not be
+    /// resolved.
+    ///
+    /// The two list kinds fail closed in opposite directions:
+    /// * **Allow-lists** (`allow_models` / `allow_regions` / `allow_sites`):
+    ///   an unresolvable reference resolves to the empty set (`Some([])`),
+    ///   which qualifies no candidate. The host's `on_empty` then decides.
+    /// * **Deny-lists** (`deny_models`): an unresolvable reference is an
+    ///   integrity failure — a deny-list has no "empty = deny everything"
+    ///   value, so we cannot safely route with an unknown one. Returns `Err`
+    ///   and the evaluator denies the request.
+    pub fn resolve(&self, bag: &AttributeBag) -> Result<CandidateConstraint, RestrictResolveError> {
+        // Allow-lists fail closed by shrinking to empty — `None` (unresolved)
+        // collapses to `Some([])`, preserving the pre-reference behavior.
+        let allow_models = self
+            .allow_models
+            .as_ref()
+            .map(|s| s.resolve(bag).unwrap_or_default());
+        let allow_regions = self
+            .allow_regions
+            .as_ref()
+            .map(|s| s.resolve(bag).unwrap_or_default());
+        let allow_sites = self
+            .allow_sites
+            .as_ref()
+            .map(|s| s.resolve(bag).unwrap_or_default());
+
+        // A deny-list that references data cannot fail open: an unresolvable
+        // reference denies the request. A literal deny-list always resolves.
+        let deny_models = match self.deny_models.as_ref() {
+            None => Vec::new(),
+            Some(spec) => match spec.resolve(bag) {
+                Some(v) => v,
+                None => {
+                    let path = match spec {
+                        StringSetSpec::Ref(p) => p.clone(),
+                        // A literal always resolves to `Some`, so this is
+                        // unreachable — kept total for safety.
+                        StringSetSpec::Literal(_) => String::new(),
+                    };
+                    return Err(RestrictResolveError {
+                        field: "deny_models",
+                        path,
+                    });
+                },
+            },
+        };
+
+        Ok(CandidateConstraint {
+            allow_models,
+            deny_models,
+            allow_regions,
+            allow_sites,
             max_cost_tier: self.max_cost_tier.clone(),
             custom: self.custom.clone(),
             on_empty: self.on_empty,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::attributes::AttributeBag;
+
+    // `is_empty()` is hand-written on both `CandidateConstraint` and
+    // `RestrictSpec` (and mirrored again on the cpex-core extension). A field
+    // that's added to the struct but forgotten in `is_empty()` would make a
+    // real restriction look empty and get silently dropped. The exhaustive
+    // destructures below (no `..`) fail to compile if a field is added
+    // without updating these tests, and the per-field asserts force each
+    // constraint-bearing field to count toward non-emptiness.
+
+    #[test]
+    fn candidate_constraint_is_empty_covers_every_field() {
+        // No `..`: adding a field breaks this until it's accounted for.
+        let CandidateConstraint {
+            allow_models,
+            deny_models,
+            allow_regions,
+            allow_sites,
+            max_cost_tier,
+            custom,
+            on_empty: _, // `on_empty` alone never makes a constraint non-empty
+        } = CandidateConstraint::default();
+        assert!(allow_models.is_none());
+        assert!(deny_models.is_empty());
+        assert!(allow_regions.is_none());
+        assert!(allow_sites.is_none());
+        assert!(max_cost_tier.is_none());
+        assert!(custom.is_empty());
+        assert!(CandidateConstraint::default().is_empty());
+
+        // Setting any single constraint-bearing field flips `is_empty()`.
+        let each: [CandidateConstraint; 6] = [
+            CandidateConstraint {
+                allow_models: Some(vec![]),
+                ..Default::default()
+            },
+            CandidateConstraint {
+                deny_models: vec!["x".into()],
+                ..Default::default()
+            },
+            CandidateConstraint {
+                allow_regions: Some(vec![]),
+                ..Default::default()
+            },
+            CandidateConstraint {
+                allow_sites: Some(vec![]),
+                ..Default::default()
+            },
+            CandidateConstraint {
+                max_cost_tier: Some("cheap".into()),
+                ..Default::default()
+            },
+            CandidateConstraint {
+                custom: [("k".to_string(), "v".to_string())].into(),
+                ..Default::default()
+            },
+        ];
+        for c in each {
+            assert!(!c.is_empty(), "field should count toward non-empty: {c:?}");
+        }
+        // `on_empty` alone does not.
+        assert!(CandidateConstraint {
+            on_empty: OnEmpty::Fallback,
+            ..Default::default()
+        }
+        .is_empty());
+    }
+
+    #[test]
+    fn restrict_spec_is_empty_covers_every_field() {
+        let RestrictSpec {
+            allow_models,
+            deny_models,
+            allow_regions,
+            allow_sites,
+            max_cost_tier,
+            custom,
+            on_empty: _,
+        } = RestrictSpec::default();
+        assert!(allow_models.is_none());
+        assert!(deny_models.is_none());
+        assert!(allow_regions.is_none());
+        assert!(allow_sites.is_none());
+        assert!(max_cost_tier.is_none());
+        assert!(custom.is_empty());
+        assert!(RestrictSpec::default().is_empty());
+
+        let lit = |s: &str| Some(StringSetSpec::Literal(vec![s.to_string()]));
+        let each: [RestrictSpec; 6] = [
+            RestrictSpec {
+                allow_models: lit("m"),
+                ..Default::default()
+            },
+            RestrictSpec {
+                deny_models: lit("m"),
+                ..Default::default()
+            },
+            RestrictSpec {
+                allow_regions: lit("eu"),
+                ..Default::default()
+            },
+            RestrictSpec {
+                allow_sites: lit("s"),
+                ..Default::default()
+            },
+            RestrictSpec {
+                max_cost_tier: Some("cheap".into()),
+                ..Default::default()
+            },
+            RestrictSpec {
+                custom: [("k".to_string(), "v".to_string())].into(),
+                ..Default::default()
+            },
+        ];
+        for s in each {
+            assert!(!s.is_empty(), "field should count toward non-empty: {s:?}");
+        }
+        assert!(RestrictSpec {
+            on_empty: OnEmpty::Fallback,
+            ..Default::default()
+        }
+        .is_empty());
+    }
+
+    #[test]
+    fn nonempty_spec_resolves_to_nonempty_constraint() {
+        // Cross-struct parity: a spec non-empty on any single field must
+        // resolve to a constraint that is ALSO non-empty — otherwise the
+        // evaluator's `if !constraint.is_empty()` guard would silently drop a
+        // real restriction. Catches a field the two `is_empty()`s (or
+        // `resolve()`) disagree on.
+        let bag = AttributeBag::new();
+        let lit = |s: &str| Some(StringSetSpec::Literal(vec![s.to_string()]));
+        let specs: [RestrictSpec; 6] = [
+            RestrictSpec {
+                allow_models: lit("m"),
+                ..Default::default()
+            },
+            RestrictSpec {
+                deny_models: lit("m"),
+                ..Default::default()
+            },
+            RestrictSpec {
+                allow_regions: lit("eu"),
+                ..Default::default()
+            },
+            RestrictSpec {
+                allow_sites: lit("s"),
+                ..Default::default()
+            },
+            RestrictSpec {
+                max_cost_tier: Some("cheap".into()),
+                ..Default::default()
+            },
+            RestrictSpec {
+                custom: [("k".to_string(), "v".to_string())].into(),
+                ..Default::default()
+            },
+        ];
+        for spec in specs {
+            assert!(!spec.is_empty(), "spec should be non-empty: {spec:?}");
+            let c = spec.resolve(&bag).expect("literal spec always resolves");
+            assert!(
+                !c.is_empty(),
+                "non-empty spec resolved to a dropped constraint: {spec:?}"
+            );
         }
     }
 }

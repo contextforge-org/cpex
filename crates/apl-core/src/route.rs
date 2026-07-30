@@ -57,7 +57,13 @@ impl RoutePayload {
 }
 
 /// Full outcome of running all four phases for a route.
+///
+/// `#[non_exhaustive]`: this outcome type keeps gaining fields as the engine
+/// grows (taints, constraints, pending elicitations, …), so it is sealed
+/// against external struct-literal construction — hosts read it, they don't
+/// build it. New fields can be added without breaking downstream readers.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct RouteDecision {
     pub decision: Decision,
     /// Taints accumulated from any phase. Empty unless a pipeline emitted them.

@@ -199,7 +199,10 @@ impl AplConfigVisitor {
     /// `FileAttributeSource::new(paths).load()?` — or hand-build one.
     /// Replacing a previously-set tree is allowed (last set wins).
     pub fn set_attribute_tree(&self, tree: AttributeTree) {
-        let mut slot = self.attribute_tree.write().unwrap_or_else(|p| p.into_inner());
+        let mut slot = self
+            .attribute_tree
+            .write()
+            .unwrap_or_else(|p| p.into_inner());
         *slot = Arc::new(tree);
     }
 
@@ -845,6 +848,13 @@ fn install_handler(
     // entity/`args.*` predicates in one evaluation. It is a no-op for hosts that
     // never populate the HTTP extension (nothing to read).
     capabilities.insert("read_headers".to_string());
+    // The APL engine emits the backend candidate constraint (the `restrict`
+    // effect's output) into `Extensions.candidate_constraint`. That slot is
+    // write-gated in the executor, so the synthetic handler holds the write
+    // capability intrinsically — emitting its own routing output, the same
+    // way it emits taints. No other plugin can overwrite or drop it without
+    // this capability. See `cpex_core::extensions::CAP_WRITE_CANDIDATE_CONSTRAINT`.
+    capabilities.insert(cpex_core::extensions::CAP_WRITE_CANDIDATE_CONSTRAINT.to_string());
 
     let plugin_config = PluginConfig {
         name: format!(

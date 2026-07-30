@@ -53,7 +53,9 @@ pub use raw_credentials::{
     TokenKind, TokenRole,
 };
 pub use request::RequestExtension;
-pub use routing::{BackendLabels, CandidateConstraintExtension, OnEmpty};
+pub use routing::{
+    BackendLabels, CandidateConstraintExtension, OnEmpty, CAP_WRITE_CANDIDATE_CONSTRAINT,
+};
 pub use security::{
     ClientExtension, ClientTrustLevel, DataPolicy, ObjectSecurityProfile, RetentionPolicy,
     SecurityExtension, SubjectExtension, SubjectType, WorkloadIdentity,
