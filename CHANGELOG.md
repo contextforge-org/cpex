@@ -15,9 +15,11 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-07-29
+
 ### Added
 
-- Structured control execution records for enforcement observability ([#130](https://github.com/contextforge-org/cpex/issues/130))
+- Structured control execution records for enforcement observability ([#141](https://github.com/contextforge-org/cpex/issues/141))
   - `ControlExecutionStatus` enum and `ControlExecutionRecord` Pydantic model in `cpex.framework.models`
   - `PluginResult.executions: list[ControlExecutionRecord]` — one record per plugin evaluated, always present
   - All five execution phases instrumented: Sequential, Transform, Audit, Concurrent, Fire-and-forget
@@ -43,6 +45,7 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/).
 
 - Initial release
 
-[Unreleased]: https://github.com/contextforge-org/cpex/compare/0.1.1...HEAD
+[Unreleased]: https://github.com/contextforge-org/cpex/compare/0.1.2...HEAD
+[0.1.2]: https://github.com/contextforge-org/cpex/compare/0.1.1...0.1.2
 [0.1.1]: https://github.com/contextforge-org/cpex/compare/0.1.0...0.1.1
 [0.1.0]: https://github.com/contextforge-org/cpex/releases/tag/0.1.0
