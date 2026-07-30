@@ -387,10 +387,9 @@ correct regardless of which token service receives it.
 >
 > **Keycloak does not.** Keycloak's Standard Token Exchange (v2, tested here on 26.6)
 > implements impersonation only: it **silently ignores `actor_token`** and returns a
-> subject-only token with no `act`. The tell (probed 2026-07-28, reproducible via
-> `verify-dual-principal.sh` in the CPEX demo): passing even a raw, untrusted-issuer
-> SVID as `actor_token` produces **no error** — Keycloak never parses the parameter, so
-> no mapper or config can surface it. To see `act` end-to-end you need a
+> subject-only token with no `act`. The tell (probed 2026-07-28): passing even a raw,
+> untrusted-issuer SVID as the exchange's `actor_token` produces **no error** — Keycloak
+> never parses the parameter, so no mapper or config can surface it. To see `act` end-to-end you need a
 > delegation-capable token service; against Keycloak, capture the acting agent at the
 > CPEX boundary (audit / downstream header) instead — CPEX resolves both principals
 > either way.
