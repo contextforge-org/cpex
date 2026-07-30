@@ -538,7 +538,7 @@ requires-dist = [
     { name = "inquirer", specifier = ">=3.4.1" },
     { name = "interrogate", marker = "extra == 'dev'", specifier = ">=1.7.0" },
     { name = "jinja2", specifier = ">=3.1.6" },
-    { name = "mcp", specifier = "==1.29.0" },
+    { name = "mcp", specifier = ">=1.29.0,<2" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.18.2" },
     { name = "orjson", specifier = ">=3.11.7" },
     { name = "packaging", specifier = ">=26.0" },
