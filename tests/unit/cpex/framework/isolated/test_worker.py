@@ -1815,4 +1815,387 @@ class TestMainFunction:
         assert error_output["request_id"] == "unknown"
 
 
+class TestExtensionsDelivery:
+    """The ``extensions`` task field reaching a 3-arg hook, and coming back.
+
+    Before this, ``process_task`` called ``execute_plugin`` with no
+    ``extensions`` argument, so every out-of-process hook saw ``extensions=None``
+    — a plugin using the 3-arg ``(payload, context, extensions)`` signature lost
+    all extension context that its in-process equivalent receives.
+
+    The wire contract is shared with the Rust host and pinned in
+    ``docs/specs/extensions-wire-contract.md``: ``extensions`` inbound on the
+    task, ``modified_extensions`` outbound on the response (the field the
+    ``PluginResult`` model already carries), sensitive headers stripped in both
+    directions, and no ``raw_credentials`` slot on this channel at all.
+    """
+
+    @pytest.fixture
+    def mock_plugin_dirs(self):
+        """Ensure the plugins directory exists."""
+        plugin_dirs = Path(os.getcwd()) / "tmp" / "plugins"
+        plugin_dirs.mkdir(parents=True, exist_ok=True)
+        return [str(plugin_dirs.resolve())]
+
+    @staticmethod
+    def _task(mock_plugin_dirs, extensions=None, class_name="ext_plugin.RecordingPlugin", capabilities=None):
+        """Build a tool_pre_invoke task, optionally carrying an extensions field."""
+        config_dict = {"name": "ext_plugin", "kind": "isolated_venv", "config": {}}
+        if capabilities is not None:
+            config_dict["capabilities"] = capabilities
+        task_data = {
+            "task_type": "load_and_run_hook",
+            "config": json.dumps(config_dict),
+            "plugin_dirs": mock_plugin_dirs,
+            "class_name": class_name,
+            "hook_type": "tool_pre_invoke",
+            "payload": {"name": "search", "args": {"q": "hello"}},
+            "context": {"state": {}, "global_context": {"request_id": "req-ext"}, "metadata": {}},
+        }
+        if extensions is not None:
+            task_data["extensions"] = extensions
+        return task_data
+
+    @staticmethod
+    def _wire_extensions():
+        """An inbound wire dict shaped as the Rust host sends it.
+
+        Sensitive headers are absent because the host strips them before the task
+        is written; what arrives is the already-scrubbed view.
+        """
+        return {
+            "security": {"labels": ["PII"], "classification": "confidential"},
+            "agent": {"agent_id": "agent-7"},
+            # The Python HttpExtension carries a single `headers` dict; the Rust
+            # one splits request/response. See the http-slot note in
+            # docs/specs/extensions-wire-contract.md.
+            "http": {"headers": {"X-Request-Id": "req-ext-1"}},
+            "custom": {"trace": True},
+        }
+
+    @pytest.mark.asyncio
+    @patch("cpex.framework.isolated.worker.import_module")
+    async def test_three_arg_hook_receives_reconstructed_extensions(self, mock_import, mock_plugin_dirs):
+        """A task with an extensions field delivers a populated Extensions to a 3-arg hook."""
+        from cpex.framework.base import Plugin
+        from cpex.framework.extensions.extensions import Extensions
+        from cpex.framework.models import PluginResult
+
+        received = {}
+
+        class RecordingPlugin(Plugin):
+            """Records the extensions object the framework handed the hook."""
+
+            async def tool_pre_invoke(self, payload, context, extensions):
+                received["type"] = type(extensions)
+                received["labels"] = sorted(extensions.security.labels) if extensions.security else None
+                received["classification"] = extensions.security.classification if extensions.security else None
+                received["agent_id"] = extensions.agent.agent_id if extensions.agent else None
+                received["custom"] = dict(extensions.custom) if extensions.custom else None
+                return PluginResult(continue_processing=True)
+
+        mock_module = MagicMock()
+        mock_module.RecordingPlugin = RecordingPlugin
+        mock_import.return_value = mock_module
+
+        task_data = self._task(
+            mock_plugin_dirs,
+            extensions=self._wire_extensions(),
+            # read_labels/read_agent so the framework's own filter keeps the slots
+            # visible; the host already filtered, this must not re-hide them.
+            capabilities=["read_labels", "read_agent", "read_headers"],
+        )
+        result = await process_task(task_data, TaskProcessor())
+
+        assert result is not None
+        assert result.continue_processing is True
+        assert received["type"] is Extensions, "the hook must receive a real Extensions, not a dict"
+        assert received["labels"] == ["PII"]
+        assert received["classification"] == "confidential"
+        assert received["agent_id"] == "agent-7"
+        assert received["custom"] == {"trace": True}
+
+    @pytest.mark.asyncio
+    @patch("cpex.framework.isolated.worker.import_module")
+    async def test_two_arg_hook_runs_without_extensions(self, mock_import, mock_plugin_dirs):
+        """A 2-arg hook still runs when the task carries extensions, and sees none.
+
+        The framework withholds extensions from 2-arg hooks; the worker must not
+        force the argument and break every existing plugin.
+        """
+        from cpex.framework.base import Plugin
+        from cpex.framework.models import PluginResult
+
+        calls = []
+
+        class RecordingPlugin(Plugin):
+            """A pre-existing 2-arg plugin shape."""
+
+            async def tool_pre_invoke(self, payload, context):
+                calls.append(payload.name)
+                return PluginResult(continue_processing=True)
+
+        mock_module = MagicMock()
+        mock_module.RecordingPlugin = RecordingPlugin
+        mock_import.return_value = mock_module
+
+        task_data = self._task(mock_plugin_dirs, extensions=self._wire_extensions())
+        result = await process_task(task_data, TaskProcessor())
+
+        assert result is not None
+        assert result.continue_processing is True
+        assert calls == ["search"], "the 2-arg hook must still be invoked, with no extensions"
+
+    @pytest.mark.asyncio
+    @patch("cpex.framework.isolated.worker.import_module")
+    async def test_absent_extensions_field_yields_none(self, mock_import, mock_plugin_dirs):
+        """No extensions field means the hook sees None — today's behavior, unchanged."""
+        from cpex.framework.base import Plugin
+        from cpex.framework.models import PluginResult
+
+        received = {}
+
+        class RecordingPlugin(Plugin):
+            """Records that extensions were absent."""
+
+            async def tool_pre_invoke(self, payload, context, extensions):
+                received["extensions"] = extensions
+                return PluginResult(continue_processing=True)
+
+        mock_module = MagicMock()
+        mock_module.RecordingPlugin = RecordingPlugin
+        mock_import.return_value = mock_module
+
+        task_data = self._task(mock_plugin_dirs)  # no extensions field
+        result = await process_task(task_data, TaskProcessor())
+
+        assert result is not None
+        assert received["extensions"] is None
+
+    @pytest.mark.asyncio
+    @patch("cpex.framework.isolated.worker.import_module")
+    async def test_reconstruction_of_frozen_extensions_succeeds(self, mock_import, mock_plugin_dirs):
+        """A frozen model still constructs from a dict — frozen blocks mutation, not construction.
+
+        Guards the plan's stated risk directly: if ``frozen=True`` were mistaken
+        for "cannot be built from a dict", the whole channel would be assumed
+        impossible.
+        """
+        from cpex.framework.base import Plugin
+        from cpex.framework.models import PluginResult
+
+        received = {}
+
+        class RecordingPlugin(Plugin):
+            """Confirms the object is frozen yet was constructed."""
+
+            async def tool_pre_invoke(self, payload, context, extensions):
+                received["built"] = extensions is not None
+                try:
+                    extensions.custom = {"mutated": True}
+                    received["frozen"] = False
+                except Exception:
+                    received["frozen"] = True
+                return PluginResult(continue_processing=True)
+
+        mock_module = MagicMock()
+        mock_module.RecordingPlugin = RecordingPlugin
+        mock_import.return_value = mock_module
+
+        task_data = self._task(mock_plugin_dirs, extensions=self._wire_extensions())
+        await process_task(task_data, TaskProcessor())
+
+        assert received["built"] is True
+        assert received["frozen"] is True, "Extensions must remain frozen after reconstruction"
+
+    @pytest.mark.asyncio
+    @patch("cpex.framework.isolated.worker.import_module")
+    async def test_unknown_slot_does_not_break_reconstruction(self, mock_import, mock_plugin_dirs):
+        """A slot this Python version does not model must not fail the task.
+
+        The two surfaces version independently. A host that grows a slot ahead of
+        the worker would otherwise take every plugin down at reconstruction.
+        """
+        from cpex.framework.base import Plugin
+        from cpex.framework.models import PluginResult
+
+        received = {}
+
+        class RecordingPlugin(Plugin):
+            """Records that the known slots survived an unknown one."""
+
+            async def tool_pre_invoke(self, payload, context, extensions):
+                received["labels"] = sorted(extensions.security.labels) if extensions.security else None
+                return PluginResult(continue_processing=True)
+
+        mock_module = MagicMock()
+        mock_module.RecordingPlugin = RecordingPlugin
+        mock_import.return_value = mock_module
+
+        wire = self._wire_extensions()
+        wire["some_future_slot"] = {"whatever": 1}
+        task_data = self._task(mock_plugin_dirs, extensions=wire, capabilities=["read_labels"])
+        result = await process_task(task_data, TaskProcessor())
+
+        assert result is not None, "an unknown slot must not fail the task"
+        assert received["labels"] == ["PII"]
+
+    @pytest.mark.asyncio
+    @patch("cpex.framework.isolated.worker.import_module")
+    async def test_appended_label_returns_on_modified_extensions(self, mock_import, mock_plugin_dirs):
+        """A plugin that appends a label returns it on modified_extensions."""
+        from cpex.framework.base import Plugin
+        from cpex.framework.models import PluginResult
+
+        class AppendingPlugin(Plugin):
+            """Appends a security label via model_copy, since Extensions is frozen."""
+
+            async def tool_pre_invoke(self, payload, context, extensions):
+                new_security = extensions.security.model_copy(
+                    update={"labels": sorted(set(extensions.security.labels) | {"SCANNED"})}
+                )
+                return PluginResult(
+                    continue_processing=True,
+                    modified_extensions=extensions.model_copy(update={"security": new_security}),
+                )
+
+        mock_module = MagicMock()
+        mock_module.AppendingPlugin = AppendingPlugin
+        mock_import.return_value = mock_module
+
+        task_data = self._task(
+            mock_plugin_dirs,
+            extensions=self._wire_extensions(),
+            class_name="ext_plugin.AppendingPlugin",
+            capabilities=["read_labels", "append_labels"],
+        )
+        result = await process_task(task_data, TaskProcessor())
+
+        assert result.modified_extensions is not None, "the plugin's extensions must ride back"
+        labels = sorted(result.modified_extensions.security.labels)
+        assert "SCANNED" in labels, "the appended label must survive into the response"
+        assert "PII" in labels, "and the inbound label must still be there"
+
+    @pytest.mark.asyncio
+    @patch("cpex.framework.isolated.worker.import_module")
+    async def test_untouched_extensions_report_no_change(self, mock_import, mock_plugin_dirs):
+        """A plugin that ignores extensions leaves modified_extensions unset.
+
+        Omission is the contract's "no change" sentinel: the Rust merge validates
+        the immutable tier by pointer identity, so an echo could not be
+        distinguished from tampering.
+        """
+        from cpex.framework.base import Plugin
+        from cpex.framework.models import PluginResult
+
+        class PassivePlugin(Plugin):
+            """Reads extensions but returns none."""
+
+            async def tool_pre_invoke(self, payload, context, extensions):
+                return PluginResult(continue_processing=True)
+
+        mock_module = MagicMock()
+        mock_module.PassivePlugin = PassivePlugin
+        mock_import.return_value = mock_module
+
+        task_data = self._task(
+            mock_plugin_dirs,
+            extensions=self._wire_extensions(),
+            class_name="ext_plugin.PassivePlugin",
+        )
+        result = await process_task(task_data, TaskProcessor())
+
+        assert result.modified_extensions is None, "no modification must serialize as no field"
+
+    @pytest.mark.asyncio
+    @patch("cpex.framework.isolated.worker.import_module")
+    async def test_returned_sensitive_headers_are_stripped(self, mock_import, mock_plugin_dirs):
+        """A plugin cannot ship a credential header back to the host.
+
+        Stripping must be symmetric. The host scrubs on the way out; if the
+        worker did not scrub on the way back, a plugin could inject
+        ``Authorization`` into the pipeline through its return value — reaching
+        the very channel the credential path exists to keep it off of.
+        """
+        from cpex.framework.base import Plugin
+        from cpex.framework.extensions.http import HttpExtension
+        from cpex.framework.models import PluginResult
+
+        class InjectingPlugin(Plugin):
+            """Returns extensions carrying sensitive headers."""
+
+            async def tool_pre_invoke(self, payload, context, extensions):
+                http = HttpExtension(
+                    headers={
+                        "Authorization": "Bearer injected",
+                        "cookie": "session=injected",
+                        "X-API-Key": "injected",
+                        "Set-Cookie": "s=injected",
+                        "X-Fine": "yes",
+                        "Content-Type": "application/json",
+                    },
+                )
+                return PluginResult(
+                    continue_processing=True,
+                    modified_extensions=extensions.model_copy(update={"http": http}),
+                )
+
+        mock_module = MagicMock()
+        mock_module.InjectingPlugin = InjectingPlugin
+        mock_import.return_value = mock_module
+
+        task_data = self._task(
+            mock_plugin_dirs,
+            extensions=self._wire_extensions(),
+            class_name="ext_plugin.InjectingPlugin",
+            capabilities=["read_headers", "write_headers"],
+        )
+        result = await process_task(task_data, TaskProcessor())
+
+        http = result.modified_extensions.http
+        names = {k.lower() for k in http.headers}
+        assert "authorization" not in names, "Authorization must not ride back"
+        assert "cookie" not in names, "Cookie must not ride back (matched case-insensitively)"
+        assert "x-api-key" not in names, "X-API-Key must not ride back"
+        assert http.headers.get("X-Fine") == "yes", "a benign header still returns"
+        assert http.headers.get("Content-Type") == "application/json"
+
+        # The response is what main() serializes to the stdout channel the host
+        # reads, so assert on the serialized form rather than just the model. Only
+        # the three spec'd names are stripped, so scope the leak check to those —
+        # `Set-Cookie` is deliberately not on that list.
+        serialized = json.dumps(result.model_dump(mode="json"), default=str)
+        assert "Bearer injected" not in serialized, f"no bearer token may reach the wire: {serialized}"
+        assert "session=injected" not in serialized, f"no cookie may reach the wire: {serialized}"
+
+    @pytest.mark.asyncio
+    @patch("cpex.framework.isolated.worker.import_module")
+    async def test_custom_change_returns_intact(self, mock_import, mock_plugin_dirs):
+        """The mutable slot round-trips as-is — the common case for plugin output."""
+        from cpex.framework.base import Plugin
+        from cpex.framework.models import PluginResult
+
+        class CustomPlugin(Plugin):
+            """Writes a verdict into the mutable custom slot."""
+
+            async def tool_pre_invoke(self, payload, context, extensions):
+                return PluginResult(
+                    continue_processing=True,
+                    modified_extensions=extensions.model_copy(update={"custom": {"verdict": "clean", "score": 3}}),
+                )
+
+        mock_module = MagicMock()
+        mock_module.CustomPlugin = CustomPlugin
+        mock_import.return_value = mock_module
+
+        task_data = self._task(
+            mock_plugin_dirs,
+            extensions=self._wire_extensions(),
+            class_name="ext_plugin.CustomPlugin",
+        )
+        result = await process_task(task_data, TaskProcessor())
+
+        assert result.modified_extensions.custom == {"verdict": "clean", "score": 3}
+
+
 # Made with Bob

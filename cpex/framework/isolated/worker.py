@@ -74,6 +74,25 @@ _DEFAULT_CREDENTIAL_SOURCE = "custom"
 # this placeholder, and a plugin that needs the credential reads raw_token.
 REDACTED_HEADER_VALUE = "**********"
 
+# Task field the Rust host attaches the capability-filtered extensions to, and
+# the response field a plugin's modified extensions ride back on. The two names
+# differ deliberately: the response is a serialized PluginResult, and that model
+# already carries `modified_extensions` — the same field the in-process manager
+# accumulates — so an out-of-process plugin returns extensions exactly the way
+# its in-process equivalent does. See docs/specs/extensions-wire-contract.md.
+EXTENSIONS_FIELD = "extensions"
+MODIFIED_EXTENSIONS_FIELD = "modified_extensions"
+
+# Headers stripped from extensions in *both* directions (cmf-message-spec §3.5).
+#
+# The host scrubs these before writing the task; the worker scrubs them again on
+# the way back, because a plugin can put anything on its returned HttpExtension
+# and the response is the stdout channel the host reads. A gap either direction
+# leaks the credential the identity/delegation payload path is supposed to own.
+# Compared case-insensitively: HTTP header names are case-insensitive, so a
+# case-sensitive check would pass `authorization` straight through.
+SENSITIVE_HEADERS = frozenset({"authorization", "cookie", "x-api-key"})
+
 
 class CredentialError(Exception):
     """A credential field was present but could not yield a usable token.
@@ -362,6 +381,122 @@ def _payload_secret_value(hook_type: str, payload: PluginPayload) -> str | None:
     return None
 
 
+def _strip_sensitive_headers(headers: object) -> dict:
+    """Drop sensitive entries from one header map, leaving the rest untouched.
+
+    Args:
+        headers: a header mapping, or anything falsy.
+
+    Returns:
+        A new dict without the sensitive entries. Empty when there was nothing.
+    """
+    if not headers:
+        return {}
+    return {name: value for name, value in dict(headers).items() if name.lower() not in SENSITIVE_HEADERS}
+
+
+# Header-bearing fields on an HttpExtension, across both shapes.
+#
+# The Python model carries a single `headers` dict; the Rust one splits
+# `request_headers` / `response_headers` (plus method/path/host/scheme). The two
+# surfaces version independently, so rather than assume either shape this scrubs
+# whichever of these the model in play actually declares. A gap here is a
+# credential leak, so tolerating both beats pinning one.
+_HTTP_HEADER_FIELDS = ("headers", "request_headers", "response_headers")
+
+
+def sanitize_extensions_http(extensions):
+    """Return ``extensions`` with sensitive headers stripped from its http slot.
+
+    Applied to the extensions a plugin returns, before they are serialized onto
+    the response the host reads. The host performs the same strip on the way out,
+    so the rule holds symmetrically and a plugin cannot inject a credential
+    header into the pipeline through its return value.
+
+    Every header map the model declares is scrubbed, not just a request one: a
+    response map can carry a ``Set-Cookie`` or an upstream ``Authorization`` echo
+    just as a request map carries the inbound credential.
+
+    ``Extensions`` and ``HttpExtension`` are frozen, so this builds new instances
+    via ``model_copy`` rather than mutating. When nothing needed stripping the
+    original object is returned unchanged, so the common case allocates nothing.
+
+    Args:
+        extensions: the plugin's returned Extensions, or None.
+
+    Returns:
+        The extensions with a scrubbed http slot, or the original when there was
+        no http slot or nothing sensitive on it.
+    """
+    if extensions is None:
+        return None
+
+    http = getattr(extensions, "http", None)
+    if http is None:
+        return extensions
+
+    declared = getattr(type(http), "model_fields", {}) or {}
+    updates = {}
+    for field in _HTTP_HEADER_FIELDS:
+        if field not in declared:
+            continue
+        original = getattr(http, field, None) or {}
+        scrubbed = _strip_sensitive_headers(original)
+        if len(scrubbed) != len(original):
+            updates[field] = scrubbed
+
+    # Nothing was sensitive — hand back the original rather than a copy.
+    if not updates:
+        return extensions
+
+    return extensions.model_copy(update={"http": http.model_copy(update=updates)})
+
+
+def reconstruct_extensions(raw: object):
+    """Rebuild a Python ``Extensions`` from the task's ``extensions`` field.
+
+    ``Extensions`` is a frozen ``BaseModel``, which blocks mutation *after*
+    construction, not construction from a dict — so ``model_validate`` is the
+    right tool and the frozen-ness is preserved for the plugin.
+
+    The inbound dict is the capability-filtered view the Rust host produced, so
+    an absent slot means the plugin's capabilities excluded it. Slot visibility
+    is not re-derived here.
+
+    Unknown slots are dropped rather than raising. The two surfaces version
+    independently, and a host that grows a slot ahead of the worker would
+    otherwise take every plugin on this channel down at reconstruction — a
+    failure mode far worse than ignoring a field this build cannot use.
+
+    Args:
+        raw: the task's ``extensions`` field: a dict, or None when absent.
+
+    Returns:
+        An ``Extensions``, or None when the field was absent or unusable.
+    """
+    if not isinstance(raw, dict):
+        return None
+
+    # Local import: the module is imported by the host-side tooling too, and
+    # extensions are only needed on this path.
+    from cpex.framework.extensions.extensions import Extensions
+
+    known = {name: value for name, value in raw.items() if name in Extensions.model_fields}
+    dropped = set(raw) - set(known)
+    if dropped:
+        # Worth a line: it means the host is ahead of this worker's model.
+        logger.warning("Ignoring unknown extension slots not modeled by this cpex version: %s", sorted(dropped))
+
+    try:
+        return Extensions.model_validate(known)
+    except Exception as e:
+        # A malformed slot must not take the hook down: the plugin can still do
+        # useful work with no extensions, exactly as it does today. Log loudly
+        # rather than silently degrading, so the shape mismatch is findable.
+        logger.warning("Could not reconstruct extensions from the task field; proceeding without them: %s", e)
+        return None
+
+
 @contextlib.contextmanager
 def scrubbing_log_factory(token: str):
     """Redact ``token`` from every log record created inside this context.
@@ -460,6 +595,7 @@ async def execute_hook_scrubbed(
     payload: PluginPayload | None,
     plugin_context: PluginContext,
     plaintext_token: str | None,
+    extensions=None,
 ):
     """Run the hook, scrubbing the plaintext token from every sink it can reach.
 
@@ -487,6 +623,8 @@ async def execute_hook_scrubbed(
         payload: the (possibly reconstructed) payload.
         plugin_context: per-call plugin context.
         plaintext_token: the live plaintext, or None for non-credential hooks.
+        extensions: the reconstructed Extensions, or None. The framework forwards
+            it only to hooks whose signature accepts a third argument.
 
     Returns:
         The plugin result from ``execute_plugin``.
@@ -503,6 +641,7 @@ async def execute_hook_scrubbed(
             payload=payload,
             local_context=plugin_context,
             violations_as_exceptions=False,
+            extensions=extensions,
         )
 
     if plaintext_token is None:
@@ -681,6 +820,14 @@ async def process_task(task_data, tp: TaskProcessor):
         # field's presence: a credential-bearing hook with no credential field is
         # not an error, it just runs with whatever the payload carried.
         credential = task_data.get(CREDENTIAL_FIELD)
+
+        # The capability-filtered extensions the host serialized for this plugin.
+        # Reconstructed here so a 3-arg (payload, context, extensions) hook sees
+        # out-of-process what its in-process equivalent would; the framework
+        # withholds it from 2-arg hooks, so passing None for an absent field
+        # leaves every existing plugin's behavior unchanged.
+        extensions = reconstruct_extensions(task_data.get(EXTENSIONS_FIELD))
+
         # Plaintext held only for the duration of the hook call, and only to scrub
         # it back out of anything the hook logs, raises, prints, or returns (see
         # execute_hook_scrubbed). Reset per call, so no token crosses tasks.
@@ -694,13 +841,27 @@ async def process_task(task_data, tp: TaskProcessor):
             # interpolate its own credential into a log line, an exception, a
             # stdout write, or its returned result, and everything downstream of
             # here would forward that verbatim onto the channel the host reads.
-            return await execute_hook_scrubbed(
+            result = await execute_hook_scrubbed(
                 tp=tp,
                 hook_type=hook_type,
                 payload=payload,
                 plugin_context=plugin_context,
                 plaintext_token=plaintext_token,
+                extensions=extensions,
             )
+
+            # A plugin's returned extensions ride back on the result's
+            # `modified_extensions`, which main() serializes to the stdout channel
+            # the host reads — so they get the same sensitive-header strip the
+            # host applied on the way out. Leaving the field unset is the
+            # contract's "no change" signal and is passed through untouched.
+            modified = getattr(result, MODIFIED_EXTENSIONS_FIELD, None)
+            if modified is not None:
+                sanitized = sanitize_extensions_http(modified)
+                if sanitized is not modified:
+                    result = result.model_copy(update={MODIFIED_EXTENSIONS_FIELD: sanitized})
+
+            return result
         except CredentialError as ce:
             # Fail closed, for both causes: a credential field that cannot yield a
             # usable token (proceeding would authenticate downstream as an empty
