@@ -58,11 +58,12 @@ regorus = { version = "0.11", default-features = false, features = [
     "urlquery",
     "uuid",
     "yaml",
-    # `cache` memoizes rule evaluation (a per-request eval speedup); `coverage`
-    # is a cheap, dependency-free flag kept for parity with regorus's pure-builtin
-    # set. Neither reaches network or runtime-introspection surfaces.
+    # `cache` bounds and reuses compiled regex and glob patterns in a
+    # process-global LRU keyed by pattern text (regorus defaults: 256 regex, 128
+    # glob). It caches compiled patterns only, never evaluation results, so it
+    # holds no input-derived state and is safe to share across requests. Without
+    # it, every regex and glob in a policy recompiles on every evaluation.
     "cache",
-    "coverage",
 ] }
 serde_json = { workspace = true }
 async-trait = { workspace = true }

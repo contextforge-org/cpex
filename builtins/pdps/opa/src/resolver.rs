@@ -16,6 +16,13 @@
 // re-parse. (All regorus `set_input`/`eval_*` methods take `&mut self`, so a
 // per-request clone is what makes concurrent evaluation possible at all.)
 //
+// Clone-per-request is input-isolated by regorus contract, not by luck.
+// `Interpreter::clone` resets the rule-value and builtin memo maps to empty, and
+// `Engine::eval_rule` calls `clean_internal_evaluation_state()` before every
+// evaluation, clearing those maps plus `data` and the scope stack. A regorus
+// change to either would break input isolation, so `concurrent_evaluation_is_correct`
+// and `sequential_reuse_does_not_leak_prior_input` pin the observable behavior.
+//
 // Inline `opa: { module: "..." }` steps get their own bounded cache of
 // prepared engines (base + that module), so a distinct inline module is parsed
 // at most once. The cache follows the workspace "cap + reject + log, never
@@ -276,6 +283,15 @@ impl OpaResolver {
 
         // Prepare base + inline module. A parse failure here is a compile error
         // (always denies), not a runtime condition.
+        //
+        // A cold-start race can have two threads prepare the same module at
+        // once. The second insert overwrites an equivalent engine, so the only
+        // cost is a duplicated compile on first hit. That is deliberate:
+        // holding the write lock across `add_policy` would serialize all
+        // inline-module preparation. The cap check below is race-safe because
+        // the length check and the insert share one write-lock acquisition, and
+        // the `contains_key` guard keeps a same-key racer from being rejected
+        // once the cache is full.
         let mut engine = self.base_engine.clone();
         let package = engine
             .add_policy(INLINE_MODULE_NAME.to_string(), src.to_string())
@@ -945,9 +961,35 @@ msg := "not a decision"
         );
     }
 
+    /// Reusing one resolver across requests must not serve a prior request's
+    /// decision. Pins the regorus invariant the clone-per-request model rests
+    /// on: cloning an engine and evaluating both clear the interpreter's
+    /// input-derived memo state.
+    #[tokio::test]
+    async fn sequential_reuse_does_not_leak_prior_input() {
+        let r = resolver(&[ALLOW_WITH_DEFAULT], OnError::Deny);
+        for (subject, expected_allow) in [("alice", true), ("eve", false), ("alice", true)] {
+            let out = r
+                .evaluate(&call("data.authz.allow", None), &bag(subject))
+                .await
+                .unwrap();
+            if expected_allow {
+                assert_eq!(out.decision, Decision::Allow, "{subject} must be allowed");
+            } else {
+                assert!(
+                    matches!(out.decision, Decision::Deny { .. }),
+                    "{subject} must be denied, got {:?}",
+                    out.decision,
+                );
+            }
+        }
+    }
+
     /// Many threads sharing one `Arc<OpaResolver>` evaluate concurrently and
     /// each gets the correct per-request decision (exercises clone-per-request
-    /// under the `arc` feature).
+    /// under the `arc` feature). Together with
+    /// `sequential_reuse_does_not_leak_prior_input`, guards against a regorus
+    /// change that starts retaining input-derived state across evaluations.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn concurrent_evaluation_is_correct() {
         let r = Arc::new(resolver(&[ALLOW_WITH_DEFAULT], OnError::Deny));

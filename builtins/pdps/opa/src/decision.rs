@@ -73,6 +73,7 @@ pub(crate) fn map_query_result(value: &Value, decision_field: &str) -> Mapped {
 fn map_object(value: &Value, decision_field: &str) -> Mapped {
     let obj = match value.as_object() {
         Ok(o) => o,
+        // Unreachable given the caller's `Value::Object` match; defensive.
         Err(_) => return Mapped::Degenerate("OPA query object was not an object".to_string()),
     };
 
