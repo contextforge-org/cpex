@@ -10,7 +10,7 @@ the base plugin layer including configurations, and contexts.
 """
 
 # First-Party
-from cpex.framework.models import PluginErrorModel, PluginViolation
+from cpex.framework.models import ControlExecutionRecord, PluginErrorModel, PluginViolation
 
 
 class PluginViolationError(Exception):
@@ -19,6 +19,10 @@ class PluginViolationError(Exception):
     Attributes:
         violation (PluginViolation): the plugin violation.
         message (str): the plugin violation reason.
+        executions (list[ControlExecutionRecord] | None): execution records collected up to and
+            including the denying plugin.  ``None`` when the exception is raised outside of an
+            ``invoke_hook`` call (e.g. in unit tests).  Populated by ``PluginExecutor.execute``
+            before the exception propagates to callers (fix for issue #147).
     """
 
     def __init__(self, message: str, violation: PluginViolation | None = None):
@@ -38,6 +42,7 @@ class PluginViolationError(Exception):
         """
         self.message = message
         self.violation = violation
+        self.executions: list[ControlExecutionRecord] | None = None
         super().__init__(self.message)
 
 

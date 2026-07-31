@@ -317,211 +317,242 @@ class PluginExecutor:
         fire_and_forget_semaphore = asyncio.Semaphore(pool) if pool else None
         concurrent_semaphore = asyncio.Semaphore(pool) if pool else None
 
-        # SEQUENTIAL: sequential, chained execution — can halt pipeline
-        halt_result, phase = await self._run_serial_phase(
-            hook_refs=sequential_refs,
-            mode_label="SEQUENTIAL",
-            payload=payload,
-            policy=policy,
-            hook_type=hook_type,
-            global_context=global_context,
-            local_contexts=local_contexts,
-            res_local_contexts=res_local_contexts,
-            violations_as_exceptions=violations_as_exceptions,
-            combined_metadata=combined_metadata,
-            current_payload=current_payload,
-            decision_plugin_name=decision_plugin_name,
-            apply_modifications=True,
-            allow_blocking=True,
-            ctx=ctx,
-            current_extensions=current_extensions,
-            fire_and_forget_refs=fire_and_forget_refs,
-            fire_and_forget_semaphore=fire_and_forget_semaphore,
-            extensions=extensions,
-            executions=executions,
-        )
-        current_payload = phase.payload
-        decision_plugin_name = phase.decision_plugin
-        current_extensions = phase.extensions
-        if halt_result is not None:
-            # Attach records collected so far (including FAF scheduled on halt)
-            halt_result[0].executions = list(executions)
-            self._end_hook_chain_span(ctx, status="ok")
-            return halt_result
+        try:
+            # SEQUENTIAL: sequential, chained execution — can halt pipeline
+            halt_result, phase = await self._run_serial_phase(
+                hook_refs=sequential_refs,
+                mode_label="SEQUENTIAL",
+                payload=payload,
+                policy=policy,
+                hook_type=hook_type,
+                global_context=global_context,
+                local_contexts=local_contexts,
+                res_local_contexts=res_local_contexts,
+                violations_as_exceptions=violations_as_exceptions,
+                combined_metadata=combined_metadata,
+                current_payload=current_payload,
+                decision_plugin_name=decision_plugin_name,
+                apply_modifications=True,
+                allow_blocking=True,
+                ctx=ctx,
+                current_extensions=current_extensions,
+                fire_and_forget_refs=fire_and_forget_refs,
+                fire_and_forget_semaphore=fire_and_forget_semaphore,
+                extensions=extensions,
+                executions=executions,
+            )
+            current_payload = phase.payload
+            decision_plugin_name = phase.decision_plugin
+            current_extensions = phase.extensions
+            if halt_result is not None:
+                # Attach records collected so far (including FAF scheduled on halt)
+                halt_result[0].executions = list(executions)
+                self._end_hook_chain_span(ctx, status="ok")
+                return halt_result
 
-        # TRANSFORM: serial, chained execution — can modify payloads but cannot halt pipeline
-        _, phase = await self._run_serial_phase(
-            hook_refs=transform_refs,
-            mode_label="TRANSFORM",
-            payload=payload,
-            policy=policy,
-            hook_type=hook_type,
-            global_context=global_context,
-            local_contexts=local_contexts,
-            res_local_contexts=res_local_contexts,
-            violations_as_exceptions=violations_as_exceptions,
-            combined_metadata=combined_metadata,
-            current_payload=current_payload,
-            decision_plugin_name=decision_plugin_name,
-            apply_modifications=True,
-            allow_blocking=False,
-            ctx=ctx,
-            current_extensions=current_extensions,
-            extensions=extensions,
-            executions=executions,
-        )
-        current_payload = phase.payload
-        decision_plugin_name = phase.decision_plugin
-        current_extensions = phase.extensions
+            # TRANSFORM: serial, chained execution — can modify payloads but cannot halt pipeline
+            _, phase = await self._run_serial_phase(
+                hook_refs=transform_refs,
+                mode_label="TRANSFORM",
+                payload=payload,
+                policy=policy,
+                hook_type=hook_type,
+                global_context=global_context,
+                local_contexts=local_contexts,
+                res_local_contexts=res_local_contexts,
+                violations_as_exceptions=violations_as_exceptions,
+                combined_metadata=combined_metadata,
+                current_payload=current_payload,
+                decision_plugin_name=decision_plugin_name,
+                apply_modifications=True,
+                allow_blocking=False,
+                ctx=ctx,
+                current_extensions=current_extensions,
+                extensions=extensions,
+                executions=executions,
+            )
+            current_payload = phase.payload
+            decision_plugin_name = phase.decision_plugin
+            current_extensions = phase.extensions
 
-        # AUDIT: serial execution — observe-only (no modifications, no blocking)
-        _, phase = await self._run_serial_phase(
-            hook_refs=audit_refs,
-            mode_label="AUDIT",
-            payload=payload,
-            policy=policy,
-            hook_type=hook_type,
-            global_context=global_context,
-            local_contexts=local_contexts,
-            res_local_contexts=res_local_contexts,
-            violations_as_exceptions=violations_as_exceptions,
-            combined_metadata=combined_metadata,
-            current_payload=current_payload,
-            decision_plugin_name=decision_plugin_name,
-            apply_modifications=False,
-            allow_blocking=False,
-            ctx=ctx,
-            current_extensions=current_extensions,
-            extensions=extensions,
-            executions=executions,
-        )
+            # AUDIT: serial execution — observe-only (no modifications, no blocking)
+            _, phase = await self._run_serial_phase(
+                hook_refs=audit_refs,
+                mode_label="AUDIT",
+                payload=payload,
+                policy=policy,
+                hook_type=hook_type,
+                global_context=global_context,
+                local_contexts=local_contexts,
+                res_local_contexts=res_local_contexts,
+                violations_as_exceptions=violations_as_exceptions,
+                combined_metadata=combined_metadata,
+                current_payload=current_payload,
+                decision_plugin_name=decision_plugin_name,
+                apply_modifications=False,
+                allow_blocking=False,
+                ctx=ctx,
+                current_extensions=current_extensions,
+                extensions=extensions,
+                executions=executions,
+            )
 
-        # CONCURRENT: parallel execution with fail-fast on first blocking result
-        if concurrent_refs:
-            concurrent_ctx_list: list[tuple[HookRef, PluginContext, PluginPayload]] = []
-            concurrent_tasks: list[asyncio.Task] = []
-            effective_payload = current_payload if current_payload is not None else payload
-            for ref in concurrent_refs:
-                plugin_input = self._isolate_payload(effective_payload, policy)
-                local_context = self._prepare_plugin_context(ref, global_context, local_contexts, res_local_contexts)
-                idx = len(concurrent_ctx_list)
-                concurrent_ctx_list.append((ref, local_context, effective_payload))
-                coro = self.execute_plugin(
-                    ref,
-                    plugin_input,
-                    local_context,
-                    violations_as_exceptions,
-                    global_context,
-                    combined_metadata,
-                    extensions=extensions,
-                )
-                if concurrent_semaphore:
-                    coro = self._with_semaphore(concurrent_semaphore, coro)
-                concurrent_tasks.append(asyncio.create_task(self._tagged(coro, idx)))
+            # CONCURRENT: parallel execution with fail-fast on first blocking result
+            if concurrent_refs:
+                concurrent_ctx_list: list[tuple[HookRef, PluginContext, PluginPayload]] = []
+                concurrent_tasks: list[asyncio.Task] = []
+                effective_payload = current_payload if current_payload is not None else payload
+                for ref in concurrent_refs:
+                    plugin_input = self._isolate_payload(effective_payload, policy)
+                    local_context = self._prepare_plugin_context(ref, global_context, local_contexts, res_local_contexts)
+                    idx = len(concurrent_ctx_list)
+                    concurrent_ctx_list.append((ref, local_context, effective_payload))
+                    coro = self.execute_plugin(
+                        ref,
+                        plugin_input,
+                        local_context,
+                        violations_as_exceptions,
+                        global_context,
+                        combined_metadata,
+                        extensions=extensions,
+                    )
+                    if concurrent_semaphore:
+                        coro = self._with_semaphore(concurrent_semaphore, coro)
+                    concurrent_tasks.append(asyncio.create_task(self._tagged(coro, idx)))
 
-            for completed_coro in asyncio.as_completed(concurrent_tasks):
-                result, idx, timeout_err = await completed_coro
-                ref, _, _ = concurrent_ctx_list[idx]
-                ctx.hook_chain_executed += 1
-                # Propagate retry signal from concurrent plugins
-                ctx.max_retry_delay_ms = max(ctx.max_retry_delay_ms, result.retry_delay_ms)
-                if timeout_err is not None:
-                    # on_error=ignore/disable timeout: pipeline continues, record TIMEOUT
-                    # (mirrors the serial-phase handler; on_error=fail raises PluginError,
-                    # which is not caught here and propagates fail-closed).
+                for completed_coro in asyncio.as_completed(concurrent_tasks):
+                    result, idx, timeout_err, violation_err = await completed_coro
+                    ref, _, _ = concurrent_ctx_list[idx]
+                    ctx.hook_chain_executed += 1
+                    # Propagate retry signal from concurrent plugins
+                    ctx.max_retry_delay_ms = max(ctx.max_retry_delay_ms, result.retry_delay_ms)
+                    if timeout_err is not None:
+                        # on_error=ignore/disable timeout: pipeline continues, record TIMEOUT
+                        # (mirrors the serial-phase handler; on_error=fail raises PluginError,
+                        # which is not caught here and propagates fail-closed).
+                        executions.append(_make_execution_record(
+                            ref,
+                            hook_type,
+                            ControlExecutionStatus.TIMEOUT,
+                            effective_allow=True,
+                            reason=_truncate_opt(str(timeout_err)),
+                            error_code="plugin_timeout",
+                        ))
+                        continue
+                    if violation_err is not None:
+                        # violations_as_exceptions=True concurrent denial: write the record,
+                        # cancel sibling tasks, then re-raise so the outer except attaches
+                        # the full executions list to the exception (fix for #147).
+                        _pve = violation_err
+                        executions.append(_make_execution_record(
+                            ref,
+                            hook_type,
+                            ControlExecutionStatus.COMPLETED,
+                            effective_allow=False,
+                            requested_allow=False,
+                            matched=True,
+                            applied=True,
+                            reason=_truncate_opt(_pve.violation.reason if _pve.violation else str(_pve)),
+                            error_code=_truncate(_pve.violation.code) if _pve.violation else "plugin_violation",
+                        ))
+                        for task in concurrent_tasks:
+                            if not task.done():
+                                task.cancel()
+                        await asyncio.gather(*concurrent_tasks, return_exceptions=True)
+                        raise _pve
+                    if result.modified_payload is not None:
+                        logger.debug(
+                            "CONCURRENT plugin %s returned modified_payload on hook %s; "
+                            "discarding (concurrent plugins cannot modify payloads)",
+                            ref.plugin_ref.name,
+                            hook_type,
+                        )
+                    # Build the concurrent execution record (duration=0: no per-branch timing)
+                    _concurrent_denied = not result.continue_processing
                     executions.append(_make_execution_record(
                         ref,
                         hook_type,
-                        ControlExecutionStatus.TIMEOUT,
-                        effective_allow=True,
-                        reason=_truncate_opt(str(timeout_err)),
-                        error_code="plugin_timeout",
+                        ControlExecutionStatus.COMPLETED,
+                        effective_allow=not _concurrent_denied,
+                        requested_allow=result.continue_processing,
+                        matched=True if _concurrent_denied else False,
+                        applied=_concurrent_denied,
+                        reason=_truncate_opt(result.violation.reason if result.violation else None),
+                        error_code=_truncate(result.violation.code) if result.violation else None,
                     ))
-                    continue
-                if result.modified_payload is not None:
-                    logger.debug(
-                        "CONCURRENT plugin %s returned modified_payload on hook %s; "
-                        "discarding (concurrent plugins cannot modify payloads)",
-                        ref.plugin_ref.name,
-                        hook_type,
-                    )
-                # Build the concurrent execution record (duration=0: no per-branch timing)
-                _concurrent_denied = not result.continue_processing
-                executions.append(_make_execution_record(
-                    ref,
-                    hook_type,
-                    ControlExecutionStatus.COMPLETED,
-                    effective_allow=not _concurrent_denied,
-                    requested_allow=result.continue_processing,
-                    matched=True if _concurrent_denied else False,
-                    applied=_concurrent_denied,
-                    reason=_truncate_opt(result.violation.reason if result.violation else None),
-                    error_code=_truncate(result.violation.code) if result.violation else None,
-                ))
-                if not result.continue_processing:
-                    pending = sum(1 for t in concurrent_tasks if not t.done())
-                    violation_detail = (
-                        f": [{result.violation.code}] {result.violation.reason}" if result.violation else ""
-                    )
-                    logger.warning(
-                        "Pipeline halted by CONCURRENT plugin %s on hook %s%s; cancelling %d pending task(s)",
-                        ref.plugin_ref.name,
-                        hook_type,
-                        violation_detail,
-                        pending,
-                    )
-                    for task in concurrent_tasks:
-                        if not task.done():
-                            task.cancel()
-                    await asyncio.gather(*concurrent_tasks, return_exceptions=True)
-                    ctx.hook_chain_stopped_by = ref.plugin_ref.name
-                    halt = self._build_halt_result(
-                        current_payload,
-                        result.violation,
-                        combined_metadata,
-                        fire_and_forget_refs,
-                        payload,
-                        global_context,
-                        res_local_contexts,
-                        fire_and_forget_semaphore,
-                        hook_type,
-                        decision_plugin_name,
-                        extensions=extensions,
-                        executions=executions,
-                    )
-                    self._end_hook_chain_span(ctx, status="ok")
-                    return halt
+                    if not result.continue_processing:
+                        pending = sum(1 for t in concurrent_tasks if not t.done())
+                        violation_detail = (
+                            f": [{result.violation.code}] {result.violation.reason}" if result.violation else ""
+                        )
+                        logger.warning(
+                            "Pipeline halted by CONCURRENT plugin %s on hook %s%s; cancelling %d pending task(s)",
+                            ref.plugin_ref.name,
+                            hook_type,
+                            violation_detail,
+                            pending,
+                        )
+                        for task in concurrent_tasks:
+                            if not task.done():
+                                task.cancel()
+                        await asyncio.gather(*concurrent_tasks, return_exceptions=True)
+                        ctx.hook_chain_stopped_by = ref.plugin_ref.name
+                        halt = self._build_halt_result(
+                            current_payload,
+                            result.violation,
+                            combined_metadata,
+                            fire_and_forget_refs,
+                            payload,
+                            global_context,
+                            res_local_contexts,
+                            fire_and_forget_semaphore,
+                            hook_type,
+                            decision_plugin_name,
+                            extensions=extensions,
+                            executions=executions,
+                        )
+                        self._end_hook_chain_span(ctx, status="ok")
+                        return halt
 
-        # FIRE_AND_FORGET: fire-and-forget background tasks (fires last with final payload snapshot)
-        bg_tasks = self._fire_and_forget_tasks(
-            fire_and_forget_refs,
-            payload,
-            global_context,
-            res_local_contexts,
-            fire_and_forget_semaphore,
-            extensions=extensions,
-            executions=executions,
-            hook_type=hook_type,
-        )
+            # FIRE_AND_FORGET: fire-and-forget background tasks (fires last with final payload snapshot)
+            bg_tasks = self._fire_and_forget_tasks(
+                fire_and_forget_refs,
+                payload,
+                global_context,
+                res_local_contexts,
+                fire_and_forget_semaphore,
+                extensions=extensions,
+                executions=executions,
+                hook_type=hook_type,
+            )
 
-        if hook_type == HTTP_AUTH_CHECK_PERMISSION_HOOK and decision_plugin_name:
-            combined_metadata[DECISION_PLUGIN_METADATA_KEY] = decision_plugin_name
+            if hook_type == HTTP_AUTH_CHECK_PERMISSION_HOOK and decision_plugin_name:
+                combined_metadata[DECISION_PLUGIN_METADATA_KEY] = decision_plugin_name
 
-        self._end_hook_chain_span(ctx, status="ok")
+            self._end_hook_chain_span(ctx, status="ok")
 
-        return (
-            PluginResult(
-                continue_processing=True,
-                modified_payload=current_payload,
-                modified_extensions=current_extensions,
-                violation=None,
-                metadata=combined_metadata,
-                background_tasks=bg_tasks,
-                retry_delay_ms=ctx.max_retry_delay_ms,
-                executions=list(executions),
-            ),
-            res_local_contexts,
-        )
+            return (
+                PluginResult(
+                    continue_processing=True,
+                    modified_payload=current_payload,
+                    modified_extensions=current_extensions,
+                    violation=None,
+                    metadata=combined_metadata,
+                    background_tasks=bg_tasks,
+                    retry_delay_ms=ctx.max_retry_delay_ms,
+                    executions=list(executions),
+                ),
+                res_local_contexts,
+            )
+
+        except PluginViolationError as _pve:
+            # Attach the execution records accumulated so far (including the record for the
+            # denying plugin written in _run_serial_phase or the concurrent loop) to the
+            # exception before propagating. FAF plugins are not scheduled on this path.
+            # Callers can inspect pve.executions to identify which plugin denied the
+            # invocation — fix for #147.
+            _pve.executions = list(executions)
+            raise
 
     def _group_by_mode(
         self,
@@ -677,8 +708,23 @@ class PluginExecutor:
                 exec_status = ControlExecutionStatus.COMPLETED
                 exec_error_code: Optional[str] = None
                 exec_reason: Optional[str] = None
-            except PluginViolationError:
-                # violations_as_exceptions=True — propagate immediately, no record needed
+            except PluginViolationError as _pve:
+                # violations_as_exceptions=True — append the denial record before propagating
+                # so that PluginResult.executions always contains an entry for the denying plugin.
+                duration_ns = time.monotonic_ns() - t_start
+                if executions is not None:
+                    executions.append(_make_execution_record(
+                        hook_ref,
+                        hook_type,
+                        ControlExecutionStatus.COMPLETED,
+                        effective_allow=False,
+                        duration_ns=duration_ns,
+                        requested_allow=False,
+                        matched=True,
+                        applied=True,
+                        reason=_truncate_opt(_pve.violation.reason if _pve.violation else str(_pve)),
+                        error_code=_truncate(_pve.violation.code) if _pve.violation else "plugin_violation",
+                    ))
                 raise
             except PluginError as _pe:
                 # execute_plugin re-raises PluginError when on_error=FAIL — must not swallow.
@@ -989,20 +1035,29 @@ class PluginExecutor:
             return await coro
 
     @staticmethod
-    async def _tagged(coro: Any, tag: Any) -> tuple[Any, Any, Optional["PluginTimeoutError"]]:
+    async def _tagged(
+        coro: Any, tag: Any
+    ) -> tuple[Any, Any, Optional["PluginTimeoutError"], Optional["PluginViolationError"]]:
         """Await *coro* and pair the result with *tag* for use with as_completed.
 
         Catches PluginTimeoutError (raised by execute_plugin for on_error=ignore/disable
         timeouts) so it never escapes the concurrent as_completed loop unpaired with its
-        tag. The loop records a TIMEOUT execution record and continues. PluginError
-        (on_error=fail) is intentionally not caught here — it must propagate to preserve
-        fail-closed behaviour.
+        tag. The loop records a TIMEOUT execution record and continues.
+
+        Catches PluginViolationError (raised by execute_plugin for concurrent-mode denials
+        when violations_as_exceptions=True) so it never escapes the loop unpaired with its
+        tag. The loop writes the denial record, cancels sibling tasks, and re-raises.
+
+        PluginError (on_error=fail) is intentionally not caught here — it must propagate
+        to preserve fail-closed behaviour.
         """
         try:
             result = await coro
-            return result, tag, None
+            return result, tag, None, None
         except PluginTimeoutError as te:
-            return PluginResult(continue_processing=True), tag, te
+            return PluginResult(continue_processing=True), tag, te, None
+        except PluginViolationError as pve:
+            return PluginResult(continue_processing=True), tag, None, pve
 
     def _fire_and_forget_tasks(
         self,
