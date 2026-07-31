@@ -136,6 +136,10 @@ impl OpaResolver {
     ///     alice: [reader]
     /// data_files:               # optional; paths to JSON/YAML data files
     ///   - data/roles.json
+    /// max_cache_entries: 1024   # optional; cap on distinct inline modules,
+    ///                           # default 1024. 0 disables inline modules (a
+    ///                           # step carrying one denies); global-module
+    ///                           # steps are unaffected.
     /// ```
     ///
     /// Global modules and data are parsed/loaded here, once. A Rego parse error
@@ -155,6 +159,7 @@ impl OpaResolver {
             "module_files",
             "data",
             "data_files",
+            "max_cache_entries",
         ];
         for (key, _) in map {
             let Some(name) = key.as_str() else {
@@ -243,7 +248,8 @@ impl OpaResolver {
             base_engine: engine,
             global_packages,
             inline_cache: RwLock::new(HashMap::new()),
-            max_cache_entries: DEFAULT_MAX_CACHE_ENTRIES,
+            max_cache_entries: read_usize(map, "max_cache_entries")?
+                .unwrap_or(DEFAULT_MAX_CACHE_ENTRIES),
         })
     }
 
@@ -255,7 +261,8 @@ impl OpaResolver {
     }
 
     /// Override the inline-module cache cap (default
-    /// [`DEFAULT_MAX_CACHE_ENTRIES`]).
+    /// [`DEFAULT_MAX_CACHE_ENTRIES`]). Equivalent to the `max_cache_entries`
+    /// config key, for hosts constructing a resolver in Rust.
     pub fn with_max_cache_entries(mut self, max_cache_entries: usize) -> Self {
         self.max_cache_entries = max_cache_entries;
         self
@@ -311,8 +318,8 @@ impl OpaResolver {
             tracing::warn!(
                 cap = self.max_cache_entries,
                 "OPA inline-module cache full; rejecting new module. Existing entries are not \
-                 evicted. Increase `with_max_cache_entries` if the policy legitimately exceeds \
-                 the default bound."
+                 evicted. Raise `max_cache_entries` in the OPA PDP config block if the policy \
+                 legitimately needs more distinct inline modules."
             );
             return Err(EngineError::CacheFull {
                 cap: self.max_cache_entries,
@@ -502,6 +509,23 @@ fn read_string(map: &serde_yaml::Mapping, key: &str) -> Result<Option<String>, B
     }
 }
 
+/// Read an optional non-negative integer field. A key that is absent (or
+/// explicitly null) yields `None`; a present value that is not a non-negative
+/// integer is a config error rather than a silent default, matching the
+/// strictness applied to the string fields.
+fn read_usize(map: &serde_yaml::Mapping, key: &str) -> Result<Option<usize>, BuildError> {
+    match map.get(serde_yaml::Value::String(key.to_string())) {
+        None | Some(serde_yaml::Value::Null) => Ok(None),
+        Some(value) => value
+            .as_u64()
+            .and_then(|n| usize::try_from(n).ok())
+            .map(Some)
+            .ok_or_else(|| {
+                BuildError::ConfigShape(format!("`{key}` must be a non-negative integer"))
+            }),
+    }
+}
+
 /// Read an optional sequence-of-strings field. A missing key yields an empty
 /// vec; a present-but-non-sequence value, or a non-string element, is a config
 /// error.
@@ -568,6 +592,30 @@ data:
     fn decision_field_override_read() {
         let r = cfg("kind: opa\ndecision_field: permit\nmodules:\n  - \"package p\"\n").unwrap();
         assert_eq!(r.decision_field, "permit");
+    }
+
+    #[test]
+    fn max_cache_entries_read_from_config() {
+        let r = cfg("kind: opa\nmax_cache_entries: 7\n").unwrap();
+        assert_eq!(r.max_cache_entries, 7);
+    }
+
+    #[test]
+    fn max_cache_entries_defaults_when_absent() {
+        let r = cfg("kind: opa\n").unwrap();
+        assert_eq!(r.max_cache_entries, DEFAULT_MAX_CACHE_ENTRIES);
+    }
+
+    #[test]
+    fn non_integer_max_cache_entries_is_rejected() {
+        let err = cfg("kind: opa\nmax_cache_entries: many\n").unwrap_err();
+        assert!(matches!(err, BuildError::ConfigShape(m) if m.contains("max_cache_entries")));
+    }
+
+    #[test]
+    fn negative_max_cache_entries_is_rejected() {
+        let err = cfg("kind: opa\nmax_cache_entries: -1\n").unwrap_err();
+        assert!(matches!(err, BuildError::ConfigShape(m) if m.contains("max_cache_entries")));
     }
 
     #[test]
@@ -710,6 +758,13 @@ mod eval_tests {
 
     fn sv(s: &str) -> serde_yaml::Value {
         serde_yaml::Value::String(s.to_string())
+    }
+
+    /// Build a resolver from raw config YAML, for tests exercising config keys
+    /// the `resolver` helper does not set.
+    fn resolver_from_yaml(yaml: &str) -> OpaResolver {
+        let value: serde_yaml::Value = serde_yaml::from_str(yaml).unwrap();
+        OpaResolver::from_config(&value).unwrap()
     }
 
     /// Build an `opa:` step call with a query and optional inline module.
@@ -938,6 +993,61 @@ msg := "not a decision"
             .await
             .unwrap();
         assert_eq!(again.decision, Decision::Allow);
+    }
+
+    /// The `max_cache_entries` config key must reach the resolver, not just the
+    /// Rust builder: an operator hitting the cap through unified config has no
+    /// other lever.
+    #[tokio::test]
+    async fn config_max_cache_entries_reaches_the_resolver() {
+        let r = resolver_from_yaml("kind: opa\nmax_cache_entries: 1\n");
+        let m1 = "package a\nallow if input.subject.id == \"alice\"\n";
+        let m2 = "package b\nallow if input.subject.id == \"alice\"\n";
+
+        let first = r
+            .evaluate(&call("data.a.allow", Some(m1)), &bag("alice"))
+            .await
+            .unwrap();
+        assert_eq!(first.decision, Decision::Allow);
+
+        let second = r
+            .evaluate(&call("data.b.allow", Some(m2)), &bag("alice"))
+            .await
+            .unwrap();
+        assert!(matches!(second.decision, Decision::Deny { .. }));
+        assert!(second.diagnostics.iter().any(|d| d.contains("cache full")));
+    }
+
+    /// A cap of 0 is a lockdown stance, not a footgun: inline modules are
+    /// refused (and deny) while global-module steps keep evaluating, because a
+    /// step without an inline module never touches the cache.
+    #[tokio::test]
+    async fn zero_max_cache_entries_disables_inline_modules_only() {
+        const YAML: &str = r#"kind: opa
+max_cache_entries: 0
+modules:
+  - |
+    package authz
+    default allow := false
+    allow if input.subject.id == "alice"
+"#;
+        let r = resolver_from_yaml(YAML);
+
+        let global = r
+            .evaluate(&call("data.authz.allow", None), &bag("alice"))
+            .await
+            .unwrap();
+        assert_eq!(global.decision, Decision::Allow);
+
+        let inline = "package extra\nallow := true\n";
+        let out = r
+            .evaluate(&call("data.extra.allow", Some(inline)), &bag("alice"))
+            .await
+            .unwrap();
+        assert!(
+            matches!(out.decision, Decision::Deny { .. }),
+            "an inline module must be refused at a cap of 0",
+        );
     }
 
     /// A cache-full rejection is a resource limit, not a policy outcome, so it

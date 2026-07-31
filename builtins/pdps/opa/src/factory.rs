@@ -12,6 +12,7 @@
 //     pdp:
 //       - kind: opa
 //         on_error: deny          # optional; deny | allow, default deny
+//         max_cache_entries: 1024 # optional; cap on distinct inline modules
 //         modules:                # global Rego modules (inline and/or files)
 //           - |
 //             package authz
