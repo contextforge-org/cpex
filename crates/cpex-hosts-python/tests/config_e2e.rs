@@ -18,6 +18,12 @@
 // catches a config-shape or dispatch-wiring break that a direct adapter call
 // would not see.
 //
+// `tool_pre_invoke` also carries populated `Extensions`, which makes this the
+// only test that drives the extensions channel against an installer-written
+// config — one that declares `capabilities: []`. `extensions_merge_e2e.rs` owns
+// the observation and merge behaviour with a 3-arg fixture and explicit
+// capability sets; what is unique here is the real config's no-capability path.
+//
 // # Why it is `#[ignore]`
 //
 // It depends on state this repo does not create: an installed plugin with a
@@ -27,7 +33,9 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use cpex_core::extensions::Extensions;
+use cpex_core::extensions::{
+    AgentExtension, Extensions, HttpExtension, RequestExtension, SecurityExtension,
+};
 use cpex_core::hooks::types::hook_names;
 use cpex_core::manager::PluginManager;
 use cpex_hosts_python::factory::{IsolatedVenvFactory, KIND};
@@ -48,6 +56,15 @@ const IDENTITY_RAW_TOKEN_MARKER: &str = "identity_resolve_raw_token";
 /// Marker `TestPlugin.token_delegate` writes when `bearer_token` arrives with a
 /// non-empty secret value. See [`IDENTITY_RAW_TOKEN_MARKER`].
 const TOKEN_DELEGATE_BEARER_MARKER: &str = "token_delegate_bearer_token";
+
+/// A security label on the inbound extensions. Distinctive so an assertion on it
+/// cannot pass against a default-constructed `Extensions`.
+const INBOUND_LABEL: &str = "CONFIG-E2E-LABEL-4f18";
+
+/// A header value that must never cross the process boundary. Asserted by
+/// absence from the serialized task, so it has to be unique enough that a match
+/// anywhere in the JSON is conclusive.
+const SENSITIVE_HEADER_VALUE: &str = "Bearer config-e2e-must-not-travel";
 
 /// The repository root — `plugins/config.yaml` and the installed plugin's
 /// `plugin_dirs` are both relative to it.
@@ -146,6 +163,57 @@ fn assert_allowed(result: &cpex_core::executor::PipelineResult, hook_name: &str)
     );
 }
 
+/// A populated `Extensions` spanning the three filter behaviours a plugin with
+/// `capabilities: []` can exhibit, so one fixture exercises all of them:
+///
+/// * `request` / `custom` — unrestricted immutable slots. `filter_extensions`
+///   copies these through regardless of capabilities, so they are the slots that
+///   actually reach a plugin declaring none.
+/// * `agent` / `http` — capability-gated slots. `cpex-test-plugin` declares
+///   `capabilities: []` in `plugins/config.yaml`, so the executor strips both
+///   before the host ever serializes. Including them is the point: it proves the
+///   gate holds on the real installer-written config rather than on a config a
+///   test constructed to have no gated data in the first place.
+/// * `security` — gated per sub-field. The slot survives, `labels` does not.
+///
+/// The `Authorization` header is a second, independent guard: `attach_extensions`
+/// strips sensitive headers on the way out, so even a config that *did* declare
+/// `read_headers` must not put this value on the wire.
+fn inbound_extensions() -> Extensions {
+    let mut security = SecurityExtension::default();
+    security.add_label(INBOUND_LABEL);
+    security.classification = Some("internal".to_string());
+    security.auth_method = Some("jwt".to_string());
+
+    let mut http = HttpExtension::default();
+    http.set_request_header("Authorization", SENSITIVE_HEADER_VALUE);
+    http.set_request_header("X-Request-Id", "req-config-e2e-1");
+    http.method = Some("POST".to_string());
+    http.path = Some("/rpc/tools/invoke".to_string());
+
+    Extensions {
+        request: Some(Arc::new(RequestExtension {
+            environment: Some("test".to_string()),
+            request_id: Some("req-config-e2e-1".to_string()),
+            trace_id: Some("trace-config-e2e-1".to_string()),
+            ..Default::default()
+        })),
+        agent: Some(Arc::new(AgentExtension {
+            session_id: Some("session-config-e2e".to_string()),
+            agent_id: Some("agent-config-e2e".to_string()),
+            turn: Some(3),
+            ..Default::default()
+        })),
+        security: Some(Arc::new(security)),
+        http: Some(Arc::new(http)),
+        custom: Some(Arc::new(HashMap::from([(
+            "config_e2e".to_string(),
+            serde_json::json!({"source": "config_e2e.rs"}),
+        )]))),
+        ..Default::default()
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Setup
 //
@@ -224,11 +292,19 @@ async fn config_yaml_dispatches_tool_pre_invoke_to_the_installed_plugin() {
         headers: None,
     };
 
+    // Populated extensions rather than `Extensions::default()`. The default is
+    // the one input that cannot fail: with every slot `None`,
+    // `attach_extensions` writes no field at all, so the whole inbound channel
+    // is untested and the assertions below hold vacuously. Passing real slots
+    // through the installer-written config is what makes this test cover the
+    // channel — see `inbound_extensions` for what each slot is there to prove.
+    let inbound = inbound_extensions();
+
     let (result, _background) = manager
         .invoke_by_name(
             hook_names::TOOL_PRE_INVOKE,
             Box::new(payload),
-            Extensions::default(),
+            inbound.clone(),
             None,
         )
         .await;
@@ -240,7 +316,98 @@ async fn config_yaml_dispatches_tool_pre_invoke_to_the_installed_plugin() {
     // The marker proves the plugin's hook body ran. Without it, a response
     // shaped like an allow is indistinguishable from the manager's
     // no-plugins-registered short circuit.
+    //
+    // Combined with the populated extensions above, it is also the assertion
+    // that carries the most weight here: the worker received a task with an
+    // `extensions` field, deserialized it, and still ran the hook. A slot shape
+    // the worker's Pydantic models reject surfaces as a validation error in
+    // `errors` and no marker — which is precisely the break a `default()` input
+    // could never detect.
     assert_marker_written(&marker, hook_names::TOOL_PRE_INVOKE);
+
+    // `modified_extensions` on an allowed pipeline is the *final* extensions
+    // view, not a "something changed" signal — `PipelineResult::allowed_with`
+    // always populates it with whatever the pipeline ended up holding. So the
+    // meaningful assertion is that the view came back unchanged.
+    //
+    // Unchanged is the correct outcome for two independent reasons, and this is
+    // the only place the real installer-written config pins either: the plugin
+    // declares `capabilities: []`, so the executor strips every gated slot before
+    // the host serializes; and its `tool_pre_invoke(payload, context)` is 2-arg,
+    // so the framework forwards no extensions to the hook body at all. A plugin
+    // that receives nothing has nothing to write back.
+    //
+    // Note this is the *pipeline's* view, not the filtered one the plugin saw —
+    // the executor filters per plugin and merges writes back into the unfiltered
+    // original, so a stripped slot reappearing here is expected and correct.
+    let returned = result
+        .modified_extensions
+        .as_ref()
+        .expect("an allowed pipeline always carries its final extensions view");
+    assert!(
+        returned.agent.is_some() && returned.request.is_some() && returned.http.is_some(),
+        "the pipeline's own view keeps the slots it started with; per-plugin \
+         filtering must not mutate it"
+    );
+    assert!(
+        returned
+            .security
+            .as_ref()
+            .is_some_and(|s| s.has_label(INBOUND_LABEL)),
+        "a plugin that never received `security.labels` cannot have dropped the \
+         pipeline's label"
+    );
+    assert_eq!(
+        returned.custom.as_deref(),
+        inbound.custom.as_deref(),
+        "no plugin wrote `custom`, so it must survive the pipeline byte-for-byte"
+    );
+
+    // What the plugin *would* have seen, computed with the same production
+    // filter the executor ran. Asserting on this rather than on the worker's
+    // observations is deliberate: the installed plugin's hooks are 2-arg, so it
+    // has no way to report what arrived, and `extensions_merge_e2e.rs` owns the
+    // 3-arg observation path with a purpose-built fixture. This keeps the
+    // capability contract pinned against the real installer-written config.
+    let filtered = cpex_core::extensions::filter_extensions(&inbound, &Default::default());
+    assert!(
+        filtered.agent.is_none(),
+        "`agent` is capability-gated and this config declares none, so it must \
+         not reach the plugin"
+    );
+    assert!(
+        filtered.http.is_none(),
+        "`http` is capability-gated and this config declares none, so it must \
+         not reach the plugin"
+    );
+    assert!(
+        !filtered
+            .security
+            .as_ref()
+            .expect("the security slot survives; its gated sub-fields do not")
+            .has_label(INBOUND_LABEL),
+        "`security.labels` is gated under `read_labels`, which this config does \
+         not declare"
+    );
+    assert!(
+        filtered.request.is_some(),
+        "`request` is unrestricted — stripping it would silently starve every \
+         plugin of request context"
+    );
+
+    // The outbound sensitive-header strip, on the path a real gateway takes.
+    // This holds for a second, independent reason beyond the capability filter
+    // above: `attach_extensions` scrubs these regardless of what the plugin
+    // declares, so the assertion stays meaningful if this config ever gains
+    // `read_headers`.
+    let mut task = serde_json::json!({"task_type": "load_and_run_hook"});
+    cpex_hosts_python::extensions::attach_extensions(&mut task, &inbound)
+        .expect("the inbound view serializes");
+    let wire = serde_json::to_string(&task).expect("the task serializes");
+    assert!(
+        !wire.contains(SENSITIVE_HEADER_VALUE),
+        "no credential header value may appear anywhere in the task JSON: {wire}"
+    );
 }
 
 /// The two credential-adjacent hooks dispatch through the same config → factory
