@@ -277,3 +277,4 @@ tmp/
 plugin-catalog
 # Hugo build output
 docs/public/
+plugins/
