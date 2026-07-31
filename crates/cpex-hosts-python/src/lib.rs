@@ -49,10 +49,21 @@
 // in-memory token directly. Production credential types keep their serde
 // guard and are never serialized. See the `credentials` module for the
 // fail-closed rules and the residual exposure this does not close.
+//
+// # Extensions
+//
+// The capability-filtered `Extensions` the executor produced for a plugin is
+// serialized onto the task, so a 3-arg `(payload, context, extensions)` hook
+// sees out-of-process what it would see in-process. The plugin's returned
+// extensions come back through the executor's existing copy-on-write merge,
+// which enforces the mutability tiers — this host adds no tier logic. Sensitive
+// headers are stripped in both directions and `raw_credentials` never rides
+// this channel. See the `extensions` module.
 
 pub mod conversion;
 pub mod credentials;
 pub mod error;
+pub mod extensions;
 pub mod factory;
 pub mod legacy;
 pub mod plugin;

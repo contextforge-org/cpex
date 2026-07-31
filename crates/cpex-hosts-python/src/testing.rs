@@ -140,6 +140,21 @@ pub fn worker_consumes_credentials(source: &Path) -> bool {
         .unwrap_or(false)
 }
 
+/// Whether a framework checkout's worker delivers the `extensions` field.
+///
+/// The extensions channel needs a `worker.py` that reads the task's
+/// `extensions` field, reconstructs a Python `Extensions`, and passes it as
+/// `extensions=` to `execute_plugin`. A worker predating that change calls
+/// `execute_plugin` without the argument, so every hook sees `extensions=None`
+/// and an extensions test would fail for the wrong reason. Gate on the field
+/// name and the keyword argument together — the name alone appears in
+/// unrelated comments.
+pub fn worker_delivers_extensions(source: &Path) -> bool {
+    std::fs::read_to_string(source.join("cpex/framework/isolated/worker.py"))
+        .map(|s| s.contains("EXTENSIONS_FIELD") && s.contains("extensions="))
+        .unwrap_or(false)
+}
+
 /// Lay out a plugin package under `<dir>/plugins/<package>`.
 ///
 /// Writes `__init__.py`, the plugin module, and a `requirements.txt` pointing

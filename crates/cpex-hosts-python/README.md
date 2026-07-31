@@ -103,12 +103,46 @@ interpret that policy itself.
 
 ### Extensions
 
-Only the `custom` slot of a returned `modified_extensions` is applied. The
-`http`, `security`, and `delegation` slots are gated by `WriteToken`s the
-executor mints, and this host has no authority to mint one — an attempt to
-write them returns an error rather than being silently dropped. Full extensions
-delivery is owned by a separate plan
-(`docs/plans/2026-07-29-003-feat-out-of-process-extensions-delivery-plan.md`).
+The capability-filtered `Extensions` the executor produced for a plugin is
+serialized onto the task under an `extensions` field, so a 3-arg
+`(payload, context, extensions)` hook sees out-of-process what its in-process
+equivalent would. Slot visibility comes from the filtered view — this host does
+not re-derive capability filtering.
+
+Two rules apply in **both** directions:
+
+- `raw_credentials` never rides this channel. Raw tokens travel the
+  capability-gated `credential` DTO instead (see below).
+- `Authorization`, `Cookie`, and `X-API-Key` are stripped from
+  `http.request_headers` and `http.response_headers` (spec §3.5), matched
+  case-insensitively.
+
+A plugin's returned extensions come back on the response's
+`modified_extensions` field — the field the Python `PluginResult` model already
+carries, so returning extensions works the same way in and out of process. The
+host rebuilds an `OwnedExtensions` and hands it to the executor's existing
+copy-on-write merge, which enforces the mutability tiers. The host adds no tier
+logic of its own; what it does add is two structural guarantees the merge relies
+on:
+
+| Slot | Tier | Out-of-process behavior |
+|---|---|---|
+| `request`, `agent`, `mcp`, `completion`, `provenance`, `llm`, `framework`, `meta` | Immutable | The inbound `Arc` is reused, so a forged edit is dropped before the merge sees it |
+| `security` (labels) | Monotonic | Applied only with `append_labels`; the executor then enforces `before ⊆ after` |
+| `delegation` | Monotonic | Applied only with `append_delegation` |
+| `http` | Guarded | Applied only with `write_headers` |
+| `custom` | Mutable | Applied as-is |
+
+Reusing the inbound `Arc`s is load-bearing: the executor validates the immutable
+tier with `Arc::ptr_eq`, and a JSON round trip allocates a fresh `Arc` for every
+slot. Deserializing the whole object from the wire would fail that check on every
+immutable slot and get the entire return rejected, even for a plugin that only
+touched `custom`.
+
+Write authority comes from the `WriteToken` the executor mints per plugin from
+its declared capabilities and carries on the inbound view. `WriteToken::new()` is
+`pub(crate)` to `cpex-core`, so this host cannot mint one — a gated write with no
+token behind it is dropped rather than honored.
 
 ## Credentials
 

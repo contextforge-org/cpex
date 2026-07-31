@@ -204,9 +204,15 @@ pub fn deserialize_payload(
 /// missing `continue_processing` defaults to `true`, matching
 /// `PluginResult`'s Pydantic default — a plugin that returns nothing means
 /// "allow", not "deny".
+///
+/// `inbound` is the capability-filtered view this plugin was dispatched with.
+/// The returned-extensions path needs it to reuse the original `Arc`s for
+/// immutable slots and to read the write tokens the executor issued — see the
+/// `extensions` module for why both are load-bearing.
 pub fn response_to_result(
     hook_name: &str,
     response: Value,
+    inbound: &cpex_core::extensions::Extensions,
 ) -> Result<ErasedResultFields, HostError> {
     let continue_processing = response
         .get("continue_processing")
@@ -223,9 +229,9 @@ pub fn response_to_result(
         Some(raw) => Some(deserialize_payload(hook_name, raw.clone())?),
     };
 
-    let modified_extensions = match response.get("modified_extensions") {
+    let modified_extensions = match response.get(crate::extensions::MODIFIED_EXTENSIONS_FIELD) {
         Some(Value::Null) | None => None,
-        Some(raw) => owned_extensions_from_value(raw)?,
+        Some(raw) => crate::extensions::owned_from_returned_slot(raw, inbound)?,
     };
 
     Ok(ErasedResultFields {
@@ -234,82 +240,6 @@ pub fn response_to_result(
         modified_extensions,
         violation,
     })
-}
-
-/// Rebuild an `OwnedExtensions` from a worker's `modified_extensions`.
-///
-/// `OwnedExtensions` is deliberately not `Deserialize`: its `http`, `security`,
-/// and `delegation` slots are gated by `WriteToken`s that the *executor* mints
-/// when it grants a plugin write access. A token parsed out of worker JSON
-/// would be a forgery, letting an out-of-process plugin write slots it was
-/// never granted — so those slots cannot be reconstructed here, by design.
-///
-/// What is safe is `custom`: a plain `HashMap<String, Value>` with no write
-/// token, which is how an out-of-process plugin passes structured data back.
-/// That slot is honored.
-///
-/// A token-gated slot is reported as an error rather than dropped, so a plugin
-/// attempting one learns its write did not land instead of silently losing it.
-/// Full extensions delivery — including the returned-extensions merge for the
-/// gated slots — is owned by
-/// `docs/plans/2026-07-29-003-feat-out-of-process-extensions-delivery-plan.md`.
-fn owned_extensions_from_value(
-    raw: &Value,
-) -> Result<Option<cpex_core::hooks::payload::OwnedExtensions>, HostError> {
-    let obj = raw.as_object().ok_or_else(|| HostError::Protocol {
-        message: "worker returned modified_extensions that is not a JSON object".into(),
-    })?;
-
-    // Slots whose writes are token-gated. Reconstructing one would require
-    // minting a WriteToken this host has no authority to mint.
-    const GATED_SLOTS: [&str; 3] = ["http", "security", "delegation"];
-    for slot in GATED_SLOTS {
-        if obj.get(slot).is_some_and(|v| !v.is_null()) {
-            return Err(HostError::Protocol {
-                message: format!(
-                    "worker returned modified_extensions.{slot}, which is write-token gated and \
-                     cannot be applied from an out-of-process plugin — only `custom` is supported \
-                     on this path"
-                ),
-            });
-        }
-    }
-
-    let custom = match obj.get("custom") {
-        Some(Value::Null) | None => None,
-        Some(value) => Some(
-            serde_json::from_value::<std::collections::HashMap<String, Value>>(value.clone())
-                .map_err(|e| HostError::Protocol {
-                    message: format!(
-                        "worker returned a modified_extensions.custom this host cannot read: {e}"
-                    ),
-                })?,
-        ),
-    };
-
-    // Nothing applicable — treat as no modification rather than an empty write.
-    if custom.is_none() {
-        return Ok(None);
-    }
-
-    Ok(Some(cpex_core::hooks::payload::OwnedExtensions {
-        request: None,
-        agent: None,
-        mcp: None,
-        completion: None,
-        provenance: None,
-        llm: None,
-        framework: None,
-        meta: None,
-        raw_credentials: None,
-        http: None,
-        security: None,
-        delegation: None,
-        custom,
-        http_write_token: None,
-        labels_write_token: None,
-        delegation_write_token: None,
-    }))
 }
 
 /// Parse a violation, tolerating the Python model's extra fields.
@@ -354,6 +284,17 @@ fn parse_violation(raw: Value) -> Result<PluginViolation, HostError> {
 mod tests {
     use super::*;
     use std::collections::HashMap;
+
+    /// Inbound view for the response-conversion tests.
+    ///
+    /// Empty by default: these tests exercise response parsing, not the
+    /// capability-filtered delivery path, and an empty view carries no write
+    /// tokens — so a gated slot in a response is dropped rather than applied.
+    /// `extensions::tests` and `tests/extensions_merge_e2e.rs` cover the
+    /// token-bearing cases.
+    fn no_inbound() -> cpex_core::extensions::Extensions {
+        cpex_core::extensions::Extensions::default()
+    }
 
     // --- hook name resolution -----------------------------------------------
 
@@ -550,6 +491,7 @@ mod tests {
         let fields = response_to_result(
             "tool_pre_invoke",
             serde_json::json!({ "continue_processing": true }),
+            &no_inbound(),
         )
         .expect("converts");
 
@@ -563,8 +505,8 @@ mod tests {
     fn a_response_without_continue_processing_defaults_to_allow() {
         // Matches PluginResult's Pydantic default. Defaulting to deny would
         // block traffic on any plugin that returns a bare result.
-        let fields =
-            response_to_result("tool_pre_invoke", serde_json::json!({})).expect("converts");
+        let fields = response_to_result("tool_pre_invoke", serde_json::json!({}), &no_inbound())
+            .expect("converts");
         assert!(fields.continue_processing);
     }
 
@@ -582,6 +524,7 @@ mod tests {
                     "mcp_error_code": -32603
                 }
             }),
+            &no_inbound(),
         )
         .expect("converts");
 
@@ -609,6 +552,7 @@ mod tests {
         let fields = response_to_result(
             "tool_pre_invoke",
             serde_json::json!({ "continue_processing": false, "violation": { "reason": "nope" } }),
+            &no_inbound(),
         )
         .expect("a sparse violation is still a violation");
 
@@ -626,6 +570,7 @@ mod tests {
                 "continue_processing": true,
                 "modified_payload": { "name": "search", "args": {"q": "[REDACTED]"} }
             }),
+            &no_inbound(),
         )
         .expect("converts");
 
@@ -647,6 +592,7 @@ mod tests {
                 "continue_processing": true,
                 "modified_extensions": { "custom": { "seen_by": "py-plugin" } }
             }),
+            &no_inbound(),
         )
         .expect("converts");
 
@@ -658,27 +604,31 @@ mod tests {
     }
 
     #[test]
-    fn a_write_token_gated_extension_slot_is_rejected_not_dropped() {
-        // `security` writes are gated by a WriteToken the executor mints. This
-        // host cannot mint one, so honoring the write would mean forging
-        // authorization — and dropping it silently would lose the plugin's
-        // intent. Erroring is the only honest option.
+    fn a_gated_slot_write_without_the_capability_is_dropped() {
+        // `http`, `security`, and `delegation` writes are gated by a WriteToken
+        // the *executor* mints from the plugin's declared capabilities and
+        // carries on the inbound view. An empty inbound view means no token was
+        // issued, so the write is dropped rather than applied — the host cannot
+        // mint a token and must not honor an unauthorized write.
+        //
+        // This used to be a hard error, back when the host had no inbound view
+        // to consult and so could not tell an authorized write from an
+        // unauthorized one. It can now, so the tier is enforced instead of
+        // refused. `extensions::tests` covers the drop at slot granularity.
         for slot in ["http", "security", "delegation"] {
-            // `ErasedResultFields` is not Debug, so `expect_err` is unavailable.
-            let Err(err) = response_to_result(
+            let fields = response_to_result(
                 "tool_pre_invoke",
                 serde_json::json!({
                     "continue_processing": true,
                     "modified_extensions": { slot: {"labels": ["PII"]} }
                 }),
-            ) else {
-                panic!("a token-gated slot ('{slot}') must not be silently dropped");
-            };
+                &no_inbound(),
+            )
+            .expect("an unauthorized gated write is dropped, not a protocol error");
 
-            assert!(matches!(err, HostError::Protocol { .. }));
             assert!(
-                err.to_string().contains(slot),
-                "the error should name the slot the plugin tried to write: {err}"
+                fields.modified_extensions.is_none(),
+                "the '{slot}' write had no token behind it, so nothing should merge"
             );
         }
     }
@@ -694,6 +644,7 @@ mod tests {
                 "continue_processing": true,
                 "modified_extensions": { "http": null, "security": null, "custom": null }
             }),
+            &no_inbound(),
         )
         .expect("all-null slots are not a write");
         assert!(fields.modified_extensions.is_none());
@@ -712,6 +663,7 @@ mod tests {
                 "modified_extensions": null,
                 "violation": null
             }),
+            &no_inbound(),
         )
         .expect("nulls are absent, not malformed");
 
@@ -725,6 +677,7 @@ mod tests {
         let Err(err) = response_to_result(
             "tool_pre_invoke",
             serde_json::json!({ "continue_processing": true, "modified_payload": "not an object" }),
+            &no_inbound(),
         ) else {
             panic!("a payload that cannot be rebuilt must not be silently dropped");
         };

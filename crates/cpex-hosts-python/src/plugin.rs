@@ -551,6 +551,11 @@ impl AnyHookHandler for PythonHookAdapter {
         )
         .map_err(to_plugin_error)?;
 
+        // The capability-filtered extensions, so a 3-arg
+        // `(payload, context, extensions)` hook sees out-of-process what it
+        // would see in-process. Attaches nothing when no slot is visible.
+        crate::extensions::attach_extensions(&mut task, extensions).map_err(to_plugin_error)?;
+
         let worker = self.plugin.worker().await?;
         let response = worker.send_task(task).await.map_err(to_plugin_error)?;
 
@@ -558,8 +563,12 @@ impl AnyHookHandler for PythonHookAdapter {
         // before the result is returned, so a plugin's context writes survive.
         apply_context_deltas(&response, ctx);
 
-        let fields =
-            conversion::response_to_result(self.hook_name, response).map_err(to_plugin_error)?;
+        // `extensions` is passed back in so the returned-extensions path can
+        // reuse the inbound `Arc`s for immutable slots and read the write
+        // tokens the executor issued. The executor's copy-on-write merge then
+        // validates the result against the mutability tiers.
+        let fields = conversion::response_to_result(self.hook_name, response, extensions)
+            .map_err(to_plugin_error)?;
         Ok(Box::new(fields))
     }
 
