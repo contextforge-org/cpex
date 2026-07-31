@@ -1,0 +1,63 @@
+# Location: ./crates/cpex-hosts-python/Cargo.toml
+# Copyright 2026
+# SPDX-License-Identifier: Apache-2.0
+# Authors: Ted Habeck
+#
+# cpex-hosts-python — out-of-process host for existing Python CPEX
+# plugins. Each plugin runs in its own cached virtualenv, driven by the
+# Python framework's `worker.py` over a newline-delimited JSON stdio
+# protocol. Registers under the `isolated_venv` plugin kind.
+#
+# Pure Rust plus a subprocess — no libpython link, so this crate stays
+# in `default-members` (unlike `bindings/python`).
+
+[package]
+name = "cpex-hosts-python"
+version.workspace      = true
+edition.workspace      = true
+license.workspace      = true
+authors.workspace      = true
+description = "CPEX host — runs Python plugins out-of-process in isolated virtualenvs."
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+cpex-core = { workspace = true }
+
+async-trait = { workspace = true }
+serde       = { workspace = true }
+serde_json  = { workspace = true }
+tracing     = { workspace = true }
+uuid        = { workspace = true }
+
+# Version-pinned rather than workspace-inherited, matching how the rest of
+# the tree declares these two (crates/apl-cpex, builtins/session/valkey for
+# sha2; crates/cpex-core, builtins/plugins/delegator-oauth for zeroize).
+sha2    = "0.10"
+zeroize = { version = "1.8", features = ["zeroize_derive"] }
+
+# `process` and `io-util` are absent from the workspace tokio floor (the
+# embedded library never spawns children). This host's whole job is a
+# long-lived child spoken to over piped stdio, so it opts both in.
+tokio = { workspace = true, features = ["process", "io-util"] }
+
+[features]
+# Exposes the `testing` module (temp dirs, python3 detection) to the
+# integration tests under `tests/`, which cannot see a `cfg(test)` module.
+# Not enabled by default — production builds carry none of it.
+testing = []
+
+[dev-dependencies]
+chrono     = { workspace = true }
+serde_yaml = { workspace = true }
+tokio      = { workspace = true, features = ["process", "io-util", "macros", "rt", "rt-multi-thread"] }
+
+# Self-dependency with the test-only feature on, so `tests/*.rs` see
+# `cpex_hosts_python::testing`. Standard trick for cfg(test)-adjacent helpers.
+cpex-hosts-python = { path = ".", features = ["testing"] }
+
+[lints]
+workspace = true

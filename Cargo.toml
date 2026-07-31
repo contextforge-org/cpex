@@ -10,6 +10,7 @@ resolver = "2"
 members = [
     "crates/cpex",
     "crates/cpex-core",
+    "crates/cpex-hosts-python",
     "crates/cpex-orchestration",
     "crates/cpex-sdk",
     "crates/cpex-builtins",
