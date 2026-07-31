@@ -24,7 +24,10 @@
 //
 // A Deny carries a human-readable `reason`, a `rule_source` (a policy-supplied
 // id when present, else `"opa"`), and diagnostics detailing the cause so an
-// auditor can see why without re-running the policy.
+// auditor can see why without re-running the policy. Diagnostics are bounded in
+// both element count and line length, since their content is policy-authored
+// and can be derived from arbitrarily large `data`. Truncation is always marked,
+// so a bounded diagnostic never reads as a complete one.
 
 use regorus::Value;
 
@@ -33,6 +36,14 @@ use apl_core::step::PdpDecision;
 
 /// The fallback attribution when a policy does not name a rule id.
 const DEFAULT_RULE_SOURCE: &str = "opa";
+
+/// Bounds on the diagnostics one deny may carry. A decision object and a deny
+/// set are policy-authored and can derive their elements from a large `data`
+/// table, so both the number of lines and the length of each line are capped
+/// before an audit sink sees them. Worst case for a single deny is roughly
+/// 35 KiB: two capped element lists plus the whole-object line.
+const MAX_DIAGNOSTIC_ELEMENTS: usize = 16;
+const MAX_DIAGNOSTIC_LEN: usize = 1024;
 
 /// Outcome of mapping a query result. A `Decision` is terminal (allow/deny);
 /// `Degenerate` means the value carries no decision and the caller applies
@@ -95,12 +106,12 @@ fn map_object(value: &Value, decision_field: &str) -> Mapped {
             // Recognized violation lists become individual diagnostics.
             for key in ["violations", "errors"] {
                 if let Some(list) = obj.get(&Value::from(key)).and_then(|v| v.as_array().ok()) {
-                    diagnostics.extend(list.iter().map(render));
+                    diagnostics.extend(bounded_elements(list.iter()));
                 }
             }
             // Serialize the whole object so nothing the author returned is lost
             // to the audit trail, even fields we did not specifically read.
-            diagnostics.push(format!("opa: {}", render(value)));
+            diagnostics.push(bounded(format!("opa: {}", render(value))));
 
             Mapped::Decision(deny(reason, rule_source, diagnostics))
         },
@@ -114,13 +125,19 @@ fn map_object(value: &Value, decision_field: &str) -> Mapped {
 /// Set/array (deny-set / violation-set idiom): empty → allow, non-empty → deny
 /// with the elements as violations.
 fn map_collection<'a>(items: impl ExactSizeIterator<Item = &'a Value>) -> Mapped {
-    let violations: Vec<String> = items.map(render).collect();
-    if violations.is_empty() {
-        Mapped::Decision(allow())
-    } else {
-        let reason = format!("OPA policy produced {} violation(s)", violations.len());
-        Mapped::Decision(deny(reason, DEFAULT_RULE_SOURCE.to_string(), violations))
+    // Count before consuming: the reason reports the true violation count even
+    // when the diagnostics below are capped, so an auditor is never told "3
+    // violations" when the policy produced 300.
+    let total = items.len();
+    if total == 0 {
+        return Mapped::Decision(allow());
     }
+    let reason = format!("OPA policy produced {total} violation(s)");
+    Mapped::Decision(deny(
+        reason,
+        DEFAULT_RULE_SOURCE.to_string(),
+        bounded_elements(items),
+    ))
 }
 
 fn allow() -> PdpDecision {
@@ -145,6 +162,30 @@ fn get_str(obj: &regorus::value::Object, key: &str) -> Option<String> {
     obj.get(&Value::from(key))
         .and_then(|v| v.as_string().ok())
         .map(|s| s.to_string())
+}
+
+/// Cap one diagnostic line, cutting on a UTF-8 boundary and noting how much was
+/// dropped so an auditor can tell a bounded line from a complete one.
+fn bounded(s: String) -> String {
+    if s.len() <= MAX_DIAGNOSTIC_LEN {
+        return s;
+    }
+    let cut = s.floor_char_boundary(MAX_DIAGNOSTIC_LEN);
+    format!("{}... [{} more bytes omitted]", &s[..cut], s.len() - cut)
+}
+
+/// Render at most [`MAX_DIAGNOSTIC_ELEMENTS`] elements, each capped, followed by
+/// a count line when the list was longer.
+fn bounded_elements<'a>(items: impl ExactSizeIterator<Item = &'a Value>) -> Vec<String> {
+    let total = items.len();
+    let mut out: Vec<String> = items
+        .take(MAX_DIAGNOSTIC_ELEMENTS)
+        .map(|item| bounded(render(item)))
+        .collect();
+    if total > out.len() {
+        out.push(format!("[{} more element(s) omitted]", total - out.len()));
+    }
+    out
 }
 
 /// Render a value for a diagnostic line: a bare string as-is, everything else
@@ -333,6 +374,90 @@ mod tests {
             Decision::Deny { rule_source, .. } => assert_eq!(rule_source, "rule-42"),
             other => panic!("expected Deny, got {other:?}"),
         }
+    }
+
+    fn diagnostics_of(m: Mapped) -> Vec<String> {
+        match m {
+            Mapped::Decision(d) => d.diagnostics,
+            Mapped::Degenerate(c) => panic!("expected a decision, got degenerate: {c}"),
+        }
+    }
+
+    #[test]
+    fn oversized_violation_list_is_capped() {
+        let violations: Vec<String> = (0..100).map(|i| format!("\"v{i}\"")).collect();
+        let m = map_query_result(
+            &val(&format!(
+                r#"{{"allow": false, "violations": [{}]}}"#,
+                violations.join(",")
+            )),
+            "allow",
+        );
+        let diagnostics = diagnostics_of(m);
+        // Capped elements, one omitted-count line, one whole-object line.
+        assert_eq!(diagnostics.len(), MAX_DIAGNOSTIC_ELEMENTS + 2);
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d == "[84 more element(s) omitted]"),
+            "truncation must be marked; got {diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn oversized_violation_element_is_truncated() {
+        let long = "x".repeat(10_000);
+        let m = map_query_result(
+            &val(&format!(r#"{{"allow": false, "violations": ["{long}"]}}"#)),
+            "allow",
+        );
+        let diagnostics = diagnostics_of(m);
+        for line in &diagnostics {
+            assert!(
+                line.len() < MAX_DIAGNOSTIC_LEN + 64,
+                "line of {} bytes exceeds the bound",
+                line.len()
+            );
+        }
+        assert!(
+            diagnostics.iter().all(|d| d.contains("more bytes omitted")),
+            "both the element and the whole-object line must be marked truncated; got \
+             {diagnostics:?}"
+        );
+    }
+
+    /// The deny reason must report the real violation count even when the
+    /// diagnostics are capped, so an auditor is never told "16 violations" when
+    /// the policy produced 100.
+    #[test]
+    fn capped_deny_set_reason_reports_true_count() {
+        let elements: Vec<String> = (0..100).map(|i| format!("\"v{i}\"")).collect();
+        let m = map_query_result(&val(&format!("[{}]", elements.join(","))), "allow");
+        match m {
+            Mapped::Decision(d) => {
+                match d.decision {
+                    Decision::Deny { reason, .. } => {
+                        assert_eq!(
+                            reason.as_deref(),
+                            Some("OPA policy produced 100 violation(s)")
+                        );
+                    },
+                    other => panic!("expected Deny, got {other:?}"),
+                }
+                assert_eq!(d.diagnostics.len(), MAX_DIAGNOSTIC_ELEMENTS + 1);
+            },
+            Mapped::Degenerate(c) => panic!("degenerate: {c}"),
+        }
+    }
+
+    #[test]
+    fn truncation_cuts_on_utf8_boundary() {
+        // Three-byte characters do not divide MAX_DIAGNOSTIC_LEN evenly, so the
+        // cut lands mid-character unless the boundary is respected.
+        let long = "\u{4e16}".repeat(1_000);
+        let out = bounded(long);
+        assert!(out.contains("more bytes omitted"));
+        assert!(out.len() <= MAX_DIAGNOSTIC_LEN + 64);
     }
 
     /// The decision field is authoritative: `allow: true` allows even if the
