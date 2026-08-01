@@ -274,7 +274,9 @@ db_path/
 tmp/
 
 .continue
-plugin-catalog
 # Hugo build output
 docs/public/
+# python cpex install target(s)
 plugins/
+data/
+plugin-catalog
