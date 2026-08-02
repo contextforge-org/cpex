@@ -1,6 +1,7 @@
 // Location: ./builtins/plugins/ocsf-audit/src/config.rs
 // Copyright 2026 AI Identity
 // SPDX-License-Identifier: Apache-2.0
+// Authors: Jeff Leva
 //
 // Operator-facing config for the OCSF audit plugin. Mirrors the
 // upstream audit-logger's config style (serde, snake_case enums,
@@ -24,10 +25,11 @@ pub struct OcsfAuditConfig {
     #[serde(default = "default_vendor_name")]
     pub vendor_name: String,
 
-    /// When true, wrap every event in an attestation: compute an
-    /// `entry_hash` over the canonical event and thread the previous
-    /// event's hash into `prev_entry_hash`, forming a tamper-evident
-    /// chain. This is the integrity seam from the field map.
+    /// When true, attach an attestation to every event: compute a
+    /// `fingerprint` over the canonical event and reference the previous
+    /// event through `prev_event` (its uid, type_uid and fingerprint),
+    /// forming a tamper-evident chain. This is the integrity seam from
+    /// the field map, and it declares the `record_integrity` profile.
     #[serde(default = "default_true")]
     pub chain: bool,
 
@@ -38,10 +40,46 @@ pub struct OcsfAuditConfig {
     pub chain_uid: Option<String>,
 
     /// Signing mode for the attestation. `none` produces an unsigned
-    /// (but still hash-chained) record; `dsse` is the production mode
-    /// and declares `digital_signature.serialization_id = DSSE`.
+    /// (but still hash-chained) record — valid under the merged shape,
+    /// whose `at_least_one(fingerprint, signatures)` constraint the
+    /// fingerprint alone satisfies. `dsse` is the production mode and
+    /// declares `signatures[0].serialization_id = DSSE`; it REQUIRES a
+    /// key via exactly one of `signing_key_pem` /
+    /// `signing_key_pem_path` — a missing key fails construction loudly
+    /// rather than silently emitting unsigned records.
     #[serde(default)]
     pub signing: SigningMode,
+
+    /// Inline PKCS#8 P-256 private key PEM for `signing: dsse`.
+    /// Mutually exclusive with `signing_key_pem_path`. Inline is for
+    /// tests/demos and secret-manager injection; operators with a key
+    /// file should prefer the path form.
+    #[serde(default)]
+    pub signing_key_pem: Option<String>,
+
+    /// Path to a PKCS#8 P-256 private key PEM for `signing: dsse`.
+    /// Mutually exclusive with `signing_key_pem`.
+    #[serde(default)]
+    pub signing_key_pem_path: Option<String>,
+
+    /// Key identifier (JWKS `kid`) stamped at
+    /// `unmapped.signature_key_id`, so a verifier can resolve the
+    /// public key from the authority's published key set. Rides in
+    /// `unmapped` (outside the hashed bytes, like the signature itself)
+    /// until ocsf-schema#1709 gives signature material a schema home.
+    #[serde(default)]
+    pub signing_key_id: Option<String>,
+
+    /// OCSF `attestation.authority_uid` — identifies the authority the
+    /// signing credential belongs to. Signing keys rotate and expire;
+    /// this is the stable party identifier a verifier checks the
+    /// resolved key AGAINST, which is what defeats an
+    /// otherwise-valid-credential substitution. Part of the hashed
+    /// canonical serialization (merged #1661 semantics), so it cannot
+    /// be swapped after the fact without breaking the fingerprint.
+    /// `recommended` in the schema; set it whenever signing is on.
+    #[serde(default)]
+    pub authority_uid: Option<String>,
 
     /// When true (default), gap fields that have no native OCSF home
     /// yet — `completion.stop_reason`, `mcp.*`, `framework.*`,
@@ -81,7 +119,8 @@ pub enum SigningMode {
     #[default]
     None,
     /// DSSE-signed (merged in OCSF #1662 via
-    /// `digital_signature.serialization_id`). Requires a key — see
-    /// sign.rs. Currently a stub.
+    /// `digital_signature.serialization_id`; DSSE = 5, verified against
+    /// ocsf-schema main 2026-07-31). ECDSA-P256-SHA256 over the PAE of
+    /// the event's canonical bytes — see sign.rs. Requires a key.
     Dsse,
 }

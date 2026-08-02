@@ -1,6 +1,7 @@
 // Location: ./builtins/plugins/ocsf-audit/examples/emit_sample.rs
 // Copyright 2026 AI Identity
 // SPDX-License-Identifier: Apache-2.0
+// Authors: Jeff Leva
 //
 // Demo: build two realistic CMF turns (a tool invocation, then an LLM
 // completion), run them through the OCSF audit emitter with attestation
@@ -14,7 +15,7 @@
 //   cargo run --example emit_sample
 //
 // The timestamps are fixed so the output is deterministic (and so the
-// entry_hash chain is reproducible across runs).
+// fingerprint chain is reproducible across runs).
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -31,6 +32,21 @@ use cpex_core::extensions::{
 };
 use cpex_core::plugin::{OnError, PluginConfig, PluginMode};
 
+/// Demo signing key, generated at runtime from a fixed scalar so the
+/// sample output is byte-identical across runs (RFC 6979 deterministic
+/// ECDSA) WITHOUT any key material living in the repo. Demo only — a
+/// real deployment points signing_key_pem_path at a provisioned key and
+/// publishes the public half (JWKS) under the authority named by
+/// authority_uid.
+fn demo_key_pem() -> String {
+    use p256::pkcs8::EncodePrivateKey;
+    p256::ecdsa::SigningKey::from_slice(&[0x42u8; 32])
+        .expect("valid P-256 scalar")
+        .to_pkcs8_pem(p256::pkcs8::LineEnding::LF)
+        .expect("pem")
+        .to_string()
+}
+
 fn emitter() -> OcsfAuditEmitter {
     let config = PluginConfig {
         name: "ocsf-audit-demo".into(),
@@ -41,7 +57,10 @@ fn emitter() -> OcsfAuditEmitter {
         on_error: OnError::Fail,
         config: Some(json!({
             "chain": true,
-            "signing": "none",
+            "signing": "dsse",
+            "signing_key_pem": demo_key_pem(),
+            "signing_key_id": "demo-key-2026-07",
+            "authority_uid": "org-f3576cf6",
             "chain_uid": "demo-chain-org-f3576cf6",
             "product_name": "AI Identity OCSF Audit",
             "vendor_name": "AI Identity",
@@ -196,12 +215,47 @@ fn main() {
     println!("{}", serde_json::to_string_pretty(&ev2).unwrap());
     println!();
 
-    // Demonstrate the tamper-evident chain: event 2's prev_entry_hash
-    // equals event 1's entry_hash.
-    let h1 = ev1["attestation"]["entry_hash"].as_str().unwrap_or("");
-    let prev2 = ev2["attestation"]["prev_entry_hash"].as_str().unwrap_or("");
+    // Demonstrate the tamper-evident chain: event 2's
+    // prev_event.fingerprint equals event 1's fingerprint.
+    let fp1 = &ev1["attestation_list"][0]["fingerprint"];
+    let prev2 = &ev2["attestation_list"][0]["prev_event"]["fingerprint"];
     println!(
-        "// chain check: event2.prev_entry_hash == event1.entry_hash -> {}",
-        h1 == prev2
+        "// chain check: event2.prev_event.fingerprint == event1.fingerprint -> {}",
+        fp1 == prev2
     );
+    // And the retrieval coordinates the merged shape adds: prev_event
+    // names the record it points at, so a consumer can go fetch it.
+    println!(
+        "// chain check: event2.prev_event.uid == event1.metadata.uid   -> {}",
+        ev2["attestation_list"][0]["prev_event"]["uid"] == ev1["metadata"]["uid"]
+    );
+
+    // The independent-verifier loop, from nothing but the emitted JSON
+    // and the public key: reconstruct the signed bytes, recompute the
+    // fingerprint, verify the DSSE signature over the PAE.
+    {
+        use base64::Engine;
+        use cpex_plugin_ocsf_audit::sign::{dsse_pae, fingerprint_value, signing_input};
+        use p256::ecdsa::signature::Verifier;
+
+        let vk = *p256::ecdsa::SigningKey::from_slice(&[0x42u8; 32])
+            .unwrap()
+            .verifying_key();
+        for (label, ev) in [("event1", &ev1), ("event2", &ev2)] {
+            let bytes = signing_input(ev);
+            let fp_ok = fingerprint_value(&bytes)
+                == ev["attestation_list"][0]["fingerprint"]["value"]
+                    .as_str()
+                    .unwrap();
+            let der = base64::engine::general_purpose::STANDARD
+                .decode(ev["unmapped"]["signature_b64"].as_str().unwrap())
+                .unwrap();
+            let sig_ok = p256::ecdsa::Signature::from_der(&der)
+                .map(|sig| vk.verify(&dsse_pae(&bytes), &sig).is_ok())
+                .unwrap_or(false);
+            println!(
+                "// verify {label}: fingerprint recomputed -> {fp_ok} · DSSE signature -> {sig_ok}"
+            );
+        }
+    }
 }

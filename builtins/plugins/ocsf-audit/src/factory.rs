@@ -1,6 +1,7 @@
 // Location: ./builtins/plugins/ocsf-audit/src/factory.rs
 // Copyright 2026 AI Identity
 // SPDX-License-Identifier: Apache-2.0
+// Authors: Jeff Leva
 //
 // Factory — registers the emitter under every CMF hook the operator
 // lists in `hooks:`. Structurally identical to the upstream

@@ -29,7 +29,12 @@ rust-version.workspace = true
 cpex-core = { workspace = true }
 
 async-trait = { workspace = true }
+base64      = "0.22"
 chrono      = { workspace = true }
+# ECDSA P-256 for the DSSE signer. RustCrypto's ecdsa signs per RFC 6979
+# (deterministic), which preserves the byte-identical-output-across-runs
+# invariant that keeps SAMPLE-OUTPUT.md reproducible.
+p256        = { version = "0.13", features = ["ecdsa", "pem", "pkcs8"] }
 serde       = { workspace = true }
 serde_json  = { workspace = true }
 sha2        = "0.10"
