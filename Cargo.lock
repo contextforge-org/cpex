@@ -785,6 +785,7 @@ dependencies = [
  "cpex-plugin-delegator-oauth",
  "cpex-plugin-elicitation-ciba",
  "cpex-plugin-identity-jwt",
+ "cpex-plugin-ocsf-audit",
  "cpex-plugin-pii-scanner",
  "cpex-session-valkey",
  "tokio",
@@ -970,6 +971,22 @@ dependencies = [
  "rsa",
  "serde",
  "serde_json",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "cpex-plugin-ocsf-audit"
+version = "0.2.2"
+dependencies = [
+ "async-trait",
+ "base64 0.22.1",
+ "chrono",
+ "cpex-core",
+ "p256",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
  "tokio",
  "tracing",
 ]
