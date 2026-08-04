@@ -429,14 +429,16 @@ class PluginExecutor:
                     # on_error=ignore/disable timeout: pipeline continues, record TIMEOUT
                     # (mirrors the serial-phase handler; on_error=fail raises PluginError,
                     # which is not caught here and propagates fail-closed).
-                    executions.append(_make_execution_record(
-                        ref,
-                        hook_type,
-                        ControlExecutionStatus.TIMEOUT,
-                        effective_allow=True,
-                        reason=_truncate_opt(str(timeout_err)),
-                        error_code="plugin_timeout",
-                    ))
+                    executions.append(
+                        _make_execution_record(
+                            ref,
+                            hook_type,
+                            ControlExecutionStatus.TIMEOUT,
+                            effective_allow=True,
+                            reason=_truncate_opt(str(timeout_err)),
+                            error_code="plugin_timeout",
+                        )
+                    )
                     continue
                 if violation_err is not None:
                     # violations_as_exceptions=True concurrent denial: write the record,
@@ -444,17 +446,19 @@ class PluginExecutor:
                     # then re-raise (fix for #147). FAF plugins are not scheduled on this path,
                     # so their records are absent — unlike the non-exception halt result.
                     _pve = violation_err
-                    executions.append(_make_execution_record(
-                        ref,
-                        hook_type,
-                        ControlExecutionStatus.COMPLETED,
-                        effective_allow=False,
-                        requested_allow=False,
-                        matched=True,
-                        applied=True,
-                        reason=_truncate_opt(_pve.violation.reason if _pve.violation else str(_pve)),
-                        error_code=_truncate(_pve.violation.code) if _pve.violation else "plugin_violation",
-                    ))
+                    executions.append(
+                        _make_execution_record(
+                            ref,
+                            hook_type,
+                            ControlExecutionStatus.COMPLETED,
+                            effective_allow=False,
+                            requested_allow=False,
+                            matched=True,
+                            applied=True,
+                            reason=_truncate_opt(_pve.violation.reason if _pve.violation else str(_pve)),
+                            error_code=_truncate(_pve.violation.code) if _pve.violation else "plugin_violation",
+                        )
+                    )
                     for task in concurrent_tasks:
                         if not task.done():
                             task.cancel()
@@ -470,17 +474,19 @@ class PluginExecutor:
                     )
                 # Build the concurrent execution record (duration=0: no per-branch timing)
                 _concurrent_denied = not result.continue_processing
-                executions.append(_make_execution_record(
-                    ref,
-                    hook_type,
-                    ControlExecutionStatus.COMPLETED,
-                    effective_allow=not _concurrent_denied,
-                    requested_allow=result.continue_processing,
-                    matched=True if _concurrent_denied else False,
-                    applied=_concurrent_denied,
-                    reason=_truncate_opt(result.violation.reason if result.violation else None),
-                    error_code=_truncate(result.violation.code) if result.violation else None,
-                ))
+                executions.append(
+                    _make_execution_record(
+                        ref,
+                        hook_type,
+                        ControlExecutionStatus.COMPLETED,
+                        effective_allow=not _concurrent_denied,
+                        requested_allow=result.continue_processing,
+                        matched=True if _concurrent_denied else False,
+                        applied=_concurrent_denied,
+                        reason=_truncate_opt(result.violation.reason if result.violation else None),
+                        error_code=_truncate(result.violation.code) if result.violation else None,
+                    )
+                )
                 if not result.continue_processing:
                     pending = sum(1 for t in concurrent_tasks if not t.done())
                     violation_detail = (
@@ -707,18 +713,20 @@ class PluginExecutor:
                 # on this path, so their records are absent — unlike the non-exception halt.
                 duration_ns = time.monotonic_ns() - t_start
                 if executions is not None:
-                    executions.append(_make_execution_record(
-                        hook_ref,
-                        hook_type,
-                        ControlExecutionStatus.COMPLETED,
-                        effective_allow=False,
-                        duration_ns=duration_ns,
-                        requested_allow=False,
-                        matched=True,
-                        applied=True,
-                        reason=_truncate_opt(_pve.violation.reason if _pve.violation else str(_pve)),
-                        error_code=_truncate(_pve.violation.code) if _pve.violation else "plugin_violation",
-                    ))
+                    executions.append(
+                        _make_execution_record(
+                            hook_ref,
+                            hook_type,
+                            ControlExecutionStatus.COMPLETED,
+                            effective_allow=False,
+                            duration_ns=duration_ns,
+                            requested_allow=False,
+                            matched=True,
+                            applied=True,
+                            reason=_truncate_opt(_pve.violation.reason if _pve.violation else str(_pve)),
+                            error_code=_truncate(_pve.violation.code) if _pve.violation else "plugin_violation",
+                        )
+                    )
                     _pve.executions = list(executions)
                 raise
             except PluginError as _pe:
@@ -726,16 +734,18 @@ class PluginExecutor:
                 # Record the error then re-raise to preserve fail-closed behaviour.
                 duration_ns = time.monotonic_ns() - t_start
                 if executions is not None:
-                    executions.append(_make_execution_record(
-                        hook_ref,
-                        hook_type,
-                        ControlExecutionStatus.ERROR,
-                        effective_allow=False,
-                        duration_ns=duration_ns,
-                        applied=True,
-                        reason=_truncate_opt(str(_pe)),
-                        error_code="plugin_error",
-                    ))
+                    executions.append(
+                        _make_execution_record(
+                            hook_ref,
+                            hook_type,
+                            ControlExecutionStatus.ERROR,
+                            effective_allow=False,
+                            duration_ns=duration_ns,
+                            applied=True,
+                            reason=_truncate_opt(str(_pe)),
+                            error_code="plugin_error",
+                        )
+                    )
                 raise
             except PluginTimeoutError as _te:
                 # on_error=IGNORE or DISABLE timeout — pipeline continues, record as TIMEOUT.
@@ -795,40 +805,40 @@ class PluginExecutor:
                 requested_allow: Optional[bool] = result.continue_processing
                 # matched: True if denied, or if payload/extensions were changed
                 # False if clean allow with no mutation, None if error/timeout
-                matched: Optional[bool] = True if denied else (
-                    True if (payload_modified or extensions_modified) else False
+                matched: Optional[bool] = (
+                    True if denied else (True if (payload_modified or extensions_modified) else False)
                 )
                 effective_allow = not denied
                 rec_applied = denied or payload_modified or extensions_modified
-                rec_error_code = (
-                    _truncate(result.violation.code) if (denied and result.violation) else exec_error_code
-                )
-                rec_reason = (
-                    _truncate_opt(result.violation.reason if (denied and result.violation) else exec_reason)
-                )
+                rec_error_code = _truncate(result.violation.code) if (denied and result.violation) else exec_error_code
+                rec_reason = _truncate_opt(result.violation.reason if (denied and result.violation) else exec_reason)
             else:
                 requested_allow = None
                 matched = None
-                effective_allow = True   # error/timeout in non-blocking phase → pipeline continues
-                rec_applied = exec_status in (ControlExecutionStatus.ERROR, ControlExecutionStatus.TIMEOUT) and allow_blocking
+                effective_allow = True  # error/timeout in non-blocking phase → pipeline continues
+                rec_applied = (
+                    exec_status in (ControlExecutionStatus.ERROR, ControlExecutionStatus.TIMEOUT) and allow_blocking
+                )
                 rec_error_code = exec_error_code
                 rec_reason = _truncate_opt(exec_reason)
 
             if executions is not None:
-                executions.append(_make_execution_record(
-                    hook_ref,
-                    hook_type,
-                    exec_status,
-                    effective_allow=effective_allow,
-                    duration_ns=duration_ns,
-                    requested_allow=requested_allow,
-                    matched=matched,
-                    applied=rec_applied,
-                    payload_modified=payload_modified,
-                    extensions_modified=extensions_modified,
-                    reason=rec_reason,
-                    error_code=rec_error_code,
-                ))
+                executions.append(
+                    _make_execution_record(
+                        hook_ref,
+                        hook_type,
+                        exec_status,
+                        effective_allow=effective_allow,
+                        duration_ns=duration_ns,
+                        requested_allow=requested_allow,
+                        matched=matched,
+                        applied=rec_applied,
+                        payload_modified=payload_modified,
+                        extensions_modified=extensions_modified,
+                        reason=rec_reason,
+                        error_code=rec_error_code,
+                    )
+                )
 
             if not result.continue_processing:
                 violation_detail = f": [{result.violation.code}] {result.violation.reason}" if result.violation else ""
@@ -1097,12 +1107,14 @@ class PluginExecutor:
             # status=COMPLETED is an optimistic placeholder; duration_ns=0 (not yet run).
             # Identify FAF records by mode == "fire_and_forget", not by status.
             if executions is not None:
-                executions.append(_make_execution_record(
-                    ref,
-                    hook_type,
-                    ControlExecutionStatus.COMPLETED,
-                    effective_allow=True,
-                ))
+                executions.append(
+                    _make_execution_record(
+                        ref,
+                        hook_type,
+                        ControlExecutionStatus.COMPLETED,
+                        effective_allow=True,
+                    )
+                )
 
             task = asyncio.create_task(
                 self._run_fire_and_forget_task(ref, task_input, local_context, semaphore, extensions=extensions)
@@ -1280,9 +1292,7 @@ class PluginExecutor:
                     self._runtime_disabled.add(hook_ref.plugin_ref.name)
             # on_error=IGNORE or DISABLE: pipeline continues, but raise PluginTimeoutError so
             # _run_serial_phase can record status=TIMEOUT rather than COMPLETED.
-            raise PluginTimeoutError(
-                f"Plugin {hook_ref.plugin_ref.name} exceeded {self.timeout}s timeout"
-            ) from exc
+            raise PluginTimeoutError(f"Plugin {hook_ref.plugin_ref.name} exceeded {self.timeout}s timeout") from exc
         except PluginViolationError:
             raise
         except PluginError as pe:
