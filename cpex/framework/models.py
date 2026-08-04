@@ -1656,7 +1656,6 @@ class PluginManifest(BaseModel):
         )
 
 
-
 # ---------------------------------------------------------------------------
 # Execution record types (issue #130)
 # ---------------------------------------------------------------------------
@@ -1813,7 +1812,6 @@ class ControlExecutionRecord(BaseModel):
 
     config_keys: list[str] = Field(default_factory=list)
     """Config key *names* from the plugin's trusted config. Values are never included."""
-
 
 
 class PluginErrorModel(BaseModel):

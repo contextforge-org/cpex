@@ -10,7 +10,7 @@ the base plugin layer including configurations, and contexts.
 """
 
 # First-Party
-from cpex.framework.models import PluginErrorModel, PluginViolation
+from cpex.framework.models import ControlExecutionRecord, PluginErrorModel, PluginViolation
 
 
 class PluginViolationError(Exception):
@@ -19,6 +19,12 @@ class PluginViolationError(Exception):
     Attributes:
         violation (PluginViolation): the plugin violation.
         message (str): the plugin violation reason.
+        executions (list[ControlExecutionRecord] | None): execution records collected up to and
+            including the denying plugin.  ``None`` when the exception is raised outside of a
+            hook chain (e.g. a direct ``execute_plugin`` call, or in unit tests).  Populated by
+            the executor before the exception propagates to callers (fix for issue #147).
+            Note: fire-and-forget plugins do not run on this path, so their records are absent
+            here — unlike ``PluginResult.executions`` on a non-exception halt.
     """
 
     def __init__(self, message: str, violation: PluginViolation | None = None):
@@ -38,6 +44,7 @@ class PluginViolationError(Exception):
         """
         self.message = message
         self.violation = violation
+        self.executions: list[ControlExecutionRecord] | None = None
         super().__init__(self.message)
 
 

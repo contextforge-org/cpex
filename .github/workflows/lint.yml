@@ -9,21 +9,11 @@
 
 name: Lint & Static Analysis
 
+# Reusable workflow only — invoked by ci.yml, which owns the branch filters.
+# Do not add push/pull_request triggers here: ci.yml already calls this on those
+# events, so its own triggers would run every job a second time.
 on:
   workflow_call:
-  push:
-    branches: ["main"]
-    paths:
-      - "cpex/**"
-      - "pyproject.toml"
-      - ".github/workflows/lint.yml"
-  pull_request:
-    types: [opened, synchronize, ready_for_review]
-    branches: ["main"]
-    paths:
-      - "cpex/**"
-      - "pyproject.toml"
-      - ".github/workflows/lint.yml"
 
 permissions:
   contents: read

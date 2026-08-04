@@ -26,7 +26,10 @@ dependencies = [
     "httpx>=0.28.1",
     "httpx[http2]>=0.28.1",
     "jinja2>=3.1.6",
-    "mcp>=1.26.0",
+    # Capped below 2.0: mcp 2.0 renamed McpError -> MCPError, which breaks
+    # cpex/framework/external/mcp/client.py. The 2.0 migration is tracked
+    # separately; the 0.1.x line stays on mcp 1.x.
+    "mcp>=1.26.0,<2",
     "orjson>=3.11.7",
     "prometheus-fastapi-instrumentator>=7.1.0",
     "prometheus_client>=0.24.1",
