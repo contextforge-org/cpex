@@ -490,7 +490,7 @@ async def test_executions_concurrent_timeout_ignore_does_not_escape():
 
 
 # ---------------------------------------------------------------------------
-# Issue #130 fix: violation record appended before exception is raised
+# Issue #147 fix: violation record appended before exception is raised
 # ---------------------------------------------------------------------------
 
 
@@ -498,10 +498,10 @@ async def test_executions_concurrent_timeout_ignore_does_not_escape():
 async def test_executions_on_violation_exception_single_plugin():
     """When violations_as_exceptions=True and a single plugin denies the request,
     the raised PluginViolationError must carry an ``executions`` list with one record
-    for the denying plugin (fix for cpex#130)."""
+    for the denying plugin (fix for #147)."""
     from unittest.mock import patch
 
-    from cpex.framework import Plugin, PluginConfig, PluginMode, PluginResult, PluginViolation
+    from cpex.framework import Plugin, PluginConfig, PluginViolation
     from cpex.framework.base import HookRef
     from cpex.framework.errors import PluginViolationError
     from cpex.framework.registry import PluginRef
@@ -552,7 +552,7 @@ async def test_executions_on_violation_exception_single_plugin():
         assert pve.value.violation is not None
         assert pve.value.violation.code == "DENY_CODE"
 
-        # executions is attached to the exception (fix for cpex#130)
+        # executions is attached to the exception (fix for #147)
         assert pve.value.executions is not None, (
             "PluginViolationError.executions must not be None when raised from invoke_hook"
         )
@@ -575,10 +575,10 @@ async def test_executions_on_violation_exception_single_plugin():
 async def test_executions_on_violation_exception_two_plugin_chain():
     """When violations_as_exceptions=True and the second plugin in a two-plugin chain denies,
     the raised PluginViolationError must carry an ``executions`` list with records for BOTH
-    plugins — the first plugin (allow) and the second plugin (deny) (fix for cpex#130)."""
+    plugins — the first plugin (allow) and the second plugin (deny) (fix for #147)."""
     from unittest.mock import patch
 
-    from cpex.framework import Plugin, PluginConfig, PluginMode, PluginResult, PluginViolation
+    from cpex.framework import Plugin, PluginConfig, PluginViolation
     from cpex.framework.base import HookRef
     from cpex.framework.errors import PluginViolationError
     from cpex.framework.registry import PluginRef
@@ -645,7 +645,7 @@ async def test_executions_on_violation_exception_two_plugin_chain():
         assert pve.value.violation is not None
         assert pve.value.violation.code == "SECOND_DENY"
 
-        # Both plugins must have records on the exception (fix for cpex#130)
+        # Both plugins must have records on the exception (fix for #147)
         assert pve.value.executions is not None, (
             "PluginViolationError.executions must not be None when raised from invoke_hook"
         )
@@ -674,7 +674,7 @@ async def test_executions_on_violation_exception_concurrent_plugin():
     This is the concurrent-mode analogue of test_executions_on_violation_exception_single_plugin."""
     from unittest.mock import patch
 
-    from cpex.framework import Plugin, PluginConfig, PluginMode, PluginResult, PluginViolation
+    from cpex.framework import Plugin, PluginConfig, PluginViolation
     from cpex.framework.base import HookRef
     from cpex.framework.errors import PluginViolationError
     from cpex.framework.registry import PluginRef
@@ -749,7 +749,7 @@ async def test_executions_on_violation_exception_list_is_independent_copy():
     mutating it after the catch must not affect any other state."""
     from unittest.mock import patch
 
-    from cpex.framework import Plugin, PluginConfig, PluginMode, PluginResult, PluginViolation
+    from cpex.framework import Plugin, PluginConfig, PluginViolation
     from cpex.framework.base import HookRef
     from cpex.framework.errors import PluginViolationError
     from cpex.framework.registry import PluginRef

@@ -20,9 +20,11 @@ class PluginViolationError(Exception):
         violation (PluginViolation): the plugin violation.
         message (str): the plugin violation reason.
         executions (list[ControlExecutionRecord] | None): execution records collected up to and
-            including the denying plugin.  ``None`` when the exception is raised outside of an
-            ``invoke_hook`` call (e.g. in unit tests).  Populated by ``PluginExecutor.execute``
-            before the exception propagates to callers (fix for issue #147).
+            including the denying plugin.  ``None`` when the exception is raised outside of a
+            hook chain (e.g. a direct ``execute_plugin`` call, or in unit tests).  Populated by
+            the executor before the exception propagates to callers (fix for issue #147).
+            Note: fire-and-forget plugins do not run on this path, so their records are absent
+            here — unlike ``PluginResult.executions`` on a non-exception halt.
     """
 
     def __init__(self, message: str, violation: PluginViolation | None = None):
