@@ -281,7 +281,17 @@ class TestApplyPolicy:
         assert result.secret == "s"  # type: ignore[union-attr]
 
     def test_copyonwritelist_items_partial_modification_preserved(self):
-        """Test that partial item removal is also preserved correctly."""
+        """Test that partial item removal is also preserved correctly.
+
+        Note: unlike the all-denied case above, this is coverage rather than a
+        regression guard -- it passes with or without CopyOnWriteList.__eq__.
+        The pre-fix bug compared against the empty base ``list`` storage, so a
+        partial filter (``[...]`` -> ``["kept-tool"]``) already evaluated as
+        ``[] == ["kept-tool"]`` -> False, i.e. correctly "changed". Only a
+        filter down to ``[]`` hit the false "unchanged" result. Kept to pin
+        the surrounding behaviour so a future __eq__ refactor cannot regress
+        partial filtering unnoticed.
+        """
         from cpex.framework.memory import CopyOnWriteList
 
         policy = HookPayloadPolicy(writable_fields=frozenset({"items"}))

@@ -1209,12 +1209,20 @@ class TestCopyOnWriteList:
         assert [] == cow
 
     def test_equality_with_non_list_returns_notimplemented(self):
-        """Equality with non-list types should return NotImplemented."""
+        """Equality with non-list types should return NotImplemented.
+
+        Returning NotImplemented (rather than False) is what lets Python fall
+        back to the reflected operand's __eq__, then to identity comparison.
+        Tuples are included deliberately: a CopyOnWriteList must stay unequal
+        to a same-content tuple, matching plain list semantics.
+        """
         cow = CopyOnWriteList(["a"])
-        assert cow != "not a list"
-        assert cow != 123
-        assert cow != {"a": 1}
-        assert cow != None
+        for other in ("not a list", 123, {"a": 1}, ("a",), None):
+            assert cow.__eq__(other) is NotImplemented
+            assert cow.__ne__(other) is NotImplemented
+            # Observable behaviour once Python applies the fallback.
+            assert cow != other
+            assert not cow == other
 
     def test_inequality_operator(self):
         """Test __ne__ operator works correctly."""
