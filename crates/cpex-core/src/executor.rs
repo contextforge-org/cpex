@@ -32,7 +32,9 @@ use std::time::Duration;
 use tokio::time::timeout;
 use tracing::{error, warn};
 
+use crate::audit::AuditHandler;
 use crate::context::PluginContextTable;
+use crate::decision::{DecisionLog, PluginAction, Verdict};
 use crate::error::PluginError;
 use crate::extensions::filter_extensions;
 use crate::hooks::payload::{Extensions, PluginPayload, WriteToken};
@@ -102,6 +104,11 @@ pub struct PipelineResult {
     /// Plugin contexts indexed by plugin ID. Thread this into the
     /// next hook invocation to preserve per-plugin `local_state`.
     pub context_table: PluginContextTable,
+
+    /// The executor's record of what each plugin did and how the pipeline
+    /// ruled. Built executor-side and handed to audit sinks; never exposed
+    /// to plugins through `PluginContext`.
+    pub decision_log: DecisionLog,
 }
 
 impl PipelineResult {
@@ -119,6 +126,7 @@ impl PipelineResult {
             errors: Vec::new(),
             metadata: None,
             context_table,
+            decision_log: DecisionLog::new(),
         }
     }
 
@@ -136,6 +144,7 @@ impl PipelineResult {
             errors: Vec::new(),
             metadata: None,
             context_table,
+            decision_log: DecisionLog::new(),
         }
     }
 
@@ -144,6 +153,12 @@ impl PipelineResult {
     /// / `on_error: disable` plugins.
     pub fn with_errors(mut self, errors: Vec<crate::error::PluginErrorRecord>) -> Self {
         self.errors = errors;
+        self
+    }
+
+    /// Attach the executor's decision log to a constructed result.
+    pub fn with_decision_log(mut self, decision_log: DecisionLog) -> Self {
+        self.decision_log = decision_log;
         self
     }
 
@@ -229,17 +244,82 @@ impl fmt::Debug for BackgroundTasks {
 /// SEQUENTIAL → TRANSFORM → AUDIT → CONCURRENT → FIRE_AND_FORGET
 /// ```
 ///
-/// The executor is stateless — all state comes from the arguments.
-/// One executor instance can serve multiple concurrent hook invocations.
+/// The executor's only state is its config and the auto-attached audit
+/// sinks; all per-request state comes from the arguments. One executor
+/// instance can serve multiple concurrent hook invocations.
 #[derive(Clone)]
 pub struct Executor {
     config: ExecutorConfig,
+
+    /// Observation-only sinks invoked at the verdict of every pipeline run.
+    /// Set when the manager builds the runtime snapshot; empty otherwise.
+    /// They receive the decision log but cannot influence the outcome.
+    audit_handlers: Vec<Arc<dyn AuditHandler>>,
 }
 
 impl Executor {
     /// Create a new executor with the given configuration.
     pub fn new(config: ExecutorConfig) -> Self {
-        Self { config }
+        Self {
+            config,
+            audit_handlers: Vec::new(),
+        }
+    }
+
+    /// Attach observation-only audit sinks, invoked at the verdict of every
+    /// pipeline run. Used by the manager when it builds the runtime snapshot.
+    pub fn with_audit_handlers(mut self, audit_handlers: Vec<Arc<dyn AuditHandler>>) -> Self {
+        self.audit_handlers = audit_handlers;
+        self
+    }
+
+    /// Append a single audit sink. Used by the manager's
+    /// `register_audit_handler` through copy-on-write snapshot mutation.
+    pub fn push_audit_handler(&mut self, handler: Arc<dyn AuditHandler>) {
+        self.audit_handlers.push(handler);
+    }
+
+    /// Invoke every audit sink with the finalized decision, once per pipeline
+    /// run. Observation-only — the executor ignores whatever they return.
+    async fn emit_audit(
+        &self,
+        payload: &dyn PluginPayload,
+        extensions: &Extensions,
+        decisions: &DecisionLog,
+    ) {
+        use futures::FutureExt;
+        use std::panic::AssertUnwindSafe;
+
+        if self.audit_handlers.is_empty() {
+            return;
+        }
+
+        // Observation-only: an audit sink must never crash or hang the
+        // request whose verdict is already decided. Contain panics and bound
+        // each call; log loudly and move on. A lost audit record is itself a
+        // problem (see the durability plan) but that never justifies letting a
+        // sink take down the request.
+        let timeout_dur = Duration::from_secs(self.config.timeout_seconds);
+        for handler in &self.audit_handlers {
+            let call =
+                AssertUnwindSafe(handler.handle(payload, extensions, decisions)).catch_unwind();
+            match timeout(timeout_dur, call).await {
+                Ok(Ok(())) => {},
+                Ok(Err(_panic)) => {
+                    error!(
+                        "audit sink '{}' panicked during emit — contained",
+                        handler.name()
+                    );
+                },
+                Err(_elapsed) => {
+                    error!(
+                        "audit sink '{}' exceeded {}s during emit — skipped",
+                        handler.name(),
+                        timeout_dur.as_secs()
+                    );
+                },
+            }
+        }
     }
 
     /// Execute a hook invocation through the 5-phase pipeline.
@@ -289,6 +369,11 @@ impl Executor {
         // become the violation directly.
         let mut errors: Vec<crate::error::PluginErrorRecord> = Vec::new();
 
+        // The executor's private record of what each plugin did and how the
+        // pipeline ruled. Threaded through the phases, finalized at each
+        // return point, and attached to the result for audit sinks.
+        let mut decisions = DecisionLog::new();
+
         if let Some(v) = self
             .run_serial_phase(
                 &sequential,
@@ -299,11 +384,17 @@ impl Executor {
                 true, // can_modify
                 "SEQUENTIAL",
                 &mut errors,
+                &mut decisions,
             )
             .await
         {
+            decisions.finalize(Verdict::Deny(v.clone()));
+            self.emit_audit(&*current_payload, &current_extensions, &decisions)
+                .await;
             return (
-                PipelineResult::denied(v, current_extensions, ctx_table).with_errors(errors),
+                PipelineResult::denied(v, current_extensions, ctx_table)
+                    .with_errors(errors)
+                    .with_decision_log(decisions),
                 BackgroundTasks::empty(),
             );
         }
@@ -319,6 +410,7 @@ impl Executor {
             true,  // can_modify
             "TRANSFORM",
             &mut errors,
+            &mut decisions,
         )
         .await;
 
@@ -339,12 +431,17 @@ impl Executor {
                 &current_extensions,
                 &ctx_table,
                 &mut errors,
+                &mut decisions,
             )
             .await
         {
+            decisions.finalize(Verdict::Deny(violation.clone()));
+            self.emit_audit(&*current_payload, &current_extensions, &decisions)
+                .await;
             return (
                 PipelineResult::denied(violation, current_extensions, ctx_table)
-                    .with_errors(errors),
+                    .with_errors(errors)
+                    .with_decision_log(decisions),
                 BackgroundTasks::empty(),
             );
         }
@@ -360,9 +457,13 @@ impl Executor {
             task_tracker,
         );
 
+        decisions.finalize(Verdict::Allow);
+        self.emit_audit(&*current_payload, &current_extensions, &decisions)
+            .await;
         (
             PipelineResult::allowed_with(current_payload, current_extensions, ctx_table)
-                .with_errors(errors),
+                .with_errors(errors)
+                .with_decision_log(decisions),
             BackgroundTasks::from_handles(bg_handles),
         )
     }
@@ -388,6 +489,7 @@ impl Executor {
         can_modify: bool,
         phase_label: &str,
         errors: &mut Vec<crate::error::PluginErrorRecord>,
+        decisions: &mut DecisionLog,
     ) -> Option<crate::error::PluginViolation> {
         for entry in entries {
             // Borrow names/ids on the happy path — allocate only when
@@ -397,6 +499,11 @@ impl Executor {
             let plugin_name = entry.plugin_ref.name();
             let plugin_id = entry.plugin_ref.id();
             let on_error = entry.plugin_ref.trusted_config().on_error;
+            let phase = entry.plugin_ref.trusted_config().mode;
+            // What this plugin did, recorded after it runs (or inline before a
+            // halting return). Defaults to Allowed; the modify and error paths
+            // update it.
+            let mut action = PluginAction::Allowed;
 
             // Take this plugin's context out of the table — pulls its stored
             // local_state and seeds global_state from the canonical store.
@@ -441,6 +548,7 @@ impl Executor {
                         if !erased.continue_processing && can_block {
                             if let Some(mut v) = erased.violation {
                                 v.plugin_name = Some(plugin_name.to_string());
+                                decisions.record(plugin_name, phase, PluginAction::Denied);
                                 return Some(v);
                             }
                         }
@@ -449,6 +557,7 @@ impl Executor {
                         if can_modify {
                             if let Some(mp) = erased.modified_payload {
                                 *payload = mp;
+                                action = PluginAction::ModifiedPayload;
                             }
                             if let Some(owned) = erased.modified_extensions {
                                 // Pointer-equality gate on the truly-immutable
@@ -500,6 +609,9 @@ impl Executor {
                                     );
                                 } else {
                                     extensions.merge_owned(owned);
+                                    if action == PluginAction::Allowed {
+                                        action = PluginAction::ModifiedExtensions;
+                                    }
                                 }
                             }
                         }
@@ -511,6 +623,7 @@ impl Executor {
                 },
                 Ok(Err(e)) => {
                     error!("{} plugin '{}' failed: {}", phase_label, plugin_name, e);
+                    action = PluginAction::Error(e.to_string());
                     match on_error {
                         OnError::Fail if can_block => {
                             let mut v = crate::error::PluginViolation::new(
@@ -518,6 +631,7 @@ impl Executor {
                                 format!("Plugin '{}' failed: {}", plugin_name, e),
                             );
                             v.plugin_name = Some(plugin_name.to_string());
+                            decisions.record(plugin_name, phase, action.clone());
                             return Some(v);
                         },
                         // Any non-halt outcome (Fail-in-non-blocking-phase,
@@ -546,6 +660,7 @@ impl Executor {
                 },
                 Err(_) => {
                     error!("{} plugin '{}' timed out", phase_label, plugin_name);
+                    action = PluginAction::Error("timed out".to_string());
                     let timeout_err = crate::error::PluginError::Timeout {
                         plugin_name: plugin_name.to_string(),
                         timeout_ms: timeout_dur.as_millis() as u64,
@@ -558,6 +673,7 @@ impl Executor {
                                 format!("Plugin '{}' timed out", plugin_name),
                             );
                             v.plugin_name = Some(plugin_name.to_string());
+                            decisions.record(plugin_name, phase, action.clone());
                             return Some(v);
                         },
                         OnError::Fail => {
@@ -581,6 +697,10 @@ impl Executor {
                     }
                 },
             }
+
+            // Record what this plugin did (halting paths recorded inline above
+            // and returned before reaching here).
+            decisions.record(plugin_name, phase, action);
 
             // Commit this plugin's context back to the table — replaces the
             // canonical global_state with its (possibly modified) copy and
@@ -693,6 +813,7 @@ impl Executor {
         extensions: &Extensions,
         ctx_table: &PluginContextTable,
         errors: &mut Vec<crate::error::PluginErrorRecord>,
+        decisions: &mut DecisionLog,
     ) -> Option<crate::error::PluginViolation> {
         use cpex_orchestration::{run_branches, BranchConfig, BranchOutcome, ErasedBranch};
 
@@ -800,6 +921,18 @@ impl Executor {
             let entry = &entries[idx];
             let plugin_name = entry.plugin_ref.name();
             let on_error = on_error_by_idx[idx];
+
+            // Record what this concurrent plugin did, in input order.
+            let action = match &outcome {
+                BranchOutcome::Completed(BranchData::Allow) => PluginAction::Allowed,
+                BranchOutcome::Completed(BranchData::Deny(_)) => PluginAction::Denied,
+                BranchOutcome::Completed(BranchData::Error(e)) => PluginAction::Error(e.to_string()),
+                BranchOutcome::TimedOut => PluginAction::Error("timed out".to_string()),
+                BranchOutcome::Panicked(s) => PluginAction::Error(format!("panicked: {s}")),
+                // Cancelled because another branch short-circuited the phase.
+                BranchOutcome::Aborted => PluginAction::Error("aborted".to_string()),
+            };
+            decisions.record(plugin_name, entry.plugin_ref.trusted_config().mode, action);
 
             match outcome {
                 BranchOutcome::Completed(BranchData::Allow) => {},

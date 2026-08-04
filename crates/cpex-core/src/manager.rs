@@ -35,6 +35,7 @@ use tracing::{error, info, warn};
 use crate::config::{self, CpexConfig};
 use crate::context::PluginContextTable;
 use crate::error::PluginError;
+use crate::audit::AuditHandler;
 use crate::executor::{BackgroundTasks, Executor, ExecutorConfig, PipelineResult};
 use crate::factory::PluginFactoryRegistry;
 use crate::hooks::adapter::TypedHandlerAdapter;
@@ -374,6 +375,14 @@ impl PluginManager {
             task_tracker: tokio_util::task::TaskTracker::new(),
             visitors: RwLock::new(Vec::new()),
         }
+    }
+
+    /// Register an observation-only audit sink. It is invoked at the verdict
+    /// of every subsequent pipeline run with the decision log — for allowed
+    /// and denied requests alike. Attached to the current executor via
+    /// copy-on-write; audit sinks cannot influence pipeline outcomes.
+    pub fn register_audit_handler(&self, handler: Arc<dyn AuditHandler>) {
+        self.mutate_runtime(|snap| snap.executor.push_audit_handler(handler));
     }
 
     /// Load the current runtime snapshot (lock-free, single atomic op).
@@ -2037,6 +2046,175 @@ mod tests {
 
         assert!(!result.continue_processing);
         assert_eq!(result.violation.as_ref().unwrap().code, "denied");
+    }
+
+    #[tokio::test]
+    async fn test_decision_log_records_allow_and_deny() {
+        use crate::decision::{PluginAction, Verdict};
+
+        // Allow path: one Allowed step, and a non-deny verdict.
+        {
+            let mgr = PluginManager::default();
+            let config = make_config("allow-plugin", 10, PluginMode::Sequential);
+            let plugin = Arc::new(AllowPlugin {
+                cfg: config.clone(),
+            });
+            mgr.register_handler::<TestHook, _>(plugin, config).unwrap();
+            mgr.initialize().await.unwrap();
+
+            let payload: Box<dyn PluginPayload> = Box::new(TestPayload {
+                value: "x".into(),
+            });
+            let (result, _) = mgr
+                .invoke_by_name("test_hook", payload, Extensions::default(), None)
+                .await;
+
+            assert!(result.continue_processing);
+            assert!(!result.decision_log.is_denied());
+            let steps = result.decision_log.steps();
+            assert_eq!(steps.len(), 1);
+            assert_eq!(steps[0].plugin_name, "allow-plugin");
+            assert_eq!(steps[0].action, PluginAction::Allowed);
+        }
+
+        // Deny path: a Denied step, plus a Deny verdict carrying the violation.
+        {
+            let mgr = PluginManager::default();
+            let config = make_config("deny-plugin", 10, PluginMode::Sequential);
+            let plugin = Arc::new(DenyPlugin {
+                cfg: config.clone(),
+            });
+            mgr.register_handler::<TestHook, _>(plugin, config).unwrap();
+            mgr.initialize().await.unwrap();
+
+            let payload: Box<dyn PluginPayload> = Box::new(TestPayload {
+                value: "x".into(),
+            });
+            let (result, _) = mgr
+                .invoke_by_name("test_hook", payload, Extensions::default(), None)
+                .await;
+
+            assert!(!result.continue_processing);
+            assert!(result.decision_log.is_denied());
+            let steps = result.decision_log.steps();
+            assert_eq!(steps.len(), 1);
+            assert_eq!(steps[0].action, PluginAction::Denied);
+            match result.decision_log.verdict() {
+                Some(Verdict::Deny(v)) => assert_eq!(v.code, "denied"),
+                other => panic!("expected a deny verdict, got {other:?}"),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_audit_handler_observes_verdict() {
+        use crate::audit::AuditHandler;
+        use crate::decision::DecisionLog;
+        use std::sync::Mutex;
+
+        // An audit sink that records whether each observed verdict was a deny.
+        struct CapturingAudit {
+            denied: Arc<Mutex<Vec<bool>>>,
+        }
+        #[async_trait]
+        impl AuditHandler for CapturingAudit {
+            async fn handle(
+                &self,
+                _payload: &dyn PluginPayload,
+                _extensions: &Extensions,
+                decisions: &DecisionLog,
+            ) {
+                self.denied.lock().unwrap().push(decisions.is_denied());
+            }
+        }
+
+        let denied = Arc::new(Mutex::new(Vec::new()));
+
+        // Allow path fires the sink once, observed as not-denied.
+        {
+            let mgr = PluginManager::default();
+            let config = make_config("allow-plugin", 10, PluginMode::Sequential);
+            mgr.register_handler::<TestHook, _>(Arc::new(AllowPlugin { cfg: config.clone() }), config)
+                .unwrap();
+            mgr.register_audit_handler(Arc::new(CapturingAudit {
+                denied: denied.clone(),
+            }));
+            mgr.initialize().await.unwrap();
+
+            let payload: Box<dyn PluginPayload> = Box::new(TestPayload {
+                value: "x".into(),
+            });
+            let (result, _) = mgr
+                .invoke_by_name("test_hook", payload, Extensions::default(), None)
+                .await;
+            assert!(result.continue_processing);
+        }
+
+        // Deny path fires the sink once too — the whole point of the seam:
+        // a blocked request is still audited.
+        {
+            let mgr = PluginManager::default();
+            let config = make_config("deny-plugin", 10, PluginMode::Sequential);
+            mgr.register_handler::<TestHook, _>(Arc::new(DenyPlugin { cfg: config.clone() }), config)
+                .unwrap();
+            mgr.register_audit_handler(Arc::new(CapturingAudit {
+                denied: denied.clone(),
+            }));
+            mgr.initialize().await.unwrap();
+
+            let payload: Box<dyn PluginPayload> = Box::new(TestPayload {
+                value: "x".into(),
+            });
+            let (result, _) = mgr
+                .invoke_by_name("test_hook", payload, Extensions::default(), None)
+                .await;
+            assert!(!result.continue_processing);
+        }
+
+        let seen = denied.lock().unwrap();
+        assert_eq!(seen.len(), 2, "audit sink fires once per invocation");
+        assert!(!seen[0], "allow verdict observed as not-denied");
+        assert!(seen[1], "deny verdict observed as denied");
+    }
+
+    #[tokio::test]
+    async fn test_panicking_audit_handler_is_contained() {
+        use crate::audit::AuditHandler;
+        use crate::decision::DecisionLog;
+
+        // An audit sink that panics. It must not take down the request — the
+        // verdict is already decided by the time the sink runs. (The panic
+        // prints to stderr via the default hook before being caught; that's
+        // expected noise, not a failure.)
+        struct PanicAudit;
+        #[async_trait]
+        impl AuditHandler for PanicAudit {
+            async fn handle(
+                &self,
+                _payload: &dyn PluginPayload,
+                _extensions: &Extensions,
+                _decisions: &DecisionLog,
+            ) {
+                panic!("audit sink boom");
+            }
+        }
+
+        let mgr = PluginManager::default();
+        let config = make_config("allow-plugin", 10, PluginMode::Sequential);
+        mgr.register_handler::<TestHook, _>(Arc::new(AllowPlugin { cfg: config.clone() }), config)
+            .unwrap();
+        mgr.register_audit_handler(Arc::new(PanicAudit));
+        mgr.initialize().await.unwrap();
+
+        let payload: Box<dyn PluginPayload> = Box::new(TestPayload {
+            value: "x".into(),
+        });
+        let (result, _) = mgr
+            .invoke_by_name("test_hook", payload, Extensions::default(), None)
+            .await;
+
+        // The sink panicked, but the request still completed with its verdict.
+        assert!(result.continue_processing);
     }
 
     #[tokio::test]
