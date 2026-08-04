@@ -6,10 +6,11 @@ name: CI
 
 on:
   push:
-    branches: ["main"]
+    # 0.1.x is the long-lived maintenance base branch for the 0.1 series
+    branches: ["main", "dev", "0.1.x"]
   pull_request:
     types: [opened, synchronize, ready_for_review]
-    branches: ["main"]
+    branches: ["main", "dev", "0.1.x"]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -27,6 +28,7 @@ jobs:
     name: Tests
     uses: ./.github/workflows/tests.yaml
 
-  docs:
-    name: Docs Build
-    uses: ./.github/workflows/docs-build.yaml
+  # No docs job on 0.1.x: docs are built and published from main only.
+  # Do not re-add a `uses: ./.github/workflows/docs-build.yaml` job here —
+  # workflow_call bypasses that workflow's own main-only branch filter, so it
+  # would run on this branch regardless.

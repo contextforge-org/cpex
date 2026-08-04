@@ -7,7 +7,8 @@ name: Tests
 on:
   workflow_call:
   push:
-    branches: ["main"]
+    # 0.1.x is the long-lived maintenance base branch for the 0.1 series
+    branches: ["main", "dev", "0.1.x"]
     paths:
       - "cpex/**"
       - "tests/**"
@@ -15,7 +16,7 @@ on:
       - ".github/workflows/tests.yaml"
   pull_request:
     types: [opened, synchronize, ready_for_review]
-    branches: ["main"]
+    branches: ["main", "dev", "0.1.x"]
     paths:
       - "cpex/**"
       - "tests/**"
