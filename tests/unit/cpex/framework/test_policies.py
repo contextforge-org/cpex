@@ -28,6 +28,14 @@ class SamplePayload(PluginPayload):
     secret: str = "original"
 
 
+class SampleListPayload(PluginPayload):
+    """Test payload with a writable list field, for CopyOnWriteList regressions."""
+
+    name: str
+    items: list = Field(default_factory=list)
+    secret: str = "original"
+
+
 class TestHookPayloadPolicy:
     """Tests for HookPayloadPolicy dataclass."""
 
@@ -227,9 +235,80 @@ class TestApplyPolicy:
         modified = SamplePayload(name="test", args={"real_arg": "value"}, secret="s")
         
         result = apply_policy(original, modified, policy)
-        
+
         assert result is not None
         assert result.args == {"real_arg": "value"}  # type: ignore[union-attr]
+
+    def test_copyonwritelist_items_all_denied_modification_preserved(self):
+        """Regression test for the CopyOnWriteList sibling of the
+        CopyOnWriteDict empty-args bug (see
+        test_copyonwritedict_args_empty_modification_preserved).
+
+        A tool_post_list-style plugin that filters every item out of a
+        listing returns items=[]. Before CopyOnWriteList implemented
+        __eq__, this compared equal to the original (empty-backed,
+        unmaterialized) CopyOnWriteList regardless of its logical content,
+        so apply_policy() treated an all-denied filtering decision as "no
+        change" and discarded it -- serving the original, unfiltered
+        listing to the caller instead.
+
+        ``original`` is built via ``model_construct`` (bypassing field
+        validation) to mirror how ``wrap_payload_for_isolation`` actually
+        attaches a CopyOnWriteList to a hook payload in production:
+        constructing through the normal validator instead would itself
+        coerce the CopyOnWriteList into a plain (and, worse, silently
+        emptied) list before apply_policy ever runs.
+        """
+        from cpex.framework.memory import CopyOnWriteList
+
+        policy = HookPayloadPolicy(writable_fields=frozenset({"items"}))
+
+        # Simulate a plugin receiving payload items as CopyOnWriteList
+        original = SampleListPayload.model_construct(
+            name="test",
+            items=CopyOnWriteList(["tool-a", "tool-b", "tool-c"]),
+            secret="s",
+        )
+
+        # Plugin denies every item, returning an empty list
+        modified = SampleListPayload(name="test", items=[], secret="s")
+
+        result = apply_policy(original, modified, policy)
+
+        assert result is not None, "apply_policy should not return None when items changed from [...] to []"
+        assert result.items == []  # type: ignore[union-attr]
+        assert result.name == "test"  # type: ignore[union-attr]
+        assert result.secret == "s"  # type: ignore[union-attr]
+
+    def test_copyonwritelist_items_partial_modification_preserved(self):
+        """Test that partial item removal is also preserved correctly.
+
+        Note: unlike the all-denied case above, this is coverage rather than a
+        regression guard -- it passes with or without CopyOnWriteList.__eq__.
+        The pre-fix bug compared against the empty base ``list`` storage, so a
+        partial filter (``[...]`` -> ``["kept-tool"]``) already evaluated as
+        ``[] == ["kept-tool"]`` -> False, i.e. correctly "changed". Only a
+        filter down to ``[]`` hit the false "unchanged" result. Kept to pin
+        the surrounding behaviour so a future __eq__ refactor cannot regress
+        partial filtering unnoticed.
+        """
+        from cpex.framework.memory import CopyOnWriteList
+
+        policy = HookPayloadPolicy(writable_fields=frozenset({"items"}))
+
+        original = SampleListPayload.model_construct(
+            name="test",
+            items=CopyOnWriteList(["denied-tool", "kept-tool"]),
+            secret="s",
+        )
+
+        # Plugin removes only denied-tool, keeping kept-tool
+        modified = SampleListPayload(name="test", items=["kept-tool"], secret="s")
+
+        result = apply_policy(original, modified, policy)
+
+        assert result is not None
+        assert result.items == ["kept-tool"]  # type: ignore[union-attr]
 
 
 class TestPluginPayloadFrozen:

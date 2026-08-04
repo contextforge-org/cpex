@@ -1166,6 +1166,93 @@ class TestCopyOnWriteList:
         assert list(cow) == [10, 20, 3, 4]
         assert original == [1, 2, 3]
 
+    def test_equality_with_empty_list(self):
+        """CopyOnWriteList with data should not equal empty list."""
+        cow = CopyOnWriteList(["a", "b"])
+        assert cow != []
+        assert [] != cow
+        assert not (cow == [])
+        assert not ([] == cow)
+
+    def test_equality_with_matching_list(self):
+        """CopyOnWriteList should equal a list with the same items."""
+        original = ["a", "b", "c"]
+        cow = CopyOnWriteList(original)
+        assert cow == ["a", "b", "c"]
+        assert ["a", "b", "c"] == cow
+
+    def test_equality_with_different_list(self):
+        """CopyOnWriteList should not equal a list with different content."""
+        cow = CopyOnWriteList(["a", "b"])
+        assert cow != ["a", "c"]
+        assert cow != ["a"]
+        assert cow != ["a", "b", "c"]
+
+    def test_equality_after_modifications(self):
+        """Equality should reflect modifications made after materialization."""
+        cow = CopyOnWriteList(["a", "b"])
+        cow.append("c")
+        assert cow == ["a", "b", "c"]
+        assert cow != ["a", "b"]
+
+    def test_equality_with_another_copyonwritelist(self):
+        """Two CopyOnWriteList instances with the same content should be equal."""
+        cow1 = CopyOnWriteList(["a", "b"])
+        cow2 = CopyOnWriteList(["a", "b"])
+        assert cow1 == cow2
+        assert cow2 == cow1
+
+    def test_equality_empty_copyonwritelist(self):
+        """Empty CopyOnWriteList should equal empty list."""
+        cow = CopyOnWriteList([])
+        assert cow == []
+        assert [] == cow
+
+    def test_equality_with_non_list_returns_notimplemented(self):
+        """Equality with non-list types should return NotImplemented.
+
+        Returning NotImplemented (rather than False) is what lets Python fall
+        back to the reflected operand's __eq__, then to identity comparison.
+        Tuples are included deliberately: a CopyOnWriteList must stay unequal
+        to a same-content tuple, matching plain list semantics.
+        """
+        cow = CopyOnWriteList(["a"])
+        for other in ("not a list", 123, {"a": 1}, ("a",), None):
+            assert cow.__eq__(other) is NotImplemented
+            assert cow.__ne__(other) is NotImplemented
+            # Observable behaviour once Python applies the fallback.
+            assert cow != other
+            assert not cow == other
+
+    def test_inequality_operator(self):
+        """Test __ne__ operator works correctly."""
+        cow = CopyOnWriteList(["a", "b"])
+        assert cow != []
+        assert cow != ["a"]
+        assert not (cow != ["a", "b"])
+
+    def test_copyonwritelist_is_unhashable(self):
+        """CopyOnWriteList should remain unhashable like list."""
+        cow = CopyOnWriteList(["a"])
+        with pytest.raises(TypeError):
+            hash(cow)
+
+    def test_equality_all_denied_listing_scenario(self):
+        """Regression test for the tool_post_list all-denied filtering bug.
+
+        A tool_post_list plugin that filters every item out of a listing
+        returns items=[]. Before CopyOnWriteList implemented __eq__, this
+        compared equal to the (empty-backed, unmaterialized) original
+        CopyOnWriteList regardless of how many items it logically wrapped,
+        so apply_policy() read "no change" and the gateway served the
+        original, unfiltered listing instead of the intended empty one.
+        """
+        cow = CopyOnWriteList(["tool-a", "tool-b", "tool-c"])
+
+        assert cow != []
+        assert [] != cow
+        assert cow == ["tool-a", "tool-b", "tool-c"]
+
 
 # ---------------------------------------------------------------------------
 # Pydantic helpers for wrap_payload_for_isolation tests
