@@ -69,6 +69,115 @@ worker does not have to invent a second field.
 Rust constants: `EXTENSIONS_FIELD` and `MODIFIED_EXTENSIONS_FIELD` in
 `crates/cpex-hosts-python/src/extensions.rs`.
 
+## The task's `config.capabilities` is part of this contract
+
+The task's `config` string must carry the plugin's declared `capabilities`, even
+though the host already sends a capability-filtered `extensions`. It is not
+redundant: `_execute_with_timeout` in `cpex/framework/manager.py` re-filters
+against `plugin_ref.capabilities` before invoking a 3-arg hook, because
+in-process that is the only filter in the path. Omit the field and the Python
+`PluginConfig` defaults it to an empty frozenset, so the second filter strips
+every gated slot the first one allowed.
+
+That composition is worth stating plainly, because both filters are individually
+correct and the result was a silently dead channel: a plugin declaring
+`read_labels` + `read_headers` received `security.labels` empty and `http` as
+`None` — byte-identical to a plugin that declared nothing. Sending the
+capabilities gives both filters the same input, which makes the second
+idempotent.
+
+**Only names the Python `Capability` enum models may be forwarded.**
+`PluginConfig`'s `capabilities` validator *raises* on an unknown name, and it
+runs while the worker constructs the config — before the plugin is called — so
+one host-only name costs every hook of that plugin, not just the slot it gates.
+The host's vocabulary is the superset today: `read_all`, `read_client`,
+`read_workload`, `read_inbound_credentials`, and `read_delegated_tokens` have no
+Python counterpart and are dropped with a warning. Dropping is safe in the
+direction that matters — the extensions were already filtered host-side, so a
+dropped name can only narrow the worker's view, never widen it.
+
+Rust: `WORKER_KNOWN_CAPABILITIES` and
+`IsolatedPythonPlugin::worker_capabilities` in
+`crates/cpex-hosts-python/src/plugin.rs`. When the Python enum grows a name,
+adding it to that list is what lets it cross.
+
+## Spawn-time capabilities handshake
+
+Every field in this contract is optional on the wire in the sense that matters
+for safety: an older `worker.py` does not *reject* a field it does not model, it
+ignores it. So a host that simply sends `credential` or `extensions` cannot tell
+delivery from silent discard, and a plugin declaring `read_inbound_credentials`
+against such a worker ran with **no credential at all** — the exact outcome
+fail-closed rule 2 exists to prevent. Version strings cannot settle it either:
+two framework builds shipped as `0.1.2` with different worker protocols.
+
+The worker is therefore asked directly, once per spawn, before any plugin code
+loads.
+
+**Request** — task type `capabilities`, no other fields:
+
+```json
+{"task_type": "capabilities", "request_id": "<uuid>"}
+```
+
+**Response:**
+
+```json
+{"status": "success", "protocol_version": 1,
+ "features": ["credential", "extensions", "modified_extensions"],
+ "cpex_version": "0.1.2"}
+```
+
+| Field | Meaning |
+|---|---|
+| `protocol_version` | Worker's declared wire-protocol version; `0` if absent |
+| `features` | Feature names the worker **implements**. The contract. |
+| `cpex_version` | Installed distribution version — **diagnostics only** |
+
+`features` is what the host gates on; `cpex_version` is never a decision input,
+for the 0.1.2 reason above.
+
+A worker predating this task type falls through its dispatch to
+`{"status": "error", "message": "task type not supported."}`. The host reads that
+specific reply as **"no features"** rather than as a transport fault — the
+conservative answer. Every other failure (timeout, dead worker, malformed frame)
+stays an error, because those mean the probe did not complete and reporting "old
+worker" for a current one would be a wrong diagnosis.
+
+**Enforcement is per plugin, not blanket.** The host requires only the features
+a plugin's own declaration commits it to using:
+
+| Plugin declares | Required feature |
+|---|---|
+| `read_inbound_credentials` or `read_delegated_tokens` | `credential` |
+| any capability in `WORKER_KNOWN_CAPABILITIES` | `extensions` |
+| nothing gated | *none* — starts on any worker |
+
+A mismatch fails the plugin at `initialize()` with a `Credential` error naming
+the missing feature and what the worker did report. Startup, not per-request: the
+plugin cannot be served safely at all, and leaving it registered defers the
+discovery to a live request. The respawn path re-verifies rather than trusting
+the original handshake — the replacement resolves `worker.py` from the venv
+again, and the venv can have been rebuilt or downgraded since.
+
+Adding a name to `WORKER_FEATURES` in `worker.py` asserts the code path exists;
+the host treats a missing name as unsupported, so an over-broad list there
+reintroduces the silent-drop bug this handshake exists to close.
+
+Rust: `TASK_CAPABILITIES`, `WorkerCapabilities`, `WorkerClient::capabilities` in
+`crates/cpex-hosts-python/src/worker.rs`;
+`IsolatedPythonPlugin::verify_worker_understands` and
+`required_worker_features` in `plugin.rs`. Python: `WORKER_FEATURES`,
+`WORKER_PROTOCOL_VERSION`, and the `capabilities` branch of `process_task` in
+`cpex/framework/isolated/worker.py`.
+
+The two sides live in different repositories, so
+`credential_e2e.rs::the_real_worker_answers_the_capabilities_handshake` drives a
+real credential hook through a real worker: it asserts the token *arrives*, not
+merely that the feature was claimed. A worker could otherwise report a feature it
+does not implement, and the unit tests — which use a stub with a hardcoded
+feature list — would not notice.
+
 ## Slots carried
 
 `request`, `agent`, `http`, `security`, `delegation`, `mcp`, `completion`,
@@ -416,6 +525,13 @@ which nothing currently does. See Remaining work item 2.
    readable on the other. A test that sends `X-Request-Id` and requires the plugin
    to read it back would have failed immediately. Blocked on item 1 — write it as a
    failing test first.
+
+   The same gap hid the capability double-filter (see "The task's
+   `config.capabilities`"). Asserting on a *value the plugin actually read* is
+   what distinguishes a live channel from one that validates cleanly and delivers
+   nothing; `extensions_merge_e2e.rs` now does this for `security.labels`, which
+   is why that failure surfaced at all. The header assertion is the same shape of
+   test for the one slot still not covered by it.
 
 3. **Consider `extra="forbid"` / `deny_unknown_fields` on the extension models.**
    The permissive default is what converted a loud shape mismatch into a silent
