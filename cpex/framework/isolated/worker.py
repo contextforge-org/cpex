@@ -748,6 +748,39 @@ def get_environment_info():
     }
 
 
+# Wire-protocol features this worker actually implements, reported by the
+# `capabilities` task so the host can refuse to run a plugin whose declared
+# needs this worker would silently drop.
+#
+# Add a name here only when the corresponding code path exists. The host treats
+# a missing name as "not supported" and fails closed, so an over-broad list here
+# reintroduces exactly the silent-drop bug the handshake exists to prevent.
+WORKER_PROTOCOL_VERSION = 1
+WORKER_FEATURES = (
+    # Reads CREDENTIAL_FIELD off the task and repopulates the redacted
+    # SecretStr before the hook runs (see reconstruct_credential_payload).
+    "credential",
+    # Reads EXTENSIONS_FIELD, reconstructs a Python Extensions, and passes it
+    # as extensions= to execute_plugin.
+    "extensions",
+    # Returns a plugin's modified extensions on MODIFIED_EXTENSIONS_FIELD.
+    "modified_extensions",
+)
+
+
+def _installed_cpex_version() -> str | None:
+    """The installed cpex distribution version, for diagnostics only.
+
+    Advisory: the host gates on `features`, not on this. Two builds have shipped
+    as 0.1.2 with different worker protocols, which is precisely why the version
+    string cannot be the thing decisions are made on.
+    """
+    try:
+        return importlib.metadata.version("cpex")
+    except Exception:  # pragma: no cover - a source checkout may not be installed
+        return None
+
+
 async def process_task(task_data, tp: TaskProcessor):
     """Process the task received from parent."""
     task_type = task_data.get("task_type")
@@ -757,6 +790,18 @@ async def process_task(task_data, tp: TaskProcessor):
             "status": "success",
             "environment": get_environment_info(),
             "message": "Environment info retrieved successfully",
+        }
+
+    # Spawn-time handshake. Answered before any plugin code loads so the host
+    # can fail a mismatch closed at startup rather than mid-request. A worker
+    # predating this task type falls through to "task type not supported.",
+    # which the host reads as "no features" — the correct conservative answer.
+    if task_type == "capabilities":
+        return {
+            "status": "success",
+            "protocol_version": WORKER_PROTOCOL_VERSION,
+            "features": list(WORKER_FEATURES),
+            "cpex_version": _installed_cpex_version(),
         }
     # This is essentially emulating the plugin loader's load and instantiate plugin
     if task_type == "load_and_run_hook":
