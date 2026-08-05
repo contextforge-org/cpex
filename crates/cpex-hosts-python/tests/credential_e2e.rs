@@ -394,3 +394,44 @@ async fn a_declared_capability_that_cannot_be_honored_fails_closed_end_to_end() 
 
     plugin.shutdown().await.expect("shuts down");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires python3 + a cpex Python checkout (CPEX_PYTHON_SOURCE); run via `make test-python-e2e`"]
+async fn the_real_worker_answers_the_capabilities_handshake() {
+    // The two sides of the handshake are edited in different repos, so nothing
+    // but this test stops them from drifting: if `worker.py` stops reporting a
+    // feature name the host requires, every credential-declaring plugin starts
+    // failing closed at startup, and the unit tests — which use a stub that
+    // hardcodes the feature list — would still pass.
+    //
+    // Asserting the features are *claimed* is deliberately not enough. A worker
+    // could report "credential" without implementing it, so this drives a real
+    // credential hook through the same worker and checks the token actually
+    // arrived. The claim and the behavior are verified together.
+    let Some(source) = require_environment("the_real_worker_answers_the_capabilities_handshake")
+    else {
+        return;
+    };
+
+    let dir = TempDir::new();
+    let Some(plugin_dir) = setup(
+        &dir,
+        &source,
+        "the_real_worker_answers_the_capabilities_handshake",
+    ) else {
+        return;
+    };
+
+    // Startup succeeding is itself the handshake assertion: initialize() now
+    // probes the worker and fails closed on a missing feature, so a plugin
+    // declaring read_inbound_credentials cannot start unless the real worker
+    // claimed `credential`.
+    let (verdict, _stderr) =
+        run_identity_hook(&dir, &plugin_dir, &["read_inbound_credentials"]).await;
+
+    assert!(
+        verdict.starts_with("GOT_TOKEN"),
+        "the worker claimed the `credential` feature, so the token must actually arrive — a claim \
+         without the behavior is the drift this test exists to catch; got: {verdict}"
+    );
+}

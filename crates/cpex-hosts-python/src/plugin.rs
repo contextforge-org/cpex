@@ -577,6 +577,15 @@ impl IsolatedPythonPlugin {
 
         // Same launch path as `initialize()` — see `launch_worker`.
         let worker = Arc::new(self.launch_worker().await.map_err(to_plugin_error)?);
+
+        // Re-verified rather than assumed from initialize(): the replacement is a
+        // fresh process resolving `worker.py` from the venv again, and the venv
+        // can have been rebuilt or downgraded since. Skipping this would make
+        // respawn the one path that installs an unverified worker.
+        self.verify_worker_understands(&worker)
+            .await
+            .map_err(to_plugin_error)?;
+
         *self.worker.write().await = Some(Arc::clone(&worker));
 
         // Deliberately *not* `record_success()` here.
@@ -652,6 +661,117 @@ impl IsolatedPythonPlugin {
         }
 
         known
+    }
+
+    /// Fail closed unless the worker implements every wire feature this
+    /// plugin's declaration commits the host to using.
+    ///
+    /// # Why a version check would not do
+    ///
+    /// The host cannot tell an old `worker.py` from a current one by version:
+    /// two framework builds shipped as 0.1.2 with different worker protocols. An
+    /// old worker also does not *reject* a field it does not know — it ignores
+    /// it. So a plugin declaring `read_inbound_credentials` against such a
+    /// worker ran with no credential at all, silently, which is the exact case
+    /// fail-closed rule 2 exists to prevent. The worker is therefore asked
+    /// directly, and a worker that cannot answer is assumed to support nothing.
+    ///
+    /// Only features this plugin actually needs are required. A plugin that
+    /// declares no gated capability and runs no credential hook is served fine
+    /// by an old worker, and refusing to start it would be a regression for
+    /// every existing plugin.
+    async fn verify_worker_understands(&self, worker: &WorkerClient) -> Result<(), HostError> {
+        let required = self.required_worker_features();
+        if required.is_empty() {
+            return Ok(());
+        }
+
+        let reported = worker.capabilities().await?;
+        let missing: Vec<&str> = required
+            .iter()
+            .copied()
+            .filter(|f| !reported.has(f))
+            .collect();
+
+        if missing.is_empty() {
+            tracing::debug!(
+                plugin = %self.config.name,
+                protocol_version = reported.protocol_version,
+                cpex_version = ?reported.cpex_version,
+                "worker handshake satisfied"
+            );
+            return Ok(());
+        }
+
+        // Sorted so the diagnostic is stable across runs: `capabilities` is a
+        // HashSet, and an operator comparing two startup failures should not
+        // have to notice that only the ordering changed.
+        let mut declared: Vec<&str> = self
+            .config
+            .capabilities
+            .iter()
+            .map(String::as_str)
+            .collect();
+        declared.sort_unstable();
+
+        Err(HostError::Credential {
+            message: format!(
+                "the installed cpex worker does not implement {} — which plugin '{}' needs given \
+                 its declared capabilities ({}) and hooks ({}). The worker reported protocol \
+                 version {} and features [{}] (cpex {}). Running anyway would drop those fields \
+                 silently, so this plugin is failed closed at startup; upgrade the cpex package \
+                 in the plugin's venv.",
+                missing.join(", "),
+                self.config.name,
+                declared.join(", "),
+                self.config.hooks.join(", "),
+                reported.protocol_version,
+                reported
+                    .features
+                    .iter()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                reported
+                    .cpex_version
+                    .as_deref()
+                    .unwrap_or("version unknown"),
+            ),
+        })
+    }
+
+    /// The wire features this plugin's declaration commits the host to using.
+    ///
+    /// Derived from the declaration rather than from what a given request
+    /// happens to carry, so the check is decidable at startup and does not vary
+    /// per invocation.
+    fn required_worker_features(&self) -> Vec<&'static str> {
+        let mut required = Vec::new();
+
+        // A credential hook only receives material when the matching capability
+        // is declared, so both halves are required for the field to travel —
+        // which makes the capability the precise trigger.
+        let declares_credential_cap = self.config.capabilities.iter().any(|c| {
+            c == crate::credentials::CAP_READ_INBOUND || c == crate::credentials::CAP_READ_DELEGATED
+        });
+        if declares_credential_cap {
+            required.push(crate::worker::FEATURE_CREDENTIAL);
+        }
+
+        // Any capability the worker models is a capability whose slot this host
+        // sends in the `extensions` field. A worker that drops the field leaves
+        // the hook with `extensions=None`, so the plugin silently sees nothing
+        // of what it declared.
+        let declares_extension_cap = self
+            .config
+            .capabilities
+            .iter()
+            .any(|c| WORKER_KNOWN_CAPABILITIES.contains(&c.as_str()));
+        if declares_extension_cap {
+            required.push(crate::worker::FEATURE_EXTENSIONS);
+        }
+
+        required
     }
 
     /// Build the `load_and_run_hook` task for one invocation.
@@ -744,6 +864,15 @@ impl Plugin for IsolatedPythonPlugin {
     async fn initialize(&self) -> Result<(), Box<PluginError>> {
         let worker = self
             .launch_worker()
+            .await
+            .map_err(|e| e.into_plugin_error(&self.config.name))?;
+
+        // Verify the worker understands what this plugin's declaration commits
+        // us to sending, before it is installed as the live worker. A mismatch
+        // is a startup failure, not a per-request one: the plugin cannot be
+        // served safely at all, and leaving it registered would mean discovering
+        // that on a live request instead.
+        self.verify_worker_understands(&worker)
             .await
             .map_err(|e| e.into_plugin_error(&self.config.name))?;
 
@@ -1200,12 +1329,15 @@ import json, os, sys
 
 here = os.path.dirname(os.path.abspath(__file__))
 
-def mode():
+def mode_file(name, default=""):
     try:
-        with open(os.path.join(here, "mode")) as f:
+        with open(os.path.join(here, name)) as f:
             return f.read().strip()
     except FileNotFoundError:
-        return "allow"
+        return default
+
+def mode():
+    return mode_file("mode", "allow")
 
 while True:
     line = sys.stdin.readline()
@@ -1220,6 +1352,23 @@ while True:
     if task.get("task_type") == "shutdown":
         print(json.dumps({"status": "success", "request_id": rid}), flush=True)
         break
+
+    # Answered before the recording below, so the spawn-time handshake does not
+    # overwrite the `last_task.json` the tests assert their hook task against.
+    # This stub stands in for a *current* worker, so it claims the features the
+    # real one implements; `handshake_mode` covers the old-worker case.
+    if task.get("task_type") == "capabilities":
+        hs = mode_file("handshake_mode")
+        if hs == "unsupported":
+            # Exactly what a worker predating the handshake replies.
+            print(json.dumps({"status": "error", "message": "task type not supported.", "request_id": rid}), flush=True)
+            continue
+        features = [] if hs == "no_features" else ["credential", "extensions", "modified_extensions"]
+        print(json.dumps({
+            "status": "success", "protocol_version": 1,
+            "features": features, "cpex_version": "0.1.2", "request_id": rid,
+        }), flush=True)
+        continue
 
     # Record the task so the test can assert on what the host actually sent.
     with open(os.path.join(here, "last_task.json"), "w") as f:
@@ -1266,6 +1415,32 @@ while True:
         hooks: &[&str],
         capabilities: &[&str],
     ) -> (TempDir, Arc<IsolatedPythonPlugin>) {
+        let (dir, plugin) = uninitialized_adapter_plugin(hooks, capabilities);
+        plugin.initialize().await.expect("the stub worker launches");
+        (dir, plugin)
+    }
+
+    fn set_mode(dir: &TempDir, mode: &str) {
+        std::fs::write(dir.path().join("mode"), mode).unwrap();
+    }
+
+    /// How the stub should answer the spawn-time `capabilities` handshake.
+    ///
+    /// `"unsupported"` reproduces a worker predating the handshake;
+    /// `"no_features"` a worker that knows the task but implements nothing.
+    fn set_handshake_mode(dir: &TempDir, mode: &str) {
+        std::fs::write(dir.path().join("handshake_mode"), mode).unwrap();
+    }
+
+    /// Build a plugin wired to the adapter stub *without* initializing it.
+    ///
+    /// Splits the scratch dir from `initialize()` so a test can set the stub's
+    /// handshake mode first and then assert on the startup result — which
+    /// `adapter_plugin` cannot, since it unwraps.
+    fn uninitialized_adapter_plugin(
+        hooks: &[&str],
+        capabilities: &[&str],
+    ) -> (TempDir, Arc<IsolatedPythonPlugin>) {
         let dir = TempDir::new();
         let script = dir.path().join("adapter_stub.py");
         std::fs::write(&script, ADAPTER_STUB).unwrap();
@@ -1284,12 +1459,7 @@ while True:
                 .expect("config parses")
                 .with_worker_override(script),
         );
-        plugin.initialize().await.expect("the stub worker launches");
         (dir, plugin)
-    }
-
-    fn set_mode(dir: &TempDir, mode: &str) {
-        std::fs::write(dir.path().join("mode"), mode).unwrap();
     }
 
     fn last_task(dir: &TempDir) -> serde_json::Value {
@@ -1695,6 +1865,106 @@ while True:
         );
 
         plugin.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_worker_that_cannot_honor_a_declared_credential_fails_closed_at_startup() {
+        // Fail-closed rule 2. An older worker.py does not *reject* the credential
+        // field, it ignores it — so before the handshake, a plugin declaring
+        // read_inbound_credentials started clean and then ran with no credential
+        // at all, silently. That is reachable in production because two framework
+        // builds shipped as 0.1.2 with different worker protocols.
+        if crate::testing::skip_without_python3(
+            "a_worker_that_cannot_honor_a_declared_credential_fails_closed_at_startup",
+        ) {
+            return;
+        }
+        let (dir, plugin) =
+            uninitialized_adapter_plugin(&["identity_resolve"], &["read_inbound_credentials"]);
+        // A worker predating the handshake: replies "task type not supported."
+        set_handshake_mode(&dir, "unsupported");
+
+        let err = plugin
+            .initialize()
+            .await
+            .expect_err("a worker that would drop the credential must not be installed");
+
+        let message = err.to_string();
+        assert!(
+            message.contains("does not implement credential"),
+            "the failure must name the missing feature: {message}"
+        );
+        assert!(
+            message.contains("upgrade the cpex package"),
+            "the failure must tell an operator what to do: {message}"
+        );
+
+        // And the plugin must be left with no worker rather than a half-installed
+        // one a later invocation could still reach.
+        assert!(
+            plugin.worker.read().await.is_none(),
+            "a failed handshake must not leave a worker in the slot"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_plugin_declaring_nothing_gated_still_runs_on_an_old_worker() {
+        // The other half of the rule: the handshake must not become a blanket
+        // version gate. A plugin that declares no gated capability is served
+        // correctly by an old worker, and refusing to start it would break every
+        // existing deployment for no safety gain.
+        if crate::testing::skip_without_python3(
+            "a_plugin_declaring_nothing_gated_still_runs_on_an_old_worker",
+        ) {
+            return;
+        }
+        let (dir, plugin) = uninitialized_adapter_plugin(&["tool_pre_invoke"], &[]);
+        set_handshake_mode(&dir, "unsupported");
+
+        plugin
+            .initialize()
+            .await
+            .expect("a plugin needing no gated field must still start on an old worker");
+
+        // ...and it must actually work, not merely start.
+        let payload = crate::legacy::ToolPreInvokePayload {
+            name: "search".into(),
+            ..Default::default()
+        };
+        let mut ctx = PluginContext::new();
+        let fields = invoke(&plugin, "tool_pre_invoke", &payload, &mut ctx)
+            .await
+            .expect("the hook still dispatches");
+        assert!(fields.continue_processing);
+
+        plugin.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_worker_answering_the_handshake_with_no_features_also_fails_closed() {
+        // A worker that knows the task but reports an empty feature set is not
+        // the same case as one that cannot answer, and must be treated the same:
+        // what matters is whether the feature is claimed, never whether the
+        // worker was new enough to be asked.
+        if crate::testing::skip_without_python3(
+            "a_worker_answering_the_handshake_with_no_features_also_fails_closed",
+        ) {
+            return;
+        }
+        let (dir, plugin) =
+            uninitialized_adapter_plugin(&["tool_pre_invoke"], &["read_labels", "append_labels"]);
+        set_handshake_mode(&dir, "no_features");
+
+        let err = plugin
+            .initialize()
+            .await
+            .expect_err("an extensions-declaring plugin needs a worker that delivers the field");
+
+        let message = err.to_string();
+        assert!(
+            message.contains("does not implement extensions"),
+            "an extensions capability requires the extensions feature: {message}"
+        );
     }
 
     #[tokio::test]

@@ -63,7 +63,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::error::HostError;
+use crate::error::{HostError, ProcessOutput};
 
 /// Default wall-clock bound on one `pip install` invocation, in seconds.
 ///
@@ -690,13 +690,10 @@ impl VenvManager {
             })?;
 
         if !output.status.success() {
-            return Err(HostError::VenvBuild {
-                message: format!(
-                    "`python3 -m venv {}` exited {}: {}",
-                    self.layout.venv_path.display(),
-                    output.status,
-                    String::from_utf8_lossy(&output.stderr).trim()
-                ),
+            return Err(HostError::VenvCommand {
+                step: "python3 -m venv",
+                context: self.layout.venv_path.display().to_string(),
+                output: ProcessOutput::from_output(&output),
             });
         }
         Ok(())
@@ -797,13 +794,18 @@ impl VenvManager {
 
         if !status.success() {
             let stderr = stderr_task.await.unwrap_or_default();
-            return Err(HostError::VenvBuild {
-                message: format!(
-                    "pip install -r {} exited {}: {}",
-                    requirements.display(),
-                    status,
-                    String::from_utf8_lossy(&stderr).trim()
-                ),
+            // Built by hand rather than via `ProcessOutput::from_output`: the
+            // wait above borrows the child so stderr could be drained
+            // concurrently, which means there is no `std::process::Output` to
+            // convert. `status.code()` is `None` when pip was killed by a
+            // signal, which `ProcessOutput` renders distinctly from an exit.
+            return Err(HostError::VenvCommand {
+                step: "pip install",
+                context: requirements.display().to_string(),
+                output: ProcessOutput {
+                    exit_code: status.code(),
+                    stderr: String::from_utf8_lossy(&stderr).trim().to_string(),
+                },
             });
         }
         Ok(true)
@@ -1676,6 +1678,77 @@ mod tests {
         assert!(
             !alive,
             "the timed-out pip process (pid {pid}) was leaked rather than killed"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_pip_install_carries_its_exit_code_and_stderr_as_details() {
+        // The exit code and stderr tail must survive as structured `details` an
+        // operator's log pipeline can match on. Pre-fix this path returned
+        // `VenvBuild { message }`, whose `details()` is empty by definition, so
+        // the only way to recover the exit code was to parse English.
+        if crate::testing::skip_without_python3(
+            "a_failed_pip_install_carries_its_exit_code_and_stderr_as_details",
+        ) {
+            return;
+        }
+        let dir = TempDir::new();
+        std::fs::create_dir_all(dir.path().join("pkg")).unwrap();
+        std::fs::write(dir.path().join("pkg").join("requirements.txt"), "").unwrap();
+
+        let mgr = manager_in(&dir, "pkg.Plugin", Some("requirements.txt"));
+        mgr.prepare_directories(false).await.expect("dirs prepared");
+        mgr.create_venv().await.expect("the venv builds");
+
+        // Same pip-shadowing trick as the timeout test, but exiting non-zero
+        // with a recognizable message on stderr instead of sleeping.
+        let site = {
+            let lib = mgr.layout().venv_path.join("lib");
+            std::fs::read_dir(&lib)
+                .expect("venv lib dir")
+                .flatten()
+                .map(|e| e.path().join("site-packages"))
+                .find(|p| p.exists())
+                .expect("site-packages exists in a built venv")
+        };
+        let pip_pkg = site.join("pip");
+        std::fs::create_dir_all(&pip_pkg).unwrap();
+        std::fs::write(pip_pkg.join("__init__.py"), "").unwrap();
+        std::fs::write(
+            pip_pkg.join("__main__.py"),
+            "import sys\nsys.stderr.write('ERROR: No matching distribution found for nope\\n')\n\
+             sys.exit(7)\n",
+        )
+        .unwrap();
+
+        let err = mgr
+            .install_requirements()
+            .await
+            .expect_err("a non-zero pip exit is a build failure");
+
+        let details = err.details();
+        assert_eq!(
+            details.get("exit_code").and_then(|v| v.as_i64()),
+            Some(7),
+            "pip's exit code must reach details, not just the prose: {details:?}"
+        );
+        assert_eq!(
+            details.get("step").and_then(|v| v.as_str()),
+            Some("pip install"),
+            "the failing step must be named so a caller can branch on it: {details:?}"
+        );
+        let stderr = details
+            .get("stderr_excerpt")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        assert!(
+            stderr.contains("No matching distribution"),
+            "pip's own diagnosis must survive into details: {stderr:?}"
+        );
+        assert_eq!(
+            err.code(),
+            "venv_build_failed",
+            "the stable code stays the same as the message-only variant's"
         );
     }
 

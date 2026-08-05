@@ -29,7 +29,7 @@
 // each in-flight `send_task` then resolves to `WorkerDied` instead of waiting
 // out a timeout that can never be satisfied.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
@@ -50,6 +50,53 @@ pub const TASK_LOAD_AND_RUN_HOOK: &str = "load_and_run_hook";
 
 /// Task type that asks the worker to exit.
 pub const TASK_SHUTDOWN: &str = "shutdown";
+
+/// Task type that asks the worker which wire-protocol features it implements.
+///
+/// Answered before any plugin code loads. A worker predating the handshake
+/// replies `{"status":"error","message":"task type not supported."}`, which the
+/// host reads as "no features" rather than as a transport fault — see
+/// [`WorkerClient::capabilities`].
+pub const TASK_CAPABILITIES: &str = "capabilities";
+
+/// Worker feature name for reading the task's `credential` field.
+pub const FEATURE_CREDENTIAL: &str = "credential";
+
+/// Worker feature name for delivering the task's `extensions` field to a hook.
+pub const FEATURE_EXTENSIONS: &str = "extensions";
+
+/// What a worker reported it can do, from the spawn-time handshake.
+///
+/// An empty feature set is a valid, meaningful answer: it is what an old worker
+/// that does not know the handshake reports, and it must make the host fail
+/// closed rather than assume support.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct WorkerCapabilities {
+    /// The worker's declared protocol version, or 0 if it reported none.
+    pub protocol_version: u64,
+
+    /// Feature names the worker claims to implement.
+    pub features: BTreeSet<String>,
+
+    /// The installed `cpex` distribution version, for diagnostics only.
+    ///
+    /// Never gated on: two builds shipped as 0.1.2 with different worker
+    /// protocols, so the version string cannot carry a decision. `features` is
+    /// the contract.
+    pub cpex_version: Option<String>,
+}
+
+impl WorkerCapabilities {
+    /// The conservative answer for a worker that does not know the handshake.
+    pub fn none() -> Self {
+        Self::default()
+    }
+
+    /// Whether the worker claims the named feature.
+    pub fn has(&self, feature: &str) -> bool {
+        self.features.contains(feature)
+    }
+}
 
 /// Map of in-flight request ids to the channel awaiting each response.
 ///
@@ -396,6 +443,62 @@ impl WorkerClient {
             };
 
         interpret_response(response)
+    }
+
+    /// Ask the worker which wire-protocol features it implements.
+    ///
+    /// # Why an unsupported task type is not an error here
+    ///
+    /// A worker predating the handshake answers the unknown `capabilities` task
+    /// with `{"status":"error","message":"task type not supported."}`, which
+    /// `send_task` surfaces as [`HostError::WorkerError`]. That is the *expected*
+    /// reply from an old worker, not a transport fault, so it maps to an empty
+    /// feature set — the conservative answer that makes the caller fail closed
+    /// for any plugin needing a gated field.
+    ///
+    /// Everything else (a timeout, a dead worker, a malformed frame) stays an
+    /// error: those mean the probe itself did not complete, and treating them as
+    /// "no features" would report a specific, wrong diagnosis for a worker that
+    /// may well be current.
+    pub async fn capabilities(&self) -> Result<WorkerCapabilities, HostError> {
+        let response = match self
+            .send_task(serde_json::json!({ "task_type": TASK_CAPABILITIES }))
+            .await
+        {
+            Ok(response) => response,
+            Err(HostError::WorkerError { message }) => {
+                tracing::info!(
+                    reply = %message,
+                    "worker does not implement the capabilities handshake; \
+                     treating it as supporting no gated wire features"
+                );
+                return Ok(WorkerCapabilities::none());
+            },
+            Err(e) => return Err(e),
+        };
+
+        let features = response
+            .get("features")
+            .and_then(Value::as_array)
+            .map(|list| {
+                list.iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string)
+                    .collect::<BTreeSet<String>>()
+            })
+            .unwrap_or_default();
+
+        Ok(WorkerCapabilities {
+            protocol_version: response
+                .get("protocol_version")
+                .and_then(Value::as_u64)
+                .unwrap_or(0),
+            features,
+            cpex_version: response
+                .get("cpex_version")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+        })
     }
 
     /// Ask the worker to exit, then wait out the grace window and kill it.
