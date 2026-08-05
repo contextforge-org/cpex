@@ -526,6 +526,13 @@ pub enum DelegationError {
 
     #[error("delegation dispatch failed: {0}")]
     Dispatch(String),
+
+    /// A delegation step key was present but held an invalid value — a
+    /// typo'd `subject:` / `actor:`, say. Distinct from an absent key
+    /// (whose documented default applies): a present-but-wrong value must
+    /// fail rather than silently exchange a different credential shape.
+    #[error("invalid delegation config: {0}")]
+    InvalidConfig(String),
 }
 
 /// `DelegationInvoker` impl that returns `NotFound` for every call.

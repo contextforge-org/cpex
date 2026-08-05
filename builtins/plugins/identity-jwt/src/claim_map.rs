@@ -35,7 +35,7 @@ use cpex_core::extensions::{ClientExtension, SubjectExtension, WorkloadIdentity}
 ///     `TokenRole::User`.
 ///   * [`map_client`]  — `client_id` plus client-shaped fields, for
 ///     `TokenRole::Client`.
-///   * [`map_workload`] — SPIFFE-style identity, for `TokenRole::Workload`.
+///   * [`map_workload`] — SPIFFE-style identity, for `TokenRole::CallerWorkload`.
 ///
 /// Each defaults to `None` so existing custom mappers stay valid —
 /// they get implicit "this mapper doesn't know how to do that role,"
@@ -189,6 +189,10 @@ impl ClaimMapper for StandardClaimMap {
             .and_then(Value::as_str)
             .filter(|s| s.starts_with("spiffe://"))
             .or_else(|| claims.get("spiffe_id").and_then(Value::as_str))
+            // Guard the `spiffe_id` fallback with the SAME prefix check as
+            // `sub`: a non-SPIFFE `sub` must not smuggle in an arbitrary
+            // `spiffe_id` claim and be accepted as a workload identity.
+            .filter(|s| s.starts_with("spiffe://"))
             .map(str::to_string)?;
 
         // Trust domain — pull from the SPIFFE-ID host part.

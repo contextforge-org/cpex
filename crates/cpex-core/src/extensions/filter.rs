@@ -785,6 +785,8 @@ mod tests {
         raw.delegated_tokens.insert(
             DelegationKey {
                 subject_id: "alice".into(),
+                workload_id: None,
+                client_id: None,
                 audience: "https://api.example.com".into(),
                 scopes: vec!["read".into()],
                 mode: DelegationMode::OnBehalfOfUser,

@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 410" font-family="IBM Plex Sans">
+  <defs>
+    <marker id="ah" markerWidth="6" markerHeight="5" refX="4" refY="2.25" orient="auto">
+      <path d="M0,0 L5,2.25 L0,4.5 z" fill="#161616"/>
+    </marker>
+  </defs>
+  <rect width="1200" height="410" fill="#ffffff"/>
+
+  <!-- section labels -->
+  <text x="270" y="92" font-size="21" fill="#5f5f5f" text-anchor="middle" font-weight="600" letter-spacing="3">INBOUND</text>
+  <text x="930" y="92" font-size="21" fill="#5f5f5f" text-anchor="middle" font-weight="600" letter-spacing="3">OUTBOUND</text>
+
+  <!-- inbound box: identity.resolve -->
+  <rect x="70" y="118" width="400" height="150" rx="8" fill="#ece0fb" stroke="#161616" stroke-width="2"/>
+  <text x="270" y="192" font-size="27" fill="#161616" text-anchor="middle" font-family="IBM Plex Mono" font-weight="600">identity.resolve</text>
+  <text x="270" y="230" font-size="20" fill="#5f5f5f" text-anchor="middle">who is calling in</text>
+
+  <!-- pipeline arrow -->
+  <line x1="490" y1="193" x2="712" y2="193" stroke="#161616" stroke-width="3" marker-end="url(#ah)"/>
+  <text x="600" y="172" font-size="20" fill="#161616" text-anchor="middle">route + policy</text>
+
+  <!-- outbound box: token.delegate -->
+  <rect x="730" y="118" width="400" height="150" rx="8" fill="#ece0fb" stroke="#161616" stroke-width="2"/>
+  <text x="930" y="192" font-size="27" fill="#161616" text-anchor="middle" font-family="IBM Plex Mono" font-weight="600">token.delegate</text>
+  <text x="930" y="230" font-size="20" fill="#5f5f5f" text-anchor="middle">who we call out as</text>
+
+  <!-- captions -->
+  <text x="270" y="310" font-size="19" fill="#5f5f5f" text-anchor="middle">validates credentials,</text>
+  <text x="270" y="336" font-size="19" fill="#5f5f5f" text-anchor="middle">lands typed identity slots</text>
+  <text x="930" y="310" font-size="19" fill="#5f5f5f" text-anchor="middle">mints the downstream credential</text>
+  <text x="930" y="336" font-size="19" fill="#5f5f5f" text-anchor="middle">per the route + subject</text>
+
+  <!-- footnote -->
+  <text x="600" y="390" font-size="18" fill="#5f5f5f" text-anchor="middle" font-style="italic">identity is additive across slots; delegation is chosen per route by subject</text>
+</svg>
