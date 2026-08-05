@@ -420,7 +420,7 @@ class PluginExecutor:
                 concurrent_tasks.append(asyncio.create_task(self._tagged(coro, idx)))
 
             for completed_coro in asyncio.as_completed(concurrent_tasks):
-                result, idx, timeout_err = await completed_coro
+                result, idx, timeout_err, violation_err = await completed_coro
                 ref, _, _ = concurrent_ctx_list[idx]
                 ctx.hook_chain_executed += 1
                 # Propagate retry signal from concurrent plugins
@@ -440,6 +440,31 @@ class PluginExecutor:
                         )
                     )
                     continue
+                if violation_err is not None:
+                    # violations_as_exceptions=True concurrent denial: write the record,
+                    # cancel sibling tasks, attach the accumulated records to the exception,
+                    # then re-raise (fix for #147). FAF plugins are not scheduled on this path,
+                    # so their records are absent — unlike the non-exception halt result.
+                    _pve = violation_err
+                    executions.append(
+                        _make_execution_record(
+                            ref,
+                            hook_type,
+                            ControlExecutionStatus.COMPLETED,
+                            effective_allow=False,
+                            requested_allow=False,
+                            matched=True,
+                            applied=True,
+                            reason=_truncate_opt(_pve.violation.reason if _pve.violation else str(_pve)),
+                            error_code=_truncate(_pve.violation.code) if _pve.violation else "plugin_violation",
+                        )
+                    )
+                    for task in concurrent_tasks:
+                        if not task.done():
+                            task.cancel()
+                    await asyncio.gather(*concurrent_tasks, return_exceptions=True)
+                    _pve.executions = list(executions)
+                    raise _pve
                 if result.modified_payload is not None:
                     logger.debug(
                         "CONCURRENT plugin %s returned modified_payload on hook %s; "
@@ -681,8 +706,28 @@ class PluginExecutor:
                 exec_status = ControlExecutionStatus.COMPLETED
                 exec_error_code: Optional[str] = None
                 exec_reason: Optional[str] = None
-            except PluginViolationError:
-                # violations_as_exceptions=True — propagate immediately, no record needed
+            except PluginViolationError as _pve:
+                # violations_as_exceptions=True — append the denial record and attach the
+                # accumulated records to the exception before propagating, so callers can
+                # identify the denying plugin (fix for #147). FAF plugins are not scheduled
+                # on this path, so their records are absent — unlike the non-exception halt.
+                duration_ns = time.monotonic_ns() - t_start
+                if executions is not None:
+                    executions.append(
+                        _make_execution_record(
+                            hook_ref,
+                            hook_type,
+                            ControlExecutionStatus.COMPLETED,
+                            effective_allow=False,
+                            duration_ns=duration_ns,
+                            requested_allow=False,
+                            matched=True,
+                            applied=True,
+                            reason=_truncate_opt(_pve.violation.reason if _pve.violation else str(_pve)),
+                            error_code=_truncate(_pve.violation.code) if _pve.violation else "plugin_violation",
+                        )
+                    )
+                    _pve.executions = list(executions)
                 raise
             except PluginError as _pe:
                 # execute_plugin re-raises PluginError when on_error=FAIL — must not swallow.
@@ -995,20 +1040,29 @@ class PluginExecutor:
             return await coro
 
     @staticmethod
-    async def _tagged(coro: Any, tag: Any) -> tuple[Any, Any, Optional["PluginTimeoutError"]]:
+    async def _tagged(
+        coro: Any, tag: Any
+    ) -> tuple[Any, Any, Optional["PluginTimeoutError"], Optional["PluginViolationError"]]:
         """Await *coro* and pair the result with *tag* for use with as_completed.
 
         Catches PluginTimeoutError (raised by execute_plugin for on_error=ignore/disable
         timeouts) so it never escapes the concurrent as_completed loop unpaired with its
-        tag. The loop records a TIMEOUT execution record and continues. PluginError
-        (on_error=fail) is intentionally not caught here — it must propagate to preserve
-        fail-closed behaviour.
+        tag. The loop records a TIMEOUT execution record and continues.
+
+        Catches PluginViolationError (raised by execute_plugin for concurrent-mode denials
+        when violations_as_exceptions=True) so it never escapes the loop unpaired with its
+        tag. The loop writes the denial record, cancels sibling tasks, and re-raises.
+
+        PluginError (on_error=fail) is intentionally not caught here — it must propagate
+        to preserve fail-closed behaviour.
         """
         try:
             result = await coro
-            return result, tag, None
+            return result, tag, None, None
         except PluginTimeoutError as te:
-            return PluginResult(continue_processing=True), tag, te
+            return PluginResult(continue_processing=True), tag, te, None
+        except PluginViolationError as pve:
+            return PluginResult(continue_processing=True), tag, None, pve
 
     def _fire_and_forget_tasks(
         self,

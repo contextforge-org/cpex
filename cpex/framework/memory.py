@@ -535,6 +535,50 @@ class CopyOnWriteList(list):
         """Return a string representation of the list."""
         return f"CopyOnWriteList({list(self)})"
 
+    __hash__ = None
+
+    def __eq__(self, other: Any) -> bool:
+        """
+        Compare equality with another list.
+
+        Compares the logical sequence (the original, or the original overlaid
+        with modifications once materialized) rather than the base ``list``
+        storage, which stays empty until the first write.
+
+        Args:
+            other: The object to compare with.
+
+        Returns:
+            True if other is a list with the same items in the same order,
+            False otherwise. Returns NotImplemented for any non-list to let
+            other.__eq__ handle the comparison.
+        """
+        if not isinstance(other, list):
+            return NotImplemented
+
+        # Fast-path: if lengths differ, sequences cannot be equal
+        if len(self) != len(other):
+            return False
+
+        # Compare materialized items
+        return list(self) == list(other)
+
+    def __ne__(self, other: Any) -> bool:
+        """
+        Compare inequality with another sequence.
+
+        Args:
+            other: The object to compare with.
+
+        Returns:
+            True if not equal, False if equal.
+            Returns NotImplemented for unsupported types.
+        """
+        eq = self.__eq__(other)
+        if eq is NotImplemented:
+            return NotImplemented
+        return not eq
+
 
 def copyonwrite(o: T) -> T:
     """

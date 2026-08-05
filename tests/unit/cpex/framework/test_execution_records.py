@@ -3,7 +3,7 @@
 Copyright 2025
 SPDX-License-Identifier: Apache-2.0
 
-Unit tests for ControlExecutionRecord generation on PluginResult.executions (issue #130).
+Unit tests for ControlExecutionRecord generation on PluginResult.executions (issues #130, #147).
 
 These tests verify:
 - executions is always present (empty when no plugins ran)
@@ -484,6 +484,333 @@ async def test_executions_concurrent_timeout_ignore_does_not_escape():
     )
     assert rec.effective_allow is True
     assert rec.error_code == "plugin_timeout"
+
+    await manager.shutdown()
+    PluginManager.reset()
+
+
+# ---------------------------------------------------------------------------
+# Issue #147 fix: violation record appended before exception is raised
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_executions_on_violation_exception_single_plugin():
+    """When violations_as_exceptions=True and a single plugin denies the request,
+    the raised PluginViolationError must carry an ``executions`` list with one record
+    for the denying plugin (fix for #147)."""
+    from unittest.mock import patch
+
+    from cpex.framework import Plugin, PluginConfig, PluginViolation
+    from cpex.framework.base import HookRef
+    from cpex.framework.errors import PluginViolationError
+    from cpex.framework.registry import PluginRef
+
+    class DenyPlugin(Plugin):
+        async def prompt_pre_fetch(self, payload, context):
+            return PluginResult(
+                continue_processing=False,
+                violation=PluginViolation(
+                    reason="Deny reason",
+                    description="Deny description",
+                    code="DENY_CODE",
+                ),
+            )
+
+    manager = PluginManager("./tests/unit/cpex/fixtures/configs/valid_no_plugin.yaml")
+    await manager.initialize()
+
+    config = PluginConfig(
+        name="DenyPlugin",
+        description="Always denies",
+        author="Test",
+        version="1.0",
+        tags=["test"],
+        kind="DenyPlugin",
+        mode=PluginMode.SEQUENTIAL,
+        hooks=["prompt_pre_fetch"],
+        config={},
+    )
+    plugin = DenyPlugin(config)
+
+    with patch.object(manager._registry, "get_hook_refs_for_hook") as mock_get:
+        hook_ref = HookRef(PromptHookType.PROMPT_PRE_FETCH, PluginRef(plugin))
+        mock_get.return_value = [hook_ref]
+
+        prompt = PromptPrehookPayload(prompt_id="test", args={"user": "hello"})
+        context = GlobalContext(request_id="req-vae-single")
+
+        with pytest.raises(PluginViolationError) as pve:
+            await manager.invoke_hook(
+                PromptHookType.PROMPT_PRE_FETCH,
+                prompt,
+                global_context=context,
+                violations_as_exceptions=True,
+            )
+
+        # The exception must carry the violation details
+        assert pve.value.violation is not None
+        assert pve.value.violation.code == "DENY_CODE"
+
+        # executions is attached to the exception (fix for #147)
+        assert pve.value.executions is not None, (
+            "PluginViolationError.executions must not be None when raised from invoke_hook"
+        )
+        assert len(pve.value.executions) == 1
+        rec = pve.value.executions[0]
+        assert rec.plugin_name == "DenyPlugin"
+        assert rec.effective_allow is False
+        assert rec.status == ControlExecutionStatus.COMPLETED
+        assert rec.requested_allow is False
+        assert rec.matched is True
+        assert rec.applied is True
+        assert rec.error_code == "DENY_CODE"
+        assert rec.duration_ns > 0
+
+    await manager.shutdown()
+    PluginManager.reset()
+
+
+@pytest.mark.asyncio
+async def test_executions_on_violation_exception_two_plugin_chain():
+    """When violations_as_exceptions=True and the second plugin in a two-plugin chain denies,
+    the raised PluginViolationError must carry an ``executions`` list with records for BOTH
+    plugins — the first plugin (allow) and the second plugin (deny) (fix for #147)."""
+    from unittest.mock import patch
+
+    from cpex.framework import Plugin, PluginConfig, PluginViolation
+    from cpex.framework.base import HookRef
+    from cpex.framework.errors import PluginViolationError
+    from cpex.framework.registry import PluginRef
+
+    class AllowPlugin(Plugin):
+        async def prompt_pre_fetch(self, payload, context):
+            return PluginResult(continue_processing=True)
+
+    class DenyPlugin(Plugin):
+        async def prompt_pre_fetch(self, payload, context):
+            return PluginResult(
+                continue_processing=False,
+                violation=PluginViolation(
+                    reason="Second plugin deny",
+                    description="Blocked by second plugin",
+                    code="SECOND_DENY",
+                ),
+            )
+
+    manager = PluginManager("./tests/unit/cpex/fixtures/configs/valid_no_plugin.yaml")
+    await manager.initialize()
+
+    allow_config = PluginConfig(
+        name="AllowPlugin",
+        description="Always allows",
+        author="Test",
+        version="1.0",
+        tags=["test"],
+        kind="AllowPlugin",
+        mode=PluginMode.SEQUENTIAL,
+        hooks=["prompt_pre_fetch"],
+        config={},
+    )
+    deny_config = PluginConfig(
+        name="DenyPlugin",
+        description="Always denies",
+        author="Test",
+        version="1.0",
+        tags=["test"],
+        kind="DenyPlugin",
+        mode=PluginMode.SEQUENTIAL,
+        hooks=["prompt_pre_fetch"],
+        config={},
+    )
+    allow_plugin = AllowPlugin(allow_config)
+    deny_plugin = DenyPlugin(deny_config)
+
+    with patch.object(manager._registry, "get_hook_refs_for_hook") as mock_get:
+        ref_allow = HookRef(PromptHookType.PROMPT_PRE_FETCH, PluginRef(allow_plugin))
+        ref_deny = HookRef(PromptHookType.PROMPT_PRE_FETCH, PluginRef(deny_plugin))
+        mock_get.return_value = [ref_allow, ref_deny]
+
+        prompt = PromptPrehookPayload(prompt_id="test", args={"user": "hello"})
+        context = GlobalContext(request_id="req-vae-two-plugin")
+
+        with pytest.raises(PluginViolationError) as pve:
+            await manager.invoke_hook(
+                PromptHookType.PROMPT_PRE_FETCH,
+                prompt,
+                global_context=context,
+                violations_as_exceptions=True,
+            )
+
+        assert pve.value.violation is not None
+        assert pve.value.violation.code == "SECOND_DENY"
+
+        # Both plugins must have records on the exception (fix for #147)
+        assert pve.value.executions is not None, (
+            "PluginViolationError.executions must not be None when raised from invoke_hook"
+        )
+        assert len(pve.value.executions) == 2, (
+            f"expected 2 execution records (allow + deny), got {len(pve.value.executions)}"
+        )
+
+        allow_rec = pve.value.executions[0]
+        assert allow_rec.plugin_name == "AllowPlugin"
+        assert allow_rec.effective_allow is True
+
+        deny_rec = pve.value.executions[1]
+        assert deny_rec.plugin_name == "DenyPlugin"
+        assert deny_rec.effective_allow is False
+        assert deny_rec.status == ControlExecutionStatus.COMPLETED
+        assert deny_rec.error_code == "SECOND_DENY"
+
+    await manager.shutdown()
+    PluginManager.reset()
+
+
+@pytest.mark.asyncio
+async def test_executions_on_violation_exception_concurrent_plugin():
+    """When violations_as_exceptions=True and a CONCURRENT plugin denies, the raised
+    PluginViolationError must carry a record for the denying plugin (fix for #147).
+    This is the concurrent-mode analogue of test_executions_on_violation_exception_single_plugin."""
+    from unittest.mock import patch
+
+    from cpex.framework import Plugin, PluginConfig, PluginViolation
+    from cpex.framework.base import HookRef
+    from cpex.framework.errors import PluginViolationError
+    from cpex.framework.registry import PluginRef
+
+    class ConcurrentDenyPlugin(Plugin):
+        async def prompt_pre_fetch(self, payload, context):
+            return PluginResult(
+                continue_processing=False,
+                violation=PluginViolation(
+                    reason="Concurrent deny reason",
+                    description="Concurrent deny description",
+                    code="CONC_DENY",
+                ),
+            )
+
+    manager = PluginManager("./tests/unit/cpex/fixtures/configs/valid_no_plugin.yaml")
+    await manager.initialize()
+
+    config = PluginConfig(
+        name="ConcurrentDenyPlugin",
+        description="Always denies in concurrent mode",
+        author="Test",
+        version="1.0",
+        tags=["test"],
+        kind="ConcurrentDenyPlugin",
+        mode=PluginMode.CONCURRENT,
+        hooks=["prompt_pre_fetch"],
+        config={},
+    )
+    plugin = ConcurrentDenyPlugin(config)
+
+    with patch.object(manager._registry, "get_hook_refs_for_hook") as mock_get:
+        hook_ref = HookRef(PromptHookType.PROMPT_PRE_FETCH, PluginRef(plugin))
+        mock_get.return_value = [hook_ref]
+
+        prompt = PromptPrehookPayload(prompt_id="test", args={"user": "hello"})
+        context = GlobalContext(request_id="req-vae-concurrent")
+
+        with pytest.raises(PluginViolationError) as pve:
+            await manager.invoke_hook(
+                PromptHookType.PROMPT_PRE_FETCH,
+                prompt,
+                global_context=context,
+                violations_as_exceptions=True,
+            )
+
+        assert pve.value.violation is not None
+        assert pve.value.violation.code == "CONC_DENY"
+
+        # Concurrent denial must also produce a record on the exception (fix for #147)
+        assert pve.value.executions is not None, (
+            "PluginViolationError.executions must not be None for concurrent-mode denial"
+        )
+        assert len(pve.value.executions) == 1
+        rec = pve.value.executions[0]
+        assert rec.plugin_name == "ConcurrentDenyPlugin"
+        assert rec.mode == PluginMode.CONCURRENT
+        assert rec.effective_allow is False
+        assert rec.status == ControlExecutionStatus.COMPLETED
+        assert rec.requested_allow is False
+        assert rec.matched is True
+        assert rec.applied is True
+        assert rec.error_code == "CONC_DENY"
+
+    await manager.shutdown()
+    PluginManager.reset()
+
+
+@pytest.mark.asyncio
+async def test_executions_on_violation_exception_list_is_independent_copy():
+    """pve.executions must be a distinct list from the manager's internal accumulator —
+    mutating it after the catch must not affect any other state."""
+    from unittest.mock import patch
+
+    from cpex.framework import Plugin, PluginConfig, PluginViolation
+    from cpex.framework.base import HookRef
+    from cpex.framework.errors import PluginViolationError
+    from cpex.framework.registry import PluginRef
+
+    class DenyPlugin(Plugin):
+        async def prompt_pre_fetch(self, payload, context):
+            return PluginResult(
+                continue_processing=False,
+                violation=PluginViolation(reason="r", description="d", code="COPY_CHECK"),
+            )
+
+    manager = PluginManager("./tests/unit/cpex/fixtures/configs/valid_no_plugin.yaml")
+    await manager.initialize()
+
+    config = PluginConfig(
+        name="DenyPlugin",
+        description="Always denies",
+        author="Test",
+        version="1.0",
+        tags=["test"],
+        kind="DenyPlugin",
+        mode=PluginMode.SEQUENTIAL,
+        hooks=["prompt_pre_fetch"],
+        config={},
+    )
+    plugin = DenyPlugin(config)
+
+    with patch.object(manager._registry, "get_hook_refs_for_hook") as mock_get:
+        hook_ref = HookRef(PromptHookType.PROMPT_PRE_FETCH, PluginRef(plugin))
+        mock_get.return_value = [hook_ref]
+
+        prompt = PromptPrehookPayload(prompt_id="test", args={"user": "hello"})
+        context = GlobalContext(request_id="req-vae-copy")
+
+        with pytest.raises(PluginViolationError) as pve:
+            await manager.invoke_hook(
+                PromptHookType.PROMPT_PRE_FETCH,
+                prompt,
+                global_context=context,
+                violations_as_exceptions=True,
+            )
+
+        executions = pve.value.executions
+        assert executions is not None
+        original_len = len(executions)
+
+        # Mutate the captured list — a second call must produce a fresh list unaffected
+        executions.clear()
+        assert len(executions) == 0
+
+        with pytest.raises(PluginViolationError) as pve2:
+            await manager.invoke_hook(
+                PromptHookType.PROMPT_PRE_FETCH,
+                prompt,
+                global_context=context,
+                violations_as_exceptions=True,
+            )
+
+        # The second exception's list must be independent
+        assert pve2.value.executions is not executions
+        assert len(pve2.value.executions) == original_len
 
     await manager.shutdown()
     PluginManager.reset()

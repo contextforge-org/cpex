@@ -58,6 +58,9 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/).
   test.pypi into a fresh isolated venv now also passes `--extra-index-url https://pypi.org/simple/`,
   so transitive dependencies (including `cpex` itself) resolve from real PyPI instead of failing
   when they are absent from test.pypi ([#113](https://github.com/contextforge-org/cpex/pull/113)).
+### Fixed
+
+- Implement `__eq__` and `__ne__` for CopyOnWriteList ([#136](https://github.com/contextforge-org/cpex/pull/136))
 
 ## [0.1.2] - 2026-07-29
 
