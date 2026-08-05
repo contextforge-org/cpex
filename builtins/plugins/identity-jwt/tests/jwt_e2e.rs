@@ -325,6 +325,65 @@ async fn workload_role_rejects_a_non_spiffe_token() {
     assert_eq!(violation.code, "auth.mapping_failed");
 }
 
+/// The `spiffe_id` fallback must be prefix-checked too: a non-SPIFFE
+/// `sub` combined with an arbitrary `spiffe_id` claim must NOT be
+/// accepted as a workload. Without the guard on the fallback, this token
+/// would be mislabeled `TokenKind::SpiffeJwt` and land in caller_workload.
+#[tokio::test]
+async fn workload_role_rejects_non_spiffe_sub_with_bogus_spiffe_id_claim() {
+    let jwt = mint_jwt(json!({
+        "sub": "alice@corp.com",          // not a SPIFFE ID
+        "spiffe_id": "not-a-spiffe-id",   // arbitrary, non-SPIFFE fallback
+        "iss": TEST_ISSUER,
+        "aud": TEST_AUDIENCE,
+        "exp": now_unix() + 300,
+        "iat": now_unix(),
+    }));
+
+    let result = invoke_with(
+        resolver_plugin_config_for("workload", "X-Workload-Token"),
+        jwt,
+        TokenSource::SpiffeJwtSvid,
+    )
+    .await;
+
+    assert!(
+        !result.continue_processing,
+        "a non-SPIFFE sub must not be rescued by a bogus spiffe_id claim",
+    );
+    assert_eq!(
+        result.violation.expect("violation surfaced").code,
+        "auth.mapping_failed",
+    );
+}
+
+/// The legit fallback still resolves: when `sub` isn't a SPIFFE ID but a
+/// valid `spiffe://` lives in the `spiffe_id` claim, the workload is
+/// accepted. Guards the fix from over-restricting.
+#[tokio::test]
+async fn workload_role_accepts_valid_spiffe_id_claim_fallback() {
+    let jwt = mint_jwt(json!({
+        "sub": "svc-account-123",                                 // not SPIFFE
+        "spiffe_id": "spiffe://corp.example/ns/default/sa/agent", // valid SPIFFE fallback
+        "iss": TEST_ISSUER,
+        "aud": TEST_AUDIENCE,
+        "exp": now_unix() + 300,
+        "iat": now_unix(),
+    }));
+
+    let result = invoke_with(
+        resolver_plugin_config_for("workload", "X-Workload-Token"),
+        jwt,
+        TokenSource::SpiffeJwtSvid,
+    )
+    .await;
+
+    assert!(
+        result.continue_processing,
+        "a valid spiffe_id claim fallback must resolve the workload",
+    );
+}
+
 /// Token correctly signed by the test key but its `iss` doesn't
 /// match any trusted issuer in our config → `auth.untrusted_issuer`.
 /// This is the path where the peek-at-iss step does its job.

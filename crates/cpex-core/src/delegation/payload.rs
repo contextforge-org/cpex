@@ -111,6 +111,19 @@ impl DelegationSubject {
         }
     }
 
+    /// The [`DelegationMode`] this subject produces. Kept in cpex-core
+    /// (rather than in a handler) so every delegation backend attributes
+    /// and cache-keys a given subject identically: `user` is the only
+    /// act-on-behalf-of-another; the other three act as themselves.
+    pub fn default_mode(&self) -> DelegationMode {
+        match self {
+            DelegationSubject::User => DelegationMode::OnBehalfOfUser,
+            DelegationSubject::Client => DelegationMode::AsClient,
+            DelegationSubject::CallerWorkload => DelegationMode::AsCallerWorkload,
+            DelegationSubject::ThisWorkload => DelegationMode::AsThisWorkload,
+        }
+    }
+
     /// Parse the value of a `subject:` step key. Returns `None` for
     /// anything unrecognized so callers apply their own policy rather
     /// than silently substituting a principal for a typo'd one.
@@ -256,11 +269,12 @@ pub struct DelegationPayload {
     /// minted credential must be attributed: a `CallerWorkload`
     /// subject with no user in the picture speaks for the calling
     /// agent (`DelegationMode::AsCallerWorkload`), a `User` subject
-    /// speaks for the user (`OnBehalfOfUser`), and `Gateway` speaks
-    /// for us (`AsGateway`). Recording it here lets a handler
-    /// *derive* the attribution rather than guess it.
+    /// speaks for the user (`OnBehalfOfUser`), a `Client` subject for
+    /// the calling client (`AsClient`), and `ThisWorkload` speaks for
+    /// us (`AsThisWorkload`). Recording it here lets a handler *derive*
+    /// the attribution rather than guess it.
     ///
-    /// `Gateway` additionally tells a handler there is no inbound
+    /// `ThisWorkload` additionally tells a handler there is no inbound
     /// credential to exchange — `bearer_token` is empty by design,
     /// and the handler authenticates as itself instead.
     ///
@@ -319,9 +333,9 @@ pub struct DelegationPayload {
     ///   * `OnBehalfOfUser` — token speaks for the original user
     ///     (RFC 8693 on-behalf-of / actor-token, UCAN delegation).
     ///     Standard flow; cache key includes the user's subject id.
-    ///   * `AsGateway` — token speaks for the gateway itself.
+    ///   * `AsThisWorkload` — token speaks for this instance itself.
     ///     User identity is conveyed through separate context.
-    ///     Cache key falls back to the gateway's identity.
+    ///     Cache key falls back to this instance's identity.
     ///
     /// `None` defaults to `OnBehalfOfUser` for backward compatibility
     /// with handlers that don't yet populate the field. Long-term,
@@ -386,7 +400,7 @@ impl DelegationPayload {
     /// Record which principal this exchange is for. The invoker sets
     /// this from the step's `subject:` key, so handlers can attribute
     /// the minted token correctly instead of assuming a user is
-    /// present — and can tell that a `Gateway` subject means "no
+    /// present — and can tell that a `ThisWorkload` subject means "no
     /// inbound credential, authenticate as yourself."
     pub fn with_subject(mut self, subject: DelegationSubject) -> Self {
         self.subject = subject;
@@ -460,6 +474,18 @@ impl DelegationPayload {
     pub fn involves_workload(&self) -> bool {
         self.subject == DelegationSubject::CallerWorkload
             || self.actor_role == Some(TokenRole::CallerWorkload)
+    }
+
+    /// Whether the calling OAuth client took part in this exchange —
+    /// either as the subject (a client acting as itself) or as the RFC
+    /// 8693 actor alongside a user. The client analogue of
+    /// [`involves_workload`]: drives whether the cache key is partitioned
+    /// by `client_id`, which it must be so two different clients requesting
+    /// the same audience/scopes can't collide on one entry.
+    ///
+    /// [`involves_workload`]: DelegationPayload::involves_workload
+    pub fn involves_client(&self) -> bool {
+        self.subject == DelegationSubject::Client || self.actor_role == Some(TokenRole::Client)
     }
 
     pub fn target_name(&self) -> &str {
@@ -580,13 +606,27 @@ impl DelegationPayload {
 
             // Which calling agent this token was minted for. Only set
             // when a workload actually participated — see the
-            // "Key composition" note above for why both principals
-            // have to be in the key.
+            // "Key composition" note above for why each principal
+            // has to be in the key.
             let workload_id = if self.involves_workload() {
                 ext.security
                     .as_ref()
                     .and_then(|s| s.caller_workload.as_ref())
                     .and_then(|w| w.spiffe_id.clone())
+            } else {
+                None
+            };
+
+            // Which calling client this token was minted for. Same
+            // rationale as `workload_id`: without it, two clients hitting
+            // the same audience/scopes (both with an empty `subject_id`)
+            // would collide on one entry and be served each other's tokens.
+            let client_id = if self.involves_client() {
+                ext.security
+                    .as_ref()
+                    .and_then(|s| s.client.as_ref())
+                    .map(|c| c.client_id.clone())
+                    .filter(|id| !id.is_empty())
             } else {
                 None
             };
@@ -602,6 +642,7 @@ impl DelegationPayload {
             let key = DelegationKey {
                 subject_id,
                 workload_id,
+                client_id,
                 audience: token.audience.clone(),
                 scopes: token.scopes.clone(),
                 mode,
@@ -708,12 +749,12 @@ mod tests {
         assert_eq!(p.subject(), &DelegationSubject::CallerWorkload);
     }
 
-    /// `Gateway` is the one subject with no inbound credential — it
+    /// `ThisWorkload` is the one subject with no inbound credential — it
     /// proves who it is by being itself rather than by exchanging
     /// something the caller sent. Handlers key the "an empty bearer
     /// token is expected here" decision off exactly this.
     #[test]
-    fn only_gateway_has_no_inbound_role() {
+    fn only_this_workload_has_no_inbound_role() {
         assert_eq!(
             DelegationSubject::User.inbound_role(),
             Some(TokenRole::User),
@@ -880,6 +921,7 @@ mod tests {
             // No workload in this exchange, so the key isn't
             // partitioned by one.
             workload_id: None,
+            client_id: None,
             audience: "https://hr.example.com".into(),
             scopes: vec!["read:compensation".into()],
             mode: DelegationMode::OnBehalfOfUser,
@@ -887,13 +929,17 @@ mod tests {
         assert!(raw.delegated_tokens.contains_key(&expected_key));
     }
 
-    /// The end-to-end version of the collision guard: two different
-    /// calling agents run the same workload-subject exchange against
-    /// the same audience and scopes, sharing one `delegated_tokens`
-    /// map. Neither has a user, so both keys carry an empty
-    /// `subject_id`; only `workload_id` keeps them apart. If it didn't,
-    /// the second agent would overwrite the first's entry and — once a
-    /// cross-request cache exists — be served the first agent's token.
+    /// Two different calling agents run the same workload-subject
+    /// exchange against the same audience and scopes, sharing one
+    /// `delegated_tokens` map. Neither has a user, so both keys carry an
+    /// empty `subject_id`; only `workload_id` keeps them apart.
+    ///
+    /// What this proves: the two exchanges build **distinct keys** and
+    /// insert as **two** separate entries rather than collapsing into one.
+    /// It does *not* exercise cross-request serving — `delegated_tokens`
+    /// is per-request today and nothing reads it across requests. The
+    /// distinct-key property is the precondition that keeps a future
+    /// cross-request lookup path from serving one agent another's token.
     #[test]
     fn two_agents_do_not_share_one_cache_entry() {
         use crate::extensions::security::WorkloadIdentity;
@@ -952,6 +998,7 @@ mod tests {
                 .get(&crate::extensions::raw_credentials::DelegationKey {
                     subject_id: String::new(),
                     workload_id: Some(spiffe.into()),
+                    client_id: None,
                     audience: "https://hr.example.com".into(),
                     scopes: vec!["read:compensation".into()],
                     mode: DelegationMode::AsCallerWorkload,
@@ -968,14 +1015,84 @@ mod tests {
         );
     }
 
+    /// The client analogue of `two_agents_do_not_share_one_cache_entry`:
+    /// two different OAuth clients run the same client-subject exchange
+    /// for the same audience/scopes, sharing one `delegated_tokens` map.
+    /// Neither has a user, so both keys carry an empty `subject_id`; only
+    /// `client_id` keeps them apart — and the token is attributed to the
+    /// client (`AsClient`), not filed under a user that never took part.
+    #[test]
+    fn two_clients_do_not_share_one_cache_entry() {
+        use crate::extensions::ClientExtension;
+
+        fn client_exchange(minted: &str) -> DelegationPayload {
+            let mut p = DelegationPayload::new("client-tok", "get_compensation")
+                .with_subject(DelegationSubject::Client);
+            p.delegated_token = Some(RawDelegatedToken::new(
+                minted,
+                "Authorization",
+                "https://hr.example.com",
+                vec!["read:compensation".into()],
+                Utc::now() + chrono::Duration::seconds(300),
+            ));
+            p.delegation_mode = Some(DelegationSubject::Client.default_mode());
+            p
+        }
+
+        fn ext_for(client_id: &str, carry: Option<Arc<RawCredentialsExtension>>) -> Extensions {
+            Extensions {
+                security: Some(Arc::new(crate::extensions::SecurityExtension {
+                    client: Some(ClientExtension {
+                        client_id: client_id.into(),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                })),
+                raw_credentials: carry,
+                ..Default::default()
+            }
+        }
+
+        let after_a = client_exchange("token-a").apply_to_extensions(ext_for("client-a", None));
+        let carried = after_a.raw_credentials.clone();
+        let after_both =
+            client_exchange("token-b").apply_to_extensions(ext_for("client-b", carried));
+
+        let raw = after_both.raw_credentials.as_ref().unwrap();
+        assert_eq!(
+            raw.delegated_tokens.len(),
+            2,
+            "each client must get its own cache entry; keys: {:?}",
+            raw.delegated_tokens.keys().collect::<Vec<_>>(),
+        );
+
+        // Look up by the client-attributed key: AsClient + client_id, with
+        // an empty subject_id (no user). If the fix regressed — subject_id
+        // used instead of client_id, or mode OnBehalfOfUser — this misses.
+        let lookup = |client_id: &str| {
+            raw.delegated_tokens
+                .get(
+                    &crate::extensions::raw_credentials::DelegationKey::new(
+                        DelegationMode::AsClient,
+                        "https://hr.example.com",
+                        vec!["read:compensation".into()],
+                    )
+                    .with_client_id(Some(client_id.into())),
+                )
+                .map(|t| (*t.token).clone())
+        };
+        assert_eq!(lookup("client-a").as_deref(), Some("token-a"));
+        assert_eq!(lookup("client-b").as_deref(), Some("token-b"));
+    }
+
     #[test]
     fn apply_to_extensions_respects_explicit_delegation_mode() {
-        // Handler that mints an AsGateway-mode token (gateway-as-principal
-        // flow). The key in `delegated_tokens` should carry AsGateway,
-        // not the default OnBehalfOfUser.
+        // Handler that mints an AsThisWorkload-mode token (this instance
+        // as principal). The key in `delegated_tokens` should carry
+        // AsThisWorkload, not the default OnBehalfOfUser.
         let mut p = DelegationPayload::new("tok", "tool");
         p.delegated_token = Some(RawDelegatedToken::new(
-            "gateway-token",
+            "this-workload-token",
             "Authorization",
             "https://downstream.example.com",
             vec!["service:call".into()],
@@ -1033,7 +1150,7 @@ mod tests {
 
     #[test]
     fn apply_to_extensions_falls_back_to_empty_subject_id_when_no_subject() {
-        // Gateway-as-principal flow — no Subject extension present.
+        // this_workload-as-principal flow — no Subject extension present.
         // The DelegationKey falls back to empty subject_id rather
         // than panicking; flagged via tracing in production but
         // not fatal here.

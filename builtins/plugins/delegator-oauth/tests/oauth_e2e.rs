@@ -682,3 +682,49 @@ async fn workload_subject_authenticates_by_svid_then_exchanges() {
     leg1.assert_async().await;
     leg2.assert_async().await;
 }
+
+/// A6: a leg-1 rejection must not echo submitted credential material. Even
+/// when the IdP hostilely parrots the SVID back in `error_description`, the
+/// caller-visible violation carries only the OAuth error code — never the
+/// `client_assertion` bytes.
+#[tokio::test]
+async fn leg1_rejection_does_not_leak_the_client_assertion() {
+    let mut server = Server::new_async().await;
+
+    let _leg1 = server
+        .mock("POST", "/oauth/token")
+        .with_status(400)
+        .with_header("content-type", "application/json")
+        .with_body(
+            json!({
+                "error": "invalid_client",
+                "error_description": "assertion 'caller-bearer-token-bytes' is not valid",
+            })
+            .to_string(),
+        )
+        .create_async()
+        .await;
+
+    let mgr = build_manager(&format!("{}/oauth/token", server.url())).await;
+    let payload = build_payload(
+        "get_compensation",
+        "https://hr.example.com",
+        &["read:compensation"],
+    )
+    .with_subject(DelegationSubject::CallerWorkload);
+
+    let result = invoke(&mgr, payload).await;
+    assert!(!result.continue_processing, "leg-1 rejection should deny");
+    let violation = result.violation.expect("violation surfaced");
+    assert_eq!(violation.code, "delegation.idp_rejected");
+    assert!(
+        !violation.reason.contains("caller-bearer-token-bytes"),
+        "violation must NOT echo the submitted SVID; got: {}",
+        violation.reason,
+    );
+    assert!(
+        violation.reason.contains("invalid_client"),
+        "violation should carry the OAuth error code; got: {}",
+        violation.reason,
+    );
+}

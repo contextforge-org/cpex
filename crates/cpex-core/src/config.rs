@@ -637,7 +637,7 @@ pub fn parse_config(yaml: &str) -> Result<CpexConfig, Box<PluginError>> {
 /// `global.policies` map (the deprecated alias location), so every resolver
 /// can keep reading a single map. Top-level entries win on a name collision
 /// — the canonical spelling takes precedence over the deprecated one.
-fn merge_groups_into_policies(config: &mut CpexConfig) {
+pub(crate) fn merge_groups_into_policies(config: &mut CpexConfig) {
     if config.groups.is_empty() {
         return;
     }
@@ -650,7 +650,7 @@ fn merge_groups_into_policies(config: &mut CpexConfig) {
 /// scope it could appear — `global`, `global.policies.<name>`,
 /// `global.defaults.<name>`, and each `routes[]` entry — so a stale config
 /// fails loudly rather than silently dropping its authentication steps.
-fn reject_renamed_identity_key(raw: &serde_yaml::Value) -> Result<(), Box<PluginError>> {
+pub(crate) fn reject_renamed_identity_key(raw: &serde_yaml::Value) -> Result<(), Box<PluginError>> {
     fn renamed(scope: &str) -> Box<PluginError> {
         Box::new(PluginError::Config {
             message: format!(
@@ -703,7 +703,7 @@ fn reject_renamed_identity_key(raw: &serde_yaml::Value) -> Result<(), Box<Plugin
 /// dispatch-plan build time, where an unknown or unreferenced plugin is logged
 /// and skipped (see `apl-cpex::dispatch_plan`). Keeping cpex-core's validation
 /// free of APL semantics is intentional.
-fn validate_config(config: &CpexConfig) -> Result<(), Box<PluginError>> {
+pub(crate) fn validate_config(config: &CpexConfig) -> Result<(), Box<PluginError>> {
     let mut seen_names = HashSet::new();
     for plugin in &config.plugins {
         if !seen_names.insert(&plugin.name) {
@@ -755,6 +755,23 @@ fn validate_config(config: &CpexConfig) -> Result<(), Box<PluginError>> {
                     }));
                 }
             }
+
+            // Validate the first-class `groups:` membership field: a value
+            // naming no defined group is a typo, and silently ignoring it
+            // can leave the route without the `authentication:` the group
+            // would have supplied. `meta.tags` stays permissive — tags are
+            // an open-ended, host-injectable substrate, not all of which
+            // name groups. Runs after `merge_groups_into_policies`, so
+            // top-level `groups:` are already folded into `global.policies`.
+            if let Some(groups) = &route.groups {
+                for name in groups.as_names() {
+                    if !config.global.policies.contains_key(name) {
+                        return Err(Box::new(PluginError::Config {
+                            message: format!("route {i} joins unknown group '{name}'"),
+                        }));
+                    }
+                }
+            }
         }
 
         for (group_name, group) in &config.global.policies {
@@ -800,15 +817,6 @@ fn score_entity_match(matcher: Option<&StringOrList>, entity_name: &str) -> Opti
     Some(score)
 }
 
-/// Resolve which plugins should fire for a given entity.
-///
-/// When routing is disabled, returns all plugin names. When enabled,
-/// matches the entity against routes and collects plugins from the
-/// `all` group, defaults, matching policy groups (via merged tags),
-/// and the route itself.
-///
-/// `request_scope` and `request_tags` come from the host's
-/// `MetaExtension` on the request.
 /// The static bundle-membership tags a route declares: its `meta.tags`
 /// plus any `groups:` sugar, unified into one stream. `groups:` is only a
 /// discoverable spelling for the common "join this bundle" case — it
@@ -825,6 +833,15 @@ fn route_static_tags(route: &RouteEntry) -> impl Iterator<Item = &str> {
     meta_tags.chain(group_tags)
 }
 
+/// Resolve which plugins should fire for a given entity.
+///
+/// When routing is disabled, returns all plugin names. When enabled,
+/// matches the entity against routes and collects plugins from the
+/// `all` group, defaults, matching groups (via merged tags), and the
+/// route itself.
+///
+/// `request_scope` and `request_tags` come from the host's
+/// `MetaExtension` on the request.
 pub fn resolve_plugins_for_entity(
     config: &CpexConfig,
     entity_type: &str,
@@ -2315,6 +2332,49 @@ groups:
         let msg = format!("{err}");
         assert!(msg.contains("groups.finance"), "names the scope: {msg}");
         assert!(msg.contains("authentication"), "mentions the rename: {msg}");
+    }
+
+    #[test]
+    fn route_joining_unknown_group_is_rejected() {
+        // A5: a typo'd `groups:` value must fail at load, not silently
+        // leave the route without the group's authentication.
+        let yaml = r#"
+plugin_settings:
+  routing_enabled: true
+plugins:
+  - { name: jwt-hr, kind: identity/jwt, hooks: [identity.resolve] }
+groups:
+  hr-tools:
+    authentication: [jwt-hr]
+routes:
+  - tool: get_compensation
+    groups: hr-toolz
+"#;
+        let err = parse_config(yaml).unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("unknown group"), "names the error: {msg}");
+        assert!(msg.contains("hr-toolz"), "names the typo: {msg}");
+    }
+
+    #[test]
+    fn route_joining_defined_group_passes_validation() {
+        // Sanity: a correct `groups:` reference (and via meta.tags, which
+        // stays permissive) validates fine.
+        let yaml = r#"
+plugin_settings:
+  routing_enabled: true
+plugins:
+  - { name: jwt-hr, kind: identity/jwt, hooks: [identity.resolve] }
+groups:
+  hr-tools:
+    authentication: [jwt-hr]
+routes:
+  - tool: get_compensation
+    groups: hr-tools
+  - tool: search_repos
+    meta: { tags: [some-runtime-tag] }
+"#;
+        assert!(parse_config(yaml).is_ok());
     }
 
     #[test]

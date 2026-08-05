@@ -372,6 +372,22 @@ token service's call — see the interop note below.
 > still follows the subject — the `act` claim records the agent, it doesn't grant it
 > anything.
 
+**Which actor — `client` or `caller_workload`?** Match it to *how the agent
+authenticated*. An agent that presented a SPIFFE SVID is a `caller_workload` (above);
+one that authenticated as a registered OAuth client — an `Authorization` bearer token,
+resolved with `role: client` — is `actor: client`:
+
+```yaml
+- "delegate(workday-oauth, target: workday-api, audience: workday-api,
+            permissions: [read_compensation], subject: user, actor: client)"
+```
+
+> **Valid combinations.** `actor:` pairs with `subject: user` or `subject: client`
+> — the on-behalf-of shape. It is **not** supported with `subject: caller_workload`
+> (the workload is already the subject) or `subject: this_workload` (a
+> `client_credentials` grant carries no `actor_token`); CPEX **rejects** those at
+> config time rather than silently dropping the actor.
+
 **CPEX side — implemented and e2e-tested against a mock IdP.** The delegator puts the
 actor on the wire exactly as RFC 8693 delegation prescribes (`actor_token` +
 `actor_token_type`), and omits it cleanly when no actor is configured. That half is
@@ -425,7 +441,9 @@ not any one vendor. Per layer:
 **If your IdP doesn't (yet) speak SPIFFE**, you are not blocked. CPEX can validate
 the SVID *itself* (it already fetches SPIRE's JWKS in `identity.resolve`), establish
 `caller_workload`, and then mint the downstream token using its *own* credentials
-(`subject: this_workload`), carrying the workload identity as a claim. That
+(`subject: this_workload`). Note the trade-off: a `client_credentials` grant carries
+**no** caller identity, so the minted token speaks for CPEX, not the agent — capture
+the caller at the CPEX boundary (audit) if the backend needs it. That
 "CPEX-validates, CPEX-mints-as-itself" mode works with any OIDC IdP today; only the
 recipe-2 *native* flow needs the IdP to understand SVIDs.
 

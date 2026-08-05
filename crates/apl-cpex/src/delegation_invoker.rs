@@ -138,11 +138,7 @@ impl DelegationInvoker for DelegationPluginInvoker {
         // `inbound_role()` returns None and the bearer token stays
         // empty *by design*; the handler must not treat that as the
         // "missing credential" error it is for every other subject.
-        let subject = cfg
-            .and_then(|m| m.get(serde_yaml::Value::String("subject".into())))
-            .and_then(|v| v.as_str())
-            .and_then(DelegationSubject::from_config_str)
-            .unwrap_or_default();
+        let subject = subject_from_cfg(cfg)?;
         let bearer_token = subject
             .inbound_role()
             .and_then(|role| {
@@ -160,20 +156,23 @@ impl DelegationInvoker for DelegationPluginInvoker {
             .unwrap_or(&step.plugin_name)
             .to_string();
 
+        // Optional RFC 8693 actor. When the step opts in with e.g.
+        // `actor: client`, attach that inbound credential as the
+        // actor_token so the minted token records `act` = actor alongside
+        // `sub` = subject. This is the on-behalf-of shape: `subject: user`
+        // (or `client`) with the acting party recorded as `act`. An absent
+        // credential leaves the exchange single-token. Parse + validate it
+        // before `subject` is consumed by the payload below.
+        let actor_role = role_from_cfg(cfg, "actor")?;
+        reject_unsupported_actor_combo(&subject, actor_role.as_ref())?;
+
         // Carry the subject onto the payload. The delegator sees only
         // opaque token bytes, so this is the only way it can tell an
         // agent-acting-autonomously exchange from an on-behalf-of-user
         // one — and that decides how the minted token gets attributed.
         let mut payload = DelegationPayload::new(bearer_token, target_name).with_subject(subject);
 
-        // Optional RFC 8693 actor. When the step opts in with e.g.
-        // `actor: caller_workload`, attach that inbound credential as
-        // the actor_token so the minted token records `act` = actor
-        // alongside `sub` = subject. Pairs naturally with
-        // `subject: this_workload`: this instance is the principal the
-        // backend trusts, while `act` records which agent caused the call.
-        // An absent credential leaves the exchange single-token.
-        if let Some(actor_role) = role_from_cfg(cfg, "actor") {
+        if let Some(actor_role) = actor_role {
             let actor_token = current_extensions
                 .raw_credentials
                 .as_ref()
@@ -297,16 +296,76 @@ impl DelegationInvoker for DelegationPluginInvoker {
 /// [`DelegationSubject`], which additionally admits `this_workload`.
 ///
 /// `"workload"` is accepted as a legacy spelling of `caller_workload`.
-fn role_from_cfg(cfg: Option<&serde_yaml::Mapping>, key: &str) -> Option<TokenRole> {
-    match cfg
-        .and_then(|m| m.get(serde_yaml::Value::String(key.into())))
-        .and_then(|v| v.as_str())
-    {
-        Some("user") => Some(TokenRole::User),
-        Some("client") => Some(TokenRole::Client),
-        Some("caller_workload") | Some("workload") => Some(TokenRole::CallerWorkload),
-        _ => None,
+/// Parse the `subject:` step key into a [`DelegationSubject`], on the
+/// production path (`DelegationSubject::from_config_str`). Distinguishes:
+/// - **absent** → the documented default (`user`);
+/// - **present but not a string / unrecognized** → `Err` — a typo'd
+///   subject must fail rather than silently exchange a different
+///   credential shape.
+fn subject_from_cfg(
+    cfg: Option<&serde_yaml::Mapping>,
+) -> Result<DelegationSubject, DelegationError> {
+    let Some(v) = cfg.and_then(|m| m.get(serde_yaml::Value::String("subject".into()))) else {
+        return Ok(DelegationSubject::default());
+    };
+    let s = v
+        .as_str()
+        .ok_or_else(|| DelegationError::InvalidConfig("`subject:` must be a string".into()))?;
+    DelegationSubject::from_config_str(s).ok_or_else(|| {
+        DelegationError::InvalidConfig(format!(
+            "unknown `subject: {s}` (expected user | client | caller_workload | this_workload)"
+        ))
+    })
+}
+
+/// Parse an actor-style role key (`actor:`) into a [`TokenRole`].
+/// - `Ok(None)` — key absent (documented default: no actor);
+/// - `Ok(Some(role))` — present and recognized;
+/// - `Err(..)` — present but invalid, which must fail rather than
+///   silently drop the actor.
+fn role_from_cfg(
+    cfg: Option<&serde_yaml::Mapping>,
+    key: &str,
+) -> Result<Option<TokenRole>, DelegationError> {
+    let Some(v) = cfg.and_then(|m| m.get(serde_yaml::Value::String(key.into()))) else {
+        return Ok(None);
+    };
+    let s = v
+        .as_str()
+        .ok_or_else(|| DelegationError::InvalidConfig(format!("`{key}:` must be a string")))?;
+    match s {
+        "user" => Ok(Some(TokenRole::User)),
+        "client" => Ok(Some(TokenRole::Client)),
+        "caller_workload" | "workload" => Ok(Some(TokenRole::CallerWorkload)),
+        other => Err(DelegationError::InvalidConfig(format!(
+            "unknown `{key}: {other}` (expected user | client | caller_workload)"
+        ))),
     }
+}
+
+/// Reject `actor:` combined with a subject the OAuth delegator can't attach
+/// an actor to: `caller_workload` is itself the subject (via the leg-1 base
+/// token — no separate actor slot), and `this_workload` uses a
+/// `client_credentials` grant, where `actor_token` has no meaning (RFC 6749
+/// §4.4). The delegator omits the actor in both cases, so accepting the key
+/// would silently mislead — fail instead.
+fn reject_unsupported_actor_combo(
+    subject: &DelegationSubject,
+    actor: Option<&TokenRole>,
+) -> Result<(), DelegationError> {
+    if actor.is_some()
+        && matches!(
+            subject,
+            DelegationSubject::CallerWorkload | DelegationSubject::ThisWorkload
+        )
+    {
+        return Err(DelegationError::InvalidConfig(
+            "`actor:` is not supported with `subject: caller_workload` or \
+             `subject: this_workload` — the actor would be silently ignored"
+                .into(),
+        ));
+    }
+    Ok(())
 }
 
 fn target_type_from_str(s: &str) -> TargetType {
@@ -342,82 +401,106 @@ mod tests {
             .clone()
     }
 
-    // --- subject selection (which credential is the exchange subject) ---
+    // --- subject selection (production path: subject_from_cfg -> DelegationSubject) ---
 
     #[test]
-    fn subject_workload_selects_svid_role() {
-        // Mode A: `subject: workload` routes the caller's SVID in as
-        // the subject_token of the exchange.
-        let m = cfg("subject: workload");
+    fn subject_variants_parse() {
+        let s = |y| subject_from_cfg(Some(&cfg(y))).unwrap();
+        assert_eq!(s("subject: user"), DelegationSubject::User);
+        assert_eq!(s("subject: client"), DelegationSubject::Client);
         assert_eq!(
-            role_from_cfg(Some(&m), "subject"),
-            Some(TokenRole::CallerWorkload)
+            s("subject: caller_workload"),
+            DelegationSubject::CallerWorkload
         );
+        assert_eq!(s("subject: workload"), DelegationSubject::CallerWorkload); // legacy alias
+        assert_eq!(s("subject: this_workload"), DelegationSubject::ThisWorkload);
     }
 
     #[test]
-    fn subject_user_selects_user_role() {
-        let m = cfg("subject: user");
-        assert_eq!(role_from_cfg(Some(&m), "subject"), Some(TokenRole::User));
-    }
-
-    #[test]
-    fn subject_client_selects_client_role() {
-        let m = cfg("subject: client");
-        assert_eq!(role_from_cfg(Some(&m), "subject"), Some(TokenRole::Client));
-    }
-
-    #[test]
-    fn subject_absent_returns_none_so_caller_defaults_to_user() {
-        // The helper does NOT bake in the User default — the caller
-        // (`.unwrap_or(TokenRole::User)`) does. An absent key must
-        // return None so on-behalf-of stays the default.
-        let m = cfg("target: hr-service");
-        assert_eq!(role_from_cfg(Some(&m), "subject"), None);
-    }
-
-    #[test]
-    fn unknown_role_returns_none_rather_than_guessing() {
-        // A typo'd role is not silently mapped to some default role —
-        // it returns None so the caller applies its own policy.
-        let m = cfg("subject: workloadd");
-        assert_eq!(role_from_cfg(Some(&m), "subject"), None);
-    }
-
-    // --- actor selection (RFC 8693 actor_token, Mode B) ---
-
-    #[test]
-    fn actor_workload_selects_svid_role() {
-        // Mode B: `actor: workload` records the SVID as the act party
-        // alongside the user subject.
-        let m = cfg("actor: workload");
+    fn subject_absent_defaults_to_user() {
+        // An absent `subject:` is the documented default (on-behalf-of user).
         assert_eq!(
-            role_from_cfg(Some(&m), "actor"),
-            Some(TokenRole::CallerWorkload)
+            subject_from_cfg(Some(&cfg("target: hr-service"))).unwrap(),
+            DelegationSubject::User
         );
+        assert_eq!(subject_from_cfg(None).unwrap(), DelegationSubject::User);
     }
 
     #[test]
-    fn actor_absent_returns_none_so_exchange_stays_single_token() {
-        let m = cfg("subject: user");
-        assert_eq!(role_from_cfg(Some(&m), "actor"), None);
+    fn subject_typo_is_rejected_not_defaulted_to_user() {
+        // A present-but-invalid subject must FAIL, not silently become user
+        // (which would exchange a different credential than the author asked).
+        let err = subject_from_cfg(Some(&cfg("subject: workloadd"))).unwrap_err();
+        assert!(matches!(err, DelegationError::InvalidConfig(_)), "{err:?}");
     }
 
     #[test]
-    fn missing_mapping_returns_none() {
-        assert_eq!(role_from_cfg(None, "subject"), None);
-        assert_eq!(role_from_cfg(None, "actor"), None);
+    fn subject_non_string_is_rejected() {
+        let err = subject_from_cfg(Some(&cfg("subject: [a, b]"))).unwrap_err();
+        assert!(matches!(err, DelegationError::InvalidConfig(_)), "{err:?}");
     }
 
-    // --- both keys coexist (Mode B: user subject + workload actor) ---
+    // --- actor selection (production path: role_from_cfg -> Result<Option<TokenRole>>) ---
+
+    #[test]
+    fn actor_variants_parse() {
+        let a = |y| role_from_cfg(Some(&cfg(y)), "actor").unwrap();
+        assert_eq!(a("actor: user"), Some(TokenRole::User));
+        assert_eq!(a("actor: client"), Some(TokenRole::Client));
+        assert_eq!(a("actor: workload"), Some(TokenRole::CallerWorkload));
+    }
+
+    #[test]
+    fn actor_absent_is_ok_none() {
+        // Absent actor → single-token exchange (no error).
+        assert_eq!(
+            role_from_cfg(Some(&cfg("subject: user")), "actor").unwrap(),
+            None
+        );
+        assert_eq!(role_from_cfg(None, "actor").unwrap(), None);
+    }
+
+    #[test]
+    fn actor_typo_is_rejected_not_silently_dropped() {
+        // A present-but-invalid actor must FAIL, not silently drop the actor.
+        let err = role_from_cfg(Some(&cfg("actor: workloadd")), "actor").unwrap_err();
+        assert!(matches!(err, DelegationError::InvalidConfig(_)), "{err:?}");
+    }
+
+    // --- both keys coexist (user subject + workload actor) ---
 
     #[test]
     fn subject_and_actor_resolve_independently() {
         let m = cfg("subject: user\nactor: workload");
-        assert_eq!(role_from_cfg(Some(&m), "subject"), Some(TokenRole::User));
+        assert_eq!(subject_from_cfg(Some(&m)).unwrap(), DelegationSubject::User);
         assert_eq!(
-            role_from_cfg(Some(&m), "actor"),
+            role_from_cfg(Some(&m), "actor").unwrap(),
             Some(TokenRole::CallerWorkload)
         );
+    }
+
+    // --- actor is rejected with subjects that have no actor slot ---
+
+    #[test]
+    fn actor_with_user_or_client_subject_is_allowed() {
+        for s in [DelegationSubject::User, DelegationSubject::Client] {
+            assert!(reject_unsupported_actor_combo(&s, Some(&TokenRole::Client)).is_ok());
+        }
+        // No actor at all is always fine.
+        assert!(reject_unsupported_actor_combo(&DelegationSubject::CallerWorkload, None).is_ok());
+    }
+
+    #[test]
+    fn actor_with_workload_or_this_workload_subject_is_rejected() {
+        // These subjects have no actor slot — the delegator would silently
+        // drop the actor, so the combo must fail rather than mislead.
+        for s in [
+            DelegationSubject::CallerWorkload,
+            DelegationSubject::ThisWorkload,
+        ] {
+            let err =
+                reject_unsupported_actor_combo(&s, Some(&TokenRole::CallerWorkload)).unwrap_err();
+            assert!(matches!(err, DelegationError::InvalidConfig(_)), "{err:?}");
+        }
     }
 }

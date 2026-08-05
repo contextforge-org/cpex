@@ -13,6 +13,23 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/).
 > - **Fixed**: for any bug fixes.
 > - **Security**: in case of vulnerabilities.
 
+## [0.2.3] - unreleased
+
+### Added
+
+- **Multi-principal delegation.** A `delegate(...)` step can now name **whose** identity the minted token speaks for (`subject: user | client | caller_workload | this_workload`) and **who** is acting (`actor: user | client | caller_workload`, an RFC 8693 `actor_token` recording `act` alongside `sub`). The mode is *derived* from the subject, never declared, so a route can't claim on-behalf-of-user while handing over a workload SVID. Adds SPIFFE JWT-SVID workload ingress (`role: caller_workload`, validated into `caller_workload.*` and stashed as `TokenKind::SpiffeJwt`) and, for `subject: caller_workload`, a two-leg OAuth delegator (SVID as an RFC 7523 `client_assertion` → base token → RFC 8693 exchange). (#131)
+- **Top-level `groups:` config section.** Reusable policy bundles (authentication + authorization + plugins) now live at a canonical top-level `groups:`, and a route joins one with a first-class `groups:` field (string-or-list). `groups:` is sugar over tags — it folds into the route's tag set at resolution, so host-injected runtime tags still join groups the same way. A route naming an undefined group is rejected at load. (#131)
+
+### Changed
+
+- **BREAKING: `TokenRole::Workload` renamed to `TokenRole::CallerWorkload`.** A serde `alias = "workload"` keeps existing serialized config loading, but the Rust symbol is renamed — downstream Rust code must update. (#131)
+- **BREAKING: `DelegationMode::AsGateway` renamed to `AsThisWorkload`.** A serde `alias = "as_gateway"` keeps persisted values deserializing. (#131)
+- **BREAKING: `DelegationKey` is now `#[non_exhaustive]`** and gained a `client_id` field (partitioning the delegated-token cache per calling OAuth client, mirroring `workload_id`). Construct it via `DelegationKey::new(mode, audience, scopes)` + the `with_subject_id` / `with_workload_id` / `with_client_id` setters rather than a struct literal. (#131)
+
+### Deprecated
+
+- The reserved `all` group and the `global.policies:` bundle location, in favor of the top-level `groups:` section. Both still load. (#131)
+
 ## [0.2.2] - 2026-07-15
 
 ### Added

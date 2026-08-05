@@ -52,7 +52,7 @@ use zeroize::Zeroizing;
 use cpex_core::context::PluginContext;
 use cpex_core::delegation::{DelegationPayload, DelegationSubject, TokenDelegateHook};
 use cpex_core::error::{PluginError, PluginViolation};
-use cpex_core::extensions::raw_credentials::{DelegationMode, RawDelegatedToken};
+use cpex_core::extensions::raw_credentials::RawDelegatedToken;
 use cpex_core::hooks::payload::Extensions;
 use cpex_core::hooks::trait_def::{HookHandler, PluginResult};
 use cpex_core::plugin::{Plugin, PluginConfig};
@@ -84,6 +84,10 @@ pub struct OAuthDelegator {
     /// Shared HTTP client. Pre-built so repeated invocations
     /// reuse connections / TLS sessions.
     http: reqwest::Client,
+    /// Latches once the best-effort "actor requested but no `act` minted"
+    /// warning has fired, so it logs at most once per delegator instead of
+    /// on every request (and skips the per-request JWT decode thereafter).
+    warned_missing_act: std::sync::atomic::AtomicBool,
 }
 
 impl std::fmt::Debug for OAuthDelegator {
@@ -175,6 +179,7 @@ impl OAuthDelegator {
             typed,
             client_secret: Zeroizing::new(secret),
             http,
+            warned_missing_act: std::sync::atomic::AtomicBool::new(false),
         })
     }
 
@@ -250,16 +255,14 @@ impl OAuthDelegator {
         let status = response.status();
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
+            // Sanitize: surface only the OAuth `error` CODE (a fixed
+            // vocabulary — invalid_client, invalid_grant, …), never the
+            // free-text `error_description` or the raw body. Leg 1 submits
+            // the SVID as a `client_assertion`, and an IdP may echo that
+            // credential material back in those fields.
             let reason = match serde_json::from_str::<TokenErrorResponse>(&body) {
-                Ok(err) => {
-                    let mut reason = err.error.clone();
-                    if let Some(desc) = err.error_description {
-                        reason.push_str(": ");
-                        reason.push_str(&desc);
-                    }
-                    reason
-                },
-                Err(_) => format!("IdP returned {status}: {body}"),
+                Ok(err) => format!("workload client_assertion rejected: {}", err.error),
+                Err(_) => format!("workload client_assertion rejected (HTTP {status})"),
             };
             return Err(PluginViolation::new("delegation.idp_rejected", reason));
         }
@@ -537,13 +540,24 @@ impl HookHandler<TokenDelegateHook> for OAuthDelegator {
         // Standard Token Exchange behaves this way). The scoped token is still
         // valid and returned; we only surface the gap so it isn't a silent
         // no-op the policy author never notices.
-        if actor_requested && jwt_payload_omits_act(&parsed.access_token) {
+        //
+        // Throttled to once per delegator via `warned_missing_act`: the
+        // `!load` short-circuit skips the per-request JWT decode entirely
+        // once we've warned, so a token service that always drops `act`
+        // doesn't spend a decode + a log line on every request.
+        use std::sync::atomic::Ordering;
+        if actor_requested
+            && !self.warned_missing_act.load(Ordering::Relaxed)
+            && jwt_payload_omits_act(&parsed.access_token)
+            && !self.warned_missing_act.swap(true, Ordering::Relaxed)
+        {
             tracing::warn!(
                 target: "cpex::delegation",
                 token_endpoint = %self.typed.token_endpoint,
                 "actor was requested (RFC 8693 actor_token) but the minted token carries no `act` claim; \
                  the token service may implement impersonation only (e.g. Keycloak Standard Token Exchange) \
-                 and ignored the actor — the acting agent will not appear downstream",
+                 and ignored the actor — the acting agent will not appear downstream. \
+                 (Further occurrences on this delegator are suppressed.)",
             );
         }
 
@@ -557,7 +571,7 @@ impl HookHandler<TokenDelegateHook> for OAuthDelegator {
 
         let mut updated = payload.clone();
         updated.delegated_token = Some(token);
-        updated.delegation_mode = Some(mode_for_subject(payload.subject()));
+        updated.delegation_mode = Some(payload.subject().default_mode());
         updated.minted_at = Some(Utc::now());
         if let Some(issued) = parsed.issued_token_type {
             updated.metadata.insert(
@@ -572,30 +586,6 @@ impl HookHandler<TokenDelegateHook> for OAuthDelegator {
         }
 
         PluginResult::modify_payload(updated)
-    }
-}
-
-/// Who the minted token speaks for, derived from the exchange's
-/// subject rather than declared independently of it.
-///
-/// A `CallerWorkload` subject means no user was in the picture — the
-/// *calling agent* exchanged its own SPIFFE JWT-SVID, so the
-/// resulting credential speaks for that agent. `ThisWorkload` means we
-/// are the principal. Everything else (a user token, an OAuth client
-/// token) is the ordinary on-behalf-of shape.
-///
-/// This matters beyond bookkeeping: `apply_to_extensions` keys the
-/// delegated-token cache off the mode, so calling a workload-subject
-/// exchange `OnBehalfOfUser` would file the token under a user
-/// identity that never participated.
-fn mode_for_subject(subject: &DelegationSubject) -> DelegationMode {
-    match subject {
-        DelegationSubject::CallerWorkload => DelegationMode::AsCallerWorkload,
-        DelegationSubject::ThisWorkload => DelegationMode::AsThisWorkload,
-        // `DelegationSubject` is #[non_exhaustive]; User, Client and
-        // any future variant all describe a principal this instance is
-        // acting *for*, so on-behalf-of stays the safe default.
-        _ => DelegationMode::OnBehalfOfUser,
     }
 }
 
@@ -620,7 +610,9 @@ fn jwt_payload_omits_act(access_token: &str) -> bool {
     let Ok(claims) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
         return false;
     };
-    claims.is_object() && claims.get("act").is_none()
+    // Treat both a missing `act` and an explicit `"act": null` as absent —
+    // a null claim records no actor.
+    claims.is_object() && claims.get("act").map_or(true, serde_json::Value::is_null)
 }
 
 // Silence unused-import warning when only a subset of these is
@@ -711,6 +703,13 @@ mod act_claim_tests {
     fn payload_without_act_is_flagged() {
         // Impersonation: subject only, no `act` → this is the case we warn on.
         let token = jwt(r#"{"sub":"user","aud":"workday-api"}"#);
+        assert!(jwt_payload_omits_act(&token));
+    }
+
+    #[test]
+    fn payload_with_null_act_is_flagged() {
+        // `"act": null` records no actor — treated as absent, same as missing.
+        let token = jwt(r#"{"sub":"user","act":null}"#);
         assert!(jwt_payload_omits_act(&token));
     }
 

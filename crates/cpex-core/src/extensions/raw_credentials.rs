@@ -109,12 +109,14 @@ pub enum TokenKind {
 /// scope-narrowing rules, audit-log attribution, and how
 /// `DelegationKey` partitions the delegated-token cache.
 ///
-/// The three variants track three of the four identity slots on
-/// `SecurityExtension` — `subject`, `caller_workload`, and
-/// `this_workload`. Keeping the calling agent distinct from the
-/// gateway matters: they are different principals, they present
-/// different credentials, and a token minted for one must never be
-/// handed to the other.
+/// The four variants track the four identity slots on
+/// `SecurityExtension` — `subject`, `client`, `caller_workload`, and
+/// `this_workload`. Keeping these principals distinct matters: they
+/// present different credentials, and a token minted for one must never
+/// be handed to another. Only `OnBehalfOfUser` is a genuine
+/// *act-on-behalf-of-another* (delegation); `AsClient`,
+/// `AsCallerWorkload`, and `AsThisWorkload` are *act-as-self* — the
+/// named principal is the one being scoped.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -123,6 +125,19 @@ pub enum DelegationMode {
     /// on-behalf-of / actor-token flows, UCAN delegation).
     /// Corresponds to `SecurityExtension.subject`.
     OnBehalfOfUser,
+
+    /// Outbound token represents the *calling client / application*
+    /// acting as itself (`SecurityExtension.client`) — an OAuth client
+    /// scoping its own credential to a downstream audience, with no user
+    /// being delegated. The credential exchanged is the client's own
+    /// token, arriving as `inbound_tokens[TokenRole::Client]`.
+    ///
+    /// Like `AsCallerWorkload`, this mode does *not* identify a single
+    /// principal on its own — many different clients call through one
+    /// enforcement point, so `DelegationKey.client_id` carries the
+    /// specific client. Without it, two clients requesting the same
+    /// audience and scopes would collide on one cache entry.
+    AsClient,
 
     /// Outbound token represents the *calling* workload — the attested
     /// agent on the inbound network peer
@@ -147,6 +162,11 @@ pub enum DelegationMode {
     /// populates `this_workload` exists, no handler produces this
     /// mode — do not reach for it as a stand-in for
     /// `AsCallerWorkload`.
+    ///
+    /// `alias = "as_gateway"`: this variant was renamed from `AsGateway`;
+    /// the alias keeps persisted / serialized `as_gateway` values
+    /// deserializing.
+    #[serde(alias = "as_gateway")]
     AsThisWorkload,
 }
 
@@ -212,10 +232,13 @@ impl RawInboundToken {
 /// policies frequently care about scope *order* — `["read", "write"]`
 /// and `["write", "read"]` may carry different semantics in some IdPs.
 /// Callers that want set semantics should sort before constructing.
+/// `#[non_exhaustive]`: construct via [`DelegationKey::new`] + the `with_*`
+/// setters so adding a future principal slot doesn't break downstream callers.
+#[non_exhaustive]
 #[derive(Debug, Hash, Eq, PartialEq, Clone, Serialize, Deserialize)]
 pub struct DelegationKey {
     /// The user the token speaks for. Empty when no user took part
-    /// (a workload acting autonomously).
+    /// (a workload or client acting as itself).
     pub subject_id: String,
 
     /// SPIFFE-ID of the calling workload, when one participated in
@@ -227,9 +250,56 @@ pub struct DelegationKey {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workload_id: Option<String>,
 
+    /// Client-id of the calling OAuth client, when one participated
+    /// in the exchange — as the subject (`AsClient`) or as the RFC 8693
+    /// actor alongside a user. The exact mirror of `workload_id`: without
+    /// it, two different clients requesting the same audience and scopes
+    /// (each with an empty `subject_id`) would collide on one key and be
+    /// served each other's tokens. `None` when no client credential took
+    /// part.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_id: Option<String>,
+
     pub audience: String,
     pub scopes: Vec<String>,
     pub mode: DelegationMode,
+}
+
+impl DelegationKey {
+    /// A key for `mode` + `audience` + `scopes`, with no principal ids set.
+    /// Attach whichever principals participated via the `with_*` setters;
+    /// this is the construction path `#[non_exhaustive]` requires.
+    pub fn new(mode: DelegationMode, audience: impl Into<String>, scopes: Vec<String>) -> Self {
+        Self {
+            subject_id: String::new(),
+            workload_id: None,
+            client_id: None,
+            audience: audience.into(),
+            scopes,
+            mode,
+        }
+    }
+
+    /// Set the user principal (`OnBehalfOfUser`).
+    #[must_use]
+    pub fn with_subject_id(mut self, subject_id: impl Into<String>) -> Self {
+        self.subject_id = subject_id.into();
+        self
+    }
+
+    /// Set the calling-workload principal (`AsCallerWorkload`, or a workload actor).
+    #[must_use]
+    pub fn with_workload_id(mut self, workload_id: Option<String>) -> Self {
+        self.workload_id = workload_id;
+        self
+    }
+
+    /// Set the calling-client principal (`AsClient`, or a client actor).
+    #[must_use]
+    pub fn with_client_id(mut self, client_id: Option<String>) -> Self {
+        self.client_id = client_id;
+        self
+    }
 }
 
 /// One minted outbound credential, produced by a TokenDelegate
@@ -371,6 +441,7 @@ mod tests {
         let k1 = DelegationKey {
             subject_id: "alice".into(),
             workload_id: None,
+            client_id: None,
             audience: "https://api.example.com".into(),
             scopes: vec!["read".into(), "write".into()],
             mode: DelegationMode::OnBehalfOfUser,
@@ -378,6 +449,7 @@ mod tests {
         let k2 = DelegationKey {
             subject_id: "alice".into(),
             workload_id: None,
+            client_id: None,
             audience: "https://api.example.com".into(),
             scopes: vec!["read".into(), "write".into()],
             mode: DelegationMode::OnBehalfOfUser,
@@ -396,13 +468,15 @@ mod tests {
     /// The collision `workload_id` exists to prevent: two different
     /// calling agents doing a workload-subject exchange for the same
     /// audience and scopes. There is no user, so `subject_id` is empty
-    /// for both — without the workload in the key they'd be one entry
-    /// and the second agent would be served the first agent's token.
+    /// for both — without the workload in the key they'd collapse to one
+    /// entry. (Asserts key distinctness only; cross-request serving isn't
+    /// exercised — nothing reads `delegated_tokens` across requests yet.)
     #[test]
     fn workload_subject_keys_are_distinct_per_calling_agent() {
         let payroll = DelegationKey {
             subject_id: String::new(),
             workload_id: Some("spiffe://corp/payroll".into()),
+            client_id: None,
             audience: "https://hr.example.com".into(),
             scopes: vec!["read".into()],
             mode: DelegationMode::AsCallerWorkload,
@@ -427,11 +501,26 @@ mod tests {
         let user_only = DelegationKey {
             subject_id: "alice".into(),
             workload_id: None,
+            client_id: None,
             audience: "https://hr.example.com".into(),
             scopes: vec!["read".into()],
             mode: DelegationMode::OnBehalfOfUser,
         };
         assert_ne!(payroll, user_only);
+    }
+
+    #[test]
+    fn as_gateway_is_a_back_compat_alias_for_this_workload() {
+        // Persisted `as_gateway` (the pre-rename spelling) must still
+        // deserialize to AsThisWorkload; the canonical spelling also works.
+        assert_eq!(
+            serde_json::from_str::<DelegationMode>("\"as_gateway\"").unwrap(),
+            DelegationMode::AsThisWorkload,
+        );
+        assert_eq!(
+            serde_json::from_str::<DelegationMode>("\"as_this_workload\"").unwrap(),
+            DelegationMode::AsThisWorkload,
+        );
     }
 
     #[test]

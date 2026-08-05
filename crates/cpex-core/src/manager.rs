@@ -546,11 +546,20 @@ impl PluginManager {
                 message: format!("YAML parse error: {}", e),
             })
         })?;
-        let cpex_config: CpexConfig = serde_yaml::from_value(raw.clone()).map_err(|e| {
+        let mut cpex_config: CpexConfig = serde_yaml::from_value(raw.clone()).map_err(|e| {
             Box::new(PluginError::Config {
                 message: format!("CpexConfig deserialize error: {}", e),
             })
         })?;
+
+        // Normalize + validate on the SAME path `parse_config` uses. A bare
+        // deserialize does none of this, so without it a running host never
+        // folds top-level `groups:` into `global.policies` (routes lose the
+        // group's plugins + `authentication:`), never rejects the renamed
+        // `identity:` key, and never validates references.
+        crate::config::reject_renamed_identity_key(&raw)?;
+        crate::config::merge_groups_into_policies(&mut cpex_config);
+        crate::config::validate_config(&cpex_config)?;
 
         // Snapshot the parsed routes + plugin declarations before
         // load_config moves the config — visitors get the typed
@@ -581,10 +590,32 @@ impl PluginManager {
             .get("defaults")
             .and_then(serde_yaml::Value::as_mapping)
             .cloned();
-        let policies_yaml = global_yaml
-            .get("policies")
-            .and_then(serde_yaml::Value::as_mapping)
-            .cloned();
+        // Bundles the visitor compiles come from BOTH the canonical
+        // top-level `groups:` and the deprecated `global.policies:`, merged
+        // with top-level winning on a name collision — mirroring
+        // `merge_groups_into_policies` on the typed side, so a top-level
+        // group's `authorization:` / `apl:` gets compiled too.
+        let policies_yaml = {
+            let from_policies = global_yaml
+                .get("policies")
+                .and_then(serde_yaml::Value::as_mapping)
+                .cloned();
+            let from_groups = raw
+                .get("groups")
+                .and_then(serde_yaml::Value::as_mapping)
+                .cloned();
+            match (from_policies, from_groups) {
+                (None, None) => None,
+                (Some(p), None) => Some(p),
+                (None, Some(g)) => Some(g),
+                (Some(mut p), Some(g)) => {
+                    for (k, v) in g {
+                        p.insert(k, v);
+                    }
+                    Some(p)
+                },
+            }
+        };
         let routes_yaml: Vec<serde_yaml::Value> = raw
             .get("routes")
             .and_then(serde_yaml::Value::as_sequence)
@@ -4237,6 +4268,105 @@ routes:
         mgr.invoke_by_name("test_hook", payload2, ext2, None).await;
 
         assert_eq!(mgr.routing_cache_size(), 1); // cache hit — no new entry
+    }
+
+    /// Regression (A1, typed path): `load_config_yaml` used to deserialize
+    /// `CpexConfig` directly and skip `parse_config`'s normalization, so a
+    /// top-level `groups:` bundle never folded into `global.policies` and a
+    /// route joining it lost the group's plugins. Here the deny plugin lives
+    /// ONLY in the group — if it isn't folded into resolution, nothing runs
+    /// and the call is (wrongly) allowed.
+    #[tokio::test]
+    async fn load_config_yaml_folds_top_level_group_into_route_resolution() {
+        let yaml = r#"
+plugin_settings:
+  routing_enabled: true
+plugins:
+  - name: gate
+    kind: test/deny
+    hooks: [test_hook]
+    mode: sequential
+groups:
+  hr-tools:
+    plugins: [gate]
+routes:
+  - tool: get_compensation
+    groups: hr-tools
+"#;
+        let mgr = Arc::new(PluginManager::default());
+        mgr.register_factory("test/deny", Box::new(DenyPluginFactory));
+        mgr.load_config_yaml(yaml).expect("config must load");
+
+        let ext = Extensions {
+            meta: Some(Arc::new(crate::hooks::payload::MetaExtension {
+                entity_type: Some("tool".into()),
+                entity_name: Some("get_compensation".into()),
+                ..Default::default()
+            })),
+            ..Default::default()
+        };
+        let payload: Box<dyn PluginPayload> = Box::new(TestPayload { value: "x".into() });
+        let (result, _bg) = mgr.invoke_by_name("test_hook", payload, ext, None).await;
+
+        assert!(
+            !result.continue_processing,
+            "route must resolve the top-level group's plugin and deny; it was allowed, \
+             so the group wasn't folded into the load path",
+        );
+        assert_eq!(result.violation.as_ref().unwrap().code, "denied");
+    }
+
+    /// Regression (A1, visitor path): the visitor walk read only
+    /// `global.policies`, so a top-level `groups:` bundle's `authorization:`
+    /// was never compiled. This registers a visitor that records which
+    /// bundles it was asked to compile and asserts the top-level group is
+    /// among them.
+    #[test]
+    fn load_config_yaml_compiles_top_level_group_via_visitor() {
+        use crate::visitor::{ConfigVisitor, VisitorError};
+        use std::sync::Mutex as StdMutex;
+
+        #[derive(Default)]
+        struct RecordingVisitor {
+            bundles: StdMutex<Vec<String>>,
+        }
+        impl ConfigVisitor for RecordingVisitor {
+            fn name(&self) -> &str {
+                "recording"
+            }
+            fn visit_policy_bundle(
+                &self,
+                _mgr: &Arc<PluginManager>,
+                tag: &str,
+                _yaml: &serde_yaml::Value,
+            ) -> Result<(), VisitorError> {
+                self.bundles.lock().unwrap().push(tag.to_string());
+                Ok(())
+            }
+        }
+
+        let yaml = r#"
+plugin_settings:
+  routing_enabled: true
+groups:
+  hr-tools:
+    authorization:
+      pre_invocation:
+        - "require(role.hr)"
+routes:
+  - tool: get_compensation
+    groups: hr-tools
+"#;
+        let mgr = Arc::new(PluginManager::default());
+        let recorder = Arc::new(RecordingVisitor::default());
+        mgr.register_visitor(recorder.clone());
+        mgr.load_config_yaml(yaml).expect("config must load");
+
+        let seen = recorder.bundles.lock().unwrap();
+        assert!(
+            seen.iter().any(|b| b == "hr-tools"),
+            "top-level groups: bundle must be visited for compilation; saw: {seen:?}",
+        );
     }
 
     #[tokio::test]
