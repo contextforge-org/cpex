@@ -8,8 +8,8 @@
 # Python framework's `worker.py` over a newline-delimited JSON stdio
 # protocol. Registers under the `isolated_venv` plugin kind.
 #
-# Pure Rust plus a subprocess — no libpython link, so this crate stays
-# in `default-members` (unlike `bindings/python`).
+# Pure Rust plus a subprocess — no libpython link, so this crate is in
+# `default-members` (unlike `bindings/python`, which links libpython).
 
 [package]
 name = "cpex-hosts-python"
@@ -33,11 +33,21 @@ serde_json  = { workspace = true }
 tracing     = { workspace = true }
 uuid        = { workspace = true }
 
-# Version-pinned rather than workspace-inherited, matching how the rest of
-# the tree declares these two (crates/apl-cpex, builtins/session/valkey for
-# sha2; crates/cpex-core, builtins/plugins/delegator-oauth for zeroize).
-sha2    = "0.10"
-zeroize = { version = "1.8", features = ["zeroize_derive"] }
+# Version-pinned rather than workspace-inherited, matching how the rest of the
+# tree declares it (crates/apl-cpex, builtins/session/valkey). Used by `venv`
+# to fingerprint a requirement set into its cache directory name.
+#
+# No `zeroize` here, deliberately, even though this crate handles plaintext
+# credentials. `cpex-core` and builtins/plugins/delegator-oauth hold a secret
+# in memory for its lifetime, so `Zeroizing` there wipes the one authoritative
+# copy. This host instead *forwards* the plaintext: `credentials` reads the
+# token out of core's `Zeroizing` field and it is immediately copied into a
+# `serde_json::Value`, then into the serialized request line, then into the
+# pipe buffer, then into the worker's own address space. Zeroizing the DTO
+# field would wipe one of those copies and leave the rest, which reads as a
+# control that is not one. The real boundary is the worker process, and it is
+# documented as such in `credentials`' "Residual exposure" note.
+sha2 = "0.10"
 
 # `process` and `io-util` are absent from the workspace tokio floor (the
 # embedded library never spawns children). This host's whole job is a

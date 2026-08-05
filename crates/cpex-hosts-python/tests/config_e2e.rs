@@ -43,7 +43,7 @@ use cpex_hosts_python::legacy::{
     IdentityResolvePayload, TokenDelegatePayload, ToolPreInvokePayload,
 };
 use cpex_hosts_python::plugin::IsolatedPythonPlugin;
-use cpex_hosts_python::testing::skip_without_python3;
+use cpex_hosts_python::testing::{skip, skip_without_python3};
 
 /// Plugin name in `plugins/config.yaml`.
 const PLUGIN_NAME: &str = "cpex-test-plugin";
@@ -89,9 +89,12 @@ fn require_installed_plugin(test_name: &str) -> Option<PathBuf> {
     let root = repo_root();
     let config_path = root.join("plugins").join("config.yaml");
     if !config_path.is_file() {
-        println!(
-            "SKIP {test_name}: no {} — install the plugin first (see the setup comment)",
-            config_path.display()
+        skip(
+            test_name,
+            &format!(
+                "no {} — install the plugin first (see the setup comment)",
+                config_path.display()
+            ),
         );
         return None;
     }
@@ -106,10 +109,13 @@ fn require_installed_plugin(test_name: &str) -> Option<PathBuf> {
         .join("bin")
         .join("python");
     if !venv.is_file() {
-        println!(
-            "SKIP {test_name}: no venv at {} — run `cpex plugin --type test-pypi install \
-             \"cpex-test-plugin@>=0.2.0\"` first",
-            venv.display()
+        skip(
+            test_name,
+            &format!(
+                "no venv at {} — run `cpex plugin --type test-pypi install \
+                 \"cpex-test-plugin@>=0.2.0\"` first",
+                venv.display()
+            ),
         );
         return None;
     }

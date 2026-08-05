@@ -35,7 +35,7 @@ use std::process::Stdio;
 use std::sync::Arc;
 
 use serde_json::Value;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::{mpsc, oneshot, Mutex};
 
@@ -52,7 +52,13 @@ pub const TASK_LOAD_AND_RUN_HOOK: &str = "load_and_run_hook";
 pub const TASK_SHUTDOWN: &str = "shutdown";
 
 /// Map of in-flight request ids to the channel awaiting each response.
-type Pending = Arc<Mutex<HashMap<String, oneshot::Sender<Value>>>>;
+///
+/// Carries a `Result` rather than a bare `Value` so the reader task can hand a
+/// waiting caller a typed failure — an oversized response frame is a real
+/// answer to that request ("it cannot be delivered"), and reporting it beats
+/// letting the caller sit out the full timeout for a response that was already
+/// discarded.
+type Pending = Arc<Mutex<HashMap<String, oneshot::Sender<Result<Value, HostError>>>>>;
 
 /// How many recent stderr lines to retain for diagnosis.
 ///
@@ -64,6 +70,102 @@ const STDERR_RETAIN_LINES: usize = 40;
 
 /// Ring buffer of the worker's most recent stderr lines.
 type StderrTail = Arc<Mutex<std::collections::VecDeque<String>>>;
+
+/// Cap on one retained stderr line, independent of `max_content_size`.
+///
+/// Stderr is diagnostic, so an over-long line is truncated rather than treated
+/// as a protocol violation — but the retained copy still has to be bounded, or
+/// a worker that writes one enormous line drives host memory on its own.
+/// Sized to hold a Python traceback frame comfortably.
+const STDERR_MAX_LINE_BYTES: usize = 8 * 1024;
+
+/// Appended to a stderr line that was cut at `STDERR_MAX_LINE_BYTES`, so an
+/// operator reading the tail can tell truncation from a worker that really
+/// stopped mid-sentence.
+const TRUNCATION_MARKER: &str = "… [truncated by host]";
+
+/// Outcome of one bounded line read.
+enum BoundedLine {
+    /// A complete line, within the limit.
+    Line(String),
+
+    /// The line exceeded the limit. Carries the bytes read up to the cap, for
+    /// the diagnostic paths that want a prefix; the rest was discarded as it
+    /// arrived, so nothing beyond the cap was ever buffered.
+    Oversized { prefix: String, scanned: usize },
+
+    /// Stream closed.
+    Eof,
+}
+
+/// Read one `\n`-delimited line, refusing to buffer more than `limit` bytes.
+///
+/// `AsyncBufReadExt::lines` grows its `String` without bound, which is what
+/// makes an unbounded inbound stream a host memory problem regardless of the
+/// outbound `max_content_size` check. This reads through the `BufRead` fill
+/// buffer instead: once `limit` bytes have accumulated without a newline, the
+/// remainder of the line is consumed and dropped rather than retained, so the
+/// stream stays framed (the next read starts at a real line boundary) while
+/// peak memory stays at `limit` plus one fill buffer.
+async fn read_bounded_line<R>(reader: &mut R, limit: usize) -> std::io::Result<BoundedLine>
+where
+    R: AsyncBufRead + Unpin,
+{
+    let mut buffer = Vec::new();
+    let mut scanned = 0usize;
+    let mut over = false;
+
+    loop {
+        let available = reader.fill_buf().await?;
+        if available.is_empty() {
+            // EOF. A trailing fragment with no newline is still a line.
+            if scanned == 0 {
+                return Ok(BoundedLine::Eof);
+            }
+            break;
+        }
+
+        let (chunk, consumed, done) = match available.iter().position(|b| *b == b'\n') {
+            Some(index) => (&available[..index], index + 1, true),
+            None => {
+                let all = available.len();
+                (available, all, false)
+            },
+        };
+
+        scanned += chunk.len();
+        if !over {
+            // Only retain up to the cap; everything past it is consumed and
+            // dropped, which is what keeps this bounded.
+            let room = limit.saturating_sub(buffer.len());
+            let keep = chunk.len().min(room);
+            buffer.extend_from_slice(&chunk[..keep]);
+            if scanned > limit {
+                over = true;
+            }
+        }
+
+        reader.consume(consumed);
+        if done {
+            break;
+        }
+    }
+
+    // Trim a `\r` from CRLF, matching what `lines()` does.
+    if buffer.last() == Some(&b'\r') {
+        buffer.pop();
+    }
+
+    let text = String::from_utf8_lossy(&buffer).into_owned();
+    if over {
+        Ok(BoundedLine::Oversized {
+            prefix: text,
+            scanned,
+        })
+    } else {
+        Ok(BoundedLine::Line(text))
+    }
+}
 
 /// Set once the reader task observes that the worker's stdout has closed.
 ///
@@ -167,10 +269,14 @@ impl WorkerClient {
         let (outbound, outbound_rx) = mpsc::unbounded_channel::<String>();
 
         tokio::spawn(writer_loop(stdin, outbound_rx));
+        // The inbound cap is the same `max_content_size` the outbound path
+        // enforces: one configured limit on the size of a protocol frame,
+        // applied in both directions.
         tokio::spawn(reader_loop(
             stdout,
             Arc::clone(&pending),
             Arc::clone(&alive),
+            max_content_size,
         ));
         tokio::spawn(stderr_loop(stderr, Arc::clone(&stderr_tail)));
 
@@ -270,7 +376,10 @@ impl WorkerClient {
         let response =
             match tokio::time::timeout(std::time::Duration::from_secs(self.timeout_secs), rx).await
             {
-                Ok(Ok(response)) => response,
+                Ok(Ok(Ok(response))) => response,
+                // The reader task delivered a typed failure for this request —
+                // an over-limit response frame it had to discard.
+                Ok(Ok(Err(e))) => return Err(e),
                 // The sender was dropped without a value: the reader task saw EOF
                 // and cleared `pending`, so the worker is gone.
                 Ok(Err(_)) => {
@@ -372,14 +481,25 @@ async fn writer_loop(
 
 /// Read response lines and route each to the one-shot for its request id.
 ///
+/// Each frame is read under `limit` (the configured `max_content_size`), so a
+/// hostile or runaway worker cannot grow host memory by never emitting a
+/// newline. An over-limit frame is dropped rather than buffered: the waiting
+/// caller gets a typed `ResponseTooLarge`, and because the rest of the line is
+/// consumed to its newline the stream stays framed for the next response.
+///
 /// On EOF, `pending` is drained and every sender dropped, which resolves each
 /// in-flight `send_task` to `WorkerDied` rather than leaving it to time out.
-async fn reader_loop(stdout: tokio::process::ChildStdout, pending: Pending, alive: Alive) {
-    let mut lines = BufReader::new(stdout).lines();
+async fn reader_loop(
+    stdout: tokio::process::ChildStdout,
+    pending: Pending,
+    alive: Alive,
+    limit: usize,
+) {
+    let mut reader = BufReader::new(stdout);
 
     loop {
-        match lines.next_line().await {
-            Ok(Some(line)) => {
+        match read_bounded_line(&mut reader, limit).await {
+            Ok(BoundedLine::Line(line)) => {
                 let line = line.trim();
                 if line.is_empty() {
                     continue;
@@ -401,7 +521,7 @@ async fn reader_loop(stdout: tokio::process::ChildStdout, pending: Pending, aliv
                 match pending.lock().await.remove(request_id) {
                     Some(tx) => {
                         // Receiver gone means the caller already timed out.
-                        let _ = tx.send(response);
+                        let _ = tx.send(Ok(response));
                     },
                     None => {
                         // The fixed "shutdown" id lands here by design, as does
@@ -410,7 +530,45 @@ async fn reader_loop(stdout: tokio::process::ChildStdout, pending: Pending, aliv
                     },
                 }
             },
-            Ok(None) => {
+            Ok(BoundedLine::Oversized { prefix, scanned }) => {
+                // The frame is gone — only `limit` bytes of it were ever kept.
+                // Recovering the request id from that prefix is best-effort
+                // (JSON field order is not guaranteed), so the fallback is to
+                // fail every in-flight request: something the worker sent could
+                // not be delivered, and guessing which caller it belonged to
+                // would be worse than telling all of them.
+                tracing::error!(
+                    scanned,
+                    limit,
+                    "worker response frame exceeded max_content_size; \
+                     the frame was discarded rather than buffered"
+                );
+
+                let request_id = request_id_from_prefix(&prefix);
+                let mut pending = pending.lock().await;
+                match request_id.and_then(|id| pending.remove(&id).map(|tx| (id, tx))) {
+                    Some((id, tx)) => {
+                        tracing::warn!(
+                            request_id = %id,
+                            "failing the request whose response was over the size limit"
+                        );
+                        let _ = tx.send(Err(response_too_large(scanned, limit)));
+                    },
+                    None => {
+                        // No recoverable id. Fail everyone rather than leave a
+                        // caller waiting on a response that no longer exists.
+                        for (id, tx) in pending.drain() {
+                            tracing::warn!(
+                                request_id = %id,
+                                "failing an in-flight request: an over-limit response frame was \
+                                 discarded and its owner could not be identified"
+                            );
+                            let _ = tx.send(Err(response_too_large(scanned, limit)));
+                        }
+                    },
+                }
+            },
+            Ok(BoundedLine::Eof) => {
                 tracing::debug!("worker stdout closed");
                 break;
             },
@@ -431,6 +589,36 @@ async fn reader_loop(stdout: tokio::process::ChildStdout, pending: Pending, aliv
     pending.lock().await.clear();
 }
 
+/// The error a caller gets when its response frame was over the inbound cap.
+///
+/// A dedicated constructor because the failure needs one stable shape and one
+/// stable wording wherever the reader raises it. `HostError::TaskTooLarge` is
+/// deliberately not reused: its `Display` says "serialized task", which would
+/// point an operator at the *outbound* check and at their own payload rather
+/// than at the worker's reply.
+fn response_too_large(size: usize, limit: usize) -> HostError {
+    HostError::ResponseTooLarge { size, limit }
+}
+
+/// Best-effort recovery of a `request_id` from a truncated response frame.
+///
+/// The frame is not parseable JSON — it was cut mid-value — so this scans for
+/// the `"request_id"` key textually. `worker.py` emits the id early enough that
+/// this usually succeeds, which lets the reader fail exactly the one caller
+/// whose response was dropped instead of every in-flight request. A miss is
+/// expected and handled by the caller, not an error.
+fn request_id_from_prefix(prefix: &str) -> Option<String> {
+    const KEY: &str = "\"request_id\"";
+    let after_key = &prefix[prefix.find(KEY)? + KEY.len()..];
+    let after_colon = &after_key[after_key.find(':')? + 1..];
+    let opening = after_colon.find('"')?;
+    let rest = &after_colon[opening + 1..];
+    // A truncated frame can end mid-id; without a closing quote there is no
+    // way to know the value is complete, so treat it as unrecoverable.
+    let closing = rest.find('"')?;
+    Some(rest[..closing].to_string())
+}
+
 /// Log the worker's stderr and retain a bounded tail for diagnosis.
 ///
 /// Logged at debug: the worker's own logging goes here, and a credential-bearing
@@ -439,9 +627,41 @@ async fn reader_loop(stdout: tokio::process::ChildStdout, pending: Pending, aliv
 /// plugin logs, raises, or returns); this side never parses these lines or
 /// echoes them anywhere except into a `WorkerDied` message, which is the one
 /// place an operator genuinely needs them.
+///
+/// # Bounding
+///
+/// Stderr gets a *softer* policy than stdout. It carries no framing and no
+/// request routing — it is the channel that explains a death, so discarding it
+/// or killing the worker over it would destroy the diagnostic the operator
+/// needs precisely when things are going wrong. Each line is therefore
+/// truncated at `STDERR_MAX_LINE_BYTES` with an explicit marker (so an operator
+/// can tell a host cut from a worker that stopped mid-sentence) rather than
+/// raising an error, and the `STDERR_RETAIN_LINES` ring already caps the total.
+/// Together those give a hard ceiling of roughly
+/// `STDERR_RETAIN_LINES * STDERR_MAX_LINE_BYTES` on retained stderr, with peak
+/// read memory bounded per line — so a worker that spews stderr forever, in
+/// however few newlines, cannot grow the host.
 async fn stderr_loop(stderr: tokio::process::ChildStderr, tail: StderrTail) {
-    let mut lines = BufReader::new(stderr).lines();
-    while let Ok(Some(line)) = lines.next_line().await {
+    let mut reader = BufReader::new(stderr);
+
+    loop {
+        let line = match read_bounded_line(&mut reader, STDERR_MAX_LINE_BYTES).await {
+            Ok(BoundedLine::Line(line)) => line,
+            Ok(BoundedLine::Oversized { prefix, scanned }) => {
+                tracing::warn!(
+                    scanned,
+                    limit = STDERR_MAX_LINE_BYTES,
+                    "worker stderr line exceeded the per-line limit; retaining a truncated prefix"
+                );
+                format!("{prefix}{TRUNCATION_MARKER}")
+            },
+            Ok(BoundedLine::Eof) => break,
+            Err(e) => {
+                tracing::debug!("error reading worker stderr: {e}");
+                break;
+            },
+        };
+
         tracing::debug!(target: "cpex_hosts_python::worker_stderr", "{line}");
 
         let mut tail = tail.lock().await;
@@ -513,6 +733,9 @@ mod tests {
     ///   - `fail`      — reply `{"status":"error","message":<message>}`
     ///   - `die`       — exit immediately without replying
     ///   - `noisy`     — print a non-JSON line first, then reply
+    ///   - `huge`      — reply with a padded response of `size` bytes
+    ///   - `unframed`  — stream `size` bytes with no newline at all, then reply
+    ///   - `loud`      — write a `size`-byte stderr line, then reply
     ///   - `deaf`      — ignore `shutdown` and keep running (drives the kill)
     ///   - `shutdown`  — reply and exit, unless previously put in `deaf` mode
     const STUB_WORKER: &str = r#"
@@ -553,6 +776,25 @@ while True:
         continue
     if kind == "noisy":
         print("this is not JSON and must not desync the stream", flush=True)
+        print(json.dumps({"status": "success", "echo": task.get("payload"), "request_id": rid}), flush=True)
+        continue
+    if kind == "huge":
+        # request_id first, so the host can still name the caller from the
+        # truncated prefix it kept.
+        size = int(task.get("size", 1024))
+        print(json.dumps({"request_id": rid, "status": "success", "pad": "P" * size}), flush=True)
+        continue
+    if kind == "unframed":
+        # No newline at all: the pathological case for a line reader.
+        size = int(task.get("size", 1024))
+        sys.stdout.write("U" * size)
+        sys.stdout.flush()
+        print(json.dumps({"request_id": rid, "status": "success"}), flush=True)
+        continue
+    if kind == "loud":
+        size = int(task.get("size", 1024))
+        sys.stderr.write("L" * size + "\n")
+        sys.stderr.flush()
         print(json.dumps({"status": "success", "echo": task.get("payload"), "request_id": rid}), flush=True)
         continue
 
@@ -705,6 +947,292 @@ while True:
             .await
             .expect("the client survives a rejected task");
         assert_eq!(response["echo"], "small");
+    }
+
+    // --- inbound bounds ------------------------------------------------------
+
+    #[tokio::test]
+    async fn an_oversized_response_frame_is_rejected_rather_than_buffered() {
+        // The reviewer's finding: `max_content_size` was enforced only outbound,
+        // so a worker could return a frame of any size and the host would grow
+        // its heap to hold it. Before the fix this test hangs to the timeout
+        // (the giant frame is buffered, parsed, and delivered as a success);
+        // after it, the caller gets a prompt protocol error.
+        if skip_without_python3("an_oversized_response_frame_is_rejected_rather_than_buffered") {
+            return;
+        }
+        let dir = TempDir::new();
+        // Big enough for the outbound task, far smaller than the reply.
+        let client = stub_client(&dir, 4096, 10).await;
+
+        let err = client
+            .send_task(serde_json::json!({ "task_type": "huge", "size": 300_000 }))
+            .await
+            .expect_err("a response over the cap cannot be delivered");
+
+        match err {
+            HostError::ResponseTooLarge { size, limit } => {
+                assert_eq!(limit, 4096, "the error carries the configured cap");
+                assert!(
+                    size >= limit,
+                    "the reported size must be at least the cap it broke: {size}"
+                );
+                let message = err.to_string();
+                assert!(
+                    message.contains("4096") && message.contains("discarded"),
+                    "the error should name the limit and say the frame was dropped: {message}"
+                );
+                assert!(
+                    !message.contains("PPPP"),
+                    "the error must not echo the frame it refused: {message}"
+                );
+            },
+            other => panic!("expected a ResponseTooLarge error, got {other:?}"),
+        }
+
+        // Framing survived: the discarded frame was consumed to its newline, so
+        // the next response lands on a real line boundary.
+        let response = client
+            .send_task(serde_json::json!({ "task_type": "echo", "payload": "still-framed" }))
+            .await
+            .expect("the stream is still in sync after a dropped frame");
+        assert_eq!(response["echo"], "still-framed");
+    }
+
+    #[tokio::test]
+    async fn an_unterminated_response_stream_does_not_grow_without_bound() {
+        // The worst case for a line reader: bytes with no newline in sight.
+        // `lines()` would buffer all of them; `read_bounded_line` stops
+        // retaining at the cap and discards the rest as it arrives.
+        if skip_without_python3("an_unterminated_response_stream_does_not_grow_without_bound") {
+            return;
+        }
+        let dir = TempDir::new();
+        let client = stub_client(&dir, 4096, 10).await;
+
+        let err = client
+            .send_task(serde_json::json!({ "task_type": "unframed", "size": 500_000 }))
+            .await
+            .expect_err("an unframed flood cannot answer the request");
+        assert!(
+            matches!(err, HostError::ResponseTooLarge { .. }),
+            "got {err:?}"
+        );
+
+        // The stub appended a real response after the flood; the reader must
+        // have resynced on that newline rather than staying wedged.
+        let response = client
+            .send_task(serde_json::json!({ "task_type": "echo", "payload": "resynced" }))
+            .await
+            .expect("the reader recovers at the next newline");
+        assert_eq!(response["echo"], "resynced");
+    }
+
+    #[tokio::test]
+    async fn oversized_stderr_is_truncated_rather_than_killing_the_worker() {
+        // Stderr is diagnostic, so the policy differs from stdout: bound it and
+        // mark the cut, but keep the worker alive — this is the channel that
+        // explains a failure, and losing the worker over a verbose traceback
+        // would trade a diagnostic for an outage.
+        if skip_without_python3("oversized_stderr_is_truncated_rather_than_killing_the_worker") {
+            return;
+        }
+        let dir = TempDir::new();
+        let client = stub_client(&dir, 1_000_000, 10).await;
+
+        let response = client
+            .send_task(serde_json::json!({
+                "task_type": "loud", "size": 200_000, "payload": "survived"
+            }))
+            .await
+            .expect("a loud worker is still a working worker");
+        assert_eq!(response["echo"], "survived");
+        assert!(client.is_alive());
+
+        let lines = client.stderr_lines().await;
+        let loud = lines
+            .iter()
+            .find(|line| line.starts_with("LLL"))
+            .expect("the loud line was retained");
+
+        assert!(
+            loud.ends_with(TRUNCATION_MARKER),
+            "a cut line must say so, or an operator reads it as the worker stopping mid-sentence"
+        );
+        assert!(
+            loud.len() <= STDERR_MAX_LINE_BYTES + TRUNCATION_MARKER.len(),
+            "the retained line is bounded: {} bytes",
+            loud.len()
+        );
+        // And the prefix is genuinely useful, not an empty stub.
+        assert!(loud.len() > STDERR_MAX_LINE_BYTES / 2);
+    }
+
+    #[tokio::test]
+    async fn total_retained_stderr_stays_bounded_under_a_flood() {
+        // Per-line truncation alone is not enough: many long lines must also be
+        // capped, which is what the retain ring does. Together they put a hard
+        // ceiling on stderr memory.
+        if skip_without_python3("total_retained_stderr_stays_bounded_under_a_flood") {
+            return;
+        }
+        let dir = TempDir::new();
+        let client = stub_client(&dir, 1_000_000, 20).await;
+
+        for _ in 0..(STDERR_RETAIN_LINES * 2) {
+            client
+                .send_task(serde_json::json!({
+                    "task_type": "loud", "size": 20_000, "payload": "ok"
+                }))
+                .await
+                .expect("the worker keeps serving");
+        }
+
+        let lines = client.stderr_lines().await;
+        assert!(
+            lines.len() <= STDERR_RETAIN_LINES,
+            "the ring must cap line count: {}",
+            lines.len()
+        );
+        let total: usize = lines.iter().map(String::len).sum();
+        assert!(
+            total <= STDERR_RETAIN_LINES * (STDERR_MAX_LINE_BYTES + TRUNCATION_MARKER.len()),
+            "retained stderr must have a hard ceiling: {total} bytes"
+        );
+    }
+
+    // --- bounded line reading (no subprocess needed) -------------------------
+
+    #[tokio::test]
+    async fn a_bounded_read_returns_whole_lines_under_the_limit() {
+        let mut reader = BufReader::new(&b"first\nsecond\n"[..]);
+
+        for expected in ["first", "second"] {
+            match read_bounded_line(&mut reader, 64).await.unwrap() {
+                BoundedLine::Line(line) => assert_eq!(line, expected),
+                other => panic!("expected a line, got {}", describe(&other)),
+            }
+        }
+        assert!(matches!(
+            read_bounded_line(&mut reader, 64).await.unwrap(),
+            BoundedLine::Eof
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_bounded_read_reports_the_scanned_size_and_keeps_only_the_cap() {
+        let input = format!("{}\nafter\n", "x".repeat(500));
+        let mut reader = BufReader::new(input.as_bytes());
+
+        match read_bounded_line(&mut reader, 100).await.unwrap() {
+            BoundedLine::Oversized { prefix, scanned } => {
+                assert_eq!(prefix.len(), 100, "nothing past the cap is retained");
+                assert_eq!(scanned, 500, "the true size is still reported");
+            },
+            other => panic!("expected Oversized, got {}", describe(&other)),
+        }
+
+        // Resync: the oversized line was consumed through its newline.
+        match read_bounded_line(&mut reader, 100).await.unwrap() {
+            BoundedLine::Line(line) => assert_eq!(line, "after"),
+            other => panic!("expected the next line, got {}", describe(&other)),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_line_exactly_at_the_limit_is_not_oversized() {
+        // Off-by-one guard: the cap is the largest *acceptable* size, matching
+        // the outbound `line.len() > max_content_size` comparison.
+        let input = "xxxxx\n";
+        let mut reader = BufReader::new(input.as_bytes());
+        match read_bounded_line(&mut reader, 5).await.unwrap() {
+            BoundedLine::Line(line) => assert_eq!(line, "xxxxx"),
+            other => panic!(
+                "5 bytes under a 5-byte cap is fine, got {}",
+                describe(&other)
+            ),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_trailing_fragment_without_a_newline_is_still_a_line() {
+        let mut reader = BufReader::new(&b"no trailing newline"[..]);
+        match read_bounded_line(&mut reader, 64).await.unwrap() {
+            BoundedLine::Line(line) => assert_eq!(line, "no trailing newline"),
+            other => panic!("expected a line, got {}", describe(&other)),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_bounded_read_trims_crlf_like_lines_does() {
+        let mut reader = BufReader::new(&b"windows\r\n"[..]);
+        match read_bounded_line(&mut reader, 64).await.unwrap() {
+            BoundedLine::Line(line) => assert_eq!(line, "windows"),
+            other => panic!("expected a line, got {}", describe(&other)),
+        }
+    }
+
+    /// Name a `BoundedLine` for a panic message, since it has no `Debug`.
+    fn describe(line: &BoundedLine) -> &'static str {
+        match line {
+            BoundedLine::Line(_) => "Line",
+            BoundedLine::Oversized { .. } => "Oversized",
+            BoundedLine::Eof => "Eof",
+        }
+    }
+
+    #[test]
+    fn a_request_id_is_recovered_from_a_truncated_frame() {
+        // What lets the reader fail exactly the one caller whose response was
+        // dropped instead of every in-flight request.
+        assert_eq!(
+            request_id_from_prefix(r#"{"request_id": "abc-123", "status": "succ"#),
+            Some("abc-123".to_string())
+        );
+        assert_eq!(
+            request_id_from_prefix(r#"{"status":"success","request_id":"xyz","pad":"PPP"#),
+            Some("xyz".to_string())
+        );
+    }
+
+    #[test]
+    fn an_unrecoverable_request_id_is_reported_as_absent() {
+        // Each of these must be a clean `None` — a wrong guess would fail the
+        // wrong caller, which is worse than failing all of them.
+        for prefix in [
+            r#"{"status":"success","pad":"PPPP"#, // id not in the prefix
+            r#"{"request_id": "cut-off-mid-val"#, // no closing quote
+            r#"{"request_id""#,                   // no colon
+            "",                                   // nothing at all
+        ] {
+            assert_eq!(
+                request_id_from_prefix(prefix),
+                None,
+                "should not guess an id from {prefix:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_over_limit_error_names_the_response_not_the_task() {
+        // Reusing `TaskTooLarge` would point an operator at their own outbound
+        // payload for a fault in the worker's reply.
+        let err = response_too_large(9_000, 4_096);
+        let message = err.to_string();
+        assert!(matches!(
+            err,
+            HostError::ResponseTooLarge {
+                size: 9_000,
+                limit: 4_096
+            }
+        ));
+        assert_eq!(err.code(), "response_too_large");
+        assert!(message.contains("response"), "{message}");
+        assert!(!message.contains("serialized task"), "{message}");
+        assert!(
+            message.contains("9000") && message.contains("4096"),
+            "{message}"
+        );
     }
 
     #[tokio::test]

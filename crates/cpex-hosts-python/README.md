@@ -146,10 +146,13 @@ token behind it is dropped rather than honored.
 
 ## Credentials
 
-The framework strips raw tokens at every process boundary (the token fields are
-`#[serde(skip)]`), which would leave identity resolvers and token delegators
-unable to work out-of-process. This host adds a narrow, capability-gated
-exception.
+The token fields on the framework's credential types are `#[serde(skip)]`, so no
+generic serialization of an `Extensions` carries token bytes — which would leave
+identity resolvers and token delegators unable to work out-of-process. This host
+adds a narrow, capability-gated exception on a separate channel: raw credential
+material **does** reach the worker process, deliberately. `cpex-core`'s
+`RawCredentialsExtension` module docs state the same boundary from the other
+side.
 
 A plugin declares what it needs:
 

@@ -8,11 +8,12 @@
 // # Why this exists
 //
 // `RawInboundToken.token` and `RawDelegatedToken.token` are `#[serde(skip)]`,
-// so serializing an `Extensions` yields no token bytes. That is the documented
-// "raw credentials never leave the host process" invariant — and it means an
-// out-of-process identity resolver or token delegator cannot do its job.
+// so serializing an `Extensions` yields no token bytes — which means an
+// out-of-process identity resolver or token delegator cannot do its job over
+// that channel.
 //
-// This module deliberately reverses that invariant, narrowly: a dedicated DTO
+// This module is the narrow, documented exception `cpex-core`'s
+// `RawCredentialsExtension` points at: a dedicated DTO
 // carries the token as a plain string, built only on the capability-gated
 // dispatch path for the two hooks whose Python payload models a raw token at
 // all. The production types keep their serde guard and are never serialized;
@@ -47,7 +48,7 @@
 use std::collections::{HashMap, HashSet};
 
 use cpex_core::extensions::raw_credentials::{
-    DelegationMode, RawDelegatedToken, RawInboundToken, TokenKind, TokenRole,
+    DelegationKey, DelegationMode, RawDelegatedToken, RawInboundToken, TokenKind, TokenRole,
 };
 use cpex_core::extensions::Extensions;
 use serde::Serialize;
@@ -210,9 +211,19 @@ pub fn attach_credential(
             if !capabilities.contains(CAP_READ_DELEGATED) {
                 return Ok(());
             }
+            // The audience the hook was actually invoked for. Read from the
+            // already-serialized payload, which is the only place the host
+            // learns it — `DelegationPayload.target_audience` names the upstream
+            // this delegation is for, and a token minted for a *different*
+            // audience is the wrong credential to hand over.
+            let requested_audience = requested_audience(task);
             CredentialDto {
                 inbound: None,
-                delegated: Some(build_delegated(extensions, hook_name)?),
+                delegated: Some(build_delegated(
+                    extensions,
+                    hook_name,
+                    requested_audience.as_deref(),
+                )?),
             }
         },
         // No other hook has a payload field to receive a token.
@@ -303,10 +314,45 @@ fn inbound_from_token(
     })
 }
 
+/// The audience the `token_delegate` hook was invoked for, if the payload names
+/// one.
+///
+/// `DelegationPayload.target_audience` is optional, so a `None` here means the
+/// caller did not scope the delegation and any audience is acceptable.
+fn requested_audience(task: &Value) -> Option<String> {
+    task.get("payload")?
+        .get("target_audience")?
+        .as_str()
+        .map(str::to_string)
+}
+
 /// Build `credential.delegated` from the filtered extensions view.
+///
+/// # Selection
+///
+/// `delegated_tokens` is a `HashMap`, so iteration order is unspecified and
+/// varies run to run. Selecting on `mode` alone therefore let map order decide
+/// *which* token a plugin received whenever more than one candidate shared a
+/// mode — including tokens minted for entirely different upstreams. Audience is
+/// the field that makes a delegated token the right or wrong credential, so it
+/// is filtered on first, and the remaining choice is broken deterministically:
+///
+///   1. Keep only tokens whose audience matches the hook's `target_audience`
+///      (every token, when the payload named no audience).
+///   2. Prefer `OnBehalfOfUser` over any other mode — a delegator asked to act
+///      for the user must not fall back to the gateway's own identity.
+///   3. Within one mode, order by the key's `(subject_id, scopes)` and take the
+///      first. Arbitrary but *stable*, so the same request picks the same token
+///      every time instead of rotating with the hasher's seed.
+///
+/// No token matching both audience and mode is a fail-closed error, not a
+/// fallback to some other audience's token: handing a plugin a credential
+/// minted for a different upstream is worse than handing it none, because it
+/// would be attached to a request the audience never authorized it for.
 fn build_delegated(
     extensions: &Extensions,
     hook_name: &str,
+    requested_audience: Option<&str>,
 ) -> Result<DelegatedCredential, HostError> {
     let raw = extensions
         .raw_credentials
@@ -319,22 +365,57 @@ fn build_delegated(
             ),
         })?;
 
-    // Prefer an on-behalf-of-user token: a delegator asked to act for the user
-    // should not silently fall back to the gateway's own identity.
-    let token = raw
+    // Match on the key's audience *and* the token's own, so a token whose two
+    // copies of the field disagree is never treated as a match for either.
+    let mut candidates: Vec<(&DelegationKey, &RawDelegatedToken)> = raw
         .delegated_tokens
         .iter()
-        .find(|(key, _)| key.mode == DelegationMode::OnBehalfOfUser)
-        .or_else(|| raw.delegated_tokens.iter().next())
-        .map(|(_, token)| token)
-        .ok_or_else(|| HostError::Credential {
+        .filter(|(key, token)| match requested_audience {
+            Some(audience) => key.audience == audience && token.audience == audience,
+            None => true,
+        })
+        .collect();
+
+    // Deterministic total order: preferred mode first, then the key's stable
+    // fields. Without this the pick rides on `HashMap` iteration order.
+    candidates.sort_by(|(left, _), (right, _)| {
+        mode_rank(&left.mode)
+            .cmp(&mode_rank(&right.mode))
+            .then_with(|| left.subject_id.cmp(&right.subject_id))
+            .then_with(|| left.scopes.cmp(&right.scopes))
+    });
+
+    let (_, token) = candidates.first().ok_or_else(|| {
+        // The message names the audience — an identifier for an upstream, not
+        // credential material — because "no token" and "no token *for this
+        // audience*" call for different operator fixes.
+        let scope = match requested_audience {
+            Some(audience) => format!(" for audience '{audience}'"),
+            None => String::new(),
+        };
+        HostError::Credential {
             message: format!(
                 "plugin declared '{CAP_READ_DELEGATED}' for hook '{hook_name}' but no delegated \
-                 token is present — refusing to dispatch without it"
+                 token{scope} is present — refusing to dispatch without it, and refusing to \
+                 substitute a token minted for a different audience"
             ),
-        })?;
+        }
+    })?;
 
     delegated_from_token(token, hook_name)
+}
+
+/// Sort key expressing the mode preference. Lower sorts first.
+///
+/// `DelegationMode` is matched exhaustively-by-fallback rather than listed, so a
+/// mode added upstream ranks after the two the host reasons about instead of
+/// silently outranking `OnBehalfOfUser`.
+fn mode_rank(mode: &DelegationMode) -> u8 {
+    match mode {
+        DelegationMode::OnBehalfOfUser => 0,
+        DelegationMode::AsGateway => 1,
+        _ => 2,
+    }
 }
 
 /// Convert one `RawDelegatedToken` into its wire form.
@@ -407,6 +488,71 @@ mod tests {
 
     fn task() -> Value {
         serde_json::json!({ "task_type": "load_and_run_hook" })
+    }
+
+    /// A `token_delegate` task whose payload names the audience the delegation
+    /// is for — the shape `plugin.rs` actually builds.
+    fn delegate_task(target_audience: &str) -> Value {
+        serde_json::json!({
+            "task_type": "load_and_run_hook",
+            "hook_type": "token_delegate",
+            "payload": {
+                "target_name": "billing",
+                "target_type": "tool",
+                "target_audience": target_audience,
+            },
+        })
+    }
+
+    /// One delegated token, keyed consistently with its own audience field.
+    fn delegated(
+        subject: &str,
+        audience: &str,
+        mode: DelegationMode,
+        secret: &str,
+    ) -> (DelegationKey, RawDelegatedToken) {
+        (
+            DelegationKey {
+                subject_id: subject.into(),
+                audience: audience.into(),
+                scopes: vec![],
+                mode,
+            },
+            RawDelegatedToken::new(
+                secret,
+                "Authorization",
+                audience,
+                vec![],
+                chrono::Utc::now(),
+            ),
+        )
+    }
+
+    fn extensions_from(tokens: Vec<(DelegationKey, RawDelegatedToken)>) -> Extensions {
+        let mut raw = RawCredentialsExtension::default();
+        for (key, token) in tokens {
+            raw.delegated_tokens.insert(key, token);
+        }
+        Extensions {
+            raw_credentials: Some(Arc::new(raw)),
+            ..Default::default()
+        }
+    }
+
+    /// The delegated token a `token_delegate` dispatch would carry, or the
+    /// fail-closed error.
+    fn pick_delegated(extensions: &Extensions, target_audience: &str) -> Result<String, HostError> {
+        let mut task = delegate_task(target_audience);
+        attach_credential(
+            &mut task,
+            "token_delegate",
+            extensions,
+            &caps(&[CAP_READ_DELEGATED]),
+        )?;
+        Ok(task[CREDENTIAL_FIELD]["delegated"]["token"]
+            .as_str()
+            .expect("a delegated token was attached")
+            .to_string())
     }
 
     // --- the capability gate -------------------------------------------------
@@ -935,6 +1081,222 @@ mod tests {
         assert_eq!(
             task[CREDENTIAL_FIELD]["delegated"]["token"], "USER-DELEGATED-TOKEN",
             "a delegator acting for the user must not fall back to the gateway's identity"
+        );
+    }
+
+    // --- delegated-token selection ------------------------------------------
+
+    #[test]
+    fn the_delegated_pick_matches_the_requested_audience() {
+        // The reviewer's finding: filtering on mode alone let `HashMap` order
+        // decide which token a plugin got. Three tokens share the preferred
+        // mode and differ only by audience, so a mode-only filter picks one of
+        // the three at random — and two of those three are credentials minted
+        // for a completely different upstream.
+        let extensions = extensions_from(vec![
+            delegated(
+                "alice",
+                "https://billing.example.com",
+                DelegationMode::OnBehalfOfUser,
+                "BILLING-TOKEN",
+            ),
+            delegated(
+                "alice",
+                "https://search.example.com",
+                DelegationMode::OnBehalfOfUser,
+                "SEARCH-TOKEN",
+            ),
+            delegated(
+                "alice",
+                "https://payroll.example.com",
+                DelegationMode::OnBehalfOfUser,
+                "PAYROLL-TOKEN",
+            ),
+        ]);
+
+        assert_eq!(
+            pick_delegated(&extensions, "https://search.example.com").unwrap(),
+            "SEARCH-TOKEN",
+            "a token minted for another audience must never be substituted"
+        );
+        assert_eq!(
+            pick_delegated(&extensions, "https://billing.example.com").unwrap(),
+            "BILLING-TOKEN"
+        );
+    }
+
+    #[test]
+    fn the_delegated_pick_is_stable_across_runs_and_insertion_orders() {
+        // `HashMap` seeds its hasher per process *and* orders by insertion
+        // history, so the pre-fix selection could differ run to run and between
+        // two extensions holding the same tokens. Both are pinned here: every
+        // repetition, under every insertion order, yields the same token.
+        let forward = vec![
+            delegated("alice", "aud-a", DelegationMode::OnBehalfOfUser, "A"),
+            delegated("bob", "aud-a", DelegationMode::OnBehalfOfUser, "B"),
+            delegated("carol", "aud-a", DelegationMode::OnBehalfOfUser, "C"),
+            delegated("dave", "aud-a", DelegationMode::OnBehalfOfUser, "D"),
+        ];
+        let reversed: Vec<_> = forward.iter().rev().cloned().collect();
+
+        // `alice` sorts first among the equal-mode candidates.
+        const EXPECTED: &str = "A";
+
+        for _ in 0..200 {
+            let one = extensions_from(forward.clone());
+            let other = extensions_from(reversed.clone());
+            assert_eq!(pick_delegated(&one, "aud-a").unwrap(), EXPECTED);
+            assert_eq!(
+                pick_delegated(&other, "aud-a").unwrap(),
+                EXPECTED,
+                "insertion order must not change the pick"
+            );
+        }
+    }
+
+    #[test]
+    fn no_token_for_the_requested_audience_fails_closed() {
+        // Fail closed rather than fall back: attaching another audience's token
+        // would send a credential to an upstream that never authorized it.
+        let extensions = extensions_from(vec![delegated(
+            "alice",
+            "https://billing.example.com",
+            DelegationMode::OnBehalfOfUser,
+            "BILLING-TOKEN",
+        )]);
+
+        let err = pick_delegated(&extensions, "https://attacker.example.com")
+            .expect_err("no matching audience means no token");
+
+        let message = err.to_string();
+        assert!(matches!(err, HostError::Credential { .. }), "{message}");
+        assert!(
+            message.contains("attacker.example.com"),
+            "the error should name the audience that had no token: {message}"
+        );
+        assert!(
+            !message.contains("BILLING-TOKEN"),
+            "the error must not name the token it declined to substitute: {message}"
+        );
+    }
+
+    #[test]
+    fn the_audience_filter_is_applied_before_the_mode_preference() {
+        // Mode preference must not reach across audiences: the only token for
+        // the requested audience is `AsGateway`, and the `OnBehalfOfUser` token
+        // belongs to a different upstream. Preferring mode first would hand
+        // over the wrong-audience token.
+        let extensions = extensions_from(vec![
+            delegated(
+                "alice",
+                "https://other.example.com",
+                DelegationMode::OnBehalfOfUser,
+                "OTHER-AUDIENCE-USER-TOKEN",
+            ),
+            delegated(
+                "gw",
+                "https://billing.example.com",
+                DelegationMode::AsGateway,
+                "BILLING-GATEWAY-TOKEN",
+            ),
+        ]);
+
+        assert_eq!(
+            pick_delegated(&extensions, "https://billing.example.com").unwrap(),
+            "BILLING-GATEWAY-TOKEN"
+        );
+    }
+
+    #[test]
+    fn within_one_audience_the_user_token_still_wins() {
+        // The original mode preference survives the audience filter: among
+        // same-audience candidates, a delegator acting for the user must not
+        // get the gateway's own identity — even when the gateway token sorts
+        // first by subject.
+        let extensions = extensions_from(vec![
+            delegated("aaa-gw", "aud", DelegationMode::AsGateway, "GATEWAY-TOKEN"),
+            delegated(
+                "zzz-user",
+                "aud",
+                DelegationMode::OnBehalfOfUser,
+                "USER-TOKEN",
+            ),
+        ]);
+
+        assert_eq!(pick_delegated(&extensions, "aud").unwrap(), "USER-TOKEN");
+    }
+
+    #[test]
+    fn a_key_whose_audience_disagrees_with_its_token_is_not_a_match() {
+        // The audience appears on both the cache key and the token. A mismatch
+        // means one of the two is wrong, and there is no safe way to guess
+        // which — so neither audience matches it.
+        let (key, _) = delegated("alice", "aud-key", DelegationMode::OnBehalfOfUser, "T");
+        let token = RawDelegatedToken::new(
+            "MISMATCHED-TOKEN",
+            "Authorization",
+            "aud-token",
+            vec![],
+            chrono::Utc::now(),
+        );
+        let extensions = extensions_from(vec![(key, token)]);
+
+        for audience in ["aud-key", "aud-token"] {
+            assert!(
+                pick_delegated(&extensions, audience).is_err(),
+                "a self-inconsistent token must not satisfy '{audience}'"
+            );
+        }
+    }
+
+    #[test]
+    fn an_unscoped_delegation_accepts_any_audience() {
+        // `DelegationPayload.target_audience` is optional. With no audience to
+        // filter on there is nothing to be wrong about, so the mode preference
+        // and the stable tiebreak carry the pick — but it must still be
+        // deterministic.
+        let tokens = vec![
+            delegated("alice", "aud-a", DelegationMode::OnBehalfOfUser, "A"),
+            delegated("bob", "aud-b", DelegationMode::OnBehalfOfUser, "B"),
+        ];
+
+        for _ in 0..50 {
+            let mut task = serde_json::json!({
+                "task_type": "load_and_run_hook",
+                "payload": { "target_name": "billing", "target_type": "tool" },
+            });
+            attach_credential(
+                &mut task,
+                "token_delegate",
+                &extensions_from(tokens.clone()),
+                &caps(&[CAP_READ_DELEGATED]),
+            )
+            .expect("an unscoped delegation is still served");
+            assert_eq!(task[CREDENTIAL_FIELD]["delegated"]["token"], "A");
+        }
+    }
+
+    #[test]
+    fn the_mode_rank_puts_the_user_first_and_unknown_modes_last() {
+        // An upstream-added mode must not outrank `OnBehalfOfUser` by accident.
+        assert!(mode_rank(&DelegationMode::OnBehalfOfUser) < mode_rank(&DelegationMode::AsGateway));
+    }
+
+    #[test]
+    fn the_requested_audience_is_read_from_the_payload() {
+        assert_eq!(
+            requested_audience(&delegate_task("https://billing.example.com")).as_deref(),
+            Some("https://billing.example.com")
+        );
+        // Absent, non-string, and payload-less tasks all mean "unscoped".
+        assert_eq!(requested_audience(&task()), None);
+        assert_eq!(
+            requested_audience(&serde_json::json!({ "payload": { "target_audience": 7 } })),
+            None
+        );
+        assert_eq!(
+            requested_audience(&serde_json::json!({ "payload": {} })),
+            None
         );
     }
 

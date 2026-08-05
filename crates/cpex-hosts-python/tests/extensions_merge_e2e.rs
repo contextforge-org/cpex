@@ -23,14 +23,56 @@
 // actually promises — the executor's copy-on-write merge validating the return —
 // instead of a host-local imitation of it.
 //
-// # Two layers, two skip conditions
+// # Two layers, two requirements
 //
 // The inbound-shape test needs nothing but this crate: it drives the adapter's
 // task-building step and inspects the JSON. The round-trip tests need a real
 // worker, so they need python3, a `cpex` Python checkout, and a `worker.py` that
-// actually consumes the `extensions` field. The Python side lives on a different
-// branch (see `testing::python_source`), so those skip with a precise reason
-// until it lands rather than failing for the wrong one.
+// actually consumes the `extensions` field. Those two are `#[ignore]`d and run
+// by `make test-python-e2e`, so a default `cargo test` reports them as ignored
+// instead of passing a body that never executed.
+//
+// # A double-filter these tests caught, and where the fix landed
+//
+// The two worker-backed tests below used to fail, and the symptom is worth
+// recording because nothing in either process was individually wrong.
+//
+// The 3-arg hook received `security` with an *empty* label set and `http` as
+// `None` — byte-identical to what filtering produces for a plugin with **no**
+// capabilities, even though this plugin declares `read_labels` + `read_headers`
+// + `append_labels`. The executor's filter was correct, `to_wire` was correct
+// (the inbound-shape test above pins it), and `reconstruct_extensions` rebuilt
+// the label faithfully from the JSON the host actually sent.
+//
+// The loss happened one layer further in. `cpex/framework/manager.py`'s
+// `_execute_with_timeout` re-filters extensions against
+// `plugin_ref.capabilities` before invoking a 3-arg hook — reasonably, since
+// in-process that is the only filter there is. But `build_task` did not send a
+// `capabilities` field, so the worker's `PluginConfig` defaulted it to an empty
+// frozenset and the second filter stripped every gated slot the first had just
+// allowed. Two correct filters, composed, deleted the channel.
+//
+// The host now forwards the declared capabilities so both filters see the same
+// input and the second is idempotent. It forwards only the names the Python
+// `Capability` enum models: that validator *raises* on an unknown name, during
+// config construction inside the worker, so a name like `read_client` (host-only
+// today) would be a dead hook rather than a narrower view. See
+// `IsolatedPythonPlugin::worker_capabilities`.
+//
+// # Still open, on the Python side: every header is dropped
+//
+// This framework's `HttpExtension` models a single `headers` field, while the
+// host sends `request_headers`/`response_headers` per the wire contract.
+// Pydantic drops unknown keys silently, so *every* header the host sends is
+// discarded with no error — confirmed directly: `model_validate` on
+// `{"request_headers": {...}}` yields `headers={}`.
+//
+// That is a gap in the Python model, not in this host, so it is not fixed here.
+// The fixture reads whichever attribute exists and records `HTTP_SLOT_EMPTY`,
+// which keeps the mismatch visible in the verdict instead of letting it read as
+// a clean run. The security assertion still holds either way, and holds for the
+// stronger reason: the label proves the channel is live, so an empty header map
+// is evidence of the model gap rather than of a dead channel.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -40,7 +82,7 @@ use cpex_core::plugin::PluginConfig;
 use cpex_hosts_python::extensions::{EXTENSIONS_FIELD, MODIFIED_EXTENSIONS_FIELD};
 use cpex_hosts_python::factory::KIND;
 use cpex_hosts_python::testing::{
-    prebuild_venv, python_source, scaffold_plugin, skip_without_python3,
+    prebuild_venv, python_source, scaffold_plugin, skip, skip_without_python3,
     worker_delivers_extensions, TempDir,
 };
 
@@ -88,10 +130,25 @@ class ExtensionsAwarePlugin(Plugin):
             if extensions.security is not None:
                 labels = set(extensions.security.labels or [])
             saw_label = INBOUND_LABEL in labels
+
             # Sensitive headers must never arrive over this channel.
+            #
+            # The Rust host serializes `request_headers`/`response_headers`, but
+            # this framework's HttpExtension models a single `headers` field, and
+            # pydantic drops unknown keys silently — so the slot can arrive
+            # present-but-empty. Read whichever attribute this build actually
+            # exposes instead of assuming one: hardcoding the wrong name turns a
+            # header leak into an AttributeError, which is a crash rather than
+            # the security assertion this test is here to make.
             headers = {}
+            slot_empty = False
             if extensions.http is not None:
-                headers = dict(extensions.http.request_headers or {})
+                for attr in ("request_headers", "headers"):
+                    if hasattr(extensions.http, attr):
+                        headers = dict(getattr(extensions.http, attr) or {})
+                        break
+                slot_empty = not headers
+
             lowered = {k.lower() for k in headers}
             leaked = lowered & {"authorization", "cookie", "x-api-key"}
             verdict = "GOT_LABEL" if saw_label else "NO_LABEL"
@@ -99,6 +156,11 @@ class ExtensionsAwarePlugin(Plugin):
                 verdict += f";LEAKED={sorted(leaked)}"
             if "x-request-id" in lowered:
                 verdict += ";GOT_SAFE_HEADER"
+            elif slot_empty:
+                # The host sent a safe header; nothing arrived. Recorded so the
+                # host/worker field-name mismatch stays visible in the verdict
+                # rather than looking like a clean run.
+                verdict += ";HTTP_SLOT_EMPTY"
 
         marker = os.path.join(os.getcwd(), "extensions_verdict.txt")
         with open(marker, "w") as f:
@@ -123,16 +185,19 @@ fn require_worker(test_name: &str) -> Option<PathBuf> {
     let source = match python_source() {
         Ok(source) => source,
         Err(reason) => {
-            println!("SKIP {test_name}: {reason}");
+            skip(test_name, &reason);
             return None;
         },
     };
     if !worker_delivers_extensions(&source) {
-        println!(
-            "SKIP {test_name}: the cpex source at {} has a worker.py that does not deliver the \
-             `{EXTENSIONS_FIELD}` field to execute_plugin — the inbound channel has no consumer \
-             there yet",
-            source.display()
+        skip(
+            test_name,
+            &format!(
+                "the cpex source at {} has a worker.py that does not deliver the \
+                 `{EXTENSIONS_FIELD}` field to execute_plugin — the inbound channel has no \
+                 consumer there yet",
+                source.display()
+            ),
         );
         return None;
     }
@@ -145,7 +210,10 @@ fn setup(dir: &TempDir, source: &Path, test_name: &str) -> Option<PathBuf> {
     match prebuild_venv(&plugin_dir, source, FIXTURE_CLASS, "ext_pkg") {
         Ok(()) => Some(plugin_dir),
         Err(reason) => {
-            println!("SKIP {test_name}: could not prepare the plugin venv — {reason}");
+            skip(
+                test_name,
+                &format!("could not prepare the plugin venv — {reason}"),
+            );
             None
         },
     }
@@ -277,6 +345,7 @@ fn a_plugin_without_read_labels_gets_no_security_slot() {
 // =====================================================================
 
 #[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires python3 + a cpex Python checkout (CPEX_PYTHON_SOURCE); run via `make test-python-e2e`"]
 async fn an_appended_label_survives_the_merge_when_the_capability_is_declared() {
     // The monotonic accept case, end to end. `append_labels` makes the executor
     // mint a labels write token, the host honors the returned `security`, and
@@ -321,6 +390,7 @@ async fn an_appended_label_survives_the_merge_when_the_capability_is_declared() 
 }
 
 #[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires python3 + a cpex Python checkout (CPEX_PYTHON_SOURCE); run via `make test-python-e2e`"]
 async fn an_appended_label_is_dropped_without_the_capability() {
     // Same fixture, same return value — but no `append_labels`, so the executor
     // mints no token and the host drops the write. The pipeline's labels are
@@ -352,6 +422,66 @@ async fn an_appended_label_is_dropped_without_the_capability() {
     );
 }
 
+/// A factory that builds the real Python plugin against a scaffolded temp dir.
+///
+/// `IsolatedVenvFactory` deliberately ignores a `plugin_dirs` key in the
+/// `config:` block — the host always resolves `<project root>/plugins`, and the
+/// factory warns and drops the key rather than appearing to honour it. That is
+/// the right production behaviour, and it is covered by the factory's own unit
+/// tests, so it must not be relaxed to suit a test.
+///
+/// But it leaves these tests no config-only way to redirect the venv, and a run
+/// that built into the repository's real `plugins/` would be both destructive
+/// and dependent on developer-machine state. The temp-dir overrides are
+/// builder-only (`with_plugin_dirs` / `with_worker_cwd`) by design, so this
+/// factory applies them and hands the manager the finished plugin. Everything
+/// downstream — capability filtering, write-token minting, the copy-on-write
+/// merge — is the real manager path, which is what these tests exist to cover.
+mod temp_dir_factory {
+    use std::path::PathBuf;
+    use std::sync::Arc;
+
+    use cpex_core::error::PluginError;
+    use cpex_core::factory::{PluginFactory, PluginInstance};
+    use cpex_core::plugin::PluginConfig;
+    use cpex_hosts_python::plugin::{IsolatedPythonPlugin, PythonHookAdapter};
+
+    /// Distinct from `factory::KIND` so registering this never shadows the real
+    /// factory for any other test in the binary.
+    pub const KIND: &str = "isolated_venv_temp_dir";
+
+    pub struct TempDirFactory {
+        pub plugin_dir: PathBuf,
+        pub worker_cwd: PathBuf,
+    }
+
+    impl PluginFactory for TempDirFactory {
+        fn create(&self, config: &PluginConfig) -> Result<PluginInstance, Box<PluginError>> {
+            let plugin = Arc::new(
+                IsolatedPythonPlugin::from_config(config)?
+                    .with_plugin_dirs(vec![self.plugin_dir.display().to_string()])
+                    .with_worker_cwd(self.worker_cwd.clone()),
+            );
+
+            let handlers: Vec<_> = config
+                .hooks
+                .iter()
+                .map(
+                    |hook| -> (&'static str, Arc<dyn cpex_core::registry::AnyHookHandler>) {
+                        let leaked: &'static str = Box::leak(hook.clone().into_boxed_str());
+                        (
+                            leaked,
+                            Arc::new(PythonHookAdapter::new(Arc::clone(&plugin), leaked)),
+                        )
+                    },
+                )
+                .collect();
+
+            Ok(PluginInstance { plugin, handlers })
+        }
+    }
+}
+
 /// Register the Python plugin on `tool_pre_invoke`, run one pipeline pass, and
 /// return the fixture's recorded verdict plus the merged extensions.
 ///
@@ -367,20 +497,18 @@ async fn run_pipeline(
     use cpex_core::manager::{ManagerConfig, PluginManager};
 
     let mut config = plugin_config(capabilities);
-    // Point the plugin at the scaffolded temp dir and run the worker there, so
-    // a test run never touches the repository's real plugins directory.
-    config.config = Some({
-        let mut base = config
-            .config
-            .take()
-            .unwrap_or_else(|| serde_json::json!({}));
-        base["plugin_dirs"] = serde_json::json!([plugin_dir.display().to_string()]);
-        base["worker_cwd"] = serde_json::json!(dir.path().display().to_string());
-        base
-    });
+    // The temp-dir redirection rides on the factory (see `temp_dir_factory`),
+    // not on a config key the host ignores.
+    config.kind = temp_dir_factory::KIND.into();
 
     let manager = PluginManager::new(ManagerConfig::default());
-    manager.register_factory(KIND, Box::new(cpex_hosts_python::IsolatedVenvFactory));
+    manager.register_factory(
+        temp_dir_factory::KIND,
+        Box::new(temp_dir_factory::TempDirFactory {
+            plugin_dir: plugin_dir.to_path_buf(),
+            worker_cwd: dir.path().to_path_buf(),
+        }),
+    );
     manager
         .load_config(CpexConfig {
             plugins: vec![config],

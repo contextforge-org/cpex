@@ -41,9 +41,12 @@
 //
 // # Credentials
 //
-// The framework strips raw tokens at every process boundary (the token
-// fields are `#[serde(skip)]`). Identity and delegation plugins genuinely
-// need them, so this host adds a capability-gated wire DTO: a plugin that
+// The token fields on `RawInboundToken` / `RawDelegatedToken` are
+// `#[serde(skip)]`, so no generic serialization of an `Extensions` carries
+// token bytes across a process boundary. Identity and delegation plugins
+// genuinely need them, so this host adds a capability-gated wire DTO on a
+// separate channel — raw material *does* reach the worker process here, by
+// design and under the conditions below. A plugin that
 // declared `read_inbound_credentials` or `read_delegated_tokens` gets a
 // dedicated `credential` object on the task JSON, built by reading the
 // in-memory token directly. Production credential types keep their serde

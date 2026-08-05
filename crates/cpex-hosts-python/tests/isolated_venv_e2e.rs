@@ -10,13 +10,19 @@
 // catch a field-name disagreement between this host's task JSON and what
 // `worker.py` actually reads.
 //
-// # Requirements, and why these skip instead of failing
+// # Requirements, and why these are `#[ignore]`d
 //
 // Two things must be present: a `python3`, and a `cpex` Python source tree to
-// install into the venv. Neither is guaranteed in CI, and the plan calls for a
-// clean skip rather than a red build when they are absent — a machine without
-// them has not covered this path, but it has not broken it either. Every skip
-// prints its reason so a silent no-op is distinguishable from a pass.
+// install into the venv. Neither is guaranteed on an arbitrary machine, so these
+// tests are `#[ignore]`d: a default `cargo test` reports them as *ignored*
+// rather than claiming a pass for a body that never ran. That distinction is the
+// point — an early-returning test that prints "SKIP" still counts as `ok` in
+// cargo's summary, which is how a suite comes to report safety it has not
+// verified.
+//
+// Run them with `make test-python-e2e`, which sets `CPEX_REQUIRE_PYTHON_E2E=1`.
+// Under that variable an unmet prerequisite panics instead of skipping, so the
+// lane that is supposed to have a complete environment cannot go quiet.
 //
 // The framework source is discovered rather than assumed: `cpex` on PyPI is
 // behind this branch (its `worker.py` predates the credential field), so the
@@ -34,7 +40,7 @@ use cpex_hosts_python::factory::KIND;
 use cpex_hosts_python::legacy::ToolPreInvokePayload;
 use cpex_hosts_python::plugin::{IsolatedPythonPlugin, PythonHookAdapter};
 use cpex_hosts_python::testing::{
-    prebuild_venv, python_source, scaffold_plugin, skip_without_python3, TempDir,
+    prebuild_venv, python_source, scaffold_plugin, skip, skip_without_python3, TempDir,
 };
 
 /// A Python plugin that marks the filesystem when its hook body runs, so the
@@ -79,7 +85,7 @@ fn require_environment(test_name: &str) -> Option<PathBuf> {
     match python_source() {
         Ok(source) => Some(source),
         Err(reason) => {
-            println!("SKIP {test_name}: {reason}");
+            skip(test_name, &reason);
             None
         },
     }
@@ -94,7 +100,10 @@ fn setup(dir: &TempDir, source: &Path, test_name: &str) -> Option<PathBuf> {
     match prebuild_venv(&plugin_dir, source, FIXTURE_CLASS, "fixture_pkg") {
         Ok(()) => Some(plugin_dir),
         Err(reason) => {
-            println!("SKIP {test_name}: could not prepare the plugin venv — {reason}");
+            skip(
+                test_name,
+                &format!("could not prepare the plugin venv — {reason}"),
+            );
             None
         },
     }
@@ -158,6 +167,7 @@ async fn invoke(
 }
 
 #[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires python3 + a cpex Python checkout (CPEX_PYTHON_SOURCE); run via `make test-python-e2e`"]
 async fn legacy_tool_pre_invoke_round_trips_through_the_real_worker() {
     // The plan's primary acceptance example: clean args return
     // continue_processing = true with no violation, and the plugin's hook body
@@ -219,6 +229,7 @@ async fn legacy_tool_pre_invoke_round_trips_through_the_real_worker() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires python3 + a cpex Python checkout (CPEX_PYTHON_SOURCE); run via `make test-python-e2e`"]
 async fn a_real_plugin_deny_surfaces_as_a_deny_result() {
     // Proves the deny path through the real framework, not just a stub that
     // emits a hand-written violation envelope.
@@ -262,6 +273,7 @@ async fn a_real_plugin_deny_surfaces_as_a_deny_result() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires python3 + a cpex Python checkout (CPEX_PYTHON_SOURCE); run via `make test-python-e2e`"]
 async fn a_cmf_hook_is_rejected_cleanly_by_a_framework_that_has_no_cmf_hooks() {
     // The plan asks for a CMF round-trip here. It is not achievable against
     // this framework version, and the reason is worth pinning rather than
@@ -326,6 +338,7 @@ async fn a_cmf_hook_is_rejected_cleanly_by_a_framework_that_has_no_cmf_hooks() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires python3 + a cpex Python checkout (CPEX_PYTHON_SOURCE); run via `make test-python-e2e`"]
 async fn a_second_run_reuses_the_cached_venv() {
     // The cached-venv-reuse acceptance example, end to end: the second
     // initialize must not rebuild or reinstall. Observed through the venv

@@ -13,6 +13,18 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/).
 > - **Fixed**: for any bug fixes.
 > - **Security**: in case of vulnerabilities.
 
+## [Unreleased]
+
+### Added
+
+- **Out-of-process host for existing Python CPEX plugins.** A new `cpex-hosts-python` crate registers `kind: isolated_venv`, running an unmodified Python CPEX plugin in its own cached virtualenv as a subprocess instead of in-process through the PyO3 bindings. Each plugin gets a venv keyed by a SHA-256 fingerprint of its requirements + manifest (rebuilt when either changes, `rmtree`d rather than upgraded in place so a removed dependency actually disappears), and the host drives the Python framework's `worker.py` over a newline-delimited JSON stdio protocol. Hook payloads, `context`, and the capability-filtered `Extensions` view cross as JSON; returns come back as a serialized `PluginResult`, with `modified_extensions` merged through the executor's existing copy-on-write tier validation — the host implements no tier logic of its own. Failure modes the executor cannot otherwise distinguish (venv build failure, worker death mid-flight, a task over `max_content_size`, per-invocation timeout) map to distinct `PluginError`s carrying a stable `code` and structured `details`, so the executor's configured `on_error` policy applies unchanged. Pure Rust plus a subprocess — no libpython link, so the crate is in `default-members` and a plain `cargo build` does not require a Python dev install. The wire contract is pinned in `docs/specs/extensions-wire-contract.md`; CMF §3 remains normative for the extension slots themselves. (#149)
+
+### Security
+
+- **Raw credential material can now reach an out-of-process worker.** `RawInboundToken.token` and `RawDelegatedToken.token` are `#[serde(skip)]`, and the "raw credentials never leave the host process" invariant has held because nothing read those fields directly. The `isolated_venv` host narrowly reverses that for two hooks — `identity_resolve` and `token_delegate`, the only ones whose Python payload models a raw token at all — by reading the in-memory field and sending the plaintext in a dedicated `credential` DTO. This is opt-in twice over and fails closed: a plugin receives nothing unless it declares `read_inbound_credentials` or `read_delegated_tokens`, and a plugin that declares one but cannot be served (no extension, empty token) causes the dispatch to error rather than silently sending no credential — an empty bearer would otherwise read as "no authentication required". The `raw_credentials` extension slot itself is never carried, so no hollow token slot invites a plugin to misread "not on this channel" as "no credential present", and the sensitive-header strip (`Authorization` / `Cookie` / `Set-Cookie` / `X-API-Key`, case-insensitive, both directions) keeps credential headers out of the `http` slot regardless. The FFI, Python-bindings, and audit paths are untouched, and the in-process hosts are unaffected.
+
+  **Operators should note the residual exposure the capability gate does not close.** Once the plaintext is resident in the worker process it is readable by every transitively-installed dependency in that plugin's venv — a materially larger and less audited trust boundary than the in-process host, which neither the gate nor the transport can constrain. Grant these two capabilities only to plugins whose venv contents you control, and treat a plugin's requirements file as credential-adjacent supply chain. (#149)
+
 ## [0.2.2] - 2026-07-15
 
 ### Added
@@ -93,7 +105,8 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/).
 
 - Initial release
 
-[Unreleased]: https://github.com/contextforge-org/cpex/compare/0.2.1...HEAD
+[Unreleased]: https://github.com/contextforge-org/cpex/compare/0.2.2...HEAD
+[0.2.2]: https://github.com/contextforge-org/cpex/compare/0.2.1...0.2.2
 [0.2.1]: https://github.com/contextforge-org/cpex/compare/0.2.0...0.2.1
 [0.2.0]: https://github.com/contextforge-org/cpex/compare/0.1.1...0.2.0
 [0.1.1]: https://github.com/contextforge-org/cpex/compare/0.1.0...0.1.1

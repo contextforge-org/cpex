@@ -53,6 +53,33 @@ const DEFAULT_TIMEOUT_SECS: u64 = 30;
 /// the host does not carry a copy of it.
 const DEFAULT_SCRIPT_PATH: &str = "cpex/framework/isolated/worker.py";
 
+/// How many times a dead worker may be respawned before the plugin gives up.
+///
+/// Bounded rather than unlimited: a worker that dies on every launch is a
+/// broken plugin (a bad dependency pin, a syntax error, an import that raises),
+/// and retrying it forever converts a fast, legible failure into an
+/// indefinitely wedged hook that hammers the machine. Three attempts covers the
+/// case respawn exists for — a worker killed by an OOM reaper, a crash inside
+/// one plugin invocation — without papering over a plugin that cannot start.
+const MAX_RESPAWN_ATTEMPTS: u32 = 3;
+
+/// Base delay before the first respawn attempt.
+///
+/// Doubled per attempt (100ms, 200ms, 400ms). The backoff exists so a worker
+/// that dies immediately on launch cannot spin the host in a tight
+/// spawn/crash loop; the values stay small because a live request is waiting
+/// behind them and the executor's own timeout is still running.
+const RESPAWN_BACKOFF_BASE_MS: u64 = 100;
+
+/// Interval after which a plugin that has exhausted its respawn budget is
+/// allowed to try again.
+///
+/// Without this, one bad patch of the worker's environment would permanently
+/// poison the plugin for the process's lifetime, even after the underlying
+/// cause is fixed. With it, a plugin that has been failing settles into one
+/// retry per minute rather than either hammering or staying dead forever.
+const RESPAWN_BUDGET_RESET_SECS: u64 = 60;
+
 /// Directory, relative to the project root, holding installed Python plugins.
 ///
 /// This is the sole source of the worker's `sys.path` entries and of the
@@ -103,6 +130,34 @@ fn default_plugin_dirs() -> Vec<String> {
 /// `GlobalContext` requires one. Reading it from global state lets a gateway
 /// that tracks request ids keep them consistent across the boundary.
 pub const GLOBAL_REQUEST_ID_KEY: &str = "request_id";
+
+/// Capability names the Python `Capability` enum models
+/// (`cpex/framework/extensions/tiers.py`).
+///
+/// This is deliberately a mirror of the *other* side's vocabulary rather than
+/// this host's own. `PluginConfig`'s `capabilities` validator raises on any name
+/// it does not recognize, and that happens during config construction inside the
+/// worker, so an unrecognized name is a dead hook rather than a narrower view.
+/// See [`IsolatedPythonPlugin::worker_capabilities`].
+///
+/// The host's vocabulary is the superset: `read_all`, `read_client`,
+/// `read_workload`, `read_inbound_credentials`, and `read_delegated_tokens` have
+/// no Python counterpart yet and are intentionally absent here. When the Python
+/// enum grows one, adding it here is what lets it cross the boundary.
+const WORKER_KNOWN_CAPABILITIES: &[&str] = &[
+    "read_subject",
+    "read_roles",
+    "read_teams",
+    "read_claims",
+    "read_permissions",
+    "read_agent",
+    "read_headers",
+    "write_headers",
+    "read_labels",
+    "append_labels",
+    "read_delegation",
+    "append_delegation",
+];
 
 /// Venv-relevant settings, parsed from a plugin entry's opaque `config` map.
 ///
@@ -221,6 +276,64 @@ pub struct IsolatedPythonPlugin {
     /// outside it is rejected outright; and a plugin's relative-path side
     /// effects land here.
     worker_cwd: Option<PathBuf>,
+
+    /// Respawn bookkeeping for a worker that dies after a successful
+    /// `initialize()`.
+    respawn: tokio::sync::Mutex<RespawnState>,
+}
+
+/// How many respawns this plugin has spent, and when the budget last reset.
+///
+/// Held behind its own mutex rather than folded into the worker lock so the
+/// accounting survives the worker slot being replaced, and so two concurrent
+/// invocations that both notice the same death cooperate: the first through
+/// respawns, the second finds a live worker and spends nothing.
+#[derive(Debug)]
+struct RespawnState {
+    /// Respawn attempts spent since the last budget reset.
+    attempts: u32,
+    /// When the budget was last reset, for the [`RESPAWN_BUDGET_RESET_SECS`]
+    /// window. `None` until the first respawn.
+    window_started: Option<std::time::Instant>,
+}
+
+impl RespawnState {
+    fn new() -> Self {
+        Self {
+            attempts: 0,
+            window_started: None,
+        }
+    }
+
+    /// Reserve one respawn attempt, or report the budget is spent.
+    ///
+    /// Resets the counter first when the window has elapsed, so a plugin that
+    /// failed hard an hour ago is not still being punished for it.
+    fn try_reserve(&mut self) -> Option<u32> {
+        let now = std::time::Instant::now();
+        let expired = self
+            .window_started
+            .is_some_and(|s| now.duration_since(s).as_secs() >= RESPAWN_BUDGET_RESET_SECS);
+
+        if expired {
+            self.attempts = 0;
+            self.window_started = None;
+        }
+
+        if self.attempts >= MAX_RESPAWN_ATTEMPTS {
+            return None;
+        }
+
+        self.attempts += 1;
+        self.window_started.get_or_insert(now);
+        Some(self.attempts)
+    }
+
+    /// Return the budget to full after a respawn that produced a live worker.
+    fn record_success(&mut self) {
+        self.attempts = 0;
+        self.window_started = None;
+    }
 }
 
 impl IsolatedPythonPlugin {
@@ -253,6 +366,7 @@ impl IsolatedPythonPlugin {
             worker: tokio::sync::RwLock::new(None),
             worker_override: None,
             worker_cwd: None,
+            respawn: tokio::sync::Mutex::new(RespawnState::new()),
         })
     }
 
@@ -324,14 +438,220 @@ impl IsolatedPythonPlugin {
         }
     }
 
-    /// The live worker, or a plugin error when `initialize()` has not run.
+    /// Launch a worker process for this plugin.
+    ///
+    /// The single path both `initialize()` and the respawn take, which is what
+    /// makes a respawned worker indistinguishable from the original: same
+    /// interpreter, same script, same cwd, same content cap, same timeout. The
+    /// security posture is preserved by construction rather than by a second
+    /// copy of the setup that could drift — the capability and credential
+    /// handshake is applied per invocation in `PythonHookAdapter::invoke`
+    /// against `self.config.capabilities`, so a fresh worker is gated by exactly
+    /// the same declared capabilities as the one it replaced. There is no
+    /// "degraded" or "retry" mode that relaxes it.
+    async fn launch_worker(&self) -> Result<WorkerClient, HostError> {
+        // With an override the worker script is given outright, so neither a
+        // venv nor script resolution is needed — but the interpreter still is.
+        let (python, script) = match self.worker_override.as_ref() {
+            Some(script) => (which_python3()?, script.clone()),
+            None => {
+                let venv = self.venv.as_ref().ok_or_else(|| HostError::Config {
+                    message: format!(
+                        "could not resolve a venv layout under {} — check that `class_name` \
+                         ('{}') begins with a package segment",
+                        self.plugin_dirs.join(", "),
+                        self.venv_config.class_name,
+                    ),
+                })?;
+
+                venv.ensure().await?;
+                let script = crate::worker::resolve_worker_script(
+                    &venv.layout().venv_path,
+                    &self.venv_config.script_path,
+                )?;
+
+                (venv.python_executable(), script)
+            },
+        };
+
+        // Matching `venv_comm.py`'s `cwd=os.getcwd()`. The worker's
+        // ALLOWED_PLUGIN_DIRS allowlist accepts its own cwd, so inheriting the
+        // host's is what lets a plugin dir declared relative to the gateway be
+        // importable at all.
+        WorkerClient::spawn(
+            &python,
+            &script,
+            self.worker_cwd.as_deref(),
+            self.venv_config.max_content_size,
+            self.venv_config.timeout_secs,
+        )
+        .await
+    }
+
+    /// The live worker, respawning it when the previous one has died.
+    ///
+    /// A worker can die between invocations — an OOM kill, a segfault in a
+    /// native dependency, a plugin that calls `sys.exit`. Before this, the
+    /// plugin stayed permanently broken: every later invocation found the dead
+    /// `WorkerClient` still in the slot and failed against it, so one crash
+    /// disabled the plugin for the lifetime of the process.
+    ///
+    /// Respawn is bounded ([`MAX_RESPAWN_ATTEMPTS`]) and backed off, and a
+    /// plugin that exhausts its budget returns a typed `WorkerStart` error
+    /// rather than retrying forever.
     async fn worker(&self) -> Result<Arc<WorkerClient>, Box<PluginError>> {
-        self.worker.read().await.clone().ok_or_else(|| {
-            HostError::WorkerStart {
-                message: "plugin has no worker — initialize() did not run or it failed".into(),
+        let to_plugin_error = |e: HostError| e.into_plugin_error(&self.config.name);
+
+        // The common path: a worker exists and is alive. No lock beyond the
+        // read, so a healthy invocation pays nothing for the respawn machinery.
+        if let Some(worker) = self.worker.read().await.clone() {
+            if worker.is_alive() {
+                return Ok(worker);
             }
-            .into_plugin_error(&self.config.name)
-        })
+        } else {
+            // Never initialized is not a respawn case — respawning here would
+            // paper over a lifecycle bug (or an initialize() that failed and
+            // was rolled back) by silently starting a worker the manager does
+            // not know about.
+            return Err(to_plugin_error(HostError::WorkerStart {
+                message: "plugin has no worker — initialize() did not run or it failed".into(),
+            }));
+        }
+
+        self.respawn_worker().await
+    }
+
+    /// Replace a dead worker, under the respawn lock.
+    ///
+    /// Split out so the happy path in `worker()` stays lock-free. Holding the
+    /// respawn mutex across the relaunch serializes concurrent invocations that
+    /// all noticed the same death: the first respawns, the rest re-check and
+    /// find a live worker without spending budget.
+    async fn respawn_worker(&self) -> Result<Arc<WorkerClient>, Box<PluginError>> {
+        let to_plugin_error = |e: HostError| e.into_plugin_error(&self.config.name);
+        let mut respawn = self.respawn.lock().await;
+
+        // Re-check under the lock. A concurrent invocation may already have
+        // done the work while this one waited.
+        if let Some(worker) = self.worker.read().await.clone() {
+            if worker.is_alive() {
+                return Ok(worker);
+            }
+        }
+
+        let Some(attempt) = respawn.try_reserve() else {
+            tracing::error!(
+                plugin = %self.config.name,
+                max_attempts = MAX_RESPAWN_ATTEMPTS,
+                "worker died and the respawn budget is exhausted; giving up"
+            );
+            return Err(to_plugin_error(HostError::WorkerStart {
+                message: format!(
+                    "worker died and could not be respawned after {MAX_RESPAWN_ATTEMPTS} attempts \
+                     — the plugin's worker is failing to start (check its venv and dependencies)"
+                ),
+            }));
+        };
+
+        // Exponential: 100ms, 200ms, 400ms. Applied *before* the spawn so a
+        // worker that dies instantly on launch cannot spin a tight loop.
+        let backoff = std::time::Duration::from_millis(
+            RESPAWN_BACKOFF_BASE_MS.saturating_mul(1 << (attempt - 1)),
+        );
+        tracing::warn!(
+            plugin = %self.config.name,
+            attempt,
+            max_attempts = MAX_RESPAWN_ATTEMPTS,
+            backoff_ms = backoff.as_millis(),
+            "worker is dead; respawning"
+        );
+        tokio::time::sleep(backoff).await;
+
+        // Reap the corpse before replacing it, so the old process and its I/O
+        // tasks are not left behind on every respawn.
+        if let Some(dead) = self.worker.write().await.take() {
+            if let Err(e) = dead.shutdown().await {
+                tracing::debug!(plugin = %self.config.name, "reaping the dead worker: {e}");
+            }
+        }
+
+        // Same launch path as `initialize()` — see `launch_worker`.
+        let worker = Arc::new(self.launch_worker().await.map_err(to_plugin_error)?);
+        *self.worker.write().await = Some(Arc::clone(&worker));
+
+        // Deliberately *not* `record_success()` here.
+        //
+        // `is_alive()` reflects the reader task's last observation, and a worker
+        // that dies at import time has not necessarily been observed yet — it
+        // reports alive for the moment right after spawn. Resetting the budget
+        // on that would let a crash-looping worker refill its allowance on every
+        // attempt and retry forever, which is exactly what the bound exists to
+        // prevent. The budget is instead reset by the passage of time
+        // (`RESPAWN_BUDGET_RESET_SECS`), so recovery is still possible once the
+        // underlying cause is fixed, and by a *successful invocation* through
+        // `note_worker_healthy`, which is proof the worker answered rather than
+        // merely proof it launched.
+        tracing::info!(
+            plugin = %self.config.name,
+            attempt,
+            "worker respawned; awaiting proof it can serve a request"
+        );
+
+        Ok(worker)
+    }
+
+    /// Mark the worker healthy after it has actually answered a request.
+    ///
+    /// Called from the adapter on a successful round trip. A completed
+    /// invocation is the only evidence that distinguishes a worker that started
+    /// from a worker that works, so it — not a successful spawn — is what
+    /// returns the respawn budget to full.
+    async fn note_worker_healthy(&self) {
+        let mut respawn = self.respawn.lock().await;
+        if respawn.attempts > 0 {
+            respawn.record_success();
+        }
+    }
+
+    /// The declared capabilities, reduced to the ones the worker's
+    /// `PluginConfig` model will accept.
+    ///
+    /// The Python model's `capabilities` validator *raises* on a name its
+    /// `Capability` enum does not know, and Pydantic validation happens while
+    /// the worker is constructing the config — before the plugin is ever
+    /// called. This host's capability vocabulary is the larger of the two
+    /// (`read_client`, `read_workload`, `read_all`, and the two
+    /// `raw_credentials` caps have no Python counterpart yet), so forwarding
+    /// the set verbatim would take down every hook of any plugin declaring one
+    /// of them.
+    ///
+    /// Dropping the unknown names is safe in the direction that matters:
+    /// the extensions the worker receives were already filtered by the
+    /// executor, so a dropped capability can only make the worker's
+    /// re-filter *more* restrictive, never less. A slot this host chose not to
+    /// send cannot be recovered by a capability string. The reverse — keeping an
+    /// unknown name — trades a possibly-narrower view for a dead worker.
+    fn worker_capabilities(&self) -> Vec<String> {
+        let (known, unknown): (Vec<String>, Vec<String>) = self
+            .config
+            .capabilities
+            .iter()
+            .cloned()
+            .partition(|c| WORKER_KNOWN_CAPABILITIES.contains(&c.as_str()));
+
+        if !unknown.is_empty() {
+            // Worth a line: it means this host's vocabulary has grown past the
+            // installed framework's, and a plugin declaring one of these sees a
+            // narrower view out-of-process than it would in-process.
+            tracing::warn!(
+                plugin = %self.config.name,
+                dropped = ?unknown,
+                "the installed cpex framework does not model these capabilities; \
+                 omitting them from the worker's config so it can still validate"
+            );
+        }
+
+        known
     }
 
     /// Build the `load_and_run_hook` task for one invocation.
@@ -349,10 +669,21 @@ impl IsolatedPythonPlugin {
     ) -> Result<serde_json::Value, HostError> {
         // The worker constructs a Python `PluginConfig` from this, so it must
         // carry that model's field names — not this host's venv settings.
+        //
+        // `capabilities` has to travel even though this host already applies the
+        // executor's filtered view: the Python manager re-filters against
+        // `plugin_ref.capabilities` before it calls a 3-arg hook
+        // (`cpex/framework/manager.py`, `_execute_with_timeout`). Omitting the
+        // field left that set empty, so the second filter stripped every gated
+        // slot the first one had just allowed — a 3-arg plugin saw
+        // `security.labels` empty and `http` as `None` no matter what it
+        // declared. The two filters are now given the same input, so the second
+        // one is idempotent rather than destructive.
         let config_json = serde_json::json!({
             "name": self.config.name,
             "kind": self.config.kind,
             "hooks": self.config.hooks,
+            "capabilities": self.worker_capabilities(),
             "config": self.config.config.clone().unwrap_or(serde_json::Value::Null),
         });
         let config_string =
@@ -411,48 +742,10 @@ impl Plugin for IsolatedPythonPlugin {
     /// Heavy setup lives here rather than on the invoke path: the manager
     /// awaits this once per plugin, with rollback on failure.
     async fn initialize(&self) -> Result<(), Box<PluginError>> {
-        let to_plugin_error = |e: HostError| e.into_plugin_error(&self.config.name);
-
-        // With an override the worker script is given outright, so neither a
-        // venv nor script resolution is needed — but the interpreter still is.
-        let (python, script) = match self.worker_override.as_ref() {
-            Some(script) => (which_python3().map_err(to_plugin_error)?, script.clone()),
-            None => {
-                let venv = self.venv.as_ref().ok_or_else(|| {
-                    to_plugin_error(HostError::Config {
-                        message: format!(
-                            "could not resolve a venv layout under {} — check that `class_name` \
-                             ('{}') begins with a package segment",
-                            self.plugin_dirs.join(", "),
-                            self.venv_config.class_name,
-                        ),
-                    })
-                })?;
-
-                venv.ensure().await.map_err(to_plugin_error)?;
-                let script = crate::worker::resolve_worker_script(
-                    &venv.layout().venv_path,
-                    &self.venv_config.script_path,
-                )
-                .map_err(to_plugin_error)?;
-
-                (venv.python_executable(), script)
-            },
-        };
-
-        // Matching `venv_comm.py`'s `cwd=os.getcwd()`. The worker's
-        // ALLOWED_PLUGIN_DIRS allowlist accepts its own cwd, so inheriting the
-        // host's is what lets a plugin dir declared relative to the gateway be
-        // importable at all.
-        let worker = WorkerClient::spawn(
-            &python,
-            &script,
-            self.worker_cwd.as_deref(),
-            self.venv_config.max_content_size,
-            self.venv_config.timeout_secs,
-        )
-        .await
-        .map_err(to_plugin_error)?;
+        let worker = self
+            .launch_worker()
+            .await
+            .map_err(|e| e.into_plugin_error(&self.config.name))?;
 
         *self.worker.write().await = Some(Arc::new(worker));
         Ok(())
@@ -461,13 +754,28 @@ impl Plugin for IsolatedPythonPlugin {
     /// Stop the worker, killing it if it will not exit on its own.
     async fn shutdown(&self) -> Result<(), Box<PluginError>> {
         let worker = self.worker.write().await.take();
-        if let Some(worker) = worker {
-            worker
+        let result = match worker {
+            Some(worker) => worker
                 .shutdown()
                 .await
-                .map_err(|e| e.into_plugin_error(&self.config.name))?;
+                .map_err(|e| e.into_plugin_error(&self.config.name)),
+            None => Ok(()),
+        };
+
+        // Give up this plugin's claim on the (possibly shared) venv, so a later
+        // rebuild is not permanently downgraded to an in-place update by a stale
+        // owner entry. Best-effort: a registry write failure must not turn a
+        // clean shutdown into an error, since the venv itself is fine.
+        if let Some(venv) = self.venv.as_ref() {
+            if let Err(e) = venv.release_owner().await {
+                tracing::warn!(
+                    plugin = %self.config.name,
+                    "could not release the venv owner claim: {e}"
+                );
+            }
         }
-        Ok(())
+
+        result
     }
 }
 
@@ -558,6 +866,10 @@ impl AnyHookHandler for PythonHookAdapter {
 
         let worker = self.plugin.worker().await?;
         let response = worker.send_task(task).await.map_err(to_plugin_error)?;
+
+        // A completed round trip is the only proof a (possibly respawned) worker
+        // actually serves requests, so it is what returns the respawn budget.
+        self.plugin.note_worker_healthy().await;
 
         // State the worker sends back is merged into the caller's context
         // before the result is returned, so a plugin's context writes survive.
@@ -799,6 +1111,83 @@ plugins:
         );
     }
 
+    /// Parse the `config` field, which travels as a JSON *string*.
+    fn worker_config(task: &serde_json::Value) -> serde_json::Value {
+        serde_json::from_str(task["config"].as_str().expect("config is a string"))
+            .expect("the worker's config parses")
+    }
+
+    /// Build a task for a plugin declaring `capabilities`.
+    fn task_for_capabilities(capabilities: &[&str]) -> serde_json::Value {
+        let mut config = config_with(serde_json::json!({"class_name": "my_pkg.Minimal"}));
+        config.capabilities = capabilities.iter().map(|c| (*c).to_string()).collect();
+
+        IsolatedPythonPlugin::from_config(&config)
+            .expect("parses")
+            .build_task(
+                "tool_pre_invoke",
+                serde_json::json!({"name": "t"}),
+                &PluginContext::new(),
+            )
+            .expect("task builds")
+    }
+
+    #[test]
+    fn declared_capabilities_reach_the_workers_config() {
+        // The Python manager re-filters extensions against the capabilities in
+        // *its* config before calling a 3-arg hook. Send none and that filter
+        // runs against an empty set, stripping every gated slot the executor
+        // just allowed — which is how a plugin declaring `read_labels` ended up
+        // seeing an empty label set out-of-process.
+        let config = worker_config(&task_for_capabilities(&["read_labels", "append_labels"]));
+
+        let mut sent: Vec<&str> = config["capabilities"]
+            .as_array()
+            .expect("capabilities is an array")
+            .iter()
+            .map(|c| c.as_str().expect("a string"))
+            .collect();
+        sent.sort_unstable();
+
+        assert_eq!(
+            sent,
+            ["append_labels", "read_labels"],
+            "the worker must be told what the plugin declared"
+        );
+    }
+
+    #[test]
+    fn a_capability_the_python_model_rejects_is_not_forwarded() {
+        // `PluginConfig`'s validator raises on an unknown capability, and it
+        // does so while the worker builds the config — before the plugin runs.
+        // So forwarding a host-only name costs every hook of that plugin, not
+        // just the slot it gates. Dropping it can only narrow the view, which
+        // the executor's own filter has already done.
+        let config = worker_config(&task_for_capabilities(&["read_labels", "read_client"]));
+
+        assert_eq!(
+            config["capabilities"],
+            serde_json::json!(["read_labels"]),
+            "a name the installed framework cannot validate must be dropped, \
+             not sent and not escalated into a task failure"
+        );
+    }
+
+    #[test]
+    fn a_plugin_declaring_nothing_sends_an_empty_capability_list() {
+        // The field is always present so the worker's config shape does not
+        // depend on whether anything was declared; an empty list and an absent
+        // field mean the same thing to Pydantic, and the explicit one is easier
+        // to read off the wire when diagnosing a filtering question.
+        let config = worker_config(&task_for_capabilities(&[]));
+
+        assert_eq!(
+            config["capabilities"],
+            serde_json::json!([]),
+            "no capabilities is an empty list, not a missing field"
+        );
+    }
+
     // --- adapter dispatch ---------------------------------------------------
 
     /// A stub worker that answers `load_and_run_hook` with a canned result and
@@ -836,7 +1225,18 @@ while True:
     with open(os.path.join(here, "last_task.json"), "w") as f:
         json.dump(task, f)
 
+    # ...and which process served it, so a respawn test can prove the request
+    # was answered by a *new* worker rather than by the original recovering.
+    with open(os.path.join(here, "last_pid"), "w") as f:
+        f.write(str(os.getpid()))
+
     m = mode()
+
+    # `die` exits without replying, which is how a test kills the worker so the
+    # *next* invocation has a dead one to respawn.
+    if m == "die":
+        sys.exit(9)
+
     if m == "deny":
         response = {
             "continue_processing": False,
@@ -1217,6 +1617,409 @@ while True:
         );
 
         plugin.shutdown().await.unwrap();
+    }
+
+    // --- dead-worker respawn ------------------------------------------------
+
+    fn last_pid(dir: &TempDir) -> u32 {
+        std::fs::read_to_string(dir.path().join("last_pid"))
+            .expect("the stub recorded its pid")
+            .trim()
+            .parse()
+            .expect("pid is numeric")
+    }
+
+    /// Wait until the client has observed the worker's death.
+    ///
+    /// `is_alive()` flips when the reader task sees EOF, which is asynchronous
+    /// with respect to the process exiting. Polling for it keeps the respawn
+    /// tests deterministic without a blind sleep.
+    async fn await_worker_death(plugin: &Arc<IsolatedPythonPlugin>) {
+        for _ in 0..200 {
+            let alive = plugin
+                .worker
+                .read()
+                .await
+                .as_ref()
+                .is_some_and(|w| w.is_alive());
+            if !alive {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+        panic!("the worker never registered as dead");
+    }
+
+    #[tokio::test]
+    async fn a_dead_worker_is_respawned_on_the_next_invocation() {
+        // Pre-fix, one crash disabled the plugin for the life of the process:
+        // the dead WorkerClient stayed in the slot and every later invocation
+        // failed against it. This asserts recovery, and asserts it came from a
+        // genuinely new process rather than the old one somehow answering.
+        if crate::testing::skip_without_python3("a_dead_worker_is_respawned_on_the_next_invocation")
+        {
+            return;
+        }
+        let (dir, plugin) = adapter_plugin(&["tool_pre_invoke"], &[]).await;
+        set_mode(&dir, "allow");
+
+        let payload = crate::legacy::ToolPreInvokePayload {
+            name: "search".into(),
+            ..Default::default()
+        };
+        let mut ctx = PluginContext::new();
+
+        // A healthy round trip establishes the original worker's pid.
+        invoke(&plugin, "tool_pre_invoke", &payload, &mut ctx)
+            .await
+            .expect("the first invocation succeeds");
+        let original_pid = last_pid(&dir);
+
+        // Kill it: the stub exits without replying.
+        set_mode(&dir, "die");
+        let _ = invoke(&plugin, "tool_pre_invoke", &payload, &mut ctx).await;
+        await_worker_death(&plugin).await;
+
+        // The next invocation must respawn and succeed rather than reporting a
+        // permanently broken plugin.
+        set_mode(&dir, "allow");
+        let fields = invoke(&plugin, "tool_pre_invoke", &payload, &mut ctx)
+            .await
+            .expect("a dead worker must be replaced, not left broken");
+        assert!(fields.continue_processing);
+
+        let new_pid = last_pid(&dir);
+        assert_ne!(
+            original_pid, new_pid,
+            "the request must be served by a respawned process"
+        );
+
+        plugin.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_respawned_worker_receives_the_same_capability_handshake() {
+        // The security rail. A respawned worker must be gated by exactly the
+        // capabilities the original was — never a weaker set, and never a
+        // "recovery mode" that skips the gate. Both directions are asserted
+        // against one respawn: the declared capability still delivers its
+        // credential, and an undeclared slot still delivers nothing.
+        if crate::testing::skip_without_python3(
+            "a_respawned_worker_receives_the_same_capability_handshake",
+        ) {
+            return;
+        }
+        use cpex_core::extensions::raw_credentials::{
+            RawCredentialsExtension, RawInboundToken, TokenKind, TokenRole,
+        };
+
+        let (dir, plugin) =
+            adapter_plugin(&["identity_resolve"], &["read_inbound_credentials"]).await;
+        set_mode(&dir, "allow");
+
+        let mut raw = RawCredentialsExtension::default();
+        raw.inbound_tokens.insert(
+            TokenRole::User,
+            RawInboundToken::new("RESPAWN-SECRET", "Authorization", TokenKind::Jwt),
+        );
+        let extensions = Extensions {
+            raw_credentials: Some(Arc::new(raw)),
+            ..Default::default()
+        };
+
+        let payload = crate::legacy::IdentityResolvePayload::default();
+        let adapter = PythonHookAdapter::new(Arc::clone(&plugin), "identity_resolve");
+
+        let mut ctx = PluginContext::new();
+        adapter
+            .invoke(&payload, &extensions, &mut ctx)
+            .await
+            .expect("the first dispatch succeeds");
+        let original_pid = last_pid(&dir);
+        assert_eq!(
+            last_task(&dir)["credential"]["inbound"]["token"],
+            "RESPAWN-SECRET"
+        );
+
+        set_mode(&dir, "die");
+        let mut ctx = PluginContext::new();
+        let _ = adapter.invoke(&payload, &extensions, &mut ctx).await;
+        await_worker_death(&plugin).await;
+
+        // Same hook, same declared capability, new process.
+        set_mode(&dir, "allow");
+        let mut ctx = PluginContext::new();
+        adapter
+            .invoke(&payload, &extensions, &mut ctx)
+            .await
+            .expect("dispatch succeeds against the respawned worker");
+
+        assert_ne!(original_pid, last_pid(&dir), "a new process served it");
+        let task = last_task(&dir);
+        assert_eq!(
+            task["credential"]["inbound"]["token"], "RESPAWN-SECRET",
+            "the respawned worker must get the same credential handshake"
+        );
+        assert_eq!(task["credential"]["inbound"]["kind"], "jwt");
+
+        plugin.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_respawned_worker_gets_no_credential_it_did_not_declare() {
+        // The fail-closed half: a plugin with no declared capability must not
+        // pick one up by virtue of having been respawned.
+        if crate::testing::skip_without_python3(
+            "a_respawned_worker_gets_no_credential_it_did_not_declare",
+        ) {
+            return;
+        }
+        use cpex_core::extensions::raw_credentials::{
+            RawCredentialsExtension, RawInboundToken, TokenKind, TokenRole,
+        };
+
+        let (dir, plugin) = adapter_plugin(&["identity_resolve"], &[]).await;
+        set_mode(&dir, "allow");
+
+        let mut raw = RawCredentialsExtension::default();
+        raw.inbound_tokens.insert(
+            TokenRole::User,
+            RawInboundToken::new("MUST-NOT-LEAK", "Authorization", TokenKind::Jwt),
+        );
+        let extensions = Extensions {
+            raw_credentials: Some(Arc::new(raw)),
+            ..Default::default()
+        };
+
+        let payload = crate::legacy::IdentityResolvePayload::default();
+        let adapter = PythonHookAdapter::new(Arc::clone(&plugin), "identity_resolve");
+
+        let mut ctx = PluginContext::new();
+        adapter
+            .invoke(&payload, &extensions, &mut ctx)
+            .await
+            .unwrap();
+
+        set_mode(&dir, "die");
+        let mut ctx = PluginContext::new();
+        let _ = adapter.invoke(&payload, &extensions, &mut ctx).await;
+        await_worker_death(&plugin).await;
+
+        set_mode(&dir, "allow");
+        let mut ctx = PluginContext::new();
+        adapter
+            .invoke(&payload, &extensions, &mut ctx)
+            .await
+            .expect("dispatch succeeds after respawn");
+
+        let task = last_task(&dir);
+        assert!(
+            task.get("credential").is_none(),
+            "respawn must not widen the capability gate"
+        );
+        assert!(
+            !serde_json::to_string(&task)
+                .unwrap()
+                .contains("MUST-NOT-LEAK"),
+            "no token bytes may reach a worker that declared nothing"
+        );
+
+        plugin.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_worker_that_will_not_stay_up_gives_up_with_a_typed_error() {
+        // The anti-loop rail. A worker that dies on every launch must surface a
+        // typed error after a bounded number of attempts rather than retrying
+        // forever. Pointing the override at a script that always exits makes
+        // every respawn produce a corpse.
+        if crate::testing::skip_without_python3(
+            "a_worker_that_will_not_stay_up_gives_up_with_a_typed_error",
+        ) {
+            return;
+        }
+        let dir = TempDir::new();
+        let script = dir.path().join("always_dies.py");
+        // Exits at import, before reading a task — so every spawn dies.
+        std::fs::write(
+            &script,
+            "import sys\nprint('fatal: dependency missing', file=sys.stderr, flush=True)\nsys.exit(1)\n",
+        )
+        .unwrap();
+
+        let config = PluginConfig {
+            name: "crash-loop".into(),
+            kind: crate::factory::KIND.into(),
+            hooks: vec!["tool_pre_invoke".into()],
+            config: Some(serde_json::json!({ "class_name": "my_pkg.Plugin" })),
+            ..Default::default()
+        };
+        let plugin = Arc::new(
+            IsolatedPythonPlugin::from_config(&config)
+                .expect("config parses")
+                .with_worker_override(script),
+        );
+        // The process *starts* (then dies), so initialize succeeds — this is
+        // exactly the shape a bad dependency pin produces.
+        plugin.initialize().await.expect("the process launches");
+
+        let payload = crate::legacy::ToolPreInvokePayload {
+            name: "search".into(),
+            ..Default::default()
+        };
+
+        // Drive invocations until one reports the budget is spent. The bound is
+        // what is under test: without it this loop never terminates.
+        let started = std::time::Instant::now();
+        let mut gave_up = None;
+        for _ in 0..(MAX_RESPAWN_ATTEMPTS + 4) {
+            let mut ctx = PluginContext::new();
+            let Err(err) = invoke(&plugin, "tool_pre_invoke", &payload, &mut ctx).await else {
+                panic!("a worker that always dies cannot serve a request");
+            };
+            let message = err.to_string();
+            if message.contains("could not be respawned") {
+                gave_up = Some(message);
+                break;
+            }
+        }
+
+        let message = gave_up
+            .expect("a permanently failing worker must give up with an error, not retry forever");
+        assert!(
+            message.contains(&MAX_RESPAWN_ATTEMPTS.to_string()),
+            "the error should name the attempt bound: {message}"
+        );
+
+        // The backoff is bounded too — giving up must not take minutes.
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(20),
+            "giving up took too long: {:?}",
+            started.elapsed()
+        );
+
+        plugin.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn respawn_is_not_attempted_before_initialize() {
+        // Respawn must not paper over a lifecycle bug by starting a worker the
+        // manager never asked for: an uninitialized plugin still errors.
+        let config = PluginConfig {
+            name: "uninitialized".into(),
+            kind: crate::factory::KIND.into(),
+            hooks: vec!["tool_pre_invoke".into()],
+            config: Some(serde_json::json!({ "class_name": "my_pkg.Plugin" })),
+            ..Default::default()
+        };
+        let plugin = Arc::new(IsolatedPythonPlugin::from_config(&config).unwrap());
+
+        let Err(err) = plugin.worker().await else {
+            panic!("a plugin with no worker must not silently spawn one");
+        };
+        let message = err.to_string();
+        assert!(
+            message.contains("initialize()"),
+            "the error should name the lifecycle gap: {message}"
+        );
+        assert!(
+            plugin.worker.read().await.is_none(),
+            "no worker was started"
+        );
+    }
+
+    #[tokio::test]
+    async fn concurrent_invocations_share_one_respawn() {
+        // Several hooks of one plugin can be in flight at once (the executor
+        // dispatches parallel-phase plugins concurrently). They must not each
+        // spend respawn budget on the same death and start competing workers.
+        if crate::testing::skip_without_python3("concurrent_invocations_share_one_respawn") {
+            return;
+        }
+        let (dir, plugin) = adapter_plugin(&["tool_pre_invoke"], &[]).await;
+        set_mode(&dir, "allow");
+
+        let payload = crate::legacy::ToolPreInvokePayload {
+            name: "search".into(),
+            ..Default::default()
+        };
+        let mut ctx = PluginContext::new();
+        invoke(&plugin, "tool_pre_invoke", &payload, &mut ctx)
+            .await
+            .unwrap();
+
+        set_mode(&dir, "die");
+        let _ = invoke(&plugin, "tool_pre_invoke", &payload, &mut ctx).await;
+        await_worker_death(&plugin).await;
+        set_mode(&dir, "allow");
+
+        // Four concurrent invocations against one dead worker.
+        let mut handles = Vec::new();
+        for _ in 0..4 {
+            let plugin = Arc::clone(&plugin);
+            handles.push(tokio::spawn(async move {
+                let payload = crate::legacy::ToolPreInvokePayload {
+                    name: "search".into(),
+                    ..Default::default()
+                };
+                let mut ctx = PluginContext::new();
+                invoke(&plugin, "tool_pre_invoke", &payload, &mut ctx)
+                    .await
+                    .map(|f| f.continue_processing)
+            }));
+        }
+
+        for handle in handles {
+            assert!(handle.await.unwrap().expect("each invocation recovers"));
+        }
+
+        // One respawn served all four, so the budget is intact — a second
+        // independent death must still be recoverable.
+        set_mode(&dir, "die");
+        let mut ctx = PluginContext::new();
+        let _ = invoke(&plugin, "tool_pre_invoke", &payload, &mut ctx).await;
+        await_worker_death(&plugin).await;
+        set_mode(&dir, "allow");
+
+        let mut ctx = PluginContext::new();
+        invoke(&plugin, "tool_pre_invoke", &payload, &mut ctx)
+            .await
+            .expect("budget was not exhausted by the concurrent respawn");
+
+        plugin.shutdown().await.unwrap();
+    }
+
+    #[test]
+    fn the_respawn_budget_is_bounded_then_resets_with_time() {
+        // Unit-level pin on the accounting, so the bound and the reset window
+        // are covered without spawning processes.
+        let mut state = RespawnState::new();
+        for expected in 1..=MAX_RESPAWN_ATTEMPTS {
+            assert_eq!(state.try_reserve(), Some(expected));
+        }
+        assert_eq!(
+            state.try_reserve(),
+            None,
+            "the budget must be bounded, not unlimited"
+        );
+
+        // A successful invocation refills it.
+        state.record_success();
+        assert_eq!(state.try_reserve(), Some(1));
+
+        // ...and so does the passage of the reset window, so a plugin is not
+        // poisoned for the life of the process once its cause is fixed.
+        let mut state = RespawnState::new();
+        while state.try_reserve().is_some() {}
+        state.window_started = Some(
+            std::time::Instant::now()
+                - std::time::Duration::from_secs(RESPAWN_BUDGET_RESET_SECS + 1),
+        );
+        assert_eq!(
+            state.try_reserve(),
+            Some(1),
+            "an elapsed window must restore the budget"
+        );
     }
 
     #[test]

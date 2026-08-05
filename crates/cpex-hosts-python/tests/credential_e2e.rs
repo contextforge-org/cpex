@@ -44,7 +44,7 @@ use cpex_hosts_python::factory::KIND;
 use cpex_hosts_python::legacy::IdentityResolvePayload;
 use cpex_hosts_python::plugin::{IsolatedPythonPlugin, PythonHookAdapter};
 use cpex_hosts_python::testing::{
-    prebuild_venv, python_source, scaffold_plugin, skip_without_python3,
+    prebuild_venv, python_source, scaffold_plugin, skip, skip_without_python3,
     worker_consumes_credentials, TempDir,
 };
 
@@ -107,15 +107,18 @@ fn require_environment(test_name: &str) -> Option<PathBuf> {
     let source = match python_source() {
         Ok(source) => source,
         Err(reason) => {
-            println!("SKIP {test_name}: {reason}");
+            skip(test_name, &reason);
             return None;
         },
     };
     if !worker_consumes_credentials(&source) {
-        println!(
-            "SKIP {test_name}: the cpex source at {} has a worker.py that does not consume the \
-             `credential` field — the credential path has no consumer there",
-            source.display()
+        skip(
+            test_name,
+            &format!(
+                "the cpex source at {} has a worker.py that does not consume the `credential` \
+                 field — the credential path has no consumer there",
+                source.display()
+            ),
         );
         return None;
     }
@@ -130,7 +133,10 @@ fn setup(dir: &TempDir, source: &Path, test_name: &str) -> Option<PathBuf> {
     match prebuild_venv(&plugin_dir, source, FIXTURE_CLASS, "cred_pkg") {
         Ok(()) => Some(plugin_dir),
         Err(reason) => {
-            println!("SKIP {test_name}: could not prepare the plugin venv — {reason}");
+            skip(
+                test_name,
+                &format!("could not prepare the plugin venv — {reason}"),
+            );
             None
         },
     }
@@ -219,6 +225,7 @@ async fn run_identity_hook(
 }
 
 #[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires python3 + a cpex Python checkout (CPEX_PYTHON_SOURCE); run via `make test-python-e2e`"]
 async fn a_capable_plugin_reads_the_raw_token_end_to_end() {
     // The capability-gated acceptance example, all the way through: the host
     // reads the in-memory Zeroizing token, the DTO carries it, worker.py folds
@@ -252,6 +259,7 @@ async fn a_capable_plugin_reads_the_raw_token_end_to_end() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires python3 + a cpex Python checkout (CPEX_PYTHON_SOURCE); run via `make test-python-e2e`"]
 async fn a_non_capable_plugin_on_the_same_hook_receives_no_token() {
     // Same hook, same request, same extensions — this plugin simply declared
     // no capability. It must see an empty credential, not the plaintext.
@@ -283,6 +291,7 @@ async fn a_non_capable_plugin_on_the_same_hook_receives_no_token() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires python3 + a cpex Python checkout (CPEX_PYTHON_SOURCE); run via `make test-python-e2e`"]
 async fn the_credential_never_reaches_a_log_sink_the_host_controls() {
     // The transport's own guarantee. The DTO travels on the child's stdin — a
     // private inherited pipe — so the exposure worth checking is what the host
@@ -335,6 +344,7 @@ async fn the_credential_never_reaches_a_log_sink_the_host_controls() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires python3 + a cpex Python checkout (CPEX_PYTHON_SOURCE); run via `make test-python-e2e`"]
 async fn a_declared_capability_that_cannot_be_honored_fails_closed_end_to_end() {
     // Fail-closed, through the real stack: the plugin declared the capability
     // but the request carries no credential extension. The host must refuse to

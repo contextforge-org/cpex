@@ -57,13 +57,14 @@
 
 use std::collections::HashMap;
 
-use cpex_core::extensions::container::OwnedExtensions;
+use cpex_core::extensions::container::{chain_extends, OwnedExtensions};
 use cpex_core::extensions::delegation::DelegationExtension;
 use cpex_core::extensions::guarded::Guarded;
 use cpex_core::extensions::http::HttpExtension;
 use cpex_core::extensions::security::SecurityExtension;
 use cpex_core::extensions::Extensions;
 use serde_json::Value;
+use tracing::warn;
 
 use crate::error::HostError;
 
@@ -88,7 +89,11 @@ pub const MODIFIED_EXTENSIONS_FIELD: &str = "modified_extensions";
 /// Matched case-insensitively: HTTP header names are case-insensitive, and
 /// `HttpExtension`'s own accessors look up that way, so a plugin sending
 /// `authorization` must not slip past a case-sensitive compare.
-const SENSITIVE_HEADERS: &[&str] = &["authorization", "cookie", "x-api-key"];
+/// `set-cookie` is included because the doc comment on `sanitize_http` promises
+/// it and the response map is the one that carries it. It was previously absent
+/// while both strip tests asserted through `is_sensitive` itself — a tautology
+/// that passed either way, which is what let the gap survive.
+const SENSITIVE_HEADERS: &[&str] = &["authorization", "cookie", "set-cookie", "x-api-key"];
 
 /// True when `name` is a header this channel must not carry.
 fn is_sensitive(name: &str) -> bool {
@@ -110,7 +115,8 @@ fn strip_sensitive(headers: &HashMap<String, String>) -> HashMap<String, String>
 ///
 /// Both maps are scrubbed: `response_headers` can carry a `Set-Cookie` or an
 /// upstream `Authorization` echo just as `request_headers` carries the inbound
-/// credential.
+/// credential. The request line is copied through unchanged — it is not
+/// credential material, and the plugin needs it to make routing decisions.
 fn sanitize_http(http: &HttpExtension) -> HttpExtension {
     HttpExtension {
         request_headers: strip_sensitive(&http.request_headers),
@@ -119,6 +125,30 @@ fn sanitize_http(http: &HttpExtension) -> HttpExtension {
         path: http.path.clone(),
         host: http.host.clone(),
         scheme: http.scheme.clone(),
+    }
+}
+
+/// Build the returned `http` value: worker headers, canonical request line.
+///
+/// The worker's return contributes header maps only. `method`, `path`, `host`,
+/// and `scheme` are taken from `inbound` — the value the executor issued —
+/// because policies gate on them (CHANGELOG 0.2.2) and `write_headers` does not
+/// authorize rewriting request identity. `host` especially must trace back to a
+/// validated authority, which a worker's JSON is not.
+///
+/// This also fixes a plain correctness bug: the Python `HttpExtension` models a
+/// single `headers` field, so a round trip through the worker returns no
+/// `method`/`path`/`host`/`scheme` at all. Taking them from the return value
+/// blanked all four on every merge, silently turning host- and path-gated
+/// policies into no-ops downstream.
+fn returned_http(returned: &HttpExtension, inbound: Option<&HttpExtension>) -> HttpExtension {
+    HttpExtension {
+        request_headers: strip_sensitive(&returned.request_headers),
+        response_headers: strip_sensitive(&returned.response_headers),
+        method: inbound.and_then(|h| h.method.clone()),
+        path: inbound.and_then(|h| h.path.clone()),
+        host: inbound.and_then(|h| h.host.clone()),
+        scheme: inbound.and_then(|h| h.scheme.clone()),
     }
 }
 
@@ -292,35 +322,82 @@ pub fn owned_from_returned_slot(
     // `WriteToken::new()` is `pub(crate)` to `cpex-core`, so this crate cannot
     // mint one, and a token can never be forged out of worker JSON. An edit
     // without the token is dropped and the inbound value stands.
+    //
+    // Within a gated slot, only the *fields* the capability covers are taken
+    // from the wire; the rest are kept from `inbound`. A token authorizes a
+    // field, not the slot it lives in. `owned` starts as `inbound.cow_copy()`,
+    // which is a copy of the capability-*filtered* view, so any field left
+    // untouched here already holds the filtered value — the executor's
+    // `merge_owned` re-merges it against canonical state field by field, and a
+    // filtered-away field never overwrites what the plugin could not see.
 
-    // Guarded — `write_headers`.
+    // Guarded — `write_headers`. Headers only: the request line
+    // (`method`/`path`/`host`/`scheme`) is preserved from the inbound value,
+    // which policies gate on and this capability does not cover.
     if let Some(http) = slot::<HttpExtension>(object, "http")? {
         if inbound.http_write_token.is_some() {
             // Strip on the way back too. A plugin cannot inject a credential
             // header into the pipeline through its return value.
-            owned.http = Some(Guarded::new(sanitize_http(&http)));
+            owned.http = Some(Guarded::new(returned_http(&http, inbound.http.as_deref())));
             applied = true;
         }
     }
 
-    // Monotonic — `append_labels`. The executor additionally checks
-    // `before ⊆ after` and rejects the whole return on a removal.
+    // Monotonic — `append_labels`. Labels *only*. Everything else on the slot
+    // is Immutable with `write_cap: None` in the tier model, so a labels token
+    // must not carry `subject`, `auth_method`, `client`, or either workload
+    // identity — otherwise `append_labels` alone would let a plugin rewrite the
+    // authenticated principal it was authenticated as. The executor re-checks
+    // `before ⊆ after` and drops a removal.
     if let Some(security) = slot::<SecurityExtension>(object, "security")? {
         if inbound.labels_write_token.is_some() {
-            owned.security = Some(security);
+            let mut merged = inbound
+                .security
+                .as_deref()
+                .cloned()
+                .unwrap_or_else(SecurityExtension::default);
+            // Append-only, and only into the set the plugin was shown. Assigning
+            // the returned set would let a shorter one read as a removal.
+            for label in security.labels.iter() {
+                merged.add_label(label.clone());
+            }
+            owned.security = Some(merged);
             applied = true;
         }
     }
 
-    // Monotonic — `append_delegation`.
+    // Monotonic — `append_delegation`. Validated rather than accepted blind: the
+    // returned chain must extend the inbound one, with every hop the plugin was
+    // shown left intact. A shortened or rewritten chain forges lineage — dropping
+    // the hop that recorded a scope narrowing widens effective authority — so the
+    // whole edit is refused and the inbound chain stands. `depth` and `delegated`
+    // are recomputed by the executor from the merged chain, never trusted here.
     if let Some(delegation) = slot::<DelegationExtension>(object, "delegation")? {
         if inbound.delegation_write_token.is_some() {
-            owned.delegation = Some(delegation);
-            applied = true;
+            let inbound_chain = inbound
+                .delegation
+                .as_deref()
+                .map(|d| d.chain.as_slice())
+                .unwrap_or_default();
+            if chain_extends(inbound_chain, &delegation.chain) {
+                owned.delegation = Some(delegation);
+                applied = true;
+            } else {
+                warn!(
+                    inbound_hops = inbound_chain.len(),
+                    returned_hops = delegation.chain.len(),
+                    "dropping a returned delegation chain that does not extend the \
+                     one the plugin was given — an append-only chain cannot be \
+                     shortened or rewritten"
+                );
+            }
         }
     }
 
-    // Mutable — accepted as-is.
+    // Mutable — `AccessPolicy::Unrestricted`, so accepted without a token. It
+    // sets `applied` on its own, which is correct *because* the gated slots
+    // above are now merged per field: a `custom` write can no longer drag a
+    // capability-filtered `security` or `http` view into the merge behind it.
     if let Some(custom) = slot::<HashMap<String, Value>>(object, "custom")? {
         owned.custom = Some(custom);
         applied = true;
@@ -405,6 +482,24 @@ mod tests {
         assert!(wire.contains_key("security"), "security slot present");
     }
 
+    /// Assert a header map contains none of `names`, case-insensitively.
+    ///
+    /// Takes **literal** names rather than calling `is_sensitive`. The tests
+    /// below previously asserted `!is_sensitive(name)` over the surviving keys —
+    /// the same function under test on both sides, so the assertion held no
+    /// matter what `SENSITIVE_HEADERS` contained. That is what let `set-cookie`
+    /// be missing from the list while the comment claimed it was there, with
+    /// both strip tests green.
+    fn assert_absent(headers: &serde_json::Map<String, Value>, names: &[&str]) {
+        for name in names {
+            assert!(
+                !headers.keys().any(|k| k.eq_ignore_ascii_case(name)),
+                "header '{name}' must not cross the process boundary; got {:?}",
+                headers.keys().collect::<Vec<_>>()
+            );
+        }
+    }
+
     #[test]
     fn sensitive_request_headers_are_stripped_but_others_survive() {
         let mut task = serde_json::json!({});
@@ -412,15 +507,10 @@ mod tests {
 
         let headers = task[EXTENSIONS_FIELD]["http"]["request_headers"]
             .as_object()
-            .expect("request_headers is an object");
+            .expect("request_headers is an object")
+            .clone();
 
-        // Case-insensitively: none of the three may appear under any casing.
-        for name in headers.keys() {
-            assert!(
-                !is_sensitive(name),
-                "sensitive header '{name}' must not cross the process boundary"
-            );
-        }
+        assert_absent(&headers, &["Authorization", "Cookie", "X-API-Key"]);
         assert_eq!(
             headers.get("X-Request-Id").and_then(Value::as_str),
             Some("req-1"),
@@ -435,17 +525,39 @@ mod tests {
 
         let headers = task[EXTENSIONS_FIELD]["http"]["response_headers"]
             .as_object()
-            .expect("response_headers is an object");
+            .expect("response_headers is an object")
+            .clone();
 
-        for name in headers.keys() {
-            assert!(
-                !is_sensitive(name),
-                "sensitive response header '{name}' must not cross the boundary"
-            );
-        }
+        // `Set-Cookie` is the one the module comment always claimed to strip.
+        // This assertion fails until it is actually in `SENSITIVE_HEADERS`.
+        assert_absent(&headers, &["Set-Cookie", "Authorization"]);
         assert_eq!(
             headers.get("Content-Type").and_then(Value::as_str),
             Some("application/json"),
+        );
+    }
+
+    #[test]
+    fn set_cookie_is_stripped_in_both_directions_and_under_any_casing() {
+        // A session cookie is credential material. It must not reach a plugin
+        // outbound, nor be injectable by one on the return.
+        let mut http = HttpExtension::default();
+        http.set_response_header("set-cookie", "session=lower");
+        http.set_response_header("SET-COOKIE", "session=upper");
+        http.set_request_header("Set-Cookie", "session=req");
+
+        let sanitized = sanitize_http(&http);
+        assert!(
+            sanitized.response_headers.is_empty(),
+            "no casing of set-cookie survives outbound: {:?}",
+            sanitized.response_headers
+        );
+        assert!(sanitized.request_headers.is_empty());
+
+        let returned = returned_http(&http, None);
+        assert!(
+            returned.response_headers.is_empty() && returned.request_headers.is_empty(),
+            "nor inbound on the return path"
         );
     }
 
@@ -729,6 +841,148 @@ mod tests {
         assert!(
             !security.labels.contains(&"SCANNED".to_string()),
             "the unauthorized label append is still dropped"
+        );
+    }
+
+    // -- Per-field gating on the return path (review finding A) --
+
+    #[test]
+    fn a_custom_write_does_not_carry_a_filtered_security_view_into_the_merge() {
+        // The headline finding, at this layer. A plugin with no security
+        // capability returns only `custom`. `owned` starts from
+        // `inbound.cow_copy()`, so before the fix the resulting
+        // `OwnedExtensions` carried the plugin's *filtered* security value —
+        // and `merge_owned`'s slot swap then wrote it over canonical state.
+        //
+        // Here the inbound view is what a plugin with no `read_labels` gets:
+        // an empty label set. The merged result must not present that as an
+        // instruction to clear labels.
+        let inbound = Extensions {
+            security: Some(Arc::new(security_with_labels(&[]))),
+            ..Default::default()
+        };
+        assert!(inbound.labels_write_token.is_none());
+
+        let response = serde_json::json!({
+            "modified_extensions": {"custom": {"verdict": "clean"}}
+        });
+        let owned = parse_returned_extensions(&response, &inbound)
+            .expect("parsing")
+            .expect("the custom write is a real modification");
+
+        // No labels token, so the security slot must merge as a no-op against
+        // canonical state. Drive that through the real merge to prove it.
+        let mut canonical = Extensions {
+            security: Some(Arc::new(security_with_labels(&["PII", "HIPAA"]))),
+            ..Default::default()
+        };
+        canonical.merge_owned(owned);
+
+        let merged = canonical.security.as_ref().expect("slot present");
+        assert!(
+            merged.labels.contains(&"PII".to_string()),
+            "a capability-less custom write must not wipe canonical labels"
+        );
+        assert!(merged.labels.contains(&"HIPAA".to_string()));
+        assert_eq!(
+            canonical.custom.as_ref().expect("custom merged")["verdict"],
+            "clean",
+            "and the legitimate custom write still lands"
+        );
+    }
+
+    #[test]
+    fn the_returned_http_slot_preserves_the_inbound_request_line() {
+        // Policies gate on method/path/host/scheme (CHANGELOG 0.2.2). The
+        // Python `HttpExtension` models only `headers`, so a worker round trip
+        // returns none of the four — taking them from the return blanked all of
+        // them on every merge. A hostile worker could also rewrite `host`,
+        // which must trace to a validated authority.
+        let mut inbound_http = HttpExtension::default();
+        inbound_http.method = Some("POST".into());
+        inbound_http.path = Some("/api/v1/transfer".into());
+        inbound_http.host = Some("bank.internal".into());
+        inbound_http.scheme = Some("https".into());
+
+        // What a worker actually returns: headers only, request line absent.
+        let returned_absent = HttpExtension {
+            request_headers: [("X-Scanned".to_string(), "1".to_string())].into(),
+            ..Default::default()
+        };
+        let merged = returned_http(&returned_absent, Some(&inbound_http));
+        assert_eq!(merged.method.as_deref(), Some("POST"));
+        assert_eq!(merged.path.as_deref(), Some("/api/v1/transfer"));
+        assert_eq!(merged.host.as_deref(), Some("bank.internal"));
+        assert_eq!(merged.scheme.as_deref(), Some("https"));
+        assert_eq!(
+            merged.request_headers.get("X-Scanned").map(String::as_str),
+            Some("1")
+        );
+
+        // And a worker that *does* send a request line cannot override it.
+        let returned_hostile = HttpExtension {
+            method: Some("GET".into()),
+            path: Some("/healthz".into()),
+            host: Some("evil.example".into()),
+            scheme: Some("http".into()),
+            ..Default::default()
+        };
+        let merged = returned_http(&returned_hostile, Some(&inbound_http));
+        assert_eq!(
+            merged.host.as_deref(),
+            Some("bank.internal"),
+            "the worker cannot re-point the validated authority"
+        );
+        assert_eq!(merged.method.as_deref(), Some("POST"));
+        assert_eq!(merged.path.as_deref(), Some("/api/v1/transfer"));
+        assert_eq!(merged.scheme.as_deref(), Some("https"));
+    }
+
+    #[test]
+    fn a_returned_delegation_chain_is_validated_not_accepted_blind() {
+        // Without a token the slot is dropped regardless, so the validation
+        // itself is asserted directly against the shared `chain_extends`
+        // predicate the merge uses — the accept path needs a real executor
+        // token and lives in `tests/extensions_merge_e2e.rs`.
+        use cpex_core::extensions::delegation::DelegationHop;
+
+        let hop = |id: &str, scopes: Vec<&str>| DelegationHop {
+            subject_id: id.into(),
+            scopes_granted: scopes.into_iter().map(str::to_string).collect(),
+            ..Default::default()
+        };
+
+        let canonical = vec![
+            hop("user-1", vec!["read_hr"]),
+            hop("svc-a", vec!["read_hr"]),
+        ];
+
+        assert!(
+            chain_extends(&canonical, &canonical),
+            "an unchanged chain is a valid (empty) append"
+        );
+        let mut appended = canonical.clone();
+        appended.push(hop("svc-b", vec!["read_hr"]));
+        assert!(
+            chain_extends(&canonical, &appended),
+            "a real append is valid"
+        );
+
+        assert!(
+            !chain_extends(&canonical, &canonical[..1]),
+            "truncation drops the hop that recorded a narrowing — not an append"
+        );
+        let mut widened = canonical.clone();
+        widened[0].scopes_granted = vec!["admin".into()];
+        assert!(
+            !chain_extends(&canonical, &widened),
+            "widening an existing hop's scopes is not an append"
+        );
+        let mut reseated = canonical.clone();
+        reseated[1].subject_id = "attacker".into();
+        assert!(
+            !chain_extends(&canonical, &reseated),
+            "rewriting an existing hop's subject is not an append"
         );
     }
 

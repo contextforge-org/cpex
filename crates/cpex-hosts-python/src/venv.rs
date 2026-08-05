@@ -32,13 +32,46 @@
 // pip install on the runtime thread would stall every other plugin's init
 // and the rollback path with it. Subprocesses go through `tokio::process`
 // and synchronous filesystem work through `spawn_blocking`.
+//
+// Moving pip off the runtime thread keeps the *thread* free but not the
+// *sequence*: `ensure()` is still awaited to completion before the next
+// plugin's `initialize()` starts. A pip that never returns (an unreachable
+// index with no client timeout, a stuck TLS handshake, a resolver backtracking
+// forever) therefore stalls startup indefinitely, so the install is bounded by
+// a wall-clock timeout and the child is killed on expiry rather than leaked —
+// see `install_requirements` and `DEFAULT_PIP_TIMEOUT_SECS`.
+//
+// # Shared venvs and ownership
+//
+// A venv directory is keyed on the class *root*, so every plugin in one package
+// deliberately shares it (see `VenvLayout`). Sharing makes the rebuild path
+// destructive in a way per-plugin venvs never were: `prepare_directories`
+// removes the venv before recreating it, and a second plugin rebuilding for its
+// own reasons would delete the interpreter and site-packages the first plugin's
+// already-running worker is executing out of.
+//
+// Ownership is therefore tracked explicitly. `.cpex/venv_cache/owners.json`
+// records which plugins (by full class name) currently consider the shared venv
+// theirs, and a rebuild is only allowed to delete the directory when the set
+// holds nobody but the caller. A plugin that finds co-owners registered
+// registers itself and reuses the venv in place instead of wiping it. That
+// keeps the intended sharing while removing the mutual-destruction window.
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::error::HostError;
+
+/// Default wall-clock bound on one `pip install` invocation, in seconds.
+///
+/// Ten minutes: long enough for a cold install of a heavy dependency tree over
+/// a slow link (torch-sized wheels routinely take minutes), short enough that a
+/// wedged pip does not hold startup open forever. `initialize()` is awaited
+/// sequentially, so this is the per-plugin worst case added to boot.
+pub const DEFAULT_PIP_TIMEOUT_SECS: u64 = 600;
 
 /// Cache metadata persisted next to each venv.
 ///
@@ -211,6 +244,48 @@ pub fn evaluate_cache(
     CacheVerdict::Valid
 }
 
+/// Filename, inside `cache_dir`, of the shared venv's owner registry.
+///
+/// One file per venv directory rather than per plugin — it is the *shared*
+/// resource's membership list, so every co-owner must read and write the same
+/// path.
+const OWNERS_FILENAME: &str = "owners.json";
+
+/// The set of plugins that currently claim a shared venv.
+///
+/// Persisted rather than held in memory because co-owners can live in different
+/// processes (a gateway and a `cpex` CLI invocation against the same
+/// `plugins/` tree), and an in-memory set would not see the other side.
+///
+/// A `BTreeSet` keeps the on-disk order stable, so the file does not churn.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct VenvOwners {
+    /// Full class names of the plugins claiming this venv.
+    #[serde(default)]
+    pub owners: BTreeSet<String>,
+}
+
+impl VenvOwners {
+    /// Read the registry, treating an absent or corrupt file as empty.
+    ///
+    /// Absent is the common case (a venv this host has never built). Corrupt is
+    /// treated the same way deliberately: the registry is an optimization for
+    /// *not* deleting a venv, so failing open to "no recorded owners" preserves
+    /// the pre-existing rebuild behavior rather than wedging startup on an
+    /// unparseable file.
+    pub fn load(path: &Path) -> Self {
+        std::fs::read_to_string(path)
+            .ok()
+            .and_then(|raw| serde_json::from_str(&raw).ok())
+            .unwrap_or_default()
+    }
+
+    /// Whether anyone other than `class_name` claims this venv.
+    pub fn has_other_owner(&self, class_name: &str) -> bool {
+        self.owners.iter().any(|o| o != class_name)
+    }
+}
+
 /// Resolved on-disk layout for one plugin's venv.
 ///
 /// The class *root* (the first dotted segment of the class name) names the
@@ -227,6 +302,9 @@ pub struct VenvLayout {
     pub metadata_path: PathBuf,
     /// This plugin's persisted manifest.
     pub manifest_path: PathBuf,
+    /// Owner registry for the shared venv directory. Shared by every plugin
+    /// that resolves to this `venv_path`, unlike `metadata_path`.
+    pub owners_path: PathBuf,
 }
 
 impl VenvLayout {
@@ -275,6 +353,9 @@ impl VenvLayout {
             manifest_stem_for_class(class_name)
         ));
         let manifest_path = plugin_path.join(manifest_filename_for_class(class_name));
+        // Deliberately *not* keyed on the class name: this is the shared venv's
+        // membership list, so co-owners must all read the same file.
+        let owners_path = cache_dir.join(OWNERS_FILENAME);
 
         Ok(Self {
             plugin_path,
@@ -282,6 +363,7 @@ impl VenvLayout {
             cache_dir,
             metadata_path,
             manifest_path,
+            owners_path,
         })
     }
 
@@ -306,6 +388,17 @@ pub enum EnsureOutcome {
         /// has no requirements file — the venv is still fresh.
         installed_requirements: bool,
     },
+    /// This plugin's own cache signals were stale, but another plugin already
+    /// owns the shared venv directory, so it was updated in place rather than
+    /// deleted and recreated.
+    ///
+    /// Distinct from `Built` because the venv was *not* recreated: the
+    /// interpreter another plugin's worker is running out of is the same one as
+    /// before. Distinct from `Reused` because an install may have run.
+    SharedUpdate {
+        /// Whether a requirements install ran into the existing venv.
+        installed_requirements: bool,
+    },
 }
 
 /// Builds and caches one plugin's virtualenv.
@@ -320,6 +413,12 @@ pub struct VenvManager {
     requirements_file: Option<PathBuf>,
     /// Manifest version the plugin declares now, if any.
     manifest_version: Option<String>,
+    /// Full class name — this plugin's identity in the shared venv's owner
+    /// registry. The venv *directory* is keyed on the class root, so the full
+    /// name is what distinguishes co-owners of it.
+    class_name: String,
+    /// Wall-clock bound on one pip install.
+    pip_timeout_secs: u64,
 }
 
 impl VenvManager {
@@ -349,12 +448,35 @@ impl VenvManager {
             layout,
             requirements_file,
             manifest_version: manifest_version.map(str::to_string),
+            class_name: class_name.to_string(),
+            pip_timeout_secs: DEFAULT_PIP_TIMEOUT_SECS,
         })
+    }
+
+    /// Override the pip install timeout.
+    ///
+    /// Configurable because the right bound is deployment-specific: an air-gapped
+    /// mirror resolves in seconds, a cold cross-region install of a large wheel
+    /// set can legitimately take minutes. Tests use a very small value to reach
+    /// the timeout path without waiting out the default.
+    pub fn with_pip_timeout_secs(mut self, secs: u64) -> Self {
+        self.pip_timeout_secs = secs;
+        self
+    }
+
+    /// The wall-clock bound applied to one pip install.
+    pub fn pip_timeout_secs(&self) -> u64 {
+        self.pip_timeout_secs
     }
 
     /// The resolved on-disk layout.
     pub fn layout(&self) -> &VenvLayout {
         &self.layout
+    }
+
+    /// The plugins currently claiming the shared venv directory.
+    pub fn owners(&self) -> VenvOwners {
+        VenvOwners::load(&self.layout.owners_path)
     }
 
     /// The venv's interpreter, for launching the worker.
@@ -383,28 +505,145 @@ impl VenvManager {
         let verdict = self.cache_verdict();
         if verdict.is_valid() {
             tracing::info!(venv = %self.layout.venv_path.display(), "reusing cached venv");
+            // Still claim ownership. A venv this plugin is about to run out of
+            // must be registered even on the pure cache-hit path, or a
+            // co-owner initializing later would see an empty registry and feel
+            // free to delete the interpreter this plugin is using.
+            self.register_owner().await?;
             return Ok(EnsureOutcome::Reused);
         }
+
+        // Only the plugin that is the venv's sole owner may destroy it. With a
+        // co-owner present the directory is updated in place: this plugin's own
+        // cache signals are stale, but wiping the shared interpreter would
+        // break a worker that is already executing out of it.
+        let shared = self.venv_has_other_owner();
+        let venv_exists = self.layout.venv_path.exists();
+        let update_in_place = shared && venv_exists;
 
         tracing::info!(
             venv = %self.layout.venv_path.display(),
             reason = ?verdict,
-            "building venv"
+            class_name = %self.class_name,
+            update_in_place,
+            "{}",
+            if update_in_place {
+                "updating shared venv in place — another plugin owns it"
+            } else {
+                "building venv"
+            }
         );
 
-        self.prepare_directories().await?;
-        self.create_venv().await?;
+        self.prepare_directories(update_in_place).await?;
+        if !update_in_place {
+            self.create_venv().await?;
+        }
 
         let installed_requirements = self.install_requirements().await?;
+        // Ownership is recorded only once the venv is usable — a failed build
+        // must not leave a claim that stops the next attempt from rebuilding.
+        self.register_owner().await?;
         self.save_metadata().await?;
 
+        if update_in_place {
+            return Ok(EnsureOutcome::SharedUpdate {
+                installed_requirements,
+            });
+        }
         Ok(EnsureOutcome::Built {
             installed_requirements,
         })
     }
 
-    /// Create the cache directory and clear any stale venv.
-    async fn prepare_directories(&self) -> Result<(), HostError> {
+    /// Whether a plugin other than this one has claimed the shared venv.
+    fn venv_has_other_owner(&self) -> bool {
+        VenvOwners::load(&self.layout.owners_path).has_other_owner(&self.class_name)
+    }
+
+    /// Add this plugin to the shared venv's owner registry.
+    ///
+    /// Read-modify-write rather than a blind overwrite: the whole point is to
+    /// preserve *other* plugins' claims. Two hosts racing here can still lose
+    /// one claim to a last-writer-wins interleaving; that degrades to the old
+    /// behavior (a rebuild that a co-owner did not expect) rather than to
+    /// silent corruption, and the sequential-init path this runs on makes the
+    /// race rare enough not to justify a lock file.
+    async fn register_owner(&self) -> Result<(), HostError> {
+        let path = self.layout.owners_path.clone();
+        let cache_dir = self.layout.cache_dir.clone();
+        let class_name = self.class_name.clone();
+
+        tokio::task::spawn_blocking(move || {
+            let mut owners = VenvOwners::load(&path);
+            if !owners.owners.insert(class_name) {
+                // Already registered — nothing to write.
+                return Ok(());
+            }
+
+            std::fs::create_dir_all(&cache_dir).map_err(|e| HostError::VenvBuild {
+                message: format!("could not create cache dir {}: {e}", cache_dir.display()),
+            })?;
+            let json = serde_json::to_string_pretty(&owners).map_err(|e| HostError::VenvBuild {
+                message: format!("could not serialize the venv owner registry: {e}"),
+            })?;
+            std::fs::write(&path, json).map_err(|e| HostError::VenvBuild {
+                message: format!("could not write venv owners {}: {e}", path.display()),
+            })
+        })
+        .await
+        .map_err(|e| HostError::VenvBuild {
+            message: format!("venv owner registration panicked: {e}"),
+        })?
+    }
+
+    /// Remove this plugin from the shared venv's owner registry.
+    ///
+    /// Called from the plugin's shutdown path so a venv stops being treated as
+    /// shared once its co-owners are gone — otherwise a stale claim would
+    /// permanently downgrade every later rebuild to an in-place update, and a
+    /// removed dependency would never actually disappear.
+    pub async fn release_owner(&self) -> Result<(), HostError> {
+        let path = self.layout.owners_path.clone();
+        let class_name = self.class_name.clone();
+
+        tokio::task::spawn_blocking(move || {
+            let mut owners = VenvOwners::load(&path);
+            if !owners.owners.remove(&class_name) {
+                return Ok(());
+            }
+
+            // The last owner leaving takes the file with it, so a fresh run
+            // starts from a clean "sole owner" state rather than an empty
+            // object it has to parse.
+            if owners.owners.is_empty() {
+                if path.exists() {
+                    std::fs::remove_file(&path).map_err(|e| HostError::VenvBuild {
+                        message: format!("could not remove venv owners {}: {e}", path.display()),
+                    })?;
+                }
+                return Ok(());
+            }
+
+            let json = serde_json::to_string_pretty(&owners).map_err(|e| HostError::VenvBuild {
+                message: format!("could not serialize the venv owner registry: {e}"),
+            })?;
+            std::fs::write(&path, json).map_err(|e| HostError::VenvBuild {
+                message: format!("could not write venv owners {}: {e}", path.display()),
+            })
+        })
+        .await
+        .map_err(|e| HostError::VenvBuild {
+            message: format!("venv owner release panicked: {e}"),
+        })?
+    }
+
+    /// Create the cache directory and, unless the venv is shared, clear any
+    /// stale venv.
+    ///
+    /// `update_in_place` suppresses the removal: a co-owned venv is upgraded by
+    /// pip rather than recreated, because deleting it would pull the interpreter
+    /// out from under another plugin's running worker.
+    async fn prepare_directories(&self, update_in_place: bool) -> Result<(), HostError> {
         let venv_path = self.layout.venv_path.clone();
         let cache_dir = self.layout.cache_dir.clone();
         let plugin_path = self.layout.plugin_path.clone();
@@ -419,8 +658,10 @@ impl VenvManager {
 
             // An invalid cache means the venv contents cannot be trusted;
             // client.py rmtree's before rebuilding rather than upgrading in
-            // place, so a removed dependency actually disappears.
-            if venv_path.exists() {
+            // place, so a removed dependency actually disappears. That reasoning
+            // holds only for a venv this plugin owns alone — see
+            // `update_in_place`.
+            if !update_in_place && venv_path.exists() {
                 std::fs::remove_dir_all(&venv_path).map_err(|e| HostError::VenvBuild {
                     message: format!("could not remove stale venv {}: {e}", venv_path.display()),
                 })?;
@@ -467,6 +708,21 @@ impl VenvManager {
     /// not an error: an FQN-converted plugin gets its package from the install
     /// channel instead, and installing requirements transitively brings in the
     /// `cpex` framework (and with it `worker.py`).
+    /// Install the plugin's requirements into the venv, bounded by
+    /// `pip_timeout_secs`.
+    ///
+    /// # Why the timeout is here rather than left to pip
+    ///
+    /// pip has no total-runtime bound of its own — `--timeout` covers a single
+    /// socket read, so a resolver that backtracks forever or an index that
+    /// dribbles bytes indefinitely never returns. Since the manager awaits each
+    /// plugin's `initialize()` in sequence, one such install stalls the whole
+    /// startup with no upper bound and no diagnostic.
+    ///
+    /// On expiry the child is killed rather than dropped-and-forgotten:
+    /// `kill_on_drop` would leave the reap to the runtime, and a pip mid-write
+    /// into `site-packages` needs to be stopped before this returns, or the next
+    /// plugin's install races a process still mutating the same directory.
     async fn install_requirements(&self) -> Result<bool, HostError> {
         let Some(requirements) = self.requirements_file.as_ref().filter(|p| p.exists()) else {
             tracing::info!("no requirements file; skipping install");
@@ -474,22 +730,79 @@ impl VenvManager {
         };
 
         let python = self.python_executable();
-        let output = tokio::process::Command::new(&python)
+        let mut child = tokio::process::Command::new(&python)
             .args(["-m", "pip", "install", "-r"])
             .arg(requirements)
-            .output()
-            .await
+            .stdin(std::process::Stdio::null())
+            // stdout is discarded rather than piped: nothing reads it, and an
+            // unread pipe fills and blocks pip on a verbose install.
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
+            // Belt and braces: if this future is cancelled rather than timing
+            // out, the child still does not outlive the host.
+            .kill_on_drop(true)
+            .spawn()
             .map_err(|e| HostError::VenvBuild {
                 message: format!("could not run pip in {}: {e}", python.display()),
             })?;
 
-        if !output.status.success() {
+        // stderr is drained concurrently with the wait rather than after it. pip
+        // is chatty on a failed resolve, and a full 64KiB pipe buffer would
+        // otherwise block the child forever — which the timeout would then
+        // report as a hang, hiding the real error message.
+        let stderr = child.stderr.take();
+        let stderr_task = tokio::spawn(async move {
+            let mut buf = Vec::new();
+            if let Some(mut stderr) = stderr {
+                use tokio::io::AsyncReadExt;
+                let _ = stderr.read_to_end(&mut buf).await;
+            }
+            buf
+        });
+
+        let timeout = std::time::Duration::from_secs(self.pip_timeout_secs);
+        // `wait` rather than `wait_with_output`: it borrows the child, so the
+        // handle survives the timeout branch and can actually kill it.
+        let status = match tokio::time::timeout(timeout, child.wait()).await {
+            Ok(result) => result.map_err(|e| HostError::VenvBuild {
+                message: format!("could not wait on pip in {}: {e}", python.display()),
+            })?,
+
+            Err(_) => {
+                tracing::warn!(
+                    timeout_secs = self.pip_timeout_secs,
+                    requirements = %requirements.display(),
+                    "pip install exceeded its timeout; killing it"
+                );
+
+                // Kill and reap. `kill()` here sends SIGKILL and awaits the
+                // child, so this returns only once the process is gone — a pip
+                // mid-write into site-packages must not outlive this call and
+                // race the next plugin's install into the same directory.
+                if let Err(e) = child.kill().await {
+                    tracing::warn!("could not kill the timed-out pip process: {e}");
+                }
+                stderr_task.abort();
+
+                return Err(HostError::VenvBuild {
+                    message: format!(
+                        "pip install -r {} exceeded the {}s timeout and was killed — check \
+                         network reachability to the package index, or raise the pip timeout",
+                        requirements.display(),
+                        self.pip_timeout_secs,
+                    ),
+                });
+            },
+        };
+
+        if !status.success() {
+            let stderr = stderr_task.await.unwrap_or_default();
             return Err(HostError::VenvBuild {
                 message: format!(
                     "pip install -r {} exited {}: {}",
                     requirements.display(),
-                    output.status,
-                    String::from_utf8_lossy(&output.stderr).trim()
+                    status,
+                    String::from_utf8_lossy(&stderr).trim()
                 ),
             });
         }
@@ -1029,10 +1342,12 @@ mod tests {
         ));
         assert_eq!(a.ensure().await.unwrap(), EnsureOutcome::Reused);
 
-        // B has no metadata yet, so it builds once...
+        // B has no metadata yet, so it does its own first-time setup. A already
+        // owns the shared venv, so that setup updates it in place rather than
+        // recreating it — see `a_second_plugin_rebuilding_does_not_delete_the_shared_venv`.
         assert!(matches!(
             b.ensure().await.unwrap(),
-            EnsureOutcome::Built { .. }
+            EnsureOutcome::SharedUpdate { .. }
         ));
         // ...and crucially A is still a cache hit afterwards. A shared manifest
         // filename here would have invalidated A and started a rebuild loop.
@@ -1042,6 +1357,326 @@ mod tests {
             "B's build must not invalidate A"
         );
         assert_eq!(b.ensure().await.unwrap(), EnsureOutcome::Reused);
+    }
+
+    // --- shared-venv ownership ----------------------------------------------
+
+    #[test]
+    fn the_owners_file_is_shared_by_every_plugin_in_the_package() {
+        // The registry is the shared venv's membership list, so unlike
+        // `metadata_path` it must resolve to one path for all co-owners.
+        // Keying it per class would give each plugin its own empty registry,
+        // and every one of them would believe it was the sole owner.
+        let dirs = vec!["/plugins".to_string()];
+        let a = VenvLayout::resolve(&dirs, "pkg.a.PluginA").unwrap();
+        let b = VenvLayout::resolve(&dirs, "pkg.b.PluginB").unwrap();
+
+        assert_eq!(a.venv_path, b.venv_path, "one shared venv");
+        assert_eq!(
+            a.owners_path, b.owners_path,
+            "co-owners of one venv must read the same registry"
+        );
+        assert_eq!(
+            a.owners_path,
+            PathBuf::from("/plugins/pkg/.cpex/venv_cache/owners.json")
+        );
+    }
+
+    #[test]
+    fn a_missing_or_corrupt_owner_registry_reads_as_empty() {
+        // Failing open matters: the registry only ever *prevents* a delete, so
+        // an unreadable file must degrade to the previous rebuild behavior
+        // rather than wedge startup.
+        let dir = TempDir::new();
+        assert!(VenvOwners::load(&dir.path().join("nope.json"))
+            .owners
+            .is_empty());
+
+        let corrupt = dir.path().join("owners.json");
+        std::fs::write(&corrupt, "{ not json").unwrap();
+        assert!(VenvOwners::load(&corrupt).owners.is_empty());
+    }
+
+    #[test]
+    fn has_other_owner_ignores_the_caller_itself() {
+        let mut owners = VenvOwners::default();
+        owners.owners.insert("pkg.a.PluginA".to_string());
+
+        assert!(
+            !owners.has_other_owner("pkg.a.PluginA"),
+            "a plugin re-initializing is still the sole owner and may rebuild"
+        );
+        assert!(
+            owners.has_other_owner("pkg.b.PluginB"),
+            "a different plugin in the same package is a co-owner"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_cache_hit_still_claims_ownership_of_the_venv() {
+        // Otherwise the reuse path would run a worker out of a venv it never
+        // registered for, and a co-owner initializing later would see an empty
+        // registry and delete it.
+        if crate::testing::skip_without_python3("a_cache_hit_still_claims_ownership_of_the_venv") {
+            return;
+        }
+        let dir = TempDir::new();
+        let mgr = manager_in(&dir, "pkg.Plugin", None);
+
+        mgr.ensure().await.unwrap();
+        assert!(mgr.owners().owners.contains("pkg.Plugin"));
+
+        // Drop the claim, then take the pure cache-hit path.
+        mgr.release_owner().await.unwrap();
+        assert!(mgr.owners().owners.is_empty());
+
+        assert_eq!(mgr.ensure().await.unwrap(), EnsureOutcome::Reused);
+        assert!(
+            mgr.owners().owners.contains("pkg.Plugin"),
+            "the reuse path must register ownership too"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_second_plugin_rebuilding_does_not_delete_the_shared_venv() {
+        // The reviewer's bug, directly. A and B share `pkg/.venv` by design.
+        // Before the owner registry, B's rebuild called `remove_dir_all` on the
+        // shared venv — deleting the interpreter and site-packages that A's
+        // already-running worker was executing out of.
+        if crate::testing::skip_without_python3(
+            "a_second_plugin_rebuilding_does_not_delete_the_shared_venv",
+        ) {
+            return;
+        }
+        let dir = TempDir::new();
+        let a = manager_in(&dir, "pkg.a.PluginA", None);
+        let b = manager_in(&dir, "pkg.b.PluginB", None);
+        assert_eq!(a.layout().venv_path, b.layout().venv_path, "one venv");
+
+        // A builds and claims the venv.
+        assert!(matches!(
+            a.ensure().await.unwrap(),
+            EnsureOutcome::Built { .. }
+        ));
+        assert!(a.python_executable().exists());
+
+        // A marker inside the venv stands in for "the files A's worker is
+        // running out of". Its survival is the actual assertion: a path check
+        // alone would pass even against a freshly recreated venv.
+        let marker = a.layout().venv_path.join("a-was-here.marker");
+        std::fs::write(&marker, "A's interpreter tree").unwrap();
+
+        // B's cache signals are stale (it has no metadata), so pre-fix it took
+        // the destructive rebuild path.
+        assert!(!b.cache_verdict().is_valid());
+        assert_eq!(
+            b.ensure().await.unwrap(),
+            EnsureOutcome::SharedUpdate {
+                installed_requirements: false
+            },
+            "a co-owned venv must be updated in place, not recreated"
+        );
+
+        assert!(
+            marker.exists(),
+            "B's build deleted the shared venv out from under A"
+        );
+        assert!(
+            a.python_executable().exists(),
+            "A's interpreter must survive B's build"
+        );
+
+        // Both plugins end up with a working venv and a recorded claim.
+        let owners = a.owners().owners;
+        assert!(owners.contains("pkg.a.PluginA"), "owners: {owners:?}");
+        assert!(owners.contains("pkg.b.PluginB"), "owners: {owners:?}");
+
+        // ...and A is still a cache hit, so this did not reintroduce thrash.
+        assert_eq!(a.ensure().await.unwrap(), EnsureOutcome::Reused);
+        assert_eq!(b.ensure().await.unwrap(), EnsureOutcome::Reused);
+    }
+
+    #[tokio::test]
+    async fn the_sole_owner_still_gets_a_destructive_rebuild() {
+        // The counterpart guarantee. Sharing must not cost correctness for the
+        // ordinary single-plugin case: an invalid cache there still wipes the
+        // venv, so a removed dependency actually disappears.
+        if crate::testing::skip_without_python3("the_sole_owner_still_gets_a_destructive_rebuild") {
+            return;
+        }
+        let dir = TempDir::new();
+        let mgr = manager_in(&dir, "pkg.Plugin", None);
+        mgr.ensure().await.unwrap();
+
+        let stale = mgr.layout().venv_path.join("stale-dependency.marker");
+        std::fs::write(&stale, "removed from requirements").unwrap();
+
+        // Invalidate: a manifest appears where there was none.
+        std::fs::write(&mgr.layout().manifest_path, "version: 1.0.1\n").unwrap();
+        assert_eq!(mgr.cache_verdict(), CacheVerdict::ManifestHashChanged);
+
+        assert!(
+            matches!(mgr.ensure().await.unwrap(), EnsureOutcome::Built { .. }),
+            "the sole owner rebuilds rather than updating in place"
+        );
+        assert!(
+            !stale.exists(),
+            "a sole-owner rebuild must clear the old venv contents"
+        );
+    }
+
+    #[tokio::test]
+    async fn releasing_the_last_owner_restores_destructive_rebuilds() {
+        // A stale claim left behind by a departed plugin would downgrade every
+        // later rebuild to an in-place update forever.
+        if crate::testing::skip_without_python3(
+            "releasing_the_last_owner_restores_destructive_rebuilds",
+        ) {
+            return;
+        }
+        let dir = TempDir::new();
+        let a = manager_in(&dir, "pkg.a.PluginA", None);
+        let b = manager_in(&dir, "pkg.b.PluginB", None);
+
+        a.ensure().await.unwrap();
+        b.ensure().await.unwrap();
+        assert_eq!(a.owners().owners.len(), 2);
+
+        // A shuts down and hands the venv over.
+        a.release_owner().await.unwrap();
+        assert!(!a.owners().has_other_owner("pkg.b.PluginB"));
+
+        // B is now sole owner, so its next invalid-cache build is destructive.
+        let stale = b.layout().venv_path.join("stale.marker");
+        std::fs::write(&stale, "x").unwrap();
+        std::fs::write(&b.layout().manifest_path, "version: 2.0.0\n").unwrap();
+
+        assert!(matches!(
+            b.ensure().await.unwrap(),
+            EnsureOutcome::Built { .. }
+        ));
+        assert!(!stale.exists(), "the sole remaining owner rebuilds fully");
+
+        // The last owner leaving removes the file entirely.
+        b.release_owner().await.unwrap();
+        assert!(!b.layout().owners_path.exists());
+    }
+
+    // --- pip timeout --------------------------------------------------------
+
+    #[test]
+    fn the_default_pip_timeout_is_applied_and_overridable() {
+        let dir = TempDir::new();
+        let mgr = manager_in(&dir, "pkg.Plugin", None);
+        assert_eq!(mgr.pip_timeout_secs(), DEFAULT_PIP_TIMEOUT_SECS);
+        assert_eq!(mgr.with_pip_timeout_secs(3).pip_timeout_secs(), 3);
+    }
+
+    #[tokio::test]
+    async fn a_hanging_pip_install_times_out_and_kills_the_child() {
+        // Init is sequential, so an unbounded pip stalls every other plugin's
+        // startup. Pre-fix this test hangs for the length of the sleep (and in
+        // production, forever) instead of returning.
+        //
+        // The hang is produced by putting a fake `pip` on the venv's path that
+        // sleeps: the manager runs `<venv>/bin/python -m pip install -r ...`, so
+        // shadowing the module inside the venv is enough — no network needed.
+        if crate::testing::skip_without_python3(
+            "a_hanging_pip_install_times_out_and_kills_the_child",
+        ) {
+            return;
+        }
+        let dir = TempDir::new();
+        std::fs::create_dir_all(dir.path().join("pkg")).unwrap();
+        std::fs::write(dir.path().join("pkg").join("requirements.txt"), "").unwrap();
+
+        let mgr = manager_in(&dir, "pkg.Plugin", Some("requirements.txt")).with_pip_timeout_secs(1);
+
+        // A real venv, so the install runs against the venv's own interpreter
+        // exactly as production does.
+        mgr.prepare_directories(false).await.expect("dirs prepared");
+        mgr.create_venv().await.expect("the venv builds");
+
+        // `python -m pip` resolves `pip/__main__.py` from sys.path, and the
+        // venv's own site-packages precedes the stdlib for it — so shadowing the
+        // module inside the venv produces the hang with no network involved.
+        let site = {
+            let lib = mgr.layout().venv_path.join("lib");
+            std::fs::read_dir(&lib)
+                .expect("venv lib dir")
+                .flatten()
+                .map(|e| e.path().join("site-packages"))
+                .find(|p| p.exists())
+                .expect("site-packages exists in a built venv")
+        };
+        let pip_pkg = site.join("pip");
+        std::fs::create_dir_all(&pip_pkg).unwrap();
+        std::fs::write(pip_pkg.join("__init__.py"), "").unwrap();
+        // Records its pid, then sleeps far past the 1s timeout. Recording the pid
+        // is what lets the test prove the child was actually killed rather than
+        // left running; without the fix this call blocks for the full 300s.
+        let pidfile = dir.path().join("pip.pid");
+        std::fs::write(
+            pip_pkg.join("__main__.py"),
+            format!(
+                "import os, time\nopen({:?}, 'w').write(str(os.getpid()))\ntime.sleep(300)\n",
+                pidfile.display().to_string()
+            ),
+        )
+        .unwrap();
+
+        let started = std::time::Instant::now();
+        let err = mgr
+            .install_requirements()
+            .await
+            .expect_err("a pip that never returns must not stall startup forever");
+        let elapsed = started.elapsed();
+
+        assert!(
+            matches!(err, HostError::VenvBuild { .. }),
+            "a pip timeout is a venv build failure: {err:?}"
+        );
+        let message = err.to_string();
+        assert!(
+            message.contains("timeout"),
+            "the error must name the timeout so an operator can raise it: {message}"
+        );
+
+        // The bound is the point: a 1s timeout against a 300s sleep.
+        assert!(
+            elapsed < std::time::Duration::from_secs(30),
+            "the install must return on the timeout, not on pip's own completion: {elapsed:?}"
+        );
+
+        // ...and the child must actually be gone. A pip still mutating
+        // site-packages would race the next plugin's install into the same
+        // shared directory.
+        let pid: i32 = std::fs::read_to_string(&pidfile)
+            .expect("the fake pip recorded its pid")
+            .trim()
+            .parse()
+            .expect("pid is numeric");
+        // `kill -0` succeeds only while the process exists. Poll briefly: the
+        // reap is synchronous in `install_requirements`, but the OS may take a
+        // moment to clear the entry.
+        let mut alive = true;
+        for _ in 0..40 {
+            let status = std::process::Command::new("kill")
+                .args(["-0", &pid.to_string()])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .expect("kill -0 runs");
+            if !status.success() {
+                alive = false;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        assert!(
+            !alive,
+            "the timed-out pip process (pid {pid}) was leaked rather than killed"
+        );
     }
 
     #[tokio::test]

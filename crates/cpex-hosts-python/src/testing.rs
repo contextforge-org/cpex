@@ -61,9 +61,9 @@ impl Drop for TempDir {
 
 /// Whether a usable `python3` is on PATH.
 ///
-/// The venv and end-to-end tests need a real interpreter. Per the plan they
-/// *skip* rather than fail when one is absent, so CI without python3 stays
-/// green — while not pretending to have covered the path.
+/// The venv and end-to-end tests need a real interpreter. When one is absent
+/// they skip rather than fail, so a developer machine without the Python side
+/// stays green — while not pretending to have covered the path.
 pub fn python3_available() -> bool {
     std::process::Command::new("python3")
         .arg("--version")
@@ -74,17 +74,48 @@ pub fn python3_available() -> bool {
         .unwrap_or(false)
 }
 
-/// Skip the calling test (with a printed reason) when python3 is missing.
+/// Env var that turns every skip in these tests into a failure.
+///
+/// The tests below are `#[ignore]`d, so a default `cargo test` reports them as
+/// *ignored* and never claims to have run them. The lane that does run them
+/// (`make test-python-e2e`, and the `python-e2e` CI job) exists precisely
+/// because the environment is supposed to be complete there — so a skip in that
+/// lane is a broken lane, not an absent dependency, and must be loud.
+pub const REQUIRE_ENV: &str = "CPEX_REQUIRE_PYTHON_E2E";
+
+/// Whether skips must fail instead of returning `None`.
+pub fn skips_are_failures() -> bool {
+    std::env::var(REQUIRE_ENV).is_ok_and(|v| !v.is_empty() && v != "0")
+}
+
+/// Record a skip: print it, or panic when [`REQUIRE_ENV`] demands a real run.
+///
+/// Every skip path in `tests/` routes through here, so there is exactly one
+/// place that decides whether an unmet prerequisite is tolerated. Returning
+/// `()` keeps the call sites' `return`/`None` shape unchanged.
+pub fn skip(test_name: &str, reason: &str) {
+    assert!(
+        !skips_are_failures(),
+        "{test_name} cannot run and {REQUIRE_ENV} is set: {reason}\n\nThis lane is supposed to \
+         have a complete Python end-to-end environment. Fix the environment (python3 on PATH, and \
+         {SOURCE_ENV} pointing at a cpex Python checkout with \
+         cpex/framework/isolated/worker.py) rather than unsetting {REQUIRE_ENV} — a silent skip \
+         here reports coverage that does not exist."
+    );
+    println!("SKIP {test_name}: {reason}");
+}
+
+/// Skip the calling test when python3 is missing.
 ///
 /// Rust has no first-class runtime skip, so this returns a bool the caller
-/// early-returns on. The printed line is what distinguishes "skipped" from
-/// "passed" when reading `cargo test -- --nocapture` output.
+/// early-returns on. Under [`REQUIRE_ENV`] it panics instead of returning
+/// `true`, so the run cannot report "ok" without having executed.
 #[must_use]
 pub fn skip_without_python3(test_name: &str) -> bool {
     if python3_available() {
         return false;
     }
-    println!("SKIP {test_name}: python3 not found on PATH");
+    skip(test_name, "python3 not found on PATH");
     true
 }
 

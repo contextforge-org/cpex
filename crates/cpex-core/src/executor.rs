@@ -450,38 +450,54 @@ impl Executor {
                             if let Some(mp) = erased.modified_payload {
                                 *payload = mp;
                             }
-                            if let Some(owned) = erased.modified_extensions {
-                                let valid = extensions.validate_immutable(&owned);
-                                if !valid {
+                            if let Some(mut owned) = erased.modified_extensions {
+                                if extensions.validate_immutable(&owned) {
+                                    // `merge_owned` enforces the tiers per
+                                    // *field*, gated on the write tokens that
+                                    // `owned` carries. It is not a slot swap: a
+                                    // field with no token keeps its canonical
+                                    // value, so an ungated edit is dropped
+                                    // rather than merged. Previously this arm
+                                    // was reached by a bare `else` that merged
+                                    // the plugin's whole capability-filtered
+                                    // view over canonical state — a plugin with
+                                    // no security capability could wipe the
+                                    // pipeline's labels by returning `custom`.
+                                    //
+                                    // The monotonic label check that used to
+                                    // live here moved into `merge_security`,
+                                    // where it applies unconditionally instead
+                                    // of only when `read_labels` was held.
+                                    //
+                                    // Authority is re-derived from *this*
+                                    // plugin's declared capabilities rather than
+                                    // read off the returned value. A handler is
+                                    // free to build its `OwnedExtensions` any
+                                    // way it likes — apl-cpex's synthetic route
+                                    // handler returns `cow_copy()` of a freshly
+                                    // accumulated `Extensions`, whose tokens
+                                    // `Clone` deliberately drops — so tokens
+                                    // surviving the round trip is a statement
+                                    // about plumbing, not about permission. The
+                                    // capability set is the real grant, and it
+                                    // cannot be widened by the return value.
+                                    owned.http_write_token = capabilities
+                                        .contains("write_headers")
+                                        .then(WriteToken::new);
+                                    owned.labels_write_token = capabilities
+                                        .contains("append_labels")
+                                        .then(WriteToken::new);
+                                    owned.delegation_write_token = capabilities
+                                        .contains("append_delegation")
+                                        .then(WriteToken::new);
+                                    extensions.merge_owned(owned);
+                                } else {
                                     warn!(
                                         "{} plugin '{}' violated immutable tier — \
                                          modified an immutable extension slot. \
                                          Extension changes rejected.",
                                         phase_label, plugin_name
                                     );
-                                } else if capabilities.contains("read_labels") {
-                                    // Only enforce monotonic labels if the plugin
-                                    // could see them. A plugin without read_labels
-                                    // has empty labels in its filtered view — that's
-                                    // not a removal.
-                                    if let (Some(ref orig_sec), Some(ref new_sec)) =
-                                        (&extensions.security, &owned.security)
-                                    {
-                                        if !new_sec.labels.is_superset(&orig_sec.labels) {
-                                            warn!(
-                                                "{} plugin '{}' violated monotonic tier — \
-                                                 removed a security label. \
-                                                 Extension changes rejected.",
-                                                phase_label, plugin_name
-                                            );
-                                        } else {
-                                            extensions.merge_owned(owned);
-                                        }
-                                    } else {
-                                        extensions.merge_owned(owned);
-                                    }
-                                } else {
-                                    extensions.merge_owned(owned);
                                 }
                             }
                         }
