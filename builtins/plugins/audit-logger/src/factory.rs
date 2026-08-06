@@ -25,16 +25,10 @@ impl PluginFactory for AuditLoggerFactory {
     fn create(&self, config: &PluginConfig) -> Result<PluginInstance, Box<PluginError>> {
         let logger = Arc::new(AuditLogger::new(config.clone())?);
 
-        if config.hooks.is_empty() {
-            return Err(Box::new(PluginError::Config {
-                message: format!(
-                    "plugin '{}' (cpex-plugin-audit-logger): `hooks:` must list at \
-                     least one CMF hook to audit (e.g. cmf.tool_pre_invoke)",
-                    config.name
-                ),
-            }));
-        }
-
+        // With no `hooks:` listed the logger runs in audit-only mode — it
+        // registers no CMF post-hook handlers and instead auto-attaches as a
+        // decision-audit sink (see `Plugin::as_audit_handler`). Listing hooks
+        // keeps the legacy per-hook observation behavior.
         let handlers: Vec<_> = config
             .hooks
             .iter()

@@ -342,7 +342,8 @@ fn snapshot_from_config(registry: PluginRegistry, cpex_config: CpexConfig) -> Ru
     let executor = Executor::new(ExecutorConfig {
         timeout_seconds: cpex_config.plugin_settings.plugin_timeout,
         short_circuit_on_deny: cpex_config.plugin_settings.short_circuit_on_deny,
-    });
+    })
+    .with_audit_handlers(registry.audit_handlers());
     let route_cache_max_entries = cpex_config.plugin_settings.route_cache_max_entries;
     RuntimeSnapshot {
         registry,
@@ -2215,6 +2216,94 @@ mod tests {
 
         // The sink panicked, but the request still completed with its verdict.
         assert!(result.continue_processing);
+    }
+
+    #[tokio::test]
+    async fn test_audit_plugin_auto_attaches_from_config() {
+        use crate::audit::AuditHandler;
+        use crate::decision::DecisionLog;
+        use std::sync::Mutex;
+
+        // A capturing audit sink that auto-attaches in audit-only mode
+        // (no hooks), mirroring how `audit-logger` opts in.
+        struct CapturingAudit {
+            cfg: PluginConfig,
+            fired: Arc<Mutex<usize>>,
+        }
+        #[async_trait]
+        impl Plugin for CapturingAudit {
+            fn config(&self) -> &PluginConfig {
+                &self.cfg
+            }
+            fn as_audit_handler(self: Arc<Self>) -> Option<Arc<dyn AuditHandler>> {
+                if self.cfg.hooks.is_empty() {
+                    Some(self)
+                } else {
+                    None
+                }
+            }
+        }
+        #[async_trait]
+        impl AuditHandler for CapturingAudit {
+            async fn handle(
+                &self,
+                _payload: &dyn PluginPayload,
+                _extensions: &Extensions,
+                _decisions: &DecisionLog,
+            ) {
+                *self.fired.lock().unwrap() += 1;
+            }
+        }
+        struct CapturingAuditFactory(Arc<Mutex<usize>>);
+        impl crate::factory::PluginFactory for CapturingAuditFactory {
+            fn create(
+                &self,
+                config: &PluginConfig,
+            ) -> Result<crate::factory::PluginInstance, Box<PluginError>> {
+                Ok(crate::factory::PluginInstance {
+                    plugin: Arc::new(CapturingAudit {
+                        cfg: config.clone(),
+                        fired: Arc::clone(&self.0),
+                    }),
+                    handlers: vec![],
+                })
+            }
+        }
+
+        // Config declares the audit sink with NO hooks — it must auto-attach.
+        let yaml = r#"
+plugins:
+  - name: audit
+    kind: test/audit
+    mode: audit
+  - name: gate
+    kind: test/allow
+    hooks: [test_hook]
+    mode: sequential
+"#;
+        let cpex_config = crate::config::parse_config(yaml).unwrap();
+
+        let fired = Arc::new(Mutex::new(0usize));
+        let mgr = PluginManager::default();
+        mgr.register_factory(
+            "test/audit",
+            Box::new(CapturingAuditFactory(Arc::clone(&fired))),
+        );
+        mgr.register_factory("test/allow", Box::new(AllowPluginFactory));
+        mgr.load_config(cpex_config).unwrap();
+        mgr.initialize().await.unwrap();
+
+        let payload: Box<dyn PluginPayload> = Box::new(TestPayload {
+            value: "x".into(),
+        });
+        let (result, _) = mgr
+            .invoke_by_name("test_hook", payload, Extensions::default(), None)
+            .await;
+        assert!(result.continue_processing);
+
+        // The hookless audit plugin auto-attached from config and fired at the
+        // verdict — no programmatic register_audit_handler, no `hooks:`.
+        assert_eq!(*fired.lock().unwrap(), 1);
     }
 
     #[tokio::test]

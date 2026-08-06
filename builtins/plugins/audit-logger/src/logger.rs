@@ -8,10 +8,12 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde_json::{json, Map, Value};
 
+use cpex_core::audit::AuditHandler;
 use cpex_core::cmf::{CmfHook, ContentPart, MessagePayload};
 use cpex_core::context::PluginContext;
+use cpex_core::decision::{DecisionLog, Verdict};
 use cpex_core::error::PluginError;
-use cpex_core::hooks::payload::Extensions;
+use cpex_core::hooks::payload::{Extensions, PluginPayload};
 use cpex_core::hooks::trait_def::{HookHandler, PluginResult};
 use cpex_core::plugin::{Plugin, PluginConfig};
 
@@ -42,7 +44,7 @@ impl AuditLogger {
         Ok(Self { cfg, typed })
     }
 
-    fn build_record(&self, payload: &MessagePayload, ext: &Extensions) -> Value {
+    fn build_record(&self, payload: Option<&MessagePayload>, ext: &Extensions) -> Value {
         let mut record = Map::new();
         record.insert(
             "ts".into(),
@@ -93,7 +95,7 @@ impl AuditLogger {
         // content part's args, if any. Mirrors what the gateway
         // would actually forward (so audit reflects post-redact
         // state if a PII scanner ran ahead of us).
-        for part in &payload.message.content {
+        for part in payload.iter().flat_map(|p| p.message.content.iter()) {
             match part {
                 ContentPart::ToolCall { content } => {
                     record.insert(
@@ -166,6 +168,18 @@ impl Plugin for AuditLogger {
     fn config(&self) -> &PluginConfig {
         &self.cfg
     }
+
+    /// Auto-attach as a decision-audit sink when run in audit-only mode (no
+    /// `hooks:` listed). If the operator listed hooks, this runs as a legacy
+    /// CMF post-hook handler instead and does not also auto-attach, so
+    /// records aren't emitted twice.
+    fn as_audit_handler(self: Arc<Self>) -> Option<Arc<dyn AuditHandler>> {
+        if self.cfg.hooks.is_empty() {
+            Some(self)
+        } else {
+            None
+        }
+    }
 }
 
 impl HookHandler<CmfHook> for AuditLogger {
@@ -175,9 +189,67 @@ impl HookHandler<CmfHook> for AuditLogger {
         ext: &Extensions,
         _ctx: &mut PluginContext,
     ) -> PluginResult<MessagePayload> {
-        let record = self.build_record(payload, ext);
+        let record = self.build_record(Some(payload), ext);
         self.emit(&record);
         PluginResult::allow()
+    }
+}
+
+impl AuditLogger {
+    /// Build the decision-audit record: the same fields as the CMF
+    /// observation record, plus the pipeline's verdict and the ordered
+    /// plugin actions. `payload` is present only when this dispatch carried
+    /// a CMF `MessagePayload` (audit sinks fire for every hook family).
+    fn build_decision_record(
+        &self,
+        payload: Option<&MessagePayload>,
+        ext: &Extensions,
+        decisions: &DecisionLog,
+    ) -> Value {
+        let mut record = self.build_record(payload, ext);
+        if let Value::Object(map) = &mut record {
+            let verdict = match decisions.verdict() {
+                Some(Verdict::Allow) => json!("allow"),
+                Some(Verdict::Deny(v)) => json!({
+                    "deny": { "code": v.code, "reason": v.reason }
+                }),
+                None => json!("pending"),
+            };
+            map.insert("verdict".into(), verdict);
+
+            let steps: Vec<Value> = decisions
+                .steps()
+                .iter()
+                .map(|s| {
+                    json!({
+                        "plugin": s.plugin_name,
+                        "phase": format!("{:?}", s.phase),
+                        "action": format!("{:?}", s.action),
+                    })
+                })
+                .collect();
+            map.insert("decision_steps".into(), json!(steps));
+        }
+        record
+    }
+}
+
+/// Decision-audit consumer: fires at the verdict of every pipeline run —
+/// including denials — with the decision log. This is the first-class path;
+/// the `HookHandler<CmfHook>` impl above remains for the legacy post-hook
+/// registration.
+#[async_trait]
+impl AuditHandler for AuditLogger {
+    async fn handle(&self, payload: &dyn PluginPayload, ext: &Extensions, decisions: &DecisionLog) {
+        // Downcast to the CMF payload when present; a non-CMF dispatch
+        // (delegation, identity) records without the message summary.
+        let msg = payload.as_any().downcast_ref::<MessagePayload>();
+        let record = self.build_decision_record(msg, ext, decisions);
+        self.emit(&record);
+    }
+
+    fn name(&self) -> &str {
+        &self.cfg.name
     }
 }
 
@@ -240,15 +312,35 @@ mod tests {
             ..Default::default()
         };
 
-        let record = plugin.build_record(&payload, &ext);
+        let record = plugin.build_record(Some(&payload), &ext);
         assert_eq!(record["subject"]["id"], "alice@corp.com");
         assert_eq!(record["entity"]["name"], "get_compensation");
         assert_eq!(record["tool_call"]["name"], "get_compensation");
         assert_eq!(record["tool_call"]["args"]["employee_id"], "EMP-001234");
         // Always-allow contract: handler returns continue_processing.
         let mut ctx = PluginContext::default();
-        let r = plugin.handle(&payload, &ext, &mut ctx).await;
+        let r = <AuditLogger as HookHandler<CmfHook>>::handle(&plugin, &payload, &ext, &mut ctx).await;
         assert!(r.continue_processing);
         assert!(r.violation.is_none());
+    }
+
+    #[test]
+    fn decision_record_includes_verdict_and_steps() {
+        use cpex_core::decision::PluginAction;
+        use cpex_core::error::PluginViolation;
+
+        let plugin = AuditLogger::new(cfg()).unwrap();
+        let mut log = DecisionLog::new();
+        log.record("cedar-pdp", PluginMode::Sequential, PluginAction::Denied);
+        log.finalize(Verdict::Deny(PluginViolation::new(
+            "missing_permission",
+            "not allowed",
+        )));
+
+        // No CMF payload on this dispatch — the record still carries the verdict.
+        let record = plugin.build_decision_record(None, &Extensions::default(), &log);
+        assert_eq!(record["verdict"]["deny"]["code"], "missing_permission");
+        assert_eq!(record["decision_steps"][0]["plugin"], "cedar-pdp");
+        assert_eq!(record["decision_steps"][0]["action"], "Denied");
     }
 }

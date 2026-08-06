@@ -98,6 +98,15 @@ pub trait Plugin: Send + Sync {
     async fn shutdown(&self) -> Result<(), Box<PluginError>> {
         Ok(())
     }
+
+    /// If this plugin is also an audit sink, return it as one so the manager
+    /// auto-attaches it to the executor's verdict emit when the plugin is
+    /// registered (including from YAML config). Default: not an audit sink.
+    fn as_audit_handler(
+        self: std::sync::Arc<Self>,
+    ) -> Option<std::sync::Arc<dyn crate::audit::AuditHandler>> {
+        None
+    }
 }
 
 /// Declared plugin configuration from the unified YAML config.
