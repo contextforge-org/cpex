@@ -339,6 +339,23 @@ impl PluginInvoker for CmfPluginInvoker {
         // these become `PluginOutcome.taints`.
         let before_labels = snapshot_labels(&current_extensions);
 
+        // Per-call field baseline for pipeline-stage dispatch: the field
+        // as *this payload* holds it right now.
+        //
+        // This is the only sound thing to compare a readback against. The
+        // pipeline's own `value` may already carry earlier stages' edits
+        // (`mask`, `redact`, `hash`) that were never pushed into the
+        // payload, so comparing against it would read the payload's
+        // untouched original as "the plugin's new value" and hand the
+        // pre-redaction plaintext back to the pipeline, undoing the
+        // earlier stage.
+        let field_before = match invocation {
+            PluginInvocation::Field { name, phase, .. } => {
+                field_value_from_message(&current_payload.message, name, phase)
+            },
+            PluginInvocation::Step { .. } => None,
+        };
+
         let (result, _bg) = self
             .manager
             .invoke_entries::<CmfHook>(
@@ -384,10 +401,10 @@ impl PluginInvoker for CmfPluginInvoker {
                     // this call ran on a `dispatch_parallel` branch task.
                     self.payload_modified.store(true, Ordering::Release);
                     match invocation {
-                        PluginInvocation::Field { name, value, phase } => {
+                        PluginInvocation::Field { name, phase, .. } => {
                             let rewritten =
                                 field_value_from_message(&modified.message, name, phase)
-                                    .filter(|new_value| new_value != value);
+                                    .filter(|new_value| field_before.as_ref() != Some(new_value));
                             if rewritten.is_none() {
                                 tracing::debug!(
                                     plugin = %plugin_name,

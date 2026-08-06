@@ -1,5 +1,5 @@
 // Location: ./crates/apl-cpex/tests/payload_mutation_propagation.rs
-// Copyright 2025
+// Copyright 2026
 // SPDX-License-Identifier: Apache-2.0
 // Authors: Fred Araujo
 //
@@ -1046,6 +1046,76 @@ routes:
         user.get("name"),
         Some(&serde_json::json!("[REDACTED]")),
         "the plugin's edit to a sibling key must survive the merge"
+    );
+}
+
+/// A plugin stage must not undo an earlier stage in its own chain.
+///
+/// The payload never sees a pipeline's interim edits, so the field a
+/// plugin stage reads back still holds the pre-`mask` value. Treating
+/// that as "the plugin's new value" hands the plaintext back to the
+/// pipeline and the mask is forwarded undone — the redaction path
+/// failing open, which is the whole point of this code.
+#[tokio::test]
+async fn a_plugin_stage_does_not_undo_an_earlier_mask_in_the_same_chain() {
+    const YAML: &str = r#"
+plugins:
+  - name: token-scrubber
+    kind: token-scrubber
+    hooks: [cmf.tool_pre_invoke]
+routes:
+  - tool: get_weather
+    apl:
+      args:
+        city: "str | mask(2) | plugin(token-scrubber)"
+      pre_invocation:
+        - "plugin(token-scrubber)"
+"#;
+
+    // The plugin rewrites `token`, never `city`. It must therefore report
+    // no change for `city` and leave the mask standing.
+    let mgr = manager_with_yaml(
+        "token-scrubber",
+        Box::new(RewriteFactory {
+            target: Target::ToolCallArgument("token"),
+            hook: "cmf.tool_pre_invoke",
+        }),
+        YAML,
+    )
+    .await;
+
+    let payload = payload_of(
+        Role::User,
+        vec![ContentPart::ToolCall {
+            content: ToolCall {
+                tool_call_id: "tc_001".to_string(),
+                name: "get_weather".to_string(),
+                arguments: [
+                    ("city".to_string(), serde_json::json!("London")),
+                    ("token".to_string(), serde_json::json!("sk-secret")),
+                ]
+                .into_iter()
+                .collect(),
+                namespace: None,
+            },
+        }],
+    );
+
+    let (result, _bg) = mgr
+        .invoke_named::<CmfHook>("cmf.tool_pre_invoke", payload, tool_meta(), None)
+        .await;
+
+    assert!(result.continue_processing, "route should allow");
+    let out = forwarded(&result);
+    assert_eq!(
+        tool_arg_of(&out, "city"),
+        Some(serde_json::json!("****on")),
+        "the mask stage's output must survive the plugin stage that followed it"
+    );
+    assert_eq!(
+        tool_arg_of(&out, "token"),
+        Some(serde_json::json!("[REDACTED]")),
+        "and the plugin's own edit must still reach the host"
     );
 }
 
