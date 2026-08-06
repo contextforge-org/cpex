@@ -169,9 +169,11 @@ pub(crate) fn write_result_back_to_message(msg: &mut Message, result: &Value) {
 /// **The pipeline wins.** If a plugin rewrote a key and the pipeline
 /// rewrote it too, the pipeline's value lands; if the plugin *removed* a
 /// key the pipeline then rewrote, the key comes back with the pipeline's
-/// value. Both cases log a warning naming the key, because the losing
-/// edit is usually also a redaction and a silent tie-break in this path
-/// is exactly the class of bug this function exists to prevent.
+/// value; if the pipeline *omitted* a key the plugin had rewritten, the
+/// key goes and the plugin's edit with it. Every case logs a warning
+/// naming the key, because the losing edit is usually also a redaction
+/// and a silent tie-break in this path is exactly the class of bug this
+/// function exists to prevent.
 ///
 /// The rule is config-author-wins: an `args:` / `result:` pipeline is
 /// written by the operator deploying the policy, so it outranks a
@@ -200,8 +202,19 @@ pub(crate) fn apply_changed_paths(base: &mut Value, pre: &Value, post: &Value) {
         return;
     };
 
-    for key in pre_map.keys() {
+    for (key, pre_value) in pre_map {
         if !post_map.contains_key(key) {
+            // Silent when the plugin left the key alone, which is the
+            // common case for an `omit`.
+            if base_map
+                .get(key)
+                .is_some_and(|base_value| base_value != pre_value)
+            {
+                tracing::warn!(
+                    field = %key,
+                    "pipeline omitted this field, discarding a plugin's edit to it"
+                );
+            }
             base_map.remove(key);
         }
     }
@@ -357,6 +370,23 @@ mod tests {
         let mut base = serde_json::json!({"city": "Paris", "debug": true});
         apply_changed_paths(&mut base, &pre, &post);
         assert_eq!(base, serde_json::json!({"city": "Paris"}));
+    }
+
+    /// The removal counterpart of the same-key conflict: a pipeline `omit`
+    /// of a key the plugin had just rewritten still drops the key, and the
+    /// plugin's edit with it. Safe in either ordering (the key is gone
+    /// whoever wins), so this pins the outcome rather than a leak.
+    #[test]
+    fn changed_paths_omit_a_key_the_plugin_rewrote() {
+        let pre = serde_json::json!({"city": "London", "ssn": "123-45-6789"});
+        let post = serde_json::json!({"city": "London"});
+        let mut base = serde_json::json!({"city": "London", "ssn": "[REDACTED]"});
+        apply_changed_paths(&mut base, &pre, &post);
+        assert_eq!(
+            base,
+            serde_json::json!({"city": "London"}),
+            "an omitted key must not survive because a plugin rewrote it"
+        );
     }
 
     #[test]
