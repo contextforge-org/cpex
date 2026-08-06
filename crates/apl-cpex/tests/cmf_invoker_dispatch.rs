@@ -701,6 +701,76 @@ impl PluginFactory for ArgRewriteFactory {
     }
 }
 
+/// Rewrites one field inside an object-shaped tool result. The Post-phase
+/// counterpart to `ArgRewritePlugin`.
+struct ResultFieldRewritePlugin {
+    cfg: PluginConfig,
+    field: &'static str,
+}
+
+#[async_trait]
+impl Plugin for ResultFieldRewritePlugin {
+    fn config(&self) -> &PluginConfig {
+        &self.cfg
+    }
+}
+
+impl HookHandler<CmfHook> for ResultFieldRewritePlugin {
+    async fn handle(
+        &self,
+        payload: &MessagePayload,
+        _extensions: &Extensions,
+        _ctx: &mut PluginContext,
+    ) -> PluginResult<MessagePayload> {
+        let content: Vec<ContentPart> = payload
+            .message
+            .content
+            .iter()
+            .map(|part| match part {
+                ContentPart::ToolResult { content } => {
+                    let mut next = content.clone();
+                    if let Some(obj) = next.content.as_object_mut() {
+                        obj.insert(
+                            self.field.to_string(),
+                            serde_json::Value::String("[REDACTED]".to_string()),
+                        );
+                    }
+                    ContentPart::ToolResult { content: next }
+                },
+                other => other.clone(),
+            })
+            .collect();
+        PluginResult::modify_payload(MessagePayload {
+            message: Message {
+                schema_version: payload.message.schema_version.clone(),
+                role: payload.message.role,
+                content,
+                channel: payload.message.channel,
+            },
+        })
+    }
+}
+
+struct ResultFieldRewriteFactory {
+    field: &'static str,
+}
+
+impl PluginFactory for ResultFieldRewriteFactory {
+    fn create(&self, config: &PluginConfig) -> Result<PluginInstance, Box<CoreError>> {
+        let plugin = Arc::new(ResultFieldRewritePlugin {
+            cfg: config.clone(),
+            field: self.field,
+        });
+        Ok(PluginInstance {
+            plugin: plugin.clone(),
+            handlers: vec![(
+                "cmf.field_redact",
+                Arc::new(TypedHandlerAdapter::<CmfHook, _>::new(plugin)),
+            )],
+        })
+    }
+}
+
 fn payload_with_tool_call(city: &str, note: &str) -> MessagePayload {
     MessagePayload {
         message: Message::with_content(
@@ -800,6 +870,62 @@ async fn field_dispatch_reports_no_change_when_another_field_was_rewritten() {
     assert!(
         invoker.payload_was_modified(),
         "the rewrite of another field still has to reach the host"
+    );
+}
+
+/// Post-phase dispatch reads the field out of the *result* projection,
+/// not the args one. A `result:` pipeline stage that rewrites one field
+/// of a structured tool result must get that field back.
+#[tokio::test]
+async fn post_phase_field_dispatch_reads_the_result_projection() {
+    let mgr = build_manager(
+        "result-redactor",
+        Box::new(ResultFieldRewriteFactory { field: "ssn" }),
+    )
+    .await;
+    let plan = plan_for(&mgr, "result-redactor");
+    let payload = MessagePayload {
+        message: Message::with_content(
+            Role::Tool,
+            vec![ContentPart::ToolResult {
+                content: cpex_core::cmf::ToolResult {
+                    tool_call_id: "tc_001".to_string(),
+                    tool_name: "get_employee".to_string(),
+                    content: serde_json::json!({"name": "Ada", "ssn": "123-45-6789"}),
+                    is_error: false,
+                },
+            }],
+        ),
+    };
+    let invoker = CmfPluginInvoker::for_request(
+        mgr,
+        Extensions::default(),
+        payload,
+        plan,
+        Arc::new(MemorySessionStore::new()),
+    )
+    .await
+    .expect("for_request");
+
+    let bag = empty_bag();
+    let value = serde_json::json!("123-45-6789");
+    let outcome = invoker
+        .invoke(
+            "result-redactor",
+            &bag,
+            PluginInvocation::Field {
+                name: "ssn",
+                value: &value,
+                phase: apl_core::step::DispatchPhase::Post,
+            },
+        )
+        .await
+        .expect("invoke");
+
+    assert_eq!(
+        outcome.modified_value,
+        Some(serde_json::json!("[REDACTED]")),
+        "Post phase must read the field back out of the tool result, not the args"
     );
 }
 

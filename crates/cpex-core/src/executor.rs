@@ -70,7 +70,15 @@ impl Default for ExecutorConfig {
 ///
 /// Background tasks are returned separately as [`BackgroundTasks`]
 /// to keep the policy result immutable.
+///
+/// `#[non_exhaustive]`: this result type keeps gaining fields as the
+/// engine grows, so it is sealed against external struct-literal
+/// construction and exhaustive destructuring — hosts read it, they don't
+/// build it. Construct via [`Self::allowed_with`] / [`Self::denied`] plus
+/// the `with_*` builders. New fields can then be added without breaking
+/// downstream readers.
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct PipelineResult {
     /// Whether the pipeline should continue processing.
     /// `false` means a plugin denied — the pipeline was halted.

@@ -447,8 +447,15 @@ impl AnyHookHandler for AplRouteHandler {
         // pipeline edits (the decision reports those) — they're the
         // baseline for folding those edits back in below, which needs to
         // know which paths the pipeline touched.
-        let pre_args = extract_args_from_message(&msg_payload.message);
-        // Post-only: Pre routes carry no result to project.
+        //
+        // Each side is projected only in the phase that can edit it:
+        // `evaluate_pre` never sets `result_modified` and `evaluate_post`
+        // never sets `args_modified`, so the other projection would be
+        // unread work on every request.
+        let pre_args = match self.phase {
+            Phase::Pre => Some(extract_args_from_message(&msg_payload.message)),
+            Phase::Post => None,
+        };
         let pre_result = match self.phase {
             Phase::Pre => None,
             Phase::Post => Some(extract_result_from_message(&msg_payload.message)),
@@ -470,10 +477,19 @@ impl AnyHookHandler for AplRouteHandler {
             // and those edits aren't in `route_payload.args` (it was
             // projected before any plugin ran), so writing it wholesale
             // would silently drop them.
+            //
+            // Without a pre-projection there is no way to tell which
+            // paths the pipeline changed, so write nothing rather than
+            // fold in an unattributable diff — a wholesale write is
+            // exactly the clobbering this merge exists to prevent. Only
+            // the Pre phase sets `args_modified`, and only the Pre phase
+            // projects `pre_args`, so this holds by construction.
             let mut updated = final_payload.clone();
-            let mut merged = extract_args_from_message(&updated.message);
-            apply_changed_paths(&mut merged, &pre_args, &route_payload.args);
-            write_args_back_to_message(&mut updated.message, &merged);
+            if let Some(pre) = pre_args.as_ref() {
+                let mut merged = extract_args_from_message(&updated.message);
+                apply_changed_paths(&mut merged, pre, &route_payload.args);
+                write_args_back_to_message(&mut updated.message, &merged);
+            }
             Some(Box::new(updated) as Box<dyn PluginPayload>)
         } else if decision.result_modified {
             // A `result:` pipeline rewrote a field in the upstream
@@ -485,16 +501,14 @@ impl AnyHookHandler for AplRouteHandler {
             // Same per-path merge as the args branch above, for the same
             // reason: a plugin may have redacted a different part of the
             // same tool result.
+            // Same "no pre-projection, no write" rule as the args branch
+            // above, for the same reason.
             let mut updated = final_payload.clone();
-            if let Some(result_value) = route_payload.result.as_ref() {
+            if let (Some(result_value), Some(pre)) =
+                (route_payload.result.as_ref(), pre_result.as_ref())
+            {
                 let mut merged = extract_result_from_message(&updated.message);
-                match pre_result.as_ref() {
-                    Some(pre) => apply_changed_paths(&mut merged, pre, result_value),
-                    // No pre-projection to diff against (a Pre-phase
-                    // route can't reach here), so nothing is known about
-                    // who changed what.
-                    None => merged = result_value.clone(),
-                }
+                apply_changed_paths(&mut merged, pre, result_value);
                 write_result_back_to_message(&mut updated.message, &merged);
             }
             Some(Box::new(updated) as Box<dyn PluginPayload>)

@@ -1,5 +1,5 @@
 // Location: ./crates/apl-cpex/src/message_projection.rs
-// Copyright 2025
+// Copyright 2026
 // SPDX-License-Identifier: Apache-2.0
 // Authors: Teryl Taylor, Fred Araujo
 //
@@ -163,6 +163,22 @@ pub(crate) fn write_result_back_to_message(msg: &mut Message, result: &Value) {
 /// Objects merge key by key; arrays and scalars are single values, so a
 /// change to one replaces it whole. That matches how APL writes fields:
 /// its dotted paths only traverse objects.
+///
+/// # Precedence when both editors touched the same path
+///
+/// **The pipeline wins.** If a plugin rewrote a key and the pipeline
+/// rewrote it too, the pipeline's value lands; if the plugin *removed* a
+/// key the pipeline then rewrote, the key comes back with the pipeline's
+/// value. Both cases log a warning naming the key, because the losing
+/// edit is usually also a redaction and a silent tie-break in this path
+/// is exactly the class of bug this function exists to prevent.
+///
+/// The rule is config-author-wins: an `args:` / `result:` pipeline is
+/// written by the operator deploying the policy, so it outranks a
+/// plugin's own view when the two genuinely conflict. Neither ordering
+/// leaks plaintext (both editors write redacted values), but a coarse
+/// pipeline stage can beat a finer plugin redaction, which is why the
+/// conflict is logged rather than resolved silently.
 pub(crate) fn apply_changed_paths(base: &mut Value, pre: &Value, post: &Value) {
     let (Some(pre_map), Some(post_map)) = (pre.as_object(), post.as_object()) else {
         // Not a keyed shape at this level, so there's nothing to merge
@@ -176,6 +192,10 @@ pub(crate) fn apply_changed_paths(base: &mut Value, pre: &Value, post: &Value) {
         // The other editor replaced the keyed shape with something else
         // entirely. There's no key to merge into, so take this editor's
         // view rather than invent a reconciliation.
+        tracing::warn!(
+            "payload projection changed shape under a field pipeline; \
+             applying the pipeline's view and discarding the other edit"
+        );
         *base = post.clone();
         return;
     };
@@ -199,14 +219,41 @@ pub(crate) fn apply_changed_paths(base: &mut Value, pre: &Value, post: &Value) {
                 match nested {
                     Some(base_value) => apply_changed_paths(base_value, pre_value, post_value),
                     None => {
+                        warn_on_conflict(base_map.get(key), pre_value, key);
                         base_map.insert(key.clone(), post_value.clone());
                     },
                 }
             },
             None => {
+                // Both editors added the same key. Same precedence, same
+                // reason to say so out loud.
+                if base_map.contains_key(key) {
+                    tracing::warn!(
+                        field = %key,
+                        "pipeline and plugin both added this field; keeping the pipeline's value"
+                    );
+                }
                 base_map.insert(key.clone(), post_value.clone());
             },
         }
+    }
+}
+
+/// Log the two ways a pipeline edit can override a plugin's work on the
+/// same key: the plugin changed it too, or the plugin removed it. Silent
+/// in the common case where the plugin left the key alone.
+fn warn_on_conflict(base_value: Option<&Value>, pre_value: &Value, key: &str) {
+    match base_value {
+        Some(base_value) if base_value != pre_value => tracing::warn!(
+            field = %key,
+            "pipeline edit overrides a plugin's edit to the same field; \
+             keeping the pipeline's value"
+        ),
+        Some(_) => {},
+        None => tracing::warn!(
+            field = %key,
+            "pipeline edit reinstates a field the plugin removed"
+        ),
     }
 }
 
@@ -322,6 +369,34 @@ mod tests {
             base,
             serde_json::json!({"user": {"name": "ADA", "ssn": "[REDACTED]"}}),
             "a sibling edit inside the same object must not be clobbered"
+        );
+    }
+
+    /// Documented precedence: when both editors rewrote the same key, the
+    /// pipeline's value lands. Pinned so a future change to the rule is
+    /// deliberate rather than incidental.
+    #[test]
+    fn changed_paths_let_the_pipeline_win_a_same_key_conflict() {
+        let pre = serde_json::json!({"ssn": "123-45-6789"});
+        let post = serde_json::json!({"ssn": "***-**-6789"});
+        // The plugin redacted the same key more aggressively.
+        let mut base = serde_json::json!({"ssn": "[REDACTED]"});
+        apply_changed_paths(&mut base, &pre, &post);
+        assert_eq!(base, serde_json::json!({"ssn": "***-**-6789"}));
+    }
+
+    /// A key the plugin removed comes back when the pipeline rewrote it,
+    /// carrying the pipeline's (redacted) value.
+    #[test]
+    fn changed_paths_reinstate_a_key_the_plugin_removed() {
+        let pre = serde_json::json!({"ssn": "123-45-6789", "name": "Ada"});
+        let post = serde_json::json!({"ssn": "[REDACTED]", "name": "Ada"});
+        let mut base = serde_json::json!({"name": "Ada"});
+        apply_changed_paths(&mut base, &pre, &post);
+        assert_eq!(
+            base,
+            serde_json::json!({"ssn": "[REDACTED]", "name": "Ada"}),
+            "the pipeline's redaction lands even though the plugin dropped the key"
         );
     }
 
