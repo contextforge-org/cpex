@@ -30,6 +30,22 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/).
 - **Raw credential material can now reach an out-of-process worker.** `RawInboundToken.token` and `RawDelegatedToken.token` are `#[serde(skip)]`, and the "raw credentials never leave the host process" invariant has held because nothing read those fields directly. The `isolated_venv` host narrowly reverses that for two hooks — `identity_resolve` and `token_delegate`, the only ones whose Python payload models a raw token at all — by reading the in-memory field and sending the plaintext in a dedicated `credential` DTO. This is opt-in twice over and fails closed: a plugin receives nothing unless it declares `read_inbound_credentials` or `read_delegated_tokens`, and a plugin that declares one but cannot be served (no extension, empty token) causes the dispatch to error rather than silently sending no credential — an empty bearer would otherwise read as "no authentication required". The `raw_credentials` extension slot itself is never carried, so no hollow token slot invites a plugin to misread "not on this channel" as "no credential present", and the sensitive-header strip (`Authorization` / `Cookie` / `Set-Cookie` / `X-API-Key`, case-insensitive, both directions) keeps credential headers out of the `http` slot regardless. The FFI, Python-bindings, and audit paths are untouched, and the in-process hosts are unaffected.
 
   **Operators should note the residual exposure the capability gate does not close.** Once the plaintext is resident in the worker process it is readable by every transitively-installed dependency in that plugin's venv — a materially larger and less audited trust boundary than the in-process host, which neither the gate nor the transport can constrain. Grant these two capabilities only to plugins whose venv contents you control, and treat a plugin's requirements file as credential-adjacent supply chain. (#149)
+## [0.2.3] - unreleased
+
+### Added
+
+- **Multi-principal delegation.** A `delegate(...)` step can now name **whose** identity the minted token speaks for (`subject: user | client | caller_workload | this_workload`) and **who** is acting (`actor: user | client | caller_workload`, an RFC 8693 `actor_token` recording `act` alongside `sub`). The mode is *derived* from the subject, never declared, so a route can't claim on-behalf-of-user while handing over a workload SVID. Adds SPIFFE JWT-SVID workload ingress (`role: caller_workload`, validated into `caller_workload.*` and stashed as `TokenKind::SpiffeJwt`) and, for `subject: caller_workload`, a two-leg OAuth delegator (SVID as an RFC 7523 `client_assertion` → base token → RFC 8693 exchange). (#131)
+- **Top-level `groups:` config section.** Reusable policy bundles (authentication + authorization + plugins) now live at a canonical top-level `groups:`, and a route joins one with a first-class `groups:` field (string-or-list). `groups:` is sugar over tags — it folds into the route's tag set at resolution, so host-injected runtime tags still join groups the same way. A route naming an undefined group is rejected at load. (#131)
+
+### Changed
+
+- **BREAKING: `TokenRole::Workload` renamed to `TokenRole::CallerWorkload`.** A serde `alias = "workload"` keeps existing serialized config loading, but the Rust symbol is renamed — downstream Rust code must update. (#131)
+- **BREAKING: `DelegationMode::AsGateway` renamed to `AsThisWorkload`.** A serde `alias = "as_gateway"` keeps persisted values deserializing. (#131)
+- **BREAKING: `DelegationKey` is now `#[non_exhaustive]`** and gained a `client_id` field (partitioning the delegated-token cache per calling OAuth client, mirroring `workload_id`). Construct it via `DelegationKey::new(mode, audience, scopes)` + the `with_subject_id` / `with_workload_id` / `with_client_id` setters rather than a struct literal. (#131)
+
+### Deprecated
+
+- The reserved `all` group and the `global.policies:` bundle location, in favor of the top-level `groups:` section. Both still load. (#131)
 
 ## [0.2.2] - 2026-07-15
 

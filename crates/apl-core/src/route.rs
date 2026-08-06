@@ -57,11 +57,22 @@ impl RoutePayload {
 }
 
 /// Full outcome of running all four phases for a route.
+///
+/// `#[non_exhaustive]`: this outcome type keeps gaining fields as the engine
+/// grows (taints, constraints, pending elicitations, …), so it is sealed
+/// against external struct-literal construction — hosts read it, they don't
+/// build it. New fields can be added without breaking downstream readers.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct RouteDecision {
     pub decision: Decision,
     /// Taints accumulated from any phase. Empty unless a pipeline emitted them.
     pub taints: Vec<TaintEvent>,
+    /// Backend candidate constraints emitted by `restrict` effects in any
+    /// phase. Empty unless a `restrict` fired. The host bridge (apl-cpex)
+    /// folds these into a `CandidateConstraintExtension` it serializes to
+    /// the router — see `docs/apl-restrict-effect-design.md` §2.5.
+    pub constraints: Vec<crate::constraint::CandidateConstraint>,
     /// True if any args field was rewritten or omitted.
     pub args_modified: bool,
     /// True if any result field was rewritten or omitted.
@@ -132,6 +143,9 @@ pub async fn evaluate_pre(
                         rule_source: rule.source.clone(),
                     },
                     taints,
+                    // `restrict` only fires in the policy phase (below);
+                    // an args-pipeline deny short-circuits before it.
+                    constraints: Vec::new(),
                     args_modified,
                     result_modified: false,
                     pending: None,
@@ -158,6 +172,7 @@ pub async fn evaluate_pre(
     RouteDecision {
         decision: policy_eval.decision,
         taints,
+        constraints: policy_eval.constraints,
         args_modified,
         result_modified: false,
         pending: policy_eval.pending,
@@ -220,6 +235,9 @@ pub async fn evaluate_post(
                             rule_source: rule.source.clone(),
                         },
                         taints,
+                        // `restrict` fires in post_policy (below); a
+                        // result-pipeline deny short-circuits before it.
+                        constraints: Vec::new(),
                         args_modified: false,
                         result_modified,
                         pending: None,
@@ -248,6 +266,7 @@ pub async fn evaluate_post(
     RouteDecision {
         decision: post_eval.decision,
         taints,
+        constraints: post_eval.constraints,
         args_modified: false,
         result_modified,
         pending: post_eval.pending,
@@ -284,9 +303,12 @@ pub async fn evaluate_route(
     let post = evaluate_post(route, bag, payload, pdp, plugins, delegations, elicitations).await;
     let mut taints = pre.taints;
     taints.extend(post.taints);
+    let mut constraints = pre.constraints;
+    constraints.extend(post.constraints);
     RouteDecision {
         decision: post.decision,
         taints,
+        constraints,
         args_modified: pre.args_modified,
         result_modified: post.result_modified,
         pending: post.pending,

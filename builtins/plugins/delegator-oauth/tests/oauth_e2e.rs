@@ -16,14 +16,19 @@
 //   * IdP unreachable — surfaces `delegation.idp_unreachable`
 //   * Request body shape — mockito's matcher verifies we send the
 //     correct RFC 8693 fields
+//   * actor_token — present on the wire when the payload carries one
+//     (Mode B), fully absent when it doesn't
+//   * workload subject (Mode A) — the SVID authenticates the agent as
+//     a client_assertion (leg 1), then the exchange runs on that base
+//     token (leg 2); attributed `AsCallerWorkload`, not `AsThisWorkload`
 
 use std::sync::Arc;
 
 use cpex_core::delegation::{
-    AttenuationConfig, AuthEnforcedBy, DelegationPayload, TargetType, TokenDelegateHook,
-    HOOK_TOKEN_DELEGATE,
+    AttenuationConfig, AuthEnforcedBy, DelegationPayload, DelegationSubject, TargetType,
+    TokenDelegateHook, HOOK_TOKEN_DELEGATE,
 };
-use cpex_core::extensions::raw_credentials::DelegationMode;
+use cpex_core::extensions::raw_credentials::{DelegationMode, TokenRole};
 use cpex_core::hooks::payload::Extensions;
 use cpex_core::manager::PluginManager;
 use cpex_core::plugin::{OnError, PluginConfig, PluginMode};
@@ -363,4 +368,363 @@ async fn idp_exact_scope_match_succeeds() {
         result.violation,
     );
     mock.assert_async().await;
+}
+
+// =====================================================================
+// RFC 8693 actor_token / subject-role attribution
+// =====================================================================
+
+/// Standard 200 response body, factored out so the actor tests can
+/// focus on what they're actually asserting (the request side).
+fn ok_token_response() -> String {
+    json!({
+        "access_token": "minted-downstream-jwt",
+        "issued_token_type": "urn:ietf:params:oauth:token-type:access_token",
+        "expires_in": 300,
+        "scope": "read:compensation",
+    })
+    .to_string()
+}
+
+/// Mode B — user subject + workload actor. The delegator must put the
+/// SVID on the wire as RFC 8693 §2.1 `actor_token`, tagged with the
+/// configured `actor_token_type`, alongside the user's `subject_token`.
+/// This is the on-behalf-of-a-user shape, and the
+/// minted token still speaks for the user.
+#[tokio::test]
+async fn actor_token_reaches_the_idp_when_the_payload_carries_one() {
+    let mut server = Server::new_async().await;
+    let mock = server
+        .mock("POST", "/oauth/token")
+        .match_body(Matcher::AllOf(vec![
+            // The user is still the subject...
+            Matcher::UrlEncoded("subject_token".into(), "caller-bearer-token-bytes".into()),
+            // ...and the workload SVID rides along as the actor.
+            Matcher::UrlEncoded("actor_token".into(), "workload.svid.bytes".into()),
+            Matcher::UrlEncoded(
+                "actor_token_type".into(),
+                "urn:ietf:params:oauth:token-type:jwt".into(),
+            ),
+        ]))
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body(ok_token_response())
+        .create_async()
+        .await;
+
+    let mgr = build_manager(&format!("{}/oauth/token", server.url())).await;
+    let payload = build_payload(
+        "get_compensation",
+        "https://hr.example.com",
+        &["read:compensation"],
+    )
+    .with_actor(TokenRole::CallerWorkload, "workload.svid.bytes");
+
+    let result = invoke(&mgr, payload).await;
+    assert!(
+        result.continue_processing,
+        "actor-token exchange should mint a token; violation = {:?}",
+        result.violation,
+    );
+
+    let final_payload = DelegationPayload::from_pipeline_result(&result)
+        .expect("delegation payload should be present");
+    // Subject is the user, so the token still speaks for the user
+    // even though a workload actor was recorded.
+    assert!(matches!(
+        final_payload.delegation_mode,
+        Some(DelegationMode::OnBehalfOfUser),
+    ));
+
+    // If the actor fields hadn't been sent, the matcher above would
+    // have failed to match and this assertion would fire.
+    mock.assert_async().await;
+}
+
+/// The negative half: a payload with no actor must produce a plain
+/// single-token exchange. Asserted by rejecting any request whose body
+/// mentions `actor_token` at all — a stray empty `actor_token=` field
+/// would confuse strict IdPs, so "absent" has to mean absent.
+#[tokio::test]
+async fn absent_actor_leaves_no_actor_fields_on_the_wire() {
+    let mut server = Server::new_async().await;
+    let mock = server
+        .mock("POST", "/oauth/token")
+        .match_request(|req| {
+            let body = req.body().expect("request has a body");
+            !String::from_utf8_lossy(body).contains("actor_token")
+        })
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body(ok_token_response())
+        .create_async()
+        .await;
+
+    let mgr = build_manager(&format!("{}/oauth/token", server.url())).await;
+    // No `.with_actor_token(...)` — the ordinary single-token case.
+    let payload = build_payload(
+        "get_compensation",
+        "https://hr.example.com",
+        &["read:compensation"],
+    );
+
+    let result = invoke(&mgr, payload).await;
+    assert!(
+        result.continue_processing,
+        "single-token exchange should still succeed; violation = {:?}",
+        result.violation,
+    );
+    mock.assert_async().await;
+}
+
+/// `subject: this_workload` — this instance holds the access to the
+/// downstream (the "hold the tool credentials here" deployment)
+/// and calls it as itself. There is no inbound credential to
+/// exchange, so this must switch to an RFC 6749 §4.4
+/// `client_credentials` grant rather than a token exchange: no
+/// `subject_token`, and this instance's identity proven by the Basic
+/// auth header it already sends.
+#[tokio::test]
+async fn this_workload_subject_uses_client_credentials_not_token_exchange() {
+    let mut server = Server::new_async().await;
+    let mock = server
+        .mock("POST", "/oauth/token")
+        .match_body(Matcher::AllOf(vec![
+            Matcher::UrlEncoded("grant_type".into(), "client_credentials".into()),
+            Matcher::UrlEncoded("audience".into(), "https://hr.example.com".into()),
+        ]))
+        // A token exchange sends subject_token; this must not.
+        .match_request(|req| {
+            let body = req.body().expect("request has a body");
+            !String::from_utf8_lossy(body).contains("subject_token")
+        })
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body(ok_token_response())
+        .create_async()
+        .await;
+
+    let mgr = build_manager(&format!("{}/oauth/token", server.url())).await;
+    // Note the empty bearer token: for a this_workload subject that is the
+    // expected state, not the "caller forgot the credential" error.
+    let payload = DelegationPayload::new("", "get_compensation")
+        .with_subject(DelegationSubject::ThisWorkload)
+        .with_target_audience("https://hr.example.com")
+        .with_required_permissions(vec!["read:compensation".into()]);
+
+    let result = invoke(&mgr, payload).await;
+    assert!(
+        result.continue_processing,
+        "this_workload-subject exchange should mint a token; violation = {:?}",
+        result.violation,
+    );
+
+    let final_payload = DelegationPayload::from_pipeline_result(&result)
+        .expect("delegation payload should be present");
+    assert!(
+        matches!(
+            final_payload.delegation_mode,
+            Some(DelegationMode::AsThisWorkload),
+        ),
+        "this_workload subject must be attributed to this instance, got {:?}",
+        final_payload.delegation_mode,
+    );
+    mock.assert_async().await;
+}
+
+/// An empty bearer token is still an error for every subject that
+/// *does* have an inbound credential. Pins the boundary: the
+/// this_workload's exemption must not silently swallow a genuinely missing
+/// workload or user token.
+#[tokio::test]
+async fn empty_bearer_still_rejected_for_non_this_workload_subjects() {
+    let mgr = build_manager("https://unused.example.com/oauth/token").await;
+    let payload = DelegationPayload::new("", "get_compensation")
+        .with_subject(DelegationSubject::CallerWorkload)
+        .with_target_audience("https://hr.example.com");
+
+    let result = invoke(&mgr, payload).await;
+    assert!(
+        !result.continue_processing,
+        "a missing credential must still be an error for a workload subject",
+    );
+    assert_eq!(
+        result.violation.expect("violation surfaced").code,
+        "delegation.bad_request",
+    );
+}
+
+/// `actor_token` is a token-exchange parameter with no meaning under
+/// `client_credentials`, so a this_workload-subject call must not send it
+/// even when the payload carries one — an IdP receiving both would be
+/// getting a malformed request.
+#[tokio::test]
+async fn this_workload_subject_never_sends_actor_token() {
+    let mut server = Server::new_async().await;
+    let mock = server
+        .mock("POST", "/oauth/token")
+        .match_request(|req| {
+            let body = req.body().expect("request has a body");
+            !String::from_utf8_lossy(body).contains("actor_token")
+        })
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body(ok_token_response())
+        .create_async()
+        .await;
+
+    let mgr = build_manager(&format!("{}/oauth/token", server.url())).await;
+    let payload = DelegationPayload::new("", "get_compensation")
+        .with_subject(DelegationSubject::ThisWorkload)
+        .with_actor(TokenRole::CallerWorkload, "workload.svid.bytes")
+        .with_target_audience("https://hr.example.com")
+        .with_required_permissions(vec!["read:compensation".into()]);
+
+    let result = invoke(&mgr, payload).await;
+    assert!(
+        result.continue_processing,
+        "should still mint; violation = {:?}",
+        result.violation,
+    );
+    mock.assert_async().await;
+}
+
+/// Mode A — the calling agent acts as itself. Its SVID is a *client
+/// credential*, not a subject_token, so the delegator runs two legs:
+///
+///   leg 1  present the SVID as an RFC 7523 `client_assertion`
+///          (client_credentials) → the agent's base IdP token;
+///   leg 2  the ordinary exchange, run on that BASE token, scopes it
+///          to the target audience.
+///
+/// This is what keeps this instance (holder of the leg-2 client secret),
+/// not the agent, as the grantor of downstream authority. The minted
+/// credential still speaks for the agent, so `delegation_mode` must be
+/// `AsCallerWorkload` (the delegated-token cache keys off it) — and
+/// specifically not `AsThisWorkload`, which is this instance's own identity.
+///
+/// Both legs are asserted: proving the SVID went out as a
+/// `client_assertion` in leg 1 and that leg 2 exchanged the base token
+/// — never the raw SVID as a subject_token.
+#[tokio::test]
+async fn workload_subject_authenticates_by_svid_then_exchanges() {
+    let mut server = Server::new_async().await;
+
+    // Leg 1: SVID as client_assertion (jwt-spiffe) under
+    // client_credentials → the agent's base token. Must NOT be a
+    // subject_token here.
+    let leg1 = server
+        .mock("POST", "/oauth/token")
+        .match_body(Matcher::AllOf(vec![
+            Matcher::UrlEncoded("grant_type".into(), "client_credentials".into()),
+            Matcher::UrlEncoded(
+                "client_assertion_type".into(),
+                "urn:ietf:params:oauth:client-assertion-type:jwt-spiffe".into(),
+            ),
+            Matcher::UrlEncoded(
+                "client_assertion".into(),
+                "caller-bearer-token-bytes".into(),
+            ),
+        ]))
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body(json!({ "access_token": "agent-base-token", "expires_in": 300 }).to_string())
+        .create_async()
+        .await;
+
+    // Leg 2: the exchange runs on the BASE token from leg 1, not the
+    // SVID. Pinning subject_token here is what fails if leg 1 is
+    // skipped or the raw SVID leaks through as the subject.
+    let leg2 = server
+        .mock("POST", "/oauth/token")
+        .match_body(Matcher::AllOf(vec![
+            Matcher::UrlEncoded(
+                "grant_type".into(),
+                "urn:ietf:params:oauth:grant-type:token-exchange".into(),
+            ),
+            Matcher::UrlEncoded("subject_token".into(), "agent-base-token".into()),
+            Matcher::UrlEncoded("audience".into(), "https://hr.example.com".into()),
+        ]))
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body(ok_token_response())
+        .create_async()
+        .await;
+
+    let mgr = build_manager(&format!("{}/oauth/token", server.url())).await;
+    let payload = build_payload(
+        "get_compensation",
+        "https://hr.example.com",
+        &["read:compensation"],
+    )
+    .with_subject(DelegationSubject::CallerWorkload);
+
+    let result = invoke(&mgr, payload).await;
+    assert!(
+        result.continue_processing,
+        "two-leg workload delegation should mint a token; violation = {:?}",
+        result.violation,
+    );
+
+    let final_payload = DelegationPayload::from_pipeline_result(&result)
+        .expect("delegation payload should be present");
+    assert!(
+        matches!(
+            final_payload.delegation_mode,
+            Some(DelegationMode::AsCallerWorkload),
+        ),
+        "workload subject must be attributed to the calling agent, got {:?}",
+        final_payload.delegation_mode,
+    );
+
+    // Both legs actually fired — the SVID authenticated the agent (leg
+    // 1) and the exchange ran on the base token (leg 2).
+    leg1.assert_async().await;
+    leg2.assert_async().await;
+}
+
+/// A6: a leg-1 rejection must not echo submitted credential material. Even
+/// when the IdP hostilely parrots the SVID back in `error_description`, the
+/// caller-visible violation carries only the OAuth error code — never the
+/// `client_assertion` bytes.
+#[tokio::test]
+async fn leg1_rejection_does_not_leak_the_client_assertion() {
+    let mut server = Server::new_async().await;
+
+    let _leg1 = server
+        .mock("POST", "/oauth/token")
+        .with_status(400)
+        .with_header("content-type", "application/json")
+        .with_body(
+            json!({
+                "error": "invalid_client",
+                "error_description": "assertion 'caller-bearer-token-bytes' is not valid",
+            })
+            .to_string(),
+        )
+        .create_async()
+        .await;
+
+    let mgr = build_manager(&format!("{}/oauth/token", server.url())).await;
+    let payload = build_payload(
+        "get_compensation",
+        "https://hr.example.com",
+        &["read:compensation"],
+    )
+    .with_subject(DelegationSubject::CallerWorkload);
+
+    let result = invoke(&mgr, payload).await;
+    assert!(!result.continue_processing, "leg-1 rejection should deny");
+    let violation = result.violation.expect("violation surfaced");
+    assert_eq!(violation.code, "delegation.idp_rejected");
+    assert!(
+        !violation.reason.contains("caller-bearer-token-bytes"),
+        "violation must NOT echo the submitted SVID; got: {}",
+        violation.reason,
+    );
+    assert!(
+        violation.reason.contains("invalid_client"),
+        "violation should carry the OAuth error code; got: {}",
+        violation.reason,
+    );
 }

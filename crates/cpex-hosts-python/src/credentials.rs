@@ -264,16 +264,20 @@ fn build_inbound(extensions: &Extensions, hook_name: &str) -> Result<InboundCred
     // Ordering matters: an identity resolver wants the subject's credential,
     // and falling straight to the client token would resolve the gateway's own
     // identity as if it were the user's.
-    let token = [TokenRole::User, TokenRole::Client, TokenRole::Workload]
-        .iter()
-        .find_map(|role| raw.inbound_tokens.get(role))
-        .or_else(|| raw.inbound_tokens.values().next())
-        .ok_or_else(|| HostError::Credential {
-            message: format!(
-                "plugin declared '{CAP_READ_INBOUND}' for hook '{hook_name}' but no inbound token \
+    let token = [
+        TokenRole::User,
+        TokenRole::Client,
+        TokenRole::CallerWorkload,
+    ]
+    .iter()
+    .find_map(|role| raw.inbound_tokens.get(role))
+    .or_else(|| raw.inbound_tokens.values().next())
+    .ok_or_else(|| HostError::Credential {
+        message: format!(
+            "plugin declared '{CAP_READ_INBOUND}' for hook '{hook_name}' but no inbound token \
                  is present — refusing to dispatch without it"
-            ),
-        })?;
+        ),
+    })?;
 
     inbound_from_token(token, hook_name)
 }
@@ -413,7 +417,7 @@ fn build_delegated(
 fn mode_rank(mode: &DelegationMode) -> u8 {
     match mode {
         DelegationMode::OnBehalfOfUser => 0,
-        DelegationMode::AsGateway => 1,
+        DelegationMode::AsThisWorkload => 1,
         _ => 2,
     }
 }
@@ -465,12 +469,12 @@ mod tests {
             RawInboundToken::new(INBOUND_SECRET, "Authorization", TokenKind::Jwt),
         );
         raw.delegated_tokens.insert(
-            DelegationKey {
-                subject_id: "alice".into(),
-                audience: "https://billing.example.com".into(),
-                scopes: vec!["read".into()],
-                mode: DelegationMode::OnBehalfOfUser,
-            },
+            DelegationKey::new(
+                DelegationMode::OnBehalfOfUser,
+                "https://billing.example.com",
+                vec!["read".into()],
+            )
+            .with_subject_id("alice"),
             RawDelegatedToken::new(
                 DELEGATED_SECRET,
                 "Authorization",
@@ -512,12 +516,7 @@ mod tests {
         secret: &str,
     ) -> (DelegationKey, RawDelegatedToken) {
         (
-            DelegationKey {
-                subject_id: subject.into(),
-                audience: audience.into(),
-                scopes: vec![],
-                mode,
-            },
+            DelegationKey::new(mode, audience, vec![]).with_subject_id(subject),
             RawDelegatedToken::new(
                 secret,
                 "Authorization",
@@ -731,12 +730,8 @@ mod tests {
         // inbound capability cannot be honored.
         let mut raw = RawCredentialsExtension::default();
         raw.delegated_tokens.insert(
-            DelegationKey {
-                subject_id: "alice".into(),
-                audience: "aud".into(),
-                scopes: vec![],
-                mode: DelegationMode::AsGateway,
-            },
+            DelegationKey::new(DelegationMode::AsThisWorkload, "aud", vec![])
+                .with_subject_id("alice"),
             RawDelegatedToken::new("t", "Authorization", "aud", vec![], chrono::Utc::now()),
         );
         let extensions = Extensions {
@@ -786,12 +781,8 @@ mod tests {
     fn an_empty_delegated_token_is_rejected() {
         let mut raw = RawCredentialsExtension::default();
         raw.delegated_tokens.insert(
-            DelegationKey {
-                subject_id: "alice".into(),
-                audience: "aud".into(),
-                scopes: vec![],
-                mode: DelegationMode::OnBehalfOfUser,
-            },
+            DelegationKey::new(DelegationMode::OnBehalfOfUser, "aud", vec![])
+                .with_subject_id("alice"),
             RawDelegatedToken::new("", "Authorization", "aud", vec![], chrono::Utc::now()),
         );
         let extensions = Extensions {
@@ -1036,12 +1027,7 @@ mod tests {
     fn an_on_behalf_of_user_token_is_preferred_over_a_gateway_token() {
         let mut raw = RawCredentialsExtension::default();
         raw.delegated_tokens.insert(
-            DelegationKey {
-                subject_id: "gw".into(),
-                audience: "aud".into(),
-                scopes: vec![],
-                mode: DelegationMode::AsGateway,
-            },
+            DelegationKey::new(DelegationMode::AsThisWorkload, "aud", vec![]).with_subject_id("gw"),
             RawDelegatedToken::new(
                 "GATEWAY-TOKEN",
                 "Authorization",
@@ -1051,12 +1037,8 @@ mod tests {
             ),
         );
         raw.delegated_tokens.insert(
-            DelegationKey {
-                subject_id: "alice".into(),
-                audience: "aud".into(),
-                scopes: vec![],
-                mode: DelegationMode::OnBehalfOfUser,
-            },
+            DelegationKey::new(DelegationMode::OnBehalfOfUser, "aud", vec![])
+                .with_subject_id("alice"),
             RawDelegatedToken::new(
                 "USER-DELEGATED-TOKEN",
                 "Authorization",
@@ -1183,7 +1165,7 @@ mod tests {
     #[test]
     fn the_audience_filter_is_applied_before_the_mode_preference() {
         // Mode preference must not reach across audiences: the only token for
-        // the requested audience is `AsGateway`, and the `OnBehalfOfUser` token
+        // the requested audience is `AsThisWorkload`, and the `OnBehalfOfUser` token
         // belongs to a different upstream. Preferring mode first would hand
         // over the wrong-audience token.
         let extensions = extensions_from(vec![
@@ -1196,7 +1178,7 @@ mod tests {
             delegated(
                 "gw",
                 "https://billing.example.com",
-                DelegationMode::AsGateway,
+                DelegationMode::AsThisWorkload,
                 "BILLING-GATEWAY-TOKEN",
             ),
         ]);
@@ -1214,7 +1196,12 @@ mod tests {
         // get the gateway's own identity — even when the gateway token sorts
         // first by subject.
         let extensions = extensions_from(vec![
-            delegated("aaa-gw", "aud", DelegationMode::AsGateway, "GATEWAY-TOKEN"),
+            delegated(
+                "aaa-gw",
+                "aud",
+                DelegationMode::AsThisWorkload,
+                "GATEWAY-TOKEN",
+            ),
             delegated(
                 "zzz-user",
                 "aud",
@@ -1279,7 +1266,9 @@ mod tests {
     #[test]
     fn the_mode_rank_puts_the_user_first_and_unknown_modes_last() {
         // An upstream-added mode must not outrank `OnBehalfOfUser` by accident.
-        assert!(mode_rank(&DelegationMode::OnBehalfOfUser) < mode_rank(&DelegationMode::AsGateway));
+        assert!(
+            mode_rank(&DelegationMode::OnBehalfOfUser) < mode_rank(&DelegationMode::AsThisWorkload)
+        );
     }
 
     #[test]

@@ -451,6 +451,7 @@ impl Executor {
                                 *payload = mp;
                             }
                             if let Some(mut owned) = erased.modified_extensions {
+                                let mut immutable_ok = false;
                                 if extensions.validate_immutable(&owned) {
                                     // `merge_owned` enforces the tiers per
                                     // *field*, gated on the write tokens that
@@ -490,14 +491,54 @@ impl Executor {
                                     owned.delegation_write_token = capabilities
                                         .contains("append_delegation")
                                         .then(WriteToken::new);
-                                    extensions.merge_owned(owned);
-                                } else {
+                                    // extensions.merge_owned(owned);
+                                    immutable_ok = true;
+                                }
+                                // Monotonic security labels: a plugin that can see
+                                // labels (`read_labels`) may only add them, never
+                                // remove. A plugin without `read_labels` saw an empty
+                                // label set in its filtered view, so an absent label
+                                // there is not a removal.
+                                let labels_ok = !capabilities.contains("read_labels")
+                                    || match (&extensions.security, &owned.security) {
+                                        (Some(orig), Some(new)) => {
+                                            new.labels.is_superset(&orig.labels)
+                                        },
+                                        _ => true,
+                                    };
+
+                                // Candidate-constraint authority: the folded routing
+                                // constraint is the policy engine's output. Only a
+                                // holder of `write_candidate_constraint` may create,
+                                // change, or remove it; any other plugin that alters
+                                // the slot (by value) is rejected. A plugin that
+                                // leaves it untouched passes (the common case).
+                                let constraint_ok =
+                                    extensions.candidate_constraint_write_ok(&owned, &capabilities);
+
+                                if !immutable_ok {
                                     warn!(
                                         "{} plugin '{}' violated immutable tier — \
                                          modified an immutable extension slot. \
                                          Extension changes rejected.",
                                         phase_label, plugin_name
                                     );
+                                } else if !labels_ok {
+                                    warn!(
+                                        "{} plugin '{}' violated monotonic tier — \
+                                         removed a security label. \
+                                         Extension changes rejected.",
+                                        phase_label, plugin_name
+                                    );
+                                } else if !constraint_ok {
+                                    warn!(
+                                        "{} plugin '{}' lacks `write_candidate_constraint` \
+                                         — attempted to modify the policy engine's routing \
+                                         constraint. Extension changes rejected.",
+                                        phase_label, plugin_name
+                                    );
+                                } else {
+                                    extensions.merge_owned(owned);
                                 }
                             }
                         }

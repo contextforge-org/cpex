@@ -287,6 +287,11 @@ pub fn filter_extensions(extensions: &Extensions, capabilities: &HashSet<String>
         mcp: extensions.mcp.clone(),
         meta: extensions.meta.clone(),
         custom: extensions.custom.clone(),
+        // Pass through like `custom` (ungated in v1): the APL engine
+        // writes this output slot, and passing it through keeps a later
+        // plugin's `merge_owned` from clobbering it back to `None`.
+        // Capability-gating the write is future work.
+        candidate_constraint: extensions.candidate_constraint.clone(),
         ..Default::default()
     };
 
@@ -784,6 +789,8 @@ mod tests {
         raw.delegated_tokens.insert(
             DelegationKey {
                 subject_id: "alice".into(),
+                workload_id: None,
+                client_id: None,
                 audience: "https://api.example.com".into(),
                 scopes: vec!["read".into()],
                 mode: DelegationMode::OnBehalfOfUser,

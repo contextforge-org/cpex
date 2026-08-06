@@ -58,6 +58,13 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
 chrono = { workspace = true }
+tracing = { workspace = true }
+
+# `base64` decodes the minted token's JWT payload for a best-effort,
+# read-only interop check (did the IdP honor the RFC 8693 `actor_token`
+# and emit an `act` claim). We never verify the signature here — the
+# token is already trusted, having just come from our own IdP roundtrip.
+base64 = "0.22"
 
 # Secret-clearing wrapper for client credentials in memory.
 zeroize = { version = "1.8", features = ["zeroize_derive"] }

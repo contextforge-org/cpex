@@ -72,6 +72,16 @@ pub(crate) enum Step {
         scopes: Vec<TaintScope>,
     },
 
+    /// `restrict: { ... }` — narrow the backend candidate set. Always
+    /// succeeds; never produces a Deny (accumulating, same family as
+    /// `Taint`). The evaluator collects the emitted constraint; a higher
+    /// layer (apl-cpex) folds it into a `CandidateConstraintExtension`
+    /// the host serializes to its router. See
+    /// `docs/apl-restrict-effect-design.md`.
+    Restrict {
+        spec: crate::constraint::RestrictSpec,
+    },
+
     /// `require_approval(...)` / `confirm(...)` / … — dispatch an
     /// elicitation to a human and resume once resolved. The elicitation
     /// analogue of `Delegate`; resolution is dispatched to an
@@ -516,6 +526,13 @@ pub enum DelegationError {
 
     #[error("delegation dispatch failed: {0}")]
     Dispatch(String),
+
+    /// A delegation step key was present but held an invalid value — a
+    /// typo'd `subject:` / `actor:`, say. Distinct from an absent key
+    /// (whose documented default applies): a present-but-wrong value must
+    /// fail rather than silently exchange a different credential shape.
+    #[error("invalid delegation config: {0}")]
+    InvalidConfig(String),
 }
 
 /// `DelegationInvoker` impl that returns `NotFound` for every call.

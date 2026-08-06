@@ -70,7 +70,7 @@ pub use http::extract_http;
 pub use llm::extract_llm;
 pub use mcp::extract_mcp;
 pub use meta::extract_meta;
-pub use payload::{extract_args, extract_result};
+pub use payload::{extract_args, extract_data, extract_result};
 pub use provenance::extract_provenance;
 pub use request::extract_request;
 pub use security::{extract_client, extract_security, extract_workload};
@@ -125,6 +125,18 @@ impl BagBuilder {
 
     pub fn with_result(mut self, result: &serde_json::Value) -> Self {
         extract_result(result, &mut self.bag);
+        self
+    }
+
+    /// Flatten a static attribute tree into the `data.*` namespace
+    /// (design §4.2). The tree is shared and startup-loaded, but this
+    /// re-walks it and re-inserts every leaf into the bag on **each call**
+    /// (a `format!` per node, a `bag.set` per leaf) — so `data.*` reads are
+    /// **not** free on the request hot path. The route handler invokes this
+    /// per request (once per phase), meaning a large tree is re-flattened on
+    /// every request until a per-request caching optimization lands.
+    pub fn with_data(mut self, tree: &apl_core::AttributeTree) -> Self {
+        extract_data(tree, &mut self.bag);
         self
     }
 

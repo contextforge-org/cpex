@@ -47,6 +47,17 @@ pub struct CpexConfig {
     #[serde(default)]
     pub plugins: Vec<PluginConfig>,
 
+    /// Named policy bundles a route can join, keyed by group name. The
+    /// canonical, top-level spelling — lines up with `global:` (always-on
+    /// defaults) and `routes:` (per-entity policy) as the third concern.
+    ///
+    /// Superset-compatible with the older `global.policies:` location, which
+    /// stays accepted as a deprecated alias: at parse time both are merged
+    /// into one bundle map (`global.policies`, the internal store the
+    /// resolvers read), with entries here winning on a name collision.
+    #[serde(default)]
+    pub groups: HashMap<String, PolicyGroup>,
+
     /// Per-entity routing rules.
     /// Only used when `plugin_settings.routing_enabled` is true.
     #[serde(default)]
@@ -298,6 +309,23 @@ pub struct RouteEntry {
     /// Operational metadata — tags, scope, properties.
     #[serde(default)]
     pub meta: Option<RouteMeta>,
+
+    /// Group bundles this route joins — a first-class, discoverable spelling
+    /// for bundle membership. Accepts a bare string or a list:
+    ///
+    /// ```yaml
+    /// groups: hr-tools          # single
+    /// groups: [hr-tools, pii]   # multiple
+    /// ```
+    ///
+    /// **Pure sugar over tags.** Each named group is folded into the route's
+    /// tag set at resolution, so `groups: [hr-tools]` and
+    /// `meta: { tags: [hr-tools] }` resolve identically. Tags remain the
+    /// substrate — they can also be injected by the host at runtime and carry
+    /// metadata beyond membership; `groups:` just names the common "join this
+    /// bundle" case up front. See [`route_static_tags`].
+    #[serde(default)]
+    pub groups: Option<StringOrList>,
 
     /// Conditional match expression — carried but not evaluated
     /// during static resolution. Evaluated at runtime when payload
@@ -566,6 +594,17 @@ impl StringOrList {
             Self::List(names) => names.iter().any(|n| n == name),
         }
     }
+
+    /// The literal values as written — the pattern string for `Single`, each
+    /// element for `List`. Use where the values are exact names rather than
+    /// globs to match against (e.g. group membership, which joins a bundle by
+    /// its exact name).
+    pub fn as_names(&self) -> Vec<&str> {
+        match self {
+            Self::Single(pattern) => vec![pattern.as_str()],
+            Self::List(names) => names.iter().map(String::as_str).collect(),
+        }
+    }
 }
 
 /// Load and parse a CPEX config from a YAML file.
@@ -586,18 +625,32 @@ pub fn parse_config(yaml: &str) -> Result<CpexConfig, Box<PluginError>> {
         message: format!("failed to parse config YAML: {}", e),
     })?;
     reject_renamed_identity_key(&raw)?;
-    let config: CpexConfig = serde_yaml::from_value(raw).map_err(|e| PluginError::Config {
+    let mut config: CpexConfig = serde_yaml::from_value(raw).map_err(|e| PluginError::Config {
         message: format!("failed to parse config YAML: {}", e),
     })?;
+    merge_groups_into_policies(&mut config);
     validate_config(&config)?;
     Ok(config)
+}
+
+/// Fold the canonical top-level `groups:` bundles into the internal
+/// `global.policies` map (the deprecated alias location), so every resolver
+/// can keep reading a single map. Top-level entries win on a name collision
+/// — the canonical spelling takes precedence over the deprecated one.
+pub(crate) fn merge_groups_into_policies(config: &mut CpexConfig) {
+    if config.groups.is_empty() {
+        return;
+    }
+    for (name, group) in std::mem::take(&mut config.groups) {
+        config.global.policies.insert(name, group);
+    }
 }
 
 /// Reject the pre-rename `identity:` key (now `authentication:`) at every
 /// scope it could appear — `global`, `global.policies.<name>`,
 /// `global.defaults.<name>`, and each `routes[]` entry — so a stale config
 /// fails loudly rather than silently dropping its authentication steps.
-fn reject_renamed_identity_key(raw: &serde_yaml::Value) -> Result<(), Box<PluginError>> {
+pub(crate) fn reject_renamed_identity_key(raw: &serde_yaml::Value) -> Result<(), Box<PluginError>> {
     fn renamed(scope: &str) -> Box<PluginError> {
         Box::new(PluginError::Config {
             message: format!(
@@ -617,6 +670,15 @@ fn reject_renamed_identity_key(raw: &serde_yaml::Value) -> Result<(), Box<Plugin
                         return Err(renamed(&format!("global.{section}.{n}")));
                     }
                 }
+            }
+        }
+    }
+    // Same guard for the canonical top-level `groups:` bundle location.
+    if let Some(map) = raw.get("groups").and_then(|m| m.as_mapping()) {
+        for (name, group) in map {
+            if group.get("identity").is_some() {
+                let n = name.as_str().unwrap_or("?");
+                return Err(renamed(&format!("groups.{n}")));
             }
         }
     }
@@ -641,7 +703,7 @@ fn reject_renamed_identity_key(raw: &serde_yaml::Value) -> Result<(), Box<Plugin
 /// dispatch-plan build time, where an unknown or unreferenced plugin is logged
 /// and skipped (see `apl-cpex::dispatch_plan`). Keeping cpex-core's validation
 /// free of APL semantics is intentional.
-fn validate_config(config: &CpexConfig) -> Result<(), Box<PluginError>> {
+pub(crate) fn validate_config(config: &CpexConfig) -> Result<(), Box<PluginError>> {
     let mut seen_names = HashSet::new();
     for plugin in &config.plugins {
         if !seen_names.insert(&plugin.name) {
@@ -693,6 +755,23 @@ fn validate_config(config: &CpexConfig) -> Result<(), Box<PluginError>> {
                     }));
                 }
             }
+
+            // Validate the first-class `groups:` membership field: a value
+            // naming no defined group is a typo, and silently ignoring it
+            // can leave the route without the `authentication:` the group
+            // would have supplied. `meta.tags` stays permissive — tags are
+            // an open-ended, host-injectable substrate, not all of which
+            // name groups. Runs after `merge_groups_into_policies`, so
+            // top-level `groups:` are already folded into `global.policies`.
+            if let Some(groups) = &route.groups {
+                for name in groups.as_names() {
+                    if !config.global.policies.contains_key(name) {
+                        return Err(Box::new(PluginError::Config {
+                            message: format!("route {i} joins unknown group '{name}'"),
+                        }));
+                    }
+                }
+            }
         }
 
         for (group_name, group) in &config.global.policies {
@@ -738,12 +817,28 @@ fn score_entity_match(matcher: Option<&StringOrList>, entity_name: &str) -> Opti
     Some(score)
 }
 
+/// The static bundle-membership tags a route declares: its `meta.tags`
+/// plus any `groups:` sugar, unified into one stream. `groups:` is only a
+/// discoverable spelling for the common "join this bundle" case — it
+/// desugars here into the same tag set the resolvers already match against
+/// bundle names, so tags stay the single substrate (runtime-injectable and
+/// metadata-bearing). Both membership resolvers iterate this so neither can
+/// forget one of the two spellings.
+fn route_static_tags(route: &RouteEntry) -> impl Iterator<Item = &str> {
+    let meta_tags = route
+        .meta
+        .iter()
+        .flat_map(|m| m.tags.iter().map(String::as_str));
+    let group_tags = route.groups.iter().flat_map(StringOrList::as_names);
+    meta_tags.chain(group_tags)
+}
+
 /// Resolve which plugins should fire for a given entity.
 ///
 /// When routing is disabled, returns all plugin names. When enabled,
 /// matches the entity against routes and collects plugins from the
-/// `all` group, defaults, matching policy groups (via merged tags),
-/// and the route itself.
+/// `all` group, defaults, matching groups (via merged tags), and the
+/// route itself.
 ///
 /// `request_scope` and `request_tags` come from the host's
 /// `MetaExtension` on the request.
@@ -780,12 +875,11 @@ pub fn resolve_plugins_for_entity(
 
     // 3. Find matching route (with scope check)
     if let Some(route) = find_matching_route(config, entity_type, entity_name, request_scope) {
-        // Merge tags: route's static tags + host's runtime tags
+        // Merge tags: route's static membership (meta.tags + groups: sugar)
+        // + host's runtime tags.
         let mut merged_tags: HashSet<String> = request_tags.clone();
-        if let Some(meta) = &route.meta {
-            for tag in &meta.tags {
-                merged_tags.insert(tag.clone());
-            }
+        for tag in route_static_tags(route) {
+            merged_tags.insert(tag.to_owned());
         }
 
         // Include plugins from all matching policy groups (merged tags)
@@ -875,18 +969,16 @@ pub fn resolve_identity_plugins_for_route(
             steps.extend(global_identity.steps.iter().cloned());
         }
 
-        // Tag-bundle layers next. Walk the route's tags (static +
-        // any runtime tags would compose here too, but resolve_*
-        // currently doesn't take runtime tags as a parameter for
-        // identity — symmetry with the existing `plugins:` resolver
-        // would extend the signature; deferred until needed).
+        // Tag-bundle layers next. Walk the route's static membership tags
+        // (meta.tags + groups: sugar, via `route_static_tags`). Runtime tags
+        // would compose here too, but resolve_* currently doesn't take them as
+        // a parameter for identity — symmetry with the existing `plugins:`
+        // resolver would extend the signature; deferred until needed.
         if let Some(route) = route {
-            if let Some(meta) = &route.meta {
-                for tag in &meta.tags {
-                    if let Some(bundle) = config.global.policies.get(tag) {
-                        if let Some(bundle_identity) = bundle.identity.as_ref() {
-                            steps.extend(bundle_identity.steps.iter().cloned());
-                        }
+            for tag in route_static_tags(route) {
+                if let Some(bundle) = config.global.policies.get(tag) {
+                    if let Some(bundle_identity) = bundle.identity.as_ref() {
+                        steps.extend(bundle_identity.steps.iter().cloned());
                     }
                 }
             }
@@ -2036,6 +2128,253 @@ routes:
             untagged.is_empty(),
             "tag bundle should NOT apply to untagged routes"
         );
+    }
+
+    #[test]
+    fn groups_field_is_sugar_for_meta_tags_in_plugin_resolution() {
+        // A route's `groups:` joins the same bundle as `meta.tags` — both
+        // desugar to the same tag set, so resolution is identical. String and
+        // list forms both work.
+        let yaml = r#"
+plugin_settings:
+  routing_enabled: true
+plugins:
+  - { name: pii-scan, kind: builtin, hooks: [identity.resolve] }
+global:
+  policies:
+    hr-tools:
+      plugins:
+        - pii-scan
+routes:
+  - tool: via_tags
+    meta:
+      tags: [hr-tools]
+  - tool: via_groups_list
+    groups: [hr-tools]
+  - tool: via_groups_string
+    groups: hr-tools
+"#;
+        let cfg = parse_config(yaml).unwrap();
+        let no_runtime = HashSet::new();
+        let names = |entity: &str| {
+            resolve_plugins_for_entity(&cfg, "tool", entity, None, &no_runtime)
+                .iter()
+                .map(|r| r.name.clone())
+                .collect::<Vec<_>>()
+        };
+
+        assert_eq!(names("via_tags"), vec!["pii-scan"]);
+        assert_eq!(
+            names("via_groups_list"),
+            names("via_tags"),
+            "groups: [x] must resolve identically to meta.tags: [x]"
+        );
+        assert_eq!(
+            names("via_groups_string"),
+            names("via_tags"),
+            "bare-string groups: x must resolve identically too"
+        );
+    }
+
+    #[test]
+    fn groups_field_is_sugar_for_meta_tags_in_identity_resolution() {
+        // The same sugar applies to the identity (authentication) resolver.
+        let yaml = r#"
+plugin_settings:
+  routing_enabled: true
+plugins:
+  - { name: workday-saml, kind: builtin, hooks: [identity.resolve] }
+global:
+  policies:
+    finance:
+      authentication:
+        - workday-saml
+routes:
+  - tool: via_groups
+    groups: finance
+"#;
+        let cfg = parse_config(yaml).unwrap();
+        let resolved = resolve_identity_plugins_for_route(&cfg, "tool", "via_groups", None);
+        assert_eq!(
+            resolved.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(),
+            vec!["workday-saml"],
+            "groups: sugar pulls the bundle's authentication just like meta.tags"
+        );
+    }
+
+    #[test]
+    fn groups_and_meta_tags_compose_as_a_union() {
+        // A route may carry both spellings; effective membership is the union.
+        let yaml = r#"
+plugin_settings:
+  routing_enabled: true
+plugins:
+  - { name: a, kind: builtin, hooks: [identity.resolve] }
+  - { name: b, kind: builtin, hooks: [identity.resolve] }
+global:
+  policies:
+    grp-a:
+      authentication: [a]
+    grp-b:
+      authentication: [b]
+routes:
+  - tool: both
+    meta:
+      tags: [grp-a]
+    groups: [grp-b]
+"#;
+        let cfg = parse_config(yaml).unwrap();
+        let resolved = resolve_identity_plugins_for_route(&cfg, "tool", "both", None);
+        let names: Vec<_> = resolved.iter().map(|r| r.name.as_str()).collect();
+        assert!(
+            names.contains(&"a"),
+            "meta.tags bundle must apply: {names:?}"
+        );
+        assert!(names.contains(&"b"), "groups bundle must apply: {names:?}");
+    }
+
+    #[test]
+    fn top_level_groups_section_is_the_canonical_bundle_location() {
+        // Bundles can live at top-level `groups:` (canonical) instead of
+        // `global.policies:` (deprecated); a route joins one the same way.
+        let yaml = r#"
+plugin_settings:
+  routing_enabled: true
+plugins:
+  - { name: workday-saml, kind: builtin, hooks: [identity.resolve] }
+groups:
+  finance:
+    authentication:
+      - workday-saml
+routes:
+  - tool: pay
+    groups: finance
+"#;
+        let cfg = parse_config(yaml).unwrap();
+        let resolved = resolve_identity_plugins_for_route(&cfg, "tool", "pay", None);
+        assert_eq!(
+            resolved.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(),
+            vec!["workday-saml"],
+            "a bundle at top-level groups: resolves like one at global.policies:"
+        );
+    }
+
+    #[test]
+    fn top_level_groups_and_deprecated_global_policies_both_apply() {
+        // Both locations coexist and contribute; neither shadows the other.
+        let yaml = r#"
+plugin_settings:
+  routing_enabled: true
+plugins:
+  - { name: a, kind: builtin, hooks: [identity.resolve] }
+  - { name: b, kind: builtin, hooks: [identity.resolve] }
+groups:
+  new-loc:
+    authentication: [a]
+global:
+  policies:
+    old-loc:
+      authentication: [b]
+routes:
+  - tool: mixed
+    groups: [new-loc, old-loc]
+"#;
+        let cfg = parse_config(yaml).unwrap();
+        let resolved = resolve_identity_plugins_for_route(&cfg, "tool", "mixed", None);
+        let names: Vec<_> = resolved.iter().map(|r| r.name.as_str()).collect();
+        assert!(names.contains(&"a"), "top-level groups applies: {names:?}");
+        assert!(
+            names.contains(&"b"),
+            "deprecated global.policies applies: {names:?}"
+        );
+    }
+
+    #[test]
+    fn top_level_groups_wins_on_name_collision_with_global_policies() {
+        let yaml = r#"
+plugin_settings:
+  routing_enabled: true
+plugins:
+  - { name: canonical, kind: builtin, hooks: [identity.resolve] }
+  - { name: deprecated, kind: builtin, hooks: [identity.resolve] }
+groups:
+  dup:
+    authentication: [canonical]
+global:
+  policies:
+    dup:
+      authentication: [deprecated]
+routes:
+  - tool: t
+    groups: dup
+"#;
+        let cfg = parse_config(yaml).unwrap();
+        let resolved = resolve_identity_plugins_for_route(&cfg, "tool", "t", None);
+        assert_eq!(
+            resolved.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(),
+            vec!["canonical"],
+            "canonical top-level groups: must win over deprecated global.policies:"
+        );
+    }
+
+    #[test]
+    fn stale_identity_key_under_top_level_groups_is_rejected() {
+        // The fail-loud guard extends to the new location.
+        let yaml = r#"
+plugin_settings:
+  routing_enabled: true
+groups:
+  finance:
+    identity:
+      - old-key
+"#;
+        let err = parse_config(yaml).unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("groups.finance"), "names the scope: {msg}");
+        assert!(msg.contains("authentication"), "mentions the rename: {msg}");
+    }
+
+    #[test]
+    fn route_joining_unknown_group_is_rejected() {
+        // A5: a typo'd `groups:` value must fail at load, not silently
+        // leave the route without the group's authentication.
+        let yaml = r#"
+plugin_settings:
+  routing_enabled: true
+plugins:
+  - { name: jwt-hr, kind: identity/jwt, hooks: [identity.resolve] }
+groups:
+  hr-tools:
+    authentication: [jwt-hr]
+routes:
+  - tool: get_compensation
+    groups: hr-toolz
+"#;
+        let err = parse_config(yaml).unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("unknown group"), "names the error: {msg}");
+        assert!(msg.contains("hr-toolz"), "names the typo: {msg}");
+    }
+
+    #[test]
+    fn route_joining_defined_group_passes_validation() {
+        // Sanity: a correct `groups:` reference (and via meta.tags, which
+        // stays permissive) validates fine.
+        let yaml = r#"
+plugin_settings:
+  routing_enabled: true
+plugins:
+  - { name: jwt-hr, kind: identity/jwt, hooks: [identity.resolve] }
+groups:
+  hr-tools:
+    authentication: [jwt-hr]
+routes:
+  - tool: get_compensation
+    groups: hr-tools
+  - tool: search_repos
+    meta: { tags: [some-runtime-tag] }
+"#;
+        assert!(parse_config(yaml).is_ok());
     }
 
     #[test]
