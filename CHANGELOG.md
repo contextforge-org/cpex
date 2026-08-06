@@ -58,8 +58,20 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/).
   test.pypi into a fresh isolated venv now also passes `--extra-index-url https://pypi.org/simple/`,
   so transitive dependencies (including `cpex` itself) resolve from real PyPI instead of failing
   when they are absent from test.pypi ([#113](https://github.com/contextforge-org/cpex/pull/113)).
+### Changed
+
+- `CopyOnWriteDict` / `CopyOnWriteList` now snapshot the wrapped container at construction instead of reading through to it lazily ([#152](https://github.com/contextforge-org/cpex/issues/152))
+  - Mutating the original *after* wrapping is no longer visible through the wrapper — isolation is now symmetric. The lazy implementation leaked such mutations in
+  - The wrapper no longer retains a reference to the original container
+  - Small construction cost: snapshotting up front measures 0.26 us vs 0.17 us (100-item list) and 0.43 us vs 0.20 us (100-key dict) against the lazy wrapper. Still ~38-45x cheaper than the `copy.deepcopy()` it exists to avoid, so the isolation path stays sub-microsecond per wrap
+
 ### Fixed
 
+- CopyOnWrite containers no longer lose or duplicate data in inherited methods ([#152](https://github.com/contextforge-org/cpex/issues/152))
+  - `model_dump()` / `model_dump_json()` / `json.dumps()` of a CoW-isolated payload returned empty containers, silently stripping `items` / `args` / headers — this reached external (gRPC/Unix-socket) plugins, which receive payloads via `model_dump()`
+  - `copy.deepcopy()` and `model_copy(deep=True)` duplicated every element of a `CopyOnWriteList`
+  - `CopyOnWriteList`: fixed `<`, `<=`, `>`, `>=`, `+`, `*`, `+=`, `*=`, `index()`, `count()` and `reversed()`; `+=` was a silent no-op
+  - `CopyOnWriteDict`: fixed `|`, `|=`, `popitem()` and `reversed()`
 - Implement `__eq__` and `__ne__` for CopyOnWriteList ([#136](https://github.com/contextforge-org/cpex/pull/136))
 
 ## [0.1.2] - 2026-07-29

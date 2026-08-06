@@ -8,6 +8,8 @@ Tests for memory module.
 """
 
 # Standard
+import copy
+import json
 import weakref
 
 # Third-Party
@@ -569,15 +571,29 @@ class TestCopyOnWriteDict:
         assert cow.copy() == {"a": 10, "c": 30, "d": 4, "e": 5}
 
     def test_original_dict_mutations_not_reflected(self):
-        """Test that mutations to the original dict after COW creation are visible."""
+        """Mutations to the original dict after COW creation are NOT visible.
+
+        Construction takes a shallow snapshot, so the wrapper is isolated from
+        the original in both directions. The previous lazy implementation read
+        through to a live original and leaked later mutations in -- which this
+        test asserted, despite its name saying otherwise (its rationale cited a
+        ChainMap that the implementation had long stopped using).
+        """
         original = {"a": 1, "b": 2}
         cow = CopyOnWriteDict(original)
 
-        # Mutate original - this WILL be visible in COW since ChainMap references the original
         original["c"] = 3
+        assert "c" not in cow
+        with pytest.raises(KeyError):
+            _ = cow["c"]
 
-        # ChainMap references the original, so this change is visible
-        assert cow["c"] == 3
+        # Pre-existing keys keep their snapshotted values.
+        original["a"] = 99
+        assert cow["a"] == 1
+
+        # Isolation still holds in the other direction.
+        cow["b"] = 20
+        assert original["b"] == 2
 
     def test_nested_values(self):
         """Test that nested values work correctly."""
@@ -1677,3 +1693,207 @@ class TestExceptionIsolation:
         exc = RuntimeError("boom")
         result = _wrap_value(exc)
         assert result is exc
+
+
+class TestCopyOnWriteInheritedMethods:
+    """Regression tests for issue #152.
+
+    The lazy CoW implementation kept its parent ``list``/``dict`` storage empty
+    until the first write, so every inherited method it did not explicitly
+    override read an empty container. Reads looked correct (those *were*
+    overridden) while serialization, copying and most operators silently saw
+    nothing -- or, for ``deepcopy``, duplicated contents.
+
+    These tests pin the whole surface rather than individual operators, because
+    patching one operator at a time is what left the class broken twice before
+    (#55 for ``CopyOnWriteDict.__eq__``, #136 for ``CopyOnWriteList.__eq__``).
+    """
+
+    # -- serialization ---------------------------------------------------
+
+    def test_list_json_serializable(self):
+        """json.dumps must see the real items, not empty base storage."""
+        assert json.loads(json.dumps(CopyOnWriteList(["a", "b", "c"]))) == ["a", "b", "c"]
+
+    def test_dict_json_serializable(self):
+        """json.dumps on the dict returned {} before the fix."""
+        assert json.loads(json.dumps(CopyOnWriteDict({"a": 1, "b": 2}))) == {"a": 1, "b": 2}
+
+    def test_isolated_payload_model_dump_preserves_contents(self):
+        """model_dump() of a CoW-isolated payload must not drop container fields.
+
+        This is the critical case: external plugins receive payloads via
+        model_dump() (grpc/unix clients), so empty containers here mean an
+        out-of-process plugin sees no args/items at all.
+        """
+
+        class ListDictPayload(BaseModel):
+            model_config = ConfigDict(frozen=True)
+            server_id: str
+            items: list = Field(default_factory=list)
+            args: dict = Field(default_factory=dict)
+
+        iso = wrap_payload_for_isolation(ListDictPayload(server_id="s", items=["a", "b"], args={"k": "v"}))
+
+        assert isinstance(iso.items, CopyOnWriteList)
+        assert isinstance(iso.args, CopyOnWriteDict)
+        assert iso.model_dump() == {"server_id": "s", "items": ["a", "b"], "args": {"k": "v"}}
+        assert json.loads(iso.model_dump_json()) == {"server_id": "s", "items": ["a", "b"], "args": {"k": "v"}}
+
+    def test_isolated_rootmodel_model_dump_preserves_contents(self):
+        """RootModel payloads are isolated regardless of policy, so they always hit this."""
+
+        class Headers(RootModel):
+            root: dict
+
+        iso = wrap_payload_for_isolation(Headers({"authorization": "Bearer x", "x-tenant": "acme"}))
+        assert iso.model_dump() == {"authorization": "Bearer x", "x-tenant": "acme"}
+
+    # -- copying ---------------------------------------------------------
+
+    def test_list_deepcopy_does_not_duplicate(self):
+        """deepcopy duplicated every item before the fix."""
+        cow = CopyOnWriteList(["a", "b", "c"])
+        assert copy.deepcopy(cow) == ["a", "b", "c"]
+        assert copy.copy(cow) == ["a", "b", "c"]
+        assert _safe_deepcopy(cow) == ["a", "b", "c"]
+
+    def test_dict_deepcopy_preserves_contents(self):
+        """deepcopy of the dict must round-trip its contents."""
+        cow = CopyOnWriteDict({"a": 1, "b": 2})
+        assert dict(copy.deepcopy(cow)) == {"a": 1, "b": 2}
+        assert dict(copy.copy(cow)) == {"a": 1, "b": 2}
+
+    def test_copy_preserves_modification_flag(self):
+        """Copying must not invent a modification that never happened."""
+        for clone in (copy.copy, copy.deepcopy):
+            assert clone(CopyOnWriteList(["a"])).has_modifications() is False
+            assert clone(CopyOnWriteDict({"a": 1})).has_modifications() is False
+
+            dirty_list = CopyOnWriteList(["a"])
+            dirty_list.append("b")
+            assert clone(dirty_list).has_modifications() is True
+
+            dirty_dict = CopyOnWriteDict({"a": 1})
+            dirty_dict["b"] = 2
+            del dirty_dict["a"]
+            clone_dict = clone(dirty_dict)
+            assert clone_dict.has_modifications() is True
+            assert clone_dict.get_modifications() == {"b": 2}
+            assert clone_dict.get_deleted() == {"a"}
+
+    def test_deepcopy_is_deep(self):
+        """Nested containers must not be shared after a deepcopy."""
+        cow_list = CopyOnWriteList([[1, 2]])
+        copy.deepcopy(cow_list)[0].append(3)
+        assert cow_list[0] == [1, 2]
+
+        cow_dict = CopyOnWriteDict({"k": [1, 2]})
+        copy.deepcopy(cow_dict)["k"].append(3)
+        assert cow_dict["k"] == [1, 2]
+
+    # -- list operators and lookups --------------------------------------
+
+    def test_list_ordering_comparisons(self):
+        """<, <=, >, >= compared against empty base storage before the fix."""
+        cow = CopyOnWriteList(["a", "b", "c"])
+        assert not cow < ["a"]
+        assert cow > ["a"]
+        assert not cow <= []
+        assert cow >= ["a"]
+        assert sorted([CopyOnWriteList(["b"]), CopyOnWriteList(["a"])]) == [["a"], ["b"]]
+
+    def test_list_concatenation_and_repetition(self):
+        """+ and * dropped the wrapped items before the fix."""
+        assert CopyOnWriteList(["a", "b"]) + ["c"] == ["a", "b", "c"]
+        assert ["z"] + CopyOnWriteList(["a"]) == ["z", "a"]
+        assert CopyOnWriteList(["a"]) * 2 == ["a", "a"]
+        assert 2 * CopyOnWriteList(["a"]) == ["a", "a"]
+
+    def test_list_inplace_operators_are_not_silent_noops(self):
+        """`cow += [...]` silently discarded the append before the fix."""
+        cow = CopyOnWriteList(["a", "b"])
+        cow += ["c"]
+        assert list(cow) == ["a", "b", "c"]
+        assert cow.has_modifications() is True
+
+        cow2 = CopyOnWriteList(["a"])
+        cow2 *= 3
+        assert list(cow2) == ["a", "a", "a"]
+        assert cow2.has_modifications() is True
+
+    def test_list_index_and_count(self):
+        """index() raised ValueError and count() returned 0 before the fix."""
+        cow = CopyOnWriteList(["a", "b", "a"])
+        assert cow.index("b") == 1
+        assert cow.count("a") == 2
+        with pytest.raises(ValueError):
+            cow.index("missing")
+
+    def test_list_reversed(self):
+        """reversed() yielded nothing before the fix."""
+        assert list(reversed(CopyOnWriteList(["a", "b", "c"]))) == ["c", "b", "a"]
+
+    # -- dict operators and methods --------------------------------------
+
+    def test_dict_union_operators(self):
+        """| returned {} before the fix; |= must also record modifications."""
+        assert CopyOnWriteDict({"a": 1}) | {"b": 2} == {"a": 1, "b": 2}
+        assert {"z": 0} | CopyOnWriteDict({"a": 1}) == {"z": 0, "a": 1}
+
+        cow = CopyOnWriteDict({"a": 1})
+        cow |= {"b": 2}
+        assert dict(cow) == {"a": 1, "b": 2}
+        assert cow.get_modifications() == {"b": 2}
+
+    def test_dict_popitem(self):
+        """popitem() raised KeyError on a non-empty dict before the fix."""
+        cow = CopyOnWriteDict({"a": 1, "b": 2})
+        assert cow.popitem() == ("b", 2)
+        assert dict(cow) == {"a": 1}
+        assert cow.get_deleted() == {"b"}
+        assert cow.has_modifications() is True
+
+        with pytest.raises(KeyError):
+            CopyOnWriteDict({}).popitem()
+
+    def test_dict_reversed(self):
+        """reversed() yielded nothing before the fix."""
+        assert list(reversed(CopyOnWriteDict({"a": 1, "b": 2}))) == ["b", "a"]
+
+    # -- isolation still holds -------------------------------------------
+
+    def test_writes_never_touch_the_original(self):
+        """The whole point of the wrapper: the original is never mutated."""
+        original_list = ["a", "b"]
+        cow_list = CopyOnWriteList(original_list)
+        cow_list.append("c")
+        cow_list[0] = "z"
+        cow_list += ["d"]
+        assert original_list == ["a", "b"]
+
+        original_dict = {"a": 1, "b": 2}
+        cow_dict = CopyOnWriteDict(original_dict)
+        cow_dict["c"] = 3
+        del cow_dict["a"]
+        cow_dict |= {"d": 4}
+        cow_dict.popitem()
+        assert original_dict == {"a": 1, "b": 2}
+
+    def test_construction_snapshots_the_original(self):
+        """Later mutations of the original must not leak in (isolation)."""
+        original_list = ["a"]
+        cow_list = CopyOnWriteList(original_list)
+        original_list.append("b")
+        assert list(cow_list) == ["a"]
+
+        original_dict = {"a": 1}
+        cow_dict = CopyOnWriteDict(original_dict)
+        original_dict["b"] = 2
+        assert dict(cow_dict) == {"a": 1}
+
+    def test_nested_containers_are_shared_shallow_copy(self):
+        """The snapshot is shallow by design -- nested objects stay shared."""
+        nested = {"n": 1}
+        cow = CopyOnWriteList([nested])
+        assert cow[0] is nested
