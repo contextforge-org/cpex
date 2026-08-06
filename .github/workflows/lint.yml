@@ -32,15 +32,15 @@ jobs:
           - id: ruff
             setup: pip install ruff
             cmd: "ruff check $TARGET"
-          # - id: vulture
-          #   setup: pip install vulture
-          #   cmd: 'vulture $TARGET'
+          - id: vulture
+            setup: pip install vulture
+            cmd: 'vulture $TARGET'
           - id: interrogate
             setup: pip install interrogate
             cmd: "interrogate -vv $TARGET"
-          # - id: radon
-          #   setup: pip install radon
-          #   cmd: "radon cc $TARGET --min C --show-complexity && radon mi $TARGET --min B"
+          - id: radon
+            setup: pip install radon
+            cmd: "radon cc $TARGET --min C --show-complexity && radon mi $TARGET --min B"
 
     name: "${{ matrix.tool.id }} (${{ matrix.target }})"
     runs-on: ubuntu-latest
