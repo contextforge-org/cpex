@@ -76,8 +76,7 @@ pub(crate) enum Step {
     /// succeeds; never produces a Deny (accumulating, same family as
     /// `Taint`). The evaluator collects the emitted constraint; a higher
     /// layer (apl-cpex) folds it into a `CandidateConstraintExtension`
-    /// the host serializes to its router. See
-    /// `docs/apl-restrict-effect-design.md`.
+    /// the host serializes to its router.
     Restrict {
         spec: crate::constraint::RestrictSpec,
     },
@@ -121,9 +120,8 @@ pub(crate) enum Step {
 /// rules.
 ///
 /// For fan-out flows that need multiple independently-queryable
-/// grants, split into `pre_invocation:` + `post_invocation:` or reach for a
-/// future per-step `as:` alias (not in v0; see the design doc's
-/// "Open design questions" section).
+/// grants, split into `pre_invocation:` + `post_invocation:`. There is
+/// no per-step alias for naming an individual delegate's grants.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DelegateStep {
     /// Plugin name — must reference an entry in the top-level

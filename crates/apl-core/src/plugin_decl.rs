@@ -140,7 +140,7 @@ impl<'a> EffectivePlugin<'a> {
     /// the effective view. Returns `None` if `name` isn't in the
     /// registry — caller decides whether that's an error.
     ///
-    /// Spec §"Route-Level Plugin Config Overrides":
+    /// Route-level override precedence:
     ///   - Override `config` replaces the global `config` entirely.
     ///   - Override `capabilities` replaces global capabilities.
     ///   - Override `on_error` replaces global on_error.

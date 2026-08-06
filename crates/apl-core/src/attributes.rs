@@ -146,7 +146,7 @@ impl AttributeBag {
     }
 
     /// Resolve an attribute path to its concrete flat key, expanding any
-    /// `[inner]` interpolation groups (design §4.3). Each `[inner]` looks
+    /// `[inner]` interpolation groups. Each `[inner]` looks
     /// `inner` up in this bag and substitutes `.` + its scalar value:
     /// `data.tenants[subject.tenant].data_region` with `subject.tenant =
     /// "acme-eu"` → `data.tenants.acme-eu.data_region`. The common

@@ -415,7 +415,7 @@ impl AnyHookHandler for AplRouteHandler {
         // No-op when no taints emitted.
         invoker.apply_session_taints(&decision.taints).await;
 
-        // R2: fold this request's `restrict` constraints into one typed
+        // Fold this request's `restrict` constraints into one typed
         // `CandidateConstraintExtension`. A custom-label contradiction
         // (two restricts requiring the same label to differ) cannot be
         // honored by any backend, so it fails closed below (mirrors the
@@ -491,11 +491,11 @@ impl AnyHookHandler for AplRouteHandler {
             None
         };
 
-        // R2: write the folded constraint into the typed
+        // Write the folded constraint into the typed
         // `candidate_constraint` extension slot so the host router reads
         // it TYPED off `PipelineResult.modified_extensions` — the same
         // in-process, type-shared channel `raw_credentials.delegated_tokens`
-        // rides (design §2.5). `extensions_changed` doesn't track this
+        // rides. `extensions_changed` doesn't track this
         // slot, so we force `modified_extensions` to `Some` here to
         // guarantee the constraint reaches the executor's merge.
         if let Some(constraint) = folded_constraint {
@@ -595,7 +595,7 @@ impl AnyHookHandler for AplRouteHandler {
             }
         }
 
-        // R2 fail-closed: a `restrict` custom-label contradiction means no
+        // Fail closed: a `restrict` custom-label contradiction means no
         // backend can satisfy the request's routing constraints. Deny
         // rather than emit an unhonorable constraint. On an already-denied
         // request, keep the original policy attribution (same precedence

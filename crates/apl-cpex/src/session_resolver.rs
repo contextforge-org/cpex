@@ -100,8 +100,8 @@ fn short_hash(raw: &str) -> String {
 /// module doc prescribes for the (previously raw) Agent and TokenClaim tiers,
 /// so a session id chosen by one principal cannot address another principal's
 /// session bucket. Returns `None` when there is no authenticated subject — a
-/// bare client value has no safe scope, consistent with Tiers 2/3, which also
-/// require a subject.
+/// bare client value has no safe scope, consistent with the identity tier,
+/// which also requires a subject.
 fn subject_scoped(subject_id: Option<&str>, raw: &str) -> Option<String> {
     let sub = subject_id?;
     Some(short_hash(&format!("{}:{}", sub, raw)))
@@ -323,9 +323,9 @@ mod tests {
 
     #[test]
     fn tier0_wins_over_identity() {
-        // T0 (agent.session_id) must win over T2 (identity triple) when
-        // both are available. Pins the tier priority explicitly so a
-        // future refactor of the resolver's walk order regresses loudly.
+        // The agent tier (`agent.session_id`) must win over the identity
+        // tier (identity triple) when both are available. Pins the walk
+        // order explicitly so a future refactor regresses loudly.
         let mut agent = AgentExtension::default();
         agent.session_id = Some("from-agent".into());
         let sec = SecurityExtension {
@@ -350,7 +350,7 @@ mod tests {
         assert_eq!(
             src,
             SessionSource::Agent,
-            "T0 must win over T2 when both are available",
+            "agent tier must win over identity tier when both are available",
         );
         assert_eq!(sid, subject_scoped(Some("alice"), "from-agent").unwrap());
     }
@@ -394,11 +394,11 @@ mod tests {
 
     #[test]
     fn tier1_same_session_id_claim_different_subjects_are_distinct() {
-        // The guarantee for T1. An issuer that reuses a
-        // session_id value across multiple principals (multi-tenant
-        // naming conventions, counters that don't carry the subject,
-        // etc.) must NOT let one principal land in another's session
-        // bucket. Direct mirror of the T0 cross-principal test.
+        // The cross-principal guarantee for the token-claim tier. An
+        // issuer that reuses a session_id value across multiple principals
+        // (multi-tenant naming conventions, counters that don't carry the
+        // subject, etc.) must NOT let one principal land in another's
+        // session bucket. Direct mirror of the agent-tier test above.
         let mk = |sub: &str| -> SecurityExtension {
             SecurityExtension {
                 subject: Some(subject_with_claims(
@@ -438,9 +438,9 @@ mod tests {
     #[test]
     fn tier1_no_subject_id_falls_through() {
         // A JWT carries a `session_id` claim but has no `sub` (subject
-        // present but `id == None`). T1 has no safe scope without a
-        // subject — must fall through. T2 also requires a subject and
-        // therefore returns None overall.
+        // present but `id == None`). The token-claim tier has no safe
+        // scope without a subject — must fall through. The identity tier
+        // also requires a subject, so resolution returns None overall.
         let sec = SecurityExtension {
             subject: Some(SubjectExtension {
                 id: None,
@@ -461,9 +461,9 @@ mod tests {
     #[test]
     fn tier1_wins_over_identity() {
         // Both a JWT session_id claim AND a full identity triple are
-        // present. T1 must win over T2. Pins the tier priority
-        // explicitly — the existing happy-path test happens to omit
-        // T2 inputs, so without this T1>T2 priority is only implicit.
+        // present. The token-claim tier must win over the identity tier.
+        // Pins the priority explicitly — the happy-path test above omits
+        // identity-tier inputs, so otherwise the ordering is only implicit.
         let sec = SecurityExtension {
             subject: Some(subject_with_claims(
                 Some("alice"),
@@ -485,12 +485,13 @@ mod tests {
         assert_eq!(
             src,
             SessionSource::TokenClaim,
-            "T1 must win over T2 when both are available",
+            "token-claim tier must win over identity tier when both are available",
         );
         assert_eq!(sid, subject_scoped(Some("alice"), "from-claim").unwrap());
     }
 
-    // Tier 2 (`X-CPEX-Session-Id` header) is intentionally absent.
+    // The client-supplied `X-CPEX-Session-Id` header tier is
+    // intentionally absent — it has no slot in the walk above.
     //
     // The Python `SessionResolver` included a header tier; cpex Rust
     // does not. See the module-level doc comment for the threat model.

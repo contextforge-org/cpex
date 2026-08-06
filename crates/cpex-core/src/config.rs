@@ -2336,7 +2336,7 @@ groups:
 
     #[test]
     fn route_joining_unknown_group_is_rejected() {
-        // A5: a typo'd `groups:` value must fail at load, not silently
+        // A typo'd `groups:` value must fail at load, not silently
         // leave the route without the group's authentication.
         let yaml = r#"
 plugin_settings:

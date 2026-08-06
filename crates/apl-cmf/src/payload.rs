@@ -37,10 +37,10 @@ pub fn extract_result(result: &Value, bag: &mut AttributeBag) {
     walk(result, BAG_RESULT_PREFIX.trim_end_matches('.'), bag);
 }
 
-/// Flatten a static attribute tree into `data.*` keys (design §4.2).
-/// Same walk as args/result — nested objects recurse, string arrays
-/// become `StringSet`s (so `data.tenants.x.allowed_models` supports
-/// `contains` and R3b `restrict` references).
+/// Flatten a static attribute tree into `data.*` keys. Same walk as
+/// args/result — nested objects recurse, string arrays become
+/// `StringSet`s (so `data.tenants.x.allowed_models` supports `contains`
+/// and interpolated `restrict` references).
 pub fn extract_data(tree: &apl_core::AttributeTree, bag: &mut AttributeBag) {
     walk(tree.as_value(), "data", bag);
 }
@@ -176,7 +176,8 @@ mod tests {
             bag.get_string("data.tenants.acme-eu.data_region"),
             Some("eu")
         );
-        // String arrays become a StringSet (ready for `contains` / R3b).
+        // String arrays become a StringSet (ready for `contains` /
+        // interpolated path lookups).
         assert!(bag.set_contains("data.tenants.acme-eu.allowed_models", "anthropic/*"));
         assert!(bag.set_contains("data.tenants.acme-eu.allowed_models", "vllm/*"));
     }

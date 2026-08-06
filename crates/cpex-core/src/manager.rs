@@ -4270,7 +4270,7 @@ routes:
         assert_eq!(mgr.routing_cache_size(), 1); // cache hit — no new entry
     }
 
-    /// Regression (A1, typed path): `load_config_yaml` used to deserialize
+    /// Regression (typed path): `load_config_yaml` used to deserialize
     /// `CpexConfig` directly and skip `parse_config`'s normalization, so a
     /// top-level `groups:` bundle never folded into `global.policies` and a
     /// route joining it lost the group's plugins. Here the deny plugin lives
@@ -4316,7 +4316,7 @@ routes:
         assert_eq!(result.violation.as_ref().unwrap().code, "denied");
     }
 
-    /// Regression (A1, visitor path): the visitor walk read only
+    /// Regression (visitor path): the visitor walk read only
     /// `global.policies`, so a top-level `groups:` bundle's `authorization:`
     /// was never compiled. This registers a visitor that records which
     /// bundles it was asked to compile and asserts the top-level group is

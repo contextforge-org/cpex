@@ -23,7 +23,7 @@ For the conceptual model first, read [Use Cases]({{< relref "use-cases" >}}) and
 
 Every request crosses two identity boundaries:
 
-![Two identity boundaries: an inbound identity.resolve box (who is calling in) that validates credentials and lands typed identity slots, an arrow labelled route + policy, and an outbound token.delegate box (who we call out as) that mints the downstream credential per the route + subject; identity is additive across slots while delegation is chosen per route by subject](images/identity_two_boundaries.png)
+![Two identity boundaries. Inbound: identity.resolve validates credentials and fills typed identity slots, additively. Outbound: token.delegate mints the downstream credential, chosen per route by subject.](images/identity_two_boundaries.png)
 
 - **Inbound.** `identity.resolve` plugins each read one credential (from a header)
   and land a typed identity in a slot. They are additive: one request can carry a
@@ -68,13 +68,11 @@ The `subject:` on a `delegate(...)` step decides the OAuth mechanism the delegat
 
 ---
 
-## Scoping — how broadly to apply it
+## Scoping: how broadly to apply it
 
 CPEX resolves the pipeline for each request across one **broad → narrow stack**, and
 **both identity and policy (including delegation) ride it**. Narrower layers add to
 (or override) broader ones. Pick the broadest layer that's still correct.
-
-The layers, broad to narrow:
 
 A **group** is a named, reusable bundle of policy (authentication steps +
 authorization steps + plugins) that routes opt into. The layers, broad to narrow:
@@ -86,7 +84,7 @@ authorization steps + plugins) that routes opt into. The layers, broad to narrow
 | **Group** | routes that join `<name>` (via `groups:` or a matching tag) | `groups.<name>.authentication` | `groups.<name>.authorization` / `plugins` |
 | **Route (entity)** | one route (a `tool: "*"` route is the catch-all) | route `authentication:` | route `authorization:` steps / `plugins:` |
 
-So a `delegate(...)` is **not** route-only. To pick its breadth, put it (or a
+So a `delegate(...)` is *not* route-only. To pick its breadth, put it (or a
 `token.delegate` plugin) at the matching layer:
 
 - **every tool** → a `delegate()` in a `tool: "*"` route, or the delegator plugin in
@@ -117,8 +115,7 @@ routes:
 
 `groups: hr-tools` is the first-class way to join a group, and it is **sugar over
 tags**: `meta: { tags: [hr-tools] }` is exactly equivalent, and host-injected runtime
-tags join groups the same way. Tags stay the substrate — `groups:` just names the
-common case.
+tags join groups the same way.
 
 **The override.** A route that must stand alone drops the inherited layers:
 
@@ -130,7 +127,7 @@ routes:
       steps: [jwt-workload]             # …authenticate by the SVID alone
 ```
 
-That is what [Recipe 2](#recipe-2--agent-acting-as-itself-by-its-spiffe-svid)
+That is what [Recipe 2](#recipe-2-agent-acting-as-itself-by-its-spiffe-svid)
 uses. (Full group / defaults syntax: [Configuration]({{< relref "configuration" >}}).)
 
 ### Rule of thumb
@@ -150,11 +147,11 @@ Each recipe is a drop-in: the plugins it needs, the route layout, and where it h
 been run. All config is [unified-config]({{< relref "configuration" >}}) YAML.
 
 > **Canonical keys.** These recipes write policy under `authorization:` (with
-> `pre_invocation:` / `post_invocation:` inside) — the orchestrator-agnostic spelling.
+> `pre_invocation:` / `post_invocation:` inside), the orchestrator-agnostic spelling.
 > The older `apl:` wrapper is still accepted, and `pre_invocation:` may also be written
 > flat on the route; all three compile identically.
 
-### Recipe 1 — User acting through an agent (on-behalf-of)
+### Recipe 1: User acting through an agent (on-behalf-of)
 
 **When:** a human is signed in; the agent calls a downstream API *as that user*.
 CPEX exchanges the user's IdP token for a downstream-audience token.
@@ -196,7 +193,7 @@ routes:
 The minted `workday-api` token is attached to the upstream call. **Tested: Keycloak
 26.x (Standard Token Exchange v2).**
 
-### Recipe 2 — Agent acting as itself, by its SPIFFE SVID
+### Recipe 2: Agent acting as itself, by its SPIFFE SVID
 
 **When:** the *agent* is the principal (no human), and you don't trust the agent to
 hold downstream authority. The agent presents its SVID; CPEX brokers a scoped
@@ -207,7 +204,7 @@ downstream token. The agent holds no standing entitlement to the target.
 > credential, not an OAuth access token. It can't be forwarded to the downstream or
 > used as a bearer/subject token as-is; CPEX has to **turn it into an IdP-issued token
 > first** (leg 1 below). Contrast
-> [Recipe 5](#recipe-5--scope-a-token-the-agent-already-holds-1-leg), whose input is a
+> [Recipe 5](#recipe-5-scope-a-token-the-agent-already-holds-1-leg), whose input is a
 > token already *minted from* an SVID.
 
 Add a workload resolver, scoped to the route so only it runs there:
@@ -253,7 +250,7 @@ consult your IdP's SPIFFE client-auth docs. **Tested: Keycloak 26.6 (feature
 > CPEX the trust boundary. A compromised agent can prove who it is but cannot mint
 > the downstream token itself.
 
-### Recipe 3 — A service acting as itself
+### Recipe 3: A service acting as itself
 
 **When:** CPEX calls a downstream as *itself*, with no inbound credential to exchange
 (e.g. a scheduled job, or CPEX's own housekeeping).
@@ -270,14 +267,14 @@ routes:
 `subject_token`, CPEX's own `client_id`/secret is the identity. **Tested: Keycloak
 (client_credentials).**
 
-### Recipe 4 — Forward a token the caller already has (passthrough)
+### Recipe 4: Forward a token the caller already has (passthrough)
 
 **When:** the agent authenticated to the IdP itself and hands CPEX a ready token.
 CPEX validates it inbound and lets the route forward it, with no `delegate` step.
 This is the "agent-brokered" case; it needs no delegation code, only that the
 inbound resolver validates the token and the route allows the call.
 
-### Recipe 5 — Scope a token the agent already holds (1-leg)
+### Recipe 5: Scope a token the agent already holds (1-leg)
 
 **When:** the agent authenticated to the IdP *itself* with its SVID and got back a
 normal JWT, and you still want CPEX to narrow that token per-tool (least privilege
@@ -309,7 +306,7 @@ routes:
 ```
 
 This is a **plain RFC 8693 exchange**, the same engine as
-[Recipe 1](#recipe-1--user-acting-through-an-agent-on-behalf-of), scoping the
+[Recipe 1](#recipe-1-user-acting-through-an-agent-on-behalf-of), scoping the
 *agent's* token instead of a user's. **One leg** (the scope): the agent did
 the authenticate leg upstream, so CPEX doesn't.
 
@@ -318,29 +315,25 @@ an SVID, or a token minted from one:
 
 | Agent presents | Slot → subject | CPEX does | Legs |
 |---|---|---|---|
-| its **SVID** (`ES256`, SPIRE JWKS) | `caller_workload` → `subject: caller_workload` | authenticate **+** scope | 2 (Recipe 2) |
+| its **SVID** (`ES256`, SPIRE JWKS) | `caller_workload` → `subject: caller_workload` | authenticate + scope | 2 (Recipe 2) |
 | a **token minted from its SVID** (`RS256`, IdP JWKS) | `client` → `subject: client` | scope only | 1 (this recipe) |
 | a **token already right** for the tool | — | forward as-is | 0 (Recipe 4) |
 
 Using `subject: caller_workload` on an already-minted token misroutes it
-down the SVID two-leg (`client_assertion`) path. Match the subject to what
-arrived: **an SVID is a `caller_workload`; a JWT minted from it is a
-`client` (or `user`) token.**
+down the two-leg `client_assertion` path.
 
-### Recipe 6 — User acting through an agent, with the agent named (dual-principal)
+### Recipe 6: User acting through an agent, with the agent named (dual-principal)
 
 **When:** a human is signed in *and* you want the record to name the agent that
 carried out the call. The minted token speaks for the user (`sub`), and CPEX
-additionally names the calling agent as the RFC 8693 acting party (`act`) — so a token
-service that honors delegation records **both** who authorized the action and who
-performed it. This is the common agentic shape: the human decides, the agent acts.
-(Whether the `act` claim actually lands depends on the token service — see the interop
-note.)
+additionally names the calling agent as the RFC 8693 acting party (`act`), so a token
+service that honors delegation records both who authorized the action and who
+performed it.
 
-It composes two inbound resolvers you have already met — `jwt-user`
-([Recipe 1](#recipe-1--user-acting-through-an-agent-on-behalf-of)) for the human on
+It composes two inbound resolvers: `jwt-user`
+([Recipe 1](#recipe-1-user-acting-through-an-agent-on-behalf-of)) for the human on
 `X-User-Token`, and `jwt-workload`
-([Recipe 2](#recipe-2--agent-acting-as-itself-by-its-spiffe-svid)) for the agent's
+([Recipe 2](#recipe-2-agent-acting-as-itself-by-its-spiffe-svid)) for the agent's
 SVID on `X-Workload-Token`. Both must resolve; both credentials arrive on every call.
 
 ```yaml
@@ -359,63 +352,61 @@ routes:
 ```
 
 `subject: user` makes the user's token the RFC 8693 `subject_token` (exactly as
-[Recipe 1](#recipe-1--user-acting-through-an-agent-on-behalf-of)); `actor:
+[Recipe 1](#recipe-1-user-acting-through-an-agent-on-behalf-of)); `actor:
 caller_workload` *additionally* attaches the agent's SVID as the `actor_token`,
-**requesting** that the minted token carry `act` alongside `sub`. It's **one exchange
-call, two principals in the request** — not a second leg. `actor` accepts only inbound
-credentials (`user`, `client`, `caller_workload`): the acting party is by definition
-one that presented itself to CPEX. Whether `act` actually lands in the token is the
-token service's call — see the interop note below.
+requesting that the minted token carry `act` alongside `sub`. This is one exchange
+call with two principals in the request, not a second leg. `actor` accepts only
+inbound credentials (`user`, `client`, `caller_workload`): the acting party is by
+definition one that presented itself to CPEX.
 
-> **Subject vs. actor.** The *subject* is who the token speaks **for** (whose
-> authority); the *actor* is who is **doing** it (attribution). Least-privilege scoping
-> still follows the subject — the `act` claim records the agent, it doesn't grant it
+> **Subject vs. actor.** The *subject* is who the token speaks *for* (whose
+> authority); the *actor* is who is *doing* it (attribution). Least-privilege scoping
+> still follows the subject. The `act` claim records the agent, it doesn't grant it
 > anything.
 
-**Which actor — `client` or `caller_workload`?** Match it to *how the agent
+**Which actor, `client` or `caller_workload`?** Match it to *how the agent
 authenticated*. An agent that presented a SPIFFE SVID is a `caller_workload` (above);
-one that authenticated as a registered OAuth client — an `Authorization` bearer token,
-resolved with `role: client` — is `actor: client`:
+one that authenticated as a registered OAuth client (an `Authorization` bearer token,
+resolved with `role: client`) is `actor: client`:
 
 ```yaml
 - "delegate(workday-oauth, target: workday-api, audience: workday-api,
             permissions: [read_compensation], subject: user, actor: client)"
 ```
 
-> **Valid combinations.** `actor:` pairs with `subject: user` or `subject: client`
-> — the on-behalf-of shape. It is **not** supported with `subject: caller_workload`
+> **Valid combinations.** `actor:` pairs with `subject: user` or `subject: client`,
+> the on-behalf-of shape. It is **not** supported with `subject: caller_workload`
 > (the workload is already the subject) or `subject: this_workload` (a
-> `client_credentials` grant carries no `actor_token`); CPEX **rejects** those at
+> `client_credentials` grant carries no `actor_token`); CPEX rejects those at
 > config time rather than silently dropping the actor.
 
-**CPEX side — implemented and e2e-tested against a mock IdP.** The delegator puts the
+**CPEX side: implemented and e2e-tested against a mock IdP.** The delegator puts the
 actor on the wire exactly as RFC 8693 delegation prescribes (`actor_token` +
-`actor_token_type`), and omits it cleanly when no actor is configured. That half is
-correct regardless of which token service receives it.
+`actor_token_type`), and omits it when no actor is configured.
 
-> **Interop: `act` is the token service's job — impersonation vs. delegation.**
+> **Interop: `act` is the token service's job (impersonation vs. delegation).**
 > RFC 8693 (§1.1) exchanges come in two flavors. *Impersonation* returns a token that
-> speaks purely for the subject — indistinguishable from one the subject fetched
-> directly, **no `act` claim**. *Delegation* additionally records the actor in a nested
-> `act`. The `actor_token` parameter is what asks for delegation; only a token service
-> that implements the delegation path emits `act`. **CPEX always sends the delegation
-> request — but the claim only appears if the service honors it.**
+> speaks purely for the subject, indistinguishable from one the subject fetched
+> directly, with **no `act` claim**. *Delegation* additionally records the actor in a
+> nested `act`. The `actor_token` parameter is what asks for delegation; only a token
+> service that implements the delegation path emits `act`. **CPEX always sends the
+> delegation request, but the claim only appears if the service honors it.**
 >
 > **Keycloak does not.** Keycloak's Standard Token Exchange (v2, tested here on 26.6)
 > implements impersonation only: it **silently ignores `actor_token`** and returns a
 > subject-only token with no `act`. The tell (probed 2026-07-28): passing even a raw,
-> untrusted-issuer SVID as the exchange's `actor_token` produces **no error** — Keycloak
-> never parses the parameter, so no mapper or config can surface it. To see `act` end-to-end you need a
-> delegation-capable token service; against Keycloak, capture the acting agent at the
-> CPEX boundary (audit / downstream header) instead — CPEX resolves both principals
-> either way.
+> untrusted-issuer SVID as the exchange's `actor_token` produces **no error**. Keycloak
+> never parses the parameter, so no mapper or config can surface it. To see `act`
+> end-to-end you need a delegation-capable token service; against Keycloak, capture the
+> acting agent at the CPEX boundary (audit / downstream header) instead. CPEX resolves
+> both principals either way.
 
 ---
 
 ## Where to place CPEX
 
-The same config runs at any enforcement point. See
-[Deployment → Placement guidance]({{< relref "deployment" >}}). The identity-specific read:
+See [Deployment → Placement guidance]({{< relref "deployment" >}}).
+The identity-specific read:
 
 | Placement | Use it when | Because |
 |---|---|---|
@@ -438,11 +429,11 @@ not any one vendor. Per layer:
 | On-behalf-of exchange | RFC 8693 | Keycloak (STE v2) | IdPs vary in RFC 8693 support; verify per target |
 | SVID as client credential | RFC 7523 + `draft-ietf-oauth-spiffe-client-auth` | Keycloak 26.6 (`spiffe:v1`) | emerging; an IETF OAuth WG draft, other IdPs not yet confirmed |
 
-**If your IdP doesn't (yet) speak SPIFFE**, you are not blocked. CPEX can validate
+**If your IdP doesn't yet speak SPIFFE**, CPEX can still validate
 the SVID *itself* (it already fetches SPIRE's JWKS in `identity.resolve`), establish
 `caller_workload`, and then mint the downstream token using its *own* credentials
 (`subject: this_workload`). Note the trade-off: a `client_credentials` grant carries
-**no** caller identity, so the minted token speaks for CPEX, not the agent — capture
+no caller identity, so the minted token speaks for CPEX, not the agent. Capture
 the caller at the CPEX boundary (audit) if the backend needs it. That
 "CPEX-validates, CPEX-mints-as-itself" mode works with any OIDC IdP today; only the
 recipe-2 *native* flow needs the IdP to understand SVIDs.
@@ -454,8 +445,8 @@ recipe-2 *native* flow needs the IdP to understand SVIDs.
 ## What to add next
 
 <!-- Stubs to flesh out as recipes are validated:
-  - Recipe 7 — per-tenant / tag-scoped identity (authentication via groups / tags).
-  - Recipe 8 — vault-backed delegation (exchange a token for a stored API key).
+  - Recipe 7: per-tenant / tag-scoped identity (authentication via groups / tags).
+  - Recipe 8: vault-backed delegation (exchange a token for a stored API key).
   - Live-IdP validation of Recipe 6's actor_token / `act` claim (currently mock-tested).
   - Per-recipe "verified against <IdP> on <date>" as the support matrix grows.
 -->

@@ -683,7 +683,7 @@ async fn workload_subject_authenticates_by_svid_then_exchanges() {
     leg2.assert_async().await;
 }
 
-/// A6: a leg-1 rejection must not echo submitted credential material. Even
+/// A leg-1 rejection must not echo submitted credential material. Even
 /// when the IdP hostilely parrots the SVID back in `error_description`, the
 /// caller-visible violation carries only the OAuth error code — never the
 /// `client_assertion` bytes.

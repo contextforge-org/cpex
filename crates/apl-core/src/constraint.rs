@@ -6,8 +6,7 @@
 // Backend candidate-constraint IR for the `restrict` effect.
 //
 // `restrict` narrows the set of backends the host's router/load-balancer
-// may select from — it never picks a backend (see
-// docs/apl-restrict-effect-design.md). It normally does not allow/deny the
+// may select from — it never picks a backend. It normally does not allow/deny the
 // request either; the one exception is fail-closed integrity — an
 // unresolvable `deny_models` reference denies, since a deny-list cannot fail
 // open (see `RestrictResolveError`). It is an accumulating
@@ -116,7 +115,7 @@ pub enum OnEmpty {
 }
 
 /// A `restrict` string-set field: either a literal set or a `data.*`/bag
-/// reference resolved against the request at eval time (design §4.3). The
+/// reference resolved against the request at eval time. The
 /// YAML shape disambiguates — a sequence is a literal, a bare scalar is a
 /// reference:
 ///
