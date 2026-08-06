@@ -7,8 +7,7 @@
 // real PluginManager + APL visitor, must fold the emitted constraints
 // and surface them on the typed `candidate_constraint` extension slot
 // that the host router reads off `PipelineResult.modified_extensions`.
-// A `custom`-label contradiction must fail closed. Covers R2 of
-// docs/apl-restrict-effect-design.md.
+// A `custom`-label contradiction must fail closed.
 
 use std::sync::Arc;
 

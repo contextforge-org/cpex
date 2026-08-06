@@ -254,7 +254,7 @@ impl<'a> Lexer<'a> {
         // An attribute path is ident-cont runs interleaved with `[...]`
         // interpolation groups: `data.tenants[subject.tenant].data_region`.
         // The bracket content is a nested attribute key the evaluator
-        // resolves at eval time (R3b) — the lexer only delimits it.
+        // resolves at eval time — the lexer only delimits it.
         let mut has_bracket = false;
         loop {
             while let Some(b) = self.peek() {
@@ -1699,8 +1699,7 @@ fn parse_restrict_effect(body: &serde_yaml::Value, source: &str) -> Result<Effec
     Ok(Effect::Restrict { spec })
 }
 
-/// Parse a `restrict:` body map into a [`RestrictSpec`]
-/// (`docs/apl-restrict-effect-design.md` §2.3, §4.3). Every field is
+/// Parse a `restrict:` body map into a [`RestrictSpec`]. Every field is
 /// optional, but an entirely empty `restrict:` is rejected — it would
 /// constrain nothing, so it's an author error. Unknown keys are a hard
 /// error: the constraint is a fixed contract we ask the host's router to
@@ -1708,7 +1707,7 @@ fn parse_restrict_effect(body: &serde_yaml::Value, source: &str) -> Result<Effec
 ///
 /// The string-set fields (`allow_models` / `deny_models` / `allow_regions`
 /// / `allow_sites`) accept either a literal YAML list **or** a bare
-/// scalar `data.*` reference resolved per request (§4.3).
+/// scalar `data.*` reference resolved per request.
 fn parse_restrict_spec(
     body_val: &serde_yaml::Value,
     source: &str,
@@ -1806,7 +1805,7 @@ fn parse_restrict_spec(
 
 /// Parse a `restrict` string-set field. A YAML **sequence** is a literal
 /// set of strings; a bare **scalar string** is a `data.*` reference
-/// resolved per request (design §4.3) — e.g.
+/// resolved per request — e.g.
 /// `allow_models: data.agents[subject.id].allowed_models`.
 fn parse_string_set_spec(
     v: &serde_yaml::Value,
@@ -1851,9 +1850,8 @@ fn parse_string_list(v: &serde_yaml::Value) -> Result<Vec<String>, String> {
 
 /// Parse a YAML value expected to be a flat map of `label: value`
 /// pairs (the `custom` field). Scalar values (string / bool / number)
-/// are coerced to their string form, matching the label-map contract
-/// (design §2.3.1) — `custom` is equality-matched labels, not typed
-/// values.
+/// are coerced to their string form: `custom` is equality-matched
+/// labels, not typed values.
 fn parse_label_map(
     v: &serde_yaml::Value,
 ) -> Result<std::collections::BTreeMap<String, String>, String> {
@@ -2944,7 +2942,7 @@ mod tests {
         assert!(format!("{}", err).contains("expected `==`"));
     }
 
-    // ----- R3b: interpolated attribute paths -----
+    // ----- interpolated attribute paths -----
 
     #[test]
     fn lex_interpolated_path_is_one_ident() {
@@ -3833,7 +3831,7 @@ sequential:
         assert!(format!("{}", err).contains("empty"));
     }
 
-    // ----- R1: restrict effect -----
+    // ----- restrict effect -----
 
     /// A literal `StringSetSpec` for terse assertions.
     fn lit(items: &[&str]) -> Option<crate::constraint::StringSetSpec> {
@@ -3945,7 +3943,7 @@ do:
     #[test]
     fn restrict_inside_pdp_on_allow() {
         // `restrict` composes in a PDP reaction — authz says yes, then
-        // pin routing (design §2.1).
+        // pin routing.
         let yaml = r#"
 cedar:
   action: read

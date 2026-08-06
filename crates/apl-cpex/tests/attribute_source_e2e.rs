@@ -5,8 +5,8 @@
 //
 // End-to-end: a static `data.*` attribute tree, set on the visitor before
 // the config walk, flows into every request's bag so policy predicates can
-// read it. Covers R3 of docs/apl-restrict-effect-design.md — the load →
-// bag path (static dot-path references; R3b interpolation is separate).
+// read it. Covers the load → bag path for static dot-path references;
+// `${...}` interpolation is exercised separately below.
 
 use std::sync::Arc;
 
@@ -113,7 +113,7 @@ async fn missing_data_key_is_absent_not_error() {
     );
 }
 
-// ----- R3b: interpolation end-to-end -----
+// ----- interpolated attribute paths, end-to-end -----
 
 /// Invoke with a subject id so `subject.id` lands in the bag.
 async fn invoke_as_subject(mgr: &Arc<PluginManager>, tool: &str, subject_id: &str) -> bool {

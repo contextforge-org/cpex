@@ -71,7 +71,7 @@ pub struct RouteDecision {
     /// Backend candidate constraints emitted by `restrict` effects in any
     /// phase. Empty unless a `restrict` fired. The host bridge (apl-cpex)
     /// folds these into a `CandidateConstraintExtension` it serializes to
-    /// the router — see `docs/apl-restrict-effect-design.md` §2.5.
+    /// the router.
     pub constraints: Vec<crate::constraint::CandidateConstraint>,
     /// True if any args field was rewritten or omitted.
     pub args_modified: bool,

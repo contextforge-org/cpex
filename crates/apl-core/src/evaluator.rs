@@ -535,7 +535,7 @@ async fn dispatch_effect(
 
         Effect::Restrict { spec } => {
             // Resolve any `data.*` field references against this request's
-            // bag (design §4.3). Allow-list references fail closed by
+            // bag. Allow-list references fail closed by
             // resolving to the empty set; an unresolvable *deny*-list
             // reference is an integrity failure that denies the request —
             // a deny-list we can't resolve must never route unconstrained.
@@ -1632,7 +1632,7 @@ mod tests {
         Expression::Condition(c)
     }
 
-    // ----- R3b: data.* path interpolation -----
+    // ----- data.* path interpolation -----
 
     /// Parse a predicate and evaluate it against `bag`.
     fn eval_pred(src: &str, bag: &AttributeBag) -> bool {
@@ -3351,7 +3351,7 @@ mod tests {
         );
     }
 
-    // ----- R1: restrict effect accumulation -----
+    // ----- restrict effect accumulation -----
 
     fn restrict_regions(regions: &[&str]) -> Effect {
         use crate::constraint::{RestrictSpec, StringSetSpec};
@@ -3521,7 +3521,7 @@ mod tests {
         assert_eq!(e.constraints[0].allow_models.as_deref(), Some(&[][..]));
     }
 
-    // ----- R1b: deny_models references fail closed -----
+    // ----- deny_models references fail closed -----
 
     fn restrict_deny_models_ref(path: &str) -> Effect {
         use crate::constraint::{RestrictSpec, StringSetSpec};
