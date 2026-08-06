@@ -11,6 +11,7 @@ on:
   pull_request:
     types: [opened, synchronize, ready_for_review]
     branches: ["main", "dev", "0.1.x"]
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
