@@ -317,10 +317,12 @@ pub async fn evaluate_route(
 
 /// Read `root.a.b.c` from a JSON value via dot-separated path. Returns
 /// `None` if any segment is missing or the path crosses a non-object.
-pub(crate) fn get_dotted<'a>(
-    root: &'a serde_json::Value,
-    path: &str,
-) -> Option<&'a serde_json::Value> {
+///
+/// Public because host bridges read fields back out of their own payload
+/// projections — a plugin dispatched from a pipeline stage reports a new
+/// value for the field it was pointed at, and finding that field has to
+/// use the same path semantics the evaluator used to write it.
+pub fn get_dotted<'a>(root: &'a serde_json::Value, path: &str) -> Option<&'a serde_json::Value> {
     let mut cur = root;
     for seg in path.split('.') {
         cur = cur.get(seg)?;

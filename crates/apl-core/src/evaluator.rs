@@ -1160,7 +1160,12 @@ async fn dispatch_field_op(
     let pipeline = crate::pipeline::Pipeline {
         stages: stages.to_vec(),
     };
-    let eval = evaluate_pipeline(&pipeline, &current, bag, plugins, path, phase).await;
+    // `subpath`, not `path`: the field name a pipeline reports to a
+    // plugin is relative to the args / result root, matching what the
+    // `args:` / `result:` section pipelines pass. The prefixed `path`
+    // stays in use for deny messages, where the reader wants the side
+    // spelled out.
+    let eval = evaluate_pipeline(&pipeline, &current, bag, plugins, subpath, phase).await;
     taints.extend(eval.taints);
     let mark_modified = |side: Side, args: &mut bool, result: &mut bool| match side {
         Side::Args => *args = true,
@@ -1440,6 +1445,13 @@ pub async fn evaluate_pipeline(
                 });
             },
             Stage::Plugin { name } => {
+                // Known limitation: `current` carries the edits earlier
+                // stages made, but the invoker's payload does not — a
+                // `mask` before this stage is visible here and invisible
+                // to the plugin, which reads the field from the payload.
+                // Pushing interim pipeline state into the payload would
+                // change what every later plugin in the request sees, so
+                // it's left alone deliberately.
                 let invocation = PluginInvocation::Field {
                     name: field_name,
                     value: &current,
@@ -3665,6 +3677,74 @@ mod tests {
         assert_eq!(
             payload.args.get("name").and_then(|v| v.as_str()),
             Some("Jane")
+        );
+    }
+
+    /// A plugin stage learns which field it's operating on from the
+    /// invocation's `name`. That name is relative to the args / result
+    /// root at every call site, so an invoker can look the field up in
+    /// its own payload projection without having to strip a prefix —
+    /// which it couldn't do safely anyway, since `args` is a legal
+    /// argument name.
+    #[tokio::test]
+    async fn field_op_reports_a_root_relative_field_name_to_plugins() {
+        /// Captures the field name the pipeline passed down.
+        struct NameRecorder {
+            seen: std::sync::Mutex<Vec<String>>,
+        }
+        #[async_trait]
+        impl PluginInvoker for NameRecorder {
+            async fn invoke(
+                &self,
+                _name: &str,
+                _bag: &AttributeBag,
+                invocation: PluginInvocation<'_>,
+            ) -> Result<PluginOutcome, PluginError> {
+                if let PluginInvocation::Field { name, .. } = invocation {
+                    self.seen.lock().unwrap().push(name.to_string());
+                }
+                Ok(PluginOutcome::allow())
+            }
+        }
+
+        let recorder = Arc::new(NameRecorder {
+            seen: std::sync::Mutex::new(Vec::new()),
+        });
+        let plugins: Arc<dyn PluginInvoker> = recorder.clone();
+
+        let rule = Rule {
+            condition: Expression::Always,
+            effects: vec![Effect::FieldOp {
+                path: "args.user.ssn".into(),
+                stages: vec![Stage::Plugin {
+                    name: "scrubber".into(),
+                }],
+            }],
+            source: "demo.policy[0]".into(),
+        };
+        let mut bag = AttributeBag::new();
+        let mut payload = crate::route::RoutePayload::new(json!({
+            "user": {"ssn": "123-45-6789"},
+        }));
+
+        let _ = evaluate_effects(
+            &[Effect::from(rule)],
+            &mut bag,
+            &(Arc::new(FakePdp {
+                decision: Decision::Allow,
+            }) as Arc<dyn PdpResolver>),
+            &plugins,
+            &noop_delegations(),
+            &noop_elicitations(),
+            crate::step::DispatchPhase::Pre,
+            &mut payload,
+        )
+        .await;
+
+        assert_eq!(
+            recorder.seen.lock().unwrap().as_slice(),
+            ["user.ssn".to_string()],
+            "the `args.` prefix belongs to the config path, not the field name"
         );
     }
 

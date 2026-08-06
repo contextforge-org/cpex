@@ -35,7 +35,9 @@ pub use pipeline::{FieldRule, Pipeline, ScanKind, Stage, TaintEvent, TaintScope,
 pub use plugin_decl::{
     CapsView, EffectivePlugin, PluginDeclaration, PluginOverride, PluginRegistry,
 };
-pub use route::{evaluate_post, evaluate_pre, evaluate_route, RouteDecision, RoutePayload};
+pub use route::{
+    evaluate_post, evaluate_pre, evaluate_route, get_dotted, RouteDecision, RoutePayload,
+};
 pub use rules::{
     CompareOp, CompiledRoute, Condition, DenyResponse, Effect, Expression, Literal, Phase,
     PhaseSet, Rule,
