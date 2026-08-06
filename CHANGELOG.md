@@ -58,12 +58,16 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/).
   test.pypi into a fresh isolated venv now also passes `--extra-index-url https://pypi.org/simple/`,
   so transitive dependencies (including `cpex` itself) resolve from real PyPI instead of failing
   when they are absent from test.pypi ([#113](https://github.com/contextforge-org/cpex/pull/113)).
+## [0.1.3] - 2026-08-06
+
 ### Changed
 
 - `CopyOnWriteDict` / `CopyOnWriteList` now snapshot the wrapped container at construction instead of reading through to it lazily ([#152](https://github.com/contextforge-org/cpex/issues/152))
   - Mutating the original *after* wrapping is no longer visible through the wrapper — isolation is now symmetric. The lazy implementation leaked such mutations in
   - The wrapper no longer retains a reference to the original container
   - Small construction cost: snapshotting up front measures 0.26 us vs 0.17 us (100-item list) and 0.43 us vs 0.20 us (100-key dict) against the lazy wrapper. Still ~38-45x cheaper than the `copy.deepcopy()` it exists to avoid, so the isolation path stays sub-microsecond per wrap
+- Capped the `mcp` dependency below 2.0 ([#148](https://github.com/contextforge-org/cpex/pull/148))
+  - mcp 2.0.0 renamed `McpError` to `MCPError`, breaking `cpex/framework/external/mcp/client.py`. The 0.1.x line stays on mcp 1.x
 
 ### Fixed
 
@@ -73,6 +77,9 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/).
   - `CopyOnWriteList`: fixed `<`, `<=`, `>`, `>=`, `+`, `*`, `+=`, `*=`, `index()`, `count()` and `reversed()`; `+=` was a silent no-op
   - `CopyOnWriteDict`: fixed `|`, `|=`, `popitem()` and `reversed()`
 - Implement `__eq__` and `__ne__` for CopyOnWriteList ([#136](https://github.com/contextforge-org/cpex/pull/136))
+- Execution records are now emitted for the denying plugin when a violation raises ([#147](https://github.com/contextforge-org/cpex/issues/147))
+  - With `violations_as_exceptions=True`, `PluginViolationError` carries the accumulated records via a new `executions` attribute — previously only plugins that ran *before* the denial were observable, so telemetry could not identify which control blocked the invocation
+  - Covers SEQUENTIAL, TRANSFORM, AUDIT and CONCURRENT modes; concurrent denials also no longer leak sibling tasks (they are cancelled before the re-raise)
 
 ## [0.1.2] - 2026-07-29
 
@@ -104,7 +111,8 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/).
 
 - Initial release
 
-[Unreleased]: https://github.com/contextforge-org/cpex/compare/0.1.2...HEAD
+[Unreleased]: https://github.com/contextforge-org/cpex/compare/0.1.3...HEAD
+[0.1.3]: https://github.com/contextforge-org/cpex/compare/0.1.2...0.1.3
 [0.1.2]: https://github.com/contextforge-org/cpex/compare/0.1.1...0.1.2
 [0.1.1]: https://github.com/contextforge-org/cpex/compare/0.1.0...0.1.1
 [0.1.0]: https://github.com/contextforge-org/cpex/releases/tag/0.1.0
