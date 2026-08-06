@@ -79,6 +79,12 @@ impl Message {
     /// Extract all text content from the message.
     ///
     /// Concatenates text from all `Text` content parts.
+    ///
+    /// Reads `Text` parts and nothing else, so it is not a stand-in for
+    /// message equality or change detection: two messages differing only
+    /// in a tool call, tool result, thinking block, or attachment return
+    /// the same string. Callers asking "did this change?" need a signal
+    /// from whatever performed the change.
     pub fn get_text_content(&self) -> String {
         let mut texts = Vec::new();
         for part in &self.content {
