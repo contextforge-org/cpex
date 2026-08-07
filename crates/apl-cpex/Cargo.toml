@@ -44,7 +44,7 @@ tracing = { workspace = true }
 # is explicitly documented as not-stable-across-Rust-versions; session
 # keys persist across process restarts (SessionStore), so we need an
 # algorithmically fixed hash.
-sha2 = "0.10"
+sha2 = "0.11"
 
 [dev-dependencies]
 serde = { workspace = true }

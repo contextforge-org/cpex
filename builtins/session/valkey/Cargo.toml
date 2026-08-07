@@ -37,7 +37,7 @@ serde_yaml = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 tokio = { workspace = true }
-sha2 = "0.10"
+sha2 = "0.11"
 # URL building/parsing so connection credentials are percent-encoded and
 # the wire scheme is consistent with the TLS setting (already in the tree
 # via redis-rs).
