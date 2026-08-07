@@ -425,6 +425,11 @@ pub enum PluginInvocation<'a> {
     Step { phase: DispatchPhase },
     /// Called inside an `args:` / `result:` pipe chain on one field.
     Field {
+        /// Dotted path to the field, relative to the args or result root
+        /// — `city`, `user.ssn`, never `args.city`. The phase says which
+        /// root it hangs off: Pre addresses args, Post addresses result.
+        /// Every call site uses this convention, so an invoker can read
+        /// the field back out of a payload without guessing.
         name: &'a str,
         value: &'a serde_json::Value,
         phase: DispatchPhase,
@@ -845,6 +850,11 @@ pub struct PluginOutcome {
     /// args/result chain, it may rewrite the field value (e.g., a PII
     /// scrubber producing a redacted string). `None` means "leave value
     /// unchanged"; always `None` for policy / post_policy invocations.
+    ///
+    /// Scoped to the field named in [`PluginInvocation::Field`] and
+    /// nothing else. A plugin that rewrote some other part of the
+    /// payload reports `None` here — that mutation travels with the
+    /// payload instead, so it isn't lost.
     pub modified_value: Option<serde_json::Value>,
 }
 

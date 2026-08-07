@@ -546,9 +546,13 @@ func (m *PluginManager) InvokeResolved(
 //	    mgr, "cmf.tool_pre_invoke", cpex.PayloadCMFMessage,
 //	    payload, ext, nil,
 //	)
-//	if !result.IsDenied() && result.ModifiedPayload != nil {
+//	if !result.IsDenied() && result.PayloadModified {
 //	    fmt.Println(result.ModifiedPayload.Message.Role)
 //	}
+//
+// ModifiedPayload is non-nil on every allowed pipeline, carrying the
+// final payload whether or not a plugin touched it. Test PayloadModified
+// to learn whether a plugin actually changed it.
 func Invoke[P any](
 	m *PluginManager,
 	hookName string,
@@ -568,6 +572,7 @@ func Invoke[P any](
 		Errors:             raw.Errors,
 		Metadata:           raw.Metadata,
 		PayloadType:        raw.PayloadType,
+		PayloadModified:    raw.PayloadModified,
 	}
 
 	// Deserialize modified payload if present

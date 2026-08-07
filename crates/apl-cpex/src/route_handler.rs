@@ -55,6 +55,10 @@ use crate::cmf_invoker::CmfPluginInvoker;
 use crate::delegation_invoker::DelegationPluginInvoker;
 use crate::dispatch_plan::DispatchCache;
 use crate::elicitation_invoker::ElicitationPluginInvoker;
+use crate::message_projection::{
+    apply_changed_paths, extract_args_from_message, extract_result_from_message,
+    write_args_back_to_message, write_result_back_to_message,
+};
 use crate::pdp_router::PdpRouter;
 use crate::session_store::SessionStore;
 
@@ -439,47 +443,90 @@ impl AnyHookHandler for AplRouteHandler {
         let final_payload = invoker.current_payload().await;
         let final_extensions = invoker.current_extensions().await;
 
-        // Detect whether the args pipeline mutated the payload by
-        // re-extracting from the pre-eval message (msg_payload is
-        // still borrowed) and comparing against the post-eval
-        // route_payload.args. Re-extraction allocates but mirrors the
-        // surrounding pattern and avoids holding a pre-eval clone.
-        let pre_args = extract_args_from_message(&msg_payload.message);
-        // For Post phase, also detect result mutations from `result:`
-        // pipelines. Pre routes don't carry a result so this is None.
+        // The pre-evaluation projections. No longer used to *detect*
+        // pipeline edits (the decision reports those) — they're the
+        // baseline for folding those edits back in below, which needs to
+        // know which paths the pipeline touched.
+        //
+        // Each side is projected only in the phase that can edit it:
+        // `evaluate_pre` never sets `result_modified` and `evaluate_post`
+        // never sets `args_modified`, so the other projection would be
+        // unread work on every request.
+        let pre_args = match self.phase {
+            Phase::Pre => Some(extract_args_from_message(&msg_payload.message)),
+            Phase::Post => None,
+        };
         let pre_result = match self.phase {
             Phase::Pre => None,
             Phase::Post => Some(extract_result_from_message(&msg_payload.message)),
         };
-        let modified_payload: Option<Box<dyn PluginPayload>> = if route_payload.args != pre_args {
+        // Which of the three sources changed the payload, in precedence
+        // order. Each condition is a signal from the code that performed
+        // the change: the decision's flags are set when a pipeline's
+        // `set_dotted` / `remove_dotted` actually writes, and the
+        // invoker's flag is set when a plugin's payload is accepted.
+        // Nothing here infers a change by comparing values.
+        let modified_payload: Option<Box<dyn PluginPayload>> = if decision.args_modified {
             // An args pipeline (Pre) rewrote a field. Fold the new
             // args back into a fresh MessagePayload so downstream
             // readers (the host's body re-serializer) see the
             // change.
+            //
+            // Only the paths the pipeline touched are applied. A plugin
+            // may have rewritten other arguments on the same tool call,
+            // and those edits aren't in `route_payload.args` (it was
+            // projected before any plugin ran), so writing it wholesale
+            // would silently drop them.
+            //
+            // Without a pre-projection there is no way to tell which
+            // paths the pipeline changed, so write nothing rather than
+            // fold in an unattributable diff — a wholesale write is
+            // exactly the clobbering this merge exists to prevent. Only
+            // the Pre phase sets `args_modified`, and only the Pre phase
+            // projects `pre_args`, so this holds by construction.
             let mut updated = final_payload.clone();
-            write_args_back_to_message(&mut updated.message, &route_payload.args);
+            if let Some(pre) = pre_args.as_ref() {
+                let mut merged = extract_args_from_message(&updated.message);
+                apply_changed_paths(&mut merged, pre, &route_payload.args);
+                write_args_back_to_message(&mut updated.message, &merged);
+            }
             Some(Box::new(updated) as Box<dyn PluginPayload>)
-        } else if matches!(self.phase, Phase::Post)
-            && pre_result
-                .as_ref()
-                .zip(route_payload.result.as_ref())
-                .map(|(prev, current)| prev != current)
-                .unwrap_or(false)
-        {
+        } else if decision.result_modified {
             // A `result:` pipeline rewrote a field in the upstream
             // response. Fold the new result back into the message
             // so the host's response body re-serializer can write
-            // it out before forwarding downstream.
+            // it out before forwarding downstream. Only the Post phase
+            // can set this — a Pre route has no result to rewrite.
+            //
+            // Same per-path merge as the args branch above, for the same
+            // reason: a plugin may have redacted a different part of the
+            // same tool result.
+            // Same "no pre-projection, no write" rule as the args branch
+            // above, for the same reason.
             let mut updated = final_payload.clone();
-            if let Some(result_value) = route_payload.result.as_ref() {
-                write_result_back_to_message(&mut updated.message, result_value);
+            if let (Some(result_value), Some(pre)) =
+                (route_payload.result.as_ref(), pre_result.as_ref())
+            {
+                let mut merged = extract_result_from_message(&updated.message);
+                apply_changed_paths(&mut merged, pre, result_value);
+                write_result_back_to_message(&mut updated.message, &merged);
             }
             Some(Box::new(updated) as Box<dyn PluginPayload>)
-        } else if msg_payload.message.get_text_content() != final_payload.message.get_text_content()
-        {
-            // A `pre_invocation:` plugin mutated the message directly via
-            // `modify_payload` (not through a field pipeline). Pass
-            // the invoker's view through unchanged.
+        } else if invoker.payload_was_modified() {
+            // A plugin mutated the message directly via `modify_payload`
+            // (not through a field pipeline). Pass the invoker's view
+            // through unchanged.
+            //
+            // The invoker records this when it accepts the mutation,
+            // which is the only point it can be known. Comparing message
+            // content here instead would read text parts only, so a
+            // redacted tool result, a rewritten tool call, or an edited
+            // thinking block would look identical to no mutation and get
+            // dropped.
+            tracing::debug!(
+                route = %self.route.route_key,
+                "plugin mutated the payload directly; forwarding the mutated view"
+            );
             Some(Box::new(final_payload) as Box<dyn PluginPayload>)
         } else {
             None
@@ -658,126 +705,6 @@ fn decorate_denial_response(violation: &mut PluginViolation, response: Option<&D
             DETAIL_HTTP_HEADERS.to_string(),
             serde_json::json!(resp.headers),
         );
-    }
-}
-
-/// Rewrite the first text part of `msg` with `new_text`. If there is no
-/// text part, append one. Mirrors what `MessagePayload`'s normal
-/// modify-path does for single-view v0.
-fn rewrite_message_text(msg: &mut cpex_core::cmf::Message, new_text: &str) {
-    for part in msg.content.iter_mut() {
-        if let cpex_core::cmf::ContentPart::Text { text } = part {
-            *text = new_text.to_string();
-            return;
-        }
-    }
-    msg.content.push(cpex_core::cmf::ContentPart::Text {
-        text: new_text.to_string(),
-    });
-}
-
-/// Extract `RoutePayload.args` from a CMF message. v0 maps:
-///   * First `ContentPart::ToolCall`      → `arguments` map (Object)
-///   * First `ContentPart::PromptRequest` → `arguments` map (Object)
-///   * Else (text / no entity parts)      → JSON String of text content
-///
-/// `args.<field>` APL paths target tool / prompt arguments directly.
-/// For text-only messages we fall back to the v0 "args = whole text"
-/// shape so `args.text` predicates keep working.
-fn extract_args_from_message(msg: &cpex_core::cmf::Message) -> Value {
-    use cpex_core::cmf::ContentPart;
-    for part in &msg.content {
-        match part {
-            ContentPart::ToolCall { content } => {
-                return Value::Object(
-                    content
-                        .arguments
-                        .iter()
-                        .map(|(k, v)| (k.clone(), v.clone()))
-                        .collect(),
-                );
-            },
-            ContentPart::PromptRequest { content } => {
-                return Value::Object(
-                    content
-                        .arguments
-                        .iter()
-                        .map(|(k, v)| (k.clone(), v.clone()))
-                        .collect(),
-                );
-            },
-            _ => {},
-        }
-    }
-    Value::String(msg.get_text_content())
-}
-
-/// Inverse of [`extract_args_from_message`]: write `args` back into
-/// `msg`'s first ToolCall / PromptRequest argument map, or — for
-/// text payloads — into the first text part.
-///
-/// Silently no-ops when the args shape doesn't match the message
-/// content shape (e.g. operator pipeline produced a String for what
-/// was originally a ToolCall). The mismatch path is recoverable —
-/// the upstream just sees the original unmodified content rather
-/// than a malformed rewrite.
-fn write_args_back_to_message(msg: &mut cpex_core::cmf::Message, args: &Value) {
-    use cpex_core::cmf::ContentPart;
-    for part in msg.content.iter_mut() {
-        match part {
-            ContentPart::ToolCall { content } => {
-                if let Some(obj) = args.as_object() {
-                    content.arguments = obj.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
-                }
-                return;
-            },
-            ContentPart::PromptRequest { content } => {
-                if let Some(obj) = args.as_object() {
-                    content.arguments = obj.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
-                }
-                return;
-            },
-            _ => {},
-        }
-    }
-    // Fall through: no structured entity part — treat as text.
-    if let Some(text) = args.as_str() {
-        rewrite_message_text(msg, text);
-    }
-}
-
-/// Extract `RoutePayload.result` from a CMF message. Mirror of
-/// [`extract_args_from_message`] for the Post phase. v0 maps:
-///   * First `ContentPart::ToolResult` → its `content` JSON value
-///   * Else (text / no structured result part) → JSON String of text
-///
-/// `result.<field>` APL paths target the structured result directly.
-fn extract_result_from_message(msg: &cpex_core::cmf::Message) -> Value {
-    use cpex_core::cmf::ContentPart;
-    for part in &msg.content {
-        if let ContentPart::ToolResult { content } = part {
-            return content.content.clone();
-        }
-    }
-    Value::String(msg.get_text_content())
-}
-
-/// Inverse of [`extract_result_from_message`]: write a mutated
-/// `result` back into the message's first `ContentPart::ToolResult.content`,
-/// or — for text-only messages — into the first text part. The praxis
-/// filter's response-body re-serializer then lifts the new content
-/// out of the ContentPart and folds it back into the JSON-RPC
-/// `result.content[*].text` payload.
-fn write_result_back_to_message(msg: &mut cpex_core::cmf::Message, result: &Value) {
-    use cpex_core::cmf::ContentPart;
-    for part in msg.content.iter_mut() {
-        if let ContentPart::ToolResult { content } = part {
-            content.content = result.clone();
-            return;
-        }
-    }
-    if let Some(text) = result.as_str() {
-        rewrite_message_text(msg, text);
     }
 }
 

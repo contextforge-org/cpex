@@ -37,6 +37,7 @@ pub mod cmf_invoker;
 pub mod delegation_invoker;
 pub mod dispatch_plan;
 pub mod elicitation_invoker;
+mod message_projection;
 pub mod parallel_safety;
 pub mod pdp_router;
 pub mod register;

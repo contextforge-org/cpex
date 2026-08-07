@@ -70,7 +70,15 @@ impl Default for ExecutorConfig {
 ///
 /// Background tasks are returned separately as [`BackgroundTasks`]
 /// to keep the policy result immutable.
+///
+/// `#[non_exhaustive]`: this result type keeps gaining fields as the
+/// engine grows, so it is sealed against external struct-literal
+/// construction and exhaustive destructuring — hosts read it, they don't
+/// build it. Construct via [`Self::allowed_with`] / [`Self::denied`] plus
+/// the `with_*` builders. New fields can then be added without breaking
+/// downstream readers.
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct PipelineResult {
     /// Whether the pipeline should continue processing.
     /// `false` means a plugin denied — the pipeline was halted.
@@ -78,7 +86,29 @@ pub struct PipelineResult {
 
     /// The final payload after all modifications (type-erased).
     /// `None` if the pipeline was denied before any modifications.
+    ///
+    /// Note this is `Some` on **every** allowed pipeline, carrying the
+    /// final payload whether or not a plugin touched it. To learn
+    /// whether anything actually changed, read [`Self::payload_modified`]
+    /// — do not compare payload contents, and do not read `is_some()` as
+    /// "was modified".
     pub modified_payload: Option<Box<dyn PluginPayload>>,
+
+    /// Whether any plugin's payload modification was accepted into
+    /// `modified_payload` above.
+    ///
+    /// Set by the phases that can modify (sequential, transform) at the
+    /// moment a handler's payload replaces the current one, so it
+    /// reflects what the executor actually applied: a plugin lacking the
+    /// modify capability, or one running in a read-only phase, does not
+    /// set it.
+    ///
+    /// This exists because the fact is knowable only here. A caller
+    /// comparing payloads afterwards cannot: the payload types are
+    /// type-erased with no equality, and content-shaped comparisons
+    /// (e.g. a message's text) are blind to whichever parts they don't
+    /// read.
+    pub payload_modified: bool,
 
     /// The final extensions after all modifications.
     /// `None` if no plugin modified extensions.
@@ -114,12 +144,21 @@ impl PipelineResult {
         Self {
             continue_processing: true,
             modified_payload: Some(payload),
+            payload_modified: false,
             modified_extensions: Some(extensions),
             violation: None,
             errors: Vec::new(),
             metadata: None,
             context_table,
         }
+    }
+
+    /// Record that a plugin's payload modification was applied. Chained
+    /// off [`Self::allowed_with`] by the executor, mirroring
+    /// [`Self::with_errors`].
+    pub fn with_payload_modified(mut self, modified: bool) -> Self {
+        self.payload_modified = modified;
+        self
     }
 
     /// Pipeline was denied by a plugin.
@@ -131,6 +170,7 @@ impl PipelineResult {
         Self {
             continue_processing: false,
             modified_payload: None,
+            payload_modified: false,
             modified_extensions: Some(extensions),
             violation: Some(violation),
             errors: Vec::new(),
@@ -288,6 +328,10 @@ impl Executor {
         // observable. Halt-condition errors (Fail, deny) skip this and
         // become the violation directly.
         let mut errors: Vec<crate::error::PluginErrorRecord> = Vec::new();
+        // Sticky across both modifying phases: true once any handler's
+        // payload has been accepted. Reported on the result so callers
+        // read an exact signal instead of comparing payload contents.
+        let mut payload_modified = false;
 
         if let Some(v) = self
             .run_serial_phase(
@@ -299,6 +343,7 @@ impl Executor {
                 true, // can_modify
                 "SEQUENTIAL",
                 &mut errors,
+                &mut payload_modified,
             )
             .await
         {
@@ -319,6 +364,7 @@ impl Executor {
             true,  // can_modify
             "TRANSFORM",
             &mut errors,
+            &mut payload_modified,
         )
         .await;
 
@@ -362,7 +408,8 @@ impl Executor {
 
         (
             PipelineResult::allowed_with(current_payload, current_extensions, ctx_table)
-                .with_errors(errors),
+                .with_errors(errors)
+                .with_payload_modified(payload_modified),
             BackgroundTasks::from_handles(bg_handles),
         )
     }
@@ -373,6 +420,11 @@ impl Executor {
     /// The framework retains ownership of the payload. Handlers receive
     /// a borrow and clone only if they modify. Modified payloads in
     /// the result replace the current payload.
+    ///
+    /// `payload_modified` is set to `true` when a handler's payload is
+    /// accepted, and never cleared — this is the only place that fact is
+    /// observable, so it's reported out rather than left to be guessed
+    /// from the resulting payload's contents.
     ///
     /// Each plugin's context is looked up in the context table (preserving
     /// `local_state` from previous hooks) or created fresh. After execution,
@@ -388,6 +440,7 @@ impl Executor {
         can_modify: bool,
         phase_label: &str,
         errors: &mut Vec<crate::error::PluginErrorRecord>,
+        payload_modified: &mut bool,
     ) -> Option<crate::error::PluginViolation> {
         for entry in entries {
             // Borrow names/ids on the happy path — allocate only when
@@ -449,6 +502,7 @@ impl Executor {
                         if can_modify {
                             if let Some(mp) = erased.modified_payload {
                                 *payload = mp;
+                                *payload_modified = true;
                             }
                             if let Some(owned) = erased.modified_extensions {
                                 // Pointer-equality gate on the truly-immutable
@@ -1116,6 +1170,10 @@ mod tests {
         assert!(result.continue_processing);
         assert!(result.modified_payload.is_some());
         assert!(result.violation.is_none());
+        assert!(
+            !result.payload_modified,
+            "carrying a payload is not the same as a plugin having changed it"
+        );
     }
 
     #[test]

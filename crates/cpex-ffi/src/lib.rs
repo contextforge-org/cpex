@@ -875,6 +875,7 @@ pub unsafe extern "C" fn cpex_invoke(
         metadata: result.metadata,
         payload_type: result_payload_type,
         modified_payload: modified_payload_bytes,
+        payload_modified: result.payload_modified,
         modified_extensions: modified_extensions_bytes,
     };
 
@@ -1122,6 +1123,7 @@ unsafe fn finish_pipeline_result(
         metadata: result.metadata,
         payload_type: result_payload_type,
         modified_payload: modified_payload_bytes,
+        payload_modified: result.payload_modified,
         modified_extensions: modified_extensions_bytes,
     };
 
@@ -1276,10 +1278,19 @@ struct FfiPipelineResult {
     metadata: Option<serde_json::Value>,
     /// Payload type ID — tells the Go caller how to deserialize.
     payload_type: u8,
-    /// Modified payload as raw MessagePack bytes (if a plugin modified it).
+    /// Modified payload as raw MessagePack bytes. Present on every
+    /// allowed pipeline, carrying the final payload whether or not a
+    /// plugin touched it — read `payload_modified` to learn whether
+    /// anything actually changed.
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(with = "serde_bytes_opt")]
     modified_payload: Option<Vec<u8>>,
+    /// Whether a plugin's payload modification was accepted. The exact
+    /// signal; `modified_payload.is_some()` is not a substitute, and
+    /// comparing payload contents across the boundary cannot see
+    /// mutations to non-text parts.
+    #[serde(default)]
+    payload_modified: bool,
     /// Modified extensions as raw MessagePack bytes (if a plugin modified them).
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(with = "serde_bytes_opt")]
