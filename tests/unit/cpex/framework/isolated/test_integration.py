@@ -389,4 +389,170 @@ class TestIsolatedPluginIntegration:
             assert result.violation is not None
 
 
+class TestFqnAutoConversionAcceptance:
+    """U7 acceptance: regression + bare-FQN conversion end-to-end (R7)."""
+
+    FQN_MANIFEST = {
+        "name": "fqn-plugin",
+        "kind": "fqn_plugin.plugin.FqnPlugin",  # bare FQN, not a known kind
+        "description": "A synthetic bare-FQN plugin fixture",
+        "author": "habeck",
+        "version": "0.1.0",
+        "tags": ["test"],
+        "available_hooks": ["tool_pre_invoke"],
+        "default_configs": {},  # legacy plural key, no requirements_file
+    }
+
+    @pytest.mark.asyncio
+    @patch("cpex.framework.isolated.client.VenvProcessCommunicator")
+    @patch.object(IsolatedVenvPlugin, "create_venv")
+    async def test_regression_existing_isolated_plugin_still_loads(
+        self, mock_create_venv, mock_comm_class, tmp_path
+    ):
+        """Regression: an already-isolated_venv plugin initializes and invokes unchanged (R7.1)."""
+        mock_create_venv.return_value = None
+        mock_comm = MagicMock()
+        mock_comm.send_task.return_value = {
+            "continue_processing": True,
+            "modified_payload": None,
+            "violation": None,
+            "metadata": {},
+        }
+        mock_comm_class.return_value = mock_comm
+
+        config = PluginConfig(
+            name="test_plugin",
+            kind="isolated_venv",
+            description="Test plugin",
+            version="1.0.0",
+            author="Test",
+            hooks=["tool_pre_invoke"],
+            config={"class_name": "test_plugin.TestPlugin", "requirements_file": "requirements.txt"},
+        )
+        resolved = (tmp_path / "xplugins").resolve()
+        (resolved / "test_plugin").mkdir(parents=True, exist_ok=True)
+        plugin = IsolatedVenvPlugin(config, plugin_dirs=[resolved])
+
+        with patch("cpex.framework.isolated.client.get_hook_registry") as mock_registry:
+            from cpex.framework.hooks.tools import ToolPreInvokeResult
+            from cpex.framework.models import PluginContext
+
+            mock_reg = MagicMock()
+            mock_reg.get_result_type.return_value = ToolPreInvokeResult
+            mock_reg.json_to_result.return_value = ToolPreInvokeResult(continue_processing=True)
+            mock_registry.return_value = mock_reg
+
+            await plugin.initialize()
+            context = PluginContext(global_context=GlobalContext(request_id="req-1"))
+            result = await plugin.invoke_hook(
+                "tool_pre_invoke", ToolPreInvokePayload(name="t", args={}), context
+            )
+            assert result.continue_processing is True
+
+    def test_fqn_manifest_converts_and_persists(self, tmp_path, monkeypatch):
+        """A bare-FQN manifest converts to isolated_venv + class_name and persists to plugin dir (R2, R3)."""
+        from cpex.tools.catalog import PluginCatalog
+
+        monkeypatch.setenv("PLUGINS_GITHUB_TOKEN", "test_token")
+        with patch("cpex.tools.catalog.Github"):
+            catalog = PluginCatalog()
+            catalog.plugin_folder = str(tmp_path / "plugins")
+
+            manifest = catalog._normalize_manifest_data(dict(self.FQN_MANIFEST), "fqn-plugin", None)
+
+            # Converted in memory.
+            assert manifest.kind == "isolated_venv"
+            assert manifest.default_config["class_name"] == "fqn_plugin.plugin.FqnPlugin"
+
+            # Persisted under plugins/<class_root>/ with a per-full-class-name
+            # filename (so multi-plugin packages don't collide — see #4).
+            from cpex.framework.utils import manifest_filename_for_class
+
+            written_path = catalog._persist_manifest_to_plugin_dir(manifest)
+            expected = (
+                tmp_path / "plugins" / "fqn_plugin" / manifest_filename_for_class("fqn_plugin.plugin.FqnPlugin")
+            )
+            assert written_path == expected
+            persisted = yaml.safe_load(expected.read_text())
+            assert persisted["kind"] == "isolated_venv"
+            assert persisted["default_config"]["class_name"] == "fqn_plugin.plugin.FqnPlugin"
+
+    @pytest.mark.asyncio
+    @patch("cpex.framework.isolated.client.VenvProcessCommunicator")
+    @patch.object(IsolatedVenvPlugin, "create_venv")
+    async def test_converted_fqn_plugin_executes_hook(self, mock_create_venv, mock_comm_class, tmp_path):
+        """A converted FQN plugin (no requirements) initializes its venv and executes a hook (R4, R7.2)."""
+        mock_create_venv.return_value = True  # newly created venv, no requirements to install
+        mock_comm = MagicMock()
+        mock_comm.send_task.return_value = {
+            "continue_processing": True,
+            "modified_payload": None,
+            "violation": None,
+            "metadata": {},
+        }
+        mock_comm_class.return_value = mock_comm
+
+        # Config as it would appear after conversion: isolated_venv + class_name, no requirements_file.
+        config = PluginConfig(
+            name="fqn-plugin",
+            kind="isolated_venv",
+            description="A synthetic bare-FQN plugin fixture",
+            version="0.1.0",
+            author="habeck",
+            hooks=["tool_pre_invoke"],
+            config={"class_name": "fqn_plugin.plugin.FqnPlugin"},
+        )
+        resolved = (tmp_path / "xplugins").resolve()
+        (resolved / "fqn_plugin").mkdir(parents=True, exist_ok=True)
+        plugin = IsolatedVenvPlugin(config, plugin_dirs=[resolved])
+
+        with patch("cpex.framework.isolated.client.get_hook_registry") as mock_registry:
+            from cpex.framework.hooks.tools import ToolPreInvokeResult
+            from cpex.framework.models import PluginContext
+
+            mock_reg = MagicMock()
+            mock_reg.get_result_type.return_value = ToolPreInvokeResult
+            mock_reg.json_to_result.return_value = ToolPreInvokeResult(continue_processing=True)
+            mock_registry.return_value = mock_reg
+
+            # Must initialize without a requirements file (no KeyError) and skip install.
+            await plugin.initialize()
+            mock_comm.install_requirements.assert_not_called()
+
+            context = PluginContext(global_context=GlobalContext(request_id="req-2"))
+            result = await plugin.invoke_hook(
+                "tool_pre_invoke", ToolPreInvokePayload(name="t", args={}), context
+            )
+            assert result.continue_processing is True
+
+    def test_version_bump_invalidates_converted_plugin_cache(self, tmp_path):
+        """Bumping a converted plugin's manifest version invalidates its venv cache (U5 + U6 tie-in)."""
+        config = PluginConfig(
+            name="fqn-plugin",
+            kind="isolated_venv",
+            description="d",
+            version="0.1.0",
+            author="habeck",
+            hooks=["tool_pre_invoke"],
+            config={"class_name": "fqn_plugin.plugin.FqnPlugin"},
+        )
+        resolved = (tmp_path / "xplugins").resolve()
+        (resolved / "fqn_plugin").mkdir(parents=True, exist_ok=True)
+        plugin = IsolatedVenvPlugin(config, plugin_dirs=[resolved])
+
+        venv_path = plugin.plugin_path / ".venv"
+        venv_path.mkdir(parents=True, exist_ok=True)
+        plugin._save_cache_metadata(str(venv_path), None)
+        assert plugin._is_venv_cache_valid(str(venv_path), None) is True
+
+        # Simulate a version bump recorded in the metadata being stale.
+        metadata_path = plugin._get_cache_metadata_path(str(venv_path))
+        import json
+
+        meta = json.loads(metadata_path.read_text())
+        meta["manifest_version"] = "0.0.9"
+        metadata_path.write_text(json.dumps(meta))
+        assert plugin._is_venv_cache_valid(str(venv_path), None) is False
+
+
 # Made with Bob

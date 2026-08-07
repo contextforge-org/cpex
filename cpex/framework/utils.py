@@ -190,6 +190,32 @@ def parse_class_name(name: str) -> tuple[str, str]:
     return ("", name)
 
 
+def manifest_filename_for_class(class_name: str) -> str:
+    """Return the per-plugin manifest filename for a full class name.
+
+    Plugins that share a package share one venv directory (keyed on the class
+    root), but each needs its own persisted manifest so the venv cache signal
+    (manifest hash) does not collide between, e.g., ``pkg.a.PluginA`` and
+    ``pkg.b.PluginB`` — otherwise installing one invalidates the other's hash
+    and both rebuild in a loop. Keying the filename on the full, sanitized
+    class name gives each plugin a distinct manifest within the shared dir.
+
+    The write side (catalog persistence) and the read side (venv cache
+    validation) MUST call this so they resolve the identical path.
+
+    Args:
+        class_name: The plugin's fully-qualified class path
+            (e.g. ``pkg.module.ClassName``).
+
+    Returns:
+        A filesystem-safe manifest filename, e.g.
+        ``pkg-module-ClassName.plugin-manifest.yaml``.
+    """
+    safe = "".join(c if (c.isalnum() or c in ("-", "_")) else "-" for c in class_name.strip())
+    safe = safe.strip("-") or "plugin"
+    return f"{safe}.plugin-manifest.yaml"
+
+
 def normalize_content_type(content_type: str) -> str:
     """Extract base content type without parameters.
 

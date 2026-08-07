@@ -18,7 +18,13 @@ from cpex.framework import (
     ToolPostInvokePayload,
     ToolPreInvokePayload,
 )
-from cpex.framework.utils import import_module, matches, parse_class_name, payload_matches
+from cpex.framework.utils import (
+    import_module,
+    manifest_filename_for_class,
+    matches,
+    parse_class_name,
+    payload_matches,
+)
 
 
 def test_server_ids():
@@ -123,6 +129,23 @@ def test_parse_class_name():
     module, class_name = parse_class_name("a.b.c.d.e.MyClass")
     assert module == "a.b.c.d.e"
     assert class_name == "MyClass"
+
+
+def test_manifest_filename_for_class():
+    """manifest_filename_for_class yields a unique, filesystem-safe name per class."""
+    # Dotted class path is sanitized into a single safe filename.
+    assert manifest_filename_for_class("pkg.module.ClassName") == "pkg-module-ClassName.plugin-manifest.yaml"
+
+    # Plugins sharing a package (same class_root) get distinct filenames — this
+    # is the collision the key change fixes.
+    assert manifest_filename_for_class("pkg.a.PluginA") != manifest_filename_for_class("pkg.b.PluginB")
+
+    # Underscores and hyphens are preserved; other separators collapse to '-'.
+    assert manifest_filename_for_class("my_pkg.Cls") == "my_pkg-Cls.plugin-manifest.yaml"
+
+    # Degenerate/empty input still yields a valid filename.
+    assert manifest_filename_for_class("") == "plugin.plugin-manifest.yaml"
+    assert manifest_filename_for_class("...") == "plugin.plugin-manifest.yaml"
 
 
 # ============================================================================

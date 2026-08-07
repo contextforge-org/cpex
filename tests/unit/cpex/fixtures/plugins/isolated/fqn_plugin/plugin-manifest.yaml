@@ -1,0 +1,12 @@
+# Bare-FQN plugin manifest: kind is a Python class path, NOT a known kind.
+# No requirements.txt. Exercises installer FQN auto-conversion (U7).
+name: fqn-plugin
+kind: fqn_plugin.plugin.FqnPlugin
+description: A synthetic bare-FQN plugin fixture
+author: habeck
+version: 0.1.0
+tags:
+  - test
+available_hooks:
+  - tool_pre_invoke
+default_configs: {}
