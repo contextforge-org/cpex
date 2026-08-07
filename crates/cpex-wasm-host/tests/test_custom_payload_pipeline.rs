@@ -111,19 +111,19 @@ async fn setup_manager() -> PluginManager {
     let mgr = PluginManager::default();
     mgr.register_factory(
         "wasm://tool-invoke-checker.wasm",
-        Box::new(WasmPluginFactory::new(wasm_dir.clone(), registry.clone())),
+        Box::new(WasmPluginFactory::new(wasm_dir.clone(), registry.clone()).expect("engine")),
     );
     mgr.register_factory(
         "wasm://pii-guard.wasm",
-        Box::new(WasmPluginFactory::new(wasm_dir.clone(), registry.clone())),
+        Box::new(WasmPluginFactory::new(wasm_dir.clone(), registry.clone()).expect("engine")),
     );
     mgr.register_factory(
         "wasm://remote-authz.wasm",
-        Box::new(WasmPluginFactory::new(wasm_dir.clone(), registry.clone())),
+        Box::new(WasmPluginFactory::new(wasm_dir.clone(), registry.clone()).expect("engine")),
     );
     mgr.register_factory(
         "wasm://audit-logger-custom.wasm",
-        Box::new(WasmPluginFactory::new(wasm_dir, registry)),
+        Box::new(WasmPluginFactory::new(wasm_dir, registry).expect("engine")),
     );
 
     mgr.load_config(cpex_config).unwrap();

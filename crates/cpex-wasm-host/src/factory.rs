@@ -1,5 +1,5 @@
 // Location: ./crates/cpex-wasm-host/src/factory.rs
-// Copyright 2025
+// Copyright 2026
 // SPDX-License-Identifier: Apache-2.0
 // Authors: Shriti Priya
 //
@@ -49,16 +49,16 @@ pub struct WasmPluginFactory {
 
 impl WasmPluginFactory {
     /// Create a factory with a pre-built payload registry and shared engine.
-    pub fn new(wasm_dir: PathBuf, registry: Arc<PayloadSerializerRegistry>) -> Self {
-        let shared_engine = Arc::new(
-            crate::sandbox_manager::SharedEngine::new()
-                .expect("failed to create shared wasmtime engine"),
-        );
-        Self {
+    pub fn new(
+        wasm_dir: PathBuf,
+        registry: Arc<PayloadSerializerRegistry>,
+    ) -> Result<Self, anyhow::Error> {
+        let shared_engine = Arc::new(crate::sandbox_manager::SharedEngine::new()?);
+        Ok(Self {
             wasm_dir,
             registry,
             shared_engine,
-        }
+        })
     }
 
     /// Convenience constructor that pre-registers all built-in payload types:
@@ -66,12 +66,17 @@ impl WasmPluginFactory {
     /// and `DelegationPayload` (token_delegate).
     /// Credential fields marked `#[serde(skip)]` on the identity and
     /// delegation payloads never cross the sandbox boundary.
+    ///
+    /// # Panics
+    /// Panics if the wasmtime engine cannot be created (e.g., system thread limit reached).
+    /// Use `WasmPluginFactory::new()` if you need to handle this as a `Result`.
     pub fn with_builtin_payloads(wasm_dir: PathBuf) -> Self {
         let mut registry = PayloadSerializerRegistry::new();
         registry.register::<MessagePayload>();
         registry.register::<cpex_core::identity::IdentityPayload>();
         registry.register::<cpex_core::delegation::DelegationPayload>();
         Self::new(wasm_dir, Arc::new(registry))
+            .expect("failed to create shared wasmtime engine")
     }
 }
 
@@ -126,7 +131,10 @@ impl PluginFactory for WasmPluginFactory {
             config: config.clone(),
         });
 
-        // Register a separate handler per hook so each carries its own hook_name
+        // Register a separate handler per hook so each carries its own hook_name.
+        // `Box::leak` converts each hook name string into a `&'static str` required
+        // by the `PluginInstance::handlers` type. Hook names are short, bounded by
+        // the plugin config, and registered once at startup — the leak is intentional.
         let hooks: Vec<(&'static str, Arc<dyn AnyHookHandler>)> = config
             .hooks
             .iter()
@@ -280,7 +288,12 @@ impl AnyHookHandler for WasmBridgeHandler {
     }
 
     fn hook_type_name(&self) -> &'static str {
-        "cmf"
+        // Returns the hook name this handler is registered under (e.g. "cmf.tool_pre_invoke").
+        // The PluginManager uses this during override-instance dispatch to locate the
+        // matching handler in a freshly created instance by name comparison.
+        // Each WasmBridgeHandler is created with hook_name already leaked to 'static
+        // in WasmPluginFactory::create(), so we can return it directly here.
+        Box::leak(self.hook_name.clone().into_boxed_str())
     }
 }
 

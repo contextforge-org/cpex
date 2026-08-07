@@ -1,0 +1,67 @@
+# Env Sandbox Permissions Demo Configuration
+#
+# Demonstrates WASI environment variable sandbox enforcement.
+# One plugin (env-sandbox-demo) handles every route. The caller passes
+# "env_var" as a tool argument; the plugin calls std::env::var and returns
+# ALLOW if the variable is visible inside the sandbox or DENY if it is not.
+#
+# How env enforcement works:
+#   - The host process exposes ALL env vars to its own process.
+#   - build_wasi_context iterates allowed_env and calls builder.env(key, val)
+#     for each variable found on the host.
+#   - Inside the WASM sandbox, std::env::var only sees variables explicitly
+#     injected this way. Nothing leaks implicitly.
+#   - A variable missing from allowed_env (or not set on the host) returns
+#     Err(NotPresent) inside the sandbox.
+#
+# Scenarios demonstrated:
+#
+#   CPEX_APP_TOKEN     — explicitly allowed; plugin can read its value        → ALLOW
+#   CPEX_LOG_LEVEL     — explicitly allowed; plugin can read its value        → ALLOW
+#   HOME               — not in allowed_env; hidden from sandbox              → DENY
+#   PATH               — not in allowed_env; hidden from sandbox              → DENY
+#   SECRET_API_KEY     — sensitive; not in allowed_env; hidden from sandbox   → DENY
+
+plugin_settings:
+  routing_enabled: true
+
+plugins:
+  - name: env-sandbox-demo
+    kind: wasm://env-sandbox-demo.wasm
+    hooks: [cmf.tool_pre_invoke]
+    mode: sequential
+    priority: 10
+    on_error: fail
+    config:
+      sandbox_policy:
+        allowed_filesystem: []
+        allowed_network: []
+        allowed_env:
+          - CPEX_APP_TOKEN      # application token — intentionally exposed to the plugin
+          - CPEX_LOG_LEVEL      # log level config — intentionally exposed to the plugin
+          # HOME, PATH, SECRET_API_KEY are deliberately absent
+        resources:
+          max_memory_bytes: 10485760    # 10 MB
+          max_fuel: 1000000000          # 1 B instructions
+          max_execution_time_ms: 5000   # 5 s per invocation
+          max_instances: 10
+          max_tables: 10
+
+routes:
+  - tool: env_allowed_token
+    plugins: [env-sandbox-demo]
+
+  - tool: env_allowed_log_level
+    plugins: [env-sandbox-demo]
+
+  - tool: env_denied_home
+    plugins: [env-sandbox-demo]
+
+  - tool: env_denied_path
+    plugins: [env-sandbox-demo]
+
+  - tool: env_denied_secret
+    plugins: [env-sandbox-demo]
+
+  - tool: "*"
+    plugins: [env-sandbox-demo]

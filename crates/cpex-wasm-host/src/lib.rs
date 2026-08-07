@@ -1,5 +1,5 @@
 // Location: ./crates/cpex-wasm-host/src/lib.rs
-// Copyright 2025
+// Copyright 2026
 // SPDX-License-Identifier: Apache-2.0
 // Authors: Shriti Priya
 

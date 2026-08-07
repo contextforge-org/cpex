@@ -1,4 +1,4 @@
-// Location: ./crates/cpex-wasm-plugin/wit/world.wit
+// Location: ./crates/cpex-wasm-host/wit/world.wit
 // Copyright 2025
 // SPDX-License-Identifier: Apache-2.0
 // Authors: Shriti Priya
@@ -15,9 +15,10 @@ package cpex:plugin;
 interface types {
 
   // ---------------------------------------------------------------------------
-  // CMF enums
+  // CMF enums: 
   // ---------------------------------------------------------------------------
 
+  // Verified
   enum role {
     system,
     developer,
@@ -26,12 +27,14 @@ interface types {
     tool,
   }
 
+  // Verified
   enum channel {
     analysis,
     commentary,
     final,
   }
-
+  
+  // Verified
   enum resource-type {
     file,
     blob,
@@ -45,13 +48,14 @@ interface types {
   // ---------------------------------------------------------------------------
   // CMF content parts
   // ---------------------------------------------------------------------------
-
+  // Verified
   record image-source {
     source-type: string,
     data: string,
     media-type: option<string>,
   }
-
+  
+  // Verified
   record video-source {
     source-type: string,
     data: string,
@@ -59,6 +63,7 @@ interface types {
     duration-ms: option<u64>,
   }
 
+  // Verified
   record audio-source {
     source-type: string,
     data: string,
@@ -66,6 +71,7 @@ interface types {
     duration-ms: option<u64>,
   }
 
+  // Verified
   record document-source {
     source-type: string,
     data: string,
@@ -73,6 +79,7 @@ interface types {
     title: option<string>,
   }
 
+  // Verified
   record tool-call {
     tool-call-id: string,
     name: string,
@@ -80,7 +87,8 @@ interface types {
     arguments: string,
     namespace: option<string>,
   }
-
+  
+  // Verified
   record tool-result {
     tool-call-id: string,
     tool-name: string,
@@ -89,6 +97,7 @@ interface types {
     is-error: bool,
   }
 
+  // Verified
   record cmf-resource {
     resource-request-id: string,
     uri: string,
@@ -104,6 +113,7 @@ interface types {
     version: option<string>,
   }
 
+  // Verified
   record resource-reference {
     resource-request-id: string,
     uri: string,
@@ -114,6 +124,7 @@ interface types {
     selector: option<string>,
   }
 
+  // Verified
   record prompt-request {
     prompt-request-id: string,
     name: string,
@@ -122,6 +133,7 @@ interface types {
     server-id: option<string>,
   }
 
+  // Verified
   record prompt-result {
     prompt-request-id: string,
     prompt-name: string,
@@ -134,6 +146,7 @@ interface types {
     error-message: option<string>,
   }
 
+  // Verified
   variant content-part {
     text(string),
     thinking(string),
@@ -149,6 +162,7 @@ interface types {
     document(document-source),
   }
 
+  // Verified
   record message {
     schema-version: string,
     role: role,
@@ -156,6 +170,7 @@ interface types {
     channel: option<channel>,
   }
 
+  // Verified
   record message-payload {
     message: message,
   }
@@ -175,6 +190,7 @@ interface types {
   // boundary. WASM handlers resolve identity from source/headers/claims.
   // ---------------------------------------------------------------------------
 
+  // Verified
   enum token-source {
     bearer,
     user-token,
@@ -186,6 +202,7 @@ interface types {
     custom,
   }
 
+  // Verified
   record identity-payload {
     // Input fields (host-supplied, read-only for handlers)
     source: token-source,
@@ -604,6 +621,7 @@ interface types {
     proto-error-code: option<s64>,
   }
 
+  // Verified
   // metadata is a JSON string (serde_json::Value)
   record hook-result {
     continue-processing: bool,

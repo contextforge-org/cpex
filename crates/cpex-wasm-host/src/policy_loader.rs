@@ -1,5 +1,5 @@
 // Location: ./crates/cpex-wasm-host/src/policy_loader.rs
-// Copyright 2025
+// Copyright 2026
 // SPDX-License-Identifier: Apache-2.0
 // Authors: Shriti Priya
 //
@@ -16,6 +16,58 @@ use serde::Deserialize;
 use wasmtime_wasi::{DirPerms, FilePerms, WasiCtx, WasiCtxBuilder};
 use wasmtime_wasi_http::WasiHttpCtx;
 
+/// A single network access rule — grants outbound HTTP access to one host pattern
+/// with optional constraints on port, scheme, and HTTP method.
+///
+/// | Field | Default | Meaning |
+/// |-------|---------|---------|
+/// | `host` | (required) | Exact hostname or `*.example.com` wildcard. Exact match only unless the pattern starts with `*.`. |
+/// | `ports` | `[]` (any) | If non-empty, only the listed port numbers are allowed. Default port (80/443) is inferred from scheme when the URI has none. |
+/// | `schemes` | `["https"]` | Allowed URI schemes. Default is HTTPS-only. Set `[http, https]` to allow both. |
+/// | `methods` | `[]` (any) | If non-empty, only the listed HTTP methods are allowed (case-insensitive). |
+///
+/// Examples:
+/// ```yaml
+/// # HTTPS-only on port 443, any method (typical API)
+/// - host: "api.example.com"
+///
+/// # Explicit constraints
+/// - host: "*.internal.svc"
+///   ports: [8080, 8443]
+///   schemes: [http, https]
+///   methods: [GET, POST]
+/// ```
+#[derive(Debug, Clone, PartialEq, Deserialize, serde::Serialize)]
+pub struct NetworkRule {
+    /// Hostname to match. Use `*.example.com` to match all subdomains of `example.com`.
+    /// A plain `example.com` matches that host exactly — subdomains are not implicitly included.
+    pub host: String,
+    /// Allowed port numbers. Empty means any port is permitted.
+    #[serde(default)]
+    pub ports: Vec<u16>,
+    /// Allowed URI schemes. Defaults to `["https"]` if omitted.
+    #[serde(default = "default_schemes")]
+    pub schemes: Vec<String>,
+    /// Allowed HTTP methods (case-insensitive). Empty means any method is permitted.
+    #[serde(default)]
+    pub methods: Vec<String>,
+}
+
+fn default_schemes() -> Vec<String> {
+    vec!["https".to_string()]
+}
+
+impl Default for NetworkRule {
+    fn default() -> Self {
+        Self {
+            host: String::new(),
+            ports: Vec::new(),
+            schemes: default_schemes(),
+            methods: Vec::new(),
+        }
+    }
+}
+
 /// Declarative sandbox policy deserialized from the plugin's config.sandbox_policy YAML key.
 /// Controls filesystem, network, and environment access for the WASM plugin.
 /// All fields default to empty/deny — a missing or empty policy means full lockdown.
@@ -24,9 +76,10 @@ pub struct SandboxPolicy {
     /// Directories/files the plugin may access (empty = no filesystem access)
     #[serde(default)]
     pub allowed_filesystem: Vec<FilesystemRule>,
-    /// Host names the plugin may make outbound HTTP requests to (empty = no network)
+    /// Outbound HTTP rules. Each entry specifies a host pattern and optional
+    /// constraints on port, scheme, and HTTP method. Empty = no network access.
     #[serde(default)]
-    pub allowed_network: Vec<String>,
+    pub allowed_network: Vec<NetworkRule>,
     /// Environment variable names the plugin may read from the host (empty = no env access)
     #[serde(default)]
     pub allowed_env: Vec<String>,
@@ -65,7 +118,16 @@ pub struct FilesystemRule {
     /// File path (its parent directory is preopened)
     #[serde(default)]
     pub file: Option<String>,
-    /// Permission level: "read" or "write"/"mutate"
+    /// Permission level controlling what the plugin can do within this path.
+    ///
+    /// | Value | DirPerms | FilePerms | Description |
+    /// |-------|----------|-----------|-------------|
+    /// | `read-only` | READ | READ | List and read; no modifications |
+    /// | `full-access` | READ+MUTATE | READ+WRITE | Full access within the preopen |
+    /// | `drop-box` | MUTATE | WRITE | create_dir/delete only; file I/O denied (open_at requires DirPerms::READ) |
+    /// | `fixed-mutable` | READ | READ+WRITE | Read files; FilePerms::WRITE has no effect — wasmtime's open_at requires DirPerms::MUTATE for any write regardless |
+    /// | `list-only` | READ | (empty) | Enumerate filenames only; cannot open file contents |
+    /// | `private-scratch` | MUTATE | READ+WRITE | Full file I/O within the preopen; list_dir denied (DirPerms::READ absent) |
     pub permission: String,
 }
 
@@ -73,8 +135,32 @@ pub struct FilesystemRule {
 pub struct PluginWasiContext {
     pub wasi_ctx: WasiCtx,
     pub http_ctx: WasiHttpCtx,
-    /// Network allow-list passed to the NetworkPolicy hook for outbound HTTP filtering
-    pub allowed_hosts: Arc<Vec<String>>,
+    /// Network rules passed to the NetworkPolicy hook for outbound HTTP filtering
+    pub allowed_hosts: Arc<Vec<NetworkRule>>,
+}
+
+/// Maps a permission string to the corresponding (DirPerms, FilePerms) flags.
+/// Only the 6 named scenarios are accepted; unknown values are rejected.
+pub fn resolve_permission(permission: &str) -> Result<(DirPerms, FilePerms)> {
+    match permission {
+        "read-only" => Ok((DirPerms::READ, FilePerms::READ)),
+        "full-access" => Ok((
+            DirPerms::READ | DirPerms::MUTATE,
+            FilePerms::READ | FilePerms::WRITE,
+        )),
+        "drop-box" => Ok((DirPerms::MUTATE, FilePerms::WRITE)),
+        "fixed-mutable" => Ok((DirPerms::READ, FilePerms::READ | FilePerms::WRITE)),
+        "list-only" => Ok((DirPerms::READ, FilePerms::empty())),
+        "private-scratch" => Ok((
+            DirPerms::MUTATE,
+            FilePerms::READ | FilePerms::WRITE,
+        )),
+        other => anyhow::bail!(
+            "unknown filesystem permission: '{}'. Valid values: \
+             read-only, full-access, drop-box, fixed-mutable, list-only, private-scratch",
+            other
+        ),
+    }
 }
 
 /// Builds a WASI context from the given sandbox policy.
@@ -85,14 +171,7 @@ pub fn build_wasi_context(sandbox_policy: Option<&SandboxPolicy>) -> Result<Plug
 
     if let Some(policy) = sandbox_policy {
         for rule in &policy.allowed_filesystem {
-            let (dir_perms, file_perms) = match rule.permission.as_str() {
-                "read" => (DirPerms::READ, FilePerms::READ),
-                "write" | "mutate" => (
-                    DirPerms::READ | DirPerms::MUTATE,
-                    FilePerms::READ | FilePerms::WRITE,
-                ),
-                other => anyhow::bail!("unknown filesystem permission: {}", other),
-            };
+            let (dir_perms, file_perms) = resolve_permission(rule.permission.as_str())?;
 
             if let Some(dir) = &rule.dir {
                 builder
@@ -132,6 +211,7 @@ pub fn build_wasi_context(sandbox_policy: Option<&SandboxPolicy>) -> Result<Plug
             .unwrap_or_default(),
     );
 
+
     Ok(PluginWasiContext {
         wasi_ctx,
         http_ctx,
@@ -146,7 +226,7 @@ mod tests {
 
     #[test]
     fn test_parse_sandbox_policy_from_config_file() {
-        let config_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("config/config.yaml");
+        let config_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("config/config_policy_test_fixture.yaml");
         let raw = fs::read_to_string(&config_path).expect("failed to read config file");
         let config: serde_yaml::Value = serde_yaml::from_str(&raw).expect("failed to parse YAML");
 
@@ -169,9 +249,9 @@ mod tests {
         let yaml = r#"
 allowed_filesystem:
   - dir: /tmp/data
-    permission: "read"
+    permission: "read-only"
 allowed_network:
-  - "httpbin.org"
+  - host: "httpbin.org"
 allowed_env:
   - "API_KEY"
 resources:
@@ -179,7 +259,8 @@ resources:
   max_fuel: 1000000000
 "#;
         let policy: SandboxPolicy = serde_yaml::from_str(yaml).unwrap();
-        assert_eq!(policy.allowed_network, vec!["httpbin.org"]);
+        assert_eq!(policy.allowed_network.len(), 1);
+        assert_eq!(policy.allowed_network[0].host, "httpbin.org");
         assert_eq!(policy.allowed_env, vec!["API_KEY"]);
         assert_eq!(policy.allowed_filesystem.len(), 1);
         assert_eq!(policy.resources.max_memory_bytes, Some(10485760));
@@ -218,7 +299,7 @@ resources:
             allowed_filesystem: vec![FilesystemRule {
                 dir: Some("/nonexistent_path_that_does_not_exist_xyz".to_string()),
                 file: None,
-                permission: "read".to_string(),
+                permission: "read-only".to_string(),
             }],
             ..Default::default()
         };
@@ -250,14 +331,181 @@ resources:
     fn test_network_allowlist_populated_from_policy() {
         let policy = SandboxPolicy {
             allowed_network: vec![
-                "api.internal.svc".to_string(),
-                "auth.example.com".to_string(),
+                NetworkRule { host: "api.internal.svc".to_string(), ..Default::default() },
+                NetworkRule { host: "auth.example.com".to_string(), ..Default::default() },
             ],
             ..Default::default()
         };
         let ctx = build_wasi_context(Some(&policy)).unwrap();
         assert_eq!(ctx.allowed_hosts.len(), 2);
-        assert!(ctx.allowed_hosts.contains(&"api.internal.svc".to_string()));
-        assert!(ctx.allowed_hosts.contains(&"auth.example.com".to_string()));
+        assert!(ctx.allowed_hosts.iter().any(|r| r.host == "api.internal.svc"));
+        assert!(ctx.allowed_hosts.iter().any(|r| r.host == "auth.example.com"));
+    }
+
+    #[test]
+    fn test_network_rule_default_scheme_is_https() {
+        let rule = NetworkRule { host: "example.com".to_string(), ..Default::default() };
+        assert_eq!(rule.schemes, vec!["https"]);
+    }
+
+    #[test]
+    fn test_network_rule_empty_ports_means_any_port() {
+        let rule = NetworkRule { host: "example.com".to_string(), ..Default::default() };
+        assert!(rule.ports.is_empty());
+    }
+
+    #[test]
+    fn test_network_rule_empty_methods_means_any_method() {
+        let rule = NetworkRule { host: "example.com".to_string(), ..Default::default() };
+        assert!(rule.methods.is_empty());
+    }
+
+    #[test]
+    fn test_network_rule_wildcard_host_parses() {
+        let yaml = r#"host: "*.example.com""#;
+        let rule: NetworkRule = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(rule.host, "*.example.com");
+        assert_eq!(rule.schemes, vec!["https"]);
+    }
+
+    #[test]
+    fn test_network_rule_full_deserialization() {
+        let yaml = r#"
+host: "*.internal.svc"
+ports: [8080, 8443]
+schemes: [http, https]
+methods: [GET, POST]
+"#;
+        let rule: NetworkRule = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(rule.host, "*.internal.svc");
+        assert_eq!(rule.ports, vec![8080, 8443]);
+        assert_eq!(rule.schemes, vec!["http", "https"]);
+        assert_eq!(rule.methods, vec!["GET", "POST"]);
+    }
+
+    #[test]
+    fn test_network_rule_schemes_override_default() {
+        let yaml = r#"
+host: "api.example.com"
+schemes: [http, https]
+"#;
+        let rule: NetworkRule = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(rule.schemes, vec!["http", "https"]);
+    }
+
+    #[test]
+    fn test_resolve_permission_read_only() {
+        let (d, f) = resolve_permission("read-only").unwrap();
+        assert_eq!(d, DirPerms::READ);
+        assert_eq!(f, FilePerms::READ);
+    }
+
+    #[test]
+    fn test_resolve_permission_full_access() {
+        let (d, f) = resolve_permission("full-access").unwrap();
+        assert_eq!(d, DirPerms::READ | DirPerms::MUTATE);
+        assert_eq!(f, FilePerms::READ | FilePerms::WRITE);
+    }
+
+    #[test]
+    fn test_resolve_permission_drop_box() {
+        let (d, f) = resolve_permission("drop-box").unwrap();
+        assert_eq!(d, DirPerms::MUTATE);
+        assert_eq!(f, FilePerms::WRITE);
+    }
+
+    #[test]
+    fn test_resolve_permission_fixed_mutable() {
+        let (d, f) = resolve_permission("fixed-mutable").unwrap();
+        assert_eq!(d, DirPerms::READ);
+        assert_eq!(f, FilePerms::READ | FilePerms::WRITE);
+    }
+
+    #[test]
+    fn test_resolve_permission_list_only() {
+        let (d, f) = resolve_permission("list-only").unwrap();
+        assert_eq!(d, DirPerms::READ);
+        assert_eq!(f, FilePerms::empty());
+    }
+
+    #[test]
+    fn test_resolve_permission_private_scratch() {
+        let (d, f) = resolve_permission("private-scratch").unwrap();
+        assert_eq!(d, DirPerms::MUTATE);
+        assert_eq!(f, FilePerms::READ | FilePerms::WRITE);
+    }
+
+    #[test]
+    fn test_resolve_permission_unknown_rejected() {
+        assert!(resolve_permission("execute").is_err());
+        assert!(resolve_permission("admin").is_err());
+        assert!(resolve_permission("read").is_err());
+        assert!(resolve_permission("write").is_err());
+        assert!(resolve_permission("mutate").is_err());
+        assert!(resolve_permission("").is_err());
+    }
+
+    #[test]
+    fn test_resolve_permission_error_lists_valid_values() {
+        let err = resolve_permission("bogus").unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("read-only"));
+        assert!(msg.contains("full-access"));
+        assert!(msg.contains("drop-box"));
+        assert!(msg.contains("fixed-mutable"));
+        assert!(msg.contains("list-only"));
+        assert!(msg.contains("private-scratch"));
+    }
+
+    #[test]
+    fn test_build_wasi_context_with_drop_box_permission() {
+        let policy = SandboxPolicy {
+            allowed_filesystem: vec![FilesystemRule {
+                dir: Some("/tmp".to_string()),
+                file: None,
+                permission: "drop-box".to_string(),
+            }],
+            ..Default::default()
+        };
+        assert!(build_wasi_context(Some(&policy)).is_ok());
+    }
+
+    #[test]
+    fn test_build_wasi_context_with_fixed_mutable_permission() {
+        let policy = SandboxPolicy {
+            allowed_filesystem: vec![FilesystemRule {
+                dir: Some("/tmp".to_string()),
+                file: None,
+                permission: "fixed-mutable".to_string(),
+            }],
+            ..Default::default()
+        };
+        assert!(build_wasi_context(Some(&policy)).is_ok());
+    }
+
+    #[test]
+    fn test_build_wasi_context_with_list_only_permission() {
+        let policy = SandboxPolicy {
+            allowed_filesystem: vec![FilesystemRule {
+                dir: Some("/tmp".to_string()),
+                file: None,
+                permission: "list-only".to_string(),
+            }],
+            ..Default::default()
+        };
+        assert!(build_wasi_context(Some(&policy)).is_ok());
+    }
+
+    #[test]
+    fn test_build_wasi_context_with_private_scratch_permission() {
+        let policy = SandboxPolicy {
+            allowed_filesystem: vec![FilesystemRule {
+                dir: Some("/tmp".to_string()),
+                file: None,
+                permission: "private-scratch".to_string(),
+            }],
+            ..Default::default()
+        };
+        assert!(build_wasi_context(Some(&policy)).is_ok());
     }
 }

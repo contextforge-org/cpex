@@ -31,6 +31,17 @@ use cpex_core::manager::PluginManager;
 
 use cpex_wasm_host::factory::WasmPluginFactory;
 
+const CYAN_BOLD: &str = "\x1b[1;36m";
+const WHITE: &str = "\x1b[97m";
+const RED: &str = "\x1b[31m";
+const RESET: &str = "\x1b[0m";
+
+macro_rules! scenario {
+    ($($arg:tt)*) => {
+        println!("{}{}{}", CYAN_BOLD, format!($($arg)*), RESET)
+    };
+}
+
 #[tokio::main]
 async fn main() {
     // Initialize tracing so plugin cpex_log! calls are visible.
@@ -98,7 +109,8 @@ async fn main() {
     let ext = build_extensions();
 
     // --- Phase 1: Pre-invoke ---
-    println!("=== Phase 1: cmf.tool_pre_invoke ===\n");
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    scenario!("=== Phase 1: cmf.tool_pre_invoke ===\n");
 
     let (pre_result, pre_bg) = mgr
         .invoke_named::<CmfHook>("cmf.tool_pre_invoke", pre_payload, ext, None)
@@ -106,7 +118,7 @@ async fn main() {
 
     println!();
     if pre_result.continue_processing {
-        println!("Pre-invoke result: ALLOWED");
+        println!("{}Pre-invoke result: ALLOWED{}", WHITE, RESET);
         if let Some(ref modified_ext) = pre_result.modified_extensions {
             if let Some(ref sec) = modified_ext.security {
                 let labels: Vec<&String> = sec.labels.iter().collect();
@@ -122,19 +134,21 @@ async fn main() {
             .as_ref()
             .map(|v| v.reason.as_str())
             .unwrap_or("unknown");
-        println!("Pre-invoke result: DENIED — {}", reason);
+        println!("{}Pre-invoke result: DENIED — {}{}", RED, reason, RESET);
         pre_bg.wait_for_background_tasks().await;
         println!("\n=== Demo complete ===");
         return;
     }
     pre_bg.wait_for_background_tasks().await;
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
     // --- Simulate tool execution ---
     println!("\n--- Tool 'get_compensation' executes... ---");
     println!("  Result: {{\"salary\": 150000, \"currency\": \"USD\"}}\n");
 
     // --- Phase 2: Post-invoke with tool result ---
-    println!("=== Phase 2: cmf.tool_post_invoke ===\n");
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    scenario!("=== Phase 2: cmf.tool_post_invoke ===\n");
 
     let post_payload = MessagePayload {
         message: Message {
@@ -167,17 +181,18 @@ async fn main() {
 
     println!();
     if post_result.continue_processing {
-        println!("Post-invoke result: ALLOWED");
+        println!("{}Post-invoke result: ALLOWED{}", WHITE, RESET);
     } else {
         let reason = post_result
             .violation
             .as_ref()
             .map(|v| v.reason.as_str())
             .unwrap_or("unknown");
-        println!("Post-invoke result: DENIED — {}", reason);
+        println!("{}Post-invoke result: DENIED — {}{}", RED, reason, RESET);
     }
 
     post_bg.wait_for_background_tasks().await;
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
     println!("\n=== Demo complete ===");
 }
 

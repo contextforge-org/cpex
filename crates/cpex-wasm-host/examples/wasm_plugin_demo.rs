@@ -87,22 +87,34 @@ fn make_tool_extensions(tool_name: &str, tags: &[&str]) -> Extensions {
 }
 
 // ---------------------------------------------------------------------------
-// Helper to print results
+// Helpers
 // ---------------------------------------------------------------------------
+
+const CYAN_BOLD: &str = "\x1b[1;36m";
+const WHITE: &str = "\x1b[97m";
+const RED: &str = "\x1b[31m";
+const RESET: &str = "\x1b[0m";
+
+macro_rules! scenario {
+    ($($arg:tt)*) => {
+        println!("{}{}{}", CYAN_BOLD, format!($($arg)*), RESET)
+    };
+}
 
 fn print_result(_label: &str, result: &PipelineResult) {
     if result.continue_processing {
-        println!("  Result: ALLOWED");
+        println!("  {}Result: ALLOWED{}", WHITE, RESET);
     } else {
         let violation = result.violation.as_ref().unwrap();
         println!(
-            "  Result: DENIED by '{}' — {} [{}]",
+            "  {}Result: DENIED by '{}' — {} [{}]{}",
+            RED,
             violation.plugin_name.as_deref().unwrap_or("unknown"),
             violation.reason,
             violation.code,
+            RESET,
         );
     }
-    println!();
 }
 
 // ---------------------------------------------------------------------------
@@ -126,7 +138,7 @@ async fn main() {
     let config_path = crate_dir.join("config/config_plugin_demo.yaml");
     let wasm_dir = crate_dir.join("wasm");
 
-    println!("--- Loading config from {} ---\n", config_path.display());
+    println!("--- Loading config from {} ---\n", "config/config_plugin_demo.yaml");
     let yaml = std::fs::read_to_string(&config_path)
         .unwrap_or_else(|e| panic!("Failed to read {}: {}", config_path.display(), e));
     let cpex_config = parse_config(&yaml).unwrap();
@@ -142,19 +154,19 @@ async fn main() {
     let mgr = PluginManager::default();
     mgr.register_factory(
         "wasm://tool-invoke-checker.wasm",
-        Box::new(WasmPluginFactory::new(wasm_dir.clone(), registry.clone())),
+        Box::new(WasmPluginFactory::new(wasm_dir.clone(), registry.clone()).expect("engine")),
     );
     mgr.register_factory(
         "wasm://pii-guard.wasm",
-        Box::new(WasmPluginFactory::new(wasm_dir.clone(), registry.clone())),
+        Box::new(WasmPluginFactory::new(wasm_dir.clone(), registry.clone()).expect("engine")),
     );
     mgr.register_factory(
         "wasm://remote-authz.wasm",
-        Box::new(WasmPluginFactory::new(wasm_dir.clone(), registry.clone())),
+        Box::new(WasmPluginFactory::new(wasm_dir.clone(), registry.clone()).expect("engine")),
     );
     mgr.register_factory(
         "wasm://audit-logger-custom.wasm",
-        Box::new(WasmPluginFactory::new(wasm_dir, registry)),
+        Box::new(WasmPluginFactory::new(wasm_dir, registry).expect("engine")),
     );
 
     mgr.load_config(cpex_config).unwrap();
@@ -173,7 +185,8 @@ async fn main() {
     // Scenario 1: PII tool without clearance
     // Expected: identity-resolver allows → pii-guard DENIES
     // =========================================================================
-    println!("=== Scenario 1: get_compensation (PII tool, no clearance) ===\n");
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    scenario!("\n=== Scenario 1: get_compensation (PII tool, no clearance) ===\n");
     let payload = ToolInvokePayload {
         tool_name: "get_compensation".into(),
         user: "alice".into(),
@@ -183,12 +196,14 @@ async fn main() {
     let (result, bg) = mgr.invoke::<ToolPreInvoke>(payload, ext, None).await;
     print_result("get_compensation (no clearance)", &result);
     bg.wait_for_background_tasks().await;
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
     // =========================================================================
     // Scenario 2: PII tool with clearance
     // Expected: identity-resolver allows → pii-guard allows → audit-logger logs
     // =========================================================================
-    println!("=== Scenario 2: get_compensation (PII tool, with clearance) ===\n");
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    scenario!("\n=== Scenario 2: get_compensation (PII tool, with clearance) ===\n");
     let payload = ToolInvokePayload {
         tool_name: "get_compensation".into(),
         user: "alice".into(),
@@ -206,7 +221,7 @@ async fn main() {
     bg.wait_for_background_tasks().await;
 
     // Thread context table into post-invoke
-    println!("  --- post-invoke for get_compensation ---\n");
+    println!("\n  --- post-invoke for get_compensation ---\n");
     let payload = ToolInvokePayload {
         tool_name: "get_compensation".into(),
         user: "alice".into(),
@@ -218,12 +233,14 @@ async fn main() {
         .await;
     print_result("get_compensation post-invoke", &post_result);
     bg.wait_for_background_tasks().await;
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
     // =========================================================================
     // Scenario 3: Non-PII tool
     // Expected: identity-resolver allows → audit-logger logs → ALLOWED
     // =========================================================================
-    println!("=== Scenario 3: list_departments (non-PII tool) ===\n");
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    scenario!("\n=== Scenario 3: list_departments (non-PII tool) ===\n");
     let payload = ToolInvokePayload {
         tool_name: "list_departments".into(),
         user: "bob".into(),
@@ -233,12 +250,14 @@ async fn main() {
     let (result, bg) = mgr.invoke::<ToolPreInvoke>(payload, ext, None).await;
     print_result("list_departments", &result);
     bg.wait_for_background_tasks().await;
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
     // =========================================================================
     // Scenario 4: Unknown tool (wildcard route)
     // Expected: identity-resolver allows → audit-logger logs → ALLOWED
     // =========================================================================
-    println!("=== Scenario 4: some_other_tool (wildcard route) ===\n");
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    scenario!("\n=== Scenario 4: some_other_tool (wildcard route) ===\n");
     let payload = ToolInvokePayload {
         tool_name: "some_other_tool".into(),
         user: "charlie".into(),
@@ -248,12 +267,14 @@ async fn main() {
     let (result, bg) = mgr.invoke::<ToolPreInvoke>(payload, ext, None).await;
     print_result("some_other_tool (wildcard)", &result);
     bg.wait_for_background_tasks().await;
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
     // =========================================================================
     // Scenario 5: Remote authz — cache hit (alice is in ACL)
     // Expected: identity-resolver allows → remote-authz allows → ALLOWED
     // =========================================================================
-    println!("=== Scenario 5: query_external_data (remote authz, ACL hit) ===\n");
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    scenario!("\n=== Scenario 5: query_external_data (remote authz, ACL hit) ===\n");
     let payload = ToolInvokePayload {
         tool_name: "query_external_data".into(),
         user: "alice".into(),
@@ -263,12 +284,14 @@ async fn main() {
     let (result, bg) = mgr.invoke::<ToolPreInvoke>(payload, ext, None).await;
     print_result("query_external_data (alice — in ACL)", &result);
     bg.wait_for_background_tasks().await;
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
     // =========================================================================
     // Scenario 6: Remote authz — cache miss (charlie is NOT in ACL)
     // Expected: identity-resolver allows → remote-authz DENIES
     // =========================================================================
-    println!("=== Scenario 6: query_external_data (remote authz, ACL miss) ===\n");
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    scenario!("\n=== Scenario 6: query_external_data (remote authz, ACL miss) ===\n");
     let payload = ToolInvokePayload {
         tool_name: "query_external_data".into(),
         user: "charlie".into(),
@@ -278,12 +301,14 @@ async fn main() {
     let (result, bg) = mgr.invoke::<ToolPreInvoke>(payload, ext, None).await;
     print_result("query_external_data (charlie — not in ACL)", &result);
     bg.wait_for_background_tasks().await;
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
     // =========================================================================
     // Scenario 7: No user identity
     // Expected: identity-resolver DENIES (first in pipeline)
     // =========================================================================
-    println!("=== Scenario 7: list_departments (no user identity) ===\n");
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    scenario!("\n=== Scenario 7: list_departments (no user identity) ===\n");
     let payload = ToolInvokePayload {
         tool_name: "list_departments".into(),
         user: "".into(),
@@ -293,6 +318,7 @@ async fn main() {
     let (result, bg) = mgr.invoke::<ToolPreInvoke>(payload, ext, None).await;
     print_result("list_departments (no user)", &result);
     bg.wait_for_background_tasks().await;
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
     // --- Shutdown ---
     println!("--- Shutting down ---\n");

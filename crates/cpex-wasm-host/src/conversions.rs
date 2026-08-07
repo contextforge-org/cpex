@@ -1,5 +1,5 @@
 // Location: ./crates/cpex-wasm-host/src/conversions.rs
-// Copyright 2025
+// Copyright 2026
 // SPDX-License-Identifier: Apache-2.0
 // Authors: Shriti Priya
 //
@@ -63,6 +63,7 @@ use crate::sandbox_manager::types::*;
 // Native → WIT: MessagePayload
 // ---------------------------------------------------------------------------
 
+/// Convert a native CMF MessagePayload to its WIT representation for sending to a WASM plugin.
 pub fn native_payload_to_wit(payload: &native_msg::MessagePayload) -> MessagePayload {
     MessagePayload {
         message: native_message_to_wit(&payload.message),
@@ -228,6 +229,7 @@ fn native_prompt_result_to_wit(pr: &native_content::PromptResult) -> PromptResul
 // Native → WIT: IdentityPayload
 // ---------------------------------------------------------------------------
 
+/// Convert a native IdentityPayload to its WIT representation for sending to a WASM plugin.
 pub fn native_identity_payload_to_wit(p: &NativeIdentityPayload) -> IdentityPayload {
     let (source, source_custom) = match p.source() {
         NativeTokenSource::Bearer => (TokenSource::Bearer, None),
@@ -266,6 +268,7 @@ pub fn native_identity_payload_to_wit(p: &NativeIdentityPayload) -> IdentityPayl
 // Native → WIT: DelegationPayload
 // ---------------------------------------------------------------------------
 
+/// Convert a native DelegationPayload to its WIT representation for sending to a WASM plugin.
 pub fn native_delegation_payload_to_wit(p: &NativeDelegationPayload) -> DelegationPayload {
     let (target_type, target_type_custom) = match p.target_type() {
         NativeTargetType::Tool => (TargetType::Tool, None),
@@ -332,6 +335,7 @@ fn native_raw_delegated_token_to_wit(t: &NativeRawDelegatedToken) -> RawDelegate
 // Native → WIT: Extensions
 // ---------------------------------------------------------------------------
 
+/// Convert native Extensions to their WIT representation for sending to a WASM plugin.
 pub fn native_extensions_to_wit(ext: &NativeExtensions) -> Extensions {
     Extensions {
         request: ext.request.as_ref().map(|r| native_request_to_wit(r)),
@@ -703,6 +707,7 @@ fn native_auth_detail_to_wit(a: &NativeAuthDetail) -> AuthorizationDetail {
 // Native → WIT: PluginContext
 // ---------------------------------------------------------------------------
 
+/// Convert a native PluginContext to its WIT representation for sending to a WASM plugin.
 pub fn native_context_to_wit(ctx: &NativePluginContext) -> PluginContext {
     PluginContext {
         local_state: ctx
@@ -803,6 +808,7 @@ fn wit_violation_to_native(v: PluginViolation) -> NativePluginViolation {
     }
 }
 
+/// Convert a WIT PluginContext received from a WASM plugin to the native representation.
 pub fn wit_context_to_native(ctx: PluginContext) -> NativePluginContext {
     NativePluginContext {
         local_state: ctx
@@ -832,6 +838,7 @@ pub fn wit_context_to_native(ctx: PluginContext) -> NativePluginContext {
 // WIT → Native: MessagePayload (for modified_payload in results)
 // ---------------------------------------------------------------------------
 
+/// Convert a WIT MessagePayload received from a WASM plugin to the native representation.
 pub fn wit_cmf_payload_to_native(payload: MessagePayload) -> native_msg::MessagePayload {
     native_msg::MessagePayload {
         message: wit_message_to_native(payload.message),
@@ -972,6 +979,7 @@ fn wit_content_part_to_native(part: ContentPart) -> native_content::ContentPart 
 // WIT → Native: IdentityPayload
 // ---------------------------------------------------------------------------
 
+/// Convert a WIT IdentityPayload received from a WASM plugin to the native representation.
 pub fn wit_identity_payload_to_native(p: IdentityPayload) -> NativeIdentityPayload {
     let source = match p.source {
         TokenSource::Bearer => NativeTokenSource::Bearer,
@@ -1024,6 +1032,7 @@ pub fn wit_identity_payload_to_native(p: IdentityPayload) -> NativeIdentityPaylo
 // WIT → Native: DelegationPayload
 // ---------------------------------------------------------------------------
 
+/// Convert a WIT DelegationPayload received from a WASM plugin to the native representation.
 pub fn wit_delegation_payload_to_native(p: DelegationPayload) -> NativeDelegationPayload {
     let target_type = match p.target_type {
         TargetType::Tool => NativeTargetType::Tool,

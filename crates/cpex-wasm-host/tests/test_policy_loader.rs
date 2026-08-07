@@ -1,10 +1,10 @@
 // Location: ./crates/cpex-wasm-host/tests/test_policy_loader.rs
-// Copyright 2025
+// Copyright 2026
 // SPDX-License-Identifier: Apache-2.0
 // Authors: Shriti Priya
 //
 // Integration tests for policy_loader.
-// Validates that the sandbox policy in config/config.yaml deserializes correctly
+// Validates that the sandbox policy in config/config_policy_test_fixture.yaml deserializes correctly
 // and matches the expected deny-all posture with resource limits.
 
 use std::path::Path;
@@ -13,7 +13,7 @@ use cpex_wasm_host::policy_loader::SandboxPolicy;
 
 /// Helper: reads config.yaml and extracts the sandbox_policy for a named plugin.
 fn load_sandbox_policy_from_config(plugin_name: &str) -> SandboxPolicy {
-    let config_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("config/config.yaml");
+    let config_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("config/config_policy_test_fixture.yaml");
     let raw = std::fs::read_to_string(&config_path).expect("failed to read config.yaml");
     let config: serde_yaml::Value = serde_yaml::from_str(&raw).expect("failed to parse YAML");
 
@@ -30,14 +30,14 @@ fn load_sandbox_policy_from_config(plugin_name: &str) -> SandboxPolicy {
 
 #[test]
 fn config_file_is_valid_yaml() {
-    let config_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("config/config.yaml");
+    let config_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("config/config_policy_test_fixture.yaml");
     let raw = std::fs::read_to_string(&config_path).expect("failed to read config.yaml");
     let _: serde_yaml::Value = serde_yaml::from_str(&raw).expect("config.yaml is not valid YAML");
 }
 
 #[test]
 fn config_has_plugins_list() {
-    let config_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("config/config.yaml");
+    let config_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("config/config_policy_test_fixture.yaml");
     let raw = std::fs::read_to_string(&config_path).expect("failed to read config.yaml");
     let config: serde_yaml::Value = serde_yaml::from_str(&raw).unwrap();
 
@@ -49,7 +49,7 @@ fn config_has_plugins_list() {
 
 #[test]
 fn identity_checker_plugin_exists_with_correct_kind() {
-    let config_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("config/config.yaml");
+    let config_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("config/config_policy_test_fixture.yaml");
     let raw = std::fs::read_to_string(&config_path).expect("failed to read config.yaml");
     let config: serde_yaml::Value = serde_yaml::from_str(&raw).unwrap();
 
@@ -107,3 +107,4 @@ fn sandbox_policy_deserializes_to_same_type_used_by_factory() {
         policy.resources.max_memory_bytes
     );
 }
+

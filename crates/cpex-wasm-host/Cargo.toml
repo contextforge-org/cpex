@@ -1,10 +1,16 @@
 [package]
 name = "cpex-wasm-host"
-version = "0.1.0"
+version = "0.2.2"
 edition = "2021"
+rust-version = "1.96"
 description = "WASM plugin host runtime for the CPEX framework — sandboxed wasmtime execution with capability-based access control"
 license = "Apache-2.0"
 authors = ["Shriti Priya"]
+repository = "https://github.com/contextforge/contextforge-plugins-framework"
+homepage = "https://github.com/contextforge/contextforge-plugins-framework"
+keywords = ["wasm", "plugin", "sandbox", "wasmtime", "cpex"]
+categories = ["wasm", "development-tools"]
+exclude = ["wasm/", "examples/data/", "benchmarking/performance_comparison.png"]
 
 [dependencies]
 tokio = { version = "1", features = ["sync", "macros", "io-util", "rt", "rt-multi-thread", "time", "signal", "net"] }
@@ -14,7 +20,6 @@ wasmtime-wasi-http = { version = "45.0", features = ["default-send-request"] }
 hyper = "1"
 anyhow = "1.0"
 serde = { version = "1", features = ["derive"] }
-serde_yaml = "0.9"
 serde_json = { workspace = true }
 cpex-core = { workspace = true }
 async-trait = "0.1"
@@ -24,6 +29,7 @@ tracing = { workspace = true }
 [dev-dependencies]
 criterion = { version = "0.5", features = ["async_tokio"] }
 async-trait = "0.1"
+serde_yaml = "0.9"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 
 [[bench]]

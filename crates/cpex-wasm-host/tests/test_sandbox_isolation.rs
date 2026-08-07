@@ -138,7 +138,7 @@ async fn test_plugin_cannot_read_etc_passwd_with_unrelated_filesystem_policy() {
         allowed_filesystem: vec![cpex_wasm_host::policy_loader::FilesystemRule {
             dir: Some("/tmp".to_string()),
             file: None,
-            permission: "read".to_string(),
+            permission: "read-only".to_string(),
         }],
         ..Default::default()
     };

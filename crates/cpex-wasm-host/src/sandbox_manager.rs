@@ -1,5 +1,5 @@
 // Location: ./crates/cpex-wasm-host/src/sandbox_manager.rs
-// Copyright 2025
+// Copyright 2026
 // SPDX-License-Identifier: Apache-2.0
 // Authors: Shriti Priya
 //
@@ -20,7 +20,13 @@ use wasmtime_wasi_http::p2::{default_send_request, HttpResult, WasiHttpHooks};
 use wasmtime_wasi_http::p2::{WasiHttpCtxView, WasiHttpView};
 use wasmtime_wasi_http::WasiHttpCtx;
 
-use crate::policy_loader::{build_wasi_context, ResourceLimits, SandboxPolicy};
+use crate::policy_loader::{build_wasi_context, NetworkRule, ResourceLimits, SandboxPolicy};
+
+// The epoch ticker fires every EPOCH_TICK_MS milliseconds. `set_epoch_deadline`
+// takes a tick count, so `max_execution_time_ms / EPOCH_TICK_MS` converts the
+// operator-visible millisecond budget into the tick count wasmtime expects.
+// If this interval changes, the conversion below remains correct automatically.
+const EPOCH_TICK_MS: u64 = 1;
 
 // Generate Rust bindings from the WIT interface definition.
 // This creates the `Plugin` struct with `call_handle_hook` and the WIT types.
@@ -35,10 +41,24 @@ pub mod types {
     pub use super::cpex::plugin::types::*;
 }
 
-/// Intercepts outbound HTTP requests from the WASM plugin and enforces the network allow-list.
-/// Only requests to explicitly allowed hosts (or their subdomains) are permitted.
+/// Returns true if `actual` matches `pattern`.
+/// - `*.example.com` matches `api.example.com` and `deep.api.example.com`, but NOT `example.com`.
+/// - `example.com` matches only `example.com` exactly.
+fn host_matches(actual: &str, pattern: &str) -> bool {
+    if let Some(suffix) = pattern.strip_prefix("*.") {
+        // actual must end with ".suffix" — the dot is required so "notexample.com"
+        // does not match "*.example.com" even though it ends with "example.com".
+        let dot_suffix = format!(".{}", suffix);
+        actual.ends_with(dot_suffix.as_str())
+    } else {
+        actual == pattern
+    }
+}
+
+/// Intercepts outbound HTTP requests from the WASM plugin and enforces the network policy.
+/// Each rule can constrain the host pattern, allowed ports, URI scheme, and HTTP methods.
 struct NetworkPolicy {
-    allowed_hosts: Arc<Vec<String>>,
+    allowed_hosts: Arc<Vec<NetworkRule>>,
 }
 
 impl WasiHttpHooks for NetworkPolicy {
@@ -47,20 +67,41 @@ impl WasiHttpHooks for NetworkPolicy {
         request: hyper::Request<HyperOutgoingBody>,
         config: OutgoingRequestConfig,
     ) -> HttpResult<HostFutureIncomingResponse> {
-        // Extract the target host from the request URI
-        let authority = request
-            .uri()
+        let uri = request.uri();
+        let host = uri
             .authority()
             .map(|a| a.host().to_string())
             .unwrap_or_default();
+        let port = uri.authority().and_then(|a| a.port_u16());
+        let scheme = uri.scheme_str().unwrap_or("https");
+        let method = request.method().as_str();
 
-        // Check exact match or subdomain match (e.g., "api.example.com" matches "example.com")
-        let is_allowed = self
-            .allowed_hosts
-            .iter()
-            .any(|allowed| authority == *allowed || authority.ends_with(&format!(".{}", allowed)));
+        // Find the first rule whose host pattern matches.
+        let rule = match self.allowed_hosts.iter().find(|r| host_matches(&host, &r.host)) {
+            Some(r) => r,
+            None => return Err(ErrorCode::HttpRequestDenied.into()),
+        };
 
-        if !is_allowed {
+        // Port check: infer default port from scheme when the URI has none.
+        if !rule.ports.is_empty() {
+            let req_port = port.unwrap_or(if scheme == "https" { 443 } else { 80 });
+            if !rule.ports.contains(&req_port) {
+                return Err(ErrorCode::HttpRequestDenied.into());
+            }
+        }
+
+        // Scheme check.
+        if !rule.schemes.is_empty() && !rule.schemes.iter().any(|s| s == scheme) {
+            return Err(ErrorCode::HttpRequestDenied.into());
+        }
+
+        // Method check (case-insensitive).
+        if !rule.methods.is_empty()
+            && !rule
+                .methods
+                .iter()
+                .any(|m| m.eq_ignore_ascii_case(method))
+        {
             return Err(ErrorCode::HttpRequestDenied.into());
         }
 
@@ -157,7 +198,7 @@ impl SharedEngine {
         let engine_clone = engine.clone();
         #[allow(clippy::disallowed_methods)]
         std::thread::spawn(move || loop {
-            std::thread::sleep(std::time::Duration::from_millis(1));
+            std::thread::sleep(std::time::Duration::from_millis(EPOCH_TICK_MS));
             engine_clone.increment_epoch();
         });
 
@@ -247,13 +288,16 @@ impl SandboxManager {
         // Apply execution timeout via epoch deadline.
         // Default is 5 seconds — safe for synchronous hooks. Plugins that
         // perform outbound HTTP should set a higher value explicitly.
-        let epoch_deadline = resources.max_execution_time_ms.unwrap_or(5_000);
+        // Convert ms → ticks using EPOCH_TICK_MS so the unit relationship
+        // is explicit and survives any future change to the ticker interval.
+        let timeout_ms = resources.max_execution_time_ms.unwrap_or(5_000);
         if resources.max_execution_time_ms.is_none() {
             tracing::warn!(
                 plugin = %plugin_name,
                 "no explicit max_execution_time_ms configured — using default 5000ms"
             );
         }
+        let epoch_deadline = timeout_ms / EPOCH_TICK_MS;
         store.set_epoch_deadline(epoch_deadline);
         store.epoch_deadline_trap();
 
@@ -304,5 +348,52 @@ impl SandboxManager {
     /// Returns whether a plugin is currently loaded.
     pub fn is_loaded(&self) -> bool {
         self.instance.is_some()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::host_matches;
+
+    #[test]
+    fn exact_match_passes() {
+        assert!(host_matches("example.com", "example.com"));
+    }
+
+    #[test]
+    fn exact_match_rejects_subdomain() {
+        assert!(!host_matches("api.example.com", "example.com"));
+    }
+
+    #[test]
+    fn exact_match_rejects_unrelated_host() {
+        assert!(!host_matches("other.com", "example.com"));
+    }
+
+    #[test]
+    fn wildcard_matches_direct_subdomain() {
+        assert!(host_matches("api.example.com", "*.example.com"));
+    }
+
+    #[test]
+    fn wildcard_matches_deep_subdomain() {
+        assert!(host_matches("deep.api.example.com", "*.example.com"));
+    }
+
+    #[test]
+    fn wildcard_rejects_bare_domain() {
+        // *.example.com must not match example.com itself
+        assert!(!host_matches("example.com", "*.example.com"));
+    }
+
+    #[test]
+    fn wildcard_rejects_unrelated_host() {
+        assert!(!host_matches("other.com", "*.example.com"));
+    }
+
+    #[test]
+    fn wildcard_rejects_partial_suffix_without_dot() {
+        // "notexample.com" should not match "*.example.com"
+        assert!(!host_matches("notexample.com", "*.example.com"));
     }
 }
