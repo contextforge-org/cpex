@@ -16,6 +16,13 @@ use cpex_core::cmf::content as native_content;
 use cpex_core::cmf::enums as native_enums;
 use cpex_core::cmf::message as native_msg;
 use cpex_core::context::PluginContext as NativePluginContext;
+use cpex_core::delegation::{
+    AttenuationConfig as NativeAttenuationConfig, AuthEnforcedBy as NativeAuthEnforcedBy,
+    DelegationPayload as NativeDelegationPayload, TargetType as NativeTargetType,
+};
+use cpex_core::extensions::raw_credentials::{
+    DelegationMode as NativeDelegationMode, RawDelegatedToken as NativeRawDelegatedToken,
+};
 use cpex_core::extensions::agent::AgentExtension as NativeAgentExtension;
 use cpex_core::extensions::authorization::AuthorizationDetail as NativeAuthDetail;
 use cpex_core::extensions::completion::{
@@ -45,6 +52,7 @@ use cpex_core::extensions::security::{
     WorkloadIdentity as NativeWorkloadIdentity,
 };
 use cpex_core::hooks::trait_def::PluginResult as NativePluginResult;
+use cpex_core::identity::{IdentityPayload as NativeIdentityPayload, TokenSource as NativeTokenSource};
 
 use crate::cpex::plugin::types::*;
 
@@ -259,29 +267,7 @@ fn wit_security_to_native(s: SecurityExtension) -> NativeSecurityExtension {
             teams: sub.teams.into_iter().collect(),
             claims: sub.claims.into_iter().collect(),
         }),
-        client: s.client.map(|c| {
-            let trust_level = match c.trust_level_custom {
-                Some(s) => NativeClientTrustLevel::Custom(s),
-                None => match c.trust_level {
-                    ClientTrustLevel::FirstParty => NativeClientTrustLevel::FirstParty,
-                    ClientTrustLevel::ThirdParty => NativeClientTrustLevel::ThirdParty,
-                    ClientTrustLevel::Internal => NativeClientTrustLevel::Internal,
-                },
-            };
-            NativeClientExtension {
-                client_id: c.client_id,
-                client_name: c.client_name,
-                trust_level,
-                authorized_scopes: c.authorized_scopes,
-                authorized_audiences: c.authorized_audiences,
-                roles: c.roles,
-                permissions: c.permissions,
-                teams: c.teams,
-                claims: c.claims.into_iter()
-                    .map(|(k, v)| (k, serde_json::from_str(&v).unwrap_or(serde_json::Value::String(v))))
-                    .collect(),
-            }
-        }),
+        client: s.client.map(wit_client_to_native),
         caller_workload: s.caller_workload.map(wit_workload_to_native),
         this_workload: s.this_workload.map(wit_workload_to_native),
         auth_method: s.auth_method,
@@ -314,6 +300,30 @@ fn wit_subject_type_to_native(st: SubjectType) -> NativeSubjectType {
         SubjectType::Agent => NativeSubjectType::Agent,
         SubjectType::Service => NativeSubjectType::Service,
         SubjectType::System => NativeSubjectType::System,
+    }
+}
+
+fn wit_client_to_native(c: ClientExtension) -> NativeClientExtension {
+    let trust_level = match c.trust_level_custom {
+        Some(s) => NativeClientTrustLevel::Custom(s),
+        None => match c.trust_level {
+            ClientTrustLevel::FirstParty => NativeClientTrustLevel::FirstParty,
+            ClientTrustLevel::ThirdParty => NativeClientTrustLevel::ThirdParty,
+            ClientTrustLevel::Internal => NativeClientTrustLevel::Internal,
+        },
+    };
+    NativeClientExtension {
+        client_id: c.client_id,
+        client_name: c.client_name,
+        trust_level,
+        authorized_scopes: c.authorized_scopes,
+        authorized_audiences: c.authorized_audiences,
+        roles: c.roles,
+        permissions: c.permissions,
+        teams: c.teams,
+        claims: c.claims.into_iter()
+            .map(|(k, v)| (k, serde_json::from_str(&v).unwrap_or(serde_json::Value::String(v))))
+            .collect(),
     }
 }
 
@@ -476,6 +486,115 @@ fn wit_delegation_to_native(d: DelegationExtension) -> NativeDelegationExtension
 }
 
 // ---------------------------------------------------------------------------
+// WIT → Native: IdentityPayload
+// ---------------------------------------------------------------------------
+
+/// Convert a WIT IdentityPayload to a native cpex-core IdentityPayload.
+pub fn wit_identity_payload_to_native(p: IdentityPayload) -> NativeIdentityPayload {
+    let source = match p.source {
+        TokenSource::Bearer => NativeTokenSource::Bearer,
+        TokenSource::UserToken => NativeTokenSource::UserToken,
+        TokenSource::Mtls => NativeTokenSource::Mtls,
+        TokenSource::SpiffeJwtSvid => NativeTokenSource::SpiffeJwtSvid,
+        TokenSource::ApiKey => NativeTokenSource::ApiKey,
+        TokenSource::Custom => NativeTokenSource::Custom(p.source_custom.unwrap_or_default()),
+    };
+    let mut out = NativeIdentityPayload::new("", source);
+    if let Some(h) = p.source_header {
+        out = out.with_source_header(h);
+    }
+    out = out.with_headers(p.headers.into_iter().collect());
+    if let Some(h) = p.client_host {
+        out = out.with_client_host(h);
+    }
+    if let Some(port) = p.client_port {
+        out = out.with_client_port(port);
+    }
+    out.subject = p.subject.map(|s| NativeSubjectExtension {
+        id: s.id,
+        subject_type: s.subject_type.map(wit_subject_type_to_native),
+        roles: s.roles.into_iter().collect(),
+        permissions: s.permissions.into_iter().collect(),
+        teams: s.teams.into_iter().collect(),
+        claims: s.claims.into_iter().collect(),
+    });
+    out.client = p.client.map(wit_client_to_native);
+    out.caller_workload = p.caller_workload.map(wit_workload_to_native);
+    out.delegation = p.delegation.map(wit_delegation_to_native);
+    out.resolved_at = p
+        .resolved_at
+        .as_deref()
+        .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+        .map(|dt| dt.with_timezone(&chrono::Utc));
+    out.raw_claims = p
+        .raw_claims
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default();
+    out
+}
+
+// ---------------------------------------------------------------------------
+// WIT → Native: DelegationPayload
+// ---------------------------------------------------------------------------
+
+/// Convert a WIT DelegationPayload to a native cpex-core DelegationPayload.
+pub fn wit_delegation_payload_to_native(p: DelegationPayload) -> NativeDelegationPayload {
+    let target_type = match p.target_type {
+        TargetType::Tool => NativeTargetType::Tool,
+        TargetType::Agent => NativeTargetType::Agent,
+        TargetType::Resource => NativeTargetType::Resource,
+        TargetType::Service => NativeTargetType::Service,
+        TargetType::Custom => NativeTargetType::Custom(p.target_type_custom.unwrap_or_default()),
+    };
+    let auth_enforced_by = match p.auth_enforced_by {
+        AuthEnforcedBy::Caller => NativeAuthEnforcedBy::Caller,
+        AuthEnforcedBy::Target => NativeAuthEnforcedBy::Target,
+        AuthEnforcedBy::Both => NativeAuthEnforcedBy::Both,
+    };
+    let mut out = NativeDelegationPayload::new("", p.target_name)
+        .with_target_type(target_type)
+        .with_auth_enforced_by(auth_enforced_by);
+    if let Some(aud) = p.target_audience {
+        out = out.with_target_audience(aud);
+    }
+    if !p.required_permissions.is_empty() {
+        out = out.with_required_permissions(p.required_permissions);
+    }
+    if let Some(td) = p.trust_domain {
+        out = out.with_trust_domain(td);
+    }
+    if let Some(att) = p.route_attenuation {
+        out = out.with_route_attenuation(NativeAttenuationConfig {
+            capabilities: att.capabilities,
+            resource_template: att.resource_template,
+            actions: att.actions,
+            ttl_seconds: att.ttl_seconds,
+        });
+    }
+    out.delegated_token = p.delegated_token.map(|t| {
+        let expires_at = DateTime::parse_from_rfc3339(&t.expires_at)
+            .map(|dt| dt.with_timezone(&chrono::Utc))
+            .unwrap_or_else(|_| chrono::Utc::now());
+        NativeRawDelegatedToken::new("", t.outbound_header, t.audience, t.scopes, expires_at)
+    });
+    out.delegation_update = p.delegation_update.map(wit_delegation_to_native);
+    out.delegation_mode = p.delegation_mode.map(|m| match m {
+        DelegationMode::OnBehalfOfUser => NativeDelegationMode::OnBehalfOfUser,
+        DelegationMode::AsGateway => NativeDelegationMode::AsGateway,
+    });
+    out.minted_at = p
+        .minted_at
+        .as_deref()
+        .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+        .map(|dt| dt.with_timezone(&chrono::Utc));
+    out.metadata = p
+        .metadata
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default();
+    out
+}
+
+// ---------------------------------------------------------------------------
 // WIT → Native: PluginContext
 // ---------------------------------------------------------------------------
 
@@ -511,6 +630,10 @@ where
         let any: &dyn std::any::Any = &p;
         if let Some(mp) = any.downcast_ref::<native_msg::MessagePayload>() {
             Some(HookPayload::Cmf(native_payload_to_wit(mp.clone())))
+        } else if let Some(ip) = any.downcast_ref::<NativeIdentityPayload>() {
+            Some(HookPayload::Identity(native_identity_payload_to_wit(ip)))
+        } else if let Some(dp) = any.downcast_ref::<NativeDelegationPayload>() {
+            Some(HookPayload::Delegation(native_delegation_payload_to_wit(dp)))
         } else {
             match p.to_wasm_bytes() {
                 Ok(bytes) => Some(HookPayload::Custom(CustomPayload {
@@ -699,6 +822,202 @@ fn native_resource_type_to_wit(rt: native_enums::ResourceType) -> ResourceType {
 ///   - security (labels, classification, subject, auth_method)
 ///   - http (request_headers, response_headers, method, path, host, scheme)
 ///   - meta (entity_type, entity_name, tags, scope, properties)
+// ---------------------------------------------------------------------------
+// Native → WIT: IdentityPayload
+// ---------------------------------------------------------------------------
+
+pub fn native_identity_payload_to_wit(p: &NativeIdentityPayload) -> IdentityPayload {
+    let (source, source_custom) = match p.source() {
+        NativeTokenSource::Bearer => (TokenSource::Bearer, None),
+        NativeTokenSource::UserToken => (TokenSource::UserToken, None),
+        NativeTokenSource::Mtls => (TokenSource::Mtls, None),
+        NativeTokenSource::SpiffeJwtSvid => (TokenSource::SpiffeJwtSvid, None),
+        NativeTokenSource::ApiKey => (TokenSource::ApiKey, None),
+        NativeTokenSource::Custom(s) => (TokenSource::Custom, Some(s.clone())),
+        _ => (TokenSource::Bearer, None),
+    };
+    IdentityPayload {
+        source,
+        source_custom,
+        source_header: p.source_header().map(str::to_owned),
+        headers: p.headers().iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+        client_host: p.client_host().map(str::to_owned),
+        client_port: p.client_port(),
+        subject: p.subject.as_ref().map(native_subject_to_wit),
+        client: p.client.as_ref().map(native_client_to_wit),
+        caller_workload: p.caller_workload.as_ref().map(native_workload_to_wit),
+        delegation: p.delegation.as_ref().map(native_delegation_ext_to_wit),
+        resolved_at: p.resolved_at.map(|dt| dt.to_rfc3339()),
+        raw_claims: if p.raw_claims.is_empty() {
+            None
+        } else {
+            serde_json::to_string(&p.raw_claims).ok()
+        },
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Native → WIT: DelegationPayload
+// ---------------------------------------------------------------------------
+
+pub fn native_delegation_payload_to_wit(p: &NativeDelegationPayload) -> DelegationPayload {
+    let (target_type, target_type_custom) = match p.target_type() {
+        NativeTargetType::Tool => (TargetType::Tool, None),
+        NativeTargetType::Agent => (TargetType::Agent, None),
+        NativeTargetType::Resource => (TargetType::Resource, None),
+        NativeTargetType::Service => (TargetType::Service, None),
+        NativeTargetType::Custom(s) => (TargetType::Custom, Some(s.clone())),
+        _ => (TargetType::Tool, None),
+    };
+    let auth_enforced_by = match p.auth_enforced_by() {
+        NativeAuthEnforcedBy::Caller => AuthEnforcedBy::Caller,
+        NativeAuthEnforcedBy::Target => AuthEnforcedBy::Target,
+        NativeAuthEnforcedBy::Both => AuthEnforcedBy::Both,
+        _ => AuthEnforcedBy::Caller,
+    };
+    DelegationPayload {
+        target_name: p.target_name().to_owned(),
+        target_type,
+        target_type_custom,
+        target_audience: p.target_audience().map(str::to_owned),
+        required_permissions: p.required_permissions().to_vec(),
+        trust_domain: p.trust_domain().map(str::to_owned),
+        auth_enforced_by,
+        route_attenuation: p.route_attenuation().map(|a| AttenuationConfig {
+            capabilities: a.capabilities.clone(),
+            resource_template: a.resource_template.clone(),
+            actions: a.actions.clone(),
+            ttl_seconds: a.ttl_seconds,
+        }),
+        delegated_token: p.delegated_token.as_ref().map(|t| RawDelegatedToken {
+            outbound_header: t.outbound_header.clone(),
+            audience: t.audience.clone(),
+            scopes: t.scopes.clone(),
+            expires_at: t.expires_at.to_rfc3339(),
+        }),
+        delegation_update: p.delegation_update.as_ref().map(native_delegation_ext_to_wit),
+        delegation_mode: p.delegation_mode.as_ref().map(|m| match m {
+            NativeDelegationMode::OnBehalfOfUser => DelegationMode::OnBehalfOfUser,
+            NativeDelegationMode::AsGateway => DelegationMode::AsGateway,
+            _ => DelegationMode::OnBehalfOfUser,
+        }),
+        minted_at: p.minted_at.map(|dt| dt.to_rfc3339()),
+        metadata: if p.metadata.is_empty() {
+            None
+        } else {
+            serde_json::to_string(&p.metadata).ok()
+        },
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Native → WIT: shared helpers for payload conversions
+// ---------------------------------------------------------------------------
+
+fn native_subject_to_wit(s: &NativeSubjectExtension) -> SubjectExtension {
+    SubjectExtension {
+        id: s.id.clone(),
+        subject_type: s.subject_type.as_ref().map(|st| match st {
+            NativeSubjectType::User => SubjectType::User,
+            NativeSubjectType::Agent => SubjectType::Agent,
+            NativeSubjectType::Service => SubjectType::Service,
+            NativeSubjectType::System => SubjectType::System,
+        }),
+        roles: s.roles.iter().cloned().collect(),
+        permissions: s.permissions.iter().cloned().collect(),
+        teams: s.teams.iter().cloned().collect(),
+        claims: s.claims.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+    }
+}
+
+fn native_client_to_wit(c: &NativeClientExtension) -> ClientExtension {
+    let (trust_level, trust_level_custom) = match &c.trust_level {
+        NativeClientTrustLevel::FirstParty => (ClientTrustLevel::FirstParty, None),
+        NativeClientTrustLevel::ThirdParty => (ClientTrustLevel::ThirdParty, None),
+        NativeClientTrustLevel::Internal => (ClientTrustLevel::Internal, None),
+        NativeClientTrustLevel::Custom(s) => (ClientTrustLevel::ThirdParty, Some(s.clone())),
+        _ => (ClientTrustLevel::ThirdParty, None),
+    };
+    ClientExtension {
+        client_id: c.client_id.clone(),
+        client_name: c.client_name.clone(),
+        trust_level,
+        trust_level_custom,
+        authorized_scopes: c.authorized_scopes.clone(),
+        authorized_audiences: c.authorized_audiences.clone(),
+        roles: c.roles.clone(),
+        permissions: c.permissions.clone(),
+        teams: c.teams.clone(),
+        claims: c.claims.iter()
+            .map(|(k, v)| (k.clone(), serde_json::to_string(v).unwrap_or_default()))
+            .collect(),
+    }
+}
+
+fn native_workload_to_wit(w: &NativeWorkloadIdentity) -> WorkloadIdentity {
+    WorkloadIdentity {
+        spiffe_id: w.spiffe_id.clone(),
+        trust_domain: w.trust_domain.clone(),
+        attested_at: w.attested_at.map(|dt| dt.to_rfc3339()),
+        attestor: w.attestor.clone(),
+        selectors: w.selectors.clone(),
+        client_id: w.client_id.clone(),
+    }
+}
+
+fn native_delegation_ext_to_wit(d: &NativeDelegationExtension) -> DelegationExtension {
+    use cpex_core::extensions::delegation::DelegationStrategy as NDS;
+    DelegationExtension {
+        chain: d.chain.iter().map(|hop| {
+            let (strategy, strategy_custom) = match &hop.strategy {
+                None => (None, None),
+                Some(NDS::TokenExchange) => (Some(DelegationStrategy::TokenExchange), None),
+                Some(NDS::ClientCredentials) => (Some(DelegationStrategy::ClientCredentials), None),
+                Some(NDS::SpiffeSvid) => (Some(DelegationStrategy::SpiffeSvid), None),
+                Some(NDS::Passthrough) => (Some(DelegationStrategy::Passthrough), None),
+                Some(NDS::Ucan) => (Some(DelegationStrategy::Ucan), None),
+                Some(NDS::TransactionToken) => (Some(DelegationStrategy::TransactionToken), None),
+                Some(NDS::Custom(s)) => (None, Some(s.clone())),
+                Some(_) => (None, None),
+            };
+            DelegationHop {
+                subject_id: hop.subject_id.clone(),
+                subject_type: hop.subject_type.as_ref().map(|st| match st {
+                    NativeSubjectType::User => SubjectType::User,
+                    NativeSubjectType::Agent => SubjectType::Agent,
+                    NativeSubjectType::Service => SubjectType::Service,
+                    NativeSubjectType::System => SubjectType::System,
+                }),
+                audience: hop.audience.clone(),
+                scopes_granted: hop.scopes_granted.clone(),
+                authorization_details: hop.authorization_details.iter().map(|a| AuthorizationDetail {
+                    detail_type: a.detail_type.clone(),
+                    locations: a.locations.clone(),
+                    actions: a.actions.clone(),
+                    datatypes: a.datatypes.clone(),
+                    identifier: a.identifier.clone(),
+                    privileges: a.privileges.clone(),
+                    extra: if a.extra.is_empty() { None } else { serde_json::to_string(&a.extra).ok() },
+                }).collect(),
+                timestamp: hop.timestamp.to_rfc3339(),
+                ttl_seconds: hop.ttl_seconds,
+                strategy,
+                strategy_custom,
+                from_cache: hop.from_cache,
+            }
+        }).collect(),
+        depth: d.depth,
+        origin_subject_id: d.origin_subject_id.clone(),
+        actor_subject_id: d.actor_subject_id.clone(),
+        delegated: d.delegated,
+        age_seconds: d.age_seconds.to_string(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Native → WIT: OwnedExtensions (for result writeback)
+// ---------------------------------------------------------------------------
+
 pub(crate) fn native_owned_extensions_to_wit(
     ext: &cpex_core::extensions::container::OwnedExtensions,
 ) -> Extensions {
@@ -1414,5 +1733,159 @@ mod tests {
         assert_eq!(comp.tokens.as_ref().unwrap().total_tokens, 300);
         assert_eq!(comp.model, Some("claude-opus-4".into()));
         assert_eq!(comp.latency_ms, Some(1500));
+    }
+
+    // ── Identity Payload Conversion ────────────────────────────────────────
+
+    #[test]
+    fn test_identity_payload_minimal() {
+        let wit = IdentityPayload {
+            source: TokenSource::Bearer,
+            source_custom: None,
+            source_header: None,
+            headers: vec![],
+            client_host: None,
+            client_port: None,
+            subject: None,
+            client: None,
+            caller_workload: None,
+            delegation: None,
+            resolved_at: None,
+            raw_claims: None,
+        };
+
+        let native = super::wit_identity_payload_to_native(wit);
+        assert!(matches!(native.source(), cpex_core::identity::TokenSource::Bearer));
+        assert!(native.subject.is_none());
+        assert!(native.client.is_none());
+        assert!(native.caller_workload.is_none());
+        assert!(native.delegation.is_none());
+        assert!(native.resolved_at.is_none());
+        assert!(native.raw_claims.is_empty());
+    }
+
+    #[test]
+    fn test_identity_payload_with_subject_and_headers() {
+        let wit = IdentityPayload {
+            source: TokenSource::Custom,
+            source_custom: Some("oauth2".into()),
+            source_header: Some("x-custom-auth".into()),
+            headers: vec![
+                ("x-user-id".into(), "alice".into()),
+                ("authorization".into(), "Bearer tok".into()),
+            ],
+            client_host: Some("10.0.0.1".into()),
+            client_port: Some(443),
+            subject: Some(SubjectExtension {
+                id: Some("alice".into()),
+                subject_type: Some(SubjectType::User),
+                roles: vec!["admin".into()],
+                permissions: vec!["read".into(), "write".into()],
+                teams: vec!["engineering".into()],
+                claims: vec![("org".into(), "acme".into())],
+            }),
+            client: None,
+            caller_workload: None,
+            delegation: None,
+            resolved_at: Some("2026-01-15T10:30:00Z".into()),
+            raw_claims: Some(r#"{"sub":"alice","iss":"idp"}"#.into()),
+        };
+
+        let native = super::wit_identity_payload_to_native(wit);
+        assert!(matches!(native.source(), cpex_core::identity::TokenSource::Custom(s) if s == "oauth2"));
+        assert_eq!(native.source_header(), Some("x-custom-auth"));
+        assert_eq!(native.headers().get("x-user-id"), Some(&"alice".to_string()));
+        assert_eq!(native.client_host(), Some("10.0.0.1"));
+        assert_eq!(native.client_port(), Some(443));
+
+        let subject = native.subject.unwrap();
+        assert_eq!(subject.id.as_deref(), Some("alice"));
+        assert_eq!(subject.subject_type, Some(NativeSubjectType::User));
+        assert!(subject.roles.contains("admin"));
+        assert!(subject.permissions.contains("read"));
+        assert!(subject.teams.contains("engineering"));
+
+        assert!(native.resolved_at.is_some());
+        assert_eq!(native.raw_claims.get("sub").and_then(|v| v.as_str()), Some("alice"));
+    }
+
+    // ── Delegation Payload Conversion ──────────────────────────────────────
+
+    #[test]
+    fn test_delegation_payload_minimal() {
+        let wit = DelegationPayload {
+            target_name: "my-tool".into(),
+            target_type: TargetType::Tool,
+            target_type_custom: None,
+            target_audience: None,
+            required_permissions: vec![],
+            trust_domain: None,
+            auth_enforced_by: AuthEnforcedBy::Caller,
+            route_attenuation: None,
+            delegated_token: None,
+            delegation_update: None,
+            delegation_mode: None,
+            minted_at: None,
+            metadata: None,
+        };
+
+        let native = super::wit_delegation_payload_to_native(wit);
+        assert_eq!(native.target_name(), "my-tool");
+        assert!(matches!(native.target_type(), NativeTargetType::Tool));
+        assert!(matches!(native.auth_enforced_by(), NativeAuthEnforcedBy::Caller));
+        assert!(native.delegated_token.is_none());
+        assert!(native.delegation_update.is_none());
+        assert!(native.delegation_mode.is_none());
+    }
+
+    #[test]
+    fn test_delegation_payload_full() {
+        let wit = DelegationPayload {
+            target_name: "query-svc".into(),
+            target_type: TargetType::Service,
+            target_type_custom: None,
+            target_audience: Some("https://api.example.com".into()),
+            required_permissions: vec!["read:data".into(), "write:logs".into()],
+            trust_domain: Some("corp.internal".into()),
+            auth_enforced_by: AuthEnforcedBy::Both,
+            route_attenuation: Some(AttenuationConfig {
+                capabilities: vec!["read".into()],
+                resource_template: Some("/api/v1/*".into()),
+                actions: vec!["GET".into()],
+                ttl_seconds: Some(300),
+            }),
+            delegated_token: Some(RawDelegatedToken {
+                outbound_header: "X-Service-Token".into(),
+                audience: "https://api.example.com".into(),
+                scopes: vec!["read:data".into()],
+                expires_at: "2026-06-15T12:00:00Z".into(),
+            }),
+            delegation_update: None,
+            delegation_mode: Some(DelegationMode::AsGateway),
+            minted_at: Some("2026-06-15T11:55:00Z".into()),
+            metadata: Some(r#"{"minter":"test"}"#.into()),
+        };
+
+        let native = super::wit_delegation_payload_to_native(wit);
+        assert_eq!(native.target_name(), "query-svc");
+        assert!(matches!(native.target_type(), NativeTargetType::Service));
+        assert_eq!(native.target_audience(), Some("https://api.example.com"));
+        assert_eq!(native.required_permissions(), &["read:data", "write:logs"]);
+        assert_eq!(native.trust_domain(), Some("corp.internal"));
+        assert!(matches!(native.auth_enforced_by(), NativeAuthEnforcedBy::Both));
+
+        let att = native.route_attenuation().unwrap();
+        assert_eq!(att.capabilities, vec!["read"]);
+        assert_eq!(att.resource_template.as_deref(), Some("/api/v1/*"));
+        assert_eq!(att.ttl_seconds, Some(300));
+
+        let token = native.delegated_token.as_ref().unwrap();
+        assert_eq!(token.outbound_header, "X-Service-Token");
+        assert_eq!(token.audience, "https://api.example.com");
+        assert_eq!(token.scopes, vec!["read:data"]);
+
+        assert_eq!(native.delegation_mode, Some(NativeDelegationMode::AsGateway));
+        assert!(native.minted_at.is_some());
+        assert_eq!(native.metadata.get("minter").and_then(|v| v.as_str()), Some("test"));
     }
 }

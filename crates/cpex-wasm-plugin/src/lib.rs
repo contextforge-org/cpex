@@ -230,23 +230,50 @@ macro_rules! register_wasm_plugin {
                         );
                         $crate::__allow_hook_result(&native_ctx)
                     }
-                    // NOTE: The host sends Identity and Delegation payloads as the
-                    // Custom variant (serialized bytes with a type discriminator),
-                    // which is routed above. These match arms handle the case where
-                    // the host sends native WIT Identity/Delegation variants directly
-                    // — this does not happen today but is kept as a safety fallback.
-                    HookPayload::Identity(_ip) => {
-                        eprintln!(
-                            "[WASM] received native Identity variant on hook '{}' — not routed, returning allow",
-                            hook_name
-                        );
+                    HookPayload::Identity(ip) => {
+                        let native_payload = $crate::wit_identity_payload_to_native(ip);
+                        let any: &dyn ::std::any::Any = &native_payload;
+                        $(
+                            if let Some(typed) =
+                                any.downcast_ref::<<$hook_ty as HookTypeDef>::Payload>()
+                            {
+                                let plugin = <$plugin_ty>::default();
+                                let result = $crate::__block_on(
+                                    <$plugin_ty as HookHandler<$hook_ty>>::handle(
+                                        &plugin,
+                                        typed,
+                                        &native_ext,
+                                        &mut native_ctx,
+                                    )
+                                );
+                                return $crate::native_result_to_hook_result_generic(
+                                    result, &native_ctx,
+                                );
+                            }
+                        )+
                         $crate::__allow_hook_result(&native_ctx)
                     }
-                    HookPayload::Delegation(_dp) => {
-                        eprintln!(
-                            "[WASM] received native Delegation variant on hook '{}' — not routed, returning allow",
-                            hook_name
-                        );
+                    HookPayload::Delegation(dp) => {
+                        let native_payload = $crate::wit_delegation_payload_to_native(dp);
+                        let any: &dyn ::std::any::Any = &native_payload;
+                        $(
+                            if let Some(typed) =
+                                any.downcast_ref::<<$hook_ty as HookTypeDef>::Payload>()
+                            {
+                                let plugin = <$plugin_ty>::default();
+                                let result = $crate::__block_on(
+                                    <$plugin_ty as HookHandler<$hook_ty>>::handle(
+                                        &plugin,
+                                        typed,
+                                        &native_ext,
+                                        &mut native_ctx,
+                                    )
+                                );
+                                return $crate::native_result_to_hook_result_generic(
+                                    result, &native_ctx,
+                                );
+                            }
+                        )+
                         $crate::__allow_hook_result(&native_ctx)
                     }
                     HookPayload::Custom(gp) => {
@@ -301,7 +328,8 @@ macro_rules! register_wasm_plugin {
 
 pub use conversions::{
     native_payload_to_wit, native_result_to_hook_result_generic,
-    wit_context_to_native, wit_extensions_to_native, wit_payload_to_native,
+    wit_context_to_native, wit_delegation_payload_to_native,
+    wit_extensions_to_native, wit_identity_payload_to_native, wit_payload_to_native,
 };
 
 /// Allow-and-continue result for payloads this plugin has no handler for.
