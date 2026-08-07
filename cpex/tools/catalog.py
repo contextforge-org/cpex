@@ -194,6 +194,10 @@ class PluginCatalog:
         self.auth = Auth.Token(self.github_token) if self.github_token else None
         self.gh = Github(auth=self.auth, base_url=f"https://{self.github_api}", per_page=100)
         self.python_executable = self._get_python_executable()
+        # Set by _initialize_isolated_venv when a venv's cache metadata is being
+        # withheld until its package install succeeds; cleared by
+        # _commit_isolated_venv_cache.
+        self._pending_venv_plugin: Any = None
 
     def _get_python_executable(self) -> str:
         """Get the Python executable path for the current environment."""
@@ -792,6 +796,8 @@ class PluginCatalog:
                 # monorepo subdirectory source so its class path is importable
                 # even without a requirements file (U4).
                 self._install_package_into_venv(plugin_path, [repo_url])
+                # Venv is usable now — safe to record it as a valid cache.
+                self._commit_isolated_venv_cache()
                 logger.info("Isolated venv initialized and plugin package installed from monorepo source")
             else:
                 # For non-isolated plugins, install normally into CLI's venv
@@ -1286,6 +1292,10 @@ class PluginCatalog:
         Raises:
             RuntimeError: If venv initialization fails.
         """
+        # Drop any metadata left pending by an earlier failed install so it can
+        # never be committed on the back of a later, unrelated success.
+        self._pending_venv_plugin = None
+
         try:
             # Import here to avoid circular dependency
             from cpex.framework.isolated.client import IsolatedVenvPlugin
@@ -1336,13 +1346,23 @@ class PluginCatalog:
             except RuntimeError:
                 loop = None
 
+            # Defer the venv cache metadata: the caller still has to install the
+            # plugin's package into this venv (_install_package_into_venv), and
+            # for converted FQN plugins — which have no requirements file — that
+            # is the only step that makes the venv importable. Writing metadata
+            # now would make a failed package install leave behind a venv that
+            # reads as a valid cache, so the next run skips the install and the
+            # worker cannot import the class. _commit_isolated_venv_cache()
+            # persists it once the install has succeeded.
             if loop is None:
-                asyncio.run(isolated_plugin.initialize())
+                asyncio.run(isolated_plugin.initialize(defer_cache_metadata=True))
             else:
                 # Called from within a running event loop (e.g. Jupyter, async CLI).
                 # Run in a thread to avoid "asyncio.run cannot be called from a running event loop".
                 with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
-                    ex.submit(asyncio.run, isolated_plugin.initialize()).result()
+                    ex.submit(asyncio.run, isolated_plugin.initialize(defer_cache_metadata=True)).result()
+
+            self._pending_venv_plugin = isolated_plugin
 
             logger.info("Successfully initialized isolated venv for %s", manifest.name)
 
@@ -1486,6 +1506,24 @@ except Exception as e:
             )
         except subprocess.CalledProcessError as e:
             raise RuntimeError(f"Failed to install plugin package into venv: {e.stderr}") from e
+
+    def _commit_isolated_venv_cache(self) -> None:
+        """Persist the venv cache metadata deferred during venv initialization.
+
+        Call this on the success path only, after the plugin's package has been
+        installed into the venv — at that point the venv is genuinely usable and
+        may legitimately be treated as a valid cache on later runs. If an install
+        step raises before this, no metadata is written and the next run rebuilds
+        the venv instead of trusting a half-provisioned one.
+
+        A no-op when no venv initialization is pending, so it is safe to call
+        unconditionally.
+        """
+        pending = self._pending_venv_plugin
+        if pending is None:
+            return
+        self._pending_venv_plugin = None
+        pending.commit_cache_metadata()
 
     def _handle_plugin_installation(
         self, manifest: PluginManifest, package_path: Path, install_command: list[str] | None = None
@@ -1642,6 +1680,8 @@ except Exception as e:
                     else [tgt]
                 )
                 self._install_package_into_venv(plugin_path, pip_args)
+                # Venv is usable now — safe to record it as a valid cache.
+                self._commit_isolated_venv_cache()
             else:
                 # For non-isolated plugins, install via pip and find package path
                 self._install_package(plugin_package_name, version_constraint, use_pytest)
@@ -1810,6 +1850,8 @@ except Exception as e:
                 if plugin_path is None:
                     raise RuntimeError(f"Failed to initialize isolated venv for {manifest.name}")
                 self._install_package_into_venv(plugin_path, [install_url])
+                # Venv is usable now — safe to record it as a valid cache.
+                self._commit_isolated_venv_cache()
                 logger.info("Successfully installed into isolated venv")
             else:
                 # Install into current venv
@@ -2018,15 +2060,20 @@ except Exception as e:
                 except RuntimeError:
                     loop = None
 
+                # Defer the cache metadata until the editable install below
+                # succeeds — that install is what makes the venv importable, so
+                # a venv without it must not read back as a valid cache.
                 if loop is None:
-                    asyncio.run(isolated_plugin.initialize())
+                    asyncio.run(isolated_plugin.initialize(defer_cache_metadata=True))
                 else:
                     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
-                        ex.submit(asyncio.run, isolated_plugin.initialize()).result()
+                        ex.submit(asyncio.run, isolated_plugin.initialize(defer_cache_metadata=True)).result()
 
                 # Install the plugin in editable mode into the isolated venv from
                 # the local source (U4).
                 self._install_package_into_venv(isolated_plugin.plugin_path, ["-e", str(source)])
+                # Venv is usable now — safe to record it as a valid cache.
+                isolated_plugin.commit_cache_metadata()
 
                 plugin_path = isolated_plugin.plugin_path
                 logger.info("Successfully installed %s into isolated venv at %s", manifest.name, plugin_path)

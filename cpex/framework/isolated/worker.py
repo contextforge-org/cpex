@@ -74,6 +74,26 @@ _DEFAULT_CREDENTIAL_SOURCE = "custom"
 # this placeholder, and a plugin that needs the credential reads raw_token.
 REDACTED_HEADER_VALUE = "**********"
 
+# Shortest token the worker will use as a *substring needle*.
+#
+# Two of the three things done with a plaintext token are substring operations
+# over data the token did not come from: `_scrub_token` rewrites any header
+# key/value containing it, and `_result_contains_token` fails the task closed when
+# the serialized result contains it. Both are meaningless below a few characters
+# and actively harmful: a token of "a" makes every header containing the letter
+# "a" mangle to the placeholder, and makes any result mentioning "a" anywhere read
+# as a credential echo — failing a task closed for a leak that never happened.
+#
+# 12 is above the length of any credential a real issuer mints (the shortest
+# plausible real bearer is a ~16-char opaque API key; JWTs and SPIFFE tokens run
+# to hundreds) and well above the length at which a token collides with ordinary
+# English words, header names, and status strings by accident. A token shorter
+# than this is passed through to the plugin unchanged — it may be a legitimate
+# test fixture, and it is not the worker's job to reject it — but it is not used
+# as a needle, because at that length the needle does more damage than the leak
+# it would catch.
+MIN_SCRUBBABLE_TOKEN_LENGTH = 12
+
 # Task field the Rust host attaches the capability-filtered extensions to, and
 # the response field a plugin's modified extensions ride back on. The two names
 # differ deliberately: the response is a serialized PluginResult, and that model
@@ -118,6 +138,22 @@ def _credential_source_from_kind(kind: object) -> str:
     return _DEFAULT_CREDENTIAL_SOURCE
 
 
+def _is_scrubbable_token(token: str | None) -> bool:
+    """Report whether ``token`` is long enough to use as a substring needle.
+
+    Gates the two substring consumers of the plaintext — header scrubbing and the
+    result leak check — without gating delivery of the credential itself. See
+    ``MIN_SCRUBBABLE_TOKEN_LENGTH`` for why short tokens are excluded.
+
+    Args:
+        token: the plaintext token, or None for a non-credential hook.
+
+    Returns:
+        True if the token is usable as a needle.
+    """
+    return isinstance(token, str) and len(token) >= MIN_SCRUBBABLE_TOKEN_LENGTH
+
+
 def _scrub_token(value: object, token: str) -> object:
     """Recursively replace the plaintext token everywhere inside ``value``.
 
@@ -128,11 +164,16 @@ def _scrub_token(value: object, token: str) -> object:
 
     Args:
         value: any JSON-shaped value.
-        token: the plaintext token to scrub.
+        token: the plaintext token to scrub. An empty needle scrubs nothing:
+            ``"" in value`` is always True and ``str.replace("", x)`` injects ``x``
+            between every character, so an empty token would shred the value it
+            was meant to protect. Callers pass "" to mean "forward unscrubbed".
 
     Returns:
         A scrubbed copy, structurally the same.
     """
+    if not token:
+        return value
     if isinstance(value, str):
         return value.replace(token, REDACTED_HEADER_VALUE) if token in value else value
     if isinstance(value, dict):
@@ -287,10 +328,17 @@ def reconstruct_credential_payload(hook_type: str, payload: PluginPayload, crede
         # stays on raw_token. Any header value equal to the plaintext token (or
         # embedding it, as in "Bearer <token>") is replaced with a placeholder,
         # because headers do not redact on serialization.
+        #
+        # A token too short to be a real credential is not used as the scrub
+        # needle: replacing a 1-2 char substring rewrites every header that merely
+        # contains those characters, destroying the header map to hide a token that
+        # is not a credential in the first place. Such headers are forwarded
+        # type-coerced but unscrubbed — see MIN_SCRUBBABLE_TOKEN_LENGTH.
+        scrub_needle = token if _is_scrubbable_token(token) else ""
         headers = inbound.get("headers")
         if isinstance(headers, dict) and headers:
             # Host-supplied headers are forwarded, minus the plaintext.
-            update["headers"] = _scrub_token_from_headers(headers, token)
+            update["headers"] = _scrub_token_from_headers(headers, scrub_needle)
         elif not getattr(payload, "headers", None):
             # Synthesize {source_header: <redacted>} so an extractor that keys off
             # headers still learns which header carried the credential; it reads
@@ -300,7 +348,9 @@ def reconstruct_credential_payload(hook_type: str, payload: PluginPayload, crede
                 # Scrub the header *name* too: it is attacker-influenced input as
                 # far as this side of the boundary knows, and a source_header of
                 # "X-<token>" would otherwise put the plaintext in a dict key.
-                safe_header = source_header.replace(token, REDACTED_HEADER_VALUE)
+                # Via _scrub_token so the short-token needle guard applies here as
+                # well, rather than mangling the header name on a 1-char token.
+                safe_header = str(_scrub_token(source_header, scrub_needle))
                 update["headers"] = {safe_header: REDACTED_HEADER_VALUE}
 
         return payload.model_copy(update=update)
@@ -367,17 +417,28 @@ def _payload_secret_value(hook_type: str, payload: PluginPayload) -> str | None:
     it back off the payload (rather than threading the token through) keeps a
     single source of truth for what the hook can actually see.
 
+    This is the single choke point for every substring use of the plaintext:
+    ``execute_hook_scrubbed`` treats a None return as "non-credential hook" and
+    skips log/exception/stream scrubbing and the result leak check entirely. So a
+    token below ``MIN_SCRUBBABLE_TOKEN_LENGTH`` returns None here — it still
+    reached the plugin on the payload's ``SecretStr``, but it is not used as a
+    needle, because at that length ``_result_contains_token`` fires on any result
+    that happens to contain those few characters and fails the task closed for a
+    leak that did not occur.
+
     Args:
         hook_type: the hook being invoked.
         payload: the reconstructed payload.
 
     Returns:
-        The plaintext secret, or None if the hook carries no secret field.
+        The plaintext secret, or None if the hook carries no secret field or the
+        secret is too short to use as a substring needle.
     """
     field = "raw_token" if hook_type == IDENTITY_RESOLVE_HOOK else "bearer_token"
     secret = getattr(payload, field, None)
     if isinstance(secret, SecretStr):
-        return secret.get_secret_value()
+        plaintext = secret.get_secret_value()
+        return plaintext if _is_scrubbable_token(plaintext) else None
     return None
 
 
@@ -881,6 +942,20 @@ async def process_task(task_data, tp: TaskProcessor):
             if payload is not None and credential is not None and hook_type in CREDENTIAL_HOOKS:
                 payload = reconstruct_credential_payload(hook_type, payload, credential)
                 plaintext_token = _payload_secret_value(hook_type, payload)
+            elif payload is None and credential is not None and hook_type in CREDENTIAL_HOOKS:
+                # The host attached a credential for a credential-bearing hook but
+                # sent no payload to fold it onto, so the plaintext is discarded and
+                # the hook runs without it. That is a host/worker contract violation
+                # — every other way this path can fail raises CredentialError and
+                # logs — so it gets logged rather than dropped silently, leaving the
+                # authentication that quietly did not happen traceable. Logged, not
+                # raised: the hook itself may legitimately take no payload, and the
+                # framework's rule is that an absent payload is not an error.
+                logger.warning(
+                    "Credential field present for hook %s but no payload to reconstruct; "
+                    "the credential was not delivered to the plugin",
+                    hook_type,
+                )
 
             # The hook runs behind a scrubbing barrier: a plugin is free to
             # interpolate its own credential into a log line, an exception, a

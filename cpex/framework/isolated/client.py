@@ -50,6 +50,9 @@ class IsolatedVenvPlugin(Plugin):
             cache_root.mkdir(parents=True, exist_ok=True)
         self.cache_dir: Path = cache_root / ".cpex" / "venv_cache"
         self.cache_dir.mkdir(parents=True, exist_ok=True)
+        # Cache metadata withheld by initialize(defer_cache_metadata=True),
+        # as (venv_path, requirements_file), pending commit_cache_metadata().
+        self._pending_cache_metadata: Optional[tuple[str, Optional[Path]]] = None
 
     def _compute_requirements_hash(self, requirements_file: Optional[str]) -> str:
         """Compute SHA256 hash of requirements file content.
@@ -274,8 +277,23 @@ class IsolatedVenvPlugin(Plugin):
 
     # Called by plugins/framework/loader/plugin.py load_and_instantiate_plugin()
     # The plugins/framework/manager.py class (PluginManager) loads and registers the plugin
-    async def initialize(self) -> None:
-        """Initialize the plugin's venv environment with caching support."""
+    async def initialize(self, defer_cache_metadata: bool = False) -> None:
+        """Initialize the plugin's venv environment with caching support.
+
+        Args:
+            defer_cache_metadata: When True, do not persist the venv cache
+                metadata here — return the pending metadata state for the caller
+                to commit via :meth:`commit_cache_metadata` once the venv is
+                actually usable. Installers must set this: for converted FQN
+                plugins there is no requirements file, so the catalog-side
+                package install (PluginCatalog._install_package_into_venv) is
+                the only step that makes the venv importable. Committing
+                metadata before it means a failed package install leaves a venv
+                that reads as a valid cache, so the next run skips the install
+                and the worker cannot import the plugin class — healable only by
+                an explicit reinstall. Runtime loading (loader/plugin.py) has no
+                follow-on install and leaves this False.
+        """
         # ensure the config is validated
         if not os.path.exists(self.plugin_path):
             raise FileNotFoundError(f"plugin path not found: {self.plugin_path}")
@@ -313,10 +331,31 @@ class IsolatedVenvPlugin(Plugin):
                 self.comm.install_requirements(requirements_file)
             else:
                 logger.info("No requirements file for %s; skipping requirements install", self.config.name)
-            # Save metadata after successful creation (records requirements hash for cache validity).
-            self._save_cache_metadata(venv_path, requirements_file)
+            if defer_cache_metadata:
+                # Hold the metadata until the caller confirms the venv is usable.
+                self._pending_cache_metadata = (str(venv_path), requirements_file)
+                logger.info(
+                    "Deferring venv cache metadata for %s until the package install completes", self.config.name
+                )
+            else:
+                # Save metadata after successful creation (records requirements hash for cache validity).
+                self._save_cache_metadata(venv_path, requirements_file)
         else:
             logger.info("Using cached venv, skipping requirements installation")
+
+    def commit_cache_metadata(self) -> None:
+        """Persist venv cache metadata deferred by ``initialize(defer_cache_metadata=True)``.
+
+        Call this only once the venv is fully usable — i.e. after the plugin's
+        package has been installed into it. A no-op when nothing is pending
+        (cache hit, or metadata already written), so callers can invoke it
+        unconditionally on the success path.
+        """
+        if self._pending_cache_metadata is None:
+            return
+        venv_path, requirements_file = self._pending_cache_metadata
+        self._save_cache_metadata(venv_path, requirements_file)
+        self._pending_cache_metadata = None
 
     async def cleanup(self) -> None:
         """Cleanup resources, including stopping the worker process."""

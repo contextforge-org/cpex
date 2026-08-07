@@ -1539,6 +1539,368 @@ class TestCredentialFailClosedHardening:
             assert "SECRET-VALUE-XYZ" not in str(ce)
 
 
+class TestShortTokenNeedleGuard:
+    """A token too short to be a credential must not be used as a substring needle.
+
+    Two of the three uses of the plaintext are substring operations over data the
+    token did not come from: ``_scrub_token`` rewrites any header containing it, and
+    ``_result_contains_token`` fails the task closed when the serialized result
+    contains it. Below ``MIN_SCRUBBABLE_TOKEN_LENGTH`` both misfire — a token of
+    "a" mangles every header containing the letter "a" and reads any result
+    mentioning "a" as a credential echo. The token must still reach the plugin.
+    """
+
+    @pytest.fixture
+    def mock_plugin_dirs(self):
+        """Ensure the plugins directory exists."""
+        plugin_dirs = Path(os.getcwd()) / "tmp" / "plugins"
+        plugin_dirs.mkdir(parents=True, exist_ok=True)
+        return [str(plugin_dirs.resolve())]
+
+    def cleanup_mock_plugin_dirs(self):
+        """Test cleanup for the mock plugin directories."""
+        shutil.rmtree((Path(os.getcwd()) / "tmp").resolve(), ignore_errors=True)
+
+    @pytest.mark.parametrize(
+        "token,scrubbable",
+        [
+            pytest.param("a", False, id="one-char"),
+            pytest.param("ab", False, id="two-chars"),
+            pytest.param("Bearer", False, id="common-word"),
+            pytest.param("a" * 11, False, id="one-below-threshold"),
+            pytest.param("a" * 12, True, id="exactly-at-threshold"),
+            pytest.param("eyJhbGciOi.PLAINTEXT.sig", True, id="realistic-jwt"),
+        ],
+    )
+    def test_threshold_boundary(self, token, scrubbable):
+        """The needle guard admits real-length tokens and rejects short ones."""
+        from cpex.framework.isolated.worker import MIN_SCRUBBABLE_TOKEN_LENGTH, _is_scrubbable_token
+
+        assert MIN_SCRUBBABLE_TOKEN_LENGTH == 12
+        assert _is_scrubbable_token(token) is scrubbable
+
+    def test_empty_needle_scrubs_nothing_rather_than_shredding(self):
+        """An empty needle is a no-op, not a placeholder between every character.
+
+        ``"" in value`` is always True and ``str.replace("", x)`` interleaves ``x``
+        throughout, so an unguarded empty needle destroys the value it was meant to
+        protect.
+        """
+        from cpex.framework.isolated.worker import _scrub_token
+
+        assert _scrub_token("Bearer abc", "") == "Bearer abc"
+        assert _scrub_token({"A": ["x", {"B": "y"}]}, "") == {"A": ["x", {"B": "y"}]}
+
+    def test_short_token_does_not_mangle_supplied_headers(self):
+        """A 1-char token leaves host-supplied headers intact.
+
+        Before the guard, a token of "a" replaced every "a" in every header key and
+        value, so ``X-Trace: abc`` became ``X-Tr**********ce`` — the header map
+        destroyed to hide a token that is not a credential.
+        """
+        from pydantic import SecretStr
+
+        from cpex.framework.hooks.identity import IdentityPayload
+        from cpex.framework.isolated.worker import reconstruct_credential_payload
+
+        rebuilt = reconstruct_credential_payload(
+            "identity_resolve",
+            IdentityPayload(raw_token=SecretStr("**********"), source="bearer", headers={}),
+            {"inbound": {"token": "a", "headers": {"X-Trace": "abc", "Authorization": "Bearer a"}}},
+        )
+
+        assert rebuilt.headers == {"X-Trace": "abc", "Authorization": "Bearer a"}
+        # The credential itself still arrives, on the field that redacts.
+        assert rebuilt.raw_token.get_secret_value() == "a"
+
+    def test_short_token_does_not_mangle_synthesized_header_name(self):
+        """The synthesized-header path is guarded too, not just the supplied one."""
+        from pydantic import SecretStr
+
+        from cpex.framework.hooks.identity import IdentityPayload
+        from cpex.framework.isolated.worker import reconstruct_credential_payload
+
+        rebuilt = reconstruct_credential_payload(
+            "identity_resolve",
+            IdentityPayload(raw_token=SecretStr("**********"), source="bearer", headers={}),
+            {"inbound": {"token": "a", "source_header": "Authorization"}},
+        )
+
+        assert rebuilt.headers == {"Authorization": "**********"}
+        assert rebuilt.raw_token.get_secret_value() == "a"
+
+    def test_real_length_token_is_still_scrubbed_from_headers(self):
+        """The guard must not weaken protection for credentials of real length."""
+        from pydantic import SecretStr
+
+        from cpex.framework.hooks.identity import IdentityPayload
+        from cpex.framework.isolated.worker import reconstruct_credential_payload
+
+        token = "eyJhbGciOi.REALLENGTH.sig"
+        rebuilt = reconstruct_credential_payload(
+            "identity_resolve",
+            IdentityPayload(raw_token=SecretStr("**********"), source="bearer", headers={}),
+            {"inbound": {"token": token, "headers": {"Authorization": f"Bearer {token}", "X-Trace": "abc"}}},
+        )
+
+        assert token not in json.dumps(rebuilt.model_dump(mode="json"))
+        assert rebuilt.headers["Authorization"] == "Bearer **********"
+        assert rebuilt.headers["X-Trace"] == "abc"
+        assert rebuilt.raw_token.get_secret_value() == token
+
+    @pytest.mark.parametrize(
+        "hook_type,field",
+        [
+            pytest.param("identity_resolve", "raw_token", id="identity"),
+            pytest.param("token_delegate", "bearer_token", id="delegation"),
+        ],
+    )
+    def test_short_secret_is_not_offered_as_a_scrub_needle(self, hook_type, field):
+        """``_payload_secret_value`` withholds a short secret from the scrub path.
+
+        Returning None is what makes ``execute_hook_scrubbed`` skip the result leak
+        check, so a short token cannot fail a task closed spuriously.
+        """
+        from pydantic import SecretStr
+
+        from cpex.framework.hooks.identity import DelegationPayload, IdentityPayload
+        from cpex.framework.isolated.worker import _payload_secret_value
+
+        def build(secret):
+            if hook_type == "identity_resolve":
+                return IdentityPayload(raw_token=SecretStr(secret))
+            return DelegationPayload(target_name="t", bearer_token=SecretStr(secret))
+
+        assert _payload_secret_value(hook_type, build("ab")) is None
+        # A real-length secret is still handed over, so scrubbing keeps working.
+        assert _payload_secret_value(hook_type, build("a" * 20)) == "a" * 20
+        assert getattr(build("ab"), field).get_secret_value() == "ab"
+
+    @pytest.mark.asyncio
+    @patch("cpex.framework.isolated.worker.import_module")
+    async def test_short_token_result_echo_does_not_fail_the_task_closed(self, mock_import, mock_plugin_dirs):
+        """A result merely containing the short token's characters is not a leak.
+
+        With a token of "a", the pre-guard substring check read *any* result
+        mentioning the letter "a" as a credential echo and failed the task closed.
+        """
+        from cpex.framework.base import Plugin
+        from cpex.framework.hooks.identity import IdentityResolveResult, IdentityResult
+
+        received = {}
+
+        class ShortTokenPlugin(Plugin):
+            """Returns a result whose text contains the short token's characters."""
+
+            async def identity_resolve(self, payload, context, extensions=None):
+                received["token"] = payload.raw_token.get_secret_value()
+                return IdentityResolveResult(
+                    continue_processing=True,
+                    modified_payload=IdentityResult(reject_reason="authentication accepted"),
+                )
+
+        mock_module = MagicMock()
+        mock_module.ShortTokenPlugin = ShortTokenPlugin
+        mock_import.return_value = mock_module
+
+        config_dict = {"name": "cred_plugin", "kind": "isolated_venv", "config": {}}
+        task_data = {
+            "task_type": "load_and_run_hook",
+            "config": json.dumps(config_dict),
+            "plugin_dirs": mock_plugin_dirs,
+            "class_name": "cred_plugin.ShortTokenPlugin",
+            "hook_type": "identity_resolve",
+            "payload": {"raw_token": "**********", "source": "bearer", "headers": {}},
+            "context": {"state": {}, "global_context": {"request_id": "req-short"}, "metadata": {}},
+            "credential": {"inbound": {"token": "a", "source_header": "Authorization", "kind": "jwt"}},
+        }
+        result = await process_task(task_data, TaskProcessor())
+
+        # Not the fail-closed error dict the leak check would have produced.
+        assert not isinstance(result, dict), result
+        assert result.continue_processing is True
+        # The credential still reached the plugin.
+        assert received["token"] == "a"
+        self.cleanup_mock_plugin_dirs()
+
+    @pytest.mark.asyncio
+    @patch("cpex.framework.isolated.worker.import_module")
+    async def test_real_length_token_echo_still_fails_closed(self, mock_import, mock_plugin_dirs):
+        """The guard does not weaken the leak check for credentials of real length."""
+        from cpex.framework.base import Plugin
+        from cpex.framework.hooks.identity import IdentityResolveResult, IdentityResult
+
+        token = "REAL-LENGTH-CANARY-abc123"
+
+        class EchoingPlugin(Plugin):
+            """Hands the inbound credential back on a field that serializes clear."""
+
+            async def identity_resolve(self, payload, context, extensions=None):
+                return IdentityResolveResult(
+                    continue_processing=True,
+                    modified_payload=IdentityResult(reject_reason=payload.raw_token.get_secret_value()),
+                )
+
+        mock_module = MagicMock()
+        mock_module.EchoingPlugin = EchoingPlugin
+        mock_import.return_value = mock_module
+
+        config_dict = {"name": "cred_plugin", "kind": "isolated_venv", "config": {}}
+        task_data = {
+            "task_type": "load_and_run_hook",
+            "config": json.dumps(config_dict),
+            "plugin_dirs": mock_plugin_dirs,
+            "class_name": "cred_plugin.EchoingPlugin",
+            "hook_type": "identity_resolve",
+            "payload": {"raw_token": "**********", "source": "bearer", "headers": {}},
+            "context": {"state": {}, "global_context": {"request_id": "req-echo"}, "metadata": {}},
+            "credential": {"inbound": {"token": token, "source_header": "Authorization", "kind": "jwt"}},
+        }
+        result = await process_task(task_data, TaskProcessor())
+
+        assert isinstance(result, dict)
+        assert result["status"] == "error"
+        assert "echoed the inbound credential" in result["message"]
+        assert token not in json.dumps(result)
+        self.cleanup_mock_plugin_dirs()
+
+
+class TestCredentialWithoutPayloadIsLogged:
+    """A credential with no payload to land on must not be dropped silently.
+
+    Every other failure on the credential path either raises ``CredentialError`` or
+    logs at error level. A credential the host attached for a credential-bearing
+    hook that never reaches the plugin is an equally real contract violation, and
+    leaves authentication that quietly did not happen untraceable.
+    """
+
+    @pytest.fixture
+    def mock_plugin_dirs(self):
+        """Ensure the plugins directory exists."""
+        plugin_dirs = Path(os.getcwd()) / "tmp" / "plugins"
+        plugin_dirs.mkdir(parents=True, exist_ok=True)
+        return [str(plugin_dirs.resolve())]
+
+    def cleanup_mock_plugin_dirs(self):
+        """Test cleanup for the mock plugin directories."""
+        shutil.rmtree((Path(os.getcwd()) / "tmp").resolve(), ignore_errors=True)
+
+    def _task(self, mock_plugin_dirs, hook_type, credential, include_payload):
+        """Build a task, optionally omitting the payload field entirely."""
+        config_dict = {"name": "cred_plugin", "kind": "isolated_venv", "config": {}}
+        task_data = {
+            "task_type": "load_and_run_hook",
+            "config": json.dumps(config_dict),
+            "plugin_dirs": mock_plugin_dirs,
+            "class_name": "cred_plugin.NoPayloadPlugin",
+            "hook_type": hook_type,
+            "context": {"state": {}, "global_context": {"request_id": "req-nopayload"}, "metadata": {}},
+            "credential": credential,
+        }
+        if include_payload:
+            task_data["payload"] = {"raw_token": "**********", "source": "bearer", "headers": {}}
+        return task_data
+
+    @pytest.mark.asyncio
+    @patch("cpex.framework.isolated.worker.import_module")
+    @pytest.mark.parametrize(
+        "hook_type,credential",
+        [
+            pytest.param("identity_resolve", {"inbound": {"token": "DROPPED-CANARY-abc123"}}, id="identity"),
+            pytest.param("token_delegate", {"delegated": {"token": "DROPPED-CANARY-abc123"}}, id="delegation"),
+        ],
+    )
+    async def test_credential_without_payload_logs_a_warning(
+        self, mock_import, mock_plugin_dirs, caplog, hook_type, credential
+    ):
+        """The dropped credential is reported at warning level, naming the hook."""
+        from cpex.framework.base import Plugin
+        from cpex.framework.hooks.identity import IdentityResolveResult, IdentityResult
+
+        class NoPayloadPlugin(Plugin):
+            """Runs without a payload."""
+
+            async def identity_resolve(self, payload, context, extensions=None):
+                return IdentityResolveResult(continue_processing=True, modified_payload=IdentityResult())
+
+            async def token_delegate(self, payload, context, extensions=None):
+                return IdentityResolveResult(continue_processing=True, modified_payload=IdentityResult())
+
+        mock_module = MagicMock()
+        mock_module.NoPayloadPlugin = NoPayloadPlugin
+        mock_import.return_value = mock_module
+
+        task_data = self._task(mock_plugin_dirs, hook_type, credential, include_payload=False)
+        with caplog.at_level(logging.WARNING, logger="cpex.framework.isolated.worker"):
+            await process_task(task_data, TaskProcessor())
+
+        records = [r for r in caplog.records if "no payload to reconstruct" in r.getMessage()]
+        assert records, f"expected a warning about the dropped credential, got {caplog.text!r}"
+        assert records[0].levelno == logging.WARNING
+        assert hook_type in records[0].getMessage()
+        # The warning names the hook, never the credential it could not deliver.
+        assert "DROPPED-CANARY-abc123" not in caplog.text
+        self.cleanup_mock_plugin_dirs()
+
+    @pytest.mark.asyncio
+    @patch("cpex.framework.isolated.worker.import_module")
+    async def test_no_warning_when_payload_is_present(self, mock_import, mock_plugin_dirs, caplog):
+        """The normal reconstruction path stays quiet — the warning is not noise."""
+        from cpex.framework.base import Plugin
+        from cpex.framework.hooks.identity import IdentityResolveResult, IdentityResult
+
+        class NoPayloadPlugin(Plugin):
+            """Records nothing; the assertion is about the log, not the payload."""
+
+            async def identity_resolve(self, payload, context, extensions=None):
+                return IdentityResolveResult(continue_processing=True, modified_payload=IdentityResult())
+
+        mock_module = MagicMock()
+        mock_module.NoPayloadPlugin = NoPayloadPlugin
+        mock_import.return_value = mock_module
+
+        task_data = self._task(
+            mock_plugin_dirs,
+            "identity_resolve",
+            {"inbound": {"token": "PRESENT-CANARY-abc123"}},
+            include_payload=True,
+        )
+        with caplog.at_level(logging.WARNING, logger="cpex.framework.isolated.worker"):
+            await process_task(task_data, TaskProcessor())
+
+        assert "no payload to reconstruct" not in caplog.text
+        self.cleanup_mock_plugin_dirs()
+
+    @pytest.mark.asyncio
+    @patch("cpex.framework.isolated.worker.import_module")
+    async def test_no_warning_for_non_credential_hook_without_payload(self, mock_import, mock_plugin_dirs, caplog):
+        """A non-credential hook is outside this contract and must not warn."""
+        from cpex.framework.base import Plugin
+        from cpex.framework.models import PluginResult
+
+        class NoPayloadPlugin(Plugin):
+            """A non-credential hook that takes no payload."""
+
+            async def tool_pre_invoke(self, payload, context, extensions=None):
+                return PluginResult(continue_processing=True)
+
+        mock_module = MagicMock()
+        mock_module.NoPayloadPlugin = NoPayloadPlugin
+        mock_import.return_value = mock_module
+
+        task_data = self._task(
+            mock_plugin_dirs,
+            "tool_pre_invoke",
+            {"inbound": {"token": "IRRELEVANT-CANARY-abc"}},
+            include_payload=False,
+        )
+        with caplog.at_level(logging.WARNING, logger="cpex.framework.isolated.worker"):
+            await process_task(task_data, TaskProcessor())
+
+        assert "no payload to reconstruct" not in caplog.text
+        self.cleanup_mock_plugin_dirs()
+
+
 class TestMainFunction:
     """Test suite for the main() function."""
 

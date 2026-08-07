@@ -1912,6 +1912,69 @@ class TestNoConvertThreading:
         assert mock_handler.call_args.kwargs["convert"] is False
 
 
+class TestNoConvertMonorepoWarning:
+    """--no-convert is a no-op on the monorepo path, so it must warn there."""
+
+    def _mock_catalog_with_match(self):
+        from cpex.tools.catalog import PluginCatalog
+
+        mock_catalog = Mock(spec=PluginCatalog)
+        mock_catalog.search = Mock(return_value=[create_test_manifest()])
+        return mock_catalog
+
+    def _monorepo_console_messages(self, convert):
+        """Run _install_from_monorepo and return everything printed to the console."""
+        from cpex.tools.cli import _install_from_monorepo
+
+        mock_catalog = self._mock_catalog_with_match()
+        mock_status = Mock()
+        mock_status.__enter__ = Mock(return_value=mock_status)
+        mock_status.__exit__ = Mock(return_value=False)
+
+        with (
+            patch("cpex.tools.cli.console") as mock_console,
+            patch("cpex.tools.cli.select_plugin_from_catalog", return_value=None),
+        ):
+            mock_console.status = Mock(return_value=mock_status)
+            _install_from_monorepo("test_plugin", mock_catalog, convert=convert)
+            return [str(call.args[0]) for call in mock_console.print.call_args_list if call.args]
+
+    def test_monorepo_warns_when_no_convert_passed(self, temp_registry_dir):
+        """--no-convert on the monorepo path tells the user the flag was ignored."""
+        messages = self._monorepo_console_messages(convert=False)
+
+        warnings = [m for m in messages if "--no-convert is ignored" in m]
+        assert len(warnings) == 1, f"expected one ignored-flag warning, got {messages}"
+        # The warning must say what happened and why.
+        assert "monorepo" in warnings[0]
+        assert "isolated_venv" in warnings[0]
+
+    def test_monorepo_silent_without_no_convert(self, temp_registry_dir):
+        """Default monorepo install does not emit the ignored-flag warning."""
+        messages = self._monorepo_console_messages(convert=True)
+
+        assert not [m for m in messages if "--no-convert" in m], f"unexpected warning: {messages}"
+
+    def test_pypi_honors_flag_without_warning(self, temp_registry_dir):
+        """convert=False is honored on the pypi path, so no warning is emitted."""
+        from cpex.tools.catalog import PluginCatalog
+        from cpex.tools.cli import _install_from_pypi
+
+        mock_catalog = Mock(spec=PluginCatalog)
+        mock_catalog.install_from_pypi = Mock(return_value=(None, None))
+        mock_status = Mock()
+        mock_status.__enter__ = Mock(return_value=mock_status)
+        mock_status.__exit__ = Mock(return_value=False)
+
+        with patch("cpex.tools.cli.console") as mock_console:
+            mock_console.status = Mock(return_value=mock_status)
+            _install_from_pypi("test_package", mock_catalog, convert=False)
+            messages = [str(call.args[0]) for call in mock_console.print.call_args_list if call.args]
+
+        assert mock_catalog.install_from_pypi.call_args.kwargs["convert"] is False
+        assert not [m for m in messages if "--no-convert" in m], f"unexpected warning: {messages}"
+
+
 class TestInstallFunctionAdditional:
     """Additional tests for install() function."""
 

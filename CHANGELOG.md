@@ -15,6 +15,8 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-08-07
+
 ### Added
 
 - Auto-conversion of "bare-FQN" plugins: a plugin whose manifest `kind` is a Python class
@@ -25,6 +27,32 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/).
   the plugin's declared FQN `kind` (loaded in-process). `--no-convert` also softens an
   unknown/unsupported `kind` from a hard error to a warning. Applies to pypi/test-pypi/git/local
   installs ([#113](https://github.com/contextforge-org/cpex/pull/113)).
+- **Credential delivery to isolated workers.** Credential-bearing hooks
+  (`identity_resolve`, `token_delegate`) cross the process boundary with the credential
+  redacted by `SecretStr` serialization. The worker now reconstructs the live credential from
+  the task's `credential` field before invoking the hook, so an out-of-process plugin sees the
+  same payload an in-process one would ([#113](https://github.com/contextforge-org/cpex/pull/113)).
+- **Credential leak scrubbing on the isolated-worker boundary.** For credential-bearing hooks,
+  the worker scrubs the token from log records, exception text, and captured stdout/stderr
+  before any of it leaves the subprocess, and fails the task closed if the plugin's own result
+  echoes the token back. Log scrubbing installs a `logging.setLogRecordFactory` wrapper and
+  stream capture uses `contextlib.redirect_stdout`/`redirect_stderr` — both process-global,
+  both scoped to the hook call and restored afterward. Tokens shorter than
+  `MIN_SCRUBBABLE_TOKEN_LENGTH` (12) are still delivered to the plugin but are not used as a
+  substring needle, since a short needle matches unrelated text and would fail tasks closed
+  spuriously ([#113](https://github.com/contextforge-org/cpex/pull/113)).
+- **`Extensions` support for `isolated_venv` plugins.** The worker reconstructs a frozen
+  `Extensions` from the task's `extensions` field and passes it to the plugin, and returns a
+  plugin's modified extensions on `modified_extensions`. The inbound dict is the host's
+  capability-filtered view — slot visibility is not re-derived in the worker — and unknown
+  slots are dropped rather than raising, so a host that grows a slot ahead of the worker does
+  not take every plugin on the channel down ([#113](https://github.com/contextforge-org/cpex/pull/113)).
+- **Spawn-time `capabilities` handshake.** A worker answers a `capabilities` task with its
+  wire-protocol version and the feature names it actually implements (`credential`,
+  `extensions`, `modified_extensions`), letting the host refuse to run a plugin whose declared
+  needs the worker would otherwise silently drop. The host gates on the feature list, not on
+  the reported `cpex` version, because two builds have shipped as the same version with
+  different worker protocols ([#113](https://github.com/contextforge-org/cpex/pull/113)).
 
 ### Changed
 
@@ -58,6 +86,31 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/).
   test.pypi into a fresh isolated venv now also passes `--extra-index-url https://pypi.org/simple/`,
   so transitive dependencies (including `cpex` itself) resolve from real PyPI instead of failing
   when they are absent from test.pypi ([#113](https://github.com/contextforge-org/cpex/pull/113)).
+- **A failed package install no longer leaves a valid-looking venv cache.** Venv cache metadata
+  was persisted during `initialize()`, before the catalog installed the plugin's package into
+  the venv. Converted bare-FQN plugins have no `requirements.txt`, so that package install is
+  the only thing making the venv usable — if it failed, the install reported an error but the
+  cache read as valid, and at runtime `initialize()` skipped provisioning and the worker could
+  not import the plugin class. Metadata is now committed only after the package install
+  succeeds, so a failed install rebuilds on the next run instead of needing an explicit
+  reinstall ([#113](https://github.com/contextforge-org/cpex/pull/113)).
+- **`--no-convert` no longer silently no-ops on monorepo installs.** The catalog manifest is
+  already normalized during `catalog update`, so by dispatch there is no unconverted `kind`
+  left for the flag to honor. The monorepo path now warns that the flag was ignored and names
+  the install types that do honor it (git/pypi/test-pypi/local)
+  ([#113](https://github.com/contextforge-org/cpex/pull/113)).
+- **A dropped credential on a payload-less hook is no longer silent.** When a credential-bearing
+  hook arrived with a credential but no payload, the credential was discarded without a trace,
+  unlike every other failure on that path. It now logs a warning naming the hook (never the
+  credential) ([#113](https://github.com/contextforge-org/cpex/pull/113)).
+
+### Dependencies
+
+- `uv.lock` resolves `mcp` to 1.29.0 (was 1.27.0). No `pyproject.toml` change: the declared
+  constraint stays `mcp>=1.26.0,<2`, and 1.29.0 satisfies it. The 2.0 migration
+  (`McpError` → `MCPError`) remains tracked separately and out of the 0.1.x line
+  ([#113](https://github.com/contextforge-org/cpex/pull/113)).
+
 ## [0.1.3] - 2026-08-06
 
 ### Changed
@@ -111,7 +164,8 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/).
 
 - Initial release
 
-[Unreleased]: https://github.com/contextforge-org/cpex/compare/0.1.3...HEAD
+[Unreleased]: https://github.com/contextforge-org/cpex/compare/0.1.4...HEAD
+[0.1.4]: https://github.com/contextforge-org/cpex/compare/0.1.3...0.1.4
 [0.1.3]: https://github.com/contextforge-org/cpex/compare/0.1.2...0.1.3
 [0.1.2]: https://github.com/contextforge-org/cpex/compare/0.1.1...0.1.2
 [0.1.1]: https://github.com/contextforge-org/cpex/compare/0.1.0...0.1.1

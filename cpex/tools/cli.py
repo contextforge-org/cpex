@@ -634,8 +634,21 @@ def _install_from_monorepo(
         convert: Accepted for signature parity; monorepo installs use the
             already-normalized catalog manifest, so conversion happened at
             ``catalog update`` time and ``--no-convert`` does not apply here.
+            When False, a warning is surfaced so the ignored flag is not silent.
     """
     logger.info("Trying to install from git monorepo: %s", source)
+
+    if not convert:
+        # The monorepo path installs the catalog manifest, which was already
+        # normalized (FQN kind -> isolated_venv) during `catalog update`. There
+        # is no unconverted manifest left to honor here, so tell the user the
+        # flag had no effect rather than silently dropping it.
+        console.print(
+            ":warning: --no-convert is ignored for monorepo installs: the catalog manifest is "
+            "already normalized during catalog update, so a bare-FQN 'kind' has been converted "
+            "to isolated_venv. Use --type git, pypi, test-pypi, or local to keep the declared kind."
+        )
+        logger.warning("--no-convert ignored for monorepo install of %s (catalog manifest pre-normalized)", source)
     available_plugins = catalog.search(source)
 
     if not available_plugins:

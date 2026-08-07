@@ -836,6 +836,90 @@ class TestIsolatedVenvPlugin:
         # Should install requirements when cache is invalid
         mock_comm.install_requirements.assert_called_once()
         mock_save_metadata.assert_called_once()
+
+    @pytest.mark.asyncio
+    @patch("cpex.framework.isolated.client.VenvProcessCommunicator")
+    @patch.object(IsolatedVenvPlugin, "create_venv")
+    @patch.object(IsolatedVenvPlugin, "_is_venv_cache_valid")
+    @patch.object(IsolatedVenvPlugin, "_save_cache_metadata")
+    async def test_initialize_defers_cache_metadata(
+        self, mock_save_metadata, mock_cache_valid, mock_create_venv, mock_comm_class, plugin
+    ):
+        """initialize(defer_cache_metadata=True) must not write metadata itself.
+
+        The installer still has to install the plugin's package into the venv;
+        until that succeeds the venv is not usable and must not read back as a
+        valid cache.
+        """
+        mock_cache_valid.return_value = False
+        mock_create_venv.return_value = True
+        mock_comm_class.return_value = MagicMock()
+
+        await plugin.initialize(defer_cache_metadata=True)
+
+        mock_save_metadata.assert_not_called()
+        # Metadata is held for the caller to commit.
+        assert plugin._pending_cache_metadata is not None
+
+    @pytest.mark.asyncio
+    @patch("cpex.framework.isolated.client.VenvProcessCommunicator")
+    @patch.object(IsolatedVenvPlugin, "create_venv")
+    @patch.object(IsolatedVenvPlugin, "_is_venv_cache_valid")
+    @patch.object(IsolatedVenvPlugin, "_save_cache_metadata")
+    async def test_commit_cache_metadata_persists_deferred_state(
+        self, mock_save_metadata, mock_cache_valid, mock_create_venv, mock_comm_class, plugin
+    ):
+        """commit_cache_metadata() writes the deferred metadata exactly once."""
+        mock_cache_valid.return_value = False
+        mock_create_venv.return_value = True
+        mock_comm_class.return_value = MagicMock()
+
+        await plugin.initialize(defer_cache_metadata=True)
+        plugin.commit_cache_metadata()
+
+        mock_save_metadata.assert_called_once()
+        # Pending state is cleared, so a second commit is a no-op.
+        assert plugin._pending_cache_metadata is None
+        plugin.commit_cache_metadata()
+        mock_save_metadata.assert_called_once()
+
+    def test_commit_cache_metadata_without_pending_is_noop(self, plugin):
+        """commit_cache_metadata() is safe to call when nothing was deferred."""
+        with patch.object(plugin, "_save_cache_metadata") as mock_save_metadata:
+            plugin.commit_cache_metadata()
+
+        mock_save_metadata.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("cpex.framework.isolated.client.VenvProcessCommunicator")
+    async def test_deferred_metadata_not_written_so_cache_reads_invalid(self, mock_comm_class, plugin):
+        """End-to-end guard: deferred + never committed => cache is NOT valid.
+
+        This is the regression the deferral exists for. A converted plugin has no
+        requirements.txt, so the catalog-side package install is the only step
+        that makes the venv importable. If it fails, commit_cache_metadata() is
+        never reached, no metadata file exists, and the next run must rebuild the
+        venv rather than trusting it.
+        """
+        # Converted-plugin shape: no requirements file at all.
+        plugin.config.config.pop("requirements_file", None)
+        venv_path = plugin.plugin_path / ".venv"
+        mock_comm_class.return_value = MagicMock()
+
+        with patch.object(IsolatedVenvPlugin, "create_venv", return_value=True):
+            await plugin.initialize(defer_cache_metadata=True)
+
+        # Simulate the package install failing: commit is never called.
+        metadata_path = plugin._get_cache_metadata_path(str(venv_path))
+        assert not metadata_path.exists()
+        assert plugin._is_venv_cache_valid(str(venv_path), None) is False
+
+        # After a successful install the commit lands and the cache is trusted.
+        venv_path.mkdir(parents=True, exist_ok=True)
+        plugin.commit_cache_metadata()
+        assert metadata_path.exists()
+        assert plugin._is_venv_cache_valid(str(venv_path), None) is True
+
     @pytest.mark.asyncio
     async def test_cleanup(self, plugin):
         """Test cleanup method stops worker process."""

@@ -1655,6 +1655,113 @@ class TestPluginCatalogInstallFolderViaPipIsolated:
                 mock_venv_install.assert_called_once()
 
 
+class TestPluginCatalogVenvCacheMetadataOrdering:
+    """Venv cache metadata must be committed only after the package install.
+
+    Converted FQN plugins have no requirements.txt, so the catalog-side
+    ``_install_package_into_venv`` is the only step that makes the venv
+    importable by the worker. Committing cache metadata before it succeeds would
+    leave a venv that reads back as a valid cache, so a later run skips the
+    install and the worker cannot import the plugin class -- healable only by an
+    explicit reinstall.
+    """
+
+    def test_commit_not_called_when_package_install_fails(self, tmp_path, mock_github_env):
+        """A failed package install must leave the cache metadata uncommitted."""
+        catalog = PluginCatalog()
+        manifest = create_test_manifest(kind="isolated_venv")
+
+        with (
+            patch.object(catalog, "_download_monorepo_folder_to_temp", return_value=tmp_path / "package"),
+            patch.object(catalog, "_initialize_isolated_venv", return_value=tmp_path / "venv"),
+            patch.object(
+                catalog, "_install_package_into_venv", side_effect=RuntimeError("pip install failed")
+            ) as mock_venv_install,
+            patch.object(catalog, "_commit_isolated_venv_cache") as mock_commit,
+        ):
+            with pytest.raises(RuntimeError):
+                catalog.install_folder_via_pip(manifest)
+
+            mock_venv_install.assert_called_once()
+            # The install error propagates before the cache is ever committed.
+            mock_commit.assert_not_called()
+
+    def test_commit_called_after_successful_package_install(self, tmp_path, mock_github_env):
+        """A successful package install commits the deferred cache metadata."""
+        catalog = PluginCatalog()
+        manifest = create_test_manifest(kind="isolated_venv")
+
+        call_order = []
+
+        with (
+            patch.object(catalog, "_download_monorepo_folder_to_temp", return_value=tmp_path / "package"),
+            patch.object(catalog, "_initialize_isolated_venv", return_value=tmp_path / "venv"),
+            patch.object(
+                catalog, "_install_package_into_venv", side_effect=lambda *a, **kw: call_order.append("install")
+            ),
+            patch.object(catalog, "_commit_isolated_venv_cache", side_effect=lambda: call_order.append("commit")),
+        ):
+            catalog.install_folder_via_pip(manifest)
+
+        # Ordering is the whole point: install first, then commit.
+        assert call_order == ["install", "commit"]
+
+    def test_initialize_isolated_venv_defers_and_commit_persists(self, tmp_path, mock_github_env):
+        """_initialize_isolated_venv defers; _commit_isolated_venv_cache persists.
+
+        Asserts the real wiring end to end: initialize() is called with
+        defer_cache_metadata=True, no metadata file exists after venv init, and
+        the file only appears once the commit helper runs.
+        """
+        catalog = PluginCatalog()
+        catalog.plugin_folder = str(tmp_path / "plugins")
+        # Converted-plugin shape: a class_name FQN and no requirements file.
+        manifest = create_test_manifest(
+            kind="isolated_venv",
+            default_config={"class_name": "test_plugin.mod.TestPlugin"},
+        )
+
+        with patch.object(catalog, "_persist_manifest_to_plugin_dir"):
+            with patch("cpex.framework.isolated.client.IsolatedVenvPlugin.create_venv", return_value=True):
+                with patch("cpex.framework.isolated.client.VenvProcessCommunicator"):
+                    plugin_path = catalog._initialize_isolated_venv(manifest, tmp_path / "package")
+
+        pending = catalog._pending_venv_plugin
+        assert pending is not None
+        assert pending._pending_cache_metadata is not None
+
+        metadata_path = pending._get_cache_metadata_path(str(plugin_path / ".venv"))
+        # Nothing written yet -- the venv is not usable until the package lands.
+        assert not metadata_path.exists()
+
+        catalog._commit_isolated_venv_cache()
+
+        assert metadata_path.exists()
+        assert catalog._pending_venv_plugin is None
+
+    def test_stale_pending_cleared_on_next_initialize(self, tmp_path, mock_github_env):
+        """A pending venv from a failed install is not committed by a later one."""
+        catalog = PluginCatalog()
+        catalog.plugin_folder = str(tmp_path / "plugins")
+        manifest = create_test_manifest(
+            kind="isolated_venv",
+            default_config={"class_name": "test_plugin.mod.TestPlugin"},
+        )
+
+        stale = MagicMock()
+        catalog._pending_venv_plugin = stale
+
+        with patch.object(catalog, "_persist_manifest_to_plugin_dir"):
+            with patch("cpex.framework.isolated.client.IsolatedVenvPlugin.create_venv", return_value=True):
+                with patch("cpex.framework.isolated.client.VenvProcessCommunicator"):
+                    catalog._initialize_isolated_venv(manifest, tmp_path / "package")
+
+        catalog._commit_isolated_venv_cache()
+
+        # The stale plugin from the earlier failure is never committed.
+        stale.commit_cache_metadata.assert_not_called()
+
+
 class TestPluginCatalogProcessPyprojectExtended:
     """Extended tests for _process_pyproject method."""
 
