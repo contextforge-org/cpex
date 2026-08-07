@@ -491,7 +491,6 @@ impl Executor {
                                     owned.delegation_write_token = capabilities
                                         .contains("append_delegation")
                                         .then(WriteToken::new);
-                                    // extensions.merge_owned(owned);
                                     immutable_ok = true;
                                 }
                                 // Monotonic security labels: a plugin that can see
