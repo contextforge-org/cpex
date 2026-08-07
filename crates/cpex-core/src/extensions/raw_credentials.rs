@@ -34,11 +34,68 @@
 // extension snapshot and expects to find a working token will fail
 // loudly, not silently leak credentials by accident.
 //
-// This implicitly means **out-of-process plugins (remote / WASM)
-// cannot read or write raw credentials**. That's by design — the
-// security audit story is much simpler when "raw credentials never
-// leave the host process" is an invariant rather than a per-plugin
-// trust decision. Handlers that need raw material must run in-process.
+// # Where the process boundary actually is
+//
+// The `#[serde(skip)]` guard is a guard on *these types*, not a
+// guarantee about the host process. It means no generic path that
+// serializes an `Extensions` — the `extensions` wire channel to an
+// out-of-process host, audit dumps, trace snapshots, hot-reload
+// bundles — can carry token bytes. That much is absolute: a plugin
+// reading `extensions.raw_credentials` out-of-process sees structure
+// and metadata with empty token strings.
+//
+// It is **not** true that raw material never leaves the host process.
+// A host may read the in-memory `Zeroizing` field directly and put
+// the plaintext on a purpose-built side channel. `cpex-hosts-python`
+// does exactly that: `crates/cpex-hosts-python/src/credentials.rs`
+// builds a dedicated `credential` DTO carrying the token as a plain
+// string, so an identity resolver or token delegator can run in a
+// separate worker process. The reversal is deliberate — without it
+// those two handler kinds cannot work out-of-process at all — and it
+// is narrow by construction, not by policy: the DTO is a distinct
+// type with a hand-written redacting `Debug`, and it is the only
+// serialize site anywhere that emits token bytes.
+//
+// ## What gates the crossing
+//
+// Raw material may cross a process boundary only when all of these
+// hold. They are conditions on the host's dispatch path, not
+// properties of this module:
+//
+// - **The plugin declared the matching capability** —
+//   `read_inbound_credentials` for inbound tokens,
+//   `read_delegated_tokens` for delegated ones. The two are
+//   independently scoped; neither unlocks the other.
+// - **The hook is one of the two that model a raw token** —
+//   `identity_resolve` (`IdentityPayload.raw_token`) and
+//   `token_delegate` (`DelegationPayload.bearer_token`). Every other
+//   hook gets nothing, even for a plugin holding both capabilities.
+// - **Fail closed on both sides of the gate.** No declared capability
+//   means no DTO and no token bytes — silently, not as an error.
+//   A declared capability that cannot be honored (no extension, no
+//   matching token, an empty or whitespace-only token) is an error
+//   rather than a no-token dispatch, because a resolver handed an
+//   empty bearer may read it as "no authentication required".
+//
+// ## Residual exposure
+//
+// The gate decides *which plugin* receives a token. It does not
+// constrain what happens after: once the plaintext is resident in a
+// worker process, every transitively-installed dependency in that
+// worker's environment can read it. That is a materially larger and
+// less audited trust boundary than this process, and neither the
+// capability gate nor the transport closes it — sending raw
+// credentials out-of-process means accepting that dependency tree
+// into the credential trust boundary.
+//
+// The mitigations are real but modest, and should not be read as
+// closing that gap. The transport is a private pipe inherited only by
+// the child (no listening socket, so no other local process can read
+// it), the DTO redacts in `Debug`, and the capability gate narrows the
+// blast radius to plugins that asked. None of that helps once a
+// malicious or compromised dependency shares the worker's address
+// space. Keeping the audit story simple is a reason to prefer
+// in-process handlers, not an invariant the framework enforces.
 //
 // # Memory hygiene
 //
@@ -177,8 +234,12 @@ pub enum DelegationMode {
 /// The `token` field is `#[serde(skip)]`. Serializing a struct of
 /// this type yields `{ "source_header": "...", "kind": "..." }` —
 /// the secret material is left out. Deserializing produces a struct
-/// whose `token` is `Zeroizing::new(String::new())`. Document this
-/// invariant when handing instances across any process boundary.
+/// whose `token` is `Zeroizing::new(String::new())`.
+///
+/// A host that needs the plaintext across a process boundary must
+/// read the in-memory field and carry it on a purpose-built channel;
+/// a serialize-then-reparse silently yields an empty token. See the
+/// module docs for the conditions under which that is permitted.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RawInboundToken {
     /// The raw credential bytes. Cleared on drop via `Zeroizing`.
@@ -304,7 +365,7 @@ impl DelegationKey {
 
 /// One minted outbound credential, produced by a TokenDelegate
 /// handler and cached for re-use until expiry. The `token` field is
-/// serde-skipped under the same invariant as `RawInboundToken.token`.
+/// serde-skipped under the same rules as `RawInboundToken.token`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RawDelegatedToken {
     /// The minted outbound credential. Cleared on drop.

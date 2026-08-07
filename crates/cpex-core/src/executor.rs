@@ -504,11 +504,49 @@ impl Executor {
                                 *payload = mp;
                                 *payload_modified = true;
                             }
-                            if let Some(owned) = erased.modified_extensions {
-                                // Pointer-equality gate on the truly-immutable
-                                // input slots.
-                                let immutable_ok = extensions.validate_immutable(&owned);
-
+                            if let Some(mut owned) = erased.modified_extensions {
+                                let mut immutable_ok = false;
+                                if extensions.validate_immutable(&owned) {
+                                    // `merge_owned` enforces the tiers per
+                                    // *field*, gated on the write tokens that
+                                    // `owned` carries. It is not a slot swap: a
+                                    // field with no token keeps its canonical
+                                    // value, so an ungated edit is dropped
+                                    // rather than merged. Previously this arm
+                                    // was reached by a bare `else` that merged
+                                    // the plugin's whole capability-filtered
+                                    // view over canonical state — a plugin with
+                                    // no security capability could wipe the
+                                    // pipeline's labels by returning `custom`.
+                                    //
+                                    // The monotonic label check that used to
+                                    // live here moved into `merge_security`,
+                                    // where it applies unconditionally instead
+                                    // of only when `read_labels` was held.
+                                    //
+                                    // Authority is re-derived from *this*
+                                    // plugin's declared capabilities rather than
+                                    // read off the returned value. A handler is
+                                    // free to build its `OwnedExtensions` any
+                                    // way it likes — apl-cpex's synthetic route
+                                    // handler returns `cow_copy()` of a freshly
+                                    // accumulated `Extensions`, whose tokens
+                                    // `Clone` deliberately drops — so tokens
+                                    // surviving the round trip is a statement
+                                    // about plumbing, not about permission. The
+                                    // capability set is the real grant, and it
+                                    // cannot be widened by the return value.
+                                    owned.http_write_token = capabilities
+                                        .contains("write_headers")
+                                        .then(WriteToken::new);
+                                    owned.labels_write_token = capabilities
+                                        .contains("append_labels")
+                                        .then(WriteToken::new);
+                                    owned.delegation_write_token = capabilities
+                                        .contains("append_delegation")
+                                        .then(WriteToken::new);
+                                    immutable_ok = true;
+                                }
                                 // Monotonic security labels: a plugin that can see
                                 // labels (`read_labels`) may only add them, never
                                 // remove. A plugin without `read_labels` saw an empty

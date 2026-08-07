@@ -77,10 +77,12 @@ pub struct Extensions {
     /// `read_inbound_credentials` / `read_delegated_tokens`. Token
     /// fields inside this extension are `#[serde(skip)]`, so any
     /// serialization (logs, audit dumps, hot-reload snapshots) drops
-    /// secret material even when the slot itself survives. The
-    /// out-of-process consequence — remote / WASM plugins can't see
-    /// raw tokens at all — is intentional and documented on
-    /// `RawCredentialsExtension`.
+    /// secret material even when the slot itself survives — so no
+    /// out-of-process plugin sees token bytes over the generic
+    /// `extensions` channel. Plaintext can still reach a worker over a
+    /// host's purpose-built, capability-gated side channel; see
+    /// `RawCredentialsExtension` for the conditions and the residual
+    /// exposure.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub raw_credentials: Option<Arc<RawCredentialsExtension>>,
 
@@ -264,12 +266,39 @@ impl Extensions {
             || modified.candidate_constraint.as_ref() == self.candidate_constraint.as_deref()
     }
 
-    /// Merge an OwnedExtensions back into this Extensions.
+    /// Merge an OwnedExtensions back into this Extensions, field by field.
+    ///
+    /// # Why per-field and not per-slot
+    ///
+    /// `owned` derives from `cow_copy()` of a **capability-filtered** view, so
+    /// every sub-field the plugin could not read is *empty* in it, not merely
+    /// unchanged. `filter_extensions` blanks `security.labels`, `.subject`,
+    /// `.client`, `.caller_workload`, and `.this_workload` for a plugin without
+    /// the matching read capability. A whole-slot swap therefore writes those
+    /// blanks over canonical state: a plugin with no security capability at all
+    /// could wipe the pipeline's security labels just by returning a `custom`
+    /// value, because the swap took its empty-labels view along for the ride.
+    ///
+    /// So each writable field is merged individually and only when the matching
+    /// write token is present on `owned`. The token is minted by the executor
+    /// from the plugin's declared capabilities (`WriteToken::new()` is
+    /// `pub(crate)`), so it is the authority for *this* field, not for the slot
+    /// it happens to live in. Fields with no write capability in the tier model
+    /// — `security.subject`, `.auth_method`, `.client`, the workload identities
+    /// — are never taken from `owned` no matter which token it carries.
+    ///
+    /// Ambiguity fails closed: an absent token, an absent slot, or a
+    /// non-monotonic edit leaves the canonical value standing.
     pub fn merge_owned(&mut self, owned: OwnedExtensions) {
-        self.http = owned.http.map(|g| Arc::new(g.into_inner()));
-        self.security = owned.security.map(Arc::new);
+        self.merge_http(owned.http, owned.http_write_token.as_ref());
+        self.merge_security(owned.security, owned.labels_write_token.as_ref());
         self.candidate_constraint = owned.candidate_constraint.map(Arc::new);
-        self.delegation = owned.delegation.map(Arc::new);
+        self.merge_delegation(owned.delegation, owned.delegation_write_token.as_ref());
+
+        // `custom` is the Mutable tier with `AccessPolicy::Unrestricted` — no
+        // capability gates it, so it merges without a token. It is also the
+        // only slot in that position, which is why it must not be able to drag
+        // a gated slot along with it.
         self.custom = owned.custom.map(Arc::new);
         // `raw_credentials` is shared by Arc in `OwnedExtensions` —
         // plugins don't mutate it directly. But framework orchestrators
@@ -284,6 +313,145 @@ impl Extensions {
             self.raw_credentials = owned.raw_credentials;
         }
     }
+
+    /// Merge the guarded `http` slot — header maps and the request line.
+    ///
+    /// `write_headers` authorizes *headers*, which is what the capability is
+    /// named for. The request line (`method`, `path`, `host`, `scheme`) is
+    /// host-populated request identity that policies gate on, so it is always
+    /// preserved from canonical state and never taken from `owned`. `host` in
+    /// particular must come from a validated authority (see `HttpExtension`),
+    /// which a plugin's return value is not.
+    fn merge_http(&mut self, owned: Option<Guarded<HttpExtension>>, token: Option<&WriteToken>) {
+        let Some(owned) = owned else { return };
+        if token.is_none() {
+            return;
+        }
+        let owned = owned.into_inner();
+
+        let mut merged = match self.http.as_ref() {
+            Some(canonical) => (**canonical).clone(),
+            // No canonical http slot: there is no request line to preserve, so
+            // the returned headers stand on their own.
+            None => HttpExtension::default(),
+        };
+        merged.request_headers = owned.request_headers;
+        merged.response_headers = owned.response_headers;
+        self.http = Some(Arc::new(merged));
+    }
+
+    /// Merge the `security` slot — labels only, and only as an append.
+    ///
+    /// Labels are the Monotonic tier: `append_labels` permits growing the set
+    /// and nothing else. A returned set that is not a superset of canonical is a
+    /// removal attempt and is dropped whole rather than partially applied — a
+    /// laundered declassification is the exact attack this gate exists for, and
+    /// removal requires a `DeclassifierToken` no plugin can construct.
+    ///
+    /// Every other field on the slot is Immutable in the tier model with
+    /// `write_cap: None` — `subject`, `auth_method`, `client`, `caller_workload`,
+    /// `this_workload`, `classification`, `objects`, `data`. A labels token does
+    /// not reach them, so they are preserved from canonical state. Without this,
+    /// `append_labels` alone would let a plugin rewrite the authenticated
+    /// subject and the auth method it was authenticated by.
+    fn merge_security(&mut self, owned: Option<SecurityExtension>, token: Option<&WriteToken>) {
+        let Some(owned) = owned else { return };
+        if token.is_none() {
+            return;
+        }
+
+        let mut merged = match self.security.as_ref() {
+            Some(canonical) => (**canonical).clone(),
+            None => SecurityExtension::default(),
+        };
+
+        // Monotonic: fold in the additions, never assign the returned set.
+        // Assignment would drop any canonical label the plugin could not see,
+        // and folding makes a filtered-away label unremovable by construction.
+        if !owned.labels.is_superset(&merged.labels) {
+            // Not a superset of what the plugin was shown either — an explicit
+            // removal attempt. Drop the whole edit; the canonical set stands.
+            return;
+        }
+        for label in owned.labels.iter() {
+            merged.labels.add_label(label.clone());
+        }
+
+        self.security = Some(Arc::new(merged));
+    }
+
+    /// Merge the `delegation` slot — append-only chain growth, validated.
+    ///
+    /// The chain is the Monotonic tier: `append_delegation` permits appending
+    /// hops. A returned chain must therefore *extend* the canonical one — same
+    /// length-or-longer, with every existing hop unchanged. A shortened or
+    /// rewritten chain is a forged lineage (dropping the hop that recorded a
+    /// scope narrowing widens effective authority) and is dropped whole.
+    ///
+    /// `depth` and `delegated` are recomputed from the merged chain rather than
+    /// taken from the wire, so a plugin cannot claim a depth its chain does not
+    /// have. `origin_subject_id` is the chain's root identity and is preserved
+    /// once canonical state has one.
+    fn merge_delegation(&mut self, owned: Option<DelegationExtension>, token: Option<&WriteToken>) {
+        let Some(owned) = owned else { return };
+        if token.is_none() {
+            return;
+        }
+
+        let canonical = self.delegation.as_ref().map(|arc| (**arc).clone());
+        let mut merged = canonical.clone().unwrap_or_default();
+
+        if let Some(canonical) = canonical.as_ref() {
+            if !chain_extends(&canonical.chain, &owned.chain) {
+                return;
+            }
+        }
+        merged.chain = owned.chain;
+
+        // Derived from the chain, not asserted by the plugin.
+        // Cast is safe: a chain with > u32::MAX hops would have failed
+        // allocation long ago.
+        merged.depth = merged.chain.len() as u32;
+        merged.delegated = !merged.chain.is_empty();
+
+        // The root of the chain cannot be re-pointed once established; the
+        // current actor legitimately advances with each appended hop.
+        if merged.origin_subject_id.is_none() {
+            merged.origin_subject_id = owned.origin_subject_id;
+        }
+        merged.actor_subject_id = owned.actor_subject_id;
+        merged.age_seconds = owned.age_seconds;
+
+        self.delegation = Some(Arc::new(merged));
+    }
+}
+
+/// True when `returned` is `canonical` plus zero or more appended hops.
+///
+/// Hops are compared on the fields that carry authority — subject, audience,
+/// granted scopes, and strategy. A rewrite of any of those on an existing hop is
+/// not an append, so the whole edit is refused.
+///
+/// Public so out-of-process hosts can apply the same validation to a chain
+/// arriving over the wire before it reaches the merge, instead of reimplementing
+/// the definition of "append-only" and drifting from it.
+pub fn chain_extends(
+    canonical: &[super::delegation::DelegationHop],
+    returned: &[super::delegation::DelegationHop],
+) -> bool {
+    if returned.len() < canonical.len() {
+        return false;
+    }
+    canonical
+        .iter()
+        .zip(returned.iter())
+        .all(|(before, after)| {
+            before.subject_id == after.subject_id
+                && before.subject_type == after.subject_type
+                && before.audience == after.audience
+                && before.scopes_granted == after.scopes_granted
+                && before.strategy == after.strategy
+        })
 }
 
 /// Owned copy of extensions for plugin modification.
@@ -330,6 +498,7 @@ pub struct OwnedExtensions {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::extensions::security::SubjectExtension;
     use crate::extensions::{
         DelegationExtension, HttpExtension, RequestExtension, SecurityExtension,
     };
@@ -751,44 +920,43 @@ mod tests {
     }
 
     #[test]
-    fn test_merge_owned_with_filtered_security() {
-        // A plugin without read_labels gets empty labels in its
-        // filtered view. After cow_copy + merge_owned, the pipeline's
-        // security labels must be preserved (not overwritten with empty).
+    fn test_merge_owned_with_filtered_security_preserves_labels() {
+        // A plugin without read_labels gets empty labels in its filtered
+        // view. merge_owned must not write that blank over canonical state.
+        //
+        // This asserted the opposite before the per-field merge landed — it
+        // encoded the slot-swap bug as expected behavior.
         let mut security = SecurityExtension::default();
         security.add_label("PII");
         security.add_label("HR");
 
-        let ext = Extensions {
+        let mut ext = Extensions {
             security: Some(Arc::new(security)),
             ..Default::default()
         };
+        // Even *with* the append capability, an empty returned set must not
+        // subtract. Without the token it would not merge at all, which would
+        // make the test pass for the wrong reason.
+        ext.labels_write_token = Some(WriteToken::new());
 
-        // Simulate: plugin has no read_labels, so filtered security
-        // has empty labels. cow_copy of filtered would have empty labels.
         let mut cow = ext.cow_copy();
-
-        // Plugin's owned security has the labels (from cow_copy of full ext)
-        // But in the real flow, it would be from the filtered ext.
-        // Simulate filtered: clear labels
+        // Simulate the filtered view: no read_labels → empty label set.
         cow.security.as_mut().unwrap().labels = crate::extensions::MonotonicSet::new();
 
-        // merge_owned replaces pipeline security with owned
-        let mut ext_mut = ext.clone();
-        ext_mut.merge_owned(cow);
+        ext.merge_owned(cow);
 
-        // After merge, the security comes from the owned (which had empty labels)
-        // This is expected — the executor's monotonic check should prevent
-        // this case. merge_owned itself is just a field replacement.
-        let merged_sec = ext_mut.security.as_ref().unwrap();
-        assert!(!merged_sec.has_label("PII")); // replaced by owned
+        let merged_sec = ext.security.as_ref().unwrap();
+        assert!(
+            merged_sec.has_label("PII"),
+            "a label the plugin could not see must survive the merge"
+        );
+        assert!(merged_sec.has_label("HR"));
     }
 
     #[test]
     fn test_merge_owned_none_http_preserves_pipeline() {
         // If owned.http is None (plugin had no read_headers capability),
-        // merge_owned replaces with None. The executor should only call
-        // merge_owned when the plugin actually modified something.
+        // the canonical slot must stand — there is no edit to apply.
         let mut http = HttpExtension::default();
         http.set_request_header("X-Original", "value");
 
@@ -796,16 +964,312 @@ mod tests {
             http: Some(Arc::new(http)),
             ..Default::default()
         };
+        ext.http_write_token = Some(WriteToken::new());
 
         let mut cow = ext.cow_copy();
         cow.http = None; // simulate filtered-out HTTP
 
         ext.merge_owned(cow);
 
-        // HTTP is now None — this is the raw merge behavior.
-        // The executor guards against this by only calling merge_owned
-        // when the plugin returned modify_extensions.
-        assert!(ext.http.is_none());
+        assert_eq!(
+            ext.http
+                .as_ref()
+                .and_then(|h| h.get_request_header("X-Original")),
+            Some("value"),
+            "an absent slot in the return is not an instruction to clear it"
+        );
+    }
+
+    // -- Per-field merge gating (review finding A) --
+    //
+    // Each test below fails against the previous whole-slot `merge_owned`,
+    // which assigned `self.security = owned.security` (and likewise for http
+    // and delegation) regardless of which token `owned` carried.
+
+    #[test]
+    fn test_custom_write_cannot_wipe_security_labels() {
+        // The headline finding: a plugin with NO security capability returns a
+        // `custom` value. Its filtered view has empty labels, and the old slot
+        // swap took that view along — wiping the pipeline's labels via a slot
+        // the plugin was never gated on.
+        let mut security = SecurityExtension::default();
+        security.add_label("PII");
+
+        let mut ext = Extensions {
+            security: Some(Arc::new(security)),
+            ..Default::default()
+        };
+        // No tokens at all — this plugin declared no security capability.
+
+        let mut cow = ext.cow_copy();
+        cow.security.as_mut().unwrap().labels = crate::extensions::MonotonicSet::new();
+        cow.custom = Some([("verdict".to_string(), serde_json::json!("clean"))].into());
+
+        ext.merge_owned(cow);
+
+        assert!(
+            ext.security.as_ref().unwrap().has_label("PII"),
+            "a capability-less custom write must not wipe security labels"
+        );
+        assert_eq!(
+            ext.custom.as_ref().unwrap().get("verdict").unwrap(),
+            "clean",
+            "the legitimate custom write still lands"
+        );
+    }
+
+    #[test]
+    fn test_labels_token_cannot_rewrite_subject_or_auth_method() {
+        // `append_labels` is Monotonic on *labels*. `subject` and `auth_method`
+        // are Immutable with `write_cap: None`, so a labels token must not
+        // reach them — otherwise appending a label buys a plugin the ability to
+        // rewrite the principal it authenticated as.
+        let mut security = SecurityExtension::default();
+        security.add_label("PII");
+        security.subject = Some(SubjectExtension {
+            id: Some("real-user".into()),
+            ..Default::default()
+        });
+        security.auth_method = Some("mtls".into());
+
+        let mut ext = Extensions {
+            security: Some(Arc::new(security)),
+            ..Default::default()
+        };
+        ext.labels_write_token = Some(WriteToken::new());
+
+        let mut cow = ext.cow_copy();
+        let owned_sec = cow.security.as_mut().unwrap();
+        owned_sec.add_label("SCANNED"); // legitimate
+        owned_sec.subject = Some(SubjectExtension {
+            id: Some("attacker".into()),
+            ..Default::default()
+        });
+        owned_sec.auth_method = Some("anonymous".into());
+
+        ext.merge_owned(cow);
+
+        let merged = ext.security.as_ref().unwrap();
+        assert!(merged.has_label("SCANNED"), "the label append is honored");
+        assert!(merged.has_label("PII"), "and does not subtract");
+        assert_eq!(
+            merged.subject.as_ref().unwrap().id.as_deref(),
+            Some("real-user"),
+            "a labels token must not rewrite the authenticated subject"
+        );
+        assert_eq!(
+            merged.auth_method.as_deref(),
+            Some("mtls"),
+            "nor the auth method"
+        );
+    }
+
+    #[test]
+    fn test_label_removal_is_dropped_whole() {
+        let mut security = SecurityExtension::default();
+        security.add_label("PII");
+        security.add_label("HIPAA");
+
+        let mut ext = Extensions {
+            security: Some(Arc::new(security)),
+            ..Default::default()
+        };
+        ext.labels_write_token = Some(WriteToken::new());
+
+        let mut cow = ext.cow_copy();
+        // Drop HIPAA and add something — a laundered declassification.
+        let mut shrunk = std::collections::HashSet::new();
+        shrunk.insert("PII".to_string());
+        shrunk.insert("CLEAN".to_string());
+        cow.security.as_mut().unwrap().labels = crate::extensions::MonotonicSet::from_set(shrunk);
+
+        ext.merge_owned(cow);
+
+        let merged = ext.security.as_ref().unwrap();
+        assert!(merged.has_label("HIPAA"), "the removal is refused");
+        assert!(
+            !merged.has_label("CLEAN"),
+            "and the edit is dropped whole, not partially applied"
+        );
+    }
+
+    #[test]
+    fn test_security_merge_needs_the_labels_token() {
+        let mut security = SecurityExtension::default();
+        security.add_label("PII");
+
+        let mut ext = Extensions {
+            security: Some(Arc::new(security)),
+            ..Default::default()
+        };
+        // No labels token.
+
+        let mut cow = ext.cow_copy();
+        cow.security.as_mut().unwrap().add_label("FORGED");
+
+        ext.merge_owned(cow);
+
+        assert!(
+            !ext.security.as_ref().unwrap().has_label("FORGED"),
+            "an append without the capability is dropped"
+        );
+    }
+
+    #[test]
+    fn test_http_merge_preserves_request_line() {
+        // Policies gate on method/path/host/scheme (CHANGELOG 0.2.2), and
+        // `write_headers` does not authorize rewriting request identity.
+        let mut http = HttpExtension::default();
+        http.method = Some("POST".into());
+        http.path = Some("/api/v1/transfer".into());
+        http.host = Some("bank.internal".into());
+        http.scheme = Some("https".into());
+
+        let mut ext = Extensions {
+            http: Some(Arc::new(http)),
+            ..Default::default()
+        };
+        ext.http_write_token = Some(WriteToken::new());
+
+        let mut cow = ext.cow_copy();
+        let token = cow.http_write_token.take().expect("token propagated");
+        {
+            let h = cow.http.as_mut().unwrap().write(&token);
+            h.set_request_header("X-Scanned", "1");
+            // A worker round trip loses these; a hostile one rewrites them.
+            h.method = Some("GET".into());
+            h.path = Some("/api/v1/healthz".into());
+            h.host = Some("evil.example".into());
+            h.scheme = None;
+        }
+        cow.http_write_token = Some(token);
+
+        ext.merge_owned(cow);
+
+        let merged = ext.http.as_ref().unwrap();
+        assert_eq!(merged.method.as_deref(), Some("POST"));
+        assert_eq!(merged.path.as_deref(), Some("/api/v1/transfer"));
+        assert_eq!(merged.host.as_deref(), Some("bank.internal"));
+        assert_eq!(merged.scheme.as_deref(), Some("https"));
+        assert_eq!(
+            merged.get_request_header("X-Scanned"),
+            Some("1"),
+            "the header write it was authorized for still lands"
+        );
+    }
+
+    #[test]
+    fn test_delegation_chain_cannot_be_shortened_or_rewritten() {
+        use crate::extensions::delegation::DelegationHop;
+
+        let mut delegation = DelegationExtension::default();
+        delegation.append_hop(DelegationHop {
+            subject_id: "user-1".into(),
+            scopes_granted: vec!["read_hr".into()],
+            ..Default::default()
+        });
+        delegation.append_hop(DelegationHop {
+            subject_id: "svc-a".into(),
+            scopes_granted: vec!["read_hr".into()],
+            ..Default::default()
+        });
+        delegation.origin_subject_id = Some("user-1".into());
+
+        let mut ext = Extensions {
+            delegation: Some(Arc::new(delegation)),
+            ..Default::default()
+        };
+        ext.delegation_write_token = Some(WriteToken::new());
+
+        // Truncate to one hop, dropping the narrowing that hop recorded.
+        let mut cow = ext.cow_copy();
+        let owned_del = cow.delegation.as_mut().unwrap();
+        owned_del.chain.truncate(1);
+        owned_del.depth = 1;
+
+        ext.merge_owned(cow);
+        assert_eq!(
+            ext.delegation.as_ref().unwrap().chain.len(),
+            2,
+            "a truncated chain is not an append — refused whole"
+        );
+
+        // Rewriting the scopes on an existing hop is likewise not an append.
+        let mut cow = ext.cow_copy();
+        cow.delegation.as_mut().unwrap().chain[0].scopes_granted = vec!["admin".into()];
+
+        ext.merge_owned(cow);
+        assert_eq!(
+            ext.delegation.as_ref().unwrap().chain[0].scopes_granted,
+            vec!["read_hr".to_string()],
+            "an existing hop's granted scopes cannot be widened"
+        );
+    }
+
+    #[test]
+    fn test_delegation_append_is_honored_and_depth_recomputed() {
+        use crate::extensions::delegation::DelegationHop;
+
+        let mut delegation = DelegationExtension::default();
+        delegation.append_hop(DelegationHop {
+            subject_id: "user-1".into(),
+            scopes_granted: vec!["read_hr".into()],
+            ..Default::default()
+        });
+        delegation.origin_subject_id = Some("user-1".into());
+
+        let mut ext = Extensions {
+            delegation: Some(Arc::new(delegation)),
+            ..Default::default()
+        };
+        ext.delegation_write_token = Some(WriteToken::new());
+
+        let mut cow = ext.cow_copy();
+        let owned_del = cow.delegation.as_mut().unwrap();
+        owned_del.chain.push(DelegationHop {
+            subject_id: "svc-b".into(),
+            scopes_granted: vec!["read_hr".into()],
+            ..Default::default()
+        });
+        // Claim a depth the chain does not have, and try to re-point the root.
+        owned_del.depth = 99;
+        owned_del.origin_subject_id = Some("attacker".into());
+
+        ext.merge_owned(cow);
+
+        let merged = ext.delegation.as_ref().unwrap();
+        assert_eq!(merged.chain.len(), 2, "the append is honored");
+        assert_eq!(merged.depth, 2, "depth is recomputed, not trusted");
+        assert!(merged.delegated);
+        assert_eq!(
+            merged.origin_subject_id.as_deref(),
+            Some("user-1"),
+            "the chain root cannot be re-pointed once established"
+        );
+    }
+
+    #[test]
+    fn test_delegation_merge_needs_the_token() {
+        use crate::extensions::delegation::DelegationHop;
+
+        let mut ext = Extensions {
+            delegation: Some(Arc::new(DelegationExtension::default())),
+            ..Default::default()
+        };
+        // No delegation token.
+
+        let mut cow = ext.cow_copy();
+        cow.delegation.as_mut().unwrap().append_hop(DelegationHop {
+            subject_id: "forged".into(),
+            ..Default::default()
+        });
+
+        ext.merge_owned(cow);
+
+        assert!(
+            ext.delegation.as_ref().unwrap().chain.is_empty(),
+            "appending a hop without the capability is dropped"
+        );
     }
 
     #[test]

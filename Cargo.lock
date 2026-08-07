@@ -838,6 +838,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "cpex-hosts-python"
+version = "0.2.2"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "cpex-core",
+ "cpex-hosts-python",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "sha2 0.10.9",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "cpex-orchestration"
 version = "0.2.2"
 dependencies = [

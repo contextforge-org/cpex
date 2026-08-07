@@ -439,9 +439,12 @@ async fn apply_to_extensions_populates_security_and_preserves_existing_fields() 
         .get(&TokenRole::User)
         .expect("user token present");
     assert_eq!(user_token.source_header, "Authorization");
-    // Token bytes carried over end-to-end. Note: this only works
-    // because RawCredentialsExtension lives in-process — out-of-process
-    // serialization would strip the token field.
+    // Token bytes carried over end-to-end. This works because nothing
+    // on this path serializes the extension — the `#[serde(skip)]` on
+    // the token field would strip the bytes if it did. A host that
+    // needs the plaintext in another process reads this field directly
+    // and carries it on a capability-gated side channel; see
+    // `RawCredentialsExtension`'s module docs.
     assert_eq!(&*user_token.token, "eyJ.fake.jwt");
 }
 
