@@ -94,15 +94,22 @@ pub enum Capability {
     /// strings captured at the wire layer before validation.
     /// Narrowly scoped: only IdentityResolve handlers, forwarding
     /// plugins, and a small set of audit plugins should declare it.
-    /// Out-of-process plugins can't see these tokens regardless of
-    /// capability — token fields are `#[serde(skip)]`.
+    ///
+    /// Token fields are `#[serde(skip)]`, so this capability never
+    /// yields token *bytes* over a generic serialized `Extensions` —
+    /// an out-of-process plugin reading the slot sees metadata with
+    /// empty token strings. It can still gate delivery of plaintext
+    /// out-of-process on a host's purpose-built side channel: see
+    /// `RawCredentialsExtension`'s module docs and
+    /// `cpex-hosts-python`'s `credential` DTO.
     ReadInboundCredentials,
     /// Read minted outbound delegated tokens
     /// (`raw_credentials.delegated_tokens`) — the credentials a
     /// TokenDelegate handler produced for an upstream call. Held by
     /// forwarding / proxy plugins that re-attach them on the outbound
-    /// request. Same out-of-process caveat as
-    /// `read_inbound_credentials`.
+    /// request. Same serialization and out-of-process rules as
+    /// `read_inbound_credentials`; the two are independently scoped and
+    /// neither unlocks the other.
     ReadDelegatedTokens,
 }
 

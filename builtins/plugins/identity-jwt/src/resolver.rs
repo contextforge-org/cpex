@@ -529,7 +529,7 @@ impl HookHandler<IdentityHook> for JwtIdentityResolver {
                     ));
                 },
             },
-            TokenRole::Workload => match self.claim_mapper.map_workload(&token_data.claims) {
+            TokenRole::CallerWorkload => match self.claim_mapper.map_workload(&token_data.claims) {
                 Some(w) => updated.caller_workload = Some(w),
                 None => {
                     return PluginResult::deny(PluginViolation::new(
@@ -562,13 +562,25 @@ impl HookHandler<IdentityHook> for JwtIdentityResolver {
         //    stash by the resolver's configured role so multi-token
         //    deployments (user + client + workload) keep each
         //    credential addressable.
+        //
+        //    Record the wire format accurately. A Workload token that
+        //    reached this point has already been through
+        //    `map_workload`, which only succeeds on a SPIFFE-shaped
+        //    `sub` — so by construction it is a JWT-SVID, not a
+        //    generic JWT. Consumers that branch on `TokenKind` (audit
+        //    attribution, SPIFFE-aware validation) get the truth
+        //    rather than having to re-parse the token to discover it.
+        let kind = match self.role {
+            TokenRole::CallerWorkload => TokenKind::SpiffeJwt,
+            _ => TokenKind::Jwt,
+        };
         let mut raw_creds = updated
             .raw_credentials
             .clone()
             .unwrap_or_else(RawCredentialsExtension::default);
         raw_creds.inbound_tokens.insert(
             self.role.clone(),
-            RawInboundToken::new(raw_token, self.header.clone(), TokenKind::Jwt),
+            RawInboundToken::new(raw_token, self.header.clone(), kind),
         );
         updated.raw_credentials = Some(raw_creds);
         updated.resolved_at = Some(chrono::Utc::now());

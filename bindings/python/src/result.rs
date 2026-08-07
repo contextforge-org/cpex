@@ -27,6 +27,7 @@ use crate::conversions::{json_value_to_pyobj, serialize_payload};
 pub struct PyPipelineResult {
     pub continue_processing: bool,
     pub modified_payload: Option<Value>,
+    pub payload_modified: bool,
     pub modified_extensions: Option<Value>,
     pub violation: Option<Value>,
     pub errors: Vec<Value>,
@@ -54,6 +55,17 @@ impl PyPipelineResult {
                 })?))
             },
         }
+    }
+
+    /// Whether a plugin's payload modification was accepted.
+    ///
+    /// `modified_payload` is set on every allowed pipeline, carrying the
+    /// final payload whether or not a plugin touched it, so it never
+    /// answered "did anything change?". Read this instead — comparing
+    /// payload contents cannot see mutations to non-text content parts.
+    #[getter]
+    fn payload_modified(&self) -> bool {
+        self.payload_modified
     }
 
     #[getter]
@@ -198,6 +210,7 @@ pub fn pipeline_result_to_py(mut result: PipelineResult) -> PyResult<PyPipelineR
     Ok(PyPipelineResult {
         continue_processing: result.continue_processing,
         modified_payload: modified_payload_value,
+        payload_modified: result.payload_modified,
         modified_extensions: modified_extensions_value,
         violation: violation_value,
         errors: errors_value,

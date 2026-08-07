@@ -76,8 +76,7 @@ pub(crate) enum Step {
     /// succeeds; never produces a Deny (accumulating, same family as
     /// `Taint`). The evaluator collects the emitted constraint; a higher
     /// layer (apl-cpex) folds it into a `CandidateConstraintExtension`
-    /// the host serializes to its router. See
-    /// `docs/apl-restrict-effect-design.md`.
+    /// the host serializes to its router.
     Restrict {
         spec: crate::constraint::RestrictSpec,
     },
@@ -121,9 +120,8 @@ pub(crate) enum Step {
 /// rules.
 ///
 /// For fan-out flows that need multiple independently-queryable
-/// grants, split into `pre_invocation:` + `post_invocation:` or reach for a
-/// future per-step `as:` alias (not in v0; see the design doc's
-/// "Open design questions" section).
+/// grants, split into `pre_invocation:` + `post_invocation:`. There is
+/// no per-step alias for naming an individual delegate's grants.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DelegateStep {
     /// Plugin name — must reference an entry in the top-level
@@ -427,6 +425,11 @@ pub enum PluginInvocation<'a> {
     Step { phase: DispatchPhase },
     /// Called inside an `args:` / `result:` pipe chain on one field.
     Field {
+        /// Dotted path to the field, relative to the args or result root
+        /// — `city`, `user.ssn`, never `args.city`. The phase says which
+        /// root it hangs off: Pre addresses args, Post addresses result.
+        /// Every call site uses this convention, so an invoker can read
+        /// the field back out of a payload without guessing.
         name: &'a str,
         value: &'a serde_json::Value,
         phase: DispatchPhase,
@@ -526,6 +529,13 @@ pub enum DelegationError {
 
     #[error("delegation dispatch failed: {0}")]
     Dispatch(String),
+
+    /// A delegation step key was present but held an invalid value — a
+    /// typo'd `subject:` / `actor:`, say. Distinct from an absent key
+    /// (whose documented default applies): a present-but-wrong value must
+    /// fail rather than silently exchange a different credential shape.
+    #[error("invalid delegation config: {0}")]
+    InvalidConfig(String),
 }
 
 /// `DelegationInvoker` impl that returns `NotFound` for every call.
@@ -840,6 +850,11 @@ pub struct PluginOutcome {
     /// args/result chain, it may rewrite the field value (e.g., a PII
     /// scrubber producing a redacted string). `None` means "leave value
     /// unchanged"; always `None` for policy / post_policy invocations.
+    ///
+    /// Scoped to the field named in [`PluginInvocation::Field`] and
+    /// nothing else. A plugin that rewrote some other part of the
+    /// payload reports `None` here — that mutation travels with the
+    /// payload instead, so it isn't lost.
     pub modified_value: Option<serde_json::Value>,
 }
 

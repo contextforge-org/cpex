@@ -13,7 +13,6 @@
 // type-shared channel `raw_credentials.delegated_tokens` rides — and
 // narrows its candidate set accordingly. It is a routing directive, not
 // an access decision: it never picks a backend and never allows/denies.
-// See docs/apl-restrict-effect-design.md.
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -47,7 +46,7 @@ pub enum OnEmpty {
 /// to `max_cost_tiers` (the *set* of ceilings). CPEX cannot order tier
 /// names — that ordering is host-owned — so it emits every ceiling and
 /// the host requires `cost_tier ≤ all of them`, which is `≤ min` once the
-/// host applies its own tier order. See the design doc §2.5.1.
+/// host applies its own tier order.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct CandidateConstraintExtension {
     /// Candidate `model` must be in this set (glob-matched). `None` = no
@@ -98,7 +97,7 @@ impl CandidateConstraintExtension {
     }
 
     /// Does `backend` satisfy this constraint? This is the executable half
-    /// of the seam contract (design §2.6) — the host router (Praxis) calls
+    /// of the seam contract — the host router (Praxis) calls
     /// it per candidate to prune its eligible set, instead of
     /// reimplementing the matcher. All field semantics live here, once:
     ///

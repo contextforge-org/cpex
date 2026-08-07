@@ -265,8 +265,15 @@ type PipelineResult struct {
 	Metadata map[string]any `msgpack:"metadata,omitempty"`
 	// Payload type ID — tells the caller how to deserialize ModifiedPayload.
 	PayloadType uint8 `msgpack:"payload_type"`
-	// Modified payload as raw MessagePack bytes.
+	// Modified payload as raw MessagePack bytes. Present on every allowed
+	// pipeline, carrying the final payload whether or not a plugin touched
+	// it — check PayloadModified to learn whether anything changed.
 	ModifiedPayload []byte `msgpack:"modified_payload,omitempty"`
+	// PayloadModified reports whether a plugin's payload modification was
+	// accepted. This is the signal to test; a non-empty ModifiedPayload
+	// only means the pipeline carried a payload, and comparing payload
+	// contents cannot see mutations to non-text content parts.
+	PayloadModified bool `msgpack:"payload_modified"`
 	// Modified extensions as raw MessagePack bytes.
 	ModifiedExtensions []byte `msgpack:"modified_extensions,omitempty"`
 }
@@ -280,6 +287,9 @@ type TypedPipelineResult[P any] struct {
 	Metadata           map[string]any
 	PayloadType        uint8
 	ModifiedPayload    *P
+	// PayloadModified reports whether a plugin actually changed the
+	// payload. See PipelineResult.PayloadModified.
+	PayloadModified    bool
 	ModifiedExtensions *Extensions
 }
 

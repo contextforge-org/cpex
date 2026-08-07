@@ -142,9 +142,11 @@ Authoring plugins or PDP resolvers? Depend on the lean [`cpex-sdk`](crates/cpex-
 ## Documentation
 
 - [**Vision**](https://contextforge-org.github.io/cpex/docs/vision/): the reference-monitor model and where CPEX sits.
-- [**Overview**](https://contextforge-org.github.io/cpex/docs/overview/): the model in motion, with the scenario above end to end.
-- [**APL**](https://contextforge-org.github.io/cpex/docs/apl/): the policy language: predicates, effects, sequencing, field pipelines.
+- [**Overview**](https://contextforge-org.github.io/cpex/docs/overview/): the scenario above end to end.
 - [**Quick Start**](https://contextforge-org.github.io/cpex/docs/quickstart/): stand up CPEX as an enforcement point.
+- [**Use Cases**](https://contextforge-org.github.io/cpex/docs/use-cases/): complete integration examples with external middleware projects.
+- [**Tutorial**](https://contextforge-org.github.io/cpex/docs/tutorial/): a complete tour of the framework.
+- [**APL**](https://contextforge-org.github.io/cpex/docs/apl/): the policy pipeline configuration: predicates, effects, sequencing, field pipelines.
 
 ## Workspace layout
 

@@ -72,7 +72,15 @@ impl Default for ExecutorConfig {
 ///
 /// Background tasks are returned separately as [`BackgroundTasks`]
 /// to keep the policy result immutable.
+///
+/// `#[non_exhaustive]`: this result type keeps gaining fields as the
+/// engine grows, so it is sealed against external struct-literal
+/// construction and exhaustive destructuring — hosts read it, they don't
+/// build it. Construct via [`Self::allowed_with`] / [`Self::denied`] plus
+/// the `with_*` builders. New fields can then be added without breaking
+/// downstream readers.
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct PipelineResult {
     /// Whether the pipeline should continue processing.
     /// `false` means a plugin denied — the pipeline was halted.
@@ -80,7 +88,29 @@ pub struct PipelineResult {
 
     /// The final payload after all modifications (type-erased).
     /// `None` if the pipeline was denied before any modifications.
+    ///
+    /// Note this is `Some` on **every** allowed pipeline, carrying the
+    /// final payload whether or not a plugin touched it. To learn
+    /// whether anything actually changed, read [`Self::payload_modified`]
+    /// — do not compare payload contents, and do not read `is_some()` as
+    /// "was modified".
     pub modified_payload: Option<Box<dyn PluginPayload>>,
+
+    /// Whether any plugin's payload modification was accepted into
+    /// `modified_payload` above.
+    ///
+    /// Set by the phases that can modify (sequential, transform) at the
+    /// moment a handler's payload replaces the current one, so it
+    /// reflects what the executor actually applied: a plugin lacking the
+    /// modify capability, or one running in a read-only phase, does not
+    /// set it.
+    ///
+    /// This exists because the fact is knowable only here. A caller
+    /// comparing payloads afterwards cannot: the payload types are
+    /// type-erased with no equality, and content-shaped comparisons
+    /// (e.g. a message's text) are blind to whichever parts they don't
+    /// read.
+    pub payload_modified: bool,
 
     /// The final extensions after all modifications.
     /// `None` if no plugin modified extensions.
@@ -121,6 +151,7 @@ impl PipelineResult {
         Self {
             continue_processing: true,
             modified_payload: Some(payload),
+            payload_modified: false,
             modified_extensions: Some(extensions),
             violation: None,
             errors: Vec::new(),
@@ -128,6 +159,14 @@ impl PipelineResult {
             context_table,
             decision_log: DecisionLog::new(),
         }
+    }
+
+    /// Record that a plugin's payload modification was applied. Chained
+    /// off [`Self::allowed_with`] by the executor, mirroring
+    /// [`Self::with_errors`].
+    pub fn with_payload_modified(mut self, modified: bool) -> Self {
+        self.payload_modified = modified;
+        self
     }
 
     /// Pipeline was denied by a plugin.
@@ -139,6 +178,7 @@ impl PipelineResult {
         Self {
             continue_processing: false,
             modified_payload: None,
+            payload_modified: false,
             modified_extensions: Some(extensions),
             violation: Some(violation),
             errors: Vec::new(),
@@ -368,6 +408,10 @@ impl Executor {
         // observable. Halt-condition errors (Fail, deny) skip this and
         // become the violation directly.
         let mut errors: Vec<crate::error::PluginErrorRecord> = Vec::new();
+        // Sticky across both modifying phases: true once any handler's
+        // payload has been accepted. Reported on the result so callers
+        // read an exact signal instead of comparing payload contents.
+        let mut payload_modified = false;
 
         // The executor's private record of what each plugin did and how the
         // pipeline ruled. Threaded through the phases, finalized at each
@@ -385,6 +429,7 @@ impl Executor {
                 "SEQUENTIAL",
                 &mut errors,
                 &mut decisions,
+                &mut payload_modified,
             )
             .await
         {
@@ -411,6 +456,7 @@ impl Executor {
             "TRANSFORM",
             &mut errors,
             &mut decisions,
+            &mut payload_modified,
         )
         .await;
 
@@ -463,7 +509,8 @@ impl Executor {
         (
             PipelineResult::allowed_with(current_payload, current_extensions, ctx_table)
                 .with_errors(errors)
-                .with_decision_log(decisions),
+                .with_decision_log(decisions)
+                .with_payload_modified(payload_modified),
             BackgroundTasks::from_handles(bg_handles),
         )
     }
@@ -474,6 +521,11 @@ impl Executor {
     /// The framework retains ownership of the payload. Handlers receive
     /// a borrow and clone only if they modify. Modified payloads in
     /// the result replace the current payload.
+    ///
+    /// `payload_modified` is set to `true` when a handler's payload is
+    /// accepted, and never cleared — this is the only place that fact is
+    /// observable, so it's reported out rather than left to be guessed
+    /// from the resulting payload's contents.
     ///
     /// Each plugin's context is looked up in the context table (preserving
     /// `local_state` from previous hooks) or created fresh. After execution,
@@ -490,6 +542,7 @@ impl Executor {
         phase_label: &str,
         errors: &mut Vec<crate::error::PluginErrorRecord>,
         decisions: &mut DecisionLog,
+        payload_modified: &mut bool,
     ) -> Option<crate::error::PluginViolation> {
         for entry in entries {
             // Borrow names/ids on the happy path — allocate only when
@@ -558,12 +611,51 @@ impl Executor {
                             if let Some(mp) = erased.modified_payload {
                                 *payload = mp;
                                 action = PluginAction::ModifiedPayload;
+                                *payload_modified = true;
                             }
-                            if let Some(owned) = erased.modified_extensions {
-                                // Pointer-equality gate on the truly-immutable
-                                // input slots.
-                                let immutable_ok = extensions.validate_immutable(&owned);
-
+                            if let Some(mut owned) = erased.modified_extensions {
+                                let mut immutable_ok = false;
+                                if extensions.validate_immutable(&owned) {
+                                    // `merge_owned` enforces the tiers per
+                                    // *field*, gated on the write tokens that
+                                    // `owned` carries. It is not a slot swap: a
+                                    // field with no token keeps its canonical
+                                    // value, so an ungated edit is dropped
+                                    // rather than merged. Previously this arm
+                                    // was reached by a bare `else` that merged
+                                    // the plugin's whole capability-filtered
+                                    // view over canonical state — a plugin with
+                                    // no security capability could wipe the
+                                    // pipeline's labels by returning `custom`.
+                                    //
+                                    // The monotonic label check that used to
+                                    // live here moved into `merge_security`,
+                                    // where it applies unconditionally instead
+                                    // of only when `read_labels` was held.
+                                    //
+                                    // Authority is re-derived from *this*
+                                    // plugin's declared capabilities rather than
+                                    // read off the returned value. A handler is
+                                    // free to build its `OwnedExtensions` any
+                                    // way it likes — apl-cpex's synthetic route
+                                    // handler returns `cow_copy()` of a freshly
+                                    // accumulated `Extensions`, whose tokens
+                                    // `Clone` deliberately drops — so tokens
+                                    // surviving the round trip is a statement
+                                    // about plumbing, not about permission. The
+                                    // capability set is the real grant, and it
+                                    // cannot be widened by the return value.
+                                    owned.http_write_token = capabilities
+                                        .contains("write_headers")
+                                        .then(WriteToken::new);
+                                    owned.labels_write_token = capabilities
+                                        .contains("append_labels")
+                                        .then(WriteToken::new);
+                                    owned.delegation_write_token = capabilities
+                                        .contains("append_delegation")
+                                        .then(WriteToken::new);
+                                    immutable_ok = true;
+                                }
                                 // Monotonic security labels: a plugin that can see
                                 // labels (`read_labels`) may only add them, never
                                 // remove. A plugin without `read_labels` saw an empty
@@ -1249,6 +1341,10 @@ mod tests {
         assert!(result.continue_processing);
         assert!(result.modified_payload.is_some());
         assert!(result.violation.is_none());
+        assert!(
+            !result.payload_modified,
+            "carrying a payload is not the same as a plugin having changed it"
+        );
     }
 
     #[test]

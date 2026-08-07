@@ -9,8 +9,7 @@
 // that aren't carried by any token or fetched from anywhere: backend-free
 // policy constants like tenant→region maps, per-agent model allow-lists,
 // org defaults. Those come from a plain, operator-organized data tree that
-// lands in the evaluation bag under `data.*` (see
-// docs/apl-restrict-effect-design.md §4).
+// lands in the evaluation bag under `data.*`.
 //
 // This module is the pure contract: the `AttributeSource` trait (where a
 // tree comes from) and the `AttributeTree` value (what it is). The default

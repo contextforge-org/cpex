@@ -190,7 +190,7 @@ pub enum Effect {
     /// picks a backend and never allows/denies. Accumulating, in the same
     /// family as `Taint`: the evaluator collects the constraint, a higher
     /// layer folds it into a `CandidateConstraintExtension` the host
-    /// serializes to its router. See docs/apl-restrict-effect-design.md.
+    /// serializes to its router.
     Restrict {
         spec: crate::constraint::RestrictSpec,
     },

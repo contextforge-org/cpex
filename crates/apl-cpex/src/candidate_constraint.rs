@@ -8,7 +8,6 @@
 // wire type) the host router reads off the returned `Extensions`. This is
 // the bridge between the pure policy language and the framework's typed
 // extension slot, the same role `apply_session_taints` plays for taints.
-// See docs/apl-restrict-effect-design.md §2.4/§2.5.
 
 use apl_core::constraint::{CandidateConstraint, OnEmpty as AplOnEmpty};
 use cpex_core::extensions::{CandidateConstraintExtension, OnEmpty};
@@ -41,7 +40,7 @@ impl std::fmt::Display for ConstraintConflict {
 /// to an unrestricting result). Order-independent — the input may arrive
 /// in any order (constraints from parallel branches merge unsorted).
 ///
-/// Monotone semantics (design §2.4): allow-sets **intersect**,
+/// Monotone semantics: allow-sets **intersect**,
 /// `deny_models` **union**, `max_cost_tier` ceilings **collect** into
 /// `max_cost_tiers` (CPEX can't order tier names — the host reduces to the
 /// min), `custom` **union**, `on_empty` takes the **strictest**

@@ -128,8 +128,8 @@ impl BagBuilder {
         self
     }
 
-    /// Flatten a static attribute tree into the `data.*` namespace
-    /// (design §4.2). The tree is shared and startup-loaded, but this
+    /// Flatten a static attribute tree into the `data.*` namespace.
+    /// The tree is shared and startup-loaded, but this
     /// re-walks it and re-inserts every leaf into the bag on **each call**
     /// (a `format!` per node, a `bag.set` per leaf) — so `data.*` reads are
     /// **not** free on the request hot path. The route handler invokes this

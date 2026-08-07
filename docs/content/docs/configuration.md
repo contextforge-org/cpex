@@ -111,6 +111,29 @@ Within a route, the two authorization phases may be written nested under `author
 
 Route-level overrides can adjust a plugin's `capabilities` or `config` for a specific operation, so a scanner can be granted `read_labels` on one sensitive route without widening its access everywhere.
 
+## Groups
+
+A **group** is a named, reusable bundle of policy — `authentication:` steps, `authorization:` steps, and/or `plugins` — that routes opt into. It is the middle layer between global defaults and per-route policy. Define groups at the top-level `groups:` section, keyed by name:
+
+```yaml
+groups:
+  hr-tools:
+    authentication: [jwt-manager]        # + identity for this group
+    authorization:
+      pre_invocation:
+        - "require(role.hr)"             # + policy for this group
+```
+
+A route joins a group with the `groups:` field — a bare string or a list:
+
+```yaml
+routes:
+  - tool: get_compensation
+    groups: hr-tools                     # or: groups: [hr-tools, pii]
+```
+
+`groups:` is **sugar over tags**: `meta: { tags: [hr-tools] }` is exactly equivalent, and a host-injected runtime tag joins a group the same way when its name matches a group. Tags remain the substrate — `groups:` just names the common "join this bundle" case as a first-class field.
+
 ## Global settings and defaults
 
 Every top-level section (`plugins`, `global`, `routes`, `plugin_dirs`, `plugin_settings`) is optional. `plugin_settings` controls runtime behavior:
@@ -146,12 +169,12 @@ JWT signing material uses `decoding_key` on each `identity/jwt` trusted issuer: 
 
 With `routing_enabled: true`, the plugins that run for an operation are assembled and de-duplicated in this order, with later layers winning on conflict:
 
-1. the `all` policy group,
+1. always-on global policy,
 2. the entity `defaults`,
-3. policy groups whose tags match the operation,
+3. groups the operation joins (via `groups:` or a matching tag),
 4. the route itself.
 
-Identity (`authentication:`) plugins stack global → tag bundles → route, with `replace_inherited` to drop inherited layers when a route needs a clean set.
+Identity (`authentication:`) plugins stack global → groups → route, with `replace_inherited` to drop inherited layers when a route needs a clean set.
 
 ## Validation
 
@@ -159,7 +182,7 @@ Identity (`authentication:`) plugins stack global → tag bundles → route, wit
 
 - a duplicate plugin `name`;
 - a route with no entity matcher, or with more than one (for example both `tool:` and `resource:`);
-- a route or policy group that references an unknown plugin name;
+- a route or group that references an unknown plugin name;
 - the renamed key `identity:` (use `authentication:`).
 
 There is no hot reload or config versioning: load a changed config by rebuilding the manager.

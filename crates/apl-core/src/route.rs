@@ -71,7 +71,7 @@ pub struct RouteDecision {
     /// Backend candidate constraints emitted by `restrict` effects in any
     /// phase. Empty unless a `restrict` fired. The host bridge (apl-cpex)
     /// folds these into a `CandidateConstraintExtension` it serializes to
-    /// the router — see `docs/apl-restrict-effect-design.md` §2.5.
+    /// the router.
     pub constraints: Vec<crate::constraint::CandidateConstraint>,
     /// True if any args field was rewritten or omitted.
     pub args_modified: bool,
@@ -317,10 +317,12 @@ pub async fn evaluate_route(
 
 /// Read `root.a.b.c` from a JSON value via dot-separated path. Returns
 /// `None` if any segment is missing or the path crosses a non-object.
-pub(crate) fn get_dotted<'a>(
-    root: &'a serde_json::Value,
-    path: &str,
-) -> Option<&'a serde_json::Value> {
+///
+/// Public because host bridges read fields back out of their own payload
+/// projections — a plugin dispatched from a pipeline stage reports a new
+/// value for the field it was pointed at, and finding that field has to
+/// use the same path semantics the evaluator used to write it.
+pub fn get_dotted<'a>(root: &'a serde_json::Value, path: &str) -> Option<&'a serde_json::Value> {
     let mut cur = root;
     for seg in path.split('.') {
         cur = cur.get(seg)?;

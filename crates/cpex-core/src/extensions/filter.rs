@@ -44,8 +44,12 @@ pub enum SlotName {
     SecurityThisWorkload,
     SecurityObjects,
     SecurityData,
-    // Raw credentials sub-slots (Layer 3 — capability-gated, never
-    // visible to out-of-process plugins regardless of cap).
+    // Raw credentials sub-slots (Layer 3 — capability-gated). Token
+    // fields are `#[serde(skip)]`, so a filtered view that survives to
+    // an out-of-process plugin over the generic `extensions` channel
+    // carries metadata with empty token strings. Plaintext reaches a
+    // worker only over a host's purpose-built side channel, under the
+    // conditions documented on `RawCredentialsExtension`.
     RawCredentialsInbound,
     RawCredentialsDelegated,
 }
@@ -785,6 +789,8 @@ mod tests {
         raw.delegated_tokens.insert(
             DelegationKey {
                 subject_id: "alice".into(),
+                workload_id: None,
+                client_id: None,
                 audience: "https://api.example.com".into(),
                 scopes: vec!["read".into()],
                 mode: DelegationMode::OnBehalfOfUser,

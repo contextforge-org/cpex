@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Authors: Teryl Taylor
 //
-// FileAttributeSource — the built-in `data.*` provider (design §4.4.1).
+// FileAttributeSource — the built-in `data.*` provider.
 //
 // Reads a list of attribute files (YAML, each wrapping everything under a
 // top-level `data:` mapping) and deep-merges them into one
