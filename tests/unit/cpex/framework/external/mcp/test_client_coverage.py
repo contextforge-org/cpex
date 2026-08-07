@@ -7,10 +7,9 @@ from contextlib import AsyncExitStack
 from unittest.mock import AsyncMock, MagicMock, patch
 
 # Third-Party
-import httpx
 import orjson
 import pytest
-from mcp.types import TextContent
+from mcp_types import TextContent
 
 # First-Party
 from cpex.framework.base import PluginRef
@@ -193,8 +192,7 @@ class TestConnectHTTP:
                     raise ConnectionError("refused")
                 read = AsyncMock()
                 write = AsyncMock()
-                get_session_id = MagicMock(return_value="sid")
-                return read, write, get_session_id
+                return read, write
 
             async def __aexit__(self, *args):
                 pass
@@ -209,7 +207,7 @@ class TestConnectHTTP:
         mock_session.list_tools = AsyncMock(return_value=list_tools_result)
 
         with (
-            patch("cpex.framework.external.mcp.client.streamablehttp_client", side_effect=mock_streamable),
+            patch("cpex.framework.external.mcp.client.streamable_http_client", side_effect=mock_streamable),
             patch("cpex.framework.external.mcp.client.ClientSession", return_value=mock_session),
             patch("cpex.framework.external.mcp.client.asyncio.sleep", new_callable=AsyncMock),
         ):
@@ -231,12 +229,47 @@ class TestConnectHTTP:
             return MockCtx()
 
         with (
-            patch("cpex.framework.external.mcp.client.streamablehttp_client", side_effect=mock_streamable),
+            patch("cpex.framework.external.mcp.client.streamable_http_client", side_effect=mock_streamable),
             patch("cpex.framework.external.mcp.client.asyncio.sleep", new_callable=AsyncMock),
         ):
             plugin._exit_stack = AsyncExitStack()
             with pytest.raises(PluginError, match="connection failed after 3 attempts"):
                 await plugin._ExternalPlugin__connect_to_http_server("http://localhost:9999/mcp")
+
+    @pytest.mark.asyncio
+    async def test_streamable_client_called_with_prebuilt_client_and_terminate_on_close(self):
+        """v2 SDK contract: streamable_http_client receives a pre-built httpx client and
+        terminate_on_close=True (replacing the removed manual __terminate_http_session)."""
+        plugin = _make_plugin()
+
+        class OkCtx:
+            async def __aenter__(self):
+                return AsyncMock(), AsyncMock()
+
+            async def __aexit__(self, *args):
+                return False
+
+        mock_session = AsyncMock()
+        mock_session.initialize = AsyncMock()
+        list_tools_result = MagicMock()
+        list_tools_result.tools = []
+        mock_session.list_tools = AsyncMock(return_value=list_tools_result)
+
+        prebuilt_client = AsyncMock(spec=httpx.AsyncClient)
+
+        with (
+            patch("cpex.framework.external.mcp.client.streamable_http_client", return_value=OkCtx()) as mock_streamable,
+            patch("cpex.framework.external.mcp.client.ClientSession", return_value=mock_session),
+            patch("cpex.framework.external.mcp.client.httpx.AsyncClient", return_value=prebuilt_client),
+        ):
+            plugin._exit_stack = AsyncExitStack()
+            await plugin._ExternalPlugin__connect_to_http_server("http://localhost:9999/mcp")
+
+        mock_streamable.assert_called_once()
+        _, kwargs = mock_streamable.call_args
+        assert kwargs["terminate_on_close"] is True
+        # A pre-built AsyncClient instance is passed, not a factory callable (v2 API change).
+        assert kwargs["http_client"] is prebuilt_client
 
 
 # ===========================================================================
@@ -286,47 +319,6 @@ class TestShutdown:
         # Should not raise
         await plugin.shutdown()
         assert plugin._stdio_task is None
-
-
-# ===========================================================================
-# Terminate HTTP session
-# ===========================================================================
-
-
-class TestTerminateHTTPSession:
-    @pytest.mark.asyncio
-    async def test_no_session_id_returns(self):
-        plugin = _make_plugin()
-        plugin._session_id = None
-        # Should return early without error
-        await plugin._ExternalPlugin__terminate_http_session()
-
-    @pytest.mark.asyncio
-    async def test_with_factory(self):
-        plugin = _make_plugin()
-        plugin._session_id = "test-session"
-        mock_client = AsyncMock()
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=False)
-        plugin._http_client_factory = MagicMock(return_value=mock_client)
-
-        await plugin._ExternalPlugin__terminate_http_session()
-        mock_client.delete.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_no_factory(self):
-        plugin = _make_plugin()
-        plugin._session_id = "test-session"
-        plugin._http_client_factory = None
-
-        with patch("cpex.framework.external.mcp.client.httpx.AsyncClient") as mock_cls:
-            mock_client = AsyncMock()
-            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-            mock_client.__aexit__ = AsyncMock(return_value=False)
-            mock_cls.return_value = mock_client
-
-            await plugin._ExternalPlugin__terminate_http_session()
-            mock_client.delete.assert_called_once()
 
 
 # ===========================================================================
@@ -444,7 +436,7 @@ class TestConnectHTTPUDS:
 
         # Mock the connection to fail immediately so we can check the warning
         with (
-            patch("cpex.framework.external.mcp.client.streamablehttp_client", return_value=FailCtx()),
+            patch("cpex.framework.external.mcp.client.streamable_http_client", return_value=FailCtx()),
             patch("cpex.framework.external.mcp.client.asyncio.sleep", new_callable=AsyncMock),
             pytest.raises(PluginError),
         ):
@@ -570,8 +562,7 @@ class TestHTTPClientFactory:
             async def __aenter__(self):
                 read = AsyncMock()
                 write = AsyncMock()
-                get_session_id = MagicMock(return_value="sid")
-                return read, write, get_session_id
+                return read, write
 
             async def __aexit__(self, *args):
                 return False
@@ -592,23 +583,18 @@ class TestHTTPClientFactory:
         mock_http_settings.skip_ssl_verify = False
 
         with (
-            patch("cpex.framework.external.mcp.client.streamablehttp_client", return_value=OkCtx()),
+            patch("cpex.framework.external.mcp.client.streamable_http_client", return_value=OkCtx()),
             patch("cpex.framework.external.mcp.client.ClientSession", return_value=mock_session),
             patch("cpex.framework.external.mcp.client.create_ssl_context", return_value="sslctx"),
-            patch("cpex.framework.external.mcp.client.httpx.AsyncClient") as mock_httpx,
+            patch("cpex.framework.external.mcp.client.httpx2.AsyncClient") as mock_httpx,
             patch("cpex.framework.external.mcp.client.get_http_client_settings", return_value=mock_http_settings),
         ):
             plugin._exit_stack = AsyncExitStack()
             await plugin._ExternalPlugin__connect_to_http_server("http://localhost:9999/mcp")
 
-            assert plugin._http_client_factory is not None
-            plugin._http_client_factory(headers={"x-test": "1"}, auth=httpx.BasicAuth("u", "p"))
-
         assert mock_httpx.call_count >= 1
         _, kwargs = mock_httpx.call_args
-        assert kwargs["headers"]["x-test"] == "1"
-        assert kwargs["auth"] is not None
-        assert kwargs["verify"] == "sslctx"
+        assert kwargs.get("verify") == "sslctx"
 
 
 class TestGetPluginConfig:
@@ -730,7 +716,6 @@ class TestShutdownMoreBranches:
         plugin._stdio_stop.set = MagicMock()
         plugin._stdio_ready = MagicMock()
         plugin._exit_stack = None
-        plugin._session_id = None
 
         await plugin.shutdown()
         assert plugin._stdio_task is None
@@ -884,19 +869,3 @@ class TestConnectHTTPMoreBranches:
             await plugin._ExternalPlugin__connect_to_http_server("http://localhost:9999/mcp")
 
 
-class TestTerminateHTTPSessionErrors:
-    @pytest.mark.asyncio
-    async def test_terminate_http_session_delete_failure_is_swallowed(self, caplog):
-        plugin = _make_plugin()
-        plugin._session_id = "sid"
-
-        mock_client = AsyncMock()
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=False)
-        mock_client.delete = AsyncMock(side_effect=RuntimeError("delete failed"))
-
-        plugin._http_client_factory = MagicMock(return_value=mock_client)
-        with caplog.at_level("DEBUG", logger="cpex.framework.external.mcp.client"):
-            await plugin._ExternalPlugin__terminate_http_session()
-
-        assert any("Failed to terminate streamable HTTP session" in r.message for r in caplog.records)
