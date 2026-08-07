@@ -43,7 +43,7 @@ apl-core = { workspace = true }
 #     credential is fresh enough").
 # `json` and `bytes` are deliberately off — APL marshals JSON at its
 # own layer, and CEL bytes ops aren't needed for ABAC predicates.
-cel = { version = "0.13", default-features = false, features = ["regex", "chrono"] }
+cel = { version = "0.14", default-features = false, features = ["regex", "chrono"] }
 async-trait = { workspace = true }
 serde_yaml = { workspace = true }
 thiserror = { workspace = true }
