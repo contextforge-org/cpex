@@ -71,6 +71,10 @@ pub use apl_cpex::{
 };
 pub use cpex_core::manager::PluginManager;
 
+// WASM plugin host — sandboxed wasmtime runtime for untrusted plugins.
+#[cfg(feature = "cpex-wasm-host")]
+pub use cpex_wasm_host;
+
 // The whole aggregator, for advanced use.
 #[cfg(feature = "cpex-builtins")]
 pub use cpex_builtins;

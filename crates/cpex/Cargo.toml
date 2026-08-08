@@ -49,7 +49,8 @@ all-features = true
 default = []
 
 builtins = ["cpex-builtins/default"]
-full = ["cpex-builtins/full"]
+wasm = ["cpex-wasm-host"]
+full = ["builtins", "wasm"]
 
 # Granular passthroughs — each pulls exactly one builtin via cpex-builtins.
 jwt = ["cpex-builtins/identity-jwt"]
@@ -72,6 +73,9 @@ apl-cpex = { workspace = true }
 # `default-features = false` so the granular plugin features compose; an
 # enabling feature turns on exactly the cpex-builtins features it names.
 cpex-builtins = { workspace = true, optional = true, default-features = false }
+
+# WASM plugin host — present only when the `wasm` feature is enabled.
+cpex-wasm-host = { workspace = true, optional = true }
 
 [lints]
 workspace = true

@@ -1,0 +1,178 @@
+# Network Policy Sandbox Demo Configuration
+#
+# Demonstrates every dimension of WASI HTTP network policy enforcement.
+# The same net-sandbox-demo.wasm binary is registered 7 times under different
+# plugin names, each with a distinct network policy. Routes direct scenarios
+# to the appropriate plugin by tool name.
+#
+# Scenarios:
+#   1. net-deny-all   — no allowed_network → all outbound HTTP denied
+#   2. net-host-allow — example.com allowed; other.com denied
+#   3. net-wildcard   — *.example.com matches subdomains, not apex
+#   4. net-port       — only port 443; port 8080 denied
+#   5. net-scheme     — https only (default); plain http denied
+#   6. net-method     — GET only; POST denied
+#   7. net-multi      — two hosts with different constraints
+
+plugin_settings:
+  routing_enabled: true
+
+plugins:
+  - name: net-deny-all
+    kind: wasm://net-sandbox-demo.wasm
+    hooks: [cmf.tool_pre_invoke]
+    mode: sequential
+    priority: 10
+    on_error: fail
+    config:
+      sandbox_policy:
+        allowed_filesystem: []
+        allowed_network: []
+        allowed_env: []
+        resources:
+          max_memory_bytes: 10485760
+          max_fuel: 1000000000
+          max_execution_time_ms: 10000
+          max_instances: 10
+          max_tables: 10
+
+  - name: net-host-allow
+    kind: wasm://net-sandbox-demo.wasm
+    hooks: [cmf.tool_pre_invoke]
+    mode: sequential
+    priority: 10
+    on_error: fail
+    config:
+      sandbox_policy:
+        allowed_filesystem: []
+        allowed_network:
+          - host: "example.com"
+        allowed_env: []
+        resources:
+          max_memory_bytes: 10485760
+          max_fuel: 1000000000
+          max_execution_time_ms: 10000
+          max_instances: 10
+          max_tables: 10
+
+  - name: net-wildcard
+    kind: wasm://net-sandbox-demo.wasm
+    hooks: [cmf.tool_pre_invoke]
+    mode: sequential
+    priority: 10
+    on_error: fail
+    config:
+      sandbox_policy:
+        allowed_filesystem: []
+        allowed_network:
+          - host: "*.example.com"
+        allowed_env: []
+        resources:
+          max_memory_bytes: 10485760
+          max_fuel: 1000000000
+          max_execution_time_ms: 10000
+          max_instances: 10
+          max_tables: 10
+
+  - name: net-port
+    kind: wasm://net-sandbox-demo.wasm
+    hooks: [cmf.tool_pre_invoke]
+    mode: sequential
+    priority: 10
+    on_error: fail
+    config:
+      sandbox_policy:
+        allowed_filesystem: []
+        allowed_network:
+          - host: "example.com"
+            ports: [443]
+        allowed_env: []
+        resources:
+          max_memory_bytes: 10485760
+          max_fuel: 1000000000
+          max_execution_time_ms: 10000
+          max_instances: 10
+          max_tables: 10
+
+  - name: net-scheme
+    kind: wasm://net-sandbox-demo.wasm
+    hooks: [cmf.tool_pre_invoke]
+    mode: sequential
+    priority: 10
+    on_error: fail
+    config:
+      sandbox_policy:
+        allowed_filesystem: []
+        allowed_network:
+          - host: "example.com"
+            # schemes defaults to ["https"] — plain http denied
+        allowed_env: []
+        resources:
+          max_memory_bytes: 10485760
+          max_fuel: 1000000000
+          max_execution_time_ms: 10000
+          max_instances: 10
+          max_tables: 10
+
+  - name: net-method
+    kind: wasm://net-sandbox-demo.wasm
+    hooks: [cmf.tool_pre_invoke]
+    mode: sequential
+    priority: 10
+    on_error: fail
+    config:
+      sandbox_policy:
+        allowed_filesystem: []
+        allowed_network:
+          - host: "example.com"
+            methods: [GET]
+        allowed_env: []
+        resources:
+          max_memory_bytes: 10485760
+          max_fuel: 1000000000
+          max_execution_time_ms: 10000
+          max_instances: 10
+          max_tables: 10
+
+  - name: net-multi
+    kind: wasm://net-sandbox-demo.wasm
+    hooks: [cmf.tool_pre_invoke]
+    mode: sequential
+    priority: 10
+    on_error: fail
+    config:
+      sandbox_policy:
+        allowed_filesystem: []
+        allowed_network:
+          - host: "api.example.com"
+            ports: [443]
+            methods: [GET]
+          - host: "data.example.com"
+            ports: [443, 8443]
+            schemes: [https]
+            methods: [GET, POST]
+        allowed_env: []
+        resources:
+          max_memory_bytes: 10485760
+          max_fuel: 1000000000
+          max_execution_time_ms: 10000
+          max_instances: 10
+          max_tables: 10
+
+routes:
+  - tool: net_deny_all
+    plugins: [net-deny-all]
+  - tool: net_host_allow
+    plugins: [net-host-allow]
+  - tool: net_wildcard
+    plugins: [net-wildcard]
+  - tool: net_port
+    plugins: [net-port]
+  - tool: net_scheme
+    plugins: [net-scheme]
+  - tool: net_method
+    plugins: [net-method]
+  - tool: net_multi
+    plugins: [net-multi]
+  - tool: "*"
+    plugins: [net-deny-all]

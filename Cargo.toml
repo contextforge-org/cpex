@@ -15,6 +15,7 @@ members = [
     "crates/cpex-sdk",
     "crates/cpex-builtins",
     "crates/cpex-ffi",
+    "crates/cpex-wasm-host",
     "crates/apl-core",
     "crates/apl-cmf",
     "crates/apl-cpex",
@@ -34,6 +35,9 @@ members = [
     # stays libpython-independent (KD3). Use `cargo build -p cpex-python`
     # or `maturin develop` to build this crate explicitly.
     "bindings/python",
+]
+exclude = [
+    "crates/cpex-wasm-plugin",
 ]
 
 # `default-members` controls what `cargo build` / `cargo test` (with no
@@ -128,6 +132,7 @@ regex = "1"
 cpex-core                     = { path = "crates/cpex-core",                   version = "0.2.2" }
 cpex-orchestration            = { path = "crates/cpex-orchestration",          version = "0.2.2" }
 cpex-sdk                      = { path = "crates/cpex-sdk",                     version = "0.2.2" }
+cpex-wasm-host                = { path = "crates/cpex-wasm-host",              version = "0.2.2" }
 cpex-builtins                 = { path = "crates/cpex-builtins",               version = "0.2.2", default-features = false }
 apl-core                      = { path = "crates/apl-core",                    version = "0.2.2" }
 apl-cmf                       = { path = "crates/apl-cmf",                      version = "0.2.2" }

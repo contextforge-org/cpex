@@ -1,0 +1,83 @@
+# WASM Capabilities Demo Configuration
+#
+# Three WASM plugins with different capabilities see different views
+# of the same extensions. Demonstrates capability-gated access
+# across pre-invoke and post-invoke hooks with sandboxed WASM plugins.
+
+plugin_settings:
+  routing_enabled: true
+
+global:
+  policies:
+    all:
+      plugins: [identity-checker, header-injector, audit-logger]
+
+plugins:
+  - name: identity-checker
+    kind: wasm://identity-checker.wasm
+    hooks: [cmf.tool_pre_invoke, cmf.tool_post_invoke]
+    mode: sequential
+    priority: 10
+    on_error: fail
+    capabilities:
+      - read_labels
+      - read_subject
+      - read_roles
+    config:
+      sandbox_policy:
+        allowed_filesystem: []
+        allowed_network: []
+        allowed_env: []
+        resources:
+          max_memory_bytes: 10485760
+          max_fuel: 1000000000
+          max_execution_time_ms: 5000
+          max_instances: 10
+          max_tables: 10
+
+  - name: header-injector
+    kind: wasm://header-injector.wasm
+    hooks: [cmf.tool_pre_invoke]
+    mode: sequential
+    priority: 20
+    on_error: fail
+    capabilities:
+      - read_headers
+      - write_headers
+      - append_labels
+    config:
+      sandbox_policy:
+        allowed_filesystem: []
+        allowed_network: []
+        allowed_env: []
+        resources:
+          max_memory_bytes: 10485760
+          max_fuel: 1000000000
+          max_execution_time_ms: 5000
+          max_instances: 10
+          max_tables: 10
+
+  - name: audit-logger
+    kind: wasm://audit-logger.wasm
+    hooks: [cmf.tool_pre_invoke, cmf.tool_post_invoke]
+    mode: audit
+    priority: 100
+    on_error: ignore
+    capabilities:
+      - read_headers
+      - read_labels
+    config:
+      sandbox_policy:
+        allowed_filesystem: []
+        allowed_network: []
+        allowed_env: []
+        resources:
+          max_memory_bytes: 10485760
+          max_fuel: 1000000000
+          max_execution_time_ms: 5000
+          max_instances: 10
+          max_tables: 10
+
+routes:
+  - tool: "*"
+    plugins: []

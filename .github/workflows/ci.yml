@@ -38,6 +38,8 @@ jobs:
         with:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
+      - name: WIT consistency check
+        run: make -C crates/cpex-wasm-host check-wit
       - name: rustfmt
         run: cargo fmt --all -- --check
       - name: clippy

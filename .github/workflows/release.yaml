@@ -102,6 +102,7 @@ jobs:
             cpex-orchestration
             cpex-core
             cpex-sdk
+            cpex-wasm-host
             apl-core
             apl-cmf
             apl-cpex
