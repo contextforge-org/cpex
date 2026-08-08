@@ -301,7 +301,7 @@ pub fn native_delegation_payload_to_wit(p: &NativeDelegationPayload) -> Delegati
         delegation_update: p.delegation_update.as_ref().map(native_delegation_to_wit),
         delegation_mode: p.delegation_mode.as_ref().map(|m| match m {
             NativeDelegationMode::OnBehalfOfUser => DelegationMode::OnBehalfOfUser,
-            NativeDelegationMode::AsGateway => DelegationMode::AsGateway,
+            NativeDelegationMode::AsThisWorkload => DelegationMode::AsGateway,
             _ => DelegationMode::OnBehalfOfUser,
         }),
         minted_at: p.minted_at.map(|dt| dt.to_rfc3339()),
@@ -1077,7 +1077,7 @@ pub fn wit_delegation_payload_to_native(p: DelegationPayload) -> NativeDelegatio
     out.delegation_update = p.delegation_update.map(wit_delegation_to_native);
     out.delegation_mode = p.delegation_mode.map(|m| match m {
         DelegationMode::OnBehalfOfUser => NativeDelegationMode::OnBehalfOfUser,
-        DelegationMode::AsGateway => NativeDelegationMode::AsGateway,
+        DelegationMode::AsGateway => NativeDelegationMode::AsThisWorkload,
     });
     out.minted_at = p
         .minted_at

@@ -580,7 +580,7 @@ pub fn wit_delegation_payload_to_native(p: DelegationPayload) -> NativeDelegatio
     out.delegation_update = p.delegation_update.map(wit_delegation_to_native);
     out.delegation_mode = p.delegation_mode.map(|m| match m {
         DelegationMode::OnBehalfOfUser => NativeDelegationMode::OnBehalfOfUser,
-        DelegationMode::AsGateway => NativeDelegationMode::AsGateway,
+        DelegationMode::AsGateway => NativeDelegationMode::AsThisWorkload,
     });
     out.minted_at = p
         .minted_at
@@ -907,7 +907,7 @@ pub fn native_delegation_payload_to_wit(p: &NativeDelegationPayload) -> Delegati
         delegation_update: p.delegation_update.as_ref().map(native_delegation_ext_to_wit),
         delegation_mode: p.delegation_mode.as_ref().map(|m| match m {
             NativeDelegationMode::OnBehalfOfUser => DelegationMode::OnBehalfOfUser,
-            NativeDelegationMode::AsGateway => DelegationMode::AsGateway,
+            NativeDelegationMode::AsThisWorkload => DelegationMode::AsGateway,
             other => {
                 eprintln!("[cpex-wasm-plugin] unhandled DelegationMode variant {:?}, falling back to OnBehalfOfUser", other);
                 DelegationMode::OnBehalfOfUser
@@ -1484,6 +1484,7 @@ mod tests {
             http_write_token: None,
             labels_write_token: None,
             delegation_write_token: None,
+            candidate_constraint: None,
         };
 
         let wit = native_owned_extensions_to_wit(&owned);
@@ -1531,6 +1532,7 @@ mod tests {
             http_write_token: None,
             labels_write_token: None,
             delegation_write_token: None,
+            candidate_constraint: None,
         };
 
         let wit = native_owned_extensions_to_wit(&owned);
@@ -1562,6 +1564,7 @@ mod tests {
             http_write_token: None,
             labels_write_token: None,
             delegation_write_token: None,
+            candidate_constraint: None,
         };
 
         let wit = native_owned_extensions_to_wit(&owned);
@@ -1916,7 +1919,7 @@ mod tests {
         assert_eq!(token.audience, "https://api.example.com");
         assert_eq!(token.scopes, vec!["read:data"]);
 
-        assert_eq!(native.delegation_mode, Some(NativeDelegationMode::AsGateway));
+        assert_eq!(native.delegation_mode, Some(NativeDelegationMode::AsThisWorkload));
         assert!(native.minted_at.is_some());
         assert_eq!(native.metadata.get("minter").and_then(|v| v.as_str()), Some("test"));
     }
@@ -2180,6 +2183,7 @@ mod tests {
             http_write_token: None,
             labels_write_token: None,
             delegation_write_token: None,
+            candidate_constraint: None,
         };
 
         let wit = native_owned_extensions_to_wit(&owned);
@@ -2224,6 +2228,7 @@ mod tests {
             http_write_token: None,
             labels_write_token: None,
             delegation_write_token: None,
+            candidate_constraint: None,
         };
 
         let wit = native_owned_extensions_to_wit(&owned);
@@ -2286,6 +2291,7 @@ mod tests {
             http_write_token: None,
             labels_write_token: None,
             delegation_write_token: None,
+            candidate_constraint: None,
         };
 
         let wit = native_owned_extensions_to_wit(&owned);
