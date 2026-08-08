@@ -9,47 +9,8 @@ How the WASM plugin host, Wasmtime sandbox, and guest plugins interact.
 
 ## High-level flow
 
-```
-┌─────────────┐
-│  Your Code  │
-└──────┬──────┘
-       │ invoke("hook_name", payload, extensions, ctx)
-       ▼
-┌─────────────────────────────────────────────────────┐
-│              PluginManager                           │
-│  routes hook to matching plugin(s)                  │
-└──────┬──────────────────────────────────────────────┘
-       │
-       ▼
-┌─────────────────────────────────────────────────────┐
-│           WasmBridgeHandler                         │
-│                                                     │
-│  1. Convert native types → WIT types                │
-│  2. Reset fuel counter + epoch deadline             │
-│  3. Call into Wasmtime sandbox                      │
-│  4. Convert WIT types → native types                │
-│  5. Validate result against capability policy       │
-└──────┬──────────────────────────────────────────────┘
-       │
-       ▼
-┌─────────────────────────────────────────────────────┐
-│           Wasmtime Sandbox                          │
-│                                                     │
-│  • Isolated linear memory (per-plugin Store)        │
-│  • Fuel budget (instruction limit)                  │
-│  • Epoch timeout (wall-clock interrupt)             │
-│  • Capability-filtered extensions                   │
-│  • Gated WASI: filesystem / network / env           │
-└──────┬──────────────────────────────────────────────┘
-       │
-       ▼
-┌─────────────────────────────────────────────────────┐
-│           Guest Plugin (.wasm)                       │
-│                                                     │
-│  handle-hook(hook-name, payload, extensions, ctx)   │
-│  → HookResult                                       │
-└─────────────────────────────────────────────────────┘
-```
+
+![CPEX Component Model Usage](images/cpex_wasm_invocation_pipeline.png)
 
 ## Key components
 

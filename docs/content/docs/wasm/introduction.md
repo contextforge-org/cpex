@@ -37,34 +37,8 @@ This separation is absolute — the guest has no way to escalate beyond what the
 
 ### How the Component Model works
 
-```
-┌──────────────────────────────────────────────────────────────────┐
-│                         HOST PROCESS                              │
-│                                                                  │
-│  1. Host compiles .wasm binary into an executable component      │
-│  2. Host links imports (functions the guest may call)            │
-│  3. Host calls an exported function on the guest                │
-│                                                                  │
-│  ┌────────────────────────────────────────────────────────────┐  │
-│  │                    WASM Runtime (Wasmtime)                  │  │
-│  │                                                            │  │
-│  │  ┌──────────────────┐  WIT Interface  ┌─────────────────┐ │  │
-│  │  │  Host Functions   │◄──── imports ───│  Guest Component │ │  │
-│  │  │  (imports)        │                 │  (.wasm binary)  │ │  │
-│  │  │                   │──── exports ───►│                  │ │  │
-│  │  │  • Logging        │                 │  • Exported fn() │ │  │
-│  │  │  • Filesystem     │                 │                  │ │  │
-│  │  │  • HTTP client    │                 │  Own memory:     │ │  │
-│  │  │  • Clocks         │                 │  [isolated heap] │ │  │
-│  │  └──────────────────┘                  └─────────────────┘ │  │
-│  │                                                            │  │
-│  └────────────────────────────────────────────────────────────┘  │
-│                                                                  │
-│  4. Guest executes, calling imports as needed                    │
-│  5. Guest returns result; host reads and validates it            │
-│                                                                  │
-└──────────────────────────────────────────────────────────────────┘
-```
+
+![Wasm Component Model](images/wasm_component_flow.png)
 
 **The communication cycle:**
 
@@ -80,7 +54,10 @@ All data crosses the boundary **by value** — there are no shared pointers or r
 
 CPEX leverages the Component Model to run untrusted or third-party plugins in a controlled sandbox. At a high level:
 
-```
+
+![CPEX Component Model Usage](images/cpex_wasm_plugin_invocation.png)
+
+<!-- ```
 ┌─────────────┐         ┌───────────────────┐         ┌──────────────────┐
 │  Your App   │────────►│  cpex-wasm-host    │────────►│  Plugin (.wasm)  │
 │             │ invoke  │                   │ handle  │                  │
@@ -89,7 +66,7 @@ CPEX leverages the Component Model to run untrusted or third-party plugins in a 
 │             │◄────────│  • Capability     │◄────────│    or block      │
 │             │ result  │    filtering      │ result  │                  │
 └─────────────┘         └───────────────────┘         └──────────────────┘
-```
+``` -->
 
 - Plugins target `wasm32-wasip2` and are built with the `cpex-wasm-plugin` guest SDK
 - The host loads plugins and defines their sandbox policy (filesystem paths, network hosts, env vars, resource budgets) in declarative YAML
