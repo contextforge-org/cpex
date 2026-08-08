@@ -149,7 +149,7 @@ async fn test_token_delegation_passes_through_agent_target() {
             p.delegated_token.is_none(),
             "agent target should not mint a token"
         ),
-        None => {} // no modified payload means pass-through — also valid
+        None => {}, // no modified payload means pass-through — also valid
     }
 }
 

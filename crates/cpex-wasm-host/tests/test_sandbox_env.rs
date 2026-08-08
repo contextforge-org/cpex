@@ -91,7 +91,9 @@ async fn test_plugin_cannot_see_env_vars_without_policy() {
 
     let shared = SharedEngine::new().unwrap();
     let mut mgr = SandboxManager::with_shared_engine(&shared);
-    mgr.load_wasmplugin(&path, None, "env-sandbox-test").await.unwrap();
+    mgr.load_wasmplugin(&path, None, "env-sandbox-test")
+        .await
+        .unwrap();
 
     assert!(
         !invoke_env_check(&mut mgr, "HOME").await,

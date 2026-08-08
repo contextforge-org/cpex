@@ -71,9 +71,8 @@ fn make_http_payload(url: &str, method: &str) -> MessagePayload {
 
 async fn invoke_http_plugin(mgr: &mut SandboxManager, url: &str, method: &str) -> String {
     let payload = make_http_payload(url, method);
-    let wit_payload = cpex_wasm_host::sandbox_manager::types::HookPayload::Cmf(
-        native_payload_to_wit(&payload),
-    );
+    let wit_payload =
+        cpex_wasm_host::sandbox_manager::types::HookPayload::Cmf(native_payload_to_wit(&payload));
     let wit_ext = native_extensions_to_wit(&Extensions::default());
     let wit_ctx = native_context_to_wit(&PluginContext::default());
 
@@ -105,7 +104,9 @@ async fn test_plugin_cannot_access_network_without_policy() {
 
     let shared = SharedEngine::new().unwrap();
     let mut mgr = SandboxManager::with_shared_engine(&shared);
-    mgr.load_wasmplugin(&path, None, "net-test-deny-all").await.unwrap();
+    mgr.load_wasmplugin(&path, None, "net-test-deny-all")
+        .await
+        .unwrap();
 
     let result = invoke_http_plugin(&mut mgr, "https://example.com/", "GET").await;
     assert_eq!(
@@ -152,8 +153,11 @@ async fn test_plugin_cannot_access_network_with_unrelated_allowlist() {
 async fn test_http_request_allowed_when_host_matches() {
     init_tracing();
     let path = wasm_path();
-    assert!(path.exists(),
-        "WASM binary not found: {}. Run `make build-test-plugins` first.", path.display());
+    assert!(
+        path.exists(),
+        "WASM binary not found: {}. Run `make build-test-plugins` first.",
+        path.display()
+    );
 
     let policy = cpex_wasm_host::policy_loader::SandboxPolicy {
         allowed_network: vec![cpex_wasm_host::policy_loader::NetworkRule {
@@ -165,10 +169,16 @@ async fn test_http_request_allowed_when_host_matches() {
 
     let shared = SharedEngine::new().unwrap();
     let mut mgr = SandboxManager::with_shared_engine(&shared);
-    mgr.load_wasmplugin(&path, Some(&policy), "net-sandbox-demo-allow").await.unwrap();
+    mgr.load_wasmplugin(&path, Some(&policy), "net-sandbox-demo-allow")
+        .await
+        .unwrap();
 
     let result = invoke_http_plugin(&mut mgr, "https://example.com/", "GET").await;
-    assert_eq!(result, "\"allowed\"", "request to allowed host should pass, got: {}", result);
+    assert_eq!(
+        result, "\"allowed\"",
+        "request to allowed host should pass, got: {}",
+        result
+    );
 }
 
 #[tokio::test]
@@ -176,8 +186,11 @@ async fn test_http_request_allowed_when_host_matches() {
 async fn test_http_request_denied_for_blocked_port() {
     init_tracing();
     let path = wasm_path();
-    assert!(path.exists(),
-        "WASM binary not found: {}. Run `make build-test-plugins` first.", path.display());
+    assert!(
+        path.exists(),
+        "WASM binary not found: {}. Run `make build-test-plugins` first.",
+        path.display()
+    );
 
     let policy = cpex_wasm_host::policy_loader::SandboxPolicy {
         allowed_network: vec![cpex_wasm_host::policy_loader::NetworkRule {
@@ -190,10 +203,16 @@ async fn test_http_request_denied_for_blocked_port() {
 
     let shared = SharedEngine::new().unwrap();
     let mut mgr = SandboxManager::with_shared_engine(&shared);
-    mgr.load_wasmplugin(&path, Some(&policy), "net-sandbox-demo-port").await.unwrap();
+    mgr.load_wasmplugin(&path, Some(&policy), "net-sandbox-demo-port")
+        .await
+        .unwrap();
 
     let result = invoke_http_plugin(&mut mgr, "https://example.com:8080/", "GET").await;
-    assert_eq!(result, "\"denied\"", "request on blocked port 8080 must be denied, got: {}", result);
+    assert_eq!(
+        result, "\"denied\"",
+        "request on blocked port 8080 must be denied, got: {}",
+        result
+    );
 }
 
 #[tokio::test]
@@ -201,8 +220,11 @@ async fn test_http_request_denied_for_blocked_port() {
 async fn test_http_request_denied_for_blocked_scheme() {
     init_tracing();
     let path = wasm_path();
-    assert!(path.exists(),
-        "WASM binary not found: {}. Run `make build-test-plugins` first.", path.display());
+    assert!(
+        path.exists(),
+        "WASM binary not found: {}. Run `make build-test-plugins` first.",
+        path.display()
+    );
 
     let policy = cpex_wasm_host::policy_loader::SandboxPolicy {
         allowed_network: vec![cpex_wasm_host::policy_loader::NetworkRule {
@@ -214,10 +236,16 @@ async fn test_http_request_denied_for_blocked_scheme() {
 
     let shared = SharedEngine::new().unwrap();
     let mut mgr = SandboxManager::with_shared_engine(&shared);
-    mgr.load_wasmplugin(&path, Some(&policy), "net-sandbox-demo-scheme").await.unwrap();
+    mgr.load_wasmplugin(&path, Some(&policy), "net-sandbox-demo-scheme")
+        .await
+        .unwrap();
 
     let result = invoke_http_plugin(&mut mgr, "http://example.com/", "GET").await;
-    assert_eq!(result, "\"denied\"", "plain HTTP must be denied when only https is allowed, got: {}", result);
+    assert_eq!(
+        result, "\"denied\"",
+        "plain HTTP must be denied when only https is allowed, got: {}",
+        result
+    );
 }
 
 #[tokio::test]
@@ -225,8 +253,11 @@ async fn test_http_request_denied_for_blocked_scheme() {
 async fn test_http_request_denied_for_blocked_method() {
     init_tracing();
     let path = wasm_path();
-    assert!(path.exists(),
-        "WASM binary not found: {}. Run `make build-test-plugins` first.", path.display());
+    assert!(
+        path.exists(),
+        "WASM binary not found: {}. Run `make build-test-plugins` first.",
+        path.display()
+    );
 
     let policy = cpex_wasm_host::policy_loader::SandboxPolicy {
         allowed_network: vec![cpex_wasm_host::policy_loader::NetworkRule {
@@ -239,10 +270,16 @@ async fn test_http_request_denied_for_blocked_method() {
 
     let shared = SharedEngine::new().unwrap();
     let mut mgr = SandboxManager::with_shared_engine(&shared);
-    mgr.load_wasmplugin(&path, Some(&policy), "net-sandbox-demo-method").await.unwrap();
+    mgr.load_wasmplugin(&path, Some(&policy), "net-sandbox-demo-method")
+        .await
+        .unwrap();
 
     let result = invoke_http_plugin(&mut mgr, "https://example.com/", "POST").await;
-    assert_eq!(result, "\"denied\"", "POST must be denied when only GET is allowed, got: {}", result);
+    assert_eq!(
+        result, "\"denied\"",
+        "POST must be denied when only GET is allowed, got: {}",
+        result
+    );
 }
 
 #[tokio::test]
@@ -250,8 +287,11 @@ async fn test_http_request_denied_for_blocked_method() {
 async fn test_http_request_denied_for_unlisted_host() {
     init_tracing();
     let path = wasm_path();
-    assert!(path.exists(),
-        "WASM binary not found: {}. Run `make build-test-plugins` first.", path.display());
+    assert!(
+        path.exists(),
+        "WASM binary not found: {}. Run `make build-test-plugins` first.",
+        path.display()
+    );
 
     let policy = cpex_wasm_host::policy_loader::SandboxPolicy {
         allowed_network: vec![cpex_wasm_host::policy_loader::NetworkRule {
@@ -263,8 +303,14 @@ async fn test_http_request_denied_for_unlisted_host() {
 
     let shared = SharedEngine::new().unwrap();
     let mut mgr = SandboxManager::with_shared_engine(&shared);
-    mgr.load_wasmplugin(&path, Some(&policy), "net-sandbox-demo-unlisted").await.unwrap();
+    mgr.load_wasmplugin(&path, Some(&policy), "net-sandbox-demo-unlisted")
+        .await
+        .unwrap();
 
     let result = invoke_http_plugin(&mut mgr, "https://other.com/", "GET").await;
-    assert_eq!(result, "\"denied\"", "request to unlisted host must be denied, got: {}", result);
+    assert_eq!(
+        result, "\"denied\"",
+        "request to unlisted host must be denied, got: {}",
+        result
+    );
 }

@@ -77,7 +77,11 @@ impl WasiHttpHooks for NetworkPolicy {
         let method = request.method().as_str();
 
         // Find the first rule whose host pattern matches.
-        let rule = match self.allowed_hosts.iter().find(|r| host_matches(&host, &r.host)) {
+        let rule = match self
+            .allowed_hosts
+            .iter()
+            .find(|r| host_matches(&host, &r.host))
+        {
             Some(r) => r,
             None => return Err(ErrorCode::HttpRequestDenied.into()),
         };
@@ -96,11 +100,7 @@ impl WasiHttpHooks for NetworkPolicy {
         }
 
         // Method check (case-insensitive).
-        if !rule.methods.is_empty()
-            && !rule
-                .methods
-                .iter()
-                .any(|m| m.eq_ignore_ascii_case(method))
+        if !rule.methods.is_empty() && !rule.methods.iter().any(|m| m.eq_ignore_ascii_case(method))
         {
             return Err(ErrorCode::HttpRequestDenied.into());
         }

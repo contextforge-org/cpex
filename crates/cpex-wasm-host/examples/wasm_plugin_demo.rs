@@ -138,7 +138,10 @@ async fn main() {
     let config_path = crate_dir.join("config/config_plugin_demo.yaml");
     let wasm_dir = crate_dir.join("wasm");
 
-    println!("--- Loading config from {} ---\n", "config/config_plugin_demo.yaml");
+    println!(
+        "--- Loading config from {} ---\n",
+        "config/config_plugin_demo.yaml"
+    );
     let yaml = std::fs::read_to_string(&config_path)
         .unwrap_or_else(|e| panic!("Failed to read {}: {}", config_path.display(), e));
     let cpex_config = parse_config(&yaml).unwrap();

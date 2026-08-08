@@ -72,7 +72,9 @@ async fn test_plugin_cannot_read_etc_passwd_without_filesystem_policy() {
 
     let shared = SharedEngine::new().unwrap();
     let mut mgr = SandboxManager::with_shared_engine(&shared);
-    mgr.load_wasmplugin(&path, None, "fs-sandbox-test").await.unwrap();
+    mgr.load_wasmplugin(&path, None, "fs-sandbox-test")
+        .await
+        .unwrap();
 
     let payload = make_read_payload("/etc/passwd");
     let wit_payload =

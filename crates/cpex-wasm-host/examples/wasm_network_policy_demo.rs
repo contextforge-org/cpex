@@ -88,7 +88,12 @@ fn make_extensions(tool_name: &str) -> Extensions {
 
 async fn invoke(mgr: &PluginManager, tool_name: &str, url: &str, method: &str) -> String {
     let (result, bg) = mgr
-        .invoke_named::<CmfHook>("cmf.tool_pre_invoke", make_payload(tool_name, url, method), make_extensions(tool_name), None)
+        .invoke_named::<CmfHook>(
+            "cmf.tool_pre_invoke",
+            make_payload(tool_name, url, method),
+            make_extensions(tool_name),
+            None,
+        )
         .await;
     bg.wait_for_background_tasks().await;
 
@@ -137,7 +142,8 @@ async fn main() {
         eprintln!(
             "{}ERROR:{} net-sandbox-demo.wasm not found at {}\n\
              Run: cd crates/cpex-wasm-host && make build-test-plugins",
-            RED, RESET,
+            RED,
+            RESET,
             wasm_path.display()
         );
         std::process::exit(1);
@@ -170,7 +176,10 @@ async fn main() {
     // =========================================================================
     // Scenario 1: No policy — deny-by-default
     // =========================================================================
-    println!("{}--- Scenario 1: no policy (deny-by-default){}", CYAN, RESET);
+    println!(
+        "{}--- Scenario 1: no policy (deny-by-default){}",
+        CYAN, RESET
+    );
     let r = invoke(&mgr, "net_deny_all", "https://example.com/", "GET").await;
     print_case("DENY expected", "GET", "https://example.com/", &r);
     println!();
@@ -178,7 +187,10 @@ async fn main() {
     // =========================================================================
     // Scenario 2: Host allowlist
     // =========================================================================
-    println!("{}--- Scenario 2: host allowlist  allowed=[example.com]{}", CYAN, RESET);
+    println!(
+        "{}--- Scenario 2: host allowlist  allowed=[example.com]{}",
+        CYAN, RESET
+    );
     let r = invoke(&mgr, "net_host_allow", "https://example.com/", "GET").await;
     print_case("ALLOW expected", "GET", "https://example.com/", &r);
     let r = invoke(&mgr, "net_host_allow", "https://other.com/", "GET").await;
@@ -188,7 +200,10 @@ async fn main() {
     // =========================================================================
     // Scenario 3: Wildcard host
     // =========================================================================
-    println!("{}--- Scenario 3: wildcard host  allowed=[*.example.com]{}", CYAN, RESET);
+    println!(
+        "{}--- Scenario 3: wildcard host  allowed=[*.example.com]{}",
+        CYAN, RESET
+    );
     let r = invoke(&mgr, "net_wildcard", "https://api.example.com/", "GET").await;
     print_case("ALLOW expected", "GET", "https://api.example.com/", &r);
     let r = invoke(&mgr, "net_wildcard", "https://data.example.com/", "GET").await;
@@ -200,17 +215,33 @@ async fn main() {
     // =========================================================================
     // Scenario 4: Port enforcement
     // =========================================================================
-    println!("{}--- Scenario 4: port enforcement  allowed_ports=[443]{}", CYAN, RESET);
+    println!(
+        "{}--- Scenario 4: port enforcement  allowed_ports=[443]{}",
+        CYAN, RESET
+    );
     let r = invoke(&mgr, "net_port", "https://example.com/", "GET").await;
-    print_case("ALLOW expected", "GET", "https://example.com/ (port 443, implicit)", &r);
+    print_case(
+        "ALLOW expected",
+        "GET",
+        "https://example.com/ (port 443, implicit)",
+        &r,
+    );
     let r = invoke(&mgr, "net_port", "https://example.com:8080/", "GET").await;
-    print_case("DENY expected", "GET", "https://example.com:8080/ (port 8080)", &r);
+    print_case(
+        "DENY expected",
+        "GET",
+        "https://example.com:8080/ (port 8080)",
+        &r,
+    );
     println!();
 
     // =========================================================================
     // Scenario 5: Scheme enforcement
     // =========================================================================
-    println!("{}--- Scenario 5: scheme enforcement  allowed_schemes=[https]{}", CYAN, RESET);
+    println!(
+        "{}--- Scenario 5: scheme enforcement  allowed_schemes=[https]{}",
+        CYAN, RESET
+    );
     let r = invoke(&mgr, "net_scheme", "https://example.com/", "GET").await;
     print_case("ALLOW expected", "GET", "https://example.com/ (https)", &r);
     let r = invoke(&mgr, "net_scheme", "http://example.com/", "GET").await;
@@ -220,7 +251,10 @@ async fn main() {
     // =========================================================================
     // Scenario 6: Method enforcement
     // =========================================================================
-    println!("{}--- Scenario 6: method enforcement  allowed_methods=[GET]{}", CYAN, RESET);
+    println!(
+        "{}--- Scenario 6: method enforcement  allowed_methods=[GET]{}",
+        CYAN, RESET
+    );
     let r = invoke(&mgr, "net_method", "https://example.com/", "GET").await;
     print_case("ALLOW expected", "GET", "https://example.com/", &r);
     let r = invoke(&mgr, "net_method", "https://example.com/", "POST").await;
@@ -238,7 +272,12 @@ async fn main() {
     let r = invoke(&mgr, "net_multi", "https://data.example.com/", "POST").await;
     print_case("ALLOW expected", "POST", "https://data.example.com/", &r);
     let r = invoke(&mgr, "net_multi", "https://data.example.com:8443/", "GET").await;
-    print_case("ALLOW expected", "GET", "https://data.example.com:8443/", &r);
+    print_case(
+        "ALLOW expected",
+        "GET",
+        "https://data.example.com:8443/",
+        &r,
+    );
     let r = invoke(&mgr, "net_multi", "https://other.com/", "GET").await;
     print_case("DENY expected", "GET", "https://other.com/", &r);
     println!();

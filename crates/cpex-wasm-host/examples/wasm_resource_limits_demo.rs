@@ -94,7 +94,12 @@ async fn invoke(mgr: &PluginManager, tool_name: &str, mode: &str) -> PipelineRes
     result
 }
 
-fn print_result(mode: &str, limit_desc: &str, result: &PipelineResult, elapsed: std::time::Duration) {
+fn print_result(
+    mode: &str,
+    limit_desc: &str,
+    result: &PipelineResult,
+    elapsed: std::time::Duration,
+) {
     if result.continue_processing {
         println!(
             "  {}[UNEXPECTED]{} mode={:14} limit={}\n  → Plugin completed (limit did NOT fire)\n",
@@ -130,14 +135,18 @@ async fn main() {
         eprintln!(
             "{}ERROR:{} resource-sandbox-demo.wasm not found at {}\n\
              Run: cd crates/cpex-wasm-host && make build-test-plugins",
-            RED, RESET,
+            RED,
+            RESET,
             wasm_path.display()
         );
         std::process::exit(1);
     }
 
     println!("{}=== Resource Limits Sandbox Demo ==={}\n", BOLD, RESET);
-    println!("{}Plugin:{}  resource-sandbox-demo.wasm (registered 3 times with different limits)", DIM, RESET);
+    println!(
+        "{}Plugin:{}  resource-sandbox-demo.wasm (registered 3 times with different limits)",
+        DIM, RESET
+    );
     println!("{}Payload:{} mode passed as ToolCall argument", DIM, RESET);
     println!(
         "{}Goal:{}    each scenario triggers a resource limit trap, proving the host\n\
@@ -165,7 +174,10 @@ async fn main() {
     // Scenario 1: Fuel exhaustion
     // 10,000 fuel units — enough to instantiate but the tight loop exhausts it.
     // =========================================================================
-    println!("{}Scenario 1: fuel exhaustion  (max_fuel=10,000){}", CYAN, RESET);
+    println!(
+        "{}Scenario 1: fuel exhaustion  (max_fuel=10,000){}",
+        CYAN, RESET
+    );
     let start = std::time::Instant::now();
     let r = invoke(&mgr, "resource_fuel", "burn_fuel").await;
     let elapsed = start.elapsed();
@@ -176,7 +188,10 @@ async fn main() {
     // Scenario 2: Epoch timeout
     // 200ms deadline — the infinite loop is interrupted by the epoch ticker.
     // =========================================================================
-    println!("{}Scenario 2: epoch timeout  (max_execution_time_ms=200){}", CYAN, RESET);
+    println!(
+        "{}Scenario 2: epoch timeout  (max_execution_time_ms=200){}",
+        CYAN, RESET
+    );
     tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     let start = std::time::Instant::now();
     let r = invoke(&mgr, "resource_timeout", "burn_fuel").await;
@@ -188,7 +203,10 @@ async fn main() {
     // Scenario 3: Memory limit
     // 5 MB cap — the plugin allocates 1 MB chunks until memory.grow is denied.
     // =========================================================================
-    println!("{}Scenario 3: memory limit  (max_memory_bytes=5MB){}", CYAN, RESET);
+    println!(
+        "{}Scenario 3: memory limit  (max_memory_bytes=5MB){}",
+        CYAN, RESET
+    );
     let start = std::time::Instant::now();
     let r = invoke(&mgr, "resource_memory", "alloc_memory").await;
     let elapsed = start.elapsed();

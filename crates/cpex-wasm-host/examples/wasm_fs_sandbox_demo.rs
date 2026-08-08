@@ -83,7 +83,12 @@ fn make_extensions() -> Extensions {
 
 async fn invoke(mgr: &PluginManager, operation: &str, path: &str) -> PipelineResult {
     let (result, bg) = mgr
-        .invoke_named::<CmfHook>("cmf.tool_pre_invoke", make_payload(operation, path), make_extensions(), None)
+        .invoke_named::<CmfHook>(
+            "cmf.tool_pre_invoke",
+            make_payload(operation, path),
+            make_extensions(),
+            None,
+        )
         .await;
     bg.wait_for_background_tasks().await;
     result
@@ -121,11 +126,11 @@ async fn main() {
         )
         .init();
 
-    println!("{}=== Filesystem Sandbox Permissions Demo ==={}\n", BOLD, RESET);
     println!(
-        "{}Plugin:{} fs-sandbox-demo.wasm",
-        DIM, RESET
+        "{}=== Filesystem Sandbox Permissions Demo ==={}\n",
+        BOLD, RESET
     );
+    println!("{}Plugin:{} fs-sandbox-demo.wasm", DIM, RESET);
     println!(
         "{}Payload:{} operation + path passed as ToolCall arguments\n",
         DIM, RESET
@@ -143,10 +148,9 @@ async fn main() {
     let mgr = PluginManager::default();
     mgr.register_factory(
         "wasm://fs-sandbox-demo.wasm",
-        Box::new(WasmPluginFactory::new(
-            crate_dir.join("wasm"),
-            Arc::new(registry),
-        ).expect("engine")),
+        Box::new(
+            WasmPluginFactory::new(crate_dir.join("wasm"), Arc::new(registry)).expect("engine"),
+        ),
     );
     mgr.load_config(cpex_config).unwrap();
     mgr.initialize().await.unwrap();
@@ -160,31 +164,40 @@ async fn main() {
     // =========================================================================
     // read-only  —  DirPerms::READ  FilePerms::READ
     // =========================================================================
-    println!("{}Scenario 1: read-only (rules/)  DirPerms::READ  FilePerms::READ{}", CYAN, RESET);
-    let r = invoke(&mgr, "read",  &p("rules", "policy.yaml")).await;
-    print_case("ALLOW expected", "read",  &p("rules", "policy.yaml"), &r);
+    println!(
+        "{}Scenario 1: read-only (rules/)  DirPerms::READ  FilePerms::READ{}",
+        CYAN, RESET
+    );
+    let r = invoke(&mgr, "read", &p("rules", "policy.yaml")).await;
+    print_case("ALLOW expected", "read", &p("rules", "policy.yaml"), &r);
     let r = invoke(&mgr, "write", &p("rules", "policy.yaml")).await;
-    print_case("DENY expected",  "write", &p("rules", "policy.yaml"), &r);
+    print_case("DENY expected", "write", &p("rules", "policy.yaml"), &r);
 
     // =========================================================================
     // full-access  —  DirPerms::READ|MUTATE  FilePerms::READ|WRITE
     // =========================================================================
-    println!("\n{}Scenario 2: full-access (cache/)  DirPerms::READ|MUTATE  FilePerms::READ|WRITE{}", CYAN, RESET);
+    println!(
+        "\n{}Scenario 2: full-access (cache/)  DirPerms::READ|MUTATE  FilePerms::READ|WRITE{}",
+        CYAN, RESET
+    );
     let r = invoke(&mgr, "write", &p("cache", "output.txt")).await;
     print_case("ALLOW expected", "write", &p("cache", "output.txt"), &r);
-    let r = invoke(&mgr, "read",  &p("cache", "output.txt")).await;
-    print_case("ALLOW expected", "read",  &p("cache", "output.txt"), &r);
+    let r = invoke(&mgr, "read", &p("cache", "output.txt")).await;
+    print_case("ALLOW expected", "read", &p("cache", "output.txt"), &r);
 
     // =========================================================================
     // drop-box  —  DirPerms::MUTATE  FilePerms::WRITE
     // open_at always requires DirPerms::READ, so file read/write are both
     // denied. Only directory-level mutations (create_dir, delete) are allowed.
     // =========================================================================
-    println!("\n{}Scenario 3: drop-box (audit/)  DirPerms::MUTATE  FilePerms::WRITE{}", CYAN, RESET);
+    println!(
+        "\n{}Scenario 3: drop-box (audit/)  DirPerms::MUTATE  FilePerms::WRITE{}",
+        CYAN, RESET
+    );
     let r = invoke(&mgr, "create_dir", &p("audit", "events")).await;
     print_case("ALLOW expected", "create_dir", &p("audit", "events"), &r);
-    let r = invoke(&mgr, "read",       &p("audit", "events")).await;
-    print_case("DENY expected",  "read",       &p("audit", "events"), &r);
+    let r = invoke(&mgr, "read", &p("audit", "events")).await;
+    print_case("DENY expected", "read", &p("audit", "events"), &r);
 
     // =========================================================================
     // fixed-mutable  —  DirPerms::READ  FilePerms::READ|WRITE
@@ -193,32 +206,46 @@ async fn main() {
     // permission behaves like read-only at the file level — reads are allowed,
     // writes and create_dir are denied.
     // =========================================================================
-    println!("\n{}Scenario 4: fixed-mutable (counters/)  DirPerms::READ  FilePerms::READ|WRITE{}", CYAN, RESET);
-    let r = invoke(&mgr, "read",       &p("counters", "rate.txt")).await;
-    print_case("ALLOW expected", "read",       &p("counters", "rate.txt"), &r);
+    println!(
+        "\n{}Scenario 4: fixed-mutable (counters/)  DirPerms::READ  FilePerms::READ|WRITE{}",
+        CYAN, RESET
+    );
+    let r = invoke(&mgr, "read", &p("counters", "rate.txt")).await;
+    print_case("ALLOW expected", "read", &p("counters", "rate.txt"), &r);
     let r = invoke(&mgr, "create_dir", &p("counters", "new")).await;
-    print_case("DENY expected",  "create_dir", &p("counters", "new"), &r);
+    print_case("DENY expected", "create_dir", &p("counters", "new"), &r);
 
     // =========================================================================
     // list-only  —  DirPerms::READ  FilePerms::empty()
     // Can enumerate filenames. Opening any file is denied (FilePerms::empty()).
     // =========================================================================
-    println!("\n{}Scenario 5: list-only (plugins/)  DirPerms::READ  FilePerms::empty(){}", CYAN, RESET);
+    println!(
+        "\n{}Scenario 5: list-only (plugins/)  DirPerms::READ  FilePerms::empty(){}",
+        CYAN, RESET
+    );
     let r = invoke(&mgr, "list_dir", &d("plugins")).await;
     print_case("ALLOW expected", "list_dir", &d("plugins"), &r);
-    let r = invoke(&mgr, "read",     &p("plugins", "fs-sandbox-demo.wasm")).await;
-    print_case("DENY expected",  "read",     &p("plugins", "fs-sandbox-demo.wasm"), &r);
+    let r = invoke(&mgr, "read", &p("plugins", "fs-sandbox-demo.wasm")).await;
+    print_case(
+        "DENY expected",
+        "read",
+        &p("plugins", "fs-sandbox-demo.wasm"),
+        &r,
+    );
 
     // =========================================================================
     // private-scratch  —  DirPerms::MUTATE  FilePerms::READ|WRITE
     // open_at always requires DirPerms::READ, so file I/O is denied despite
     // FilePerms::READ|WRITE. Only directory mutations are allowed.
     // =========================================================================
-    println!("\n{}Scenario 6: private-scratch (scratch/)  DirPerms::MUTATE  FilePerms::READ|WRITE{}", CYAN, RESET);
+    println!(
+        "\n{}Scenario 6: private-scratch (scratch/)  DirPerms::MUTATE  FilePerms::READ|WRITE{}",
+        CYAN, RESET
+    );
     let r = invoke(&mgr, "create_dir", &p("scratch", "work")).await;
     print_case("ALLOW expected", "create_dir", &p("scratch", "work"), &r);
-    let r = invoke(&mgr, "list_dir",   &d("scratch")).await;
-    print_case("DENY expected",  "list_dir",   &d("scratch"), &r);
+    let r = invoke(&mgr, "list_dir", &d("scratch")).await;
+    print_case("DENY expected", "list_dir", &d("scratch"), &r);
 
     println!("\n{}=== Demo complete ==={}\n", BOLD, RESET);
     mgr.shutdown().await;

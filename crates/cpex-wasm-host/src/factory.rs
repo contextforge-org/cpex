@@ -75,8 +75,7 @@ impl WasmPluginFactory {
         registry.register::<MessagePayload>();
         registry.register::<cpex_core::identity::IdentityPayload>();
         registry.register::<cpex_core::delegation::DelegationPayload>();
-        Self::new(wasm_dir, Arc::new(registry))
-            .expect("failed to create shared wasmtime engine")
+        Self::new(wasm_dir, Arc::new(registry)).expect("failed to create shared wasmtime engine")
     }
 }
 

@@ -98,9 +98,8 @@ async fn test_fuel_limit_traps_plugin() {
     .await;
 
     let payload = make_payload("burn_fuel");
-    let wit_payload = cpex_wasm_host::sandbox_manager::types::HookPayload::Cmf(
-        native_payload_to_wit(&payload),
-    );
+    let wit_payload =
+        cpex_wasm_host::sandbox_manager::types::HookPayload::Cmf(native_payload_to_wit(&payload));
     let wit_ext = native_extensions_to_wit(&Extensions::default());
     let wit_ctx = native_context_to_wit(&PluginContext::default());
 
@@ -121,7 +120,9 @@ async fn test_fuel_limit_traps_plugin() {
     }
     let combined = messages.join(" | ").to_lowercase();
     assert!(
-        combined.contains("fuel") || combined.contains("wasm") || combined.contains("error while executing"),
+        combined.contains("fuel")
+            || combined.contains("wasm")
+            || combined.contains("error while executing"),
         "expected fuel/wasm trap error, got: {:?}",
         messages
     );
@@ -150,9 +151,8 @@ async fn test_epoch_timeout_traps_plugin() {
     tokio::time::sleep(std::time::Duration::from_millis(20)).await;
 
     let payload = make_payload("burn_fuel");
-    let wit_payload = cpex_wasm_host::sandbox_manager::types::HookPayload::Cmf(
-        native_payload_to_wit(&payload),
-    );
+    let wit_payload =
+        cpex_wasm_host::sandbox_manager::types::HookPayload::Cmf(native_payload_to_wit(&payload));
     let wit_ext = native_extensions_to_wit(&Extensions::default());
     let wit_ctx = native_context_to_wit(&PluginContext::default());
 
@@ -181,8 +181,10 @@ async fn test_epoch_timeout_traps_plugin() {
         elapsed
     );
     assert!(
-        combined.contains("epoch") || combined.contains("interrupt")
-            || combined.contains("deadline") || combined.contains("fuel")
+        combined.contains("epoch")
+            || combined.contains("interrupt")
+            || combined.contains("deadline")
+            || combined.contains("fuel")
             || combined.contains("error while executing"),
         "expected execution error, got: {:?}",
         messages
@@ -206,9 +208,8 @@ async fn test_memory_limit_traps_plugin() {
     .await;
 
     let payload = make_payload("alloc_memory");
-    let wit_payload = cpex_wasm_host::sandbox_manager::types::HookPayload::Cmf(
-        native_payload_to_wit(&payload),
-    );
+    let wit_payload =
+        cpex_wasm_host::sandbox_manager::types::HookPayload::Cmf(native_payload_to_wit(&payload));
     let wit_ext = native_extensions_to_wit(&Extensions::default());
     let wit_ctx = native_context_to_wit(&PluginContext::default());
 
@@ -227,8 +228,10 @@ async fn test_memory_limit_traps_plugin() {
     }
     let combined = messages.join(" | ").to_lowercase();
     assert!(
-        combined.contains("memory") || combined.contains("grow")
-            || combined.contains("unreachable") || combined.contains("error while executing"),
+        combined.contains("memory")
+            || combined.contains("grow")
+            || combined.contains("unreachable")
+            || combined.contains("error while executing"),
         "expected memory/execution error, got: {:?}",
         messages
     );

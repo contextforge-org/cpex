@@ -154,7 +154,10 @@ mod tests {
         assert!(!bytes.is_empty());
 
         let deserialized = registry.deserialize(type_name, &bytes).unwrap();
-        assert_eq!(deserialized.as_any().type_id(), TypeId::of::<MessagePayload>());
+        assert_eq!(
+            deserialized.as_any().type_id(),
+            TypeId::of::<MessagePayload>()
+        );
     }
 
     #[test]
@@ -171,7 +174,10 @@ mod tests {
         let registry = PayloadSerializerRegistry::new();
         let result = registry.deserialize("nonexistent.type", &[]);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("unknown payload type"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("unknown payload type"));
     }
 
     #[test]
@@ -201,6 +207,9 @@ mod tests {
         let payload = sample_payload();
         let (type_name, bytes) = registry.serialize(&payload).unwrap();
         let deserialized = registry.deserialize(type_name, &bytes).unwrap();
-        assert_eq!(deserialized.as_any().type_id(), TypeId::of::<MessagePayload>());
+        assert_eq!(
+            deserialized.as_any().type_id(),
+            TypeId::of::<MessagePayload>()
+        );
     }
 }

@@ -25,7 +25,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use cpex_core::config::parse_config;
-use cpex_core::delegation::{DelegationPayload, TargetType, TokenDelegateHook, HOOK_TOKEN_DELEGATE};
+use cpex_core::delegation::{
+    DelegationPayload, TargetType, TokenDelegateHook, HOOK_TOKEN_DELEGATE,
+};
 use cpex_core::extensions::container::Extensions;
 use cpex_core::manager::PluginManager;
 
@@ -54,14 +56,12 @@ fn print_delegation_result(result: &cpex_core::executor::PipelineResult) {
             if let Some(token) = &resolved.delegated_token {
                 println!(
                     "  {}Token minted:{}  audience='{}' scopes={:?} header='{}'",
-                    GREEN, RESET,
-                    token.audience,
-                    token.scopes,
-                    token.outbound_header,
+                    GREEN, RESET, token.audience, token.scopes, token.outbound_header,
                 );
                 println!(
                     "  {}Expires at:{}   {}",
-                    WHITE, RESET,
+                    WHITE,
+                    RESET,
                     token.expires_at.format("%Y-%m-%dT%H:%M:%SZ"),
                 );
             } else {
@@ -73,10 +73,10 @@ fn print_delegation_result(result: &cpex_core::executor::PipelineResult) {
             if let Some(minter) = resolved.metadata.get("minter") {
                 println!("  {}Minted by:{}     {}", WHITE, RESET, minter);
             }
-        }
+        },
         None => {
             println!("  Pipeline denied the delegation request.");
-        }
+        },
     }
 }
 
@@ -126,10 +126,7 @@ async fn main() {
     println!("\n--- Initializing plugins ---\n");
     mgr.initialize().await.unwrap();
 
-    println!(
-        "Plugins loaded: {}\n",
-        mgr.plugin_count()
-    );
+    println!("Plugins loaded: {}\n", mgr.plugin_count());
 
     // =========================================================================
     // Scenario 1: Delegate to a Tool target
@@ -142,7 +139,12 @@ async fn main() {
         .with_required_permissions(vec!["read:compensation".into()]);
 
     let (result, bg) = mgr
-        .invoke_named::<TokenDelegateHook>(HOOK_TOKEN_DELEGATE, payload, Extensions::default(), None)
+        .invoke_named::<TokenDelegateHook>(
+            HOOK_TOKEN_DELEGATE,
+            payload,
+            Extensions::default(),
+            None,
+        )
         .await;
     print_delegation_result(&result);
     bg.wait_for_background_tasks().await;
@@ -159,7 +161,12 @@ async fn main() {
         .with_target_audience("https://agents.internal/summarizer");
 
     let (result, bg) = mgr
-        .invoke_named::<TokenDelegateHook>(HOOK_TOKEN_DELEGATE, payload, Extensions::default(), None)
+        .invoke_named::<TokenDelegateHook>(
+            HOOK_TOKEN_DELEGATE,
+            payload,
+            Extensions::default(),
+            None,
+        )
         .await;
     print_delegation_result(&result);
     bg.wait_for_background_tasks().await;
@@ -171,17 +178,23 @@ async fn main() {
     // Required permissions are forwarded as token scopes.
     // =========================================================================
     scenario!("\n=== Scenario 3: multi-permission delegation to 'query_external_data' ===\n");
-    let payload = DelegationPayload::new("eyJhbGciOiJSUzI1NiJ9.caller-token", "query_external_data")
-        .with_target_type(TargetType::Tool)
-        .with_target_audience("https://data-svc.internal/query")
-        .with_required_permissions(vec![
-            "read:records".into(),
-            "read:metadata".into(),
-            "read:audit".into(),
-        ]);
+    let payload =
+        DelegationPayload::new("eyJhbGciOiJSUzI1NiJ9.caller-token", "query_external_data")
+            .with_target_type(TargetType::Tool)
+            .with_target_audience("https://data-svc.internal/query")
+            .with_required_permissions(vec![
+                "read:records".into(),
+                "read:metadata".into(),
+                "read:audit".into(),
+            ]);
 
     let (result, bg) = mgr
-        .invoke_named::<TokenDelegateHook>(HOOK_TOKEN_DELEGATE, payload, Extensions::default(), None)
+        .invoke_named::<TokenDelegateHook>(
+            HOOK_TOKEN_DELEGATE,
+            payload,
+            Extensions::default(),
+            None,
+        )
         .await;
     print_delegation_result(&result);
     bg.wait_for_background_tasks().await;

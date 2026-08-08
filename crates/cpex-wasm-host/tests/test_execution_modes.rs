@@ -90,20 +90,22 @@ async fn test_concurrent_plugins_all_allow() {
     let mgr = setup_manager().await;
     let ext = make_extensions("some_tool");
 
-    let (result, bg) = mgr.invoke::<CmfHook>(
-        cpex_core::cmf::MessagePayload {
-            message: cpex_core::cmf::Message {
-                schema_version: cpex_core::cmf::constants::SCHEMA_VERSION.into(),
-                role: cpex_core::cmf::Role::Assistant,
-                content: vec![cpex_core::cmf::ContentPart::Text {
-                    text: "hello".into(),
-                }],
-                channel: None,
+    let (result, bg) = mgr
+        .invoke::<CmfHook>(
+            cpex_core::cmf::MessagePayload {
+                message: cpex_core::cmf::Message {
+                    schema_version: cpex_core::cmf::constants::SCHEMA_VERSION.into(),
+                    role: cpex_core::cmf::Role::Assistant,
+                    content: vec![cpex_core::cmf::ContentPart::Text {
+                        text: "hello".into(),
+                    }],
+                    channel: None,
+                },
             },
-        },
-        ext,
-        None,
-    ).await;
+            ext,
+            None,
+        )
+        .await;
     bg.wait_for_background_tasks().await;
 
     assert!(
@@ -135,12 +137,9 @@ async fn test_fire_and_forget_returns_immediately() {
     let ext = make_extensions("some_tool");
 
     // Fire the post_invoke hook which has a fire_and_forget plugin
-    let (result, bg) = mgr.invoke_named::<CmfHook>(
-        "cmf.tool_post_invoke",
-        payload,
-        ext,
-        None,
-    ).await;
+    let (result, bg) = mgr
+        .invoke_named::<CmfHook>("cmf.tool_post_invoke", payload, ext, None)
+        .await;
 
     // Pipeline should return immediately with allow (FAF doesn't block)
     assert!(

@@ -20,9 +20,7 @@ use std::sync::{Arc, Once};
 use cpex_core::config::parse_config;
 use cpex_core::extensions::container::Extensions;
 use cpex_core::extensions::security::SubjectType;
-use cpex_core::identity::{
-    IdentityHook, IdentityPayload, TokenSource, HOOK_IDENTITY_RESOLVE,
-};
+use cpex_core::identity::{IdentityHook, IdentityPayload, TokenSource, HOOK_IDENTITY_RESOLVE};
 use cpex_core::manager::PluginManager;
 
 use cpex_wasm_host::factory::WasmPluginFactory;
@@ -83,19 +81,13 @@ async fn test_identity_resolve_extracts_subject_from_header() {
     check_binary_exists();
     let mgr = setup_manager().await;
 
-    let payload = IdentityPayload::new("", TokenSource::Bearer)
-        .with_headers(HashMap::from([
-            ("x-user-id".into(), "alice-123".into()),
-            ("authorization".into(), "Bearer eyJ...".into()),
-        ]));
+    let payload = IdentityPayload::new("", TokenSource::Bearer).with_headers(HashMap::from([
+        ("x-user-id".into(), "alice-123".into()),
+        ("authorization".into(), "Bearer eyJ...".into()),
+    ]));
 
     let (result, bg) = mgr
-        .invoke_named::<IdentityHook>(
-            HOOK_IDENTITY_RESOLVE,
-            payload,
-            Extensions::default(),
-            None,
-        )
+        .invoke_named::<IdentityHook>(HOOK_IDENTITY_RESOLVE, payload, Extensions::default(), None)
         .await;
     bg.wait_for_background_tasks().await;
 
@@ -120,18 +112,13 @@ async fn test_identity_resolve_passes_through_when_no_header() {
     check_binary_exists();
     let mgr = setup_manager().await;
 
-    let payload = IdentityPayload::new("", TokenSource::Bearer)
-        .with_headers(HashMap::from([
-            ("authorization".into(), "Bearer eyJ...".into()),
-        ]));
+    let payload = IdentityPayload::new("", TokenSource::Bearer).with_headers(HashMap::from([(
+        "authorization".into(),
+        "Bearer eyJ...".into(),
+    )]));
 
     let (result, bg) = mgr
-        .invoke_named::<IdentityHook>(
-            HOOK_IDENTITY_RESOLVE,
-            payload,
-            Extensions::default(),
-            None,
-        )
+        .invoke_named::<IdentityHook>(HOOK_IDENTITY_RESOLVE, payload, Extensions::default(), None)
         .await;
     bg.wait_for_background_tasks().await;
 
@@ -146,7 +133,7 @@ async fn test_identity_resolve_passes_through_when_no_header() {
             p.subject.is_none(),
             "no x-user-id header means no subject should be resolved"
         ),
-        None => {} // no modified payload means pass-through — valid
+        None => {}, // no modified payload means pass-through — valid
     }
 }
 
@@ -157,10 +144,11 @@ async fn test_identity_resolve_skips_when_subject_already_set() {
     check_binary_exists();
     let mgr = setup_manager().await;
 
-    let mut payload = IdentityPayload::new("", TokenSource::Bearer)
-        .with_headers(HashMap::from([
-            ("x-user-id".into(), "should-be-ignored".into()),
-        ]));
+    let mut payload =
+        IdentityPayload::new("", TokenSource::Bearer).with_headers(HashMap::from([(
+            "x-user-id".into(),
+            "should-be-ignored".into(),
+        )]));
     payload.subject = Some(cpex_core::extensions::security::SubjectExtension {
         id: Some("pre-existing-user".into()),
         subject_type: Some(SubjectType::Service),
@@ -168,16 +156,14 @@ async fn test_identity_resolve_skips_when_subject_already_set() {
     });
 
     let (result, bg) = mgr
-        .invoke_named::<IdentityHook>(
-            HOOK_IDENTITY_RESOLVE,
-            payload,
-            Extensions::default(),
-            None,
-        )
+        .invoke_named::<IdentityHook>(HOOK_IDENTITY_RESOLVE, payload, Extensions::default(), None)
         .await;
     bg.wait_for_background_tasks().await;
 
-    assert!(result.continue_processing, "should allow when subject already set");
+    assert!(
+        result.continue_processing,
+        "should allow when subject already set"
+    );
 
     // Subject already present — plugin should pass through without overwriting
     match IdentityPayload::from_pipeline_result(&result) {
@@ -185,7 +171,7 @@ async fn test_identity_resolve_skips_when_subject_already_set() {
             let subject = p.subject.as_ref().expect("subject should still be present");
             assert_eq!(subject.id.as_deref(), Some("pre-existing-user"));
             assert_eq!(subject.subject_type, Some(SubjectType::Service));
-        }
-        None => {} // no modification means original subject preserved — valid
+        },
+        None => {}, // no modification means original subject preserved — valid
     }
 }

@@ -141,7 +141,10 @@ fn test_monotonic_passes_when_labels_only_added() {
         .collect();
 
     let result = validate_extension_modifications(&owned, &ext, &caps, "test-plugin", "test-hook");
-    assert!(result, "should accept when labels only added with proper caps");
+    assert!(
+        result,
+        "should accept when labels only added with proper caps"
+    );
 }
 
 #[test]

@@ -73,7 +73,12 @@ fn make_extensions() -> Extensions {
 
 async fn invoke(mgr: &PluginManager, env_var: &str) -> PipelineResult {
     let (result, bg) = mgr
-        .invoke_named::<CmfHook>("cmf.tool_pre_invoke", make_payload(env_var), make_extensions(), None)
+        .invoke_named::<CmfHook>(
+            "cmf.tool_pre_invoke",
+            make_payload(env_var),
+            make_extensions(),
+            None,
+        )
         .await;
     bg.wait_for_background_tasks().await;
     result
@@ -114,18 +119,23 @@ async fn main() {
     std::env::set_var("SECRET_API_KEY", "sk-super-secret-value");
     // HOME and PATH are already set by the shell.
 
-    println!("{}=== Environment Variable Sandbox Permissions Demo ==={}\n", BOLD, RESET);
-    println!("{}Plugin:{} env-sandbox-demo.wasm", DIM, RESET);
-    println!("{}Payload:{} env_var passed as ToolCall argument\n", DIM, RESET);
-
     println!(
-        "{}Host env vars set for this demo:{}",
+        "{}=== Environment Variable Sandbox Permissions Demo ==={}\n",
+        BOLD, RESET
+    );
+    println!("{}Plugin:{} env-sandbox-demo.wasm", DIM, RESET);
+    println!(
+        "{}Payload:{} env_var passed as ToolCall argument\n",
         DIM, RESET
     );
+
+    println!("{}Host env vars set for this demo:{}", DIM, RESET);
     println!("  CPEX_APP_TOKEN  = tok-demo-abc123   (in allowed_env → visible)");
     println!("  CPEX_LOG_LEVEL  = info              (in allowed_env → visible)");
-    println!("  HOME            = {}  (not in allowed_env → hidden)",
-        std::env::var("HOME").unwrap_or_else(|_| "<not set>".into()));
+    println!(
+        "  HOME            = {}  (not in allowed_env → hidden)",
+        std::env::var("HOME").unwrap_or_else(|_| "<not set>".into())
+    );
     println!("  PATH            = <set by shell>    (not in allowed_env → hidden)");
     println!("  SECRET_API_KEY  = sk-super-secret-* (not in allowed_env → hidden)\n");
 
@@ -141,10 +151,9 @@ async fn main() {
     let mgr = PluginManager::default();
     mgr.register_factory(
         "wasm://env-sandbox-demo.wasm",
-        Box::new(WasmPluginFactory::new(
-            crate_dir.join("wasm"),
-            Arc::new(registry),
-        ).expect("engine")),
+        Box::new(
+            WasmPluginFactory::new(crate_dir.join("wasm"), Arc::new(registry)).expect("engine"),
+        ),
     );
     mgr.load_config(cpex_config).unwrap();
     mgr.initialize().await.unwrap();
@@ -152,7 +161,10 @@ async fn main() {
     // =========================================================================
     // Allowed variables — declared in allowed_env; value is visible to plugin
     // =========================================================================
-    println!("{}Scenario 1: allowed_env variables (visible inside sandbox){}", CYAN, RESET);
+    println!(
+        "{}Scenario 1: allowed_env variables (visible inside sandbox){}",
+        CYAN, RESET
+    );
     let r = invoke(&mgr, "CPEX_APP_TOKEN").await;
     print_case("ALLOW expected", "CPEX_APP_TOKEN", &r);
     let r = invoke(&mgr, "CPEX_LOG_LEVEL").await;
@@ -162,7 +174,10 @@ async fn main() {
     // Denied variables — not in allowed_env; hidden from sandbox
     // Even though these are set on the host, the plugin cannot see them.
     // =========================================================================
-    println!("\n{}Scenario 2: variables NOT in allowed_env (hidden inside sandbox){}", CYAN, RESET);
+    println!(
+        "\n{}Scenario 2: variables NOT in allowed_env (hidden inside sandbox){}",
+        CYAN, RESET
+    );
     let r = invoke(&mgr, "HOME").await;
     print_case("DENY expected", "HOME", &r);
     let r = invoke(&mgr, "PATH").await;

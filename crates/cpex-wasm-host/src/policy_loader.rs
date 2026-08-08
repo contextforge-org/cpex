@@ -151,10 +151,7 @@ pub fn resolve_permission(permission: &str) -> Result<(DirPerms, FilePerms)> {
         "drop-box" => Ok((DirPerms::MUTATE, FilePerms::WRITE)),
         "fixed-mutable" => Ok((DirPerms::READ, FilePerms::READ | FilePerms::WRITE)),
         "list-only" => Ok((DirPerms::READ, FilePerms::empty())),
-        "private-scratch" => Ok((
-            DirPerms::MUTATE,
-            FilePerms::READ | FilePerms::WRITE,
-        )),
+        "private-scratch" => Ok((DirPerms::MUTATE, FilePerms::READ | FilePerms::WRITE)),
         other => anyhow::bail!(
             "unknown filesystem permission: '{}'. Valid values: \
              read-only, full-access, drop-box, fixed-mutable, list-only, private-scratch",
@@ -211,7 +208,6 @@ pub fn build_wasi_context(sandbox_policy: Option<&SandboxPolicy>) -> Result<Plug
             .unwrap_or_default(),
     );
 
-
     Ok(PluginWasiContext {
         wasi_ctx,
         http_ctx,
@@ -226,7 +222,8 @@ mod tests {
 
     #[test]
     fn test_parse_sandbox_policy_from_config_file() {
-        let config_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("config/config_policy_test_fixture.yaml");
+        let config_path =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("config/config_policy_test_fixture.yaml");
         let raw = fs::read_to_string(&config_path).expect("failed to read config file");
         let config: serde_yaml::Value = serde_yaml::from_str(&raw).expect("failed to parse YAML");
 
@@ -331,32 +328,53 @@ resources:
     fn test_network_allowlist_populated_from_policy() {
         let policy = SandboxPolicy {
             allowed_network: vec![
-                NetworkRule { host: "api.internal.svc".to_string(), ..Default::default() },
-                NetworkRule { host: "auth.example.com".to_string(), ..Default::default() },
+                NetworkRule {
+                    host: "api.internal.svc".to_string(),
+                    ..Default::default()
+                },
+                NetworkRule {
+                    host: "auth.example.com".to_string(),
+                    ..Default::default()
+                },
             ],
             ..Default::default()
         };
         let ctx = build_wasi_context(Some(&policy)).unwrap();
         assert_eq!(ctx.allowed_hosts.len(), 2);
-        assert!(ctx.allowed_hosts.iter().any(|r| r.host == "api.internal.svc"));
-        assert!(ctx.allowed_hosts.iter().any(|r| r.host == "auth.example.com"));
+        assert!(ctx
+            .allowed_hosts
+            .iter()
+            .any(|r| r.host == "api.internal.svc"));
+        assert!(ctx
+            .allowed_hosts
+            .iter()
+            .any(|r| r.host == "auth.example.com"));
     }
 
     #[test]
     fn test_network_rule_default_scheme_is_https() {
-        let rule = NetworkRule { host: "example.com".to_string(), ..Default::default() };
+        let rule = NetworkRule {
+            host: "example.com".to_string(),
+            ..Default::default()
+        };
         assert_eq!(rule.schemes, vec!["https"]);
     }
 
     #[test]
     fn test_network_rule_empty_ports_means_any_port() {
-        let rule = NetworkRule { host: "example.com".to_string(), ..Default::default() };
+        let rule = NetworkRule {
+            host: "example.com".to_string(),
+            ..Default::default()
+        };
         assert!(rule.ports.is_empty());
     }
 
     #[test]
     fn test_network_rule_empty_methods_means_any_method() {
-        let rule = NetworkRule { host: "example.com".to_string(), ..Default::default() };
+        let rule = NetworkRule {
+            host: "example.com".to_string(),
+            ..Default::default()
+        };
         assert!(rule.methods.is_empty());
     }
 
