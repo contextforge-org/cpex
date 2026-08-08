@@ -10,6 +10,7 @@ resolver = "2"
 members = [
     "crates/cpex",
     "crates/cpex-core",
+    "crates/cpex-hosts-python",
     "crates/cpex-orchestration",
     "crates/cpex-sdk",
     "crates/cpex-builtins",
@@ -26,6 +27,7 @@ members = [
     "builtins/plugins/elicitation-ciba",
     "builtins/pdps/cedar-direct",
     "builtins/pdps/cel",
+    "builtins/pdps/opa",
     "builtins/session/valkey",
     "examples/go-demo/ffi",
     "examples/tutorial",
@@ -39,17 +41,25 @@ exclude = [
 ]
 
 # `default-members` controls what `cargo build` / `cargo test` (with no
-# `-p` or `--workspace` flag) picks up. `cpex-session-valkey` pulls a redis
-# client + a rustls TLS stack, which slows default builds — excluding it
-# from default-members keeps everyday iteration fast.
+# `-p` or `--workspace` flag) picks up. Two members are held out:
 #
-# To exercise the Valkey session store:
+#   * `bindings/python` — links libpython, so including it would make a plain
+#     `cargo build` require a Python dev install (KD3).
+#   * `builtins/session/valkey` — pulls a redis client + a rustls TLS stack,
+#     which slows every default build.
+#
+# Everything else, including `crates/cpex-hosts-python` (pure Rust; it only
+# *spawns* a Python subprocess, never links one), builds by default.
+#
+# To exercise a held-out member:
 #   cargo build --workspace                  # all members
-#   cargo build -p cpex-session-valkey       # just this one
+#   cargo build -p cpex-session-valkey       # just the Valkey session store
+#   cargo build -p cpex-python               # just the PyO3 bindings
 #   cargo test --workspace                   # full sweep (CI)
 default-members = [
     "crates/cpex",
     "crates/cpex-core",
+    "crates/cpex-hosts-python",
     "crates/cpex-orchestration",
     "crates/cpex-sdk",
     "crates/cpex-builtins",
@@ -65,6 +75,7 @@ default-members = [
     "builtins/plugins/elicitation-ciba",
     "builtins/pdps/cedar-direct",
     "builtins/pdps/cel",
+    "builtins/pdps/opa",
     "examples/go-demo/ffi",
     "examples/tutorial",
 ]
@@ -134,6 +145,7 @@ cpex-plugin-delegator-biscuit = { path = "builtins/plugins/delegator-biscuit", v
 cpex-plugin-elicitation-ciba  = { path = "builtins/plugins/elicitation-ciba",  version = "0.2.2" }
 cpex-pdp-cedar-direct         = { path = "builtins/pdps/cedar-direct",         version = "0.2.2" }
 cpex-pdp-cel                  = { path = "builtins/pdps/cel",                   version = "0.2.2" }
+cpex-pdp-opa                  = { path = "builtins/pdps/opa",                   version = "0.2.2" }
 cpex-session-valkey           = { path = "builtins/session/valkey",            version = "0.2.2" }
 
 # Size-first release profile. The FFI artifact (libcpex_ffi.a) is linked

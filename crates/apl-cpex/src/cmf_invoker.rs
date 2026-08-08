@@ -23,6 +23,13 @@
 // [`persist_session`] after route evaluation. Session ID is pulled from
 // `extensions.agent.session_id`; absent → both ops are no-ops.
 //
+// Alongside the payload, the invoker records *whether* a plugin ever
+// handed back a payload ([`payload_was_modified`]). That flag is the
+// authoritative answer for the host: a plugin mutation is only
+// detectable at the moment it's accepted, not by comparing message
+// content afterwards (content comparison can't see mutations to
+// non-text parts, and equality isn't defined on the CMF payload types).
+//
 // # Per-call taint extraction
 //
 // Each plugin invocation diffs `result.modified_extensions.security.labels`
@@ -49,6 +56,7 @@
 // invoker.
 
 use std::collections::HashSet;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -83,6 +91,16 @@ pub struct CmfPluginInvoker {
     /// `extensions` — accumulated text rewrites have to be visible to
     /// the next dispatch in the same request.
     payload: Arc<Mutex<MessagePayload>>,
+    /// Set the moment a plugin's `modified_payload` is accepted into
+    /// `payload` above. Request-scoped and sticky: once any plugin in
+    /// the request mutates, it stays `true`.
+    ///
+    /// This is the *signal* the host reads to decide whether to forward
+    /// a modified payload. It exists because the fact is only knowable
+    /// here — a caller comparing message content afterwards sees text
+    /// parts only, so a redaction of a `ToolResult` (or any other
+    /// non-text part) looks identical to no mutation at all.
+    payload_modified: AtomicBool,
     /// Pre-resolved per-route plugin lineup. Built (or fetched from a
     /// shared `DispatchCache`) at request start by the host.
     plan: Arc<RouteDispatchPlan>,
@@ -144,6 +162,7 @@ impl CmfPluginInvoker {
             manager,
             extensions: Arc::new(Mutex::new(extensions)),
             payload: Arc::new(Mutex::new(payload)),
+            payload_modified: AtomicBool::new(false),
             plan,
             session_id,
             session_store,
@@ -156,6 +175,26 @@ impl CmfPluginInvoker {
     /// re-serialization.
     pub async fn current_payload(&self) -> MessagePayload {
         self.payload.lock().await.clone()
+    }
+
+    /// Did any plugin in this request hand back a payload?
+    ///
+    /// `true` from the moment a `modified_payload` is accepted into the
+    /// request's payload, and never resets. The host uses this to decide
+    /// whether to forward [`current_payload`] downstream. Reported
+    /// independently of *what* changed: a plugin that rewrites a tool
+    /// result, a tool call's arguments, or a thinking block is as
+    /// visible here as one that rewrites text.
+    ///
+    /// Deliberately `false` when a plugin returned a payload of the
+    /// wrong concrete type — that mutation was dropped (with a warning),
+    /// so claiming it landed would forward an unmutated payload while
+    /// asserting it changed.
+    pub fn payload_was_modified(&self) -> bool {
+        // Pairs with the `Release` store in `invoke`: plugin branches
+        // can run on other tasks (`dispatch_parallel`), so the write
+        // has to be visible to this read.
+        self.payload_modified.load(Ordering::Acquire)
     }
 
     /// Snapshot the current extensions. Useful for hosts that need to
@@ -300,6 +339,23 @@ impl PluginInvoker for CmfPluginInvoker {
         // these become `PluginOutcome.taints`.
         let before_labels = snapshot_labels(&current_extensions);
 
+        // Per-call field baseline for pipeline-stage dispatch: the field
+        // as *this payload* holds it right now.
+        //
+        // This is the only sound thing to compare a readback against. The
+        // pipeline's own `value` may already carry earlier stages' edits
+        // (`mask`, `redact`, `hash`) that were never pushed into the
+        // payload, so comparing against it would read the payload's
+        // untouched original as "the plugin's new value" and hand the
+        // pre-redaction plaintext back to the pipeline, undoing the
+        // earlier stage.
+        let field_before = match invocation {
+            PluginInvocation::Field { name, phase, .. } => {
+                field_value_from_message(&current_payload.message, name, phase)
+            },
+            PluginInvocation::Step { .. } => None,
+        };
+
         let (result, _bg) = self
             .manager
             .invoke_entries::<CmfHook>(
@@ -329,18 +385,43 @@ impl PluginInvoker for CmfPluginInvoker {
         // request payload. `PluginPayload` only exposes `as_any`, so we
         // downcast-ref and clone. `MessagePayload: Clone` makes this
         // cheap relative to the FFI/invoke cost.
-        let modified_value = if let Some(mp_boxed) = result.modified_payload.as_ref() {
+        //
+        // Gated on `payload_modified`, not on `modified_payload.is_some()`:
+        // the executor returns the final payload on every allowed
+        // pipeline, so `is_some()` is true even when the plugin never
+        // touched it.
+        let modified_value = if !result.payload_modified {
+            None
+        } else if let Some(mp_boxed) = result.modified_payload.as_ref() {
             match mp_boxed.as_any().downcast_ref::<MessagePayload>() {
                 Some(modified) => {
                     *self.payload.lock().await = modified.clone();
+                    // Record the mutation for the host. `Release` so the
+                    // flag is visible to `payload_was_modified` even when
+                    // this call ran on a `dispatch_parallel` branch task.
+                    self.payload_modified.store(true, Ordering::Release);
                     match invocation {
-                        PluginInvocation::Field { .. } => Some(serde_json::Value::String(
-                            modified.message.get_text_content(),
-                        )),
+                        PluginInvocation::Field { name, phase, .. } => {
+                            let rewritten =
+                                field_value_from_message(&modified.message, name, phase)
+                                    .filter(|new_value| field_before.as_ref() != Some(new_value));
+                            if rewritten.is_none() {
+                                tracing::debug!(
+                                    plugin = %plugin_name,
+                                    field = %name,
+                                    "plugin mutated the payload but not this field; \
+                                     leaving the field value alone"
+                                );
+                            }
+                            rewritten
+                        },
                         PluginInvocation::Step { .. } => None,
                     }
                 },
                 None => {
+                    // Left out of `payload_modified` on purpose: nothing
+                    // was written, so the host must keep forwarding the
+                    // payload it already has.
                     tracing::warn!(
                         plugin = %plugin_name,
                         "CmfPluginInvoker: modified_payload was not MessagePayload \
@@ -383,6 +464,40 @@ impl PluginInvoker for CmfPluginInvoker {
             taints,
             modified_value,
         })
+    }
+}
+
+/// Read the value of one pipeline field out of a message.
+///
+/// A plugin dispatched from an `args:` / `result:` stage is handed the
+/// whole message, not the field, so its new value for that field has to
+/// be read back out. The projection matches what APL evaluated against:
+/// Pre addresses args, Post addresses result. `field` is relative to
+/// that root.
+///
+/// Two shapes:
+///   * object projection (a tool call's arguments, a structured tool
+///     result) → look up `field` in it, `None` when absent.
+///   * scalar projection (a text-only message, whose whole content is
+///     the field) → the projection itself.
+///
+/// The caller compares the result against the value the pipeline is
+/// holding: equal, or `None` here, both mean "this plugin didn't change
+/// this field". The plugin's payload mutation is recorded separately, so
+/// reporting no field change never drops it.
+fn field_value_from_message(
+    message: &cpex_core::cmf::Message,
+    field: &str,
+    phase: DispatchPhase,
+) -> Option<serde_json::Value> {
+    let projection = match phase {
+        DispatchPhase::Pre => crate::message_projection::extract_args_from_message(message),
+        DispatchPhase::Post => crate::message_projection::extract_result_from_message(message),
+    };
+    if projection.is_object() {
+        apl_core::get_dotted(&projection, field).cloned()
+    } else {
+        Some(projection)
     }
 }
 

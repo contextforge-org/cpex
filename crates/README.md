@@ -8,6 +8,9 @@ Phase 1a — core runtime functional, no language bindings yet.
 
 - `cpex-core`: Plugin trait, typed hooks, 5-phase executor, plugin manager
 - `cpex-sdk`: Lean re-exports for plugin authors
+- `cpex-hosts-python`: Runs existing Python plugins out-of-process, each in its
+  own cached virtualenv, under the `isolated_venv` kind
+  ([README](cpex-hosts-python/README.md))
 
 ## Prerequisites
 

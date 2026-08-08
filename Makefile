@@ -43,6 +43,8 @@ help:
 	@echo "  test              Run all workspace tests"
 	@echo "  test-ffi          Run only the cpex-ffi crate tests"
 	@echo "  test-all          Rust tests + Go tests (with -race)"
+	@echo "  test-python-e2e   Python host e2e (#[ignore]d); needs CPEX_PYTHON_SOURCE."
+	@echo "                    Skips FAIL here — this lane must really run."
 	@echo ""
 	@echo "Supply chain & coverage:"
 	@echo "  audit             cargo deny check (advisories, licenses, bans, sources)"
@@ -142,6 +144,38 @@ test:
 .PHONY: test-ffi
 test-ffi:
 	@$(CARGO) test -p cpex-ffi --lib
+
+# The Python host's end-to-end tests. They are `#[ignore]`d because they need a
+# python3 and a checkout of the cpex Python side, so `make test` reports them as
+# ignored rather than passing a body that never ran.
+#
+# CPEX_REQUIRE_PYTHON_E2E=1 turns every in-test skip into a panic: this target
+# is the lane that is supposed to have the environment, so a skip here is a
+# broken lane, not an absent dependency. That is what stops the suite reporting
+# safety it has not verified.
+#
+# CPEX_PYTHON_SOURCE must point at a cpex Python checkout carrying
+# cpex/framework/isolated/worker.py (PyPI's is behind this branch).
+PYTHON_E2E_TESTS = credential_e2e isolated_venv_e2e extensions_merge_e2e
+
+.PHONY: test-python-e2e
+test-python-e2e:
+	@command -v python3 >/dev/null 2>&1 || { \
+		echo "❌ python3 not found — the Python host e2e tests need an interpreter"; exit 1; }
+	@test -n "$(CPEX_PYTHON_SOURCE)" || { \
+		echo "❌ CPEX_PYTHON_SOURCE is unset. Point it at a cpex Python checkout containing"; \
+		echo "   cpex/framework/isolated/worker.py, e.g.:"; \
+		echo "   make test-python-e2e CPEX_PYTHON_SOURCE=../cpex-python"; exit 1; }
+	@test -f "$(CPEX_PYTHON_SOURCE)/cpex/framework/isolated/worker.py" || { \
+		echo "❌ $(CPEX_PYTHON_SOURCE) has no cpex/framework/isolated/worker.py"; exit 1; }
+	@echo "🐍 Python host e2e (skips fail here) ..."
+	@for t in $(PYTHON_E2E_TESTS); do \
+		echo "→ $$t"; \
+		CPEX_REQUIRE_PYTHON_E2E=1 CPEX_PYTHON_SOURCE="$(CPEX_PYTHON_SOURCE)" \
+			$(CARGO) test -p cpex-hosts-python --test $$t \
+			-- --ignored --nocapture || exit 1; \
+	done
+	@echo "✅  Python host e2e passed (no skips)"
 
 # Rust workspace tests + Go tests under the race detector.
 .PHONY: test-all

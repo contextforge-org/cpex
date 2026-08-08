@@ -11,7 +11,9 @@
 
 #![doc = "APL — Authorization Policy Language."]
 
+pub mod attribute_source;
 pub mod attributes;
+pub mod constraint;
 pub mod evaluator;
 pub mod parser;
 pub mod pipeline;
@@ -20,6 +22,7 @@ pub mod route;
 pub mod rules;
 pub mod step;
 
+pub use attribute_source::{AttributeError, AttributeSource, AttributeTree};
 pub use attributes::{AttributeBag, AttributeExtractor, AttributeValue};
 pub use evaluator::{
     evaluate_effects, evaluate_pipeline, evaluate_rules, Decision, FieldOutcome, PipelineEvaluation,
@@ -32,7 +35,9 @@ pub use pipeline::{FieldRule, Pipeline, ScanKind, Stage, TaintEvent, TaintScope,
 pub use plugin_decl::{
     CapsView, EffectivePlugin, PluginDeclaration, PluginOverride, PluginRegistry,
 };
-pub use route::{evaluate_post, evaluate_pre, evaluate_route, RouteDecision, RoutePayload};
+pub use route::{
+    evaluate_post, evaluate_pre, evaluate_route, get_dotted, RouteDecision, RoutePayload,
+};
 pub use rules::{
     CompareOp, CompiledRoute, Condition, DenyResponse, Effect, Expression, Literal, Phase,
     PhaseSet, Rule,

@@ -274,9 +274,16 @@ db_path/
 tmp/
 
 .continue
-plugin-catalog
 # Hugo build output
 docs/public/
 crates/cpex-wasm-host/wasm/*.wasm
 crates/cpex-wasm-plugin/plugin.wasm
 crates/cpex-wasm-plugin/Cargo.lock
+# python cpex install target(s) — the repo-root install dir the Python CLI
+# materializes venvs into. Leading slash anchors it to the root: unanchored,
+# `plugins/` matched at any depth and swallowed the tracked source trees
+# `builtins/plugins/` and `tests/unit/cpex/fixtures/plugins/` (existing files
+# stayed tracked, but any newly added one was silently unstageable).
+/plugins/
+data/
+plugin-catalog

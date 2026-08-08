@@ -142,9 +142,11 @@ Authoring plugins or PDP resolvers? Depend on the lean [`cpex-sdk`](crates/cpex-
 ## Documentation
 
 - [**Vision**](https://contextforge-org.github.io/cpex/docs/vision/): the reference-monitor model and where CPEX sits.
-- [**Overview**](https://contextforge-org.github.io/cpex/docs/overview/): the model in motion, with the scenario above end to end.
-- [**APL**](https://contextforge-org.github.io/cpex/docs/apl/): the policy language: predicates, effects, sequencing, field pipelines.
+- [**Overview**](https://contextforge-org.github.io/cpex/docs/overview/): the scenario above end to end.
 - [**Quick Start**](https://contextforge-org.github.io/cpex/docs/quickstart/): stand up CPEX as an enforcement point.
+- [**Use Cases**](https://contextforge-org.github.io/cpex/docs/use-cases/): complete integration examples with external middleware projects.
+- [**Tutorial**](https://contextforge-org.github.io/cpex/docs/tutorial/): a complete tour of the framework.
+- [**APL**](https://contextforge-org.github.io/cpex/docs/apl/): the policy pipeline configuration: predicates, effects, sequencing, field pipelines.
 
 ## Workspace layout
 
@@ -159,7 +161,7 @@ CPEX is a Cargo workspace of focused crates:
 | [`cpex-builtins`](crates/cpex-builtins) | Feature-gated bundle of builtin plugins, PDPs, session stores |
 | [`cpex-ffi`](crates/cpex-ffi) | C FFI (`cdylib`/`staticlib`) for Go / Python / WASM host bindings |
 | [`apl-core`](crates/apl-core) · [`apl-cmf`](crates/apl-cmf) · [`apl-cpex`](crates/apl-cpex) | APL (Authorization Policy Language): compiler/evaluator, CMF bridge, CPEX integration |
-| `builtins/*` | Bundled plugins (PII scanner, audit logger, JWT identity, OAuth/Biscuit delegation), PDPs (Cedar, CEL), and the Valkey session store |
+| `builtins/*` | Bundled plugins (PII scanner, audit logger, JWT identity, OAuth/Biscuit delegation), PDPs (Cedar, CEL, OPA/Rego), and the Valkey session store |
 
 The C FFI is distributed as signed prebuilt artifacts. See [`crates/cpex-ffi/RELEASE.md`](crates/cpex-ffi/RELEASE.md). Go bindings live in [`go/cpex`](go/cpex).
 

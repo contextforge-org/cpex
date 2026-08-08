@@ -51,17 +51,17 @@ global:
 
 ## Supported dialects
 
-APL recognizes a fixed set of PDP dialects. Two ship as builtin resolvers; the rest are recognized by APL and dispatched to a resolver you provide on the host.
+APL recognizes a fixed set of PDP dialects. Three ship as builtin resolvers; the rest are recognized by APL and dispatched to a resolver you provide on the host.
 
 | Dialect | Status |
 |---------|--------|
 | `cedar` | Ships as the `cedar-direct` builtin resolver. |
 | `cel` | Ships as the `cel` builtin resolver (safe, bounded expressions). |
-| `opa` | Recognized dialect; wire a host resolver (Rego / OPA). |
+| `opa` | Ships as the `opa` builtin resolver (embedded Rego via regorus, no sidecar). |
 | `authzen` | Recognized dialect; wire a host resolver (AuthZEN protocol). |
 | `nemo` | Recognized dialect; wire a host resolver (NeMo Guardrails). |
 
-This is a deliberate pluggable-resolver surface, not a maturity checklist. APL speaks the dialect; the resolver is an implementation. Cedar and CEL are provided so you can start without writing one. For OPA, AuthZEN, or NeMo, implement the resolver trait and register it; the APL `opa:` / `authzen:` / `nemo:` call forms then work unchanged.
+This is a deliberate pluggable-resolver surface, not a maturity checklist. APL speaks the dialect; the resolver is an implementation. Cedar, CEL, and OPA are provided so you can start without writing one. For AuthZEN or NeMo, implement the resolver trait and register it; the APL `authzen:` / `nemo:` call forms then work unchanged.
 
 CEL is the lightest option for inline boolean policy:
 

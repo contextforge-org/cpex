@@ -450,15 +450,18 @@ async fn apply_to_extensions_writes_delegated_token_keyed_by_subject() {
         .expect("raw_credentials slot populated");
     assert_eq!(raw.delegated_tokens.len(), 1);
 
-    // The key is synthesized from (subject.id, audience, scopes, mode).
-    let expected_key = DelegationKey {
-        subject_id: "alice@corp.com".into(),
-        audience: "https://hr.example.com".into(),
+    // The key is synthesized from (subject.id, workload, client, audience,
+    // scopes, mode). Built via the constructor — DelegationKey is
+    // #[non_exhaustive]; no workload/client participated, so only the
+    // subject is set.
+    let expected_key = DelegationKey::new(
+        DelegationMode::OnBehalfOfUser,
+        "https://hr.example.com",
         // Order matches what StubExchanger produces (required_permissions
         // first, then attenuation capabilities).
-        scopes: vec!["read:compensation".into(), "audit".into()],
-        mode: DelegationMode::OnBehalfOfUser,
-    };
+        vec!["read:compensation".into(), "audit".into()],
+    )
+    .with_subject_id("alice@corp.com");
     assert!(
         raw.delegated_tokens.contains_key(&expected_key),
         "delegated_tokens missing expected key; saw keys: {:?}",

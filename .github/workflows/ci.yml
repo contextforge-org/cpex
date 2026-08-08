@@ -76,8 +76,54 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: cargo test
         # Valkey/testcontainers integration tests are `#[ignore]`d by default
-        # and run out-of-band, so this needs no Docker daemon.
+        # and run out-of-band, so this needs no Docker daemon. The Python host
+        # e2e tests are also `#[ignore]`d here — the `python-e2e` job below runs
+        # them with a real interpreter and framework checkout.
         run: cargo test --workspace
+
+  # The Python host's end-to-end tests, actually run.
+  #
+  # These are `#[ignore]`d so the workspace job reports them as ignored rather
+  # than passing bodies that never executed. This job builds the environment they
+  # need and sets CPEX_REQUIRE_PYTHON_E2E=1, under which an unmet prerequisite
+  # panics instead of skipping. So a missing interpreter or a stale worker.py
+  # fails this job loudly — it cannot go quiet and still report green.
+  python-e2e:
+    name: Python host e2e (skips fail)
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+      # The Python framework lives on its own branch, and PyPI's `cpex` is behind
+      # it (its worker.py predates the credential and extensions fields). The
+      # *stable* 0.1.x branch is not enough either: it carries no
+      # cpex/framework/isolated/worker.py at all. The companion branch below is
+      # the one whose worker.py both consumes `credential` and delivers
+      # `extensions=` to execute_plugin, which is what these tests gate on.
+      #
+      # This is a cross-branch dependency: when the Python side merges, retarget
+      # this ref. Until then a wrong ref fails loudly (skips are errors here)
+      # rather than silently skipping — which is the whole point of this job.
+      - name: Checkout the cpex Python framework
+        uses: actions/checkout@v7
+        with:
+          ref: "feat/python_plugin_compat_0.1.x"
+          path: cpex-python
+          fetch-depth: 1
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install Rust 1.96.0
+        uses: dtolnay/rust-toolchain@1.96.0
+      - uses: Swatinem/rust-cache@v2
+      - name: make test-python-e2e
+        env:
+          CPEX_PYTHON_SOURCE: ${{ github.workspace }}/cpex-python
+        run: make test-python-e2e
 
   examples:
     name: Examples build (Rust + Go FFI)

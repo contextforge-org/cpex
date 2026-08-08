@@ -18,4 +18,6 @@ pub mod hook;
 pub mod payload;
 
 pub use hook::{TokenDelegateHook, HOOK_TOKEN_DELEGATE};
-pub use payload::{AttenuationConfig, AuthEnforcedBy, DelegationPayload, TargetType};
+pub use payload::{
+    AttenuationConfig, AuthEnforcedBy, DelegationPayload, DelegationSubject, TargetType,
+};

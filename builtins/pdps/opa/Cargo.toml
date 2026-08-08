@@ -1,0 +1,93 @@
+# Location: ./builtins/pdps/opa/Cargo.toml
+# Copyright 2026
+# SPDX-License-Identifier: Apache-2.0
+# Authors: Fred Araujo
+#
+# cpex-pdp-opa — a `PdpResolver` that evaluates OPA/Rego policy in-process via
+# the pure-Rust `regorus` interpreter. Global and/or inline Rego modules plus
+# external `data`; the request `AttributeBag` maps to the Rego `input`
+# document; the configured query resolves to allow/deny.
+#
+# See the crate-level module docs in `src/lib.rs` for the full picture: where
+# it sits in the stack, the bag→input mapping, the decision contract, and the
+# base-engine / clone-per-request evaluation model.
+
+[package]
+name = "cpex-pdp-opa"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "CPEX PDP — embedded OPA/Rego policy evaluation via regorus."
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+apl-core = { workspace = true }
+# regorus — Microsoft's pure-Rust Rego interpreter (Apache-2.0).
+#
+# `default-features = false` is deliberate. regorus's `default`
+# (`arc + full-opa + rvm`) bundles the `http`, `net`, `opa-runtime`, and
+# `jsonschema` builtins. Inline Rego is authored by a less-trusted actor than
+# the operator, so this crate opts out of that surface and enables only the
+# pure, local builtins an authorization predicate needs — the same discipline
+# `cpex-pdp-cel` applies when it pins CEL features explicitly. Excluded on
+# purpose:
+#   - http        → `http.send` network egress
+#   - net         → ipnet/CIDR builtins
+#   - opa-runtime → `opa.runtime()` environment/config introspection
+#   - jsonschema  → large dependency, unused for allow/deny predicates
+# `arc` is load-bearing: it switches regorus's internal reference counting to
+# atomic `Arc` so `Engine` is `Send`/`Sync` and the resolver can be shared
+# across worker threads behind `Arc<dyn PdpResolver>`.
+regorus = { version = "0.11", default-features = false, features = [
+    "arc",
+    "std",
+    "rvm",
+    "regex",
+    "time",
+    "base64",
+    "base64url",
+    "hex",
+    "glob",
+    "graph",
+    "semver",
+    "urlquery",
+    "uuid",
+    "yaml",
+    # `cache` bounds and reuses compiled regex and glob patterns in a
+    # process-global LRU keyed by pattern text (regorus defaults: 256 regex, 128
+    # glob). It caches compiled patterns only, never evaluation results, so it
+    # holds no input-derived state and is safe to share across requests. Without
+    # it, every regex and glob in a policy recompiles on every evaluation.
+    "cache",
+] }
+serde_json = { workspace = true }
+async-trait = { workspace = true }
+serde_yaml = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+# Rego evaluation is synchronous and can be CPU-heavy (comprehensions over
+# large `data`, expensive builtins). The resolver runs each eval on
+# `tokio::task::spawn_blocking` so one request cannot monopolize an async
+# worker thread. This couples the crate to a tokio runtime at eval time — a
+# deliberate divergence from `cpex-pdp-cel` (which evaluates inline), justified
+# because Rego eval is materially heavier than a CEL predicate. The CPEX host
+# already runs on tokio.
+tokio = { workspace = true, features = ["rt"] }
+
+[dev-dependencies]
+# End-to-end integration tests wire the opa factory through the apl-cpex
+# visitor and exercise it against a real `PluginManager`. These dev-dep edges
+# only exist for tests — the crate depends only on apl-core (plus its engine
+# and runtime deps) at compile time, so it can be used standalone.
+apl-cmf = { workspace = true }
+apl-cpex = { workspace = true }
+cpex-core = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }
+
+[lints]
+workspace = true

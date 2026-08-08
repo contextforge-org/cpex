@@ -197,6 +197,69 @@ impl PluginFactory for ModifyPluginFactory {
     }
 }
 
+/// Redactor that rewrites **only** `ToolResult.content`, leaving every
+/// Text part byte-identical. This is the shape of a real PII/secret
+/// redactor, and the shape whose mutation used to vanish: nothing about
+/// the message's text changes, so text-based change detection reports
+/// "unmodified" and the unredacted result gets forwarded.
+struct RedactToolResultPlugin {
+    cfg: PluginConfig,
+}
+
+#[async_trait]
+impl Plugin for RedactToolResultPlugin {
+    fn config(&self) -> &PluginConfig {
+        &self.cfg
+    }
+}
+
+impl HookHandler<CmfHook> for RedactToolResultPlugin {
+    async fn handle(
+        &self,
+        payload: &MessagePayload,
+        _extensions: &Extensions,
+        _ctx: &mut PluginContext,
+    ) -> PluginResult<MessagePayload> {
+        let new_content: Vec<ContentPart> = payload
+            .message
+            .content
+            .iter()
+            .map(|part| match part {
+                ContentPart::ToolResult { content } => {
+                    let mut redacted = content.clone();
+                    redacted.content = serde_json::Value::String("[REDACTED]".to_string());
+                    ContentPart::ToolResult { content: redacted }
+                },
+                other => other.clone(),
+            })
+            .collect();
+        PluginResult::modify_payload(MessagePayload {
+            message: Message {
+                schema_version: payload.message.schema_version.clone(),
+                role: payload.message.role,
+                content: new_content,
+                channel: payload.message.channel,
+            },
+        })
+    }
+}
+
+struct RedactToolResultPluginFactory;
+impl PluginFactory for RedactToolResultPluginFactory {
+    fn create(&self, config: &PluginConfig) -> Result<PluginInstance, Box<CoreError>> {
+        let plugin = Arc::new(RedactToolResultPlugin {
+            cfg: config.clone(),
+        });
+        Ok(PluginInstance {
+            plugin: plugin.clone(),
+            handlers: vec![(
+                "cmf.tool_pre_invoke",
+                Arc::new(TypedHandlerAdapter::<CmfHook, _>::new(plugin)),
+            )],
+        })
+    }
+}
+
 // ---------------------------------------------------------------------
 // Test helpers
 // ---------------------------------------------------------------------
@@ -205,6 +268,38 @@ fn payload_with_text(text: &str) -> MessagePayload {
     MessagePayload {
         message: Message::text(Role::User, text),
     }
+}
+
+/// A message carrying a tool result alongside a text part. The text part
+/// is what any text-based comparison would see; the secret lives in the
+/// tool result, where only a structural reader finds it.
+fn payload_with_tool_result(text: &str, result: &str) -> MessagePayload {
+    MessagePayload {
+        message: Message::with_content(
+            Role::Tool,
+            vec![
+                ContentPart::Text {
+                    text: text.to_string(),
+                },
+                ContentPart::ToolResult {
+                    content: cpex_core::cmf::ToolResult {
+                        tool_call_id: "tc_001".to_string(),
+                        tool_name: "get_secret".to_string(),
+                        content: serde_json::Value::String(result.to_string()),
+                        is_error: false,
+                    },
+                },
+            ],
+        ),
+    }
+}
+
+/// Read the first `ToolResult.content` out of a payload.
+fn tool_result_content(payload: &MessagePayload) -> Option<&serde_json::Value> {
+    payload.message.content.iter().find_map(|part| match part {
+        ContentPart::ToolResult { content } => Some(&content.content),
+        _ => None,
+    })
 }
 
 fn empty_bag() -> AttributeBag {
@@ -382,6 +477,456 @@ async fn current_payload_reflects_accumulated_mutations() {
 
     let final_payload = invoker.current_payload().await;
     assert_eq!(final_payload.message.get_text_content(), "hello [MODIFIED]");
+}
+
+// ---------------------------------------------------------------------
+// Mutation signalling — the invoker reports whether a plugin handed back
+// a payload, so the host never has to guess from message content. A
+// guess based on text can't see a rewritten tool result, tool call,
+// thinking block, image, or any other non-text part.
+//
+// Not covered here: a plugin returning a payload of the wrong concrete
+// type (the downcast-failure path that warns and drops). `HookHandler`
+// is typed on `PluginResult<MessagePayload>`, so a foreign payload can't
+// be constructed through the typed dispatch path these tests use — it
+// would take a hand-rolled `AnyHookHandler` bypassing the adapter.
+// ---------------------------------------------------------------------
+
+#[tokio::test]
+async fn no_mutation_reported_before_any_dispatch() {
+    let mgr = build_manager("allow-plugin", Box::new(AllowPluginFactory)).await;
+    let plan = plan_for(&mgr, "allow-plugin");
+    let invoker = CmfPluginInvoker::for_request(
+        mgr,
+        Extensions::default(),
+        payload_with_text("hello"),
+        plan,
+        Arc::new(MemorySessionStore::new()),
+    )
+    .await
+    .expect("for_request");
+
+    assert!(
+        !invoker.payload_was_modified(),
+        "a fresh invoker has dispatched nothing, so nothing can have mutated"
+    );
+}
+
+#[tokio::test]
+async fn plugin_that_allows_without_mutating_reports_no_mutation() {
+    let mgr = build_manager("allow-plugin", Box::new(AllowPluginFactory)).await;
+    let plan = plan_for(&mgr, "allow-plugin");
+    let invoker = CmfPluginInvoker::for_request(
+        mgr,
+        Extensions::default(),
+        payload_with_text("hello"),
+        plan,
+        Arc::new(MemorySessionStore::new()),
+    )
+    .await
+    .expect("for_request");
+
+    let bag = empty_bag();
+    let _ = invoker
+        .invoke(
+            "allow-plugin",
+            &bag,
+            PluginInvocation::Step {
+                phase: apl_core::step::DispatchPhase::Pre,
+            },
+        )
+        .await
+        .expect("invoke");
+
+    assert!(
+        !invoker.payload_was_modified(),
+        "a plain allow carries no payload; reporting a mutation here would \
+         make every request look modified"
+    );
+}
+
+#[tokio::test]
+async fn text_mutation_is_reported() {
+    let mgr = build_manager("modify-plugin", Box::new(ModifyPluginFactory)).await;
+    let plan = plan_for(&mgr, "modify-plugin");
+    let invoker = CmfPluginInvoker::for_request(
+        mgr,
+        Extensions::default(),
+        payload_with_text("hello"),
+        plan,
+        Arc::new(MemorySessionStore::new()),
+    )
+    .await
+    .expect("for_request");
+
+    let bag = empty_bag();
+    let value = serde_json::Value::String("hello".to_string());
+    let _ = invoker
+        .invoke(
+            "modify-plugin",
+            &bag,
+            PluginInvocation::Field {
+                name: "content",
+                value: &value,
+                phase: apl_core::step::DispatchPhase::Pre,
+            },
+        )
+        .await
+        .expect("invoke");
+
+    assert!(invoker.payload_was_modified());
+}
+
+/// The reported bug, at the invoker layer: a redactor rewrites only
+/// `ToolResult.content`, so the message's text is byte-identical before
+/// and after. The mutation must still be reported.
+#[tokio::test]
+async fn tool_result_only_mutation_is_reported() {
+    let mgr = build_manager("redact-plugin", Box::new(RedactToolResultPluginFactory)).await;
+    let plan = plan_for(&mgr, "redact-plugin");
+    let original = payload_with_tool_result("here is the result", "sk-secret-value");
+    let text_before = original.message.get_text_content();
+    let invoker = CmfPluginInvoker::for_request(
+        mgr,
+        Extensions::default(),
+        original,
+        plan,
+        Arc::new(MemorySessionStore::new()),
+    )
+    .await
+    .expect("for_request");
+
+    let bag = empty_bag();
+    let _ = invoker
+        .invoke(
+            "redact-plugin",
+            &bag,
+            PluginInvocation::Step {
+                phase: apl_core::step::DispatchPhase::Pre,
+            },
+        )
+        .await
+        .expect("invoke");
+
+    let final_payload = invoker.current_payload().await;
+    assert_eq!(
+        tool_result_content(&final_payload),
+        Some(&serde_json::Value::String("[REDACTED]".to_string())),
+        "the redaction must land in the shared payload"
+    );
+    assert_eq!(
+        final_payload.message.get_text_content(),
+        text_before,
+        "fixture sanity: the text is untouched, so text comparison sees no change"
+    );
+    assert!(
+        invoker.payload_was_modified(),
+        "the mutation is invisible to text comparison but must still be reported"
+    );
+}
+
+// ---------------------------------------------------------------------
+// Field-stage dispatch — a plugin invoked from an `args:` / `result:`
+// pipeline is handed the whole message, so its new value for the field
+// in focus has to be read back out of the part that field came from.
+// Reporting the message's concatenated text instead would overwrite a
+// structured argument with unrelated content.
+// ---------------------------------------------------------------------
+
+/// Rewrites one named tool-call argument, leaving other arguments and
+/// all text parts alone.
+struct ArgRewritePlugin {
+    cfg: PluginConfig,
+    arg: &'static str,
+}
+
+#[async_trait]
+impl Plugin for ArgRewritePlugin {
+    fn config(&self) -> &PluginConfig {
+        &self.cfg
+    }
+}
+
+impl HookHandler<CmfHook> for ArgRewritePlugin {
+    async fn handle(
+        &self,
+        payload: &MessagePayload,
+        _extensions: &Extensions,
+        _ctx: &mut PluginContext,
+    ) -> PluginResult<MessagePayload> {
+        let content: Vec<ContentPart> = payload
+            .message
+            .content
+            .iter()
+            .map(|part| match part {
+                ContentPart::ToolCall { content } => {
+                    let mut next = content.clone();
+                    next.arguments.insert(
+                        self.arg.to_string(),
+                        serde_json::Value::String("[REDACTED]".to_string()),
+                    );
+                    ContentPart::ToolCall { content: next }
+                },
+                other => other.clone(),
+            })
+            .collect();
+        PluginResult::modify_payload(MessagePayload {
+            message: Message {
+                schema_version: payload.message.schema_version.clone(),
+                role: payload.message.role,
+                content,
+                channel: payload.message.channel,
+            },
+        })
+    }
+}
+
+struct ArgRewriteFactory {
+    arg: &'static str,
+}
+
+impl PluginFactory for ArgRewriteFactory {
+    fn create(&self, config: &PluginConfig) -> Result<PluginInstance, Box<CoreError>> {
+        let plugin = Arc::new(ArgRewritePlugin {
+            cfg: config.clone(),
+            arg: self.arg,
+        });
+        Ok(PluginInstance {
+            plugin: plugin.clone(),
+            handlers: vec![(
+                "cmf.field_redact",
+                Arc::new(TypedHandlerAdapter::<CmfHook, _>::new(plugin)),
+            )],
+        })
+    }
+}
+
+/// Rewrites one field inside an object-shaped tool result. The Post-phase
+/// counterpart to `ArgRewritePlugin`.
+struct ResultFieldRewritePlugin {
+    cfg: PluginConfig,
+    field: &'static str,
+}
+
+#[async_trait]
+impl Plugin for ResultFieldRewritePlugin {
+    fn config(&self) -> &PluginConfig {
+        &self.cfg
+    }
+}
+
+impl HookHandler<CmfHook> for ResultFieldRewritePlugin {
+    async fn handle(
+        &self,
+        payload: &MessagePayload,
+        _extensions: &Extensions,
+        _ctx: &mut PluginContext,
+    ) -> PluginResult<MessagePayload> {
+        let content: Vec<ContentPart> = payload
+            .message
+            .content
+            .iter()
+            .map(|part| match part {
+                ContentPart::ToolResult { content } => {
+                    let mut next = content.clone();
+                    if let Some(obj) = next.content.as_object_mut() {
+                        obj.insert(
+                            self.field.to_string(),
+                            serde_json::Value::String("[REDACTED]".to_string()),
+                        );
+                    }
+                    ContentPart::ToolResult { content: next }
+                },
+                other => other.clone(),
+            })
+            .collect();
+        PluginResult::modify_payload(MessagePayload {
+            message: Message {
+                schema_version: payload.message.schema_version.clone(),
+                role: payload.message.role,
+                content,
+                channel: payload.message.channel,
+            },
+        })
+    }
+}
+
+struct ResultFieldRewriteFactory {
+    field: &'static str,
+}
+
+impl PluginFactory for ResultFieldRewriteFactory {
+    fn create(&self, config: &PluginConfig) -> Result<PluginInstance, Box<CoreError>> {
+        let plugin = Arc::new(ResultFieldRewritePlugin {
+            cfg: config.clone(),
+            field: self.field,
+        });
+        Ok(PluginInstance {
+            plugin: plugin.clone(),
+            handlers: vec![(
+                "cmf.field_redact",
+                Arc::new(TypedHandlerAdapter::<CmfHook, _>::new(plugin)),
+            )],
+        })
+    }
+}
+
+fn payload_with_tool_call(city: &str, note: &str) -> MessagePayload {
+    MessagePayload {
+        message: Message::with_content(
+            Role::User,
+            vec![
+                ContentPart::Text {
+                    text: note.to_string(),
+                },
+                ContentPart::ToolCall {
+                    content: cpex_core::cmf::ToolCall {
+                        tool_call_id: "tc_001".to_string(),
+                        name: "get_weather".to_string(),
+                        arguments: [("city".to_string(), serde_json::json!(city))]
+                            .into_iter()
+                            .collect(),
+                        namespace: None,
+                    },
+                },
+            ],
+        ),
+    }
+}
+
+/// The field in focus is `city`, and the plugin rewrites `city`. The new
+/// value must be the redacted city, not the message's text.
+#[tokio::test]
+async fn field_dispatch_reports_the_field_the_plugin_rewrote() {
+    let mgr = build_manager("arg-redactor", Box::new(ArgRewriteFactory { arg: "city" })).await;
+    let plan = plan_for(&mgr, "arg-redactor");
+    let invoker = CmfPluginInvoker::for_request(
+        mgr,
+        Extensions::default(),
+        payload_with_tool_call("London", "unrelated chatter"),
+        plan,
+        Arc::new(MemorySessionStore::new()),
+    )
+    .await
+    .expect("for_request");
+
+    let bag = empty_bag();
+    let value = serde_json::json!("London");
+    let outcome = invoker
+        .invoke(
+            "arg-redactor",
+            &bag,
+            PluginInvocation::Field {
+                name: "city",
+                value: &value,
+                phase: apl_core::step::DispatchPhase::Pre,
+            },
+        )
+        .await
+        .expect("invoke");
+
+    assert_eq!(
+        outcome.modified_value,
+        Some(serde_json::json!("[REDACTED]"))
+    );
+}
+
+/// The field in focus is `city`, but the plugin rewrote `token`. The
+/// pipeline must be told the field is unchanged — and the payload
+/// mutation must still be recorded, so the rewrite isn't lost.
+#[tokio::test]
+async fn field_dispatch_reports_no_change_when_another_field_was_rewritten() {
+    let mgr = build_manager("arg-redactor", Box::new(ArgRewriteFactory { arg: "token" })).await;
+    let plan = plan_for(&mgr, "arg-redactor");
+    let invoker = CmfPluginInvoker::for_request(
+        mgr,
+        Extensions::default(),
+        payload_with_tool_call("London", "unrelated chatter"),
+        plan,
+        Arc::new(MemorySessionStore::new()),
+    )
+    .await
+    .expect("for_request");
+
+    let bag = empty_bag();
+    let value = serde_json::json!("London");
+    let outcome = invoker
+        .invoke(
+            "arg-redactor",
+            &bag,
+            PluginInvocation::Field {
+                name: "city",
+                value: &value,
+                phase: apl_core::step::DispatchPhase::Pre,
+            },
+        )
+        .await
+        .expect("invoke");
+
+    assert_eq!(
+        outcome.modified_value, None,
+        "the field in focus is untouched, so the pipeline must leave it alone"
+    );
+    assert!(
+        invoker.payload_was_modified(),
+        "the rewrite of another field still has to reach the host"
+    );
+}
+
+/// Post-phase dispatch reads the field out of the *result* projection,
+/// not the args one. A `result:` pipeline stage that rewrites one field
+/// of a structured tool result must get that field back.
+#[tokio::test]
+async fn post_phase_field_dispatch_reads_the_result_projection() {
+    let mgr = build_manager(
+        "result-redactor",
+        Box::new(ResultFieldRewriteFactory { field: "ssn" }),
+    )
+    .await;
+    let plan = plan_for(&mgr, "result-redactor");
+    let payload = MessagePayload {
+        message: Message::with_content(
+            Role::Tool,
+            vec![ContentPart::ToolResult {
+                content: cpex_core::cmf::ToolResult {
+                    tool_call_id: "tc_001".to_string(),
+                    tool_name: "get_employee".to_string(),
+                    content: serde_json::json!({"name": "Ada", "ssn": "123-45-6789"}),
+                    is_error: false,
+                },
+            }],
+        ),
+    };
+    let invoker = CmfPluginInvoker::for_request(
+        mgr,
+        Extensions::default(),
+        payload,
+        plan,
+        Arc::new(MemorySessionStore::new()),
+    )
+    .await
+    .expect("for_request");
+
+    let bag = empty_bag();
+    let value = serde_json::json!("123-45-6789");
+    let outcome = invoker
+        .invoke(
+            "result-redactor",
+            &bag,
+            PluginInvocation::Field {
+                name: "ssn",
+                value: &value,
+                phase: apl_core::step::DispatchPhase::Post,
+            },
+        )
+        .await
+        .expect("invoke");
+
+    assert_eq!(
+        outcome.modified_value,
+        Some(serde_json::json!("[REDACTED]")),
+        "Post phase must read the field back out of the tool result, not the args"
+    );
 }
 
 // ---------------------------------------------------------------------
