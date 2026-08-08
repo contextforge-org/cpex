@@ -25,9 +25,6 @@ header-injector = []
 audit-logger = []
 token-attenuator = []
 noop = []
-fs-test = []
-net-test = []
-env-test = []
 tool-invoke-checker = []
 pii-guard = []
 audit-logger-custom = []
@@ -35,14 +32,14 @@ remote-authz = []
 compute-bench = []
 fs-sandbox-demo = []
 env-sandbox-demo = []
-resource-test = []
-net-http-test = []
+resource-sandbox-demo = []
+net-sandbox-demo = []
 # Enables all demos for testing — use: cargo test --features test-demos
 test-demos = [
     "identity-checker", "header-injector", "audit-logger", "token-attenuator",
-    "noop", "fs-test", "net-test", "env-test", "tool-invoke-checker",
+    "noop", "tool-invoke-checker",
     "pii-guard", "audit-logger-custom", "remote-authz", "compute-bench",
-    "fs-sandbox-demo", "env-sandbox-demo", "resource-test", "net-http-test",
+    "fs-sandbox-demo", "env-sandbox-demo", "resource-sandbox-demo", "net-sandbox-demo",
 ]
 
 

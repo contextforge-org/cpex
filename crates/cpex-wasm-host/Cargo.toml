@@ -1,13 +1,13 @@
 [package]
 name = "cpex-wasm-host"
-version = "0.2.2"
-edition = "2021"
-rust-version = "1.96"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
 description = "WASM plugin host runtime for the CPEX framework — sandboxed wasmtime execution with capability-based access control"
-license = "Apache-2.0"
 authors = ["Shriti Priya"]
-repository = "https://github.com/contextforge/contextforge-plugins-framework"
-homepage = "https://github.com/contextforge/contextforge-plugins-framework"
+repository.workspace = true
+homepage.workspace = true
 keywords = ["wasm", "plugin", "sandbox", "wasmtime", "cpex"]
 categories = ["wasm", "development-tools"]
 exclude = ["wasm/", "examples/data/", "benchmarking/performance_comparison.png"]

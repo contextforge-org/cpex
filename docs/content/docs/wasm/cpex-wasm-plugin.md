@@ -246,8 +246,11 @@ To add a new example plugin to the crate:
 
 ## Limitations
 
-- **Extension writeback is partial** — only `request`, `security`, `http`, and `meta` extensions survive the return trip; modifications to `agent`, `mcp`, `completion`, `provenance`, `llm`, `framework`, `delegation`, and `custom` extensions are silently dropped
-- **Synchronous execution model** — `__block_on` polls a future up to 10,000 times; deeply async workflows may hit this cap
+- **Immutable extension slots cannot be modified** — `agent`, `mcp`, `completion`, `provenance`, `llm`, `framework`, `meta`, and `request` are read-only by design (matching native plugin behavior); changes are discarded by the host via Arc pointer validation. Mutable slots (`security`, `http`, `delegation`, `custom`) are fully persisted
+- **Synchronous execution model** — `__block_on` polls a future up to 1,000,000 times; the host's epoch timeout is the primary safeguard against non-completing futures. If the cap is reached, the plugin aborts cleanly (WASM trap) rather than panicking
 - **Single-function export** — all hooks route through one `handle-hook` entry point; you cannot export additional functions
-- **No shared state between invocations** — each call may get a fresh `Store`; use `PluginContext` for persistence
+- **No shared state between invocations** — each call may get a fresh `Store`; use `PluginContext` or module-level statics (`OnceLock`) for persistence
 - **WASI P2 only** — plugins must target `wasm32-wasip2`, not the older `wasm32-wasi` (P1)
+- **No raw token access** — `raw_token`, `bearer_token`, and credential bytes never cross the WASM boundary (intentional security design)
+- **No standard networking libraries** — plugins use `wasi:http/outgoing-handler` for HTTP; `reqwest`, `std::net`, and raw sockets are unavailable
+- **Non-exhaustive enum fallbacks** — `cpex-core` enums are `#[non_exhaustive]`; unrecognized variants are logged and mapped to a safe default rather than causing a compile error

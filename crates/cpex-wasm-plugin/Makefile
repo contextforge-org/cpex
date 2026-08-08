@@ -13,8 +13,8 @@ ARTIFACT       = $(TARGET_DIR)/$(TARGET)/$(PROFILE)/$(PLUGIN_NAME).wasm
 # Demo plugin list — one binary is compiled per feature flag.
 DEMOS         := identity-checker header-injector audit-logger token-attenuator \
                  tool-invoke-checker pii-guard audit-logger-custom remote-authz \
-                 noop fs-test net-test env-test compute-bench fs-sandbox-demo \
-                 env-sandbox-demo resource-test net-http-test
+                 noop compute-bench fs-sandbox-demo env-sandbox-demo \
+                 resource-sandbox-demo net-sandbox-demo
 
 # ---------------------------------------------------------------------------
 # Build your plugin
@@ -140,18 +140,7 @@ clippy-demos: ## Run clippy lints on all demo plugins
 # CI (run everything: format check, lint, test, build, validate)
 # ---------------------------------------------------------------------------
 
-ci: ## Run full CI pipeline (fmt check + clippy + test + build + validate)
-	@echo "── Format check ──"
-	cargo fmt -- --check
-	@echo "── Clippy ──"
-	cargo clippy --target $(TARGET) -- -D warnings
-	@echo "── Tests (all) ──"
-	cargo test --features test-demos
-	@echo "── Build (plugin) ──"
-	cargo build --target $(TARGET) --release
-	@echo "── Validate ──"
-	wasm-tools validate $(ARTIFACT)
-	@echo ""
+ci: fmt-check clippy test-all build validate ## Run full CI pipeline (fmt check + clippy + test + build + validate)
 	@echo "CI passed."
 
 # ---------------------------------------------------------------------------

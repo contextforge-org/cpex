@@ -5,10 +5,12 @@
 //
 // Network Policy Sandbox Demo
 //
-// Invokes net-http-test.wasm with a URL and HTTP method as ToolCall arguments.
-// Each scenario loads the plugin with a different NetworkRule configuration to
-// demonstrate every enforcement dimension:
+// Demonstrates every dimension of WASI HTTP network policy enforcement using
+// the PluginManager layer. The same net-sandbox-demo.wasm binary is registered
+// 7 times with different NetworkRule configurations. Each scenario invokes
+// through a route that targets the appropriate policy-configured plugin.
 //
+// Scenarios:
 //   1. No policy          — all outbound HTTP denied (deny-by-default)
 //   2. Host allowlist     — allowed host passes, unlisted host is denied
 //   3. Wildcard host      — *.example.com matches subdomains, not the apex
@@ -25,17 +27,17 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use cpex_core::cmf::constants::SCHEMA_VERSION;
-use cpex_core::cmf::{ContentPart, Message, MessagePayload, Role, ToolCall};
-use cpex_core::context::PluginContext;
+use cpex_core::cmf::{CmfHook, ContentPart, Message, MessagePayload, Role, ToolCall};
+use cpex_core::config::parse_config;
 use cpex_core::extensions::container::Extensions;
+use cpex_core::extensions::meta::MetaExtension;
+use cpex_core::manager::PluginManager;
 
-use cpex_wasm_host::conversions::{
-    native_context_to_wit, native_extensions_to_wit, native_payload_to_wit,
-};
-use cpex_wasm_host::policy_loader::{NetworkRule, SandboxPolicy};
-use cpex_wasm_host::sandbox_manager::{SandboxManager, SharedEngine};
+use cpex_wasm_host::factory::WasmPluginFactory;
+use cpex_wasm_host::payload_registry::PayloadSerializerRegistry;
 
 // ---------------------------------------------------------------------------
 // Terminal colours
@@ -52,11 +54,7 @@ const RESET: &str = "\x1b[0m";
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn wasm_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("wasm/net-http-test.wasm")
-}
-
-fn make_payload(url: &str, method: &str) -> MessagePayload {
+fn make_payload(tool_name: &str, url: &str, method: &str) -> MessagePayload {
     let mut arguments = HashMap::new();
     arguments.insert("url".to_string(), serde_json::json!(url));
     arguments.insert("method".to_string(), serde_json::json!(method));
@@ -67,7 +65,7 @@ fn make_payload(url: &str, method: &str) -> MessagePayload {
             content: vec![ContentPart::ToolCall {
                 content: ToolCall {
                     tool_call_id: "tc_net".into(),
-                    name: "http_check".into(),
+                    name: tool_name.into(),
                     arguments,
                     namespace: None,
                 },
@@ -77,24 +75,35 @@ fn make_payload(url: &str, method: &str) -> MessagePayload {
     }
 }
 
-async fn invoke(mgr: &mut SandboxManager, url: &str, method: &str) -> String {
-    let payload = make_payload(url, method);
-    let wit_payload = cpex_wasm_host::sandbox_manager::types::HookPayload::Cmf(
-        native_payload_to_wit(&payload),
-    );
-    let wit_ext = native_extensions_to_wit(&Extensions::default());
-    let wit_ctx = native_context_to_wit(&PluginContext::default());
+fn make_extensions(tool_name: &str) -> Extensions {
+    Extensions {
+        meta: Some(Arc::new(MetaExtension {
+            entity_type: Some("tool".into()),
+            entity_name: Some(tool_name.into()),
+            ..Default::default()
+        })),
+        ..Default::default()
+    }
+}
 
-    let result = mgr
-        .invoke("cmf.tool_pre_invoke", wit_payload, wit_ext, wit_ctx)
-        .await
-        .unwrap();
+async fn invoke(mgr: &PluginManager, tool_name: &str, url: &str, method: &str) -> String {
+    let (result, bg) = mgr
+        .invoke_named::<CmfHook>("cmf.tool_pre_invoke", make_payload(tool_name, url, method), make_extensions(tool_name), None)
+        .await;
+    bg.wait_for_background_tasks().await;
+
+    if !result.continue_processing {
+        return "denied".to_string();
+    }
 
     result
-        .modified_context
-        .and_then(|ctx| ctx.local_state.into_iter().find(|e| e.key == "http_result"))
-        .map(|e| e.value.trim_matches('"').to_string())
-        .unwrap_or_else(|| "no_result".to_string())
+        .context_table
+        .local_states
+        .values()
+        .find_map(|state| state.get("http_result"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("no_result")
+        .to_string()
 }
 
 fn print_case(label: &str, method: &str, url: &str, result: &str) {
@@ -107,15 +116,6 @@ fn print_case(label: &str, method: &str, url: &str, result: &str) {
         "  {}[{}]{} {:6} {}\n  {}→ {}{}",
         DIM, label, RESET, method, url, color, arrow, RESET,
     );
-}
-
-async fn load_plugin(shared: &SharedEngine, policy: Option<SandboxPolicy>, name: &str) -> SandboxManager {
-    let path = wasm_path();
-    let mut mgr = SandboxManager::with_shared_engine(shared);
-    mgr.load_wasmplugin(&path, policy.as_ref(), name)
-        .await
-        .unwrap_or_else(|e| panic!("failed to load plugin '{}': {}", name, e));
-    mgr
 }
 
 // ---------------------------------------------------------------------------
@@ -131,175 +131,118 @@ async fn main() {
         )
         .init();
 
-    let path = wasm_path();
-    if !path.exists() {
+    let crate_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let wasm_path = crate_dir.join("wasm/net-sandbox-demo.wasm");
+    if !wasm_path.exists() {
         eprintln!(
-            "{}ERROR:{} net-http-test.wasm not found at {}\n\
+            "{}ERROR:{} net-sandbox-demo.wasm not found at {}\n\
              Run: cd crates/cpex-wasm-host && make build-test-plugins",
             RED, RESET,
-            path.display()
+            wasm_path.display()
         );
         std::process::exit(1);
     }
 
     println!("{}=== Network Policy Sandbox Demo ==={}\n", BOLD, RESET);
     println!(
-        "{}Plugin:{}  net-http-test.wasm\n\
+        "{}Plugin:{}  net-sandbox-demo.wasm (registered 7 times with different policies)\n\
          {}Payload:{} url + method passed as ToolCall arguments\n\
          {}Result:{}  plugin writes 'allowed' or 'denied' into local_state\n",
         DIM, RESET, DIM, RESET, DIM, RESET
     );
 
-    // Shared wasmtime engine — one epoch thread, each scenario gets its own store
-    let shared = SharedEngine::new().unwrap();
+    let yaml = std::fs::read_to_string(crate_dir.join("config/config_network_policy_demo.yaml"))
+        .expect("config not found");
+    let cpex_config = parse_config(&yaml).unwrap();
+
+    let mut registry = PayloadSerializerRegistry::new();
+    registry.register::<MessagePayload>();
+    let registry = Arc::new(registry);
+
+    let mgr = PluginManager::default();
+    mgr.register_factory(
+        "wasm://net-sandbox-demo.wasm",
+        Box::new(WasmPluginFactory::new(crate_dir.join("wasm"), registry).expect("engine")),
+    );
+    mgr.load_config(cpex_config).unwrap();
+    mgr.initialize().await.unwrap();
 
     // =========================================================================
     // Scenario 1: No policy — deny-by-default
-    // Every outbound request is blocked when no allowed_network is configured.
     // =========================================================================
     println!("{}--- Scenario 1: no policy (deny-by-default){}", CYAN, RESET);
-    let mut mgr = load_plugin(&shared, None, "net-deny-all").await;
-    let r = invoke(&mut mgr, "https://example.com/", "GET").await;
+    let r = invoke(&mgr, "net_deny_all", "https://example.com/", "GET").await;
     print_case("DENY expected", "GET", "https://example.com/", &r);
     println!();
 
     // =========================================================================
     // Scenario 2: Host allowlist
-    // example.com is explicitly allowed; other.com is not in the list.
     // =========================================================================
     println!("{}--- Scenario 2: host allowlist  allowed=[example.com]{}", CYAN, RESET);
-    let policy = SandboxPolicy {
-        allowed_network: vec![NetworkRule {
-            host: "example.com".to_string(),
-            ..Default::default()
-        }],
-        ..Default::default()
-    };
-    let mut mgr = load_plugin(&shared, Some(policy), "net-allowlist").await;
-    let r = invoke(&mut mgr, "https://example.com/", "GET").await;
+    let r = invoke(&mgr, "net_host_allow", "https://example.com/", "GET").await;
     print_case("ALLOW expected", "GET", "https://example.com/", &r);
-    let r = invoke(&mut mgr, "https://other.com/", "GET").await;
-    print_case("DENY expected",  "GET", "https://other.com/",  &r);
+    let r = invoke(&mgr, "net_host_allow", "https://other.com/", "GET").await;
+    print_case("DENY expected", "GET", "https://other.com/", &r);
     println!();
 
     // =========================================================================
     // Scenario 3: Wildcard host
-    // *.example.com matches api.example.com and data.example.com,
-    // but NOT the apex example.com itself.
     // =========================================================================
     println!("{}--- Scenario 3: wildcard host  allowed=[*.example.com]{}", CYAN, RESET);
-    let policy = SandboxPolicy {
-        allowed_network: vec![NetworkRule {
-            host: "*.example.com".to_string(),
-            ..Default::default()
-        }],
-        ..Default::default()
-    };
-    let mut mgr = load_plugin(&shared, Some(policy), "net-wildcard").await;
-    let r = invoke(&mut mgr, "https://api.example.com/", "GET").await;
-    print_case("ALLOW expected", "GET", "https://api.example.com/",  &r);
-    let r = invoke(&mut mgr, "https://data.example.com/", "GET").await;
+    let r = invoke(&mgr, "net_wildcard", "https://api.example.com/", "GET").await;
+    print_case("ALLOW expected", "GET", "https://api.example.com/", &r);
+    let r = invoke(&mgr, "net_wildcard", "https://data.example.com/", "GET").await;
     print_case("ALLOW expected", "GET", "https://data.example.com/", &r);
-    let r = invoke(&mut mgr, "https://example.com/", "GET").await;
-    print_case("DENY expected",  "GET", "https://example.com/",      &r);
+    let r = invoke(&mgr, "net_wildcard", "https://example.com/", "GET").await;
+    print_case("DENY expected", "GET", "https://example.com/", &r);
     println!();
 
     // =========================================================================
     // Scenario 4: Port enforcement
-    // Only port 443 is allowed. Port 8080 must be denied.
     // =========================================================================
     println!("{}--- Scenario 4: port enforcement  allowed_ports=[443]{}", CYAN, RESET);
-    let policy = SandboxPolicy {
-        allowed_network: vec![NetworkRule {
-            host: "example.com".to_string(),
-            ports: vec![443],
-            ..Default::default()
-        }],
-        ..Default::default()
-    };
-    let mut mgr = load_plugin(&shared, Some(policy), "net-port").await;
-    let r = invoke(&mut mgr, "https://example.com/", "GET").await;
-    print_case("ALLOW expected", "GET", "https://example.com/       (port 443, implicit)", &r);
-    let r = invoke(&mut mgr, "https://example.com:8080/", "GET").await;
-    print_case("DENY expected",  "GET", "https://example.com:8080/  (port 8080)", &r);
+    let r = invoke(&mgr, "net_port", "https://example.com/", "GET").await;
+    print_case("ALLOW expected", "GET", "https://example.com/ (port 443, implicit)", &r);
+    let r = invoke(&mgr, "net_port", "https://example.com:8080/", "GET").await;
+    print_case("DENY expected", "GET", "https://example.com:8080/ (port 8080)", &r);
     println!();
 
     // =========================================================================
     // Scenario 5: Scheme enforcement
-    // Default schemes = ["https"] — plain http must be denied.
     // =========================================================================
     println!("{}--- Scenario 5: scheme enforcement  allowed_schemes=[https]{}", CYAN, RESET);
-    let policy = SandboxPolicy {
-        allowed_network: vec![NetworkRule {
-            host: "example.com".to_string(),
-            // schemes defaults to ["https"]
-            ..Default::default()
-        }],
-        ..Default::default()
-    };
-    let mut mgr = load_plugin(&shared, Some(policy), "net-scheme").await;
-    let r = invoke(&mut mgr, "https://example.com/", "GET").await;
-    print_case("ALLOW expected", "GET", "https://example.com/  (https)", &r);
-    let r = invoke(&mut mgr, "http://example.com/", "GET").await;
-    print_case("DENY expected",  "GET", "http://example.com/   (http)", &r);
+    let r = invoke(&mgr, "net_scheme", "https://example.com/", "GET").await;
+    print_case("ALLOW expected", "GET", "https://example.com/ (https)", &r);
+    let r = invoke(&mgr, "net_scheme", "http://example.com/", "GET").await;
+    print_case("DENY expected", "GET", "http://example.com/ (http)", &r);
     println!();
 
     // =========================================================================
     // Scenario 6: Method enforcement
-    // Only GET is allowed. POST must be denied.
     // =========================================================================
     println!("{}--- Scenario 6: method enforcement  allowed_methods=[GET]{}", CYAN, RESET);
-    let policy = SandboxPolicy {
-        allowed_network: vec![NetworkRule {
-            host: "example.com".to_string(),
-            methods: vec!["GET".to_string()],
-            ..Default::default()
-        }],
-        ..Default::default()
-    };
-    let mut mgr = load_plugin(&shared, Some(policy), "net-method").await;
-    let r = invoke(&mut mgr, "https://example.com/", "GET").await;
-    print_case("ALLOW expected", "GET",  "https://example.com/", &r);
-    let r = invoke(&mut mgr, "https://example.com/", "POST").await;
-    print_case("DENY expected",  "POST", "https://example.com/", &r);
+    let r = invoke(&mgr, "net_method", "https://example.com/", "GET").await;
+    print_case("ALLOW expected", "GET", "https://example.com/", &r);
+    let r = invoke(&mgr, "net_method", "https://example.com/", "POST").await;
+    print_case("DENY expected", "POST", "https://example.com/", &r);
     println!();
 
     // =========================================================================
-    // Scenario 7: Multi-rule — two hosts with different constraints
-    // api.example.com: GET only on port 443
-    // data.example.com: GET+POST on ports 443 and 8443
-    // other.com: not listed — denied
+    // Scenario 7: Multi-rule
     // =========================================================================
     println!("{}--- Scenario 7: multi-rule  [api.example.com GET:443]  [data.example.com GET+POST:443,8443]{}", CYAN, RESET);
-    let policy = SandboxPolicy {
-        allowed_network: vec![
-            NetworkRule {
-                host: "api.example.com".to_string(),
-                ports: vec![443],
-                methods: vec!["GET".to_string()],
-                ..Default::default()
-            },
-            NetworkRule {
-                host: "data.example.com".to_string(),
-                ports: vec![443, 8443],
-                methods: vec!["GET".to_string(), "POST".to_string()],
-                ..Default::default()
-            },
-        ],
-        ..Default::default()
-    };
-    let mut mgr = load_plugin(&shared, Some(policy), "net-multi").await;
-    let r = invoke(&mut mgr, "https://api.example.com/", "GET").await;
-    print_case("ALLOW expected", "GET",  "https://api.example.com/",       &r);
-    let r = invoke(&mut mgr, "https://api.example.com/", "POST").await;
-    print_case("DENY expected",  "POST", "https://api.example.com/",       &r);
-    let r = invoke(&mut mgr, "https://data.example.com/", "POST").await;
-    print_case("ALLOW expected", "POST", "https://data.example.com/",      &r);
-    let r = invoke(&mut mgr, "https://data.example.com:8443/", "GET").await;
-    print_case("ALLOW expected", "GET",  "https://data.example.com:8443/", &r);
-    let r = invoke(&mut mgr, "https://other.com/", "GET").await;
-    print_case("DENY expected",  "GET",  "https://other.com/",             &r);
+    let r = invoke(&mgr, "net_multi", "https://api.example.com/", "GET").await;
+    print_case("ALLOW expected", "GET", "https://api.example.com/", &r);
+    let r = invoke(&mgr, "net_multi", "https://api.example.com/", "POST").await;
+    print_case("DENY expected", "POST", "https://api.example.com/", &r);
+    let r = invoke(&mgr, "net_multi", "https://data.example.com/", "POST").await;
+    print_case("ALLOW expected", "POST", "https://data.example.com/", &r);
+    let r = invoke(&mgr, "net_multi", "https://data.example.com:8443/", "GET").await;
+    print_case("ALLOW expected", "GET", "https://data.example.com:8443/", &r);
+    let r = invoke(&mgr, "net_multi", "https://other.com/", "GET").await;
+    print_case("DENY expected", "GET", "https://other.com/", &r);
     println!();
 
     println!("{}=== Demo complete ==={}\n", BOLD, RESET);
+    mgr.shutdown().await;
 }

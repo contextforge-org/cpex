@@ -2,52 +2,30 @@
 // Copyright 2026
 // SPDX-License-Identifier: Apache-2.0
 // Authors: Shriti Priya
-//
-// ============================================================================
-// CPEX WASM Plugin SDK — lib.rs
-// ============================================================================
-//
-// This file is the SDK glue that connects your plugin logic (src/plugin.rs) to
-// the WASM component model. You should NOT need to edit this file.
-//
-// What this file does:
-//
-//   1. WIT BINDINGS (wit_bindgen::generate!)
-//      Reads wit/world.wit at compile time and generates:
-//      - Guest trait: the interface the host calls into
-//      - export! macro: produces #[no_mangle] ABI entry points
-//      - WIT types: HookPayload, HookResult, Extensions, PluginContext
-//        (flat/serialized types for the WASM boundary — NOT cpex-core types)
-//
-//   2. PRELUDE (pub mod prelude)
-//      Re-exports everything a plugin author needs in one import:
-//        use crate::prelude::*;
-//
-//   3. CONVERSIONS (pub mod conversions)
-//      Bridges WIT types ↔ cpex-core native types. Your plugin never touches
-//      WIT types — the macro handles translation automatically.
-//
-//   4. register_wasm_plugin! MACRO
-//      Generates the Guest impl that:
-//        a. Receives WIT types from the host
-//        b. Converts them to cpex-core native types
-//        c. Routes to YOUR HookHandler::handle() method
-//        d. Converts your PluginResult back to a WIT HookResult
-//        e. Calls export!() to produce the WASM export symbol
-//
-//   5. PLUGIN REGISTRATION (bottom of this file)
-//      Wires src/plugin.rs as the active plugin. When no demo feature flag is
-//      set, your plugin is what gets compiled into the .wasm binary.
-//
-// Quickstart:
-//   1. Edit src/plugin.rs
-//   2. Run: make build
-//   3. Output: target/wasm32-wasip2/release/cpex_wasm_plugin.wasm
-//
-// See src/examples/ for reference demo implementations.
 
+//! Guest SDK for writing CPEX plugins compiled to WebAssembly.
+//!
+//! This crate provides WIT bindings, type conversions, hook dispatch macros, and
+//! structured logging so plugin authors can focus on hook logic without touching
+//! the component-model boundary directly.
+//!
+//! # Quick start
+//!
+//! ```ignore
+//! use cpex_wasm_plugin::prelude::*;
+//!
+//! pub struct MyPlugin;
+//! impl Plugin for MyPlugin { /* ... */ }
+//! impl HookHandler<CmfHook> for MyPlugin { /* ... */ }
+//! ```
+//!
+//! Build: `cargo build --target wasm32-wasip2 --release`
+
+/// Bidirectional type conversions between WIT component-model types and cpex-core native types.
 pub mod conversions;
+/// User-facing plugin template — edit this module to implement your hook logic.
 pub mod plugin;
+/// Feature-gated example plugins demonstrating different hooks and sandbox capabilities.
 pub mod examples;
 
 // ---------------------------------------------------------------------------
@@ -372,13 +350,22 @@ pub fn __decode_error_hook_result(
 /// Synchronous async executor for WASM.
 ///
 /// Futures returned by `HookHandler::handle()` must be driven to completion
-/// synchronously. Current handlers await nothing in WASM context, so the
-/// future completes on the first poll in practice. A 10,000-iteration cap
-/// prevents infinite busy-loops if a future unexpectedly yields.
+/// synchronously. Most handlers complete on the first poll. Handlers that
+/// make outbound WASI HTTP calls may yield multiple times while the host
+/// drives the I/O to completion.
+///
+/// The poll cap (1,000,000) is deliberately high to accommodate real network
+/// I/O without truncating legitimate work. If a future genuinely cannot
+/// complete (infinite yield loop), the host's epoch timeout will interrupt
+/// the WASM instance before this cap is reached in practice.
+///
+/// If the cap IS reached, the function traps with `std::process::abort()`
+/// rather than `panic!()` to produce a clean WASM trap that the host can
+/// classify, avoiding an unwind through FFI.
 pub fn __block_on<F: std::future::Future>(f: F) -> F::Output {
     use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 
-    const MAX_POLLS: u32 = 10_000;
+    const MAX_POLLS: u32 = 1_000_000;
 
     fn noop(_: *const ()) {}
     fn noop_clone(_: *const ()) -> RawWaker {
@@ -397,7 +384,13 @@ pub fn __block_on<F: std::future::Future>(f: F) -> F::Output {
         }
     }
 
-    panic!("[WASM] executor exceeded {} polls — handler future is not completing", MAX_POLLS);
+    eprintln!(
+        "[cpex-wasm-plugin] executor exceeded {} polls — handler future is not completing. \
+         This typically means the handler is awaiting an operation that cannot make progress \
+         in the WASM sandbox. The host's epoch timeout should have interrupted before this point.",
+        MAX_POLLS
+    );
+    std::process::abort();
 }
 
 // ---------------------------------------------------------------------------
@@ -440,23 +433,6 @@ register_wasm_plugin!(
     [cpex_core::cmf::CmfHook]
 );
 
-#[cfg(all(feature = "fs-test", not(test), not(feature = "test-demos")))]
-register_wasm_plugin!(
-    examples::fs_test::FsTestPlugin,
-    [cpex_core::cmf::CmfHook]
-);
-
-#[cfg(all(feature = "net-test", not(test), not(feature = "test-demos")))]
-register_wasm_plugin!(
-    examples::net_test::NetTestPlugin,
-    [cpex_core::cmf::CmfHook]
-);
-
-#[cfg(all(feature = "env-test", not(test), not(feature = "test-demos")))]
-register_wasm_plugin!(
-    examples::env_test::EnvTestPlugin,
-    [cpex_core::cmf::CmfHook]
-);
 
 #[cfg(all(feature = "tool-invoke-checker", not(test), not(feature = "test-demos")))]
 register_wasm_plugin!(
@@ -506,15 +482,15 @@ register_wasm_plugin!(
     [cpex_core::cmf::CmfHook]
 );
 
-#[cfg(all(feature = "resource-test", not(test), not(feature = "test-demos")))]
+#[cfg(all(feature = "resource-sandbox-demo", not(test), not(feature = "test-demos")))]
 register_wasm_plugin!(
-    examples::resource_test::ResourceTestPlugin,
+    examples::resource_sandbox_demo::ResourceSandboxDemoPlugin,
     [cpex_core::cmf::CmfHook]
 );
 
-#[cfg(all(feature = "net-http-test", not(test), not(feature = "test-demos")))]
+#[cfg(all(feature = "net-sandbox-demo", not(test), not(feature = "test-demos")))]
 register_wasm_plugin!(
-    examples::net_http_test::NetHttpTestPlugin,
+    examples::net_sandbox_demo::NetSandboxDemoPlugin,
     [cpex_core::cmf::CmfHook]
 );
 
@@ -540,9 +516,6 @@ register_wasm_plugin!(
     not(feature = "audit-logger"),
     not(feature = "token-attenuator"),
     not(feature = "noop"),
-    not(feature = "fs-test"),
-    not(feature = "net-test"),
-    not(feature = "env-test"),
     not(feature = "tool-invoke-checker"),
     not(feature = "pii-guard"),
     not(feature = "audit-logger-custom"),
@@ -550,8 +523,8 @@ register_wasm_plugin!(
     not(feature = "compute-bench"),
     not(feature = "fs-sandbox-demo"),
     not(feature = "env-sandbox-demo"),
-    not(feature = "resource-test"),
-    not(feature = "net-http-test"),
+    not(feature = "resource-sandbox-demo"),
+    not(feature = "net-sandbox-demo"),
 ))]
 register_wasm_plugin!(
     plugin::UserPlugin,

@@ -10,14 +10,18 @@
 // 2. Post-invocation immutable tier validation
 // 3. Post-invocation monotonic label enforcement
 // 4. Post-invocation write authorization checking
+//
+// Tests 2-4 call the real `validate_extension_modifications` from factory.rs
+// to ensure tests and implementation cannot diverge.
 
 use std::collections::HashSet;
 use std::sync::Arc;
 
 use cpex_core::extensions::{
     filter_extensions, DelegationExtension, Extensions, Guarded, HttpExtension, MonotonicSet,
-    OwnedExtensions, RequestExtension, SecurityExtension,
+    RequestExtension, SecurityExtension,
 };
+use cpex_wasm_host::factory::validate_extension_modifications;
 
 // ---------------------------------------------------------------------------
 // Fix 1: Pre-invocation capability filtering
@@ -110,7 +114,7 @@ fn test_monotonic_violation_when_label_removed() {
     // With read_labels capability, this should be detected
     let caps: HashSet<String> = ["read_labels"].iter().map(|s| s.to_string()).collect();
 
-    let result = validate_monotonic(&ext, &owned, &caps);
+    let result = validate_extension_modifications(&owned, &ext, &caps, "test-plugin", "test-hook");
     assert!(!result, "should reject when label removed");
 }
 
@@ -130,10 +134,14 @@ fn test_monotonic_passes_when_labels_only_added() {
     };
     owned.security = Some(new_sec);
 
-    let caps: HashSet<String> = ["read_labels"].iter().map(|s| s.to_string()).collect();
+    // Both read_labels (for monotonic check) and append_labels (for write auth) needed
+    let caps: HashSet<String> = ["read_labels", "append_labels"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
 
-    let result = validate_monotonic(&ext, &owned, &caps);
-    assert!(result, "should accept when labels only added");
+    let result = validate_extension_modifications(&owned, &ext, &caps, "test-plugin", "test-hook");
+    assert!(result, "should accept when labels only added with proper caps");
 }
 
 #[test]
@@ -141,20 +149,22 @@ fn test_monotonic_not_enforced_without_read_labels() {
     let ext = build_extensions_with_labels(&["PII", "HIPAA"]);
     let mut owned = ext.cow_copy();
 
-    // Remove a label
+    // Remove a label — this would fail monotonic if read_labels were present
     let new_sec = SecurityExtension {
         labels: MonotonicSet::from_set(["PII".to_string()].into_iter().collect()),
         ..Default::default()
     };
     owned.security = Some(new_sec);
 
-    // Without read_labels capability, plugin never saw labels — not a violation
-    let caps: HashSet<String> = HashSet::new();
+    // Without read_labels, monotonic check is skipped. But we still need
+    // append_labels to authorize the label count change (write-auth check).
+    let caps: HashSet<String> = ["append_labels"].iter().map(|s| s.to_string()).collect();
 
-    let result = validate_monotonic(&ext, &owned, &caps);
+    let result = validate_extension_modifications(&owned, &ext, &caps, "test-plugin", "test-hook");
     assert!(
         result,
-        "should not enforce monotonic without read_labels cap"
+        "should not enforce monotonic without read_labels cap — \
+         label removal passes when monotonic is not checked"
     );
 }
 
@@ -177,7 +187,7 @@ fn test_unauthorized_http_write_detected() {
     // Plugin lacks write_headers capability
     let caps: HashSet<String> = ["read_headers"].iter().map(|s| s.to_string()).collect();
 
-    let result = validate_write_auth_http(&ext, &owned, &caps);
+    let result = validate_extension_modifications(&owned, &ext, &caps, "test-plugin", "test-hook");
     assert!(
         !result,
         "should reject HTTP write without write_headers cap"
@@ -202,7 +212,7 @@ fn test_authorized_http_write_passes() {
         .map(|s| s.to_string())
         .collect();
 
-    let result = validate_write_auth_http(&ext, &owned, &caps);
+    let result = validate_extension_modifications(&owned, &ext, &caps, "test-plugin", "test-hook");
     assert!(result, "should accept HTTP write with write_headers cap");
 }
 
@@ -220,9 +230,11 @@ fn test_unauthorized_labels_write_detected() {
     };
     owned.security = Some(new_sec);
 
+    // read_labels triggers monotonic check (passes since superset),
+    // but append_labels is missing so write auth fails
     let caps: HashSet<String> = ["read_labels"].iter().map(|s| s.to_string()).collect();
 
-    let result = validate_write_auth_labels(&ext, &owned, &caps);
+    let result = validate_extension_modifications(&owned, &ext, &caps, "test-plugin", "test-hook");
     assert!(
         !result,
         "should reject label write without append_labels cap"
@@ -248,7 +260,7 @@ fn test_authorized_labels_write_passes() {
         .map(|s| s.to_string())
         .collect();
 
-    let result = validate_write_auth_labels(&ext, &owned, &caps);
+    let result = validate_extension_modifications(&owned, &ext, &caps, "test-plugin", "test-hook");
     assert!(result, "should accept label write with append_labels cap");
 }
 
@@ -268,7 +280,7 @@ fn test_unauthorized_delegation_write_detected() {
     // Plugin lacks append_delegation capability
     let caps: HashSet<String> = ["read_delegation"].iter().map(|s| s.to_string()).collect();
 
-    let result = validate_write_auth_delegation(&ext, &owned, &caps);
+    let result = validate_extension_modifications(&owned, &ext, &caps, "test-plugin", "test-hook");
     assert!(
         !result,
         "should reject delegation write without append_delegation cap"
@@ -284,94 +296,8 @@ fn test_no_modifications_skips_validation() {
     let caps: HashSet<String> = HashSet::new();
 
     assert!(ext.validate_immutable(&owned));
-    // Monotonic: no caps means no enforcement
-    assert!(validate_monotonic(&ext, &owned, &caps));
-}
-
-// ---------------------------------------------------------------------------
-// Helpers — mirror the validation logic from factory.rs
-// ---------------------------------------------------------------------------
-
-fn validate_monotonic(
-    original: &Extensions,
-    owned: &OwnedExtensions,
-    capabilities: &HashSet<String>,
-) -> bool {
-    if capabilities.contains("read_labels") {
-        if let (Some(ref orig_sec), Some(ref new_sec)) = (&original.security, &owned.security) {
-            if !new_sec.labels.is_superset(&orig_sec.labels) {
-                return false;
-            }
-        }
-    }
-    true
-}
-
-fn validate_write_auth_http(
-    original: &Extensions,
-    owned: &OwnedExtensions,
-    capabilities: &HashSet<String>,
-) -> bool {
-    if !capabilities.contains("write_headers") {
-        if let Some(ref http_guarded) = owned.http {
-            let new_http = http_guarded.read();
-            let http_changed = match original.http.as_ref() {
-                Some(orig) => {
-                    new_http.request_headers != orig.request_headers
-                        || new_http.response_headers != orig.response_headers
-                },
-                None => {
-                    !new_http.request_headers.is_empty() || !new_http.response_headers.is_empty()
-                },
-            };
-            if http_changed {
-                return false;
-            }
-        }
-    }
-    true
-}
-
-fn validate_write_auth_labels(
-    original: &Extensions,
-    owned: &OwnedExtensions,
-    capabilities: &HashSet<String>,
-) -> bool {
-    if !capabilities.contains("append_labels") {
-        if let Some(ref new_sec) = owned.security {
-            let labels_changed = match original.security.as_ref() {
-                Some(orig) => new_sec.labels.len() != orig.labels.len(),
-                None => !new_sec.labels.is_empty(),
-            };
-            if labels_changed {
-                return false;
-            }
-        }
-    }
-    true
-}
-
-fn validate_write_auth_delegation(
-    original: &Extensions,
-    owned: &OwnedExtensions,
-    capabilities: &HashSet<String>,
-) -> bool {
-    if !capabilities.contains("append_delegation") {
-        if let Some(ref new_deleg) = owned.delegation {
-            let delegation_changed = match original.delegation.as_ref() {
-                Some(orig) => {
-                    new_deleg.chain.len() != orig.chain.len()
-                        || new_deleg.depth != orig.depth
-                        || new_deleg.delegated != orig.delegated
-                },
-                None => new_deleg.delegated || !new_deleg.chain.is_empty(),
-            };
-            if delegation_changed {
-                return false;
-            }
-        }
-    }
-    true
+    let result = validate_extension_modifications(&owned, &ext, &caps, "test-plugin", "test-hook");
+    assert!(result, "no modifications should pass all checks");
 }
 
 // ---------------------------------------------------------------------------

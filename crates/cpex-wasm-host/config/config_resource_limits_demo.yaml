@@ -1,0 +1,74 @@
+# Resource Limits Sandbox Demo Configuration
+#
+# Demonstrates how fuel, epoch timeout, and memory limits protect the host
+# from runaway WASM plugins. The same resource-sandbox-demo.wasm binary is registered
+# 3 times under different plugin names, each with a deliberately tiny limit.
+#
+# Scenarios:
+#   1. resource-fuel    — 10,000 fuel; tight loop exhausts it immediately
+#   2. resource-timeout — 200ms epoch deadline; infinite loop is interrupted
+#   3. resource-memory  — 5 MB cap; 1 MB chunk allocations trigger OOM trap
+
+plugin_settings:
+  routing_enabled: true
+
+plugins:
+  - name: resource-fuel
+    kind: wasm://resource-sandbox-demo.wasm
+    hooks: [cmf.tool_pre_invoke]
+    mode: sequential
+    priority: 10
+    on_error: fail
+    config:
+      sandbox_policy:
+        allowed_filesystem: []
+        allowed_network: []
+        allowed_env: []
+        resources:
+          max_fuel: 10000
+          max_execution_time_ms: 10000
+          max_instances: 10
+          max_tables: 10
+
+  - name: resource-timeout
+    kind: wasm://resource-sandbox-demo.wasm
+    hooks: [cmf.tool_pre_invoke]
+    mode: sequential
+    priority: 10
+    on_error: fail
+    config:
+      sandbox_policy:
+        allowed_filesystem: []
+        allowed_network: []
+        allowed_env: []
+        resources:
+          max_fuel: 500000000
+          max_execution_time_ms: 200
+          max_instances: 10
+          max_tables: 10
+
+  - name: resource-memory
+    kind: wasm://resource-sandbox-demo.wasm
+    hooks: [cmf.tool_pre_invoke]
+    mode: sequential
+    priority: 10
+    on_error: fail
+    config:
+      sandbox_policy:
+        allowed_filesystem: []
+        allowed_network: []
+        allowed_env: []
+        resources:
+          max_memory_bytes: 5242880
+          max_fuel: 1000000000
+          max_execution_time_ms: 10000
+          max_instances: 10
+          max_tables: 10
+
+routes:
+  - tool: resource_fuel
+    plugins: [resource-fuel]
+  - tool: resource_timeout
+    plugins: [resource-timeout]
+  - tool: resource_memory
+    plugins: [resource-memory]

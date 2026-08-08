@@ -1,10 +1,10 @@
-// Location: ./crates/cpex-wasm-plugin/src/examples/resource_test.rs
+// Location: ./crates/cpex-wasm-plugin/src/examples/resource_sandbox_demo.rs
 // Copyright 2026
 // SPDX-License-Identifier: Apache-2.0
 // Authors: Shriti Priya
 //
 // Test plugin for resource limit enforcement.
-// Reads the "resource_test_mode" arg from the first ToolCall and exercises
+// Reads the "resource_sandbox_demo_mode" arg from the first ToolCall and exercises
 // the corresponding limit so the host can verify it traps correctly.
 //
 // Modes (passed as tool call argument "mode"):
@@ -24,9 +24,9 @@ use cpex_core::plugin::{Plugin, PluginConfig};
 
 use crate::cpex_log;
 
-pub struct ResourceTestPlugin;
+pub struct ResourceSandboxDemoPlugin;
 
-impl Default for ResourceTestPlugin {
+impl Default for ResourceSandboxDemoPlugin {
     fn default() -> Self {
         Self
     }
@@ -35,11 +35,11 @@ impl Default for ResourceTestPlugin {
 static PLUGIN_CONFIG: std::sync::OnceLock<PluginConfig> = std::sync::OnceLock::new();
 
 #[async_trait]
-impl Plugin for ResourceTestPlugin {
+impl Plugin for ResourceSandboxDemoPlugin {
     fn config(&self) -> &PluginConfig {
         PLUGIN_CONFIG.get_or_init(|| PluginConfig {
-            name: "resource-test".to_string(),
-            kind: "wasm://resource-test.wasm".to_string(),
+            name: "resource-sandbox-demo".to_string(),
+            kind: "wasm://resource-sandbox-demo.wasm".to_string(),
             hooks: vec!["cmf.tool_pre_invoke".to_string()],
             ..Default::default()
         })
@@ -69,7 +69,7 @@ fn extract_mode(payload: &MessagePayload) -> String {
         .unwrap_or_default()
 }
 
-impl HookHandler<CmfHook> for ResourceTestPlugin {
+impl HookHandler<CmfHook> for ResourceSandboxDemoPlugin {
     async fn handle(
         &self,
         payload: &MessagePayload,
@@ -77,7 +77,7 @@ impl HookHandler<CmfHook> for ResourceTestPlugin {
         _ctx: &mut PluginContext,
     ) -> PluginResult<MessagePayload> {
         let mode = extract_mode(payload);
-        cpex_log!(info, "resource-test mode: {}", mode);
+        cpex_log!(info, "resource-sandbox-demo mode: {}", mode);
 
         match mode.as_str() {
             "burn_fuel" => {
@@ -108,7 +108,7 @@ impl HookHandler<CmfHook> for ResourceTestPlugin {
                 }
             }
             _ => {
-                cpex_log!(warn, "unknown resource-test mode '{}' — returning allow", mode);
+                cpex_log!(warn, "unknown resource-sandbox-demo mode '{}' — returning allow", mode);
                 PluginResult::allow()
             }
         }

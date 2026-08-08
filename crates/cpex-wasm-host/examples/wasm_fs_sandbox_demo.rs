@@ -25,22 +25,14 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use cpex_core::cmf::constants::SCHEMA_VERSION;
-use cpex_core::cmf::{ContentPart, Message, MessagePayload, Role, ToolCall};
+use cpex_core::cmf::{CmfHook, ContentPart, Message, MessagePayload, Role, ToolCall};
 use cpex_core::config::parse_config;
 use cpex_core::executor::PipelineResult;
 use cpex_core::extensions::container::Extensions;
 use cpex_core::extensions::meta::MetaExtension;
-use cpex_core::hooks::trait_def::{HookTypeDef, PluginResult};
 use cpex_core::manager::PluginManager;
 use cpex_wasm_host::factory::WasmPluginFactory;
 use cpex_wasm_host::payload_registry::PayloadSerializerRegistry;
-
-struct CmfPreInvoke;
-impl HookTypeDef for CmfPreInvoke {
-    type Payload = MessagePayload;
-    type Result = PluginResult<MessagePayload>;
-    const NAME: &'static str = "cmf.tool_pre_invoke";
-}
 
 // ---------------------------------------------------------------------------
 // Terminal colours
@@ -91,7 +83,7 @@ fn make_extensions() -> Extensions {
 
 async fn invoke(mgr: &PluginManager, operation: &str, path: &str) -> PipelineResult {
     let (result, bg) = mgr
-        .invoke::<CmfPreInvoke>(make_payload(operation, path), make_extensions(), None)
+        .invoke_named::<CmfHook>("cmf.tool_pre_invoke", make_payload(operation, path), make_extensions(), None)
         .await;
     bg.wait_for_background_tasks().await;
     result

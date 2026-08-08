@@ -121,6 +121,7 @@ regex = "1"
 cpex-core                     = { path = "crates/cpex-core",                   version = "0.2.2" }
 cpex-orchestration            = { path = "crates/cpex-orchestration",          version = "0.2.2" }
 cpex-sdk                      = { path = "crates/cpex-sdk",                     version = "0.2.2" }
+cpex-wasm-host                = { path = "crates/cpex-wasm-host",              version = "0.2.2" }
 cpex-builtins                 = { path = "crates/cpex-builtins",               version = "0.2.2", default-features = false }
 apl-core                      = { path = "crates/apl-core",                    version = "0.2.2" }
 apl-cmf                       = { path = "crates/apl-cmf",                      version = "0.2.2" }

@@ -16,14 +16,14 @@ Run plugins in sandboxed WebAssembly instead of trusting them with full process 
 8. [Running the Demos](#running-the-demos)
 9. [Filesystem Sandbox Permissions Demo](#filesystem-sandbox-permissions-demo)
 10. [Environment Variable Sandbox Demo](#environment-variable-sandbox-demo)
-12. [Running Tests](#running-tests)
-13. [Performance](#performance)
-14. [Security Model](#security-model)
-15. [Error Handling](#error-handling)
-16. [API Reference](#api-reference)
-17. [Project Structure](#project-structure)
-18. [Troubleshooting](#troubleshooting)
-19. [Known Limitations & Future Work](#known-limitations--future-work)
+11. [Running Tests](#running-tests)
+12. [Performance](#performance)
+13. [Security Model](#security-model)
+14. [Error Handling](#error-handling)
+15. [API Reference](#api-reference)
+16. [Project Structure](#project-structure)
+17. [Troubleshooting](#troubleshooting)
+18. [Known Limitations & Future Work](#known-limitations--future-work)
     - [Raw Socket Capabilities (Future Extension)](#raw-socket-capabilities-future-extension)
 
 ---
@@ -62,7 +62,7 @@ That's it. Everything else (wasmtime, WIT bindings) is handled by Cargo dependen
 cd crates/cpex-wasm-host
 
 # This builds all WASM plugins and runs both demos end-to-end:
-make run-demos
+make run-all-demos
 ```
 
 You'll see output showing 4 plugins processing requests in a pipeline — identity checks, PII access control, remote authorization, and audit logging — all running inside WASM sandboxes.
@@ -70,7 +70,7 @@ You'll see output showing 4 plugins processing requests in a pipeline — identi
 If you want to reset everything and start fresh:
 
 ```bash
-make clean-all && make run-demos
+make clean-all && make run-all-demos
 ```
 
 ---
@@ -283,7 +283,10 @@ routes:
 | **Capabilities Demo** | 3 WASM plugins, capability-gated extension visibility | `make run-capabilities-demo` |
 | **Filesystem Sandbox Demo** | All 6 WASI permission levels — ALLOW and DENY per scenario | `make run-sandbox-demo` |
 | **Env Sandbox Demo** | Allowed vs denied env variables — ALLOW and DENY per variable | `make run-env-demo` |
-| **Both** | Plugin demo + capabilities demo | `make run-demos` |
+| **Token Attenuator Demo** | Token delegation hook — minting, pass-through, multi-permission | `make run-token-attenuator-demo` |
+| **Network Policy Demo** | 7 network enforcement scenarios (host/port/scheme/method/wildcard/multi-rule) | `make run-network-policy-demo` |
+| **Resource Limits Demo** | Fuel exhaustion, epoch timeout, memory cap traps | `make run-resource-limits-demo` |
+| **All** | Build all plugins and run every demo end-to-end | `make run-all-demos` |
 
 All commands should be run from `crates/cpex-wasm-host`.
 
@@ -502,11 +505,11 @@ make test
 |----------|:-----:|----------------|
 | Security enforcement | 15 | Capability filtering, immutable tier, monotonic labels, write authorization, slot preservation |
 | Custom payload pipeline | 8 | 4 WASM plugins with user-defined payload through the full PluginManager pipeline (E2E) |
-| Sandbox isolation | 6 | Real plugins attempt filesystem/network/env access — sandbox blocks them |
-| Network policy enforcement | 5 | Port, scheme, method, host, and wildcard constraints enforced by WasiHttpHooks (WASM-level) |
+| Sandbox isolation | 2 | Real plugins attempt filesystem access — sandbox blocks them |
+| Network policy enforcement | 7 | Port, scheme, method, host, and wildcard constraints enforced by WasiHttpHooks (WASM-level) |
+| Env isolation | 2 | Env vars hidden from sandbox without explicit allowlist |
 | Resource limits | 3 | Fuel exhaustion, epoch timeout, and memory cap actually trap a running plugin |
-| Policy loader | 8 | YAML config parsing, context building, deny-all defaults |
-| Config integration | 8 | Config structure, resource limits validation |
+| Policy loader (unit) | 28 | YAML config parsing, permission resolution, context building, deny-all defaults, JSON roundtrip |
 | Error classification | 6 | Timeout, fuel, memory, trap, network errors classified correctly |
 | Conversions | 3 | Payload round-trips, extension immutability |
 
@@ -638,16 +641,24 @@ cpex-wasm-host/
 ├── README.md
 ├── Makefile                               # Build, test, run, bench targets (see table below)
 ├── config/
-│   ├── config.yaml                        # Test fixture (policy loader tests)
+│   ├── config_policy_test_fixture.yaml    # Test fixture (policy loader unit tests)
 │   ├── config_plugin_demo.yaml            # 4-plugin custom payload demo
 │   ├── config_capabilities.yaml           # 3-plugin capabilities demo
 │   ├── config_fs_sandbox_demo.yaml        # 6 WASI filesystem permission levels demo
-│   └── config_env_sandbox_demo.yaml       # env variable sandbox demo
+│   ├── config_env_sandbox_demo.yaml       # env variable sandbox demo
+│   ├── config_token_attenuator_demo.yaml  # token delegation demo
+│   ├── config_network_policy_demo.yaml    # 7 network policy scenarios
+│   ├── config_resource_limits_demo.yaml   # 3 resource limit scenarios
+│   ├── config_identity_resolve_test.yaml  # identity resolve E2E test
+│   └── config_execution_modes_test.yaml   # concurrent + fire-and-forget test
 ├── examples/
 │   ├── wasm_plugin_demo.rs                # 4 plugins, custom payload, 7 scenarios
 │   ├── wasm_capabilities_demo.rs          # 3 plugins, capability isolation
 │   ├── wasm_fs_sandbox_demo.rs            # all 6 filesystem permission levels
-│   └── wasm_env_sandbox_demo.rs           # env variable allow/deny scenarios
+│   ├── wasm_env_sandbox_demo.rs           # env variable allow/deny scenarios
+│   ├── wasm_token_attenuator_demo.rs      # token delegation hook
+│   ├── wasm_network_policy_demo.rs        # 7 network enforcement scenarios
+│   └── wasm_resource_limits_demo.rs       # fuel, timeout, memory cap
 ├── benchmarking/
 │   ├── README.md                          # Step-by-step benchmarking guide
 │   ├── invocation.rs                      # Benchmark: sandbox overhead
@@ -661,7 +672,9 @@ cpex-wasm-host/
 │   ├── test_sandbox_network.rs            # 7 tests: network denied + port/scheme/method enforcement
 │   ├── test_sandbox_env.rs               # 2 tests: env vars hidden
 │   ├── test_sandbox_resource_limits.rs    # 3 tests: fuel/timeout/memory trap a real plugin
-│   └── test_policy_loader.rs             # 8 tests: config parsing
+│   ├── test_identity_resolve_e2e.rs       # 3 tests: identity resolve through WASM boundary
+│   ├── test_token_delegation_e2e.rs       # 3 tests: token delegation through WASM boundary
+│   └── test_execution_modes.rs            # 2 tests: concurrent + fire-and-forget modes
 ├── src/
 │   ├── lib.rs                             # Crate docs + module re-exports
 │   ├── factory.rs                         # WasmPluginFactory, WasmBridgeHandler
@@ -681,25 +694,34 @@ All targets are run from `crates/cpex-wasm-host`.
 
 | Target | What it does |
 |--------|-------------|
-| `all` | Build all demo plugins and compile host examples (default) |
+| `all` | Build all demo + test plugins and compile host examples (default) |
 | `build-examples` | Compile host example binaries only |
 | `build-all-plugins` | Build all demo WASM plugins (`DEMO_PLUGINS` list) and stage to `wasm/` |
 | `build-test-plugins` | Build all test/sandbox WASM plugins (`TEST_PLUGINS` list) and stage to `wasm/` |
 | `build-bench-plugins` | Build benchmark WASM plugins (`BENCH_PLUGINS` list) and stage to `wasm/` |
-| `run-demos` | Build all plugins + run plugin demo and capabilities demo |
-| `run-plugin-demo` | Build all plugins + run custom-payload plugin demo |
-| `run-capabilities-demo` | Build all plugins + run capability isolation demo |
+| `run-all-demos` | Build all plugins + run every demo end-to-end |
+| `run-plugin-demo` | Build demo plugins + run custom-payload plugin demo |
+| `run-capabilities-demo` | Build demo plugins + run capability isolation demo |
 | `run-sandbox-demo` | Build test plugins + seed data + run filesystem permissions demo |
 | `run-env-demo` | Build test plugins + run env variable sandbox demo |
+| `run-token-attenuator-demo` | Build demo plugins + run token delegation demo |
+| `run-network-policy-demo` | Build test plugins + run network policy sandbox demo |
+| `run-resource-limits-demo` | Build test plugins + run resource limits sandbox demo |
 | `bench-all` | Build everything + run benchmarks + generate performance chart |
 | `test` | Clean, rebuild everything, run all host + plugin unit tests |
+| `unit-tests` | Run host unit tests only (no WASM plugins needed) |
+| `integration-tests` | Build plugins + run integration tests (`--ignored`) |
+| `plugin-tests` | Run plugin crate unit tests (all demos) |
+| `clippy` | Run clippy on both host and plugin crates |
 | `clean` | Remove host build artifacts and `wasm/*.wasm` |
 | `clean-all` | Remove host + plugin build artifacts and all `.wasm` files |
+| `sync-wit` | Copy `wit/world.wit` from cpex-wasm-plugin (source of truth) |
+| `check-wit` | Fail if `wit/world.wit` has drifted from cpex-wasm-plugin |
 | `help` | List all targets with descriptions |
 
 **Plugin lists** (single source of truth in the Makefile variables):
-- `DEMO_PLUGINS` — compiled by `build-all-plugins`; the capabilities and plugin demos use these
-- `TEST_PLUGINS` — compiled by `build-test-plugins`; the sandbox isolation and integration tests use these
+- `DEMO_PLUGINS` — compiled by `build-all-plugins`; the capabilities, plugin, and token attenuator demos use these
+- `TEST_PLUGINS` — compiled by `build-test-plugins`; the sandbox, network, resource, and env demos + integration tests use these
 - `BENCH_PLUGINS` — compiled by `build-bench-plugins`; the benchmark suite uses these
 
 ---

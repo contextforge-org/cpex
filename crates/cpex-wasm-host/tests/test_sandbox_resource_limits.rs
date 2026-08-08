@@ -5,12 +5,12 @@
 //
 //! Integration tests: verifies resource limits actually trap a running WASM plugin.
 //!
-//! Each test loads the resource-test plugin with a deliberately tiny limit,
+//! Each test loads the resource-sandbox-demo plugin with a deliberately tiny limit,
 //! invokes it in the mode that exercises that limit, and asserts the invocation
 //! returns the expected error variant — proving the limit is enforced at runtime,
 //! not just parsed from YAML.
 //!
-//! Requires: `wasm/resource-test.wasm` built with `make build-test-plugins`
+//! Requires: `wasm/resource-sandbox-demo.wasm` built with `make build-test-plugins`
 
 use std::path::PathBuf;
 use std::sync::Once;
@@ -37,7 +37,7 @@ fn init_tracing() {
 }
 
 fn wasm_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("wasm/resource-test.wasm")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("wasm/resource-sandbox-demo.wasm")
 }
 
 fn make_payload(mode: &str) -> MessagePayload {
@@ -51,7 +51,7 @@ fn make_payload(mode: &str) -> MessagePayload {
             content: vec![ContentPart::ToolCall {
                 content: ToolCall {
                     tool_call_id: "tc_resource".into(),
-                    name: "resource_test".into(),
+                    name: "resource_sandbox_demo".into(),
                     arguments: args,
                     namespace: None,
                 },
@@ -76,7 +76,7 @@ async fn load_with_limits(resources: ResourceLimits) -> SandboxManager {
 
     let shared = SharedEngine::new().unwrap();
     let mut mgr = SandboxManager::with_shared_engine(&shared);
-    mgr.load_wasmplugin(&path, Some(&policy), "resource-test")
+    mgr.load_wasmplugin(&path, Some(&policy), "resource-sandbox-demo")
         .await
         .unwrap();
     mgr

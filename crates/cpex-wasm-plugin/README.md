@@ -224,7 +224,7 @@ cargo test              # all tests
 ### Test demo plugins
 
 ```bash
-make test-demos         # runs inline tests for all 17 demo plugins
+make test-demos         # runs inline tests for all 14 demo plugins
 ```
 
 ## Logging
@@ -288,7 +288,7 @@ cpex-wasm-plugin/
     lib.rs              # SDK internals (don't edit)
     plugin.rs           # YOUR PLUGIN — edit this
     conversions.rs      # WIT ↔ native type bridging
-    examples/           # 17 demo plugins for reference
+    examples/           # 14 demo plugins for reference
   wit/
     world.wit           # WIT world definition (typed WASM boundary)
     deps/               # WASI interface definitions (io, http, clocks, etc.)
@@ -334,14 +334,11 @@ Browse `src/examples/` for working reference implementations:
 | `audit_logger_custom.rs` | Custom ToolPreInvoke/PostInvoke | Audit with custom payloads |
 | `remote_authz.rs` | Custom ToolPreInvoke | Delegate to external authz |
 | `token_attenuator.rs` | TokenDelegateHook | Downscope outbound tokens |
-| `fs_test.rs` | CmfHook | Filesystem sandbox testing |
-| `net_test.rs` | CmfHook | Network sandbox testing |
-| `env_test.rs` | CmfHook | Environment variable access |
 | `compute_bench.rs` | CmfHook | CPU computation benchmark |
 | `fs_sandbox_demo.rs` | CmfHook | Filesystem sandbox operations |
 | `env_sandbox_demo.rs` | CmfHook | Env var sandbox operations |
-| `resource_test.rs` | CmfHook | Resource limit testing |
-| `net_http_test.rs` | CmfHook | Outbound HTTP requests |
+| `resource_sandbox_demo.rs` | CmfHook | Resource limit testing |
+| `net_sandbox_demo.rs` | CmfHook | Outbound HTTP requests |
 
 ## Advantages
 

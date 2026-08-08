@@ -125,3 +125,82 @@ impl PayloadSerializerRegistry {
         self.by_type_id.contains_key(&type_id)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cpex_core::cmf::constants::SCHEMA_VERSION;
+    use cpex_core::cmf::{Message, MessagePayload, Role};
+
+    fn sample_payload() -> MessagePayload {
+        MessagePayload {
+            message: Message {
+                schema_version: SCHEMA_VERSION.into(),
+                role: Role::User,
+                content: vec![],
+                channel: None,
+            },
+        }
+    }
+
+    #[test]
+    fn test_register_and_serialize_roundtrip() {
+        let mut registry = PayloadSerializerRegistry::new();
+        registry.register::<MessagePayload>();
+
+        let payload = sample_payload();
+        let (type_name, bytes) = registry.serialize(&payload).unwrap();
+        assert_eq!(type_name, "cmf.message");
+        assert!(!bytes.is_empty());
+
+        let deserialized = registry.deserialize(type_name, &bytes).unwrap();
+        assert_eq!(deserialized.as_any().type_id(), TypeId::of::<MessagePayload>());
+    }
+
+    #[test]
+    fn test_serialize_unregistered_type_returns_error() {
+        let registry = PayloadSerializerRegistry::new();
+        let payload = sample_payload();
+        let result = registry.serialize(&payload);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("not registered"));
+    }
+
+    #[test]
+    fn test_deserialize_unknown_type_name_returns_error() {
+        let registry = PayloadSerializerRegistry::new();
+        let result = registry.deserialize("nonexistent.type", &[]);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("unknown payload type"));
+    }
+
+    #[test]
+    fn test_deserialize_corrupted_bytes_returns_error() {
+        let mut registry = PayloadSerializerRegistry::new();
+        registry.register::<MessagePayload>();
+
+        let result = registry.deserialize("cmf.message", b"not valid json");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_contains_type_id() {
+        let mut registry = PayloadSerializerRegistry::new();
+        assert!(!registry.contains_type_id(TypeId::of::<MessagePayload>()));
+
+        registry.register::<MessagePayload>();
+        assert!(registry.contains_type_id(TypeId::of::<MessagePayload>()));
+    }
+
+    #[test]
+    fn test_register_idempotent() {
+        let mut registry = PayloadSerializerRegistry::new();
+        registry.register::<MessagePayload>();
+        registry.register::<MessagePayload>();
+
+        let payload = sample_payload();
+        let (type_name, bytes) = registry.serialize(&payload).unwrap();
+        let deserialized = registry.deserialize(type_name, &bytes).unwrap();
+        assert_eq!(deserialized.as_any().type_id(), TypeId::of::<MessagePayload>());
+    }
+}

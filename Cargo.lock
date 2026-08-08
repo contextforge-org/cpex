@@ -912,6 +912,7 @@ dependencies = [
  "apl-cpex",
  "cpex-builtins",
  "cpex-core",
+ "cpex-wasm-host",
 ]
 
 [[package]]

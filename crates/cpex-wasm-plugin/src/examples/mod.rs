@@ -23,14 +23,6 @@ pub mod token_attenuator;
 #[cfg(feature = "noop")]
 pub mod noop;
 
-#[cfg(feature = "fs-test")]
-pub mod fs_test;
-
-#[cfg(feature = "net-test")]
-pub mod net_test;
-
-#[cfg(feature = "env-test")]
-pub mod env_test;
 
 #[cfg(feature = "tool-invoke-checker")]
 pub mod tool_invoke_checker;
@@ -53,8 +45,8 @@ pub mod fs_sandbox_demo;
 #[cfg(feature = "env-sandbox-demo")]
 pub mod env_sandbox_demo;
 
-#[cfg(feature = "resource-test")]
-pub mod resource_test;
+#[cfg(feature = "resource-sandbox-demo")]
+pub mod resource_sandbox_demo;
 
-#[cfg(feature = "net-http-test")]
-pub mod net_http_test;
+#[cfg(feature = "net-sandbox-demo")]
+pub mod net_sandbox_demo;

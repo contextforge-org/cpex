@@ -1,4 +1,4 @@
-// Location: ./crates/cpex-wasm-plugin/src/examples/net_http_test.rs
+// Location: ./crates/cpex-wasm-plugin/src/examples/net_sandbox_demo.rs
 // Copyright 2026
 // SPDX-License-Identifier: Apache-2.0
 // Authors: Shriti Priya
@@ -28,9 +28,9 @@ use crate::wasi::http::types::{
     Headers, Method, OutgoingRequest, RequestOptions, Scheme,
 };
 
-pub struct NetHttpTestPlugin;
+pub struct NetSandboxDemoPlugin;
 
-impl Default for NetHttpTestPlugin {
+impl Default for NetSandboxDemoPlugin {
     fn default() -> Self {
         Self
     }
@@ -39,11 +39,11 @@ impl Default for NetHttpTestPlugin {
 static PLUGIN_CONFIG: std::sync::OnceLock<PluginConfig> = std::sync::OnceLock::new();
 
 #[async_trait]
-impl Plugin for NetHttpTestPlugin {
+impl Plugin for NetSandboxDemoPlugin {
     fn config(&self) -> &PluginConfig {
         PLUGIN_CONFIG.get_or_init(|| PluginConfig {
-            name: "net-http-test".to_string(),
-            kind: "wasm://net-http-test.wasm".to_string(),
+            name: "net-sandbox-demo".to_string(),
+            kind: "wasm://net-sandbox-demo.wasm".to_string(),
             hooks: vec!["cmf.tool_pre_invoke".to_string()],
             ..Default::default()
         })
@@ -68,7 +68,7 @@ fn extract_arg(payload: &MessagePayload, key: &str) -> Option<String> {
     })
 }
 
-impl HookHandler<CmfHook> for NetHttpTestPlugin {
+impl HookHandler<CmfHook> for NetSandboxDemoPlugin {
     async fn handle(
         &self,
         payload: &MessagePayload,
@@ -78,7 +78,7 @@ impl HookHandler<CmfHook> for NetHttpTestPlugin {
         let url = extract_arg(payload, "url").unwrap_or_else(|| "https://example.com/".to_string());
         let method_str = extract_arg(payload, "method").unwrap_or_else(|| "GET".to_string());
 
-        cpex_log!(info, "net-http-test: {} {}", method_str, url);
+        cpex_log!(info, "net-sandbox-demo: {} {}", method_str, url);
 
         // Parse scheme, authority, and path from the URL manually — no std URL parser in WASM.
         let (scheme, rest) = if let Some(s) = url.strip_prefix("https://") {
@@ -116,13 +116,13 @@ impl HookHandler<CmfHook> for NetHttpTestPlugin {
         match outgoing_handler::handle(req, None::<RequestOptions>) {
             Ok(_future_response) => {
                 ctx.set_local("http_result", serde_json::json!("allowed"));
-                cpex_log!(info, "net-http-test: request allowed by host policy");
+                cpex_log!(info, "net-sandbox-demo: request allowed by host policy");
             }
             Err(e) => {
                 let reason = format!("{:?}", e);
                 ctx.set_local("http_result", serde_json::json!("denied"));
                 ctx.set_local("http_error", serde_json::json!(reason));
-                cpex_log!(info, "net-http-test: request denied — {}", reason);
+                cpex_log!(info, "net-sandbox-demo: request denied — {}", reason);
             }
         }
 

@@ -11,8 +11,7 @@ PLUGIN_TARGET := $(PLUGIN_DIR)/target/wasm32-wasip2/release/cpex_wasm_plugin.was
 # Plugin lists — single source of truth for what gets built and staged to wasm/.
 DEMO_PLUGINS  := identity-checker header-injector audit-logger token-attenuator \
                  tool-invoke-checker pii-guard audit-logger-custom remote-authz
-TEST_PLUGINS  := fs-test net-test env-test noop fs-sandbox-demo env-sandbox-demo \
-                 resource-test net-http-test
+TEST_PLUGINS  := noop fs-sandbox-demo env-sandbox-demo resource-sandbox-demo net-sandbox-demo
 BENCH_PLUGINS := compute-bench
 
 # ---------------------------------------------------------------------------

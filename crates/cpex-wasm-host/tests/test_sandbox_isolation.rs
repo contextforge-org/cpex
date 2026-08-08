@@ -5,12 +5,14 @@
 //
 //! Integration test: verifies WASM sandbox filesystem isolation.
 //!
-//! Loads a real `.wasm` plugin that attempts to read `/etc/passwd`.
-//! With no filesystem policy, the read must fail (sandbox denies access).
-//! This proves the isolation isn't just config-level — it's enforced at runtime.
+//! Uses the fs-sandbox-demo.wasm plugin (same binary as the FS demo) with
+//! operation=read, path=/etc/passwd. With no filesystem policy, the read must
+//! be denied. With an unrelated policy (/tmp only), /etc/passwd must still be
+//! denied. This proves isolation is enforced at runtime.
 //!
-//! Requires: `wasm/fs-test.wasm` built from cpex-wasm-plugin with `--features fs-test`
+//! Requires: `wasm/fs-sandbox-demo.wasm` built from cpex-wasm-plugin with `--features fs-sandbox-demo`
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Once;
 
@@ -35,10 +37,13 @@ fn init_tracing() {
 }
 
 fn wasm_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("wasm/fs-test.wasm")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("wasm/fs-sandbox-demo.wasm")
 }
 
-fn make_payload() -> MessagePayload {
+fn make_read_payload(path: &str) -> MessagePayload {
+    let mut arguments = HashMap::new();
+    arguments.insert("operation".to_string(), serde_json::json!("read"));
+    arguments.insert("path".to_string(), serde_json::json!(path));
     MessagePayload {
         message: Message {
             schema_version: SCHEMA_VERSION.into(),
@@ -47,7 +52,7 @@ fn make_payload() -> MessagePayload {
                 content: ToolCall {
                     tool_call_id: "tc_001".into(),
                     name: "read_file".into(),
-                    arguments: Default::default(),
+                    arguments,
                     namespace: None,
                 },
             }],
@@ -65,12 +70,11 @@ async fn test_plugin_cannot_read_etc_passwd_without_filesystem_policy() {
         "WASM binary not found: {}. Run `make build-test-plugins` from crates/cpex-wasm-host first.",
         path.display());
 
-    // Load plugin with NO filesystem policy (deny-all)
     let shared = SharedEngine::new().unwrap();
     let mut mgr = SandboxManager::with_shared_engine(&shared);
-    mgr.load_wasmplugin(&path, None, "fs-test").await.unwrap();
+    mgr.load_wasmplugin(&path, None, "fs-sandbox-test").await.unwrap();
 
-    let payload = make_payload();
+    let payload = make_read_payload("/etc/passwd");
     let wit_payload =
         cpex_wasm_host::sandbox_manager::types::HookPayload::Cmf(native_payload_to_wit(&payload));
     let wit_ext = native_extensions_to_wit(&Extensions::default());
@@ -81,47 +85,13 @@ async fn test_plugin_cannot_read_etc_passwd_without_filesystem_policy() {
         .await
         .unwrap();
 
-    // The plugin should have executed (continue_processing = true)
-    assert!(result.continue_processing, "plugin should return allow");
-
-    // Check the context — plugin writes fs_read_success into local_state
-    let ctx = result
-        .modified_context
-        .expect("plugin should write context");
-    let local_entries: std::collections::HashMap<String, String> = ctx
-        .local_state
-        .into_iter()
-        .map(|e| (e.key, e.value))
-        .collect();
-
-    let success_value = local_entries
-        .get("fs_read_success")
-        .expect("plugin should set fs_read_success in context");
-
-    // The read MUST have failed — sandbox denied it
-    assert_eq!(
-        success_value,
-        "false",
-        "SANDBOX ESCAPE: plugin successfully read /etc/passwd! fs_read_success={}, error={}",
-        success_value,
-        local_entries
-            .get("fs_read_error")
-            .unwrap_or(&"<none>".to_string())
-    );
-
-    // Verify the error message indicates permission/access denial
-    let error_msg = local_entries
-        .get("fs_read_error")
-        .expect("plugin should set fs_read_error");
     assert!(
-        error_msg.contains("denied")
-            || error_msg.contains("permission")
-            || error_msg.contains("not found")
-            || error_msg.contains("No such")
-            || error_msg.contains("Capabilities insufficient"),
-        "unexpected error message: {}",
-        error_msg
+        !result.continue_processing,
+        "SANDBOX ESCAPE: plugin successfully read /etc/passwd without filesystem policy"
     );
+
+    let violation = result.violation.as_ref().expect("should have a violation");
+    assert_eq!(violation.code, "fs_access_denied");
 }
 
 #[tokio::test]
@@ -133,7 +103,6 @@ async fn test_plugin_cannot_read_etc_passwd_with_unrelated_filesystem_policy() {
         "WASM binary not found: {}. Run `make build-test-plugins` from crates/cpex-wasm-host first.",
         path.display());
 
-    // Load plugin with filesystem policy that only allows /tmp
     let policy = cpex_wasm_host::policy_loader::SandboxPolicy {
         allowed_filesystem: vec![cpex_wasm_host::policy_loader::FilesystemRule {
             dir: Some("/tmp".to_string()),
@@ -145,11 +114,11 @@ async fn test_plugin_cannot_read_etc_passwd_with_unrelated_filesystem_policy() {
 
     let shared = SharedEngine::new().unwrap();
     let mut mgr = SandboxManager::with_shared_engine(&shared);
-    mgr.load_wasmplugin(&path, Some(&policy), "fs-test-restricted")
+    mgr.load_wasmplugin(&path, Some(&policy), "fs-sandbox-test-restricted")
         .await
         .unwrap();
 
-    let payload = make_payload();
+    let payload = make_read_payload("/etc/passwd");
     let wit_payload =
         cpex_wasm_host::sandbox_manager::types::HookPayload::Cmf(native_payload_to_wit(&payload));
     let wit_ext = native_extensions_to_wit(&Extensions::default());
@@ -160,24 +129,11 @@ async fn test_plugin_cannot_read_etc_passwd_with_unrelated_filesystem_policy() {
         .await
         .unwrap();
 
-    assert!(result.continue_processing);
-
-    let ctx = result
-        .modified_context
-        .expect("plugin should write context");
-    let local_entries: std::collections::HashMap<String, String> = ctx
-        .local_state
-        .into_iter()
-        .map(|e| (e.key, e.value))
-        .collect();
-
-    let success_value = local_entries
-        .get("fs_read_success")
-        .expect("plugin should set fs_read_success");
-
-    // Even with /tmp allowed, /etc/passwd must still be denied
-    assert_eq!(
-        success_value, "false",
+    assert!(
+        !result.continue_processing,
         "SANDBOX ESCAPE: plugin read /etc/passwd despite only /tmp being allowed!"
     );
+
+    let violation = result.violation.as_ref().expect("should have a violation");
+    assert_eq!(violation.code, "fs_access_denied");
 }

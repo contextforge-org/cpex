@@ -143,6 +143,7 @@ impl PluginFactory for WasmPluginFactory {
                 let handler: Arc<dyn AnyHookHandler> = Arc::new(WasmBridgeHandler {
                     plugin_name: config.name.clone(),
                     hook_name: hook_name.clone(),
+                    hook_name_static: leaked,
                     sandbox: sandbox.clone(),
                     registry: self.registry.clone(),
                     capabilities: config.capabilities.clone(),
@@ -193,6 +194,7 @@ impl Plugin for WasmBridgePlugin {
 struct WasmBridgeHandler {
     plugin_name: String,
     hook_name: String,
+    hook_name_static: &'static str,
     sandbox: Arc<Mutex<SandboxManager>>,
     registry: Arc<PayloadSerializerRegistry>,
     capabilities: HashSet<String>,
@@ -288,12 +290,7 @@ impl AnyHookHandler for WasmBridgeHandler {
     }
 
     fn hook_type_name(&self) -> &'static str {
-        // Returns the hook name this handler is registered under (e.g. "cmf.tool_pre_invoke").
-        // The PluginManager uses this during override-instance dispatch to locate the
-        // matching handler in a freshly created instance by name comparison.
-        // Each WasmBridgeHandler is created with hook_name already leaked to 'static
-        // in WasmPluginFactory::create(), so we can return it directly here.
-        Box::leak(self.hook_name.clone().into_boxed_str())
+        self.hook_name_static
     }
 }
 
@@ -306,7 +303,7 @@ impl AnyHookHandler for WasmBridgeHandler {
 /// Checks immutable tier integrity, monotonic label enforcement, and
 /// write authorization. Returns `true` if the modifications should be
 /// accepted, `false` if they must be rejected.
-fn validate_extension_modifications(
+pub fn validate_extension_modifications(
     owned: &OwnedExtensions,
     original: &Extensions,
     capabilities: &HashSet<String>,

@@ -811,17 +811,17 @@ fn native_resource_type_to_wit(rt: native_enums::ResourceType) -> ResourceType {
 
 /// Convert plugin-modified extensions back to WIT for the host.
 ///
-/// LIMITATION: The following extension slots are NOT converted and will be
-/// silently discarded if a plugin modifies them:
-///   - agent, mcp, completion, provenance, llm, framework, delegation, custom
-///   - security.client, security.caller_workload, security.this_workload
-///   - security.objects, security.data
-///
-/// Only these are preserved across the boundary:
-///   - request (environment, request_id, timestamp, trace_id, span_id)
-///   - security (labels, classification, subject, auth_method)
+/// Mutable slots (persisted by the host via `merge_owned`):
+///   - security (full: labels, classification, subject, client, workloads, objects, data, auth_method)
 ///   - http (request_headers, response_headers, method, path, host, scheme)
-///   - meta (entity_type, entity_name, tags, scope, properties)
+///   - delegation (full chain, hops, strategies)
+///   - custom (arbitrary key-value map)
+///
+/// Immutable slots (host discards guest changes by design, validated via Arc pointer equality):
+///   - request, agent, mcp, completion, provenance, llm, framework, meta
+///
+/// The immutable slots are still serialized for completeness (the host uses
+/// the original Arc pointers regardless), matching cpex-core native behavior.
 // ---------------------------------------------------------------------------
 // Native → WIT: IdentityPayload
 // ---------------------------------------------------------------------------
@@ -834,7 +834,10 @@ pub fn native_identity_payload_to_wit(p: &NativeIdentityPayload) -> IdentityPayl
         NativeTokenSource::SpiffeJwtSvid => (TokenSource::SpiffeJwtSvid, None),
         NativeTokenSource::ApiKey => (TokenSource::ApiKey, None),
         NativeTokenSource::Custom(s) => (TokenSource::Custom, Some(s.clone())),
-        _ => (TokenSource::Bearer, None),
+        other => {
+            eprintln!("[cpex-wasm-plugin] unhandled TokenSource variant {:?}, falling back to Bearer", other);
+            (TokenSource::Bearer, None)
+        }
     };
     IdentityPayload {
         source,
@@ -867,13 +870,19 @@ pub fn native_delegation_payload_to_wit(p: &NativeDelegationPayload) -> Delegati
         NativeTargetType::Resource => (TargetType::Resource, None),
         NativeTargetType::Service => (TargetType::Service, None),
         NativeTargetType::Custom(s) => (TargetType::Custom, Some(s.clone())),
-        _ => (TargetType::Tool, None),
+        other => {
+            eprintln!("[cpex-wasm-plugin] unhandled TargetType variant {:?}, falling back to Tool", other);
+            (TargetType::Tool, None)
+        }
     };
     let auth_enforced_by = match p.auth_enforced_by() {
         NativeAuthEnforcedBy::Caller => AuthEnforcedBy::Caller,
         NativeAuthEnforcedBy::Target => AuthEnforcedBy::Target,
         NativeAuthEnforcedBy::Both => AuthEnforcedBy::Both,
-        _ => AuthEnforcedBy::Caller,
+        other => {
+            eprintln!("[cpex-wasm-plugin] unhandled AuthEnforcedBy variant {:?}, falling back to Caller", other);
+            AuthEnforcedBy::Caller
+        }
     };
     DelegationPayload {
         target_name: p.target_name().to_owned(),
@@ -899,7 +908,10 @@ pub fn native_delegation_payload_to_wit(p: &NativeDelegationPayload) -> Delegati
         delegation_mode: p.delegation_mode.as_ref().map(|m| match m {
             NativeDelegationMode::OnBehalfOfUser => DelegationMode::OnBehalfOfUser,
             NativeDelegationMode::AsGateway => DelegationMode::AsGateway,
-            _ => DelegationMode::OnBehalfOfUser,
+            other => {
+                eprintln!("[cpex-wasm-plugin] unhandled DelegationMode variant {:?}, falling back to OnBehalfOfUser", other);
+                DelegationMode::OnBehalfOfUser
+            }
         }),
         minted_at: p.minted_at.map(|dt| dt.to_rfc3339()),
         metadata: if p.metadata.is_empty() {
@@ -936,7 +948,10 @@ fn native_client_to_wit(c: &NativeClientExtension) -> ClientExtension {
         NativeClientTrustLevel::ThirdParty => (ClientTrustLevel::ThirdParty, None),
         NativeClientTrustLevel::Internal => (ClientTrustLevel::Internal, None),
         NativeClientTrustLevel::Custom(s) => (ClientTrustLevel::ThirdParty, Some(s.clone())),
-        _ => (ClientTrustLevel::ThirdParty, None),
+        other => {
+            eprintln!("[cpex-wasm-plugin] unhandled ClientTrustLevel variant {:?}, falling back to ThirdParty", other);
+            (ClientTrustLevel::ThirdParty, None)
+        }
     };
     ClientExtension {
         client_id: c.client_id.clone(),
@@ -978,7 +993,10 @@ fn native_delegation_ext_to_wit(d: &NativeDelegationExtension) -> DelegationExte
                 Some(NDS::Ucan) => (Some(DelegationStrategy::Ucan), None),
                 Some(NDS::TransactionToken) => (Some(DelegationStrategy::TransactionToken), None),
                 Some(NDS::Custom(s)) => (None, Some(s.clone())),
-                Some(_) => (None, None),
+                Some(other) => {
+                    eprintln!("[cpex-wasm-plugin] unhandled DelegationStrategy variant {:?}, falling back to None", other);
+                    (None, None)
+                }
             };
             DelegationHop {
                 subject_id: hop.subject_id.clone(),
@@ -1032,25 +1050,17 @@ pub(crate) fn native_owned_extensions_to_wit(
         security: ext.security.as_ref().map(|s| SecurityExtension {
             labels: s.labels.iter().cloned().collect(),
             classification: s.classification.clone(),
-            subject: s.subject.as_ref().map(|sub| SubjectExtension {
-                id: sub.id.clone(),
-                subject_type: sub.subject_type.as_ref().map(|st| match st {
-                    NativeSubjectType::User => SubjectType::User,
-                    NativeSubjectType::Agent => SubjectType::Agent,
-                    NativeSubjectType::Service => SubjectType::Service,
-                    NativeSubjectType::System => SubjectType::System,
-                }),
-                roles: sub.roles.iter().cloned().collect(),
-                permissions: sub.permissions.iter().cloned().collect(),
-                teams: sub.teams.iter().cloned().collect(),
-                claims: sub.claims.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
-            }),
-            client: None,
-            caller_workload: None,
-            this_workload: None,
+            subject: s.subject.as_ref().map(|sub| native_subject_to_wit(sub)),
+            client: s.client.as_ref().map(|c| native_client_to_wit(c)),
+            caller_workload: s.caller_workload.as_ref().map(|w| native_workload_to_wit(w)),
+            this_workload: s.this_workload.as_ref().map(|w| native_workload_to_wit(w)),
             auth_method: s.auth_method.clone(),
-            objects: vec![],
-            data: vec![],
+            objects: s.objects.iter()
+                .map(|(k, v)| (k.clone(), native_object_profile_to_wit(v)))
+                .collect(),
+            data: s.data.iter()
+                .map(|(k, v)| (k.clone(), native_data_policy_to_wit(v)))
+                .collect(),
         }),
         http: ext.http.as_ref().map(|h| HttpExtension {
             request_headers: h.read().request_headers.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
@@ -1073,8 +1083,30 @@ pub(crate) fn native_owned_extensions_to_wit(
         provenance: None,
         llm: None,
         framework: None,
-        delegation: None,
-        custom: None,
+        delegation: ext.delegation.as_ref().map(|d| native_delegation_ext_to_wit(d)),
+        custom: ext.custom.as_ref().and_then(|c| serde_json::to_string(c).ok()),
+    }
+}
+
+fn native_object_profile_to_wit(o: &NativeObjectSecurityProfile) -> ObjectSecurityProfile {
+    ObjectSecurityProfile {
+        managed_by: o.managed_by.clone(),
+        permissions: o.permissions.clone(),
+        trust_domain: o.trust_domain.clone(),
+        data_scope: o.data_scope.clone(),
+    }
+}
+
+fn native_data_policy_to_wit(d: &NativeDataPolicy) -> DataPolicy {
+    DataPolicy {
+        apply_labels: d.apply_labels.clone(),
+        allowed_actions: d.allowed_actions.clone(),
+        denied_actions: d.denied_actions.clone(),
+        retention: d.retention.as_ref().map(|r| RetentionPolicy {
+            max_age_seconds: r.max_age_seconds,
+            policy: r.policy.clone(),
+            delete_after: r.delete_after.clone(),
+        }),
     }
 }
 
@@ -1887,5 +1919,402 @@ mod tests {
         assert_eq!(native.delegation_mode, Some(NativeDelegationMode::AsGateway));
         assert!(native.minted_at.is_some());
         assert_eq!(native.metadata.get("minter").and_then(|v| v.as_str()), Some("test"));
+    }
+
+    // ── Content Parts Roundtrip ─────────────────────────────────────────────
+
+    #[test]
+    fn test_payload_roundtrip_resource() {
+        let native = native_msg::MessagePayload {
+            message: native_msg::Message {
+                schema_version: SCHEMA_VERSION.into(),
+                role: native_enums::Role::Tool,
+                content: vec![native_content::ContentPart::Resource {
+                    content: native_content::Resource {
+                        resource_request_id: "rr-001".into(),
+                        uri: "file:///src/main.rs".into(),
+                        name: Some("main.rs".into()),
+                        description: Some("Entry point".into()),
+                        resource_type: native_enums::ResourceType::File,
+                        content: Some("fn main() {}".into()),
+                        blob: None,
+                        mime_type: Some("text/x-rust".into()),
+                        size_bytes: Some(12),
+                        annotations: HashMap::new(),
+                        version: Some("v1".into()),
+                    },
+                }],
+                channel: None,
+            },
+        };
+
+        let wit = native_payload_to_wit(native.clone());
+        let back = wit_payload_to_native(wit);
+
+        match &back.message.content[0] {
+            native_content::ContentPart::Resource { content } => {
+                assert_eq!(content.resource_request_id, "rr-001");
+                assert_eq!(content.uri, "file:///src/main.rs");
+                assert_eq!(content.name, Some("main.rs".into()));
+                assert_eq!(content.resource_type, native_enums::ResourceType::File);
+                assert_eq!(content.content, Some("fn main() {}".into()));
+                assert_eq!(content.mime_type, Some("text/x-rust".into()));
+                assert_eq!(content.size_bytes, Some(12));
+                assert_eq!(content.version, Some("v1".into()));
+            }
+            _ => panic!("expected Resource"),
+        }
+    }
+
+    #[test]
+    fn test_payload_roundtrip_image() {
+        let native = native_msg::MessagePayload {
+            message: native_msg::Message {
+                schema_version: SCHEMA_VERSION.into(),
+                role: native_enums::Role::User,
+                content: vec![native_content::ContentPart::Image {
+                    content: native_content::ImageSource {
+                        source_type: "base64".into(),
+                        data: "iVBORw0KGgo=".into(),
+                        media_type: Some("image/png".into()),
+                    },
+                }],
+                channel: None,
+            },
+        };
+
+        let wit = native_payload_to_wit(native.clone());
+        let back = wit_payload_to_native(wit);
+
+        match &back.message.content[0] {
+            native_content::ContentPart::Image { content } => {
+                assert_eq!(content.source_type, "base64");
+                assert_eq!(content.data, "iVBORw0KGgo=");
+                assert_eq!(content.media_type, Some("image/png".into()));
+            }
+            _ => panic!("expected Image"),
+        }
+    }
+
+    #[test]
+    fn test_payload_roundtrip_document() {
+        let native = native_msg::MessagePayload {
+            message: native_msg::Message {
+                schema_version: SCHEMA_VERSION.into(),
+                role: native_enums::Role::User,
+                content: vec![native_content::ContentPart::Document {
+                    content: native_content::DocumentSource {
+                        source_type: "base64".into(),
+                        data: "JVBERi0xLjQ=".into(),
+                        media_type: Some("application/pdf".into()),
+                        title: Some("Report Q4".into()),
+                    },
+                }],
+                channel: None,
+            },
+        };
+
+        let wit = native_payload_to_wit(native.clone());
+        let back = wit_payload_to_native(wit);
+
+        match &back.message.content[0] {
+            native_content::ContentPart::Document { content } => {
+                assert_eq!(content.source_type, "base64");
+                assert_eq!(content.data, "JVBERi0xLjQ=");
+                assert_eq!(content.media_type, Some("application/pdf".into()));
+                assert_eq!(content.title, Some("Report Q4".into()));
+            }
+            _ => panic!("expected Document"),
+        }
+    }
+
+    // ── Extensions Roundtrip: MCP, LLM, Framework ───────────────────────────
+
+    #[test]
+    fn test_extensions_mcp_tool_metadata() {
+        let wit = Extensions {
+            mcp: Some(McpExtension {
+                tool: Some(ToolMetadata {
+                    name: "search_docs".into(),
+                    title: Some("Search Documents".into()),
+                    description: Some("Searches the document index".into()),
+                    input_schema: Some(r#"{"type":"object","properties":{"query":{"type":"string"}}}"#.into()),
+                    output_schema: None,
+                    server_id: Some("docs-server".into()),
+                    namespace: Some("knowledge".into()),
+                    annotations: vec![("priority".into(), r#""high""#.into())],
+                }),
+                resource_info: None,
+                prompt: None,
+            }),
+            request: None,
+            security: None,
+            http: None,
+            meta: None,
+            agent: None,
+            completion: None,
+            provenance: None,
+            llm: None,
+            framework: None,
+            delegation: None,
+            custom: None,
+        };
+
+        let native = wit_extensions_to_native(wit);
+        let mcp = native.mcp.unwrap();
+        let tool = mcp.tool.as_ref().unwrap();
+        assert_eq!(tool.name, "search_docs");
+        assert_eq!(tool.title, Some("Search Documents".into()));
+        assert_eq!(tool.description, Some("Searches the document index".into()));
+        assert!(tool.input_schema.is_some());
+        let schema = tool.input_schema.as_ref().unwrap();
+        assert_eq!(schema["type"], "object");
+        assert_eq!(schema["properties"]["query"]["type"], "string");
+        assert_eq!(tool.server_id, Some("docs-server".into()));
+        assert_eq!(tool.namespace, Some("knowledge".into()));
+        assert_eq!(
+            tool.annotations.get("priority").unwrap(),
+            &serde_json::json!("high")
+        );
+    }
+
+    #[test]
+    fn test_extensions_llm() {
+        let wit = Extensions {
+            llm: Some(LlmExtension {
+                model_id: Some("claude-opus-4".into()),
+                provider: Some("anthropic".into()),
+                capabilities: vec!["tool_use".into(), "vision".into(), "streaming".into()],
+            }),
+            request: None,
+            security: None,
+            http: None,
+            meta: None,
+            agent: None,
+            mcp: None,
+            completion: None,
+            provenance: None,
+            framework: None,
+            delegation: None,
+            custom: None,
+        };
+
+        let native = wit_extensions_to_native(wit);
+        let llm = native.llm.unwrap();
+        assert_eq!(llm.model_id, Some("claude-opus-4".into()));
+        assert_eq!(llm.provider, Some("anthropic".into()));
+        assert_eq!(llm.capabilities, vec!["tool_use", "vision", "streaming"]);
+    }
+
+    #[test]
+    fn test_extensions_framework() {
+        let wit = Extensions {
+            framework: Some(FrameworkExtension {
+                framework: Some("langchain".into()),
+                framework_version: Some("0.2.1".into()),
+                node_id: Some("node-transform-42".into()),
+                graph_id: Some("pipeline-main".into()),
+                metadata: Some(r#"{"retry_count":3}"#.into()),
+            }),
+            request: None,
+            security: None,
+            http: None,
+            meta: None,
+            agent: None,
+            mcp: None,
+            completion: None,
+            provenance: None,
+            llm: None,
+            delegation: None,
+            custom: None,
+        };
+
+        let native = wit_extensions_to_native(wit);
+        let fw = native.framework.unwrap();
+        assert_eq!(fw.framework, Some("langchain".into()));
+        assert_eq!(fw.framework_version, Some("0.2.1".into()));
+        assert_eq!(fw.node_id, Some("node-transform-42".into()));
+        assert_eq!(fw.graph_id, Some("pipeline-main".into()));
+        assert_eq!(fw.metadata.get("retry_count").unwrap(), &serde_json::json!(3));
+    }
+
+    // ── OwnedExtensions Writeback: Delegation, Custom, Security ─────────────
+
+    #[test]
+    fn test_owned_extensions_delegation_writeback() {
+        use cpex_core::extensions::container::OwnedExtensions;
+
+        let delegation = NativeDelegationExtension {
+            chain: vec![NativeDelegationHop {
+                subject_id: "user-alice".into(),
+                subject_type: Some(NativeSubjectType::User),
+                audience: Some("https://backend.internal".into()),
+                scopes_granted: vec!["read:data".into()],
+                authorization_details: vec![],
+                timestamp: chrono::Utc::now(),
+                ttl_seconds: Some(600),
+                strategy: Some(NativeDelegationStrategy::TokenExchange),
+                from_cache: false,
+            }],
+            depth: 1,
+            origin_subject_id: Some("user-alice".into()),
+            actor_subject_id: Some("user-alice".into()),
+            delegated: true,
+            age_seconds: 5.0,
+        };
+
+        let owned = OwnedExtensions {
+            delegation: Some(delegation),
+            security: None,
+            request: None,
+            agent: None,
+            mcp: None,
+            completion: None,
+            provenance: None,
+            llm: None,
+            framework: None,
+            meta: None,
+            raw_credentials: None,
+            http: None,
+            custom: None,
+            http_write_token: None,
+            labels_write_token: None,
+            delegation_write_token: None,
+        };
+
+        let wit = native_owned_extensions_to_wit(&owned);
+        let wit_del = wit.delegation.unwrap();
+
+        assert_eq!(wit_del.chain.len(), 1);
+        assert_eq!(wit_del.chain[0].subject_id, "user-alice");
+        assert_eq!(wit_del.chain[0].subject_type, Some(SubjectType::User));
+        assert_eq!(wit_del.chain[0].audience, Some("https://backend.internal".into()));
+        assert_eq!(wit_del.chain[0].scopes_granted, vec!["read:data"]);
+        assert_eq!(wit_del.chain[0].ttl_seconds, Some(600));
+        assert_eq!(wit_del.chain[0].strategy, Some(DelegationStrategy::TokenExchange));
+        assert!(!wit_del.chain[0].from_cache);
+        assert_eq!(wit_del.depth, 1);
+        assert!(wit_del.delegated);
+        assert_eq!(wit_del.origin_subject_id, Some("user-alice".into()));
+        assert_eq!(wit_del.actor_subject_id, Some("user-alice".into()));
+    }
+
+    #[test]
+    fn test_owned_extensions_custom_writeback() {
+        use cpex_core::extensions::container::OwnedExtensions;
+
+        let mut custom_map = HashMap::new();
+        custom_map.insert("feature_flag".to_string(), serde_json::json!(true));
+        custom_map.insert("max_retries".to_string(), serde_json::json!(3));
+
+        let owned = OwnedExtensions {
+            custom: Some(custom_map),
+            security: None,
+            request: None,
+            agent: None,
+            mcp: None,
+            completion: None,
+            provenance: None,
+            llm: None,
+            framework: None,
+            meta: None,
+            raw_credentials: None,
+            http: None,
+            delegation: None,
+            http_write_token: None,
+            labels_write_token: None,
+            delegation_write_token: None,
+        };
+
+        let wit = native_owned_extensions_to_wit(&owned);
+        let wit_custom_str = wit.custom.unwrap();
+        let parsed: HashMap<String, serde_json::Value> =
+            serde_json::from_str(&wit_custom_str).unwrap();
+
+        assert_eq!(parsed.get("feature_flag").unwrap(), &serde_json::json!(true));
+        assert_eq!(parsed.get("max_retries").unwrap(), &serde_json::json!(3));
+        assert_eq!(parsed.len(), 2);
+    }
+
+    #[test]
+    fn test_owned_extensions_security_client_and_workload_writeback() {
+        use cpex_core::extensions::container::OwnedExtensions;
+
+        let sec = NativeSecurityExtension {
+            labels: cpex_core::extensions::monotonic::MonotonicSet::default(),
+            classification: None,
+            subject: None,
+            client: Some(NativeClientExtension {
+                client_id: "client-web-app".into(),
+                client_name: Some("Web App".into()),
+                trust_level: NativeClientTrustLevel::FirstParty,
+                authorized_scopes: vec!["openid".into(), "profile".into()],
+                authorized_audiences: vec!["https://api.example.com".into()],
+                roles: vec!["service-role".into()],
+                permissions: vec!["invoke:tools".into()],
+                teams: vec!["platform".into()],
+                claims: [("iss".into(), serde_json::json!("https://idp.example.com"))].into_iter().collect(),
+            }),
+            caller_workload: Some(NativeWorkloadIdentity {
+                spiffe_id: Some("spiffe://corp.internal/ns/prod/sa/web-app".into()),
+                trust_domain: Some("corp.internal".into()),
+                attested_at: None,
+                attestor: Some("spire-agent".into()),
+                selectors: vec!["k8s:ns:prod".into(), "k8s:sa:web-app".into()],
+                client_id: Some("client-web-app".into()),
+            }),
+            this_workload: None,
+            auth_method: Some("mtls".into()),
+            objects: HashMap::new(),
+            data: HashMap::new(),
+        };
+
+        let owned = OwnedExtensions {
+            security: Some(sec),
+            request: None,
+            agent: None,
+            mcp: None,
+            completion: None,
+            provenance: None,
+            llm: None,
+            framework: None,
+            meta: None,
+            raw_credentials: None,
+            http: None,
+            delegation: None,
+            custom: None,
+            http_write_token: None,
+            labels_write_token: None,
+            delegation_write_token: None,
+        };
+
+        let wit = native_owned_extensions_to_wit(&owned);
+        let wit_sec = wit.security.unwrap();
+
+        // Client assertions
+        let wit_client = wit_sec.client.unwrap();
+        assert_eq!(wit_client.client_id, "client-web-app");
+        assert_eq!(wit_client.client_name, Some("Web App".into()));
+        assert_eq!(wit_client.trust_level, ClientTrustLevel::FirstParty);
+        assert!(wit_client.authorized_scopes.contains(&"openid".to_string()));
+        assert!(wit_client.authorized_scopes.contains(&"profile".to_string()));
+        assert!(wit_client.authorized_audiences.contains(&"https://api.example.com".to_string()));
+        assert!(wit_client.roles.contains(&"service-role".to_string()));
+        assert!(wit_client.permissions.contains(&"invoke:tools".to_string()));
+        assert!(wit_client.teams.contains(&"platform".to_string()));
+
+        // Caller workload assertions
+        let wit_workload = wit_sec.caller_workload.unwrap();
+        assert_eq!(
+            wit_workload.spiffe_id,
+            Some("spiffe://corp.internal/ns/prod/sa/web-app".into())
+        );
+        assert_eq!(wit_workload.trust_domain, Some("corp.internal".into()));
+        assert_eq!(wit_workload.attestor, Some("spire-agent".into()));
+        assert!(wit_workload.selectors.contains(&"k8s:ns:prod".to_string()));
+        assert!(wit_workload.selectors.contains(&"k8s:sa:web-app".to_string()));
+        assert_eq!(wit_workload.client_id, Some("client-web-app".into()));
+
+        assert_eq!(wit_sec.auth_method, Some("mtls".into()));
     }
 }

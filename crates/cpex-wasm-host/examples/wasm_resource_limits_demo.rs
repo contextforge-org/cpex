@@ -6,8 +6,9 @@
 // Resource Limits Sandbox Demo
 //
 // Demonstrates how fuel, epoch timeout, and memory limits protect the host
-// from runaway WASM plugins. Each scenario loads resource-test.wasm with a
-// deliberately tiny limit and invokes it in a mode that triggers that limit.
+// from runaway WASM plugins using the PluginManager layer. The same
+// resource-sandbox-demo.wasm binary is registered 3 times with deliberately tiny
+// limits. Each scenario routes to the appropriate plugin by tool name.
 //
 // Scenarios:
 //   1. Fuel exhaustion   — tight loop burns through a 10,000 fuel budget
@@ -22,17 +23,18 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use cpex_core::cmf::constants::SCHEMA_VERSION;
-use cpex_core::cmf::{ContentPart, Message, MessagePayload, Role, ToolCall};
-use cpex_core::context::PluginContext;
+use cpex_core::cmf::{CmfHook, ContentPart, Message, MessagePayload, Role, ToolCall};
+use cpex_core::config::parse_config;
+use cpex_core::executor::PipelineResult;
 use cpex_core::extensions::container::Extensions;
+use cpex_core::extensions::meta::MetaExtension;
+use cpex_core::manager::PluginManager;
 
-use cpex_wasm_host::conversions::{
-    native_context_to_wit, native_extensions_to_wit, native_payload_to_wit,
-};
-use cpex_wasm_host::policy_loader::{ResourceLimits, SandboxPolicy};
-use cpex_wasm_host::sandbox_manager::{SandboxManager, SharedEngine};
+use cpex_wasm_host::factory::WasmPluginFactory;
+use cpex_wasm_host::payload_registry::PayloadSerializerRegistry;
 
 // ---------------------------------------------------------------------------
 // Terminal colours
@@ -40,7 +42,6 @@ use cpex_wasm_host::sandbox_manager::{SandboxManager, SharedEngine};
 
 const BOLD: &str = "\x1b[1m";
 const CYAN: &str = "\x1b[1;36m";
-const GREEN: &str = "\x1b[32m";
 const RED: &str = "\x1b[31m";
 const DIM: &str = "\x1b[2m";
 const RESET: &str = "\x1b[0m";
@@ -49,11 +50,7 @@ const RESET: &str = "\x1b[0m";
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn wasm_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("wasm/resource-test.wasm")
-}
-
-fn make_payload(mode: &str) -> MessagePayload {
+fn make_payload(tool_name: &str, mode: &str) -> MessagePayload {
     let mut arguments = HashMap::new();
     arguments.insert("mode".to_string(), serde_json::json!(mode));
     MessagePayload {
@@ -63,7 +60,7 @@ fn make_payload(mode: &str) -> MessagePayload {
             content: vec![ContentPart::ToolCall {
                 content: ToolCall {
                     tool_call_id: format!("tc_resource_{}", mode),
-                    name: "resource_test".into(),
+                    name: tool_name.into(),
                     arguments,
                     namespace: None,
                 },
@@ -73,55 +70,44 @@ fn make_payload(mode: &str) -> MessagePayload {
     }
 }
 
-async fn invoke(mgr: &mut SandboxManager, mode: &str) -> Result<(), String> {
-    let payload = make_payload(mode);
-    let wit_payload = cpex_wasm_host::sandbox_manager::types::HookPayload::Cmf(
-        native_payload_to_wit(&payload),
-    );
-    let wit_ext = native_extensions_to_wit(&Extensions::default());
-    let wit_ctx = native_context_to_wit(&PluginContext::default());
-
-    mgr.invoke("cmf.tool_pre_invoke", wit_payload, wit_ext, wit_ctx)
-        .await
-        .map(|_| ())
-        .map_err(|e| {
-            let mut messages = vec![format!("{}", e)];
-            let mut source: Option<&dyn std::error::Error> = e.source();
-            while let Some(s) = source {
-                messages.push(format!("{}", s));
-                source = s.source();
-            }
-            messages.join(" → ")
-        })
-}
-
-async fn load_plugin(shared: &SharedEngine, resources: ResourceLimits, name: &str) -> SandboxManager {
-    let path = wasm_path();
-    let policy = SandboxPolicy {
-        resources,
+fn make_extensions(tool_name: &str) -> Extensions {
+    Extensions {
+        meta: Some(Arc::new(MetaExtension {
+            entity_type: Some("tool".into()),
+            entity_name: Some(tool_name.into()),
+            ..Default::default()
+        })),
         ..Default::default()
-    };
-    let mut mgr = SandboxManager::with_shared_engine(shared);
-    mgr.load_wasmplugin(&path, Some(&policy), name)
-        .await
-        .unwrap_or_else(|e| panic!("failed to load plugin '{}': {}", name, e));
-    mgr
+    }
 }
 
-fn print_result(mode: &str, limit_desc: &str, result: &Result<(), String>, elapsed: std::time::Duration) {
-    match result {
-        Ok(()) => {
-            println!(
-                "  {}[UNEXPECTED]{} mode={:14} limit={}\n  {}→ Plugin completed (limit did NOT fire){}\n",
-                GREEN, RESET, mode, limit_desc, GREEN, RESET,
-            );
-        }
-        Err(err) => {
-            println!(
-                "  {}[TRAPPED]{} mode={:14} limit={}\n  {}→ Plugin trapped in {:?}{}\n  {}Error: {}{}",
-                RED, RESET, mode, limit_desc, RED, elapsed, RESET, DIM, err, RESET,
-            );
-        }
+async fn invoke(mgr: &PluginManager, tool_name: &str, mode: &str) -> PipelineResult {
+    let (result, bg) = mgr
+        .invoke_named::<CmfHook>(
+            "cmf.tool_pre_invoke",
+            make_payload(tool_name, mode),
+            make_extensions(tool_name),
+            None,
+        )
+        .await;
+    bg.wait_for_background_tasks().await;
+    result
+}
+
+fn print_result(mode: &str, limit_desc: &str, result: &PipelineResult, elapsed: std::time::Duration) {
+    if result.continue_processing {
+        println!(
+            "  {}[UNEXPECTED]{} mode={:14} limit={}\n  → Plugin completed (limit did NOT fire)\n",
+            CYAN, RESET, mode, limit_desc,
+        );
+    } else {
+        let violation = result.violation.as_ref();
+        let code = violation.map(|v| v.code.as_str()).unwrap_or("unknown");
+        let reason = violation.map(|v| v.reason.as_str()).unwrap_or("no reason");
+        println!(
+            "  {}[TRAPPED]{} mode={:14} limit={}\n  {}→ Plugin trapped in {:?}{}\n  {}Code: {}  Reason: {}{}",
+            RED, RESET, mode, limit_desc, RED, elapsed, RESET, DIM, code, reason, RESET,
+        );
     }
 }
 
@@ -138,19 +124,20 @@ async fn main() {
         )
         .init();
 
-    let path = wasm_path();
-    if !path.exists() {
+    let crate_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let wasm_path = crate_dir.join("wasm/resource-sandbox-demo.wasm");
+    if !wasm_path.exists() {
         eprintln!(
-            "{}ERROR:{} resource-test.wasm not found at {}\n\
+            "{}ERROR:{} resource-sandbox-demo.wasm not found at {}\n\
              Run: cd crates/cpex-wasm-host && make build-test-plugins",
             RED, RESET,
-            path.display()
+            wasm_path.display()
         );
         std::process::exit(1);
     }
 
     println!("{}=== Resource Limits Sandbox Demo ==={}\n", BOLD, RESET);
-    println!("{}Plugin:{}  resource-test.wasm", DIM, RESET);
+    println!("{}Plugin:{}  resource-sandbox-demo.wasm (registered 3 times with different limits)", DIM, RESET);
     println!("{}Payload:{} mode passed as ToolCall argument", DIM, RESET);
     println!(
         "{}Goal:{}    each scenario triggers a resource limit trap, proving the host\n\
@@ -158,22 +145,29 @@ async fn main() {
         DIM, RESET, DIM, RESET
     );
 
-    let shared = SharedEngine::new().unwrap();
+    let yaml = std::fs::read_to_string(crate_dir.join("config/config_resource_limits_demo.yaml"))
+        .expect("config not found");
+    let cpex_config = parse_config(&yaml).unwrap();
+
+    let mut registry = PayloadSerializerRegistry::new();
+    registry.register::<MessagePayload>();
+    let registry = Arc::new(registry);
+
+    let mgr = PluginManager::default();
+    mgr.register_factory(
+        "wasm://resource-sandbox-demo.wasm",
+        Box::new(WasmPluginFactory::new(crate_dir.join("wasm"), registry).expect("engine")),
+    );
+    mgr.load_config(cpex_config).unwrap();
+    mgr.initialize().await.unwrap();
 
     // =========================================================================
     // Scenario 1: Fuel exhaustion
-    // 10,000 fuel units — enough to instantiate but the tight loop exhausts
-    // it almost immediately.
+    // 10,000 fuel units — enough to instantiate but the tight loop exhausts it.
     // =========================================================================
     println!("{}Scenario 1: fuel exhaustion  (max_fuel=10,000){}", CYAN, RESET);
-    let mut mgr = load_plugin(&shared, ResourceLimits {
-        max_fuel: Some(10_000),
-        max_execution_time_ms: Some(10_000),
-        ..Default::default()
-    }, "resource-fuel").await;
-
     let start = std::time::Instant::now();
-    let r = invoke(&mut mgr, "burn_fuel").await;
+    let r = invoke(&mgr, "resource_fuel", "burn_fuel").await;
     let elapsed = start.elapsed();
     print_result("burn_fuel", "max_fuel=10,000", &r, elapsed);
     println!();
@@ -183,16 +177,9 @@ async fn main() {
     // 200ms deadline — the infinite loop is interrupted by the epoch ticker.
     // =========================================================================
     println!("{}Scenario 2: epoch timeout  (max_execution_time_ms=200){}", CYAN, RESET);
-    let mut mgr = load_plugin(&shared, ResourceLimits {
-        max_execution_time_ms: Some(200),
-        max_fuel: Some(500_000_000),
-        ..Default::default()
-    }, "resource-timeout").await;
-
     tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-
     let start = std::time::Instant::now();
-    let r = invoke(&mut mgr, "burn_fuel").await;
+    let r = invoke(&mgr, "resource_timeout", "burn_fuel").await;
     let elapsed = start.elapsed();
     print_result("burn_fuel", "max_execution_time_ms=200", &r, elapsed);
     println!();
@@ -202,15 +189,8 @@ async fn main() {
     // 5 MB cap — the plugin allocates 1 MB chunks until memory.grow is denied.
     // =========================================================================
     println!("{}Scenario 3: memory limit  (max_memory_bytes=5MB){}", CYAN, RESET);
-    let mut mgr = load_plugin(&shared, ResourceLimits {
-        max_memory_bytes: Some(5 * 1024 * 1024),
-        max_fuel: Some(u64::MAX),
-        max_execution_time_ms: Some(10_000),
-        ..Default::default()
-    }, "resource-memory").await;
-
     let start = std::time::Instant::now();
-    let r = invoke(&mut mgr, "alloc_memory").await;
+    let r = invoke(&mgr, "resource_memory", "alloc_memory").await;
     let elapsed = start.elapsed();
     print_result("alloc_memory", "max_memory_bytes=5MB", &r, elapsed);
 
@@ -220,4 +200,5 @@ async fn main() {
          terminated cleanly without host degradation.{}\n",
         DIM, RESET
     );
+    mgr.shutdown().await;
 }

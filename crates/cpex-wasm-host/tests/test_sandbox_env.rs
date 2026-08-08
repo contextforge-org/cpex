@@ -5,12 +5,13 @@
 //
 //! Integration test: verifies WASM sandbox environment variable isolation.
 //!
-//! Loads a real `.wasm` plugin that reads env vars (HOME, PATH, SECRET_API_KEY).
-//! With no env policy, all must be empty. With a selective policy, only the
-//! explicitly allowed variable should be visible.
+//! Uses the env-sandbox-demo.wasm plugin (same binary as the env demo).
+//! The plugin reads an env var name from ToolCall arguments and returns
+//! ALLOW if visible or DENY (violation) if hidden.
 //!
-//! Requires: `wasm/env-test.wasm` built from cpex-wasm-plugin with `--features env-test`
+//! Requires: `wasm/env-sandbox-demo.wasm` built from cpex-wasm-plugin with `--features env-sandbox-demo`
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Once;
 
@@ -36,19 +37,21 @@ fn init_tracing() {
 }
 
 fn wasm_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("wasm/env-test.wasm")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("wasm/env-sandbox-demo.wasm")
 }
 
-fn make_payload() -> MessagePayload {
+fn make_payload(env_var: &str) -> MessagePayload {
+    let mut arguments = HashMap::new();
+    arguments.insert("env_var".to_string(), serde_json::json!(env_var));
     MessagePayload {
         message: Message {
             schema_version: SCHEMA_VERSION.into(),
             role: Role::Assistant,
             content: vec![ContentPart::ToolCall {
                 content: ToolCall {
-                    tool_call_id: "tc_001".into(),
+                    tool_call_id: format!("tc_env_{}", env_var),
                     name: "env_check".into(),
-                    arguments: Default::default(),
+                    arguments,
                     namespace: None,
                 },
             }],
@@ -57,17 +60,22 @@ fn make_payload() -> MessagePayload {
     }
 }
 
-fn extract_context(
-    result: &cpex_wasm_host::sandbox_manager::types::HookResult,
-) -> std::collections::HashMap<String, String> {
-    result
-        .modified_context
-        .as_ref()
-        .expect("plugin should write context")
-        .local_state
-        .iter()
-        .map(|e| (e.key.clone(), e.value.clone()))
-        .collect()
+async fn invoke_env_check(mgr: &mut SandboxManager, env_var: &str) -> bool {
+    let payload = make_payload(env_var);
+    let wit_payload =
+        cpex_wasm_host::sandbox_manager::types::HookPayload::Cmf(native_payload_to_wit(&payload));
+    let wit_ext = native_extensions_to_wit(&Extensions::default());
+    let wit_ctx = native_context_to_wit(&PluginContext::default());
+
+    let result = mgr
+        .invoke("cmf.tool_pre_invoke", wit_payload, wit_ext, wit_ctx)
+        .await
+        .unwrap();
+
+    // The env-sandbox-demo plugin returns DENY (continue_processing=false)
+    // with violation code "env_access_denied" when the var is hidden.
+    // Returns ALLOW (continue_processing=true) when the var is visible.
+    result.continue_processing
 }
 
 #[tokio::test]
@@ -79,57 +87,25 @@ async fn test_plugin_cannot_see_env_vars_without_policy() {
         "WASM binary not found: {}. Run `make build-test-plugins` from crates/cpex-wasm-host first.",
         path.display());
 
-    // Set a host env var that the plugin will try to read
     std::env::set_var("SECRET_API_KEY", "super-secret-value");
 
-    // Load with NO env policy (deny-all)
     let shared = SharedEngine::new().unwrap();
     let mut mgr = SandboxManager::with_shared_engine(&shared);
-    mgr.load_wasmplugin(&path, None, "env-test").await.unwrap();
+    mgr.load_wasmplugin(&path, None, "env-sandbox-test").await.unwrap();
 
-    let payload = make_payload();
-    let wit_payload =
-        cpex_wasm_host::sandbox_manager::types::HookPayload::Cmf(native_payload_to_wit(&payload));
-    let wit_ext = native_extensions_to_wit(&Extensions::default());
-    let wit_ctx = native_context_to_wit(&PluginContext::default());
-
-    let result = mgr
-        .invoke("cmf.tool_pre_invoke", wit_payload, wit_ext, wit_ctx)
-        .await
-        .unwrap();
-
-    assert!(result.continue_processing);
-
-    let entries = extract_context(&result);
-
-    // HOME must be empty (not exposed)
-    let home = entries.get("env_HOME").unwrap_or(&String::new()).clone();
-    assert_eq!(
-        home, "\"\"",
-        "SANDBOX ESCAPE: plugin can see HOME='{}'",
-        home
+    assert!(
+        !invoke_env_check(&mut mgr, "HOME").await,
+        "SANDBOX ESCAPE: plugin can see HOME without policy"
+    );
+    assert!(
+        !invoke_env_check(&mut mgr, "PATH").await,
+        "SANDBOX ESCAPE: plugin can see PATH without policy"
+    );
+    assert!(
+        !invoke_env_check(&mut mgr, "SECRET_API_KEY").await,
+        "SANDBOX ESCAPE: plugin can see SECRET_API_KEY without policy"
     );
 
-    // PATH must be empty
-    let path_val = entries.get("env_PATH").unwrap_or(&String::new()).clone();
-    assert_eq!(
-        path_val, "\"\"",
-        "SANDBOX ESCAPE: plugin can see PATH='{}'",
-        path_val
-    );
-
-    // SECRET_API_KEY must be empty
-    let secret = entries
-        .get("env_SECRET_API_KEY")
-        .unwrap_or(&String::new())
-        .clone();
-    assert_eq!(
-        secret, "\"\"",
-        "SANDBOX ESCAPE: plugin can see SECRET_API_KEY='{}'",
-        secret
-    );
-
-    // Clean up
     std::env::remove_var("SECRET_API_KEY");
 }
 
@@ -142,11 +118,9 @@ async fn test_plugin_sees_only_allowed_env_var() {
         "WASM binary not found: {}. Run `make build-test-plugins` from crates/cpex-wasm-host first.",
         path.display());
 
-    // Set the allowed var and a secret var on the host
     std::env::set_var("CPEX_TEST_ALLOWED", "hello-from-host");
     std::env::set_var("SECRET_API_KEY", "super-secret-value");
 
-    // Policy allows ONLY CPEX_TEST_ALLOWED
     let policy = SandboxPolicy {
         allowed_env: vec!["CPEX_TEST_ALLOWED".to_string()],
         ..Default::default()
@@ -154,51 +128,23 @@ async fn test_plugin_sees_only_allowed_env_var() {
 
     let shared = SharedEngine::new().unwrap();
     let mut mgr = SandboxManager::with_shared_engine(&shared);
-    mgr.load_wasmplugin(&path, Some(&policy), "env-test-selective")
+    mgr.load_wasmplugin(&path, Some(&policy), "env-sandbox-test-selective")
         .await
         .unwrap();
 
-    let payload = make_payload();
-    let wit_payload =
-        cpex_wasm_host::sandbox_manager::types::HookPayload::Cmf(native_payload_to_wit(&payload));
-    let wit_ext = native_extensions_to_wit(&Extensions::default());
-    let wit_ctx = native_context_to_wit(&PluginContext::default());
-
-    let result = mgr
-        .invoke("cmf.tool_pre_invoke", wit_payload, wit_ext, wit_ctx)
-        .await
-        .unwrap();
-
-    assert!(result.continue_processing);
-
-    let entries = extract_context(&result);
-
-    // CPEX_TEST_ALLOWED should be visible
-    let allowed = entries
-        .get("env_CPEX_TEST_ALLOWED")
-        .unwrap_or(&String::new())
-        .clone();
-    assert_eq!(
-        allowed, "\"hello-from-host\"",
-        "allowed env var should be visible, got: {}",
-        allowed
+    assert!(
+        invoke_env_check(&mut mgr, "CPEX_TEST_ALLOWED").await,
+        "allowed env var should be visible inside sandbox"
     );
-
-    // HOME must still be empty (not in allowed list)
-    let home = entries.get("env_HOME").unwrap_or(&String::new()).clone();
-    assert_eq!(home, "\"\"", "HOME should be hidden, got: {}", home);
-
-    // SECRET_API_KEY must still be empty
-    let secret = entries
-        .get("env_SECRET_API_KEY")
-        .unwrap_or(&String::new())
-        .clone();
-    assert_eq!(
-        secret, "\"\"",
+    assert!(
+        !invoke_env_check(&mut mgr, "HOME").await,
+        "HOME should be hidden (not in allowed_env)"
+    );
+    assert!(
+        !invoke_env_check(&mut mgr, "SECRET_API_KEY").await,
         "SANDBOX ESCAPE: plugin sees SECRET_API_KEY despite not being in allowed_env"
     );
 
-    // Clean up
     std::env::remove_var("CPEX_TEST_ALLOWED");
     std::env::remove_var("SECRET_API_KEY");
 }

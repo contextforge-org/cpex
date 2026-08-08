@@ -508,4 +508,44 @@ schemes: [http, https]
         };
         assert!(build_wasi_context(Some(&policy)).is_ok());
     }
+
+    #[test]
+    fn test_config_fixture_plugin_has_correct_kind() {
+        let config_path =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("config/config_policy_test_fixture.yaml");
+        let raw = fs::read_to_string(&config_path).expect("failed to read config file");
+        let config: serde_yaml::Value = serde_yaml::from_str(&raw).unwrap();
+
+        let plugin = config["plugins"]
+            .as_sequence()
+            .unwrap()
+            .iter()
+            .find(|p| p["name"].as_str() == Some("identity-checker"))
+            .expect("identity-checker plugin not found");
+
+        assert_eq!(plugin["kind"].as_str(), Some("wasm://plugin.wasm"));
+    }
+
+    #[test]
+    fn test_sandbox_policy_json_roundtrip() {
+        let config_path =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("config/config_policy_test_fixture.yaml");
+        let raw = fs::read_to_string(&config_path).expect("failed to read config file");
+        let config: serde_yaml::Value = serde_yaml::from_str(&raw).unwrap();
+
+        let sandbox_value = config["plugins"][0]["config"]["sandbox_policy"].clone();
+        let policy: SandboxPolicy =
+            serde_yaml::from_value(sandbox_value).expect("failed to deserialize");
+
+        let json = serde_json::to_value(&policy).expect("SandboxPolicy should serialize to JSON");
+        let roundtripped: SandboxPolicy =
+            serde_json::from_value(json).expect("SandboxPolicy should roundtrip through JSON");
+
+        assert_eq!(roundtripped.allowed_network, policy.allowed_network);
+        assert_eq!(roundtripped.allowed_env, policy.allowed_env);
+        assert_eq!(
+            roundtripped.resources.max_memory_bytes,
+            policy.resources.max_memory_bytes
+        );
+    }
 }
