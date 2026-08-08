@@ -89,9 +89,9 @@ async fn load_with_limits(resources: ResourceLimits) -> SandboxManager {
 async fn test_fuel_limit_traps_plugin() {
     init_tracing();
 
-    // 10 000 fuel units — enough to instantiate but far too little for the loop.
+    // 100 000 fuel units — enough to instantiate but far too little for the loop.
     let mut mgr = load_with_limits(ResourceLimits {
-        max_fuel: Some(10_000),
+        max_fuel: Some(100_000),
         max_execution_time_ms: Some(10_000),
         ..Default::default()
     })

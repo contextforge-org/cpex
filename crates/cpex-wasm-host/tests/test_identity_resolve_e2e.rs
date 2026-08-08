@@ -128,12 +128,11 @@ async fn test_identity_resolve_passes_through_when_no_header() {
     );
 
     // No subject resolved — either no modified payload or subject is None
-    match IdentityPayload::from_pipeline_result(&result) {
-        Some(p) => assert!(
+    if let Some(p) = IdentityPayload::from_pipeline_result(&result) {
+        assert!(
             p.subject.is_none(),
             "no x-user-id header means no subject should be resolved"
-        ),
-        None => {}, // no modified payload means pass-through — valid
+        );
     }
 }
 
@@ -166,12 +165,9 @@ async fn test_identity_resolve_skips_when_subject_already_set() {
     );
 
     // Subject already present — plugin should pass through without overwriting
-    match IdentityPayload::from_pipeline_result(&result) {
-        Some(p) => {
-            let subject = p.subject.as_ref().expect("subject should still be present");
-            assert_eq!(subject.id.as_deref(), Some("pre-existing-user"));
-            assert_eq!(subject.subject_type, Some(SubjectType::Service));
-        },
-        None => {}, // no modification means original subject preserved — valid
+    if let Some(p) = IdentityPayload::from_pipeline_result(&result) {
+        let subject = p.subject.as_ref().expect("subject should still be present");
+        assert_eq!(subject.id.as_deref(), Some("pre-existing-user"));
+        assert_eq!(subject.subject_type, Some(SubjectType::Service));
     }
 }

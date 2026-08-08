@@ -11,7 +11,7 @@
 // limits. Each scenario routes to the appropriate plugin by tool name.
 //
 // Scenarios:
-//   1. Fuel exhaustion   — tight loop burns through a 10,000 fuel budget
+//   1. Fuel exhaustion   — tight loop burns through a 100,000 fuel budget
 //   2. Epoch timeout     — infinite loop interrupted by 200ms deadline
 //   3. Memory limit      — 1 MB chunks allocated until 5 MB cap traps
 //
@@ -172,16 +172,16 @@ async fn main() {
 
     // =========================================================================
     // Scenario 1: Fuel exhaustion
-    // 10,000 fuel units — enough to instantiate but the tight loop exhausts it.
+    // 100,000 fuel units — enough to instantiate but the tight loop exhausts it.
     // =========================================================================
     println!(
-        "{}Scenario 1: fuel exhaustion  (max_fuel=10,000){}",
+        "{}Scenario 1: fuel exhaustion  (max_fuel=100,000){}",
         CYAN, RESET
     );
     let start = std::time::Instant::now();
     let r = invoke(&mgr, "resource_fuel", "burn_fuel").await;
     let elapsed = start.elapsed();
-    print_result("burn_fuel", "max_fuel=10,000", &r, elapsed);
+    print_result("burn_fuel", "max_fuel=100,000", &r, elapsed);
     println!();
 
     // =========================================================================

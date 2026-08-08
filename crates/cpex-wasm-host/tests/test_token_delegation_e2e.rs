@@ -143,13 +143,11 @@ async fn test_token_delegation_passes_through_agent_target() {
         "agent targets should be allowed through"
     );
     // Agent targets should not produce a minted token
-    let resolved = DelegationPayload::from_pipeline_result(&result);
-    match resolved {
-        Some(p) => assert!(
+    if let Some(p) = DelegationPayload::from_pipeline_result(&result) {
+        assert!(
             p.delegated_token.is_none(),
             "agent target should not mint a token"
-        ),
-        None => {}, // no modified payload means pass-through — also valid
+        );
     }
 }
 

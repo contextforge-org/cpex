@@ -25,7 +25,7 @@ plugins:
         allowed_network: []
         allowed_env: []
         resources:
-          max_fuel: 10000
+          max_fuel: 100000
           max_execution_time_ms: 10000
           max_instances: 10
           max_tables: 10
