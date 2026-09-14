@@ -448,6 +448,34 @@ func TestPipelineResultIsDenied(t *testing.T) {
 	}
 }
 
+func TestPipelineResultDenialOutcomeRoundTrip(t *testing.T) {
+	original := PipelineResult{
+		ContinueProcessing: false,
+		DenialOutcome: &DenialOutcome{
+			PluginID:   "plugin-123",
+			PluginName: "rate-limiter",
+			HookName:   "cmf.tool_pre_invoke",
+			Mode:       "sequential",
+			Metadata:   map[string]any{"rate_limiter.throttled": true},
+		},
+	}
+
+	wire, err := msgpack.Marshal(original)
+	if err != nil {
+		t.Fatalf("marshal denial outcome: %v", err)
+	}
+	var decoded PipelineResult
+	if err := msgpack.Unmarshal(wire, &decoded); err != nil {
+		t.Fatalf("unmarshal denial outcome: %v", err)
+	}
+	if decoded.DenialOutcome == nil {
+		t.Fatal("denial outcome dropped on wire")
+	}
+	if got := decoded.DenialOutcome.Metadata["rate_limiter.throttled"]; got != true {
+		t.Fatalf("denial metadata lost: %#v", got)
+	}
+}
+
 func TestExtensionsSerialization(t *testing.T) {
 	ext := Extensions{
 		Meta: &MetaExtension{

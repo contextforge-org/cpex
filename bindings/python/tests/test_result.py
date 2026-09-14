@@ -18,7 +18,7 @@ from cpex import PluginManager, PipelineResult
 
 @pytest.mark.asyncio
 async def test_all_fields_accessible(manager: PluginManager):
-    """All seven PipelineResult fields are accessible after a real invoke."""
+    """All PipelineResult fields are accessible after a real invoke."""
     payload = {
         "message": {
             "role": "user",
@@ -36,6 +36,8 @@ async def test_all_fields_accessible(manager: PluginManager):
     assert isinstance(result.errors, list)
     # metadata — may be None
     assert result.metadata is None or isinstance(result.metadata, dict)
+    # denial_outcome — None for an allowed result
+    assert result.denial_outcome is None
     # context_table — always a dict
     assert isinstance(result.context_table, dict)
 
@@ -73,6 +75,12 @@ async def test_deny_result_violation_fields(pii_deny_config_path: str):
     assert isinstance(result.violation, dict)
     # Standard violation keys
     assert "reason" in result.violation
+    assert result.denial_outcome is not None
+    assert result.denial_outcome["hook_name"] == "cmf.tool_pre_invoke"
+    assert isinstance(result.denial_outcome["plugin_name"], str)
+    assert result.denial_outcome["metadata"] is None or isinstance(
+        result.denial_outcome["metadata"], dict
+    )
 
     await mgr.shutdown()
 

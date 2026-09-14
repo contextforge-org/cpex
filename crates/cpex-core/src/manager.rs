@@ -982,7 +982,8 @@ impl PluginManager {
 
         snapshot
             .executor
-            .execute(
+            .execute_for_hook(
+                hook_name,
                 &entries,
                 payload,
                 extensions,
@@ -1053,7 +1054,8 @@ impl PluginManager {
         let boxed: Box<dyn PluginPayload> = Box::new(payload);
         snapshot
             .executor
-            .execute(
+            .execute_for_hook(
+                H::NAME,
                 &entries,
                 boxed,
                 extensions,
@@ -1130,7 +1132,8 @@ impl PluginManager {
         let boxed: Box<dyn PluginPayload> = Box::new(payload);
         snapshot
             .executor
-            .execute(
+            .execute_for_hook(
+                hook_name,
                 &entries,
                 boxed,
                 extensions,
@@ -1196,6 +1199,10 @@ impl PluginManager {
         let boxed: Box<dyn PluginPayload> = Box::new(payload);
         snapshot
             .executor
+            // This advanced path accepts caller-supplied entries but no hook
+            // name. Do not claim `H::NAME` is the concrete hook: one marker
+            // can cover several names (notably CMF). The direct executor API
+            // records the honest `"<unknown>"` sentinel instead.
             .execute(
                 entries,
                 boxed,
@@ -1924,7 +1931,16 @@ mod tests {
             _extensions: &Extensions,
             _ctx: &mut PluginContext,
         ) -> PluginResult<TestPayload> {
-            PluginResult::deny(PluginViolation::new("denied", "test denial"))
+            PluginResult::deny_with_metadata(
+                PluginViolation::new("denied", "test denial"),
+                serde_json::json!({
+                    "rate_limiter.allowed": false,
+                    "rate_limiter.throttled": true,
+                })
+                .as_object()
+                .unwrap()
+                .clone(),
+            )
         }
     }
 
@@ -2068,6 +2084,14 @@ mod tests {
 
         assert!(!result.continue_processing);
         assert_eq!(result.violation.as_ref().unwrap().code, "denied");
+        let outcome = result.denial_outcome.as_ref().unwrap();
+        assert_eq!(outcome.plugin_name, "deny-plugin");
+        assert_eq!(outcome.hook_name, "test_hook");
+        assert_eq!(outcome.mode, PluginMode::Sequential);
+        assert_eq!(
+            outcome.metadata.as_ref().unwrap()["rate_limiter.throttled"],
+            true
+        );
     }
 
     #[tokio::test]
