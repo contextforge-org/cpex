@@ -15,6 +15,15 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Framework-generated `PluginViolationError` exceptions now expose an immutable
+  `denial_outcome` for Gateway telemetry. The snapshot contains trusted denying-control
+  identity and execution state, violation code and protocol/HTTP status, plus only the
+  allowlisted rate-limiter metrics `allowed`, `throttled`, and a known backend name. It
+  excludes payloads, headers, violation details, free-form text, and arbitrary metadata
+  ([#178](https://github.com/contextforge-org/cpex/issues/178)).
+
 ## [0.1.4] - 2026-08-07
 
 ### Added

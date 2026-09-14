@@ -19,7 +19,7 @@ from typing import Optional
 # First-Party
 from cpex.framework.base import Plugin
 from cpex.framework.decorator import hook
-from cpex.framework.errors import PluginError, PluginViolationError
+from cpex.framework.errors import DenialExecutionRecord, DenialOutcome, PluginError, PluginViolationError
 from cpex.framework.external.mcp.server import ExternalPluginServer
 from cpex.framework.hooks.agents import (
     AgentHookType,
@@ -139,6 +139,8 @@ __all__ = [
     "ConfigLoader",
     "ControlExecutionRecord",
     "ControlExecutionStatus",
+    "DenialExecutionRecord",
+    "DenialOutcome",
     "ExternalPluginServer",
     "get_attr",
     "get_hook_registry",

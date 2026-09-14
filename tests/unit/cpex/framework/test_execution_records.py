@@ -19,7 +19,7 @@ These tests verify:
 """
 
 # Standard
-import asyncio
+from dataclasses import FrozenInstanceError
 
 # Third-Party
 import pytest
@@ -42,7 +42,6 @@ from cpex.framework.models import (
     _truncate,
     _truncate_opt,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helper / truncation unit tests
@@ -140,6 +139,29 @@ def test_execution_record_serialises_to_dict():
     assert d["effective_allow"] is False
     assert d["matched"] is True
     assert d["error_code"] == "pii_access_denied"
+
+
+def test_direct_violation_error_has_no_framework_outcome():
+    """Only a denial returned to the executor receives a denial outcome."""
+    from cpex.framework import PluginViolation
+    from cpex.framework.errors import PluginViolationError
+
+    error = PluginViolationError(
+        "plugin-raised",
+        PluginViolation(reason="r", description="d", code="DIRECT"),
+        denial_metadata={"allowed": False},
+    )
+    record = ControlExecutionRecord(
+        plugin_id="abc",
+        plugin_name="test-plugin",
+        plugin_kind="builtin",
+        hook_name="tool_pre_invoke",
+        mode=PluginMode.SEQUENTIAL,
+        status=ControlExecutionStatus.COMPLETED,
+        effective_allow=False,
+    )
+    error.attach_denial_outcome(record)
+    assert error.denial_outcome is None
 
 
 # ---------------------------------------------------------------------------
@@ -514,7 +536,19 @@ async def test_executions_on_violation_exception_single_plugin():
                     reason="Deny reason",
                     description="Deny description",
                     code="DENY_CODE",
+                    details={"user_id": "alice", "token": "secret"},
+                    mcp_error_code=-32029,
+                    http_status_code=429,
+                    http_headers={"Retry-After": "60"},
                 ),
+                metadata={
+                    "allowed": False,
+                    "throttled": True,
+                    "backend": "valkey",
+                    "token": "must-not-leak",
+                    "tenant_id": "alice",
+                    "nested": {"secret": "must-not-leak"},
+                },
             )
 
     manager = PluginManager("./tests/unit/cpex/fixtures/configs/valid_no_plugin.yaml")
@@ -566,6 +600,24 @@ async def test_executions_on_violation_exception_single_plugin():
         assert rec.applied is True
         assert rec.error_code == "DENY_CODE"
         assert rec.duration_ns > 0
+
+        outcome = pve.value.denial_outcome
+        assert outcome is not None
+        assert outcome.execution.plugin_id == rec.plugin_id
+        assert outcome.execution.plugin_name == "DenyPlugin"
+        assert outcome.execution.hook_name == PromptHookType.PROMPT_PRE_FETCH
+        assert outcome.execution.mode == PluginMode.SEQUENTIAL
+        assert outcome.execution.error_code == "DENY_CODE"
+        assert outcome.violation_code == "DENY_CODE"
+        assert outcome.mcp_error_code == -32029
+        assert outcome.http_status_code == 429
+        assert dict(outcome.metadata) == {"allowed": False, "throttled": True, "backend": "valkey"}
+        assert not hasattr(outcome.execution, "reason")
+        assert not hasattr(outcome, "violation")
+        with pytest.raises(FrozenInstanceError):
+            outcome.execution.plugin_name = "forged"  # type: ignore[misc]
+        with pytest.raises(TypeError):
+            outcome.metadata["token"] = "must-not-leak"  # type: ignore[index]
 
     await manager.shutdown()
     PluginManager.reset()
@@ -688,6 +740,7 @@ async def test_executions_on_violation_exception_concurrent_plugin():
                     description="Concurrent deny description",
                     code="CONC_DENY",
                 ),
+                metadata={"allowed": False, "throttled": True, "backend": "memory"},
             )
 
     manager = PluginManager("./tests/unit/cpex/fixtures/configs/valid_no_plugin.yaml")
@@ -738,6 +791,13 @@ async def test_executions_on_violation_exception_concurrent_plugin():
         assert rec.matched is True
         assert rec.applied is True
         assert rec.error_code == "CONC_DENY"
+        assert pve.value.denial_outcome is not None
+        assert pve.value.denial_outcome.execution.plugin_name == "ConcurrentDenyPlugin"
+        assert dict(pve.value.denial_outcome.metadata) == {
+            "allowed": False,
+            "throttled": True,
+            "backend": "memory",
+        }
 
     await manager.shutdown()
     PluginManager.reset()
