@@ -45,7 +45,6 @@ from cpex.framework.errors import (
     PluginError,
     PluginViolationError,
     convert_exception_to_error,
-    sanitize_denial_metadata,
 )
 from cpex.framework.extensions.extensions import Extensions
 from cpex.framework.extensions.tiers import filter_extensions
@@ -1251,18 +1250,19 @@ class PluginExecutor:
                             raise PluginViolationError._from_framework_denial(
                                 f"{hook_ref.name} blocked by plugin {plugin_name}: {violation_code} - {violation_reason} ({violation_desc})",
                                 result.violation,
-                                sanitize_denial_metadata(result.metadata),
+                                result.denial_metadata,
                             )
                         raise PluginViolationError._from_framework_denial(
                             f"{hook_ref.name} blocked by plugin",
                             None,
-                            sanitize_denial_metadata(result.metadata),
+                            result.denial_metadata,
                         )
                     return PluginResult(
                         continue_processing=False,
                         modified_payload=None,
                         violation=result.violation,
                         metadata=combined_metadata,
+                        denial_metadata=result.denial_metadata,
                     )
                 if hook_ref.plugin_ref.mode in (PluginMode.AUDIT, PluginMode.TRANSFORM):
                     mode_label = hook_ref.plugin_ref.mode.value

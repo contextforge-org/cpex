@@ -24,8 +24,9 @@ _sym_db = _symbol_database.Default()
 
 from google.protobuf import struct_pb2 as google_dot_protobuf_dot_struct__pb2
 
+
 DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(
-    b'\n\x14plugin_service.proto\x12\x04\x63pex\x1a\x1cgoogle/protobuf/struct.proto"&\n\x16GetPluginConfigRequest\x12\x0c\n\x04name\x18\x01 \x01(\t"Q\n\x17GetPluginConfigResponse\x12\r\n\x05\x66ound\x18\x01 \x01(\x08\x12\'\n\x06\x63onfig\x18\x02 \x01(\x0b\x32\x17.google.protobuf.Struct"\x19\n\x17GetPluginConfigsRequest"D\n\x18GetPluginConfigsResponse\x12(\n\x07\x63onfigs\x18\x01 \x03(\x0b\x32\x17.google.protobuf.Struct"\x8b\x01\n\x11InvokeHookRequest\x12\x11\n\thook_type\x18\x01 \x01(\t\x12\x13\n\x0bplugin_name\x18\x02 \x01(\t\x12(\n\x07payload\x18\x03 \x01(\x0b\x32\x17.google.protobuf.Struct\x12$\n\x07\x63ontext\x18\x04 \x01(\x0b\x32\x13.cpex.PluginContext"\xc7\x01\n\x12InvokeHookResponse\x12\x13\n\x0bplugin_name\x18\x01 \x01(\t\x12\'\n\x06result\x18\x02 \x01(\x0b\x32\x17.google.protobuf.Struct\x12$\n\x07\x63ontext\x18\x03 \x01(\x0b\x32\x13.cpex.PluginContext\x12 \n\x05\x65rror\x18\x04 \x01(\x0b\x32\x11.cpex.PluginError\x12+\n\x0bresult_base\x18\x05 \x01(\x0b\x32\x16.cpex.PluginResultBase"\xf1\x01\n\rGlobalContext\x12\x12\n\nrequest_id\x18\x01 \x01(\t\x12\x11\n\tserver_id\x18\x02 \x01(\t\x12\x11\n\ttenant_id\x18\x03 \x01(\t\x12\x15\n\x0buser_string\x18\x04 \x01(\tH\x00\x12.\n\x0buser_struct\x18\x05 \x01(\x0b\x32\x17.google.protobuf.StructH\x00\x12)\n\x08metadata\x18\x06 \x01(\x0b\x32\x17.google.protobuf.Struct\x12&\n\x05state\x18\x07 \x01(\x0b\x32\x17.google.protobuf.StructB\x0c\n\nuser_value"\x8f\x01\n\rPluginContext\x12+\n\x0eglobal_context\x18\x01 \x01(\x0b\x32\x13.cpex.GlobalContext\x12&\n\x05state\x18\x02 \x01(\x0b\x32\x17.google.protobuf.Struct\x12)\n\x08metadata\x18\x03 \x01(\x0b\x32\x17.google.protobuf.Struct"\x9b\x01\n\x0fPluginViolation\x12\x0e\n\x06reason\x18\x01 \x01(\t\x12\x13\n\x0b\x64\x65scription\x18\x02 \x01(\t\x12\x0c\n\x04\x63ode\x18\x03 \x01(\t\x12\x13\n\x0bplugin_name\x18\x04 \x01(\t\x12(\n\x07\x64\x65tails\x18\x05 \x01(\x0b\x32\x17.google.protobuf.Struct\x12\x16\n\x0emcp_error_code\x18\x06 \x01(\x05"\x84\x01\n\x10PluginResultBase\x12\x1b\n\x13\x63ontinue_processing\x18\x01 \x01(\x08\x12(\n\tviolation\x18\x02 \x01(\x0b\x32\x15.cpex.PluginViolation\x12)\n\x08metadata\x18\x03 \x01(\x0b\x32\x17.google.protobuf.Struct"\x83\x01\n\x0bPluginError\x12\x0f\n\x07message\x18\x01 \x01(\t\x12\x13\n\x0bplugin_name\x18\x02 \x01(\t\x12\x0c\n\x04\x63ode\x18\x03 \x01(\t\x12(\n\x07\x64\x65tails\x18\x04 \x01(\x0b\x32\x17.google.protobuf.Struct\x12\x16\n\x0emcp_error_code\x18\x05 \x01(\x05"%\n\x12HealthCheckRequest\x12\x0f\n\x07service\x18\x01 \x01(\t"\x9f\x01\n\x13HealthCheckResponse\x12\x37\n\x06status\x18\x01 \x01(\x0e\x32\'.cpex.HealthCheckResponse.ServingStatus"O\n\rServingStatus\x12\x0b\n\x07UNKNOWN\x10\x00\x12\x0b\n\x07SERVING\x10\x01\x12\x0f\n\x0bNOT_SERVING\x10\x02\x12\x13\n\x0fSERVICE_UNKNOWN\x10\x03\x32\xf3\x01\n\rPluginService\x12N\n\x0fGetPluginConfig\x12\x1c.cpex.GetPluginConfigRequest\x1a\x1d.cpex.GetPluginConfigResponse\x12Q\n\x10GetPluginConfigs\x12\x1d.cpex.GetPluginConfigsRequest\x1a\x1e.cpex.GetPluginConfigsResponse\x12?\n\nInvokeHook\x12\x17.cpex.InvokeHookRequest\x1a\x18.cpex.InvokeHookResponse2F\n\x06Health\x12<\n\x05\x43heck\x12\x18.cpex.HealthCheckRequest\x1a\x19.cpex.HealthCheckResponseb\x06proto3'
+    b'\n\x14plugin_service.proto\x12\x04\x63pex\x1a\x1cgoogle/protobuf/struct.proto"&\n\x16GetPluginConfigRequest\x12\x0c\n\x04name\x18\x01 \x01(\t"Q\n\x17GetPluginConfigResponse\x12\r\n\x05\x66ound\x18\x01 \x01(\x08\x12\'\n\x06\x63onfig\x18\x02 \x01(\x0b\x32\x17.google.protobuf.Struct"\x19\n\x17GetPluginConfigsRequest"D\n\x18GetPluginConfigsResponse\x12(\n\x07\x63onfigs\x18\x01 \x03(\x0b\x32\x17.google.protobuf.Struct"\x8b\x01\n\x11InvokeHookRequest\x12\x11\n\thook_type\x18\x01 \x01(\t\x12\x13\n\x0bplugin_name\x18\x02 \x01(\t\x12(\n\x07payload\x18\x03 \x01(\x0b\x32\x17.google.protobuf.Struct\x12$\n\x07\x63ontext\x18\x04 \x01(\x0b\x32\x13.cpex.PluginContext"\xc7\x01\n\x12InvokeHookResponse\x12\x13\n\x0bplugin_name\x18\x01 \x01(\t\x12\'\n\x06result\x18\x02 \x01(\x0b\x32\x17.google.protobuf.Struct\x12$\n\x07\x63ontext\x18\x03 \x01(\x0b\x32\x13.cpex.PluginContext\x12 \n\x05\x65rror\x18\x04 \x01(\x0b\x32\x11.cpex.PluginError\x12+\n\x0bresult_base\x18\x05 \x01(\x0b\x32\x16.cpex.PluginResultBase"\xf1\x01\n\rGlobalContext\x12\x12\n\nrequest_id\x18\x01 \x01(\t\x12\x11\n\tserver_id\x18\x02 \x01(\t\x12\x11\n\ttenant_id\x18\x03 \x01(\t\x12\x15\n\x0buser_string\x18\x04 \x01(\tH\x00\x12.\n\x0buser_struct\x18\x05 \x01(\x0b\x32\x17.google.protobuf.StructH\x00\x12)\n\x08metadata\x18\x06 \x01(\x0b\x32\x17.google.protobuf.Struct\x12&\n\x05state\x18\x07 \x01(\x0b\x32\x17.google.protobuf.StructB\x0c\n\nuser_value"\x8f\x01\n\rPluginContext\x12+\n\x0eglobal_context\x18\x01 \x01(\x0b\x32\x13.cpex.GlobalContext\x12&\n\x05state\x18\x02 \x01(\x0b\x32\x17.google.protobuf.Struct\x12)\n\x08metadata\x18\x03 \x01(\x0b\x32\x17.google.protobuf.Struct"\x9b\x01\n\x0fPluginViolation\x12\x0e\n\x06reason\x18\x01 \x01(\t\x12\x13\n\x0b\x64\x65scription\x18\x02 \x01(\t\x12\x0c\n\x04\x63ode\x18\x03 \x01(\t\x12\x13\n\x0bplugin_name\x18\x04 \x01(\t\x12(\n\x07\x64\x65tails\x18\x05 \x01(\x0b\x32\x17.google.protobuf.Struct\x12\x16\n\x0emcp_error_code\x18\x06 \x01(\x05"\xb3\x01\n\x10PluginResultBase\x12\x1b\n\x13\x63ontinue_processing\x18\x01 \x01(\x08\x12(\n\tviolation\x18\x02 \x01(\x0b\x32\x15.cpex.PluginViolation\x12)\n\x08metadata\x18\x03 \x01(\x0b\x32\x17.google.protobuf.Struct\x12-\n\x0f\x64\x65nial_metadata\x18\x04 \x01(\x0b\x32\x14.cpex.DenialMetadata"Q\n\x0c\x44\x65nialMetric\x12\x11\n\x07\x62oolean\x18\x01 \x01(\x08H\x00\x12\x11\n\x07integer\x18\x02 \x01(\x12H\x00\x12\x12\n\x08\x66loating\x18\x03 \x01(\x01H\x00\x42\x07\n\x05value"\x85\x01\n\x0e\x44\x65nialMetadata\x12\x30\n\x06\x66ields\x18\x01 \x03(\x0b\x32 .cpex.DenialMetadata.FieldsEntry\x1a\x41\n\x0b\x46ieldsEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12!\n\x05value\x18\x02 \x01(\x0b\x32\x12.cpex.DenialMetric:\x02\x38\x01"\x83\x01\n\x0bPluginError\x12\x0f\n\x07message\x18\x01 \x01(\t\x12\x13\n\x0bplugin_name\x18\x02 \x01(\t\x12\x0c\n\x04\x63ode\x18\x03 \x01(\t\x12(\n\x07\x64\x65tails\x18\x04 \x01(\x0b\x32\x17.google.protobuf.Struct\x12\x16\n\x0emcp_error_code\x18\x05 \x01(\x05"%\n\x12HealthCheckRequest\x12\x0f\n\x07service\x18\x01 \x01(\t"\x9f\x01\n\x13HealthCheckResponse\x12\x37\n\x06status\x18\x01 \x01(\x0e\x32\'.cpex.HealthCheckResponse.ServingStatus"O\n\rServingStatus\x12\x0b\n\x07UNKNOWN\x10\x00\x12\x0b\n\x07SERVING\x10\x01\x12\x0f\n\x0bNOT_SERVING\x10\x02\x12\x13\n\x0fSERVICE_UNKNOWN\x10\x03\x32\xf3\x01\n\rPluginService\x12N\n\x0fGetPluginConfig\x12\x1c.cpex.GetPluginConfigRequest\x1a\x1d.cpex.GetPluginConfigResponse\x12Q\n\x10GetPluginConfigs\x12\x1d.cpex.GetPluginConfigsRequest\x1a\x1e.cpex.GetPluginConfigsResponse\x12?\n\nInvokeHook\x12\x17.cpex.InvokeHookRequest\x1a\x18.cpex.InvokeHookResponse2F\n\x06Health\x12<\n\x05\x43heck\x12\x18.cpex.HealthCheckRequest\x1a\x19.cpex.HealthCheckResponseb\x06proto3'
 )
 
 _globals = globals()
@@ -33,6 +34,8 @@ _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
 _builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, "plugin_service_pb2", _globals)
 if not _descriptor._USE_C_DESCRIPTORS:
     DESCRIPTOR._loaded_options = None
+    _globals["_DENIALMETADATA_FIELDSENTRY"]._loaded_options = None
+    _globals["_DENIALMETADATA_FIELDSENTRY"]._serialized_options = b"8\001"
     _globals["_GETPLUGINCONFIGREQUEST"]._serialized_start = 60
     _globals["_GETPLUGINCONFIGREQUEST"]._serialized_end = 98
     _globals["_GETPLUGINCONFIGRESPONSE"]._serialized_start = 100
@@ -52,17 +55,23 @@ if not _descriptor._USE_C_DESCRIPTORS:
     _globals["_PLUGINVIOLATION"]._serialized_start = 1015
     _globals["_PLUGINVIOLATION"]._serialized_end = 1170
     _globals["_PLUGINRESULTBASE"]._serialized_start = 1173
-    _globals["_PLUGINRESULTBASE"]._serialized_end = 1305
-    _globals["_PLUGINERROR"]._serialized_start = 1308
-    _globals["_PLUGINERROR"]._serialized_end = 1439
-    _globals["_HEALTHCHECKREQUEST"]._serialized_start = 1441
-    _globals["_HEALTHCHECKREQUEST"]._serialized_end = 1478
-    _globals["_HEALTHCHECKRESPONSE"]._serialized_start = 1481
-    _globals["_HEALTHCHECKRESPONSE"]._serialized_end = 1640
-    _globals["_HEALTHCHECKRESPONSE_SERVINGSTATUS"]._serialized_start = 1561
-    _globals["_HEALTHCHECKRESPONSE_SERVINGSTATUS"]._serialized_end = 1640
-    _globals["_PLUGINSERVICE"]._serialized_start = 1643
-    _globals["_PLUGINSERVICE"]._serialized_end = 1886
-    _globals["_HEALTH"]._serialized_start = 1888
-    _globals["_HEALTH"]._serialized_end = 1958
+    _globals["_PLUGINRESULTBASE"]._serialized_end = 1352
+    _globals["_DENIALMETRIC"]._serialized_start = 1354
+    _globals["_DENIALMETRIC"]._serialized_end = 1435
+    _globals["_DENIALMETADATA"]._serialized_start = 1438
+    _globals["_DENIALMETADATA"]._serialized_end = 1571
+    _globals["_DENIALMETADATA_FIELDSENTRY"]._serialized_start = 1506
+    _globals["_DENIALMETADATA_FIELDSENTRY"]._serialized_end = 1571
+    _globals["_PLUGINERROR"]._serialized_start = 1574
+    _globals["_PLUGINERROR"]._serialized_end = 1705
+    _globals["_HEALTHCHECKREQUEST"]._serialized_start = 1707
+    _globals["_HEALTHCHECKREQUEST"]._serialized_end = 1744
+    _globals["_HEALTHCHECKRESPONSE"]._serialized_start = 1747
+    _globals["_HEALTHCHECKRESPONSE"]._serialized_end = 1906
+    _globals["_HEALTHCHECKRESPONSE_SERVINGSTATUS"]._serialized_start = 1827
+    _globals["_HEALTHCHECKRESPONSE_SERVINGSTATUS"]._serialized_end = 1906
+    _globals["_PLUGINSERVICE"]._serialized_start = 1909
+    _globals["_PLUGINSERVICE"]._serialized_end = 2152
+    _globals["_HEALTH"]._serialized_start = 2154
+    _globals["_HEALTH"]._serialized_end = 2224
 # @@protoc_insertion_point(module_scope)

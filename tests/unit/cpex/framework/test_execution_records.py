@@ -149,7 +149,6 @@ def test_direct_violation_error_has_no_framework_outcome():
     error = PluginViolationError(
         "plugin-raised",
         PluginViolation(reason="r", description="d", code="DIRECT"),
-        denial_metadata={"allowed": False},
     )
     record = ControlExecutionRecord(
         plugin_id="abc",
@@ -549,6 +548,7 @@ async def test_executions_on_violation_exception_single_plugin():
                     "tenant_id": "alice",
                     "nested": {"secret": "must-not-leak"},
                 },
+                denial_metadata={"remaining": 0, "throttled": True, "backend": "valkey"},
             )
 
     manager = PluginManager("./tests/unit/cpex/fixtures/configs/valid_no_plugin.yaml")
@@ -611,7 +611,7 @@ async def test_executions_on_violation_exception_single_plugin():
         assert outcome.violation_code == "DENY_CODE"
         assert outcome.mcp_error_code == -32029
         assert outcome.http_status_code == 429
-        assert dict(outcome.metadata) == {"allowed": False, "throttled": True, "backend": "valkey"}
+        assert dict(outcome.metadata) == {"remaining": 0, "throttled": True}
         assert not hasattr(outcome.execution, "reason")
         assert not hasattr(outcome, "violation")
         with pytest.raises(FrozenInstanceError):
@@ -740,7 +740,7 @@ async def test_executions_on_violation_exception_concurrent_plugin():
                     description="Concurrent deny description",
                     code="CONC_DENY",
                 ),
-                metadata={"allowed": False, "throttled": True, "backend": "memory"},
+                denial_metadata={"allowed": False, "throttled": True, "backend": "memory"},
             )
 
     manager = PluginManager("./tests/unit/cpex/fixtures/configs/valid_no_plugin.yaml")
@@ -796,7 +796,6 @@ async def test_executions_on_violation_exception_concurrent_plugin():
         assert dict(pve.value.denial_outcome.metadata) == {
             "allowed": False,
             "throttled": True,
-            "backend": "memory",
         }
 
     await manager.shutdown()

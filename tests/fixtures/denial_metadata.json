@@ -1,0 +1,9 @@
+[
+  {"name":"primitives","input":{"zero":0,"matched":false,"score":0.5,"minimum":-9223372036854775808,"maximum":9223372036854775807,"large_float":1e20},"expected":{"zero":0,"matched":false,"score":0.5,"minimum":-9223372036854775808,"maximum":9223372036854775807,"large_float":1e20}},
+  {"name":"strings-and-nesting","input":{"backend":"valkey","other_backend":"postgres","nested":{"secret":1},"array":[1],"null":null,"retained":true},"expected":{"retained":true}},
+  {"name":"key-bounds","input":{"":1,"bad key":2,"é":3,"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa":4,"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa":5,"A-z_0.9":6},"expected":{"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa":5,"A-z_0.9":6}},
+  {"name":"unsigned-overflow","input":{"too_large":9223372036854775808,"retained":0},"expected":{"retained":0}},
+  {"name":"empty","input":{},"expected":{}},
+  {"name":"sixteen","input":{"m0":0,"m1":1,"m2":2,"m3":3,"m4":4,"m5":5,"m6":6,"m7":7,"m8":8,"m9":9,"m10":10,"m11":11,"m12":12,"m13":13,"m14":14,"m15":15},"expected":{"m0":0,"m1":1,"m2":2,"m3":3,"m4":4,"m5":5,"m6":6,"m7":7,"m8":8,"m9":9,"m10":10,"m11":11,"m12":12,"m13":13,"m14":14,"m15":15}},
+  {"name":"oversized","input":{"m0":0,"m1":1,"m2":2,"m3":3,"m4":4,"m5":5,"m6":6,"m7":7,"m8":8,"m9":9,"m10":10,"m11":11,"m12":12,"m13":13,"m14":14,"m15":15,"invalid":"discarded"},"expected":{}}
+]

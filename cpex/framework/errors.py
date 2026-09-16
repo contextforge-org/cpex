@@ -10,6 +10,8 @@ the base plugin layer including configurations, and contexts.
 """
 
 # Standard
+import math
+import re
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, Mapping, Optional, Union
@@ -22,39 +24,44 @@ from cpex.framework.models import (
     PluginViolation,
 )
 
-DenialMetadataValue = Union[bool, str]
+DenialMetadataValue = Union[bool, int, float]
 """Safe, low-cardinality metadata values allowed on a denial outcome."""
 
 
-_DENIAL_METADATA_RULES: dict[str, type[object]] = {
-    "allowed": bool,
-    "throttled": bool,
-    "backend": str,
-}
-_SAFE_BACKEND_NAMES = frozenset({"memory", "redis", "valkey"})
-_FRAMEWORK_DENIAL_MARKER = object()
+_TELEMETRY_LABEL = re.compile(r"[A-Za-z0-9._-]{1,64}\Z", re.ASCII)
 
 
-def sanitize_denial_metadata(metadata: Optional[Mapping[str, Any]]) -> Mapping[str, DenialMetadataValue]:
-    """Return the explicitly allowlisted, safe portion of denial metadata.
+def sanitize_denial_metadata(metadata: Optional[Mapping[str, Any]]) -> dict[str, DenialMetadataValue]:
+    """Select an owned, bounded dictionary of explicitly opted-in numeric metrics.
 
-    Plugin metadata is untrusted.  Only rate-limiter state that Gateway needs for
-    telemetry can cross the exception boundary.  In particular, this excludes
-    arbitrary strings, nested data, request identifiers, and credentials.
+    Producers must use static metric names and non-sensitive values. Numeric
+    identifiers must never be supplied: type validation cannot prove privacy.
+    Oversized input maps are rejected entirely, before selecting valid entries.
     """
-    if not metadata:
-        return MappingProxyType({})
+    if not isinstance(metadata, Mapping) or len(metadata) > 16:
+        return {}
 
     safe: dict[str, DenialMetadataValue] = {}
-    for key, expected_type in _DENIAL_METADATA_RULES.items():
-        value = metadata.get(key)
-        # bool is an int subclass, so require the exact type rather than
-        # isinstance() to keep the contract unambiguous.
-        if type(value) is bool and expected_type is bool:
+    for key, value in metadata.items():
+        if type(key) is not str or _TELEMETRY_LABEL.fullmatch(key) is None:
+            continue
+        if type(value) is bool:
             safe[key] = value
-        elif key == "backend" and type(value) is str and value in _SAFE_BACKEND_NAMES:
+        elif type(value) is int and -(2**63) <= value <= 2**63 - 1:
             safe[key] = value
-    return MappingProxyType(safe)
+        elif type(value) is float and math.isfinite(value):
+            safe[key] = value
+    return safe
+
+
+def _safe_label(value: Any) -> Optional[str]:
+    """Accept bounded identifier labels, never free-form text."""
+    return value if type(value) is str and _TELEMETRY_LABEL.fullmatch(value) else None
+
+
+def _safe_integer(value: Any, minimum: int, maximum: int) -> Optional[int]:
+    """Validate protocol codes without coercing boolean or string values."""
+    return value if type(value) is int and minimum <= value <= maximum else None
 
 
 @dataclass(frozen=True)
@@ -93,7 +100,7 @@ class DenialExecutionRecord:
             payload_modified=execution.payload_modified,
             extensions_modified=execution.extensions_modified,
             duration_ns=execution.duration_ns,
-            error_code=execution.error_code,
+            error_code=_safe_label(execution.error_code),
         )
 
 
@@ -121,9 +128,9 @@ class DenialOutcome:
         """Build an immutable safe snapshot from trusted executor state."""
         return cls(
             execution=DenialExecutionRecord.from_execution(execution),
-            violation_code=violation.code if violation else None,
-            mcp_error_code=violation.mcp_error_code if violation else None,
-            http_status_code=violation.http_status_code if violation else None,
+            violation_code=_safe_label(violation.code) if violation else None,
+            mcp_error_code=_safe_integer(violation.mcp_error_code, -(2**31), 2**31 - 1) if violation else None,
+            http_status_code=_safe_integer(violation.http_status_code, 100, 599) if violation else None,
             metadata=MappingProxyType(dict(metadata or {})),
         )
 
@@ -145,14 +152,7 @@ class PluginViolationError(Exception):
             directly by plugins or callers.
     """
 
-    def __init__(
-        self,
-        message: str,
-        violation: PluginViolation | None = None,
-        *,
-        denial_metadata: Optional[Mapping[str, DenialMetadataValue]] = None,
-        _framework_marker: object | None = None,
-    ):
+    def __init__(self, message: str, violation: PluginViolation | None = None):
         """Initialize a plugin violation error.
 
         Args:
@@ -171,10 +171,7 @@ class PluginViolationError(Exception):
         self.violation = violation
         self.executions: list[ControlExecutionRecord] | None = None
         self.denial_outcome: DenialOutcome | None = None
-        self._framework_denial = _framework_marker is _FRAMEWORK_DENIAL_MARKER
-        # This is already allowlisted by the executor.  Keep it private until a
-        # trusted execution record exists, then create the immutable outcome.
-        self._denial_metadata = MappingProxyType(dict(denial_metadata or {}))
+        self._denial_metadata: Optional[dict[str, DenialMetadataValue]] = None
         super().__init__(self.message)
 
     @classmethod
@@ -182,19 +179,16 @@ class PluginViolationError(Exception):
         cls,
         message: str,
         violation: PluginViolation | None,
-        denial_metadata: Optional[Mapping[str, DenialMetadataValue]],
+        denial_metadata: Optional[Mapping[str, Any]],
     ) -> "PluginViolationError":
         """Create the exception used only for a result denied by the executor."""
-        return cls(
-            message,
-            violation,
-            denial_metadata=denial_metadata,
-            _framework_marker=_FRAMEWORK_DENIAL_MARKER,
-        )
+        error = cls(message, violation)
+        error._denial_metadata = sanitize_denial_metadata(denial_metadata)
+        return error
 
     def attach_denial_outcome(self, execution: ControlExecutionRecord) -> None:
         """Attach the framework-generated outcome after the denial is recorded."""
-        if not self._framework_denial:
+        if self._denial_metadata is None or self.denial_outcome is not None:
             return
         self.denial_outcome = DenialOutcome.from_execution(execution, self.violation, self._denial_metadata)
 

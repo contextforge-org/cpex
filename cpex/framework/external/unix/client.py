@@ -42,10 +42,19 @@ from google.protobuf.struct_pb2 import Struct
 from cpex.framework.base import Plugin
 from cpex.framework.errors import PluginError, convert_exception_to_error
 from cpex.framework.external.grpc.proto import plugin_service_pb2
-from cpex.framework.external.proto_convert import pydantic_context_to_proto, update_pydantic_context_from_proto
+from cpex.framework.external.proto_convert import (
+    proto_result_to_dict,
+    pydantic_context_to_proto,
+    update_pydantic_context_from_proto,
+)
 from cpex.framework.external.unix.protocol import read_message, write_message_async
 from cpex.framework.hooks.registry import get_hook_registry
-from cpex.framework.models import PluginConfig, PluginContext, PluginErrorModel, PluginResult
+from cpex.framework.models import (
+    PluginConfig,
+    PluginContext,
+    PluginErrorModel,
+    PluginResult,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -338,7 +347,7 @@ class UnixSocketExternalPlugin(Plugin):
 
             # Parse and return result
             if response.HasField("result"):
-                result_dict = json_format.MessageToDict(response.result)
+                result_dict = proto_result_to_dict(response)
                 return result_type.model_validate(result_dict)
 
             raise PluginError(
