@@ -871,6 +871,7 @@ pub unsafe extern "C" fn cpex_invoke(
     let ffi_result = FfiPipelineResult {
         continue_processing: result.continue_processing,
         violation: result.violation,
+        denial_outcome: result.denial_outcome,
         errors: result.errors,
         metadata: result.metadata,
         payload_type: result_payload_type,
@@ -1119,6 +1120,7 @@ unsafe fn finish_pipeline_result(
     let ffi_result = FfiPipelineResult {
         continue_processing: result.continue_processing,
         violation: result.violation,
+        denial_outcome: result.denial_outcome,
         errors: result.errors,
         metadata: result.metadata,
         payload_type: result_payload_type,
@@ -1272,6 +1274,10 @@ struct FfiPipelineResult {
     continue_processing: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     violation: Option<cpex_core::error::PluginViolation>,
+    /// Trusted provenance and safe numeric/boolean telemetry for an explicit
+    /// plugin deny. Additive on the MessagePack wire.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    denial_outcome: Option<cpex_core::executor::DenialOutcome>,
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     errors: Vec<cpex_core::error::PluginErrorRecord>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1408,6 +1414,44 @@ mod tests {
     /// PAYLOAD_GENERIC consumes. Returns bytes the FFI can borrow.
     fn payload_bytes(value: &str) -> Vec<u8> {
         rmp_serde::to_vec_named(&serde_json::json!({ "value": value })).expect("encode payload")
+    }
+
+    #[test]
+    fn ffi_pipeline_result_roundtrips_denial_outcome() {
+        let wire_result = FfiPipelineResult {
+            continue_processing: false,
+            violation: None,
+            denial_outcome: Some(cpex_core::executor::DenialOutcome {
+                plugin_id: "plugin-123".to_string(),
+                plugin_name: "rate-limiter".to_string(),
+                hook_name: "cmf.tool_pre_invoke".to_string(),
+                mode: PluginMode::Sequential,
+                metadata: Some(
+                    serde_json::json!({"rate_limiter.throttled": true})
+                        .as_object()
+                        .unwrap()
+                        .clone(),
+                ),
+            }),
+            errors: Vec::new(),
+            metadata: None,
+            payload_type: PAYLOAD_GENERIC,
+            modified_payload: None,
+            payload_modified: false,
+            modified_extensions: None,
+        };
+
+        let bytes = rmp_serde::to_vec_named(&wire_result).expect("serialize FFI result");
+        let decoded: serde_json::Value =
+            rmp_serde::from_slice(&bytes).expect("deserialize FFI result");
+        let outcome = decoded["denial_outcome"]
+            .as_object()
+            .expect("denial outcome on FFI wire");
+        assert_eq!(outcome["plugin_name"], "rate-limiter");
+        assert_eq!(
+            outcome["metadata"]["rate_limiter.throttled"],
+            serde_json::Value::Bool(true)
+        );
     }
 
     /// Drive cpex_invoke with a single hook name and the given payload.

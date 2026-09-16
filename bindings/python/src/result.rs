@@ -30,6 +30,7 @@ pub struct PyPipelineResult {
     pub payload_modified: bool,
     pub modified_extensions: Option<Value>,
     pub violation: Option<Value>,
+    pub denial_outcome: Option<Value>,
     pub errors: Vec<Value>,
     pub metadata: Option<Value>,
     pub context_table: Value,
@@ -91,6 +92,20 @@ impl PyPipelineResult {
                 let obj = json_value_to_pyobj(py, v)?;
                 Ok(Some(obj.cast_into::<PyDict>().map_err(|_| {
                     pyo3::exceptions::PyRuntimeError::new_err("cpex: violation is not a dict")
+                })?))
+            },
+        }
+    }
+
+    /// Trusted provenance and safe telemetry for an explicit plugin deny.
+    #[getter]
+    fn denial_outcome<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyDict>>> {
+        match &self.denial_outcome {
+            None => Ok(None),
+            Some(v) => {
+                let obj = json_value_to_pyobj(py, v)?;
+                Ok(Some(obj.cast_into::<PyDict>().map_err(|_| {
+                    pyo3::exceptions::PyRuntimeError::new_err("cpex: denial_outcome is not a dict")
                 })?))
             },
         }
@@ -190,6 +205,16 @@ pub fn pipeline_result_to_py(mut result: PipelineResult) -> PyResult<PyPipelineR
             ))
         })?;
 
+    let denial_outcome_value: Option<Value> = result
+        .denial_outcome
+        .map(serde_json::to_value)
+        .transpose()
+        .map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!(
+                "cpex: denial_outcome serialization failed: {e}"
+            ))
+        })?;
+
     let errors_value: Vec<Value> = result
         .errors
         .iter()
@@ -213,6 +238,7 @@ pub fn pipeline_result_to_py(mut result: PipelineResult) -> PyResult<PyPipelineR
         payload_modified: result.payload_modified,
         modified_extensions: modified_extensions_value,
         violation: violation_value,
+        denial_outcome: denial_outcome_value,
         errors: errors_value,
         metadata: result.metadata,
         context_table: context_table_value,

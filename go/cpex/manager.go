@@ -569,6 +569,7 @@ func Invoke[P any](
 	typed := &TypedPipelineResult[P]{
 		ContinueProcessing: raw.ContinueProcessing,
 		Violation:          raw.Violation,
+		DenialOutcome:      raw.DenialOutcome,
 		Errors:             raw.Errors,
 		Metadata:           raw.Metadata,
 		PayloadType:        raw.PayloadType,

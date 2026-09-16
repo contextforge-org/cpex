@@ -54,6 +54,17 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/).
 
 ### Fixed
 
+- **Denied plugin outcomes now retain safe, attributable telemetry.** An explicit
+  `PluginResult::deny_with_metadata(...)` now produces
+  `PipelineResult.denial_outcome`, including registry-derived plugin identity,
+  hook, execution mode, and a bounded flat boolean/numeric metric map. The executor
+  rejects nested values, arrays, strings, oversized keys, and unbounded maps;
+  integer metrics must fit signed 64-bit and float metrics must be finite;
+  it never exports payloads, headers, configuration, identities, or violation
+  details. The field is available through the native Python binding, and the
+  isolated Python-host response path preserves only explicit `denial_metadata`
+  for the same core validation. See [the Gateway contract](docs/specs/denial-telemetry-contract.md).
+  (#178)
 - **Plugin payload mutations are no longer silently discarded.** A plugin that rewrote anything other than a message's text — a tool result, a tool call's arguments, a thinking block, an attachment — had its mutation dropped by the APL route handler, which decided "was this modified?" by comparing concatenated text content. Redaction and sanitisation plugins are precisely the ones that rewrite tool results, so the failure was fail-open on the path that matters most: the plugin reported a successful redaction and the host forwarded the original secret. Mutation is now reported by the executor at the point it accepts a plugin's payload (`PipelineResult.payload_modified`) and read from there, so it no longer depends on which part of the message changed. Plugins that appended a throwaway text part to force the old check to fire can drop that workaround. (#151)
 - **A field pipeline no longer clobbers a plugin's edit to the same content part.** Folding an `args:` or `result:` pipeline's rewrite back into the message replaced the whole argument map / result content, discarding edits a plugin had made to other fields of it. Only the paths the pipeline actually changed are applied now, so a pipeline redacting one argument and a plugin scrubbing another both survive. (#151)
 - **A plugin invoked as a pipeline stage now reports a value for the field it was pointed at.** It previously reported the message's concatenated text as the field's new value, which for a structured tool call meant an unrelated argument was overwritten with chat text. A plugin that rewrote some other part of the payload now reports no field change, and its mutation travels with the payload instead. The reported value is compared against the field as the payload held it before the plugin ran, so a `plugin(...)` stage that leaves the field alone can no longer undo an earlier `mask` / `redact` / `hash` stage in the same chain — those interim edits live only in the pipeline, never in the payload, and comparing against them handed the pre-redaction value back as if the plugin had produced it. (#151)

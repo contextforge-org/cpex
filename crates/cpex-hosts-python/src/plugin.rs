@@ -1008,9 +1008,12 @@ impl AnyHookHandler for PythonHookAdapter {
         // reuse the inbound `Arc`s for immutable slots and read the write
         // tokens the executor issued. The executor's copy-on-write merge then
         // validates the result against the mutability tiers.
-        let fields = conversion::response_to_result(self.hook_name, response, extensions)
-            .map_err(to_plugin_error)?;
-        Ok(Box::new(fields))
+        let (fields, metadata) =
+            conversion::response_to_result_with_metadata(self.hook_name, response, extensions)
+                .map_err(to_plugin_error)?;
+        Ok(cpex_core::executor::erase_raw_result_with_metadata(
+            fields, metadata,
+        ))
     }
 
     fn hook_type_name(&self) -> &'static str {

@@ -29,6 +29,7 @@ use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
 
+use serde::{Deserialize, Serialize};
 use tokio::time::timeout;
 use tracing::{error, warn};
 
@@ -117,6 +118,13 @@ pub struct PipelineResult {
     /// The violation that caused a deny, if any.
     pub violation: Option<crate::error::PluginViolation>,
 
+    /// Trusted, immutable-at-boundary facts about the plugin denial.
+    ///
+    /// This is present only for an explicit plugin deny. Failure-derived
+    /// violations (timeout, panic, or `on_error: fail`) intentionally do not
+    /// receive a denial outcome because no plugin result was returned.
+    pub denial_outcome: Option<DenialOutcome>,
+
     /// Errors from plugins that ran with `on_error: ignore` or
     /// `on_error: disable`. These plugins didn't halt the pipeline
     /// (their on_error policy said to continue), but the caller
@@ -126,7 +134,11 @@ pub struct PipelineResult {
     /// Fire-and-forget errors live in `BackgroundTasks` instead.
     pub errors: Vec<crate::error::PluginErrorRecord>,
 
-    /// Optional metadata aggregated from plugins (telemetry, diagnostics).
+    /// Optional pipeline-level metadata reserved for host use.
+    ///
+    /// Per-plugin denial telemetry is deliberately not aggregated here. Read
+    /// [`Self::denial_outcome`] instead; its metadata is provenance-bound and
+    /// schema-limited by the executor.
     pub metadata: Option<serde_json::Value>,
 
     /// Plugin contexts indexed by plugin ID. Thread this into the
@@ -147,6 +159,7 @@ impl PipelineResult {
             payload_modified: false,
             modified_extensions: Some(extensions),
             violation: None,
+            denial_outcome: None,
             errors: Vec::new(),
             metadata: None,
             context_table,
@@ -173,6 +186,7 @@ impl PipelineResult {
             payload_modified: false,
             modified_extensions: Some(extensions),
             violation: Some(violation),
+            denial_outcome: None,
             errors: Vec::new(),
             metadata: None,
             context_table,
@@ -187,9 +201,109 @@ impl PipelineResult {
         self
     }
 
+    /// Attach the executor-created outcome for an explicit plugin denial.
+    fn with_denial_outcome(mut self, denial_outcome: Option<DenialOutcome>) -> Self {
+        self.denial_outcome = denial_outcome;
+        self
+    }
+
     /// Whether this result represents a denial.
     pub fn is_denied(&self) -> bool {
         !self.continue_processing
+    }
+}
+
+/// Safe, trusted facts attached to an explicit plugin denial.
+///
+/// Plugin identity, hook, and mode come from the registry's trusted
+/// configuration. `metadata` is an owned, schema-limited snapshot selected
+/// by the denying plugin; it never includes raw payloads, headers,
+/// configuration, identities, or [`crate::error::PluginViolation::details`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DenialOutcome {
+    /// Stable ID assigned by the registry to the denying plugin.
+    pub plugin_id: String,
+    /// Registry-configured plugin name.
+    pub plugin_name: String,
+    /// Hook being invoked.
+    pub hook_name: String,
+    /// Registry-configured execution mode.
+    pub mode: crate::plugin::PluginMode,
+    /// Explicit, validated flat telemetry map, if the plugin supplied one.
+    pub metadata: Option<serde_json::Map<String, serde_json::Value>>,
+}
+
+impl DenialOutcome {
+    fn from_entry(entry: &HookEntry, hook_name: &str, metadata: Option<serde_json::Value>) -> Self {
+        let config = entry.plugin_ref.trusted_config();
+        Self {
+            plugin_id: entry.plugin_ref.id().to_string(),
+            plugin_name: entry.plugin_ref.name().to_string(),
+            hook_name: hook_name.to_string(),
+            mode: config.mode,
+            metadata: metadata.and_then(sanitize_denial_metadata),
+        }
+    }
+}
+
+/// Limit exported plugin denial metadata to low-risk operational metrics.
+///
+/// The framework cannot determine whether arbitrary text is PII, so callers
+/// must opt in deliberately via `PluginResult::deny_with_metadata`. This
+/// validator prevents accidental structured data leakage: no nesting, arrays,
+/// objects, strings, oversized keys, or unbounded field counts survive.
+/// Integers must fit signed 64-bit; floats must be finite. Producers must use
+/// static metric names and non-sensitive values, never numeric identifiers.
+fn sanitize_denial_metadata(
+    metadata: serde_json::Value,
+) -> Option<serde_json::Map<String, serde_json::Value>> {
+    const MAX_FIELDS: usize = 16;
+    const MAX_KEY_BYTES: usize = 64;
+    let object = metadata.as_object()?;
+    if object.is_empty() || object.len() > MAX_FIELDS {
+        return None;
+    }
+
+    let mut safe = serde_json::Map::with_capacity(object.len());
+    for (key, value) in object {
+        let valid_key = !key.is_empty()
+            && key.len() <= MAX_KEY_BYTES
+            && key
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'));
+        // Strings are deliberately excluded. Shape validation cannot prove a
+        // string is not an identity, credential, request value, or violation
+        // detail. Boolean and numeric metrics give hosts useful telemetry
+        // without exporting that sensitive free-form channel.
+        let valid_value = match value {
+            serde_json::Value::Bool(_) => true,
+            serde_json::Value::Number(number) => {
+                number.as_i64().is_some()
+                    || (number.is_f64() && number.as_f64().is_some_and(f64::is_finite))
+            },
+            _ => false,
+        };
+        if valid_key && valid_value {
+            safe.insert(key.clone(), value.clone());
+        }
+    }
+
+    (!safe.is_empty()).then_some(safe)
+}
+
+/// Internal halt result. Explicit plugin denials retain an outcome; framework
+/// failure paths intentionally carry only their violation.
+struct DeniedPipeline {
+    violation: crate::error::PluginViolation,
+    denial_outcome: Option<DenialOutcome>,
+}
+
+impl DeniedPipeline {
+    fn failure(violation: crate::error::PluginViolation) -> Self {
+        Self {
+            violation,
+            denial_outcome: None,
+        }
     }
 }
 
@@ -308,6 +422,31 @@ impl Executor {
         context_table: Option<PluginContextTable>,
         task_tracker: &tokio_util::task::TaskTracker,
     ) -> (PipelineResult, BackgroundTasks) {
+        self.execute_for_hook(
+            "<unknown>",
+            entries,
+            payload,
+            extensions,
+            context_table,
+            task_tracker,
+        )
+        .await
+    }
+
+    /// Execute a hook invocation and retain its name in any denial outcome.
+    ///
+    /// [`Self::execute`] remains available for direct executor callers, but
+    /// uses `"<unknown>"` because it has no hook-name argument. Managers and
+    /// hosts that know the hook should use this method.
+    pub async fn execute_for_hook(
+        &self,
+        hook_name: &str,
+        entries: &[HookEntry],
+        payload: Box<dyn PluginPayload>,
+        extensions: Extensions,
+        context_table: Option<PluginContextTable>,
+        task_tracker: &tokio_util::task::TaskTracker,
+    ) -> (PipelineResult, BackgroundTasks) {
         let mut ctx_table = context_table.unwrap_or_default();
 
         if entries.is_empty() {
@@ -333,8 +472,9 @@ impl Executor {
         // read an exact signal instead of comparing payload contents.
         let mut payload_modified = false;
 
-        if let Some(v) = self
+        if let Some(denial) = self
             .run_serial_phase(
+                hook_name,
                 &sequential,
                 &mut current_payload,
                 &mut current_extensions,
@@ -347,8 +487,14 @@ impl Executor {
             )
             .await
         {
+            let DeniedPipeline {
+                violation,
+                denial_outcome,
+            } = denial;
             return (
-                PipelineResult::denied(v, current_extensions, ctx_table).with_errors(errors),
+                PipelineResult::denied(violation, current_extensions, ctx_table)
+                    .with_denial_outcome(denial_outcome)
+                    .with_errors(errors),
                 BackgroundTasks::empty(),
             );
         }
@@ -356,6 +502,7 @@ impl Executor {
         // Phase 2: TRANSFORM — serial, chained, can modify, cannot block.
         // can_block=false means denials are suppressed (returns None).
         self.run_serial_phase(
+            hook_name,
             &transform,
             &mut current_payload,
             &mut current_extensions,
@@ -380,6 +527,7 @@ impl Executor {
 
         if let Some(violation) = self
             .run_concurrent_phase(
+                hook_name,
                 &concurrent,
                 &*current_payload,
                 &current_extensions,
@@ -388,8 +536,13 @@ impl Executor {
             )
             .await
         {
+            let DeniedPipeline {
+                violation,
+                denial_outcome,
+            } = violation;
             return (
                 PipelineResult::denied(violation, current_extensions, ctx_table)
+                    .with_denial_outcome(denial_outcome)
                     .with_errors(errors),
                 BackgroundTasks::empty(),
             );
@@ -432,6 +585,7 @@ impl Executor {
     #[allow(clippy::too_many_arguments)] // internal phase helper — args have distinct types and meaning
     async fn run_serial_phase(
         &self,
+        hook_name: &str,
         entries: &[HookEntry],
         payload: &mut Box<dyn PluginPayload>,
         extensions: &mut Extensions,
@@ -441,7 +595,7 @@ impl Executor {
         phase_label: &str,
         errors: &mut Vec<crate::error::PluginErrorRecord>,
         payload_modified: &mut bool,
-    ) -> Option<crate::error::PluginViolation> {
+    ) -> Option<DeniedPipeline> {
         for entry in entries {
             // Borrow names/ids on the happy path — allocate only when
             // building a violation or stashing the local_state back into
@@ -490,21 +644,31 @@ impl Executor {
 
             match result {
                 Ok(Ok(result_box)) => {
-                    if let Some(erased) = extract_erased(result_box) {
-                        if !erased.continue_processing && can_block {
-                            if let Some(mut v) = erased.violation {
-                                v.plugin_name = Some(plugin_name.to_string());
-                                return Some(v);
-                            }
+                    if let Some(erased) = extract_erased_with_metadata(result_box) {
+                        if !erased.fields.continue_processing && can_block {
+                            let metadata = erased.metadata;
+                            let mut violation = erased.fields.violation.unwrap_or_else(|| {
+                                crate::error::PluginViolation::new(
+                                    "plugin_deny",
+                                    format!("Plugin '{}' denied", plugin_name),
+                                )
+                            });
+                            violation.plugin_name = Some(plugin_name.to_string());
+                            return Some(DeniedPipeline {
+                                violation,
+                                denial_outcome: Some(DenialOutcome::from_entry(
+                                    entry, hook_name, metadata,
+                                )),
+                            });
                         }
 
                         // Accept modifications
                         if can_modify {
-                            if let Some(mp) = erased.modified_payload {
+                            if let Some(mp) = erased.fields.modified_payload {
                                 *payload = mp;
                                 *payload_modified = true;
                             }
-                            if let Some(mut owned) = erased.modified_extensions {
+                            if let Some(mut owned) = erased.fields.modified_extensions {
                                 let mut immutable_ok = false;
                                 if extensions.validate_immutable(&owned) {
                                     // `merge_owned` enforces the tiers per
@@ -610,7 +774,7 @@ impl Executor {
                                 format!("Plugin '{}' failed: {}", plugin_name, e),
                             );
                             v.plugin_name = Some(plugin_name.to_string());
-                            return Some(v);
+                            return Some(DeniedPipeline::failure(v));
                         },
                         // Any non-halt outcome (Fail-in-non-blocking-phase,
                         // Ignore, Disable): record the error so the caller
@@ -650,7 +814,7 @@ impl Executor {
                                 format!("Plugin '{}' timed out", plugin_name),
                             );
                             v.plugin_name = Some(plugin_name.to_string());
-                            return Some(v);
+                            return Some(DeniedPipeline::failure(v));
                         },
                         OnError::Fail => {
                             warn!(
@@ -780,12 +944,13 @@ impl Executor {
     /// non-halting failures.
     async fn run_concurrent_phase(
         &self,
+        hook_name: &str,
         entries: &[HookEntry],
         payload: &dyn PluginPayload,
         extensions: &Extensions,
         ctx_table: &PluginContextTable,
         errors: &mut Vec<crate::error::PluginErrorRecord>,
-    ) -> Option<crate::error::PluginViolation> {
+    ) -> Option<DeniedPipeline> {
         use cpex_orchestration::{run_branches, BranchConfig, BranchOutcome, ErasedBranch};
 
         if entries.is_empty() {
@@ -798,7 +963,10 @@ impl Executor {
         // future's captures.
         enum BranchData {
             Allow,
-            Deny(Option<crate::error::PluginViolation>),
+            Deny(
+                Option<crate::error::PluginViolation>,
+                Option<serde_json::Value>,
+            ),
             Error(Box<PluginError>),
         }
 
@@ -842,13 +1010,13 @@ impl Executor {
 
             branches.push(Box::pin(async move {
                 match handler.invoke(&**payload_clone, &filtered, &mut ctx).await {
-                    Ok(result_box) => match extract_erased(result_box) {
-                        Some(erased) if !erased.continue_processing => {
-                            let violation = erased.violation.map(|mut v| {
+                    Ok(result_box) => match extract_erased_with_metadata(result_box) {
+                        Some(erased) if !erased.fields.continue_processing => {
+                            let violation = erased.fields.violation.map(|mut v| {
                                 v.plugin_name = Some(plugin_name);
                                 v
                             });
-                            BranchData::Deny(violation)
+                            BranchData::Deny(violation, erased.metadata)
                         },
                         // `Some(..)` with continue_processing=true, OR
                         // `None` (downcast failed — historically logged
@@ -880,13 +1048,13 @@ impl Executor {
         // abort test that's fine — that test exercises the Deny
         // path, which still goes through `is_deny` + abort_all.
         let outcomes = run_branches(branches, cfg, |v: &BranchData| {
-            matches!(v, BranchData::Deny(_))
+            matches!(v, BranchData::Deny(..))
         })
         .await;
 
         // Post-loop: walk outcomes in input order applying per-plugin
         // policy. First halting outcome wins.
-        let mut first_violation: Option<crate::error::PluginViolation> = None;
+        let mut first_denial: Option<DeniedPipeline> = None;
 
         for (idx, outcome) in outcomes.into_iter().enumerate() {
             let entry = &entries[idx];
@@ -895,7 +1063,7 @@ impl Executor {
 
             match outcome {
                 BranchOutcome::Completed(BranchData::Allow) => {},
-                BranchOutcome::Completed(BranchData::Deny(opt_v)) => {
+                BranchOutcome::Completed(BranchData::Deny(opt_v, metadata)) => {
                     let violation = opt_v.unwrap_or_else(|| {
                         let mut v = crate::error::PluginViolation::new(
                             "concurrent_deny",
@@ -904,19 +1072,24 @@ impl Executor {
                         v.plugin_name = Some(plugin_name.to_string());
                         v
                     });
-                    if first_violation.is_none() {
-                        first_violation = Some(violation);
+                    if first_denial.is_none() {
+                        first_denial = Some(DeniedPipeline {
+                            violation,
+                            denial_outcome: Some(DenialOutcome::from_entry(
+                                entry, hook_name, metadata,
+                            )),
+                        });
                     }
                 },
                 BranchOutcome::Completed(BranchData::Error(e)) => match on_error {
                     OnError::Fail => {
-                        if first_violation.is_none() {
+                        if first_denial.is_none() {
                             let mut v = crate::error::PluginViolation::new(
                                 "plugin_error",
                                 format!("Plugin '{}' failed: {}", plugin_name, e),
                             );
                             v.plugin_name = Some(plugin_name.to_string());
-                            first_violation = Some(v);
+                            first_denial = Some(DeniedPipeline::failure(v));
                         }
                     },
                     OnError::Ignore => {
@@ -937,13 +1110,13 @@ impl Executor {
                     };
                     match on_error {
                         OnError::Fail => {
-                            if first_violation.is_none() {
+                            if first_denial.is_none() {
                                 let mut v = crate::error::PluginViolation::new(
                                     "plugin_timeout",
                                     format!("Plugin '{}' timed out", plugin_name),
                                 );
                                 v.plugin_name = Some(plugin_name.to_string());
-                                first_violation = Some(v);
+                                first_denial = Some(DeniedPipeline::failure(v));
                             }
                         },
                         OnError::Ignore => {
@@ -969,13 +1142,13 @@ impl Executor {
                     };
                     match on_error {
                         OnError::Fail => {
-                            if first_violation.is_none() {
+                            if first_denial.is_none() {
                                 let mut v = crate::error::PluginViolation::new(
                                     "plugin_panic",
                                     format!("Plugin '{}' task panicked: {}", plugin_name, s),
                                 );
                                 v.plugin_name = Some(plugin_name.to_string());
-                                first_violation = Some(v);
+                                first_denial = Some(DeniedPipeline::failure(v));
                             }
                         },
                         OnError::Ignore => {
@@ -997,7 +1170,7 @@ impl Executor {
             }
         }
 
-        first_violation
+        first_denial
     }
 
     /// Spawn fire-and-forget handlers as background tasks.
@@ -1098,17 +1271,52 @@ pub struct ErasedResultFields {
     pub violation: Option<crate::error::PluginViolation>,
 }
 
+/// Private typed-adapter envelope for data that was not part of the legacy
+/// `ErasedResultFields` public struct. Keeping this separate avoids breaking
+/// third-party `AnyHookHandler` implementations that construct the legacy
+/// fields with a struct literal.
+struct ErasedResultWithMetadata {
+    fields: ErasedResultFields,
+    metadata: Option<serde_json::Value>,
+}
+
+/// Internal result consumed by the executor. Native typed handlers carry
+/// optional denial telemetry; legacy raw handlers naturally carry none.
+struct ExtractedErasedResult {
+    fields: ErasedResultFields,
+    metadata: Option<serde_json::Value>,
+}
+
 /// Extract erased result fields from a type-erased handler result.
 ///
 /// Takes ownership of the Box — the executor consumes the result.
 /// Logs a warning if the downcast fails (indicates a handler returned
 /// the wrong type — a framework bug, not a plugin error).
 pub fn extract_erased(result: Box<dyn Any + Send + Sync>) -> Option<ErasedResultFields> {
-    match result.downcast::<ErasedResultFields>() {
-        Ok(b) => Some(*b),
-        Err(_) => {
-            warn!("extract_erased: downcast failed — handler returned unexpected type");
-            None
+    extract_erased_with_metadata(result).map(|result| result.fields)
+}
+
+/// Extract the erased handler result for executor dispatch.
+///
+/// Accepts both the metadata-capable envelope emitted by typed adapters and
+/// the legacy public `ErasedResultFields` shape emitted by raw handlers.
+fn extract_erased_with_metadata(
+    result: Box<dyn Any + Send + Sync>,
+) -> Option<ExtractedErasedResult> {
+    match result.downcast::<ErasedResultWithMetadata>() {
+        Ok(result) => Some(ExtractedErasedResult {
+            fields: result.fields,
+            metadata: result.metadata,
+        }),
+        Err(result) => match result.downcast::<ErasedResultFields>() {
+            Ok(fields) => Some(ExtractedErasedResult {
+                fields: *fields,
+                metadata: None,
+            }),
+            Err(_) => {
+                warn!("extract_erased: downcast failed — handler returned unexpected type");
+                None
+            },
         },
     }
 }
@@ -1120,14 +1328,29 @@ pub fn extract_erased(result: Box<dyn Any + Send + Sync>) -> Option<ErasedResult
 pub fn erase_result<P: crate::hooks::PluginPayload>(
     result: crate::hooks::PluginResult<P>,
 ) -> Box<dyn Any + Send + Sync> {
-    Box::new(ErasedResultFields {
-        continue_processing: result.continue_processing,
-        modified_payload: result
-            .modified_payload
-            .map(|p| Box::new(p) as Box<dyn PluginPayload>),
-        modified_extensions: result.modified_extensions,
-        violation: result.violation,
+    Box::new(ErasedResultWithMetadata {
+        fields: ErasedResultFields {
+            continue_processing: result.continue_processing,
+            modified_payload: result
+                .modified_payload
+                .map(|p| Box::new(p) as Box<dyn PluginPayload>),
+            modified_extensions: result.modified_extensions,
+            violation: result.violation,
+        },
+        metadata: result.metadata,
     })
+}
+
+/// Wrap a raw handler result with optional denial telemetry.
+///
+/// Intended for bridge hosts that already construct [`ErasedResultFields`].
+/// The public fields struct remains source-compatible for existing raw
+/// handlers; this additive helper supplies the metadata-capable envelope.
+pub fn erase_raw_result_with_metadata(
+    fields: ErasedResultFields,
+    metadata: Option<serde_json::Value>,
+) -> Box<dyn Any + Send + Sync> {
+    Box::new(ErasedResultWithMetadata { fields, metadata })
 }
 
 #[cfg(test)]
@@ -1135,6 +1358,22 @@ mod tests {
     use super::*;
     use crate::hooks::payload::PluginPayload;
     use crate::hooks::PluginResult;
+
+    #[test]
+    fn cross_runtime_denial_metadata_acceptance_fixtures() {
+        let cases: serde_json::Value =
+            serde_json::from_str(include_str!("../../../tests/fixtures/denial_metadata.json"))
+                .unwrap();
+        for case in cases.as_array().unwrap() {
+            let actual = sanitize_denial_metadata(case["input"].clone()).unwrap_or_default();
+            assert_eq!(
+                serde_json::Value::Object(actual),
+                case["expected"],
+                "{}",
+                case["name"]
+            );
+        }
+    }
 
     #[derive(Debug, Clone)]
     #[allow(dead_code)] // test fixture — typed shape is the point, not field reads
@@ -1161,6 +1400,61 @@ mod tests {
         let fields = extract_erased(erased).unwrap();
         assert!(!fields.continue_processing);
         assert_eq!(fields.violation.as_ref().unwrap().code, "test");
+    }
+
+    #[test]
+    fn test_erase_result_preserves_denial_metadata() {
+        let metadata = serde_json::json!({"rate_limiter.throttled": true})
+            .as_object()
+            .unwrap()
+            .clone();
+        let result: PluginResult<TestPayload> = PluginResult::deny_with_metadata(
+            crate::error::PluginViolation::new("test", "denied"),
+            metadata,
+        );
+        let erased = erase_result(result);
+        let fields = extract_erased_with_metadata(erased).unwrap();
+        assert_eq!(
+            fields.metadata.unwrap()["rate_limiter.throttled"],
+            serde_json::Value::Bool(true)
+        );
+    }
+
+    #[test]
+    fn legacy_raw_erased_fields_remain_supported_without_metadata() {
+        let erased: Box<dyn Any + Send + Sync> = Box::new(ErasedResultFields {
+            continue_processing: false,
+            modified_payload: None,
+            modified_extensions: None,
+            violation: Some(crate::error::PluginViolation::new("test", "denied")),
+        });
+
+        let result = extract_erased_with_metadata(erased).unwrap();
+        assert!(!result.fields.continue_processing);
+        assert!(result.metadata.is_none());
+    }
+
+    #[test]
+    fn denial_metadata_keeps_only_flat_bounded_scalars() {
+        let metadata = serde_json::json!({
+            "rate_limiter.throttled": true,
+            "retry_after_seconds": 30,
+            "nested": {"user": "must-not-leak"},
+            "array": ["must-not-leak"],
+            "token": "must-not-leak",
+            "bad key": "must-not-leak",
+            "very_long": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        });
+
+        let safe = sanitize_denial_metadata(metadata).unwrap();
+        assert_eq!(safe.len(), 2);
+        assert_eq!(safe["rate_limiter.throttled"], true);
+        assert_eq!(safe["retry_after_seconds"], 30);
+        assert!(!safe.contains_key("nested"));
+        assert!(!safe.contains_key("array"));
+        assert!(!safe.contains_key("token"));
+        assert!(!safe.contains_key("bad key"));
+        assert!(!safe.contains_key("very_long"));
     }
 
     #[test]

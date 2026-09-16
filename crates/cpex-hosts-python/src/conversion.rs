@@ -214,6 +214,16 @@ pub fn response_to_result(
     response: Value,
     inbound: &cpex_core::extensions::Extensions,
 ) -> Result<ErasedResultFields, HostError> {
+    response_to_result_with_metadata(hook_name, response, inbound).map(|(fields, _)| fields)
+}
+
+/// Convert a worker response and retain its explicit `denial_metadata` for the core
+/// executor's denial-telemetry sanitizer.
+pub fn response_to_result_with_metadata(
+    hook_name: &str,
+    response: Value,
+    inbound: &cpex_core::extensions::Extensions,
+) -> Result<(ErasedResultFields, Option<Value>), HostError> {
     let continue_processing = response
         .get("continue_processing")
         .and_then(Value::as_bool)
@@ -234,12 +244,24 @@ pub fn response_to_result(
         Some(raw) => crate::extensions::owned_from_returned_slot(raw, inbound)?,
     };
 
-    Ok(ErasedResultFields {
-        continue_processing,
-        modified_payload,
-        modified_extensions,
-        violation,
-    })
+    // Metadata remains untrusted until the core executor sees an explicit
+    // denial and applies its bounded telemetry sanitizer. Keep the original
+    // JSON here so Python-hosted plugins have the same opt-in path as native
+    // Rust plugins. Ordinary Python metadata is never forwarded automatically.
+    let metadata = match response.get("denial_metadata") {
+        Some(Value::Null) | None => None,
+        Some(raw) => Some(raw.clone()),
+    };
+
+    Ok((
+        ErasedResultFields {
+            continue_processing,
+            modified_payload,
+            modified_extensions,
+            violation,
+        },
+        metadata,
+    ))
 }
 
 /// Parse a violation, tolerating the Python model's extra fields.
@@ -512,7 +534,7 @@ mod tests {
 
     #[test]
     fn a_deny_response_carries_its_violation() {
-        let fields = response_to_result(
+        let (fields, metadata) = response_to_result_with_metadata(
             "tool_pre_invoke",
             serde_json::json!({
                 "continue_processing": false,
@@ -522,6 +544,11 @@ mod tests {
                     "description": "matched the email pattern",
                     "details": {"field": "q"},
                     "mcp_error_code": -32603
+                },
+                "metadata": {"ordinary": 42},
+                "denial_metadata": {
+                    "rate_limiter.throttled": true,
+                    "nested": {"request": "must-stay-untrusted"}
                 }
             }),
             &no_inbound(),
@@ -542,6 +569,22 @@ mod tests {
             Some(-32603),
             "the Python mcp_error_code maps onto the Rust proto_error_code"
         );
+        assert_eq!(
+            metadata.unwrap()["rate_limiter.throttled"],
+            serde_json::Value::Bool(true),
+            "the executor, not the Python host, decides whether metadata is safe to export"
+        );
+    }
+
+    #[test]
+    fn ordinary_metadata_does_not_opt_in_to_denial_telemetry() {
+        let (_, metadata) = response_to_result_with_metadata(
+            "tool_pre_invoke",
+            serde_json::json!({"continue_processing": false, "metadata": {"rejects": 1}}),
+            &no_inbound(),
+        )
+        .unwrap();
+        assert!(metadata.is_none());
     }
 
     #[test]

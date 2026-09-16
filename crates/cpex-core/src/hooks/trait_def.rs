@@ -219,8 +219,17 @@ pub struct PluginResult<P: PluginPayload> {
     /// Policy violation. Present when `continue_processing` is `false`.
     pub violation: Option<PluginViolation>,
 
-    /// Optional metadata from the plugin (telemetry, diagnostics).
-    /// Not used for scheduling or policy decisions.
+    /// Optional safe metadata for a denied result.
+    ///
+    /// The executor reads this only when `continue_processing` is `false`.
+    /// It is copied into [`crate::executor::DenialOutcome`] only after
+    /// validating a deliberately small telemetry schema: at most 16 flat
+    /// boolean, signed-64-bit integer, or finite floating-point fields with
+    /// bounded metric-style keys. Use static metric names. Do not put
+    /// request data, identities, credentials, headers, configuration, or
+    /// violation details here.
+    ///
+    /// This value is not used for scheduling or policy decisions.
     pub metadata: Option<serde_json::Value>,
 }
 
@@ -247,6 +256,21 @@ impl<P: PluginPayload> PluginResult<P> {
             violation: Some(violation),
             metadata: None,
         }
+    }
+
+    /// Deny with explicit, safe observability metadata.
+    ///
+    /// `metadata` must contain only flat boolean, signed-64-bit integer, or
+    /// finite floating-point values such as `{"policy.matched": true, "rejects": 1}`.
+    /// The executor drops fields that do not meet the denial telemetry
+    /// contract; this constructor does not make arbitrary data safe.
+    pub fn deny_with_metadata(
+        violation: PluginViolation,
+        metadata: serde_json::Map<String, serde_json::Value>,
+    ) -> Self {
+        let mut result = Self::deny(violation);
+        result.metadata = Some(serde_json::Value::Object(metadata));
+        result
     }
 
     /// Modify payload only — extensions unchanged.

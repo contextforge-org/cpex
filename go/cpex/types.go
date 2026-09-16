@@ -253,10 +253,21 @@ type PluginError struct {
 	ProtoErrorCode *int64         `msgpack:"proto_error_code,omitempty"`
 }
 
+// DenialOutcome carries trusted registry provenance plus safe boolean/numeric
+// telemetry for an explicit plugin denial.
+type DenialOutcome struct {
+	PluginID   string         `msgpack:"plugin_id"`
+	PluginName string         `msgpack:"plugin_name"`
+	HookName   string         `msgpack:"hook_name"`
+	Mode       string         `msgpack:"mode"`
+	Metadata   map[string]any `msgpack:"metadata,omitempty"`
+}
+
 // PipelineResult is the aggregate result from a hook invocation.
 type PipelineResult struct {
 	ContinueProcessing bool             `msgpack:"continue_processing"`
 	Violation          *PluginViolation `msgpack:"violation,omitempty"`
+	DenialOutcome      *DenialOutcome   `msgpack:"denial_outcome,omitempty"`
 	// Errors from plugins that ran with on_error: ignore or
 	// on_error: disable. Empty when no plugin errored on a non-halt
 	// path. Fire-and-forget errors live on BackgroundTasks.Wait()
@@ -283,6 +294,7 @@ type PipelineResult struct {
 type TypedPipelineResult[P any] struct {
 	ContinueProcessing bool
 	Violation          *PluginViolation
+	DenialOutcome      *DenialOutcome
 	Errors             []PluginError
 	Metadata           map[string]any
 	PayloadType        uint8
