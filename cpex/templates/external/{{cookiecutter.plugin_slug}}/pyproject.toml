@@ -44,8 +44,8 @@ authors = [
 ]
 
 dependencies = [
-    "mcp==2.0.0b1",
-    "mcp-types==2.0.0b1",
+    "mcp>=2.0.0",
+    "mcp-types>=2.0.0",
     "mcp-contextforge-gateway",
 ]
 
