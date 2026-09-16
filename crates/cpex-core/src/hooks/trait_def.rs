@@ -224,7 +224,8 @@ pub struct PluginResult<P: PluginPayload> {
     /// The executor reads this only when `continue_processing` is `false`.
     /// It is copied into [`crate::executor::DenialOutcome`] only after
     /// validating a deliberately small telemetry schema: at most 16 flat
-    /// boolean or numeric fields with bounded metric-style keys. Do not put
+    /// boolean, signed-64-bit integer, or finite floating-point fields with
+    /// bounded metric-style keys. Use static metric names. Do not put
     /// request data, identities, credentials, headers, configuration, or
     /// violation details here.
     ///
@@ -259,8 +260,8 @@ impl<P: PluginPayload> PluginResult<P> {
 
     /// Deny with explicit, safe observability metadata.
     ///
-    /// `metadata` must contain only flat boolean or numeric values such as
-    /// `{"rate_limiter.throttled": true, "retry_after_seconds": 30}`.
+    /// `metadata` must contain only flat boolean, signed-64-bit integer, or
+    /// finite floating-point values such as `{"policy.matched": true, "rejects": 1}`.
     /// The executor drops fields that do not meet the denial telemetry
     /// contract; this constructor does not make arbitrary data safe.
     pub fn deny_with_metadata(

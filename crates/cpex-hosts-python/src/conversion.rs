@@ -217,7 +217,7 @@ pub fn response_to_result(
     response_to_result_with_metadata(hook_name, response, inbound).map(|(fields, _)| fields)
 }
 
-/// Convert a worker response and retain its untrusted metadata for the core
+/// Convert a worker response and retain its explicit `denial_metadata` for the core
 /// executor's denial-telemetry sanitizer.
 pub fn response_to_result_with_metadata(
     hook_name: &str,
@@ -246,9 +246,9 @@ pub fn response_to_result_with_metadata(
 
     // Metadata remains untrusted until the core executor sees an explicit
     // denial and applies its bounded telemetry sanitizer. Keep the original
-    // JSON here so Python-hosted plugins have the same deny-metadata path as
-    // native Rust plugins.
-    let metadata = match response.get("metadata") {
+    // JSON here so Python-hosted plugins have the same opt-in path as native
+    // Rust plugins. Ordinary Python metadata is never forwarded automatically.
+    let metadata = match response.get("denial_metadata") {
         Some(Value::Null) | None => None,
         Some(raw) => Some(raw.clone()),
     };
@@ -545,7 +545,8 @@ mod tests {
                     "details": {"field": "q"},
                     "mcp_error_code": -32603
                 },
-                "metadata": {
+                "metadata": {"ordinary": 42},
+                "denial_metadata": {
                     "rate_limiter.throttled": true,
                     "nested": {"request": "must-stay-untrusted"}
                 }
@@ -573,6 +574,17 @@ mod tests {
             serde_json::Value::Bool(true),
             "the executor, not the Python host, decides whether metadata is safe to export"
         );
+    }
+
+    #[test]
+    fn ordinary_metadata_does_not_opt_in_to_denial_telemetry() {
+        let (_, metadata) = response_to_result_with_metadata(
+            "tool_pre_invoke",
+            serde_json::json!({"continue_processing": false, "metadata": {"rejects": 1}}),
+            &no_inbound(),
+        )
+        .unwrap();
+        assert!(metadata.is_none());
     }
 
     #[test]

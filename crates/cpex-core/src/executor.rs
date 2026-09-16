@@ -252,6 +252,8 @@ impl DenialOutcome {
 /// must opt in deliberately via `PluginResult::deny_with_metadata`. This
 /// validator prevents accidental structured data leakage: no nesting, arrays,
 /// objects, strings, oversized keys, or unbounded field counts survive.
+/// Integers must fit signed 64-bit; floats must be finite. Producers must use
+/// static metric names and non-sensitive values, never numeric identifiers.
 fn sanitize_denial_metadata(
     metadata: serde_json::Value,
 ) -> Option<serde_json::Map<String, serde_json::Value>> {
@@ -273,10 +275,14 @@ fn sanitize_denial_metadata(
         // string is not an identity, credential, request value, or violation
         // detail. Boolean and numeric metrics give hosts useful telemetry
         // without exporting that sensitive free-form channel.
-        let valid_value = matches!(
-            value,
-            serde_json::Value::Bool(_) | serde_json::Value::Number(_)
-        );
+        let valid_value = match value {
+            serde_json::Value::Bool(_) => true,
+            serde_json::Value::Number(number) => {
+                number.as_i64().is_some()
+                    || (number.is_f64() && number.as_f64().is_some_and(f64::is_finite))
+            },
+            _ => false,
+        };
         if valid_key && valid_value {
             safe.insert(key.clone(), value.clone());
         }
@@ -1352,6 +1358,22 @@ mod tests {
     use super::*;
     use crate::hooks::payload::PluginPayload;
     use crate::hooks::PluginResult;
+
+    #[test]
+    fn cross_runtime_denial_metadata_acceptance_fixtures() {
+        let cases: serde_json::Value =
+            serde_json::from_str(include_str!("../../../tests/fixtures/denial_metadata.json"))
+                .unwrap();
+        for case in cases.as_array().unwrap() {
+            let actual = sanitize_denial_metadata(case["input"].clone()).unwrap_or_default();
+            assert_eq!(
+                serde_json::Value::Object(actual),
+                case["expected"],
+                "{}",
+                case["name"]
+            );
+        }
+    }
 
     #[derive(Debug, Clone)]
     #[allow(dead_code)] // test fixture — typed shape is the point, not field reads
