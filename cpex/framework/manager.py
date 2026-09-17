@@ -41,13 +41,25 @@ from pydantic import BaseModel, RootModel
 # First-Party
 from cpex.framework.base import HookRef, Plugin
 from cpex.framework.constants import EXTERNAL_PLUGIN_TYPE
-from cpex.framework.errors import PluginError, PluginViolationError, convert_exception_to_error
+from cpex.framework.errors import (
+    PluginError,
+    PluginViolationError,
+    convert_exception_to_error,
+)
 from cpex.framework.extensions.extensions import Extensions
 from cpex.framework.extensions.tiers import filter_extensions
-from cpex.framework.hooks.policies import DefaultHookPolicy, HookPayloadPolicy, apply_policy
+from cpex.framework.hooks.policies import (
+    DefaultHookPolicy,
+    HookPayloadPolicy,
+    apply_policy,
+)
 from cpex.framework.loader.config import ConfigLoader
 from cpex.framework.loader.plugin import PluginLoader
-from cpex.framework.memory import _safe_deepcopy, copyonwrite, wrap_payload_for_isolation
+from cpex.framework.memory import (
+    _safe_deepcopy,
+    copyonwrite,
+    wrap_payload_for_isolation,
+)
 from cpex.framework.models import (
     Config,
     ControlExecutionRecord,
@@ -446,24 +458,24 @@ class PluginExecutor:
                     # then re-raise (fix for #147). FAF plugins are not scheduled on this path,
                     # so their records are absent — unlike the non-exception halt result.
                     _pve = violation_err
-                    executions.append(
-                        _make_execution_record(
-                            ref,
-                            hook_type,
-                            ControlExecutionStatus.COMPLETED,
-                            effective_allow=False,
-                            requested_allow=False,
-                            matched=True,
-                            applied=True,
-                            reason=_truncate_opt(_pve.violation.reason if _pve.violation else str(_pve)),
-                            error_code=_truncate(_pve.violation.code) if _pve.violation else "plugin_violation",
-                        )
+                    denial_record = _make_execution_record(
+                        ref,
+                        hook_type,
+                        ControlExecutionStatus.COMPLETED,
+                        effective_allow=False,
+                        requested_allow=False,
+                        matched=True,
+                        applied=True,
+                        reason=_truncate_opt(_pve.violation.reason if _pve.violation else str(_pve)),
+                        error_code=_truncate(_pve.violation.code) if _pve.violation else "plugin_violation",
                     )
+                    executions.append(denial_record)
                     for task in concurrent_tasks:
                         if not task.done():
                             task.cancel()
                     await asyncio.gather(*concurrent_tasks, return_exceptions=True)
                     _pve.executions = list(executions)
+                    _pve.attach_denial_outcome(denial_record)
                     raise _pve
                 if result.modified_payload is not None:
                     logger.debug(
@@ -713,21 +725,21 @@ class PluginExecutor:
                 # on this path, so their records are absent — unlike the non-exception halt.
                 duration_ns = time.monotonic_ns() - t_start
                 if executions is not None:
-                    executions.append(
-                        _make_execution_record(
-                            hook_ref,
-                            hook_type,
-                            ControlExecutionStatus.COMPLETED,
-                            effective_allow=False,
-                            duration_ns=duration_ns,
-                            requested_allow=False,
-                            matched=True,
-                            applied=True,
-                            reason=_truncate_opt(_pve.violation.reason if _pve.violation else str(_pve)),
-                            error_code=_truncate(_pve.violation.code) if _pve.violation else "plugin_violation",
-                        )
+                    denial_record = _make_execution_record(
+                        hook_ref,
+                        hook_type,
+                        ControlExecutionStatus.COMPLETED,
+                        effective_allow=False,
+                        duration_ns=duration_ns,
+                        requested_allow=False,
+                        matched=True,
+                        applied=True,
+                        reason=_truncate_opt(_pve.violation.reason if _pve.violation else str(_pve)),
+                        error_code=_truncate(_pve.violation.code) if _pve.violation else "plugin_violation",
                     )
+                    executions.append(denial_record)
                     _pve.executions = list(executions)
+                    _pve.attach_denial_outcome(denial_record)
                 raise
             except PluginError as _pe:
                 # execute_plugin re-raises PluginError when on_error=FAIL — must not swallow.
@@ -1235,16 +1247,22 @@ class PluginExecutor:
                             violation_reason = result.violation.reason
                             violation_desc = result.violation.description
                             violation_code = result.violation.code
-                            raise PluginViolationError(
+                            raise PluginViolationError._from_framework_denial(
                                 f"{hook_ref.name} blocked by plugin {plugin_name}: {violation_code} - {violation_reason} ({violation_desc})",
-                                violation=result.violation,
+                                result.violation,
+                                result.denial_metadata,
                             )
-                        raise PluginViolationError(f"{hook_ref.name} blocked by plugin")
+                        raise PluginViolationError._from_framework_denial(
+                            f"{hook_ref.name} blocked by plugin",
+                            None,
+                            result.denial_metadata,
+                        )
                     return PluginResult(
                         continue_processing=False,
                         modified_payload=None,
                         violation=result.violation,
                         metadata=combined_metadata,
+                        denial_metadata=result.denial_metadata,
                     )
                 if hook_ref.plugin_ref.mode in (PluginMode.AUDIT, PluginMode.TRANSFORM):
                     mode_label = hook_ref.plugin_ref.mode.value

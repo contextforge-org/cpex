@@ -13,11 +13,13 @@ messages where possible, falling back to Struct for dynamic fields.
 # pylint: disable=no-member
 
 # Standard
+from typing import Any, Mapping, Optional
 
 # Third-Party
 from google.protobuf import json_format
 
 # First-Party
+from cpex.framework.errors import sanitize_denial_metadata
 from cpex.framework.external.grpc.proto import plugin_service_pb2
 from cpex.framework.models import GlobalContext as PydanticGlobalContext
 from cpex.framework.models import PluginContext as PydanticPluginContext
@@ -218,6 +220,9 @@ def pydantic_result_to_proto_base(result: PluginResult) -> plugin_service_pb2.Pl
     if result.metadata:
         json_format.ParseDict(result.metadata, proto_result.metadata)
 
+    if result.denial_metadata is not None:
+        proto_result.denial_metadata.CopyFrom(denial_metadata_to_proto(result.denial_metadata))
+
     return proto_result
 
 
@@ -238,6 +243,49 @@ def update_pydantic_result_from_proto_base(
 
     if proto_base.metadata.fields:
         result.metadata = json_format.MessageToDict(proto_base.metadata)
+
+    if proto_base.HasField("denial_metadata"):
+        result.denial_metadata = denial_metadata_from_proto(proto_base.denial_metadata)
+
+
+def denial_metadata_to_proto(metadata: Optional[Mapping[str, Any]]) -> plugin_service_pb2.DenialMetadata:
+    """Validate opt-in metrics and preserve their primitive types on protobuf."""
+    result = plugin_service_pb2.DenialMetadata()
+    for key, value in sanitize_denial_metadata(metadata).items():
+        metric = result.fields[key]
+        if type(value) is bool:
+            metric.boolean = value
+        elif type(value) is int:
+            metric.integer = value
+        else:
+            metric.floating = value
+    return result
+
+
+def denial_metadata_from_proto(metadata: plugin_service_pb2.DenialMetadata) -> dict[str, Any]:
+    """Decode only set primitive values and revalidate the untrusted map."""
+    values = {}
+    for key, metric in metadata.fields.items():
+        kind = metric.WhichOneof("value")
+        values[key] = getattr(metric, kind) if kind else None
+    return sanitize_denial_metadata(values)
+
+
+def populate_proto_result(result: dict[str, Any], response: plugin_service_pb2.InvokeHookResponse) -> None:
+    """Write polymorphic results with a separate, lossless denial metrics field."""
+    body = dict(result)
+    metrics = body.pop("denial_metadata", None)
+    json_format.ParseDict(body, response.result)
+    if metrics is not None:
+        response.result_base.denial_metadata.CopyFrom(denial_metadata_to_proto(metrics))
+
+
+def proto_result_to_dict(response: plugin_service_pb2.InvokeHookResponse) -> dict[str, Any]:
+    """Read a result, overlaying typed denial metrics when supplied by a peer."""
+    result = json_format.MessageToDict(response.result)
+    if response.result_base.HasField("denial_metadata"):
+        result["denial_metadata"] = denial_metadata_from_proto(response.result_base.denial_metadata)
+    return result
 
 
 def update_pydantic_context_from_proto(

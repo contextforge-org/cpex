@@ -1287,7 +1287,9 @@ class PluginConfig(BaseModel):
             ValueError: If an unknown capability is declared.
         """
         # First-Party
-        from cpex.framework.extensions.tiers import Capability  # pylint: disable=import-outside-toplevel
+        from cpex.framework.extensions.tiers import (
+            Capability,  # pylint: disable=import-outside-toplevel
+        )
 
         if isinstance(v, (list, set, frozenset)):
             known = {c.value for c in Capability}
@@ -1979,6 +1981,12 @@ class PluginResult(BaseModel, Generic[T]):
                 (e.g., updated HTTP headers from token delegation, appended security labels).
             violation (Optional[PluginViolation]): violation object.
             metadata (Optional[dict[str, Any]]): additional metadata.
+            denial_metadata (Optional[dict[str, Any]]): Explicit opt-in denial telemetry.
+                Use at most 16 static ASCII metric keys (1–64 letters, digits, dots,
+                underscores or hyphens) with non-sensitive boolean/numeric values.
+                Strings, nested values, non-finite floats and integers outside signed
+                64-bit range are rejected. Never supply numeric request/user identifiers.
+                Ordinary metadata is never forwarded into a denial outcome.
             background_tasks (list[asyncio.Task]): asyncio.Task handles for any FIRE_AND_FORGET
                 plugins scheduled during this invocation. Use ``wait_for_background_tasks()``
                 to await them and collect any errors. This field is excluded from model serialization.
@@ -2024,6 +2032,7 @@ class PluginResult(BaseModel, Generic[T]):
     modified_extensions: Optional[Extensions] = None
     violation: Optional[PluginViolation] = None
     metadata: Optional[dict[str, Any]] = Field(default_factory=dict)
+    denial_metadata: Optional[dict[str, Any]] = None
     background_tasks: list[asyncio.Task] = Field(default_factory=list, exclude=True)
     http_headers: Optional[dict[str, str]] = None
     retry_delay_ms: int = 0

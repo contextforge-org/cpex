@@ -44,10 +44,15 @@ from google.protobuf.struct_pb2 import Struct
 from cpex.framework.external.grpc.proto import plugin_service_pb2
 from cpex.framework.external.mcp.server.server import ExternalPluginServer
 from cpex.framework.external.proto_convert import (
+    populate_proto_result,
     proto_context_to_pydantic,
     pydantic_context_to_proto,
 )
-from cpex.framework.external.unix.protocol import ProtocolError, read_message, write_message_async
+from cpex.framework.external.unix.protocol import (
+    ProtocolError,
+    read_message,
+    write_message_async,
+)
 from cpex.framework.models import PluginContext
 
 logger = logging.getLogger(__name__)
@@ -245,7 +250,7 @@ class UnixSocketPluginServer:
                 response.error.mcp_error_code = error_dict.get("mcp_error_code", -32603)
             else:
                 if "result" in result:
-                    json_format.ParseDict(result["result"], response.result)
+                    populate_proto_result(result["result"], response)
                 if "context" in result:
                     ctx = result["context"]
                     # Handle both Pydantic (optimized path) and dict (MCP compat)

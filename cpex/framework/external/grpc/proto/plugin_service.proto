@@ -116,6 +116,20 @@ message PluginResultBase {
   bool continue_processing = 1;           // Whether to continue plugin chain
   PluginViolation violation = 2;          // Violation if policy check failed
   google.protobuf.Struct metadata = 3;   // Result metadata
+  DenialMetadata denial_metadata = 4;   // Explicit numeric telemetry opt-in
+}
+
+// Struct numbers are doubles; preserve signed 64-bit metrics without rounding.
+message DenialMetric {
+  oneof value {
+    bool boolean = 1;
+    sint64 integer = 2;
+    double floating = 3;
+  }
+}
+
+message DenialMetadata {
+  map<string, DenialMetric> fields = 1;
 }
 
 // ============================================================================

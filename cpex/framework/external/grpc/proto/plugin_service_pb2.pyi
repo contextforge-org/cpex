@@ -143,19 +143,50 @@ class PluginViolation(_message.Message):
     ) -> None: ...
 
 class PluginResultBase(_message.Message):
-    __slots__ = ("continue_processing", "violation", "metadata")
+    __slots__ = ("continue_processing", "violation", "metadata", "denial_metadata")
     CONTINUE_PROCESSING_FIELD_NUMBER: _ClassVar[int]
     VIOLATION_FIELD_NUMBER: _ClassVar[int]
     METADATA_FIELD_NUMBER: _ClassVar[int]
+    DENIAL_METADATA_FIELD_NUMBER: _ClassVar[int]
     continue_processing: bool
     violation: PluginViolation
     metadata: _struct_pb2.Struct
+    denial_metadata: DenialMetadata
     def __init__(
         self,
         continue_processing: bool = ...,
         violation: _Optional[_Union[PluginViolation, _Mapping]] = ...,
         metadata: _Optional[_Union[_struct_pb2.Struct, _Mapping]] = ...,
+        denial_metadata: _Optional[_Union[DenialMetadata, _Mapping]] = ...,
     ) -> None: ...
+
+class DenialMetric(_message.Message):
+    __slots__ = ("boolean", "integer", "floating")
+    BOOLEAN_FIELD_NUMBER: _ClassVar[int]
+    INTEGER_FIELD_NUMBER: _ClassVar[int]
+    FLOATING_FIELD_NUMBER: _ClassVar[int]
+    boolean: bool
+    integer: int
+    floating: float
+    def __init__(
+        self, boolean: bool = ..., integer: _Optional[int] = ..., floating: _Optional[float] = ...
+    ) -> None: ...
+
+class DenialMetadata(_message.Message):
+    __slots__ = ("fields",)
+    class FieldsEntry(_message.Message):
+        __slots__ = ("key", "value")
+        KEY_FIELD_NUMBER: _ClassVar[int]
+        VALUE_FIELD_NUMBER: _ClassVar[int]
+        key: str
+        value: DenialMetric
+        def __init__(
+            self, key: _Optional[str] = ..., value: _Optional[_Union[DenialMetric, _Mapping]] = ...
+        ) -> None: ...
+
+    FIELDS_FIELD_NUMBER: _ClassVar[int]
+    fields: _containers.MessageMap[str, DenialMetric]
+    def __init__(self, fields: _Optional[_Mapping[str, DenialMetric]] = ...) -> None: ...
 
 class PluginError(_message.Message):
     __slots__ = ("message", "plugin_name", "code", "details", "mcp_error_code")
@@ -186,7 +217,6 @@ class HealthCheckRequest(_message.Message):
 
 class HealthCheckResponse(_message.Message):
     __slots__ = ("status",)
-
     class ServingStatus(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
         __slots__ = ()
         UNKNOWN: _ClassVar[HealthCheckResponse.ServingStatus]
