@@ -1,0 +1,4 @@
+# Treat rustdoc warnings as errors everywhere (broken intra-doc links, etc.),
+# matching the [workspace.lints.rustdoc] policy and the `make doc` target.
+[build]
+rustdocflags = ["-D", "warnings"]

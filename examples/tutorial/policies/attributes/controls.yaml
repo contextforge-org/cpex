@@ -1,0 +1,16 @@
+# Operator-maintained facts for module 18, loaded into the `data.*` tree.
+#
+# These are decisions an operator makes and maintains alongside the deployment,
+# carried by no token and living in no application: which tools are currently
+# enabled, and the org's data region. Policy reads them per request; it does
+# not compute them. Everything lives under a top-level `data:` mapping.
+data:
+  org:
+    # The region this deployment's data must stay in.
+    data_region: eu
+  controls:
+    # An operator's per-tool kill switch: flip a tool off without touching
+    # policy or code. Policy reads these facts and decides.
+    tools:
+      get_compensation: { enabled: false }   # frozen by operations
+      search_repos: { enabled: true }

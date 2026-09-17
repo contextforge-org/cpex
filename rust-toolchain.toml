@@ -1,0 +1,6 @@
+# Pin the toolchain so local builds, CI, and the release pipeline all agree.
+# This version is also the project MSRV (mirrored in clippy.toml `msrv` and the
+# `msrv` CI check). Bump all three together.
+[toolchain]
+channel = "1.96.0"
+components = ["clippy", "rustfmt", "rust-analyzer", "llvm-tools-preview"]

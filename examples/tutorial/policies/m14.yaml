@@ -1,0 +1,44 @@
+# Module 14, Passthrough (forward the caller's token, mint nothing).
+#
+# Passthrough is the zero-leg case, defined by what is ABSENT: there is no
+# `delegate(...)` step. CPEX validates the caller's token inbound, authorizes
+# the call, and that same token is what flows downstream.
+#
+#   no delegate            (this module)   forward the caller's token unchanged
+#   delegate(subject: …)   (modules 6/13)  mint a fresh, scoped token
+#
+# The trade-off is scope: a forwarded token is as broad as it was issued, where
+# a minted one is narrowed to a single audience. Forward only when the caller's
+# token is already scoped for the downstream.
+#
+# See the cookbook, Recipe 4 (Forward a token the caller already has).
+
+plugins:
+  # A plain inbound resolver (as in module 2). Its only job here is to
+  # validate the caller's token; there is no delegator plugin at all.
+  - name: keycloak
+    kind: identity/jwt
+    hooks: [identity.resolve]
+    config:
+      role: user
+      header: Authorization
+      claim_mapper: standard
+      trusted_issuers:
+        - issuer: http://localhost:8081/realms/cpex-tutorial
+          audiences: [cpex-tutorial]
+          algorithms: [RS256]
+          decoding_key:
+            kind: jwks_url
+            url: http://localhost:8081/realms/cpex-tutorial/protocol/openid-connect/certs
+            insecure_http: true
+          leeway_seconds: 60
+
+routes:
+  # Passthrough: validate the caller, authorize, and forward. No delegate
+  # step, so the token the caller presented is the token that flows on.
+  - tool: search_repos
+    authentication:
+      - keycloak
+    authorization:
+      pre_invocation:
+        - "require(authenticated)"

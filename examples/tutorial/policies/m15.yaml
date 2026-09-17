@@ -1,0 +1,93 @@
+# Module 15, Dual-principal delegation (who authorized vs. who acted).
+#
+# So far a delegation has spoken for ONE principal. But the common agentic
+# shape has two: a human decides, and an agent carries the call out. You want
+# the minted token to speak for the user (`sub`) AND to name the agent that
+# performed the action (`act`). RFC 8693 calls this delegation (as opposed to
+# impersonation, which records only the subject).
+#
+#   subject: user     the minted token speaks FOR the user (whose authority)
+#   actor:   client   the calling agent is named as the ACTING party
+#
+# Both credentials arrive on every call, on different headers:
+#   - the human's token on X-User-Token   (resolved role: user   -> subject)
+#   - the agent's  token on Authorization (resolved role: client -> client)
+#
+# `actor:` only pairs with an on-behalf-of subject (`user` or `client`). With
+# `subject: this_workload` / `caller_workload` the step is denied when it runs,
+# so a route can't quietly ask for an actor the grant can't carry.
+#
+# See the cookbook, Recipe 6 (User acting through an agent, agent named).
+
+plugins:
+  # The human, on X-User-Token -> subject slot.
+  - name: jwt-user
+    kind: identity/jwt
+    hooks: [identity.resolve]
+    config:
+      role: user
+      header: X-User-Token
+      claim_mapper: standard
+      trusted_issuers:
+        - issuer: http://localhost:8081/realms/cpex-tutorial
+          audiences: [cpex-tutorial]
+          algorithms: [RS256]
+          decoding_key:
+            kind: jwks_url
+            url: http://localhost:8081/realms/cpex-tutorial/protocol/openid-connect/certs
+            insecure_http: true
+          leeway_seconds: 60
+
+  # The agent, on Authorization -> client slot (the acting party).
+  - name: jwt-agent
+    kind: identity/jwt
+    hooks: [identity.resolve]
+    config:
+      role: client
+      header: Authorization
+      claim_mapper: standard
+      trusted_issuers:
+        - issuer: http://localhost:8081/realms/cpex-tutorial
+          audiences: [cpex-gateway]
+          algorithms: [RS256]
+          decoding_key:
+            kind: jwks_url
+            url: http://localhost:8081/realms/cpex-tutorial/protocol/openid-connect/certs
+            insecure_http: true
+          leeway_seconds: 60
+
+  - name: workday-oauth
+    kind: delegator/oauth
+    hooks: [token.delegate]
+    capabilities: [read_inbound_credentials, write_delegated_tokens]
+    config:
+      token_endpoint: http://localhost:8081/realms/cpex-tutorial/protocol/openid-connect/token
+      client_id: cpex-gateway
+      client_secret_source:
+        kind: literal
+        secret: gateway-dev-secret
+      insecure_http: true
+
+routes:
+  # The user authorizes (require role.hr on the SUBJECT), the token is minted
+  # on behalf of the user, and the agent is named as the actor. CPEX puts the
+  # actor on the wire per RFC 8693 delegation; whether `act` lands in the
+  # minted token is the token service's call (Keycloak drops it, see the doc).
+  - tool: get_compensation
+    authentication:
+      - jwt-user
+      - jwt-agent
+    authorization:
+      pre_invocation:
+        - "require(role.hr)"
+        - "delegate(workday-oauth, target: workday-api, audience: workday-api, subject: user, actor: client)"
+        - "require(delegation.granted)"
+
+  # The guardrail: `actor:` only pairs with an on-behalf-of subject. Naming an
+  # actor while the subject is `this_workload` (a client_credentials grant that
+  # carries no actor_token) is a mistake, and CPEX denies it when the step runs
+  # rather than silently dropping the actor.
+  - tool: sync_index
+    authorization:
+      pre_invocation:
+        - "delegate(workday-oauth, target: github-api, audience: github-api, subject: this_workload, actor: client)"

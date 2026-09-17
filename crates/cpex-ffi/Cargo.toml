@@ -1,0 +1,65 @@
+# Location: ./crates/cpex-ffi/Cargo.toml
+# Copyright 2025
+# SPDX-License-Identifier: Apache-2.0
+# Authors: Teryl Taylor
+#
+# CPEX FFI — C API for embedding the CPEX runtime in Go, Python, etc.
+# Compiles to a shared library (cdylib) exporting extern "C" functions.
+# Payloads cross the FFI boundary as MessagePack bytes.
+
+[package]
+name = "cpex-ffi"
+description = "CPEX C FFI — shared library for Go/Python/WASM host bindings."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+publish = false
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+rust-version.workspace = true
+
+[lib]
+crate-type = ["lib", "cdylib", "staticlib"]
+
+[dependencies]
+cpex-core = { workspace = true }
+# APL governance layer — bundled so Go/Python hosts can enable APL
+# policies and route handlers via the `cpex_apl_install` FFI entry point.
+apl-cpex = { workspace = true }
+# The builtin extension set. `cpex_apl_install` delegates registration to
+# cpex-builtins, whose `register_builtins` expands to explicit
+# `register_factory` calls — so the factory symbols survive in the
+# staticlib (no inventory/linkme link-section GC hazard). The feature set
+# below is the exact bundle the default `.a` ships: four hook plugins, both
+# bundled PDPs (cedar-direct and cel), and the Valkey session store. Valkey
+# pulls a redis client + rustls TLS stack, so it adds materially to the `.a`
+# size and to the musl cross-build surface.
+cpex-builtins = { workspace = true, default-features = false, features = [
+    "pii-scanner",
+    "audit-logger",
+    "identity-jwt",
+    "delegator-oauth",
+    "cedar-direct",
+    "cel",
+    "valkey",
+] }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+rmp-serde = { workspace = true }
+serde_bytes = { workspace = true }
+tracing = { workspace = true }
+
+[features]
+# No opt-in features: the bundled set (including the Valkey session store) is
+# fixed in the cpex-builtins dependency above.
+default = []
+
+[dev-dependencies]
+async-trait = { workspace = true }
+
+[lints]
+workspace = true

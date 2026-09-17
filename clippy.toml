@@ -1,0 +1,30 @@
+# Clippy thresholds and method blocklist. Lint *levels* live in
+# [workspace.lints.clippy] in Cargo.toml; this file only tunes the knobs the
+# complexity/style lints read.
+too-many-lines-threshold = 100
+cognitive-complexity-threshold = 25
+too-many-arguments-threshold = 8
+max-fn-params-bools = 2
+max-struct-bools = 3
+enum-variant-size-threshold = 256
+type-complexity-threshold = 250
+# Keep in sync with rust-toolchain.toml `channel`.
+msrv = "1.96"
+avoid-breaking-exported-api = false
+
+# Identifiers clippy::doc_markdown should not flag as needing backticks.
+doc-valid-idents = [
+    "CPEX", "ContextForge",
+    "APL", "CMF", "PDP", "PEP",
+    "Cedar", "CEL", "Biscuit",
+    "JWT", "OAuth", "OIDC", "mTLS",
+    "PII", "Valkey", "Redis",
+    "FFI", "ABI", "cdylib", "staticlib",
+    "gRPC", "WASM", "WebAssembly", "MessagePack",
+    "OpenTelemetry", "IPv4", "IPv6", "MiB",
+]
+
+# Method blocklist enforced by the `disallowed_methods` lint.
+disallowed-methods = [
+    { path = "std::thread::sleep", reason = "use tokio::time::sleep in async contexts to avoid blocking the runtime" },
+]

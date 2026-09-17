@@ -1,0 +1,32 @@
+# Location: ./crates/apl-cmf/Cargo.toml
+# Copyright 2025
+# SPDX-License-Identifier: Apache-2.0
+# Authors: Teryl Taylor
+#
+# apl-cmf — bridge from cpex-core typed extensions into apl-core's
+# AttributeBag. The "where the policy vocabulary comes from" crate.
+
+[package]
+name = "apl-cmf"
+description = "APL ↔ CPEX bridge — extension → AttributeBag mapping"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+apl-core = { workspace = true }
+cpex-core = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+async-trait = { workspace = true }
+
+[lints]
+workspace = true

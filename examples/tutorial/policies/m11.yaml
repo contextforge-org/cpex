@@ -1,0 +1,64 @@
+# Module 11, Organizing policy (Groups)
+#
+# By now every route repeats the same `authentication: [keycloak]` line. The
+# identity resolver is the same everywhere; only the per-route authorization
+# differs. A `group` factors that shared setup out once, and routes join it
+# with `groups:`.
+#
+# Here the `identified` group holds the one thing every route needs: resolve
+# the caller's token with `keycloak`. Each route joins it and adds only its
+# own authorization. Change the resolver once (add a claim mapper, a second
+# issuer) and every route that joins the group inherits it.
+#
+# `groups:` is sugar over tags: `groups: identified` is exactly
+# `meta: { tags: [identified] }`. A route that names a group that doesn't
+# exist is rejected at load, so a typo can't silently leave a route
+# unauthenticated.
+
+plugins:
+  - name: keycloak
+    kind: identity/jwt
+    hooks: [identity.resolve]
+    config:
+      role: user
+      header: Authorization
+      claim_mapper: standard
+      trusted_issuers:
+        - issuer: http://localhost:8081/realms/cpex-tutorial
+          audiences: [cpex-tutorial]
+          algorithms: [RS256]
+          decoding_key:
+            kind: jwks_url
+            url: http://localhost:8081/realms/cpex-tutorial/protocol/openid-connect/certs
+            insecure_http: true    # localhost speaks http; never set this in production
+            refresh_secs: 600
+          leeway_seconds: 60
+
+# One reusable bundle. Written once; joined by every route below.
+groups:
+  identified:
+    authentication:
+      - keycloak
+
+routes:
+  # HR-only. Joins `identified` for the resolver, then requires the hr role.
+  - tool: get_compensation
+    groups: identified
+    authorization:
+      pre_invocation:
+        - "require(role.hr)"
+
+  # Engineering-only. Same resolver from the group; a different requirement.
+  - tool: search_repos
+    groups: identified
+    authorization:
+      pre_invocation:
+        - "require(role.engineer)"
+
+  # Open to any authenticated caller. Still joins `identified`, which is what
+  # resolves the token in the first place, but adds no role requirement.
+  - tool: send_email
+    groups: identified
+    authorization:
+      pre_invocation:
+        - "require(authenticated)"

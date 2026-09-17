@@ -1,0 +1,45 @@
+# Module 2, Who's calling? (Identity)
+#
+# This is the first module with a real identity provider. The `keycloak`
+# plugin resolves the caller's bearer token (a JWT minted by the tutorial
+# Keycloak realm) into a subject: an id, a set of roles, and a set of
+# permissions. Policy predicates then read those attributes.
+#
+# The plugin validates the token OFFLINE against the realm's signing keys
+# (fetched once from the JWKS url, then cached), it does not call Keycloak
+# on every request. It checks the issuer, audience, expiry, and signature;
+# a token failing any of those is rejected before any authorization rule
+# runs (try an expired or tampered token and watch the reason code).
+#
+# The realm emits FLAT `roles` and `permissions` claims (via protocol
+# mappers, see idp/README.md). The `standard` claim mapper turns
+# `roles: ["hr"]` into role.hr = true and `permissions: ["view_ssn"]`
+# into perm.view_ssn = true, which is exactly what these predicates read.
+
+plugins:
+  - name: keycloak
+    kind: identity/jwt
+    hooks: [identity.resolve]
+    config:
+      role: user
+      header: Authorization
+      claim_mapper: standard
+      trusted_issuers:
+        - issuer: http://localhost:8081/realms/cpex-tutorial
+          audiences: [cpex-tutorial]
+          algorithms: [RS256]
+          decoding_key:
+            kind: jwks_url
+            url: http://localhost:8081/realms/cpex-tutorial/protocol/openid-connect/certs
+            insecure_http: true    # localhost speaks http; never set this in production
+            refresh_secs: 600
+          leeway_seconds: 60
+
+routes:
+  - tool: get_compensation
+    authentication:
+      - keycloak
+    authorization:
+      pre_invocation:
+        - "require(authenticated)"
+        - "require(role.hr)"

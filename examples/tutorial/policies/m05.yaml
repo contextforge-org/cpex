@@ -1,0 +1,50 @@
+# Module 5, Delegating decisions (PDP)
+#
+# Some decisions are easier to express as a rule engine's expression than
+# as a list of require() predicates. CPEX hands those decisions to a Policy
+# Decision Point (PDP). The engine decides allow or deny; CPEX enforces it.
+#
+# This route uses the CEL PDP. The `cel:` step evaluates a boolean
+# expression against the same attributes predicates see (roles, args). The
+# rule: engineers may search internal repos only; security may search any.
+#
+#   * evan (engineer) + internal  -> allow
+#   * evan (engineer) + public    -> deny (engineers are internal-only here)
+#   * sam  (security) + anything   -> allow
+#
+# A PDP is declared once under global.apl.pdp, then referenced by steps.
+# CEL expressions must guard optional attributes with has(...), because a
+# reference to an unset attribute is an error (and errors fail closed).
+
+global:
+  apl:
+    pdp:
+      - kind: cel
+
+plugins:
+  - name: keycloak
+    kind: identity/jwt
+    hooks: [identity.resolve]
+    config:
+      claim_mapper: standard
+      trusted_issuers:
+        - issuer: http://localhost:8081/realms/cpex-tutorial
+          audiences: [cpex-tutorial]
+          algorithms: [RS256]
+          decoding_key:
+            kind: jwks_url
+            url: http://localhost:8081/realms/cpex-tutorial/protocol/openid-connect/certs
+            insecure_http: true
+          leeway_seconds: 60
+
+routes:
+  - tool: search_repos
+    authentication:
+      - keycloak
+    authorization:
+      pre_invocation:
+        - "require(authenticated)"
+        - cel:
+            expr: "(has(role.engineer) && role.engineer && args.visibility == 'internal') || (has(role.security) && role.security)"
+            on_deny:
+              - "deny('engineers read internal only; security reads any', 'repo.policy_denied')"

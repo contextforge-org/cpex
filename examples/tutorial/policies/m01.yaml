@@ -1,0 +1,29 @@
+# Module 1, Hello, enforcement
+#
+# Two routes, so one anonymous caller can see both outcomes a route
+# produces:
+#
+#   * get_compensation requires an authenticated caller. We have no IdP
+#     until module 2, so every caller here is anonymous, this route
+#     always DENIES, and the denial names the predicate that failed.
+#
+#   * search_repos has no pre-invocation rule, so nothing blocks it, it
+#     always ALLOWS. A route with no denying rule is open by default.
+#
+# The lesson: the route defines the pipeline. Same caller, same backend,
+# different route -> different outcome. Nothing in the Rust code changed.
+#
+# Try it: change `require(authenticated)` to `require(role.hr)` and re-run.
+# get_compensation still denies, but the reason code changes. Or add a
+# `require(authenticated)` line under search_repos and watch it start
+# denying too. Reset with `git checkout -- examples/tutorial/policies`.
+
+routes:
+  - tool: get_compensation
+    authorization:
+      pre_invocation:
+        - "require(authenticated)"
+
+  - tool: search_repos
+    authorization:
+      pre_invocation: []

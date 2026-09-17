@@ -1,0 +1,871 @@
+// Location: ./crates/apl-cpex/src/route_handler.rs
+// Copyright 2025
+// SPDX-License-Identifier: Apache-2.0
+// Authors: Teryl Taylor, Fred Araujo
+//
+// `AplRouteHandler` — synthetic plugin that drives APL evaluation when
+// cpex-core's `filter_entries_by_route` matches an annotated route. Each
+// instance is bound to ONE phase (Pre or Post) so the unified-config
+// `cmf.tool_pre_invoke` and `cmf.tool_post_invoke` hooks can carry
+// distinct handler logic without an in-handler hook-name discriminator.
+//
+// # Why a phase-bound handler
+//
+// The CPEX manager's annotation table is keyed on
+// `(entity_type, entity_name, scope, hook_name)`. The visitor registers
+// one handler per route per phase; the manager picks the right one based
+// on the dispatching hook name. Inside `invoke`, no hook-name plumbing is
+// needed — the handler already knows which phase it's running.
+//
+// # Lifetime / weak manager handle
+//
+// The handler holds `Weak<PluginManager>` because the manager owns the
+// snapshot that owns the annotation that owns the handler — a strong
+// reference would create a cycle. Each `invoke` upgrades to `Arc` for
+// the duration of the call. If the upgrade fails (manager has been
+// dropped) the call returns a configuration error.
+
+use std::sync::{Arc, Weak};
+
+use async_trait::async_trait;
+use serde_json::Value;
+
+use cpex_core::cmf::MessagePayload;
+use cpex_core::context::PluginContext;
+use cpex_core::error::{PluginError, PluginViolation};
+use cpex_core::executor::ErasedResultFields;
+use cpex_core::extensions::Extensions;
+use cpex_core::hooks::PluginPayload;
+use cpex_core::manager::PluginManager;
+use cpex_core::plugin::{Plugin, PluginConfig};
+use cpex_core::registry::AnyHookHandler;
+
+use apl_cmf::constants::{DETAIL_HTTP_BODY, DETAIL_HTTP_HEADERS, DETAIL_HTTP_STATUS};
+use apl_cmf::{extract_args, extract_result, BagBuilder};
+use apl_core::evaluator::Decision;
+use apl_core::plugin_decl::PluginRegistry;
+use apl_core::AttributeTree;
+
+use crate::candidate_constraint::fold_candidate_constraints;
+use apl_core::route::{evaluate_post, evaluate_pre, RoutePayload};
+use apl_core::rules::{CompiledRoute, DenyResponse};
+use apl_core::step::PdpResolver;
+
+use crate::cmf_invoker::CmfPluginInvoker;
+use crate::delegation_invoker::DelegationPluginInvoker;
+use crate::dispatch_plan::DispatchCache;
+use crate::elicitation_invoker::ElicitationPluginInvoker;
+use crate::message_projection::{
+    apply_changed_paths, extract_args_from_message, extract_result_from_message,
+    write_args_back_to_message, write_result_back_to_message,
+};
+use crate::pdp_router::PdpRouter;
+use crate::session_store::SessionStore;
+
+/// JSON-RPC error code the host emits when a phase suspends on a pending
+/// elicitation: "request not complete — retry echoing the elicitation id."
+/// In the application-reserved JSON-RPC range; carried via
+/// `PluginViolation::proto_error_code` for the host to put on the wire.
+/// The agent SDK keys its pause/resume loop on this code.
+pub const ELICITATION_PENDING_CODE: i64 = -32120;
+
+/// Header an agent echoes on retry to continue a suspended elicitation —
+/// its value is the `elicitation_id` from a prior `-32120`. The handler
+/// seeds it into the bag (`elicitation.id`) before evaluation so the
+/// runtime *checks* the existing elicitation instead of dispatching a new
+/// one. Mirrors how `X-User-Token` carries request-scoped context.
+pub const ELICITATION_ID_HEADER: &str = "X-Policy-Elicitation-Id";
+
+/// JSON-RPC error code emitted when an agent re-checks an approval in
+/// *peek* mode and it has resolved approved: "approved — confirm to apply."
+/// The phase does NOT forward to the tool; the agent confirms with the
+/// requester and re-sends *without* the peek header to actually run it.
+/// Lets a human authorize while the requester separately commits execution.
+pub const ELICITATION_APPROVED_CODE: i64 = -32121;
+
+/// Header an agent sets (alongside `X-Policy-Elicitation-Id`) to *peek* at an
+/// approval — resolve its status without committing the action. Truthy
+/// value ("1"/"true"/anything non-empty) enables it.
+pub const ELICITATION_PEEK_HEADER: &str = "X-Policy-Elicitation-Peek";
+
+/// Which APL phase this handler runs. Pre covers `args` + `policy`; Post
+/// covers `result` + `post_invocation`. Set once at construction and never
+/// changes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Phase {
+    Pre,
+    Post,
+}
+
+/// Synthetic plugin that drives APL evaluation for one route + one phase.
+///
+/// Implements `Plugin` (so cpex-core treats it like any other plugin —
+/// mode/capabilities/on_error come from the `PluginConfig` the visitor
+/// supplied at `annotate_route` time) and `AnyHookHandler` (so the
+/// executor dispatches into it through the normal type-erased path).
+pub struct AplRouteHandler {
+    config: PluginConfig,
+    route: Arc<CompiledRoute>,
+    phase: Phase,
+    plugin_registry: Arc<PluginRegistry>,
+    dispatch_cache: Arc<DispatchCache>,
+    session_store: Arc<dyn SessionStore>,
+    /// Weak handle to the manager so we can resolve plugin entries +
+    /// dispatch into them by-name. `Weak` avoids the
+    /// manager↔snapshot↔annotation↔handler cycle.
+    manager: Weak<PluginManager>,
+    /// PDP resolver. APL routes that don't use `pdp(...)` steps never
+    /// touch this. Default is an empty [`PdpRouter`] — any `pdp(...)`
+    /// step against an unregistered dialect returns
+    /// `PdpError::NoResolver`. Hosts that need Cedar, OPA, NeMo, etc.
+    /// install resolvers via [`Self::with_pdp`] or
+    /// [`Self::with_pdp_router`].
+    pdp: Arc<dyn PdpResolver>,
+    /// Static `data.*` attribute tree, flattened into every request's
+    /// bag. Shared `Arc` (the visitor hands the same tree to every
+    /// handler); empty by default when no source was configured.
+    attribute_tree: Arc<AttributeTree>,
+}
+
+impl AplRouteHandler {
+    /// Build a handler. Visitor calls this twice per route — once for
+    /// each phase — and passes the resulting `Arc` to `annotate_route`.
+    pub fn new(
+        config: PluginConfig,
+        route: Arc<CompiledRoute>,
+        phase: Phase,
+        plugin_registry: Arc<PluginRegistry>,
+        dispatch_cache: Arc<DispatchCache>,
+        session_store: Arc<dyn SessionStore>,
+        manager: Weak<PluginManager>,
+    ) -> Self {
+        Self {
+            config,
+            route,
+            phase,
+            plugin_registry,
+            dispatch_cache,
+            session_store,
+            manager,
+            pdp: Arc::new(PdpRouter::new()),
+            attribute_tree: Arc::new(apl_core::AttributeTree::empty()),
+        }
+    }
+
+    /// Install the static `data.*` attribute tree flattened into every
+    /// request's bag. Defaults to empty; the visitor sets it from the
+    /// configured [`AttributeSource`](apl_core::AttributeSource).
+    pub fn with_attribute_tree(mut self, tree: Arc<AttributeTree>) -> Self {
+        self.attribute_tree = tree;
+        self
+    }
+
+    /// Install a `PdpResolver`. Pass a [`PdpRouter`] when the host needs
+    /// to support multiple dialects (Cedar + OPA + NeMo) on the same
+    /// route — the router dispatches each `pdp(...)` step by dialect.
+    /// Pass a single resolver when only one dialect is in use; APL
+    /// steps for any other dialect will then return
+    /// `PdpError::NoResolver` at evaluation time.
+    pub fn with_pdp(mut self, pdp: Arc<dyn PdpResolver>) -> Self {
+        self.pdp = pdp;
+        self
+    }
+
+    /// Sugar for the common "register many resolvers" path. Builds a
+    /// [`PdpRouter`], registers each resolver into it, then installs the
+    /// router. Equivalent to constructing a `PdpRouter` by hand and
+    /// passing it to [`Self::with_pdp`].
+    pub fn with_pdp_router(
+        mut self,
+        resolvers: impl IntoIterator<Item = Arc<dyn PdpResolver>>,
+    ) -> Self {
+        let mut router = PdpRouter::new();
+        for r in resolvers {
+            router.register(r);
+        }
+        self.pdp = Arc::new(router);
+        self
+    }
+}
+
+#[async_trait]
+impl Plugin for AplRouteHandler {
+    fn config(&self) -> &PluginConfig {
+        &self.config
+    }
+}
+
+#[async_trait]
+impl AnyHookHandler for AplRouteHandler {
+    async fn invoke(
+        &self,
+        payload: &dyn PluginPayload,
+        extensions: &Extensions,
+        _ctx: &mut PluginContext,
+    ) -> Result<Box<dyn std::any::Any + Send + Sync>, Box<PluginError>> {
+        // Downcast to the CMF payload — this handler only registers for
+        // cmf.* hook names, so the executor should always hand us a
+        // MessagePayload. A mismatch indicates a framework wiring bug.
+        let msg_payload = payload
+            .as_any()
+            .downcast_ref::<MessagePayload>()
+            .ok_or_else(|| {
+                Box::new(PluginError::Config {
+                    message: format!(
+                        "AplRouteHandler '{}': payload was not MessagePayload",
+                        self.route.route_key
+                    ),
+                })
+            })?;
+
+        let manager = self.manager.upgrade().ok_or_else(|| {
+            Box::new(PluginError::Config {
+                message: format!(
+                    "AplRouteHandler '{}': PluginManager dropped before invoke",
+                    self.route.route_key
+                ),
+            })
+        })?;
+
+        // Build (or reuse) the dispatch plan for this route. Cache keyed
+        // by `(route_key, manager.config_generation())` — if the manager
+        // has reloaded since the last invoke, the next lookup rebuilds.
+        let plan = self
+            .dispatch_cache
+            .get_or_build(&self.route, &self.plugin_registry, &manager)
+            .await;
+
+        // CmfPluginInvoker carries the request-scoped payload + extensions
+        // under interior mutability so successive plugin calls accumulate
+        // mutations. Hydration + persistence are no-ops when there's no
+        // session id (the common case for the first request in a session).
+        // Wrapped in Arc so it can be erased to `Arc<dyn PluginInvoker>`
+        // for the apl-core entry points (which take `&Arc<dyn PluginInvoker>`
+        // so `dispatch_parallel` can clone an owned, 'static reference into
+        // each spawned branch). Inherent-method calls on `CmfPluginInvoker`
+        // (e.g. `extensions_arc`, `persist_session`) deref through the Arc.
+        // Hydration loads accumulated session labels. A store failure
+        // here happens *before* any policy decision, so we fail the
+        // request closed immediately: deny with a
+        // distinguished violation rather than proceeding as if the
+        // session carried no taint. Sessionless traffic never reaches
+        // the store, so this only denies session-bearing requests.
+        let invoker = match CmfPluginInvoker::for_request(
+            Arc::clone(&manager),
+            extensions.clone(),
+            msg_payload.clone(),
+            plan,
+            Arc::clone(&self.session_store),
+        )
+        .await
+        {
+            Ok(inv) => Arc::new(inv),
+            Err(e) => {
+                tracing::error!(
+                    alarm = "session_store_failure",
+                    op = "load",
+                    route = %self.route.route_key,
+                    error = %e,
+                    "session label load failed; failing request closed"
+                );
+                let mut v = PluginViolation::new(
+                    "session.load_failed",
+                    "session state could not be loaded",
+                );
+                decorate_denial_response(&mut v, self.route.response.as_ref());
+                return Ok(Box::new(ErasedResultFields {
+                    continue_processing: false,
+                    modified_payload: None,
+                    modified_extensions: None,
+                    violation: Some(v),
+                }));
+            },
+        };
+
+        // Build the attribute bag. APL predicates read flat keys; the
+        // BagBuilder bridges typed CPEX extensions into that namespace.
+        // `route.key` lets default/policy-bundle predicates branch on
+        // which route they're attached to.
+        let post_extensions = invoker.current_extensions().await;
+        let mut bag = BagBuilder::new()
+            .with_extensions(&post_extensions)
+            .with_route_key(&self.route.route_key)
+            .with_data(&self.attribute_tree)
+            .build();
+
+        // Phase 5 retry seeding: if the agent echoed an elicitation id (from
+        // a prior `-32120`) in the `X-Policy-Elicitation-Id` header, seed it
+        // into the bag *before* evaluation. `dispatch_elicitation` then takes
+        // the "id present → check" path (poll the existing approval) instead
+        // of dispatching a fresh one. Without this, every retry would open a
+        // new approval and the loop would never resolve.
+        if let Some(elicitation_id) = elicitation_id_from_headers(&post_extensions) {
+            bag.set(apl_core::step::elicitation_bag_keys::ID, elicitation_id);
+        }
+
+        // Build `RoutePayload.args` from the message. Per-content shape:
+        //   * ToolCall      → arguments map (JSON Object)
+        //   * PromptRequest → arguments map (JSON Object)
+        //   * Text-only     → JSON String of concatenated text content
+        //
+        // Field pipelines operate on `args.<name>` paths. Result starts
+        // as Null on Pre (no upstream response yet); the Post phase
+        // would extract from a ToolResult / PromptResult — deferred
+        // until result-side handling lands.
+        let args_value = extract_args_from_message(&msg_payload.message);
+        let mut route_payload = match self.phase {
+            Phase::Pre => RoutePayload::new(args_value),
+            Phase::Post => {
+                // Pull the upstream result out of the message so APL
+                // `result.<field>` predicates and the `result:`
+                // pipeline have something to operate on. Falls back to
+                // `Value::Null` when the message has no ToolResult /
+                // PromptResult / Resource content (e.g. for hooks that
+                // fire on entities without a structured result).
+                let result_value = extract_result_from_message(&msg_payload.message);
+                RoutePayload::with_result(args_value, result_value)
+            },
+        };
+
+        // Flatten the call args into the bag under `args.<path>`. APL's
+        // own args pipelines read from `route_payload.args` directly,
+        // but PDP steps and predicates that reference `${args.X}` /
+        // `args.X` resolve through the bag. Mirroring the args here
+        // makes both consumers see the same vocabulary the
+        // `MessageView` exposes. (Bag-mutation via redact during the
+        // args pipeline isn't reflected back into the bag; that's fine
+        // — args predicates today read from `route_payload.args`, and
+        // the cedar substitution snapshots the pre-args view, which is
+        // what an author writing `cedar:(resource.id: ${args.X})` would
+        // expect.)
+        extract_args(&route_payload.args, &mut bag);
+        // Post phase: also project the upstream result into the bag
+        // under `result.<path>`. This is what enables predicates like
+        // `redact(result.ssn) when !perm.view_ssn` and `require(...)`
+        // gates that branch on the result. Pre phases skip this — the
+        // result is `None` by construction.
+        if matches!(self.phase, Phase::Post) {
+            if let Some(result_value) = route_payload.result.as_ref() {
+                extract_result(result_value, &mut bag);
+            }
+        }
+
+        // Real delegation invoker, sharing the CMF invoker's
+        // extensions Mutex so a `delegate(...)` step's writes to
+        // raw_credentials / delegation are visible to downstream CMF
+        // plugins and to the post phase. Routes that don't declare
+        // any `Step::Delegate` won't have entries in the plan's
+        // `delegation_entries` map; if such a route accidentally hits
+        // `delegate(...)`, the invoker returns `NotFound` and the
+        // evaluator translates it via the step's `on_error`.
+        let delegations = Arc::new(DelegationPluginInvoker::new(
+            Arc::clone(&manager),
+            invoker.extensions_arc(),
+            invoker.plan_arc(),
+        ));
+
+        // Unsized coercion: `Arc<ConcreteType>` → `Arc<dyn Trait>`. The
+        // erased forms get borrowed into `evaluate_pre`/`evaluate_post`;
+        // `dispatch_parallel` can then `Arc::clone` an owned 'static
+        // reference into each branch closure.
+        // Elicitation bridge — resolves `require_approval(...)` /
+        // `confirm(...)` steps to `ElicitationHook` plugins by name off
+        // the same plan, sharing the request's Extensions so the handler
+        // reads the same identity. Routes with no elicitation steps have
+        // an empty `elicitation_entries` map; an accidental `Effect::Elicit`
+        // then returns `NotFound`, handled by the step's `on_error`.
+        let elicitations = Arc::new(ElicitationPluginInvoker::new(
+            Arc::clone(&manager),
+            invoker.extensions_arc(),
+            invoker.plan_arc(),
+        ));
+
+        let invoker_dyn: Arc<dyn apl_core::step::PluginInvoker> = invoker.clone();
+        let delegations_dyn: Arc<dyn apl_core::step::DelegationInvoker> = delegations.clone();
+        let elicitations_dyn: Arc<dyn apl_core::step::ElicitationInvoker> = elicitations.clone();
+
+        let decision = match self.phase {
+            Phase::Pre => {
+                evaluate_pre(
+                    &self.route,
+                    &mut bag,
+                    &mut route_payload,
+                    &self.pdp,
+                    &invoker_dyn,
+                    &delegations_dyn,
+                    &elicitations_dyn,
+                )
+                .await
+            },
+            Phase::Post => {
+                evaluate_post(
+                    &self.route,
+                    &mut bag,
+                    &mut route_payload,
+                    &self.pdp,
+                    &invoker_dyn,
+                    &delegations_dyn,
+                    &elicitations_dyn,
+                )
+                .await
+            },
+        };
+
+        // Drain Session-scoped taints (from `taint(label, session)` /
+        // pipeline `Stage::Taint`) into `extensions.security.labels`
+        // so the existing label-diff flow inside `persist_session`
+        // picks them up. Message-scoped taints are filtered out by
+        // `apply_session_taints` — they need their own destination.
+        // No-op when no taints emitted.
+        invoker.apply_session_taints(&decision.taints).await;
+
+        // Fold this request's `restrict` constraints into one typed
+        // `CandidateConstraintExtension`. A custom-label contradiction
+        // (two restricts requiring the same label to differ) cannot be
+        // honored by any backend, so it fails closed below (mirrors the
+        // persist-failure handling). `Ok(None)` = no restrict fired.
+        let (folded_constraint, constraint_conflict) =
+            match fold_candidate_constraints(&decision.constraints) {
+                Ok(folded) => (folded, None),
+                Err(e) => (None, Some(e)),
+            };
+
+        // Commit any session-scoped labels accumulated during this
+        // request. No-op when there was no session id. The result is
+        // folded into the decision below — captured here because
+        // `continue_processing`/`violation` are computed after persist.
+        let persist_result = invoker.persist_session().await;
+
+        // Surface the final mutated payload + extensions back into the
+        // PipelineResult the executor returns to the host. The host's
+        // body re-serialization picks up edits made by APL pipelines
+        // (e.g. a redact stage that rewrote args.text).
+        let final_payload = invoker.current_payload().await;
+        let final_extensions = invoker.current_extensions().await;
+
+        // The pre-evaluation projections. No longer used to *detect*
+        // pipeline edits (the decision reports those) — they're the
+        // baseline for folding those edits back in below, which needs to
+        // know which paths the pipeline touched.
+        //
+        // Each side is projected only in the phase that can edit it:
+        // `evaluate_pre` never sets `result_modified` and `evaluate_post`
+        // never sets `args_modified`, so the other projection would be
+        // unread work on every request.
+        let pre_args = match self.phase {
+            Phase::Pre => Some(extract_args_from_message(&msg_payload.message)),
+            Phase::Post => None,
+        };
+        let pre_result = match self.phase {
+            Phase::Pre => None,
+            Phase::Post => Some(extract_result_from_message(&msg_payload.message)),
+        };
+        // Which of the three sources changed the payload, in precedence
+        // order. Each condition is a signal from the code that performed
+        // the change: the decision's flags are set when a pipeline's
+        // `set_dotted` / `remove_dotted` actually writes, and the
+        // invoker's flag is set when a plugin's payload is accepted.
+        // Nothing here infers a change by comparing values.
+        let modified_payload: Option<Box<dyn PluginPayload>> = if decision.args_modified {
+            // An args pipeline (Pre) rewrote a field. Fold the new
+            // args back into a fresh MessagePayload so downstream
+            // readers (the host's body re-serializer) see the
+            // change.
+            //
+            // Only the paths the pipeline touched are applied. A plugin
+            // may have rewritten other arguments on the same tool call,
+            // and those edits aren't in `route_payload.args` (it was
+            // projected before any plugin ran), so writing it wholesale
+            // would silently drop them.
+            //
+            // Without a pre-projection there is no way to tell which
+            // paths the pipeline changed, so write nothing rather than
+            // fold in an unattributable diff — a wholesale write is
+            // exactly the clobbering this merge exists to prevent. Only
+            // the Pre phase sets `args_modified`, and only the Pre phase
+            // projects `pre_args`, so this holds by construction.
+            let mut updated = final_payload.clone();
+            if let Some(pre) = pre_args.as_ref() {
+                let mut merged = extract_args_from_message(&updated.message);
+                apply_changed_paths(&mut merged, pre, &route_payload.args);
+                write_args_back_to_message(&mut updated.message, &merged);
+            }
+            Some(Box::new(updated) as Box<dyn PluginPayload>)
+        } else if decision.result_modified {
+            // A `result:` pipeline rewrote a field in the upstream
+            // response. Fold the new result back into the message
+            // so the host's response body re-serializer can write
+            // it out before forwarding downstream. Only the Post phase
+            // can set this — a Pre route has no result to rewrite.
+            //
+            // Same per-path merge as the args branch above, for the same
+            // reason: a plugin may have redacted a different part of the
+            // same tool result.
+            // Same "no pre-projection, no write" rule as the args branch
+            // above, for the same reason.
+            let mut updated = final_payload.clone();
+            if let (Some(result_value), Some(pre)) =
+                (route_payload.result.as_ref(), pre_result.as_ref())
+            {
+                let mut merged = extract_result_from_message(&updated.message);
+                apply_changed_paths(&mut merged, pre, result_value);
+                write_result_back_to_message(&mut updated.message, &merged);
+            }
+            Some(Box::new(updated) as Box<dyn PluginPayload>)
+        } else if invoker.payload_was_modified() {
+            // A plugin mutated the message directly via `modify_payload`
+            // (not through a field pipeline). Pass the invoker's view
+            // through unchanged.
+            //
+            // The invoker records this when it accepts the mutation,
+            // which is the only point it can be known. Comparing message
+            // content here instead would read text parts only, so a
+            // redacted tool result, a rewritten tool call, or an edited
+            // thinking block would look identical to no mutation and get
+            // dropped.
+            tracing::debug!(
+                route = %self.route.route_key,
+                "plugin mutated the payload directly; forwarding the mutated view"
+            );
+            Some(Box::new(final_payload) as Box<dyn PluginPayload>)
+        } else {
+            None
+        };
+
+        let mut modified_extensions = if extensions_changed(extensions, &final_extensions) {
+            Some(final_extensions.cow_copy())
+        } else {
+            None
+        };
+
+        // Write the folded constraint into the typed
+        // `candidate_constraint` extension slot so the host router reads
+        // it TYPED off `PipelineResult.modified_extensions` — the same
+        // in-process, type-shared channel `raw_credentials.delegated_tokens`
+        // rides. `extensions_changed` doesn't track this
+        // slot, so we force `modified_extensions` to `Some` here to
+        // guarantee the constraint reaches the executor's merge.
+        if let Some(constraint) = folded_constraint {
+            let mut owned = modified_extensions
+                .take()
+                .unwrap_or_else(|| final_extensions.cow_copy());
+            owned.candidate_constraint = Some(constraint);
+            modified_extensions = Some(owned);
+        }
+
+        // A suspended phase reports `Allow` with a pending bundle — it
+        // must NOT forward. Fail closed with a distinguished violation that
+        // carries the elicitation id (mapped to JSON-RPC `-32120`) so the
+        // suspend is visible and the unapproved call never proceeds.
+        let pending_elicitation = decision.pending.clone();
+
+        // Attach the route's transpiled `denyWith` to a violation at each
+        // genuine-denial site (below) via `decorate_denial_response`, rather
+        // than blanket-decorating whatever `violation` is set. This keeps the
+        // custom response off any future non-denial signal (e.g. an
+        // elicitation/retry/confirm violation) that must reach the host with
+        // its own wire shape intact.
+        let (mut continue_processing, mut violation) = match decision.decision {
+            Decision::Allow => (true, None),
+            Decision::Deny {
+                reason,
+                rule_source,
+            } => {
+                let code = if rule_source.is_empty() {
+                    "policy.deny".to_string()
+                } else {
+                    rule_source
+                };
+                let reason = reason.unwrap_or_else(|| "access denied".to_string());
+                let mut v = PluginViolation::new(code, reason);
+                decorate_denial_response(&mut v, self.route.response.as_ref());
+                (false, Some(v))
+            },
+        };
+
+        if let Some(p) = &pending_elicitation {
+            tracing::info!(
+                route = %self.route.route_key,
+                elicitation_id = %p.id,
+                plugin = %p.plugin_name,
+                "policy suspended on pending elicitation; emitting -32120 (retry)"
+            );
+            // The phase suspended awaiting a human. Do NOT forward. Surface
+            // a structured "request not complete — retry echoing this id"
+            // via the protocol error code the host maps to the wire
+            // (JSON-RPC `-32120`). Left undecorated by `denyWith` — it is a
+            // retry signal, not a denial.
+            continue_processing = false;
+            violation = Some(pending_violation(p));
+        }
+
+        // Peek (confirm-then-apply): the agent re-checked an approval but
+        // asked NOT to commit yet (the `X-Policy-Elicitation-Peek` header). If
+        // the elicitation resolved approved (Allow, not pending), report
+        // "approved — confirm to apply" (-32121) and do NOT forward. The
+        // agent then asks the requester, who re-sends without the peek header
+        // to actually run the tool (the plugin replays the cached approval).
+        if continue_processing
+            && elicitation_peek_from_headers(&post_extensions)
+            && bag.get_string(apl_core::step::elicitation_bag_keys::OUTCOME) == Some("approved")
+        {
+            continue_processing = false;
+            violation = Some(approved_peek_violation(&bag));
+        }
+
+        // Append fail-closed with merge precedence:
+        //   - decision Allow + append Err → flip to Deny with a
+        //     distinguished `session.persist_failed` violation.
+        //   - decision Deny + append Err → keep the original policy
+        //     violation (preserve attribution); the request is already
+        //     denied. The append failure surfaces only as the alarm.
+        // The alarm/metric fires on every append failure regardless of
+        // decision, since the dangerous residual is a *selective*
+        // failure (append rejected while reads still succeed).
+        if let Err(e) = persist_result {
+            tracing::error!(
+                alarm = "session_store_failure",
+                op = "append",
+                route = %self.route.route_key,
+                decision_was_allow = continue_processing,
+                error = %e,
+                "session label persist failed; failing request closed"
+            );
+            if continue_processing {
+                continue_processing = false;
+                let mut v = PluginViolation::new(
+                    "session.persist_failed",
+                    "session state could not be persisted",
+                );
+                decorate_denial_response(&mut v, self.route.response.as_ref());
+                violation = Some(v);
+            }
+        }
+
+        // Fail closed: a `restrict` custom-label contradiction means no
+        // backend can satisfy the request's routing constraints. Deny
+        // rather than emit an unhonorable constraint. On an already-denied
+        // request, keep the original policy attribution (same precedence
+        // as the persist-failure block above).
+        if let Some(conflict) = constraint_conflict {
+            tracing::warn!(
+                route = %self.route.route_key,
+                error = %conflict,
+                "restrict constraints conflict; failing request closed"
+            );
+            if continue_processing {
+                continue_processing = false;
+                violation = Some(PluginViolation::new(
+                    "policy.restrict_conflict",
+                    conflict.to_string(),
+                ));
+            }
+        }
+
+        Ok(Box::new(ErasedResultFields {
+            continue_processing,
+            modified_payload,
+            modified_extensions,
+            violation,
+        }))
+    }
+
+    fn hook_type_name(&self) -> &'static str {
+        // CmfHook::NAME — kept as a literal here to avoid pulling in the
+        // HookTypeDef trait just for the constant.
+        "cmf"
+    }
+}
+
+/// Attach a route's transpiled `denyWith` (status/body/headers) to a
+/// denial `violation`'s `details` map so the host can render a custom HTTP
+/// denial response. Carried via `details` (not new violation fields) to
+/// keep the violation type stable. `None` response leaves the host default.
+///
+/// Call this only from genuine-denial sites — never blanket-apply it to
+/// whatever violation happens to be set, or a non-denial signal (e.g. an
+/// elicitation/retry/confirm) would get stamped with a `403`-shaped
+/// response the host would render instead of the intended wire signal.
+fn decorate_denial_response(violation: &mut PluginViolation, response: Option<&DenyResponse>) {
+    let Some(resp) = response else {
+        return;
+    };
+    if let Some(status) = resp.status {
+        violation
+            .details
+            .insert(DETAIL_HTTP_STATUS.to_string(), serde_json::json!(status));
+    }
+    if let Some(body) = &resp.body {
+        violation
+            .details
+            .insert(DETAIL_HTTP_BODY.to_string(), serde_json::json!(body));
+    }
+    if !resp.headers.is_empty() {
+        violation.details.insert(
+            DETAIL_HTTP_HEADERS.to_string(),
+            serde_json::json!(resp.headers),
+        );
+    }
+}
+
+/// Cheap pointer-equality check across the few mutable extension slots
+/// the executor would care about. False positives (claiming a change
+/// when there isn't one) are cheap — the executor re-validates anyway.
+fn extensions_changed(before: &Extensions, after: &Extensions) -> bool {
+    let security_changed = match (before.security.as_ref(), after.security.as_ref()) {
+        (Some(a), Some(b)) => !Arc::ptr_eq(a, b),
+        (None, None) => false,
+        _ => true,
+    };
+    let delegation_changed = match (before.delegation.as_ref(), after.delegation.as_ref()) {
+        (Some(a), Some(b)) => !Arc::ptr_eq(a, b),
+        (None, None) => false,
+        _ => true,
+    };
+    // `delegate(...)` steps write minted tokens into
+    // `raw_credentials.delegated_tokens` via the shared Mutex —
+    // without this check, a route whose only Extensions mutation is
+    // a delegate (no security / delegation chain edit) looks
+    // unchanged, so the executor never merges the minted token back
+    // and downstream readers (our HttpFilter attaching the token to
+    // the upstream request) see nothing.
+    let raw_creds_changed = match (
+        before.raw_credentials.as_ref(),
+        after.raw_credentials.as_ref(),
+    ) {
+        (Some(a), Some(b)) => !Arc::ptr_eq(a, b),
+        (None, None) => false,
+        _ => true,
+    };
+    security_changed || delegation_changed || raw_creds_changed
+}
+
+/// Extract the elicitation id an agent echoes on retry from the
+/// `X-Policy-Elicitation-Id` request header. `None` when absent/empty.
+/// Pure so it's unit-testable without the full handler path.
+fn elicitation_id_from_headers(ext: &Extensions) -> Option<String> {
+    ext.http
+        .as_ref()
+        .and_then(|h| h.get_request_header(ELICITATION_ID_HEADER))
+        .filter(|v| !v.is_empty())
+        .map(str::to_string)
+}
+
+/// True when the agent set `X-Policy-Elicitation-Peek` to a truthy value —
+/// it wants to resolve the approval's status without committing the action.
+fn elicitation_peek_from_headers(ext: &Extensions) -> bool {
+    ext.http
+        .as_ref()
+        .and_then(|h| h.get_request_header(ELICITATION_PEEK_HEADER))
+        .is_some_and(|v| !v.is_empty() && !v.eq_ignore_ascii_case("false") && v != "0")
+}
+
+/// Build the `-32121` "approved — confirm to apply" violation for a peek
+/// that resolved approved. Carries the elicitation id + approver in
+/// `details` so the agent can ask the requester and then re-send (without
+/// the peek header) to actually run the tool.
+fn approved_peek_violation(bag: &apl_core::attributes::AttributeBag) -> PluginViolation {
+    use apl_core::step::elicitation_bag_keys as bk;
+    let mut details: std::collections::HashMap<String, Value> = std::collections::HashMap::new();
+    if let Some(id) = bag.get_string(bk::ID) {
+        details.insert("elicitation_id".into(), Value::String(id.to_string()));
+    }
+    if let Some(approver) = bag.get_string(bk::APPROVER) {
+        details.insert("approver".into(), Value::String(approver.to_string()));
+    }
+    PluginViolation::new(
+        "elicitation.approved",
+        "approved — confirm to apply (re-send without the peek header)".to_string(),
+    )
+    .with_proto_error_code(ELICITATION_APPROVED_CODE)
+    .with_details(details)
+}
+
+/// Build the `-32120` violation for a suspended phase: a distinguished
+/// code, the protocol error code the host maps to the wire, and the
+/// elicitation bundle in `details` so the agent can show who's approving /
+/// when it expires and retry by re-sending the id.
+fn pending_violation(p: &apl_core::step::PendingElicitation) -> PluginViolation {
+    let mut details: std::collections::HashMap<String, Value> = std::collections::HashMap::new();
+    details.insert("elicitation_id".into(), Value::String(p.id.clone()));
+    details.insert("plugin".into(), Value::String(p.plugin_name.clone()));
+    for (key, val) in [
+        ("approver", &p.approver),
+        ("channel", &p.channel),
+        ("expires_at", &p.expires_at),
+        ("intent_id", &p.intent_id),
+    ] {
+        if let Some(v) = val {
+            details.insert(key.into(), Value::String(v.clone()));
+        }
+    }
+    PluginViolation::new(
+        "elicitation.pending",
+        format!(
+            "awaiting approval `{}` via `{}` — retry with this id",
+            p.id, p.plugin_name
+        ),
+    )
+    .with_proto_error_code(ELICITATION_PENDING_CODE)
+    .with_details(details)
+}
+
+#[cfg(test)]
+mod phase5_tests {
+    use super::*;
+    use cpex_core::extensions::HttpExtension;
+    use std::sync::Arc;
+
+    fn pending(id: &str) -> apl_core::step::PendingElicitation {
+        apl_core::step::PendingElicitation {
+            id: id.to_string(),
+            plugin_name: "manager-approver".to_string(),
+            approver: Some("alice".to_string()),
+            intent_id: None,
+            channel: Some("ciba".to_string()),
+            expires_at: Some("2026-12-31T00:00:00Z".to_string()),
+            source: "route.payroll.policy[0]".to_string(),
+        }
+    }
+
+    #[test]
+    fn pending_violation_carries_minus32120_and_bundle() {
+        let v = pending_violation(&pending("elic-1"));
+        assert_eq!(v.proto_error_code, Some(ELICITATION_PENDING_CODE));
+        assert_eq!(v.code, "elicitation.pending");
+        assert_eq!(v.details.get("elicitation_id").unwrap(), "elic-1");
+        assert_eq!(v.details.get("approver").unwrap(), "alice");
+        assert_eq!(v.details.get("channel").unwrap(), "ciba");
+        assert_eq!(v.details.get("expires_at").unwrap(), "2026-12-31T00:00:00Z");
+        // Absent optional → not in details.
+        assert!(!v.details.contains_key("intent_id"));
+    }
+
+    #[test]
+    fn elicitation_id_extracted_from_header_case_insensitively() {
+        let mut http = HttpExtension::default();
+        http.set_request_header("x-policy-elicitation-id", "elic-42");
+        let ext = Extensions {
+            http: Some(Arc::new(http)),
+            ..Extensions::default()
+        };
+        assert_eq!(
+            elicitation_id_from_headers(&ext).as_deref(),
+            Some("elic-42")
+        );
+    }
+
+    #[test]
+    fn no_header_yields_none() {
+        // No http extension at all.
+        assert!(elicitation_id_from_headers(&Extensions::default()).is_none());
+        // Header present but empty → treated as absent.
+        let mut http = HttpExtension::default();
+        http.set_request_header(ELICITATION_ID_HEADER, "");
+        let ext = Extensions {
+            http: Some(Arc::new(http)),
+            ..Extensions::default()
+        };
+        assert!(elicitation_id_from_headers(&ext).is_none());
+    }
+}

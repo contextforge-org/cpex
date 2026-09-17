@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1400 420" font-family="IBM Plex Sans">
+  <defs>
+    <marker id="arrow" markerWidth="6" markerHeight="5" refX="4" refY="2.25" orient="auto">
+      <path d="M0,0 L5,2.25 L0,4.5 z" fill="#9e9e9e"/>
+    </marker>
+  </defs>
+  <rect width="1400" height="420" fill="#ffffff"/>
+
+  <rect x="40" y="75" width="380" height="270" rx="14" fill="#fafafa" stroke="#8a8a8a" stroke-width="2.5" stroke-dasharray="7 7"/>
+  <text x="65" y="118" font-size="22" fill="#5f5f5f">workload</text>
+
+  <rect x="90" y="170" width="260" height="90" rx="10" fill="#f0f0f0"/>
+  <text x="220" y="223" font-size="24" fill="#161616" text-anchor="middle">agent</text>
+
+  <line x1="350" y1="215" x2="548" y2="215" stroke="#9e9e9e" stroke-width="4" marker-end="url(#arrow)"/>
+  <text x="484" y="193" font-size="19" fill="#161616" text-anchor="middle">all egress</text>
+
+  <rect x="560" y="150" width="320" height="130" rx="16" fill="#161616"/>
+  <text x="720" y="207" font-size="30" fill="#ffffff" text-anchor="middle">CPEX</text>
+  <text x="720" y="243" font-size="19" fill="#bdbdbd" text-anchor="middle">egress sidecar</text>
+
+  <path d="M 880 190 H 952 Q 970 190 970 172 V 123 Q 970 105 988 105 H 1048" fill="none" stroke="#9e9e9e" stroke-width="4" marker-end="url(#arrow)"/>
+  <line x1="880" y1="215" x2="1048" y2="215" stroke="#9e9e9e" stroke-width="4" marker-end="url(#arrow)"/>
+  <path d="M 880 240 H 952 Q 970 240 970 258 V 307 Q 970 325 988 325 H 1048" fill="none" stroke="#9e9e9e" stroke-width="4" marker-end="url(#arrow)"/>
+
+  <rect x="1060" y="65" width="290" height="80" rx="10" fill="#f0f0f0"/>
+  <text x="1205" y="113" font-size="24" fill="#161616" text-anchor="middle">internal tool</text>
+
+  <rect x="1060" y="175" width="290" height="80" rx="10" fill="#f0f0f0"/>
+  <text x="1205" y="223" font-size="24" fill="#161616" text-anchor="middle">third-party API</text>
+
+  <rect x="1060" y="285" width="290" height="80" rx="10" fill="#f0f0f0"/>
+  <text x="1205" y="333" font-size="24" fill="#161616" text-anchor="middle">other agents</text>
+</svg>

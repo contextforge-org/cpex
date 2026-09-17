@@ -1,9 +1,0 @@
-[run]
-omit =
-    *__init__.py
-    */templates/*
-
-[report]
-omit =
-    *__init__.py
-    */templates/*

@@ -1,0 +1,12 @@
+# rustfmt configuration — stable-channel options only, so `cargo fmt` runs on
+# the pinned stable toolchain (see rust-toolchain.toml) with no nightly needed.
+#
+# Nightly-only options (group_imports, imports_granularity, wrap_comments,
+# format_code_in_doc_comments, normalize_comments, reorder_impl_items, …) are
+# intentionally omitted; they error or no-op on stable.
+edition = "2021"
+max_width = 100
+newline_style = "Unix"
+use_field_init_shorthand = true
+use_try_shorthand = true
+match_block_trailing_comma = true

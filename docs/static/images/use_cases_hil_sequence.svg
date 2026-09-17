@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1560 900" font-family="IBM Plex Sans">
+  <defs>
+    <marker id="ah" markerWidth="6" markerHeight="5" refX="4" refY="2.25" orient="auto">
+      <path d="M0,0 L5,2.25 L0,4.5 z" fill="#161616"/>
+    </marker>
+  </defs>
+  <rect width="1560" height="900" fill="#ffffff"/>
+
+  <!-- lifelines -->
+  <line x1="190" y1="100" x2="190" y2="860" stroke="#c9c9c9" stroke-width="2.5" stroke-dasharray="8 8"/>
+  <line x1="620" y1="100" x2="620" y2="860" stroke="#c9c9c9" stroke-width="2.5" stroke-dasharray="8 8"/>
+  <line x1="1050" y1="100" x2="1050" y2="860" stroke="#c9c9c9" stroke-width="2.5" stroke-dasharray="8 8"/>
+  <line x1="1400" y1="100" x2="1400" y2="860" stroke="#c9c9c9" stroke-width="2.5" stroke-dasharray="8 8"/>
+
+  <!-- participants -->
+  <rect x="75" y="30" width="230" height="70" rx="8" fill="#ffffff" stroke="#161616" stroke-width="2.5"/>
+  <text x="190" y="74" font-size="24" fill="#161616" text-anchor="middle">agent</text>
+
+  <rect x="490" y="30" width="260" height="70" rx="8" fill="#ece0fb" stroke="#161616" stroke-width="2"/>
+  <text x="620" y="74" font-size="24" fill="#161616" text-anchor="middle">gateway (CPEX)</text>
+
+  <rect x="935" y="30" width="230" height="70" rx="8" fill="#ffffff" stroke="#161616" stroke-width="2.5"/>
+  <text x="1050" y="74" font-size="24" fill="#161616" text-anchor="middle">Keycloak</text>
+
+  <rect x="1270" y="30" width="260" height="70" rx="8" fill="#ffffff" stroke="#161616" stroke-width="2.5"/>
+  <text x="1400" y="74" font-size="24" fill="#161616" text-anchor="middle">manager's device</text>
+
+  <!-- messages -->
+  <line x1="190" y1="170" x2="608" y2="170" stroke="#161616" stroke-width="3" marker-end="url(#ah)"/>
+  <text x="399" y="148" font-size="19" fill="#161616" text-anchor="middle"><tspan font-family="IBM Plex Mono">adjust_compensation</tspan> (+$25k)</text>
+
+  <line x1="620" y1="250" x2="202" y2="250" stroke="#161616" stroke-width="3" stroke-dasharray="9 7" marker-end="url(#ah)"/>
+  <text x="399" y="228" font-size="19" fill="#161616" text-anchor="middle"><tspan font-family="IBM Plex Mono" fill="#3b6de8">-32120</tspan> pending + <tspan font-family="IBM Plex Mono">elicitation_id</tspan></text>
+
+  <line x1="620" y1="330" x2="1038" y2="330" stroke="#161616" stroke-width="3" marker-end="url(#ah)"/>
+  <text x="829" y="308" font-size="19" fill="#161616" text-anchor="middle">CIBA backchannel (<tspan font-family="IBM Plex Mono">login_hint</tspan> = manager)</text>
+
+  <line x1="1050" y1="410" x2="1388" y2="410" stroke="#161616" stroke-width="3" marker-end="url(#ah)"/>
+  <text x="1219" y="388" font-size="19" fill="#161616" text-anchor="middle">push approval prompt</text>
+
+  <line x1="1400" y1="490" x2="1062" y2="490" stroke="#161616" stroke-width="3" marker-end="url(#ah)"/>
+  <text x="1231" y="468" font-size="19" fill="#161616" text-anchor="middle">approve</text>
+
+  <line x1="190" y1="570" x2="608" y2="570" stroke="#161616" stroke-width="3" marker-end="url(#ah)"/>
+  <text x="390" y="548" font-size="17" fill="#161616" text-anchor="middle">peek: <tspan font-family="IBM Plex Mono">X-Policy-Elicitation-Id</tspan> + <tspan font-family="IBM Plex Mono">Peek: true</tspan></text>
+
+  <line x1="620" y1="650" x2="202" y2="650" stroke="#161616" stroke-width="3" stroke-dasharray="9 7" marker-end="url(#ah)"/>
+  <text x="399" y="628" font-size="19" fill="#161616" text-anchor="middle"><tspan font-family="IBM Plex Mono" fill="#3b6de8">-32121</tspan> approved</text>
+
+  <line x1="190" y1="730" x2="608" y2="730" stroke="#161616" stroke-width="3" marker-end="url(#ah)"/>
+  <text x="399" y="708" font-size="19" fill="#161616" text-anchor="middle">re-send with <tspan font-family="IBM Plex Mono">X-Policy-Elicitation-Id</tspan></text>
+
+  <line x1="620" y1="810" x2="202" y2="810" stroke="#161616" stroke-width="3" stroke-dasharray="9 7" marker-end="url(#ah)"/>
+  <text x="399" y="788" font-size="19" fill="#161616" text-anchor="middle"><tspan font-family="IBM Plex Mono" fill="#3b6de8">200</tspan> &#183; change applied</text>
+</svg>

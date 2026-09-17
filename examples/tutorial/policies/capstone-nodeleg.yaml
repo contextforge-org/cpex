@@ -1,0 +1,69 @@
+# Capstone (no-delegation variant)
+#
+# The same scenario as capstone.yaml, for readers who skipped module 6
+# (delegation). It drops the delegate(...) step and the workday-oauth
+# plugin; everything else is identical. Run with:
+#
+#   cargo run -p cpex-tutorial --example capstone -- --no-delegation
+
+global:
+  apl:
+    pdp:
+      - kind: cel
+
+plugins:
+  - name: keycloak
+    kind: identity/jwt
+    hooks: [identity.resolve]
+    config:
+      claim_mapper: standard
+      trusted_issuers:
+        - issuer: http://localhost:8081/realms/cpex-tutorial
+          audiences: [cpex-tutorial]
+          algorithms: [RS256]
+          decoding_key:
+            kind: jwks_url
+            url: http://localhost:8081/realms/cpex-tutorial/protocol/openid-connect/certs
+            insecure_http: true
+          leeway_seconds: 60
+
+  - name: audit-log
+    kind: audit/logger
+    hooks: [cmf.tool_pre_invoke]
+    capabilities: [read_subject, read_meta]
+    config:
+      destination: stderr
+
+routes:
+  - tool: get_compensation
+    authentication:
+      - keycloak
+    authorization:
+      pre_invocation:
+        - "require(role.hr)"
+        - "taint(secret, session)"
+        - "run(audit-log)"
+    result:
+      ssn: "str | redact(!perm.view_ssn)"
+      salary: "int | redact(!role.hr)"
+
+  - tool: search_repos
+    authentication:
+      - keycloak
+    authorization:
+      pre_invocation:
+        - "require(authenticated)"
+        - cel:
+            expr: "(has(role.engineer) && role.engineer && args.visibility == 'internal') || (has(role.security) && role.security)"
+            on_deny:
+              - "deny('engineers read internal only; security reads any', 'repo.policy_denied')"
+        - "run(audit-log)"
+
+  - tool: send_email
+    authentication:
+      - keycloak
+    authorization:
+      pre_invocation:
+        - "require(authenticated)"
+        - "security.labels contains \"secret\": deny('write-down blocked: this session read secret data', 'session_tainted')"
+        - "run(audit-log)"

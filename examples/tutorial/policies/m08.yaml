@@ -1,0 +1,51 @@
+# Module 8, Human in the loop (Elicitation)
+#
+# Some actions should not run on the agent's say-so alone. They need a
+# human to approve first. CPEX models this by SUSPENDING the operation:
+# policy pauses the call, records a pending approval, and tells the caller
+# to come back once a human has decided. Nothing runs until then.
+#
+# This route requires the caller's manager to approve an outbound email:
+#
+#   1. require(authenticated)
+#   2. require_approval(manager-approval, from: claim.manager, ...)
+#
+# The first time a caller hits this route, the approval is Pending: the
+# call is suspended and the caller gets an elicitation id. A human approves
+# out of band (in this tutorial, with a curl to the approval channel the
+# harness serves). The caller then retries with that id, and the approval
+# is now resolved, so the call proceeds.
+#
+# `from: claim.manager` resolves to the caller's manager from their token
+# (evan's manager is mona). The approval plugin is a small custom plugin
+# on the `elicit` hook, backed by a curl-driven channel. In production this
+# would be an OIDC CIBA backchannel or a push to the approver's device.
+
+plugins:
+  - name: keycloak
+    kind: identity/jwt
+    hooks: [identity.resolve]
+    config:
+      claim_mapper: standard
+      trusted_issuers:
+        - issuer: http://localhost:8081/realms/cpex-tutorial
+          audiences: [cpex-tutorial]
+          algorithms: [RS256]
+          decoding_key:
+            kind: jwks_url
+            url: http://localhost:8081/realms/cpex-tutorial/protocol/openid-connect/certs
+            insecure_http: true
+          leeway_seconds: 60
+
+  - name: manager-approval
+    kind: approval-channel
+    hooks: [elicit]
+
+routes:
+  - tool: send_email
+    authentication:
+      - keycloak
+    authorization:
+      pre_invocation:
+        - "require(authenticated)"
+        - "require_approval(manager-approval, from: claim.manager, purpose: \"Approve outbound email\")"

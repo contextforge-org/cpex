@@ -1,0 +1,71 @@
+# Location: ./builtins/plugins/elicitation-ciba/Cargo.toml
+# Copyright 2026
+# SPDX-License-Identifier: Apache-2.0
+# Authors: Teryl Taylor
+#
+# cpex-plugin-elicitation-ciba — `ElicitationHandler` that drives manager
+# approval (and other human-in-the-loop kinds) through OpenID Connect
+# CIBA (Client-Initiated Backchannel Authentication) against Keycloak or
+# any CIBA-capable OP.
+#
+# # Why this exists
+#
+# The `ElicitationHook` family defines the surface (`ElicitationPayload`
+# in/out, three operations); this crate is the *backend* that actually
+# reaches a human. The CIBA flow:
+#
+#   * dispatch → POST the backchannel auth endpoint with `login_hint`
+#     (the approver), `binding_message` (the audited purpose), and
+#     `scope`; the OP pushes a decoupled approval prompt to the
+#     approver's authentication device and returns an `auth_req_id`.
+#   * check    → POST the token endpoint with
+#     `grant_type=urn:openid:params:grant-type:ciba` + `auth_req_id`;
+#     `authorization_pending` / `slow_down` mean keep waiting, a token
+#     means approved, `access_denied` / `expired_token` are terminal.
+#   * validate → confirm the returned token names the expected approver.
+#
+# The hours-long human gap is owned by the OP, never by a handler call —
+# each of the three operations is a short, synchronous HTTP round-trip.
+
+[package]
+name = "cpex-plugin-elicitation-ciba"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "CPEX elicitation handler — OIDC CIBA human-in-the-loop approval."
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+cpex-core = { workspace = true }
+
+# `reqwest` for the backchannel + token-endpoint POSTs. Same TLS stance
+# as cpex-plugin-delegator-oauth: rustls, no native-tls/openssl link.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+# `base64` to decode the JWT payload segment for the approver claim
+# (claims extraction only — see the validate notes in approver.rs).
+base64 = "0.22"
+
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["sync"] }
+chrono = { workspace = true }
+
+# Secret-clearing wrapper for the OAuth client secret in memory.
+zeroize = { version = "1.8", features = ["zeroize_derive"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }
+serde_json = { workspace = true }
+# `mockito` stands up an HTTP server in-process so tests can assert the
+# CIBA request shapes and simulate OP responses without a real Keycloak.
+mockito = "1"
+
+[lints]
+workspace = true

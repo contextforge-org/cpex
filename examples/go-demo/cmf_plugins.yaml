@@ -1,0 +1,60 @@
+# Location: ./examples/go-demo/cmf_plugins.yaml
+# Copyright 2025
+# SPDX-License-Identifier: Apache-2.0
+# Authors: Teryl Taylor
+#
+# CMF Demo — plugin configuration
+#
+# Two CMF plugins demonstrating typed message processing:
+#   - Tool policy: checks tool permissions against security labels
+#   - Header injector: adds response headers after processing
+#
+# Uses cmf.tool_pre_invoke and cmf.tool_post_invoke hooks with
+# MessagePayload (typed CMF messages, not generic maps).
+
+plugin_settings:
+  routing_enabled: true
+  plugin_timeout: 30
+
+global:
+  policies:
+    all:
+      plugins: [tool-policy]
+    pii:
+      plugins: [tool-policy]
+
+plugins:
+  - name: tool-policy
+    kind: builtin/cmf-tool-policy
+    hooks: [cmf.tool_pre_invoke]
+    mode: sequential
+    priority: 10
+    on_error: fail
+    capabilities:
+      - read_labels
+      - read_subject
+
+  - name: header-injector
+    kind: builtin/cmf-header-injector
+    hooks: [cmf.tool_pre_invoke, cmf.tool_post_invoke]
+    mode: sequential
+    priority: 50
+    on_error: ignore
+    capabilities:
+      - read_headers
+      - write_headers
+
+routes:
+  - tool: get_compensation
+    meta:
+      tags: [pii, hr]
+    plugins:
+      - header-injector
+
+  - tool: list_departments
+    plugins:
+      - header-injector
+
+  - tool: "*"
+    plugins:
+      - header-injector

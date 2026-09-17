@@ -1,0 +1,8 @@
+{"version": 3, "term": {"cols": 80, "rows": 24}, "timestamp": 1784230064, "command": "cargo run -q -p cpex-tutorial --example m07_tainting", "title": "CPEX tutorial: m07-tainting", "env": {"SHELL": "/bin/zsh"}}
+[0.6, "o", "\r\n\u001b[1;36m=== Module 7: Information flow (Tainting) ===\u001b[0m\r\n\r\n"]
+[1.2, "o", "\u001b[1m\u25b8 alice, fresh session \u2192 send_email (nothing tainted yet)\u001b[0m\r\n"]
+[1.8, "o", "  \u001b[32m\u2713 ALLOWED\u001b[0m  {\"sent\":true,\"to\":\"coworker@corp.example\",\"subject\":\"lunch\"}\r\n\r\n"]
+[2.4, "o", "\u001b[1m\u25b8 alice, session-hr-work \u2192 get_compensation (taints session 'secret')\u001b[0m\r\n"]
+[3.0, "o", "  \u001b[32m\u2713 ALLOWED\u001b[0m  {\"employee_id\":\"e-1001\",\"name\":\"Alice Okafor\",\"title\":\"Staff Engineer\",\"salary\":198000,\"ssn\":\"521-38-7710\"}\r\n\r\n\u001b[1m\u25b8 alice, session-hr-work \u2192 send_email (write-down blocked)\u001b[0m\r\n"]
+[3.6, "o", "  \u001b[31m\u2717 DENIED\u001b[0m   [session_tainted] write-down blocked: this session read secret data\r\n\r\nIdentical send_email call: allowed in the clean session, denied after the same session read secret data.\r\n"]
+[4.4, "x", "0"]

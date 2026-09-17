@@ -1,0 +1,59 @@
+# Module 18, Static attributes (operator-maintained facts in the `data.*` tree).
+#
+# Most attributes a predicate reads come from the request: the subject, its
+# roles, session labels. But some facts are carried by nothing and belong in
+# no token: they are operator decisions, known at configuration time, such as which
+# region data must stay in, which tools are currently enabled. Those are
+# STATIC attributes, provisioned from a file into the `data.*` namespace and
+# read in policy exactly like `subject.*` or `role.*`.
+#
+# Here an operator's per-tool kill switch (data.controls.tools.<tool>.enabled)
+# decides whether a tool runs, without editing this policy or any code. The
+# same caller reaches one tool and is refused another, and the difference is a
+# fact in a data file, not anything about the request.
+
+global:
+  apl:
+    # Deep-merged, in order, into one `data.*` tree at startup. Paths are
+    # relative to where you run the example (the repo root).
+    attribute_files:
+      - examples/tutorial/policies/attributes/controls.yaml
+
+plugins:
+  - name: keycloak
+    kind: identity/jwt
+    hooks: [identity.resolve]
+    config:
+      role: user
+      header: Authorization
+      claim_mapper: standard
+      trusted_issuers:
+        - issuer: http://localhost:8081/realms/cpex-tutorial
+          audiences: [cpex-tutorial]
+          algorithms: [RS256]
+          decoding_key:
+            kind: jwks_url
+            url: http://localhost:8081/realms/cpex-tutorial/protocol/openid-connect/certs
+            insecure_http: true
+          leeway_seconds: 60
+
+routes:
+  # Enabled/disabled is an operator fact, read from data.* per request. Each
+  # route consults its own tool's flag; policy never hard-codes the answer.
+  - tool: get_compensation
+    authentication: [keycloak]
+    authorization:
+      pre_invocation:
+        - "require(authenticated)"
+        - when: "data.controls.tools.get_compensation.enabled == false"
+          do:
+            - "deny('get_compensation is disabled by operations', 'ops.tool_disabled')"
+
+  - tool: search_repos
+    authentication: [keycloak]
+    authorization:
+      pre_invocation:
+        - "require(authenticated)"
+        - when: "data.controls.tools.search_repos.enabled == false"
+          do:
+            - "deny('search_repos is disabled by operations', 'ops.tool_disabled')"

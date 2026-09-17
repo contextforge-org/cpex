@@ -1,222 +1,188 @@
 ---
 title: "Configuration"
-weight: 90
+weight: 80
 ---
 
-# Configuration Reference
+# Configuration
 
-Plugins are configured in a YAML file. You pass the file path when creating the `PluginManager`:
+A CPEX config is a single document that declares the plugins and PDP resolvers available, the global settings, and the APL routes. The runtime loads it and the APL visitor wires routes to hooks.
 
-```python
-manager = PluginManager("plugins/config.yaml")
-```
-
-Or set it via environment variable:
-
-```bash
-export PLUGINS_CONFIG_FILE=plugins/config.yaml
-export PLUGINS_ENABLED=true
-```
-
----
-
-## YAML Structure
+## Shape
 
 ```yaml
-plugin_dirs:
-  - ./plugins
+plugins:        # the plugins available to policy, by kind
+  - name: ...
+    kind: ...
+    hooks: [...]
+    capabilities: [...]
+    config: { ... }
 
+global:         # cross-cutting resolvers and stores
+  apl:
+    pdp:
+      - kind: ...
+    session_store:
+      kind: ...
+
+routes:         # APL policy, a list of operations
+  - tool: <name>            # or resource: / prompt: / llm:
+    authentication: [ ... ] # identity-resolution plugins
+    args: { ... }
+    authorization:
+      pre_invocation: [ ... ]
+      post_invocation: [ ... ]
+    result: { ... }
+```
+
+## Plugins
+
+Each plugin entry declares how it is identified, where it runs, and what it may see:
+
+| Field | Meaning |
+|-------|---------|
+| `name` | Instance name, referenced from APL (`plugin(name)`, `delegate(name, ...)`). |
+| `kind` | Which plugin implementation (for example `identity/jwt`, `audit/logger`). |
+| `hooks` | The hook points it registers on. |
+| `mode` | Execution mode (see [Plugins & Pipeline]({{< relref "/docs/pipeline" >}})). |
+| `priority` | Order within a hook; lower runs first. |
+| `on_error` | `fail`, `ignore`, or `disable`. |
+| `capabilities` | Declared context access (see [Extensions & Capability-Gating]({{< relref "/docs/extensions" >}})). |
+| `config` | Plugin-specific settings. |
+
+```yaml
 plugins:
-  - name: content_filter
-    kind: my_app.plugins.ContentFilterPlugin
-    version: "1.0.0"
-    description: "Blocks prohibited content in tool arguments"
-    author: "platform-team"
-    hooks:
-      - tool_pre_invoke
-    tags:
-      - security
-      - content
-    mode: sequential
-    on_error: fail
-    priority: 10
-    conditions:
-      - server_ids: [prod-gateway]
-        tenant_ids: [tenant-a, tenant-b]
+  - name: jwt-user
+    kind: identity/jwt
+    hooks: [identity.resolve]
     config:
-      blocked_patterns:
-        - "DROP TABLE"
-        - "rm -rf"
+      role: user
+      header: X-User-Token
+      trusted_issuers:
+        - issuer: "https://idp.example.com/realms/agents"
+          audiences: ["cpex-gateway"]
+          decoding_key:
+            kind: jwks_url
+            url: "https://idp.example.com/realms/agents/protocol/openid-connect/certs"
+
+  - name: audit-log
+    kind: audit/logger
+    hooks: [cmf.tool_pre_invoke]
+    priority: 90
+    capabilities: [read_subject, read_client, read_delegation]
 ```
 
----
+## Global
 
-## Plugin Fields
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `name` | `str` | *required* | Unique plugin identifier |
-| `kind` | `str` | *required* | Fully qualified class path (e.g., `my_app.plugins.MyPlugin`), `"external"` for remote plugins, or `"isolated_venv"` for venv-isolated plugins |
-| `version` | `str` | — | Semantic version |
-| `description` | `str` | — | Human-readable description |
-| `author` | `str` | — | Plugin author |
-| `hooks` | `list[str]` | `[]` | Hook types this plugin handles |
-| `tags` | `list[str]` | `[]` | Searchable tags |
-| `mode` | `str` | `sequential` | Execution mode — see [Execution Modes]({{< relref "/docs/execution-modes" >}}) |
-| `on_error` | `str` | `fail` | Error behavior: `fail`, `ignore`, `disable` |
-| `priority` | `int` | `100` | Execution order within mode (lower = higher priority) |
-| `conditions` | `list` | `[]` | When the plugin should execute |
-| `capabilities` | `list[str]` | `[]` | Declared capabilities for [extension access]({{< relref "/docs/extensions" >}}) |
-| `config` | `dict` | — | Plugin-specific settings passed to the constructor |
-| `max_content_size` | `int` | `10000000` | Maximum payload size in bytes |
-| `mcp` | `object` | — | MCP client config (for [external plugins]({{< relref "/docs/external-plugins" >}})) |
-| `grpc` | `object` | — | gRPC client config (for external plugins) |
-| `unix_socket` | `object` | — | Unix socket client config (for external plugins) |
-
----
-
-## Plugin Directories
-
-`plugin_dirs` lists directories that CPEX adds to the Python path for plugin discovery. Use this when your plugin classes live outside the main application package:
+`global.apl.pdp` registers PDP resolvers; `global.apl.session_store` selects where taint labels live (absent it, the in-process memory store is used).
 
 ```yaml
-plugin_dirs:
-  - ./plugins
-  - ./vendor/plugins
+global:
+  apl:
+    pdp:
+      - kind: cedar-direct
+        policy_text: |
+          permit(principal, action == Action::"read", resource is Repo)
+          when { principal.roles.contains("security") };
+    session_store:
+      kind: valkey
+      endpoint: localhost:6379
 ```
 
----
+## Routes
 
-## Conditions
-
-Conditions restrict when a plugin executes. If conditions are set and none match, the plugin is skipped for that invocation.
+Routes carry the APL policy. The runtime loads routes as a **list**, one entry per operation, matched by `tool:` (or `resource:` / `prompt:` / `llm:`):
 
 ```yaml
-conditions:
-  - server_ids: [prod-gateway, staging-gateway]
-    tenant_ids: [tenant-a]
-  - tools: [web_search, code_exec]
+routes:
+  - tool: get_compensation
+    authorization:
+      pre_invocation:
+        - "require(role.hr)"
+        - "delegate(workday-oauth, target: workday-api, audience: workday-api, permissions: [read_compensation])"
+        - "taint(secret, session)"
+        - "plugin(audit-log)"
+    result:
+      ssn: "str | redact(!perm.view_ssn)"
 ```
 
-Available condition fields:
+Within a route, the two authorization phases may be written nested under `authorization:` (as above) or flat, as `pre_invocation:` / `post_invocation:` directly on the route; the two are equivalent.
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `server_ids` | `set[str]` | Match specific server IDs |
-| `tenant_ids` | `set[str]` | Match specific tenant IDs |
-| `tools` | `set[str]` | Match specific tool names |
-| `prompts` | `set[str]` | Match specific prompt names |
-| `resources` | `set[str]` | Match specific resource URIs |
-| `agents` | `set[str]` | Match specific agent IDs |
-| `user_patterns` | `list[str]` | Match user patterns |
-| `content_types` | `list[str]` | Match content types |
+> **Runtime config vs. apl-core.** The `apl-core` crate also accepts a map-keyed `routes:` form (keyed by route name) through its standalone `compile_config` entry point, used mainly in tests. The runtime host path (`load_config_yaml`) does not: it parses the list form shown here. Write the list form for anything you load into a running CPEX. See [APL]({{< relref "/docs/apl" >}}) for the policy syntax itself.
 
-Multiple conditions are OR'd — the plugin runs if **any** condition matches. Fields within a single condition are AND'd.
+Route-level overrides can adjust a plugin's `capabilities` or `config` for a specific operation, so a scanner can be granted `read_labels` on one sensitive route without widening its access everywhere.
 
----
+## Groups
 
-## Plugin-Specific Config
-
-The `config` dict is passed to your plugin's constructor via `PluginConfig.config`. You access it in `__init__`:
-
-```python
-from pydantic import BaseModel
-from cpex.framework import Plugin, PluginConfig
-
-
-class FilterConfig(BaseModel):
-    blocked_patterns: list[str]
-    case_sensitive: bool = False
-
-
-class ContentFilterPlugin(Plugin):
-    def __init__(self, config: PluginConfig):
-        super().__init__(config)
-        self._filter = FilterConfig.model_validate(config.config)
-```
-
-Validating with a Pydantic model gives you type safety and clear error messages if the YAML config is malformed.
-
----
-
-## Environment Variables
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `PLUGINS_ENABLED` | `false` | Enable the plugin framework |
-| `PLUGINS_CONFIG_FILE` | `plugins/config.yaml` | Path to plugin configuration |
-| `PLUGINS_PLUGIN_TIMEOUT` | `30` | Max execution time per plugin (seconds) |
-| `PLUGINS_EXECUTION_POOL` | — | Max concurrent tasks (semaphore limit) |
-| `PLUGINS_DEFAULT_HOOK_POLICY` | `allow` | Default policy for hooks without explicit rules: `allow` or `deny` |
-
----
-
-## Legacy Mode Migration
-
-If you are upgrading from an older version of CPEX, these mode names are automatically migrated:
-
-| Legacy Mode | Current Equivalent |
-|-------------|-------------------|
-| `enforce` | `sequential` |
-| `permissive` | `transform` |
-| `enforce_ignore_error` | `sequential` + `on_error: ignore` |
-
----
-
-## Complete Example
+A **group** is a named, reusable bundle of policy — `authentication:` steps, `authorization:` steps, and/or `plugins` — that routes opt into. It is the middle layer between global defaults and per-route policy. Define groups at the top-level `groups:` section, keyed by name:
 
 ```yaml
-plugin_dirs:
-  - ./plugins
-
-plugins:
-  # Policy enforcement — blocks dangerous tools
-  - name: tool_policy
-    kind: plugins.security.ToolPolicyPlugin
-    version: "1.0.0"
-    hooks:
-      - tool_pre_invoke
-    mode: sequential
-    priority: 10
-    on_error: fail
-    conditions:
-      - server_ids: [prod-gateway]
-    config:
-      blocked_tools:
-        - admin_delete
-        - raw_sql_exec
-
-  # PII redaction — cleans arguments before tools run
-  - name: pii_redactor
-    kind: plugins.privacy.PIIRedactionPlugin
-    version: "1.0.0"
-    hooks:
-      - tool_pre_invoke
-      - tool_post_invoke
-    mode: transform
-    priority: 20
-    on_error: ignore
-
-  # Audit logging — async, never blocks
-  - name: audit_logger
-    kind: plugins.observability.AuditLogPlugin
-    version: "1.0.0"
-    hooks:
-      - tool_pre_invoke
-      - tool_post_invoke
-      - prompt_pre_fetch
-    mode: fire_and_forget
-    priority: 100
-    on_error: ignore
-
-  # Experimental policy — dry-run only
-  - name: new_content_policy
-    kind: plugins.experimental.ContentPolicyV2
-    version: "0.1.0"
-    hooks:
-      - tool_pre_invoke
-    mode: audit
-    priority: 15
+groups:
+  hr-tools:
+    authentication: [jwt-manager]        # + identity for this group
+    authorization:
+      pre_invocation:
+        - "require(role.hr)"             # + policy for this group
 ```
 
-This pipeline runs in order: `tool_policy` (sequential, blocks) → `pii_redactor` (transform, modifies) → `new_content_policy` (audit, observes) → `audit_logger` (fire_and_forget, logs in background).
+A route joins a group with the `groups:` field — a bare string or a list:
+
+```yaml
+routes:
+  - tool: get_compensation
+    groups: hr-tools                     # or: groups: [hr-tools, pii]
+```
+
+`groups:` is **sugar over tags**: `meta: { tags: [hr-tools] }` is exactly equivalent, and a host-injected runtime tag joins a group the same way when its name matches a group. Tags remain the substrate — `groups:` just names the common "join this bundle" case as a first-class field.
+
+## Global settings and defaults
+
+Every top-level section (`plugins`, `global`, `routes`, `plugin_dirs`, `plugin_settings`) is optional. `plugin_settings` controls runtime behavior:
+
+| Setting | Default | Meaning |
+|---------|---------|---------|
+| `routing_enabled` | `false` | `false`: each plugin self-selects via its own `conditions:`. `true`: `routes:` / `global:` drive selection and per-plugin `conditions:` are ignored. Route-based configs set this `true`. |
+| `plugin_timeout` | `30` | Per-plugin timeout, in seconds. |
+| `short_circuit_on_deny` | `true` | Stop a hook's remaining plugins once one denies. |
+| `fail_on_plugin_error` | `false` | Whether a plugin error fails the request (see also per-plugin `on_error`). |
+| `parallel_execution_within_band` | `false` | Run same-priority plugins concurrently. |
+| `route_cache_max_entries` | `10000` | Dispatch-plan cache size. |
+
+Per-plugin fields default to `mode: sequential`, `on_error: fail`, and a `priority` that orders plugins within a hook (lower runs first).
+
+## Secrets and key material
+
+CPEX does not interpolate environment variables into arbitrary config values; there is no `${ENV}` substitution of config fields. Secrets are injected through typed source enums on the plugins that need them.
+
+OAuth and CIBA client secrets use `client_secret_source`:
+
+```yaml
+client_secret_source: { kind: env_var, name: OAUTH_CLIENT_SECRET }  # production-friendly
+client_secret_source: { kind: file, path: /run/secrets/oauth }       # mounted secret
+client_secret_source: { kind: literal, secret: dev-only }            # never in production
+```
+
+JWT signing material uses `decoding_key` on each `identity/jwt` trusted issuer: `jwks_url` (fetched and cached; `refresh_secs` default 600), `pem`, `pem_file`, `jwk`, or `secret` (HMAC). For a `jwks_url`, `insecure_http` defaults to `false`; set it `true` only to allow `http://` on localhost, never in production.
+
+(The request-time templates like `${args.X}` used inside PDP and predicate steps are a separate mechanism, evaluated per request against the attribute bag, not config interpolation.)
+
+## Resolution order
+
+With `routing_enabled: true`, the plugins that run for an operation are assembled and de-duplicated in this order, with later layers winning on conflict:
+
+1. always-on global policy,
+2. the entity `defaults`,
+3. groups the operation joins (via `groups:` or a matching tag),
+4. the route itself.
+
+Identity (`authentication:`) plugins stack global → groups → route, with `replace_inherited` to drop inherited layers when a route needs a clean set.
+
+## Validation
+
+`load_config_yaml` validates on load and fails with an operator-facing message rather than starting in a bad state. Common errors:
+
+- a duplicate plugin `name`;
+- a route with no entity matcher, or with more than one (for example both `tool:` and `resource:`);
+- a route or group that references an unknown plugin name;
+- the renamed key `identity:` (use `authentication:`).
+
+There is no hot reload or config versioning: load a changed config by rebuilding the manager.

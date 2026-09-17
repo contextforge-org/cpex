@@ -1,0 +1,36 @@
+# Module 4, Effects and sequencing
+#
+# A route's pre_invocation is an ordered list of effects. They run top to
+# bottom and HALT on the first denial (halt-on-deny). Effects before the
+# denial still ran, including side effects like auditing.
+#
+# This route protects outbound email:
+#
+#   1. run(audit-log): a side-effecting plugin. It records the attempt and
+#      always allows, so the pipeline continues. Watch stderr for its line
+#      even when the call is later denied.
+#   2. a deny guard: `deny('msg','code')` produces a denial with a machine
+#      code you choose, so downstream systems can branch on it. Here we
+#      block outbound email whose recipient is external.
+#   3. require(authenticated): never reached when step 2 denies. Proof of
+#      halt-on-deny.
+#
+# Try it: reorder the steps so require(authenticated) comes first. Now an
+# anonymous call is denied by authentication and the external-recipient
+# guard never runs (and the reason code changes). Ordering is policy.
+
+plugins:
+  - name: audit-log
+    kind: audit/logger
+    hooks: [cmf.tool_pre_invoke]
+    capabilities: [read_subject, read_meta]
+    config:
+      destination: stderr
+
+routes:
+  - tool: send_email
+    authorization:
+      pre_invocation:
+        - "run(audit-log)"
+        - "args.external == true: deny('outbound email to external recipients is blocked', 'email.external_blocked')"
+        - "require(authenticated)"

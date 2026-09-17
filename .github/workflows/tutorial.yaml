@@ -1,0 +1,40 @@
+# Tutorial checks — runs the runnable tutorial modules end to end.
+#
+# Split out from ci.yml because the IdP-backed modules need a live Keycloak
+# (a Docker service), which the main gate does not. The no-IdP modules and
+# the policy unit tests already run in ci.yml via `make examples-build` and
+# `cargo test --workspace`; this workflow adds the identity-backed path:
+# boot the tutorial Keycloak with docker compose, run every module's
+# `--check`, and tear it down.
+name: Tutorial
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "examples/tutorial/**"
+      - "crates/**"
+      - "builtins/**"
+      - ".github/workflows/tutorial.yaml"
+  pull_request:
+    paths:
+      - "examples/tutorial/**"
+      - ".github/workflows/tutorial.yaml"
+
+jobs:
+  tutorial-check:
+    name: Tutorial modules (with Keycloak)
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+      - name: Install Rust 1.96.0
+        uses: dtolnay/rust-toolchain@1.96.0
+      - uses: Swatinem/rust-cache@v2
+      # `make tutorial-check` brings the Keycloak compose stack up, runs the
+      # no-IdP and IdP-backed module checks, then tears the stack down.
+      - name: make tutorial-check
+        run: make tutorial-check

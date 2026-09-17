@@ -1,233 +1,74 @@
 ---
-title: "Testing Plugins"
-weight: 120
+title: "Testing"
+weight: 110
 ---
 
-# Testing Plugins
+# Testing Policy
 
-Plugins are plain async classes — you can test them directly without the full framework. For integration testing, use `PluginManager` with a test configuration.
+Policy is code, and it deserves tests. The behaviors worth covering are the ones the scenario demonstrates: a route allows the right callers, denies the wrong ones, redacts the right fields, and carries taint across a session. Because APL is declarative and evaluated by the runtime, you can test a route by loading a policy and driving operations through it, asserting the outcome, without standing up a live backend.
 
----
+## What to test
 
-## Unit Testing
+For each route, cover the outcomes its policy produces:
 
-Call hook methods directly with constructed payloads and contexts. No framework overhead needed.
+- **Allow**: a caller with the required attributes passes and the operation forwards.
+- **Deny**: a caller missing a required attribute is rejected, with the expected reason code.
+- **Redaction**: a field is present for an entitled caller and redacted for an unentitled one (the "same request, different data" outcomes).
+- **Information flow**: a session that acquired a taint label is blocked on a later operation that gates on it.
+- **Delegation**: a passing caller mints a token with the requested scope, and a post-check denies when the granted scope is short.
 
-```python
-import pytest
+## A table-driven policy test
 
-from cpex.framework import (
-    GlobalContext,
-    PluginConfig,
-    PluginContext,
-    ToolPreInvokePayload,
-)
+Load a policy into a manager, drive routes through it with a fake backend, and assert the outcome. The tutorial ships this as a working template you can copy: [`examples/tutorial/tests/policy_tests.rs`](https://github.com/contextforge-org/cpex/tree/main/examples/tutorial/tests/policy_tests.rs). The setup is a small helper:
 
+```rust
+async fn manager_with(policy: &str) -> Arc<PluginManager> {
+    let mgr = Arc::new(PluginManager::default());
+    cpex::install_builtins(&mgr);
+    mgr.load_config_yaml(policy).expect("policy should load");
+    mgr.initialize().await.expect("initialize");
+    mgr
+}
+```
 
-@pytest.mark.asyncio
-async def test_tool_blocker_blocks_dangerous_tool():
-    config = PluginConfig(
-        name="test_blocker",
-        kind="plugins.tool_blocker.ToolBlockerPlugin",
-        version="1.0.0",
-        hooks=["tool_pre_invoke"],
-        config={"blocked_tools": ["dangerous_tool", "admin_delete"]},
+Then a table keeps the allow/deny matrix readable, one row per case:
+
+```rust
+#[tokio::test]
+async fn external_email_denied_with_custom_code() {
+    let mgr = manager_with(POLICY).await;
+    let outcome = mediate(
+        &mgr,
+        &Caller::anonymous(),
+        "send_email",
+        json!({ "to": "x@evil.example", "external": true }),
+        |args| backends::dispatch("send_email", args),
     )
-
-    # Import your plugin class
-    from plugins.tool_blocker import ToolBlockerPlugin
-
-    plugin = ToolBlockerPlugin(config)
-
-    payload = ToolPreInvokePayload(name="dangerous_tool", args={"target": "prod"})
-    context = PluginContext(global_context=GlobalContext(request_id="test-001"))
-
-    result = await plugin.tool_pre_invoke(payload, context)
-
-    assert result.continue_processing is False
-    assert result.violation is not None
-    assert result.violation.code == "TOOL_BLOCKED"
+    .await;
+    assert!(matches!(
+        outcome,
+        Outcome::Denied { code, .. } if code == "email.external_blocked"
+    ));
+}
 ```
 
-### Testing Allowed Requests
+`mediate()` here is the tutorial's harness wrapper around the host dispatch loop, not a CPEX API; in your own host you would drive the same route through your own loop and assert on the result. Anonymous callers are enough to exercise structural rules (authentication gates, argument guards, `result` pipelines) with no IdP. For identity-dependent rules, mint a token the way the tutorial's `idp` helper does.
 
-```python
-@pytest.mark.asyncio
-async def test_tool_blocker_allows_safe_tool():
-    config = PluginConfig(
-        name="test_blocker",
-        kind="plugins.tool_blocker.ToolBlockerPlugin",
-        version="1.0.0",
-        hooks=["tool_pre_invoke"],
-        config={"blocked_tools": ["dangerous_tool"]},
-    )
+A stateful taint test follows the same shape but shares one session id across two calls: read a sensitive route, then assert a later `send_email` on the same session is denied on the taint label. Tutorial [module 7]({{< relref "/docs/tutorial/07-tainting" >}}) is the worked example; [module 10]({{< relref "/docs/tutorial/10-testing" >}}) walks through the test file above.
 
-    from plugins.tool_blocker import ToolBlockerPlugin
+## Scenario checks
 
-    plugin = ToolBlockerPlugin(config)
+Beyond unit tests, each tutorial module binary supports a `--check` flag that runs its scripted scenario and exits non-zero if the outcome drifts. `make tutorial-check` boots the tutorial IdP, runs every module's check, and tears it down. This is a lightweight way to pin end-to-end behavior (including the identity- and delegation-backed paths) in CI.
 
-    payload = ToolPreInvokePayload(name="web_search", args={"query": "CPEX docs"})
-    context = PluginContext(global_context=GlobalContext(request_id="test-002"))
+## Integration coverage
 
-    result = await plugin.tool_pre_invoke(payload, context)
+Unit-evaluating a route proves the policy logic. It does not prove the plugins it dispatches behave correctly end to end. For effects that call out (a PDP resolver, a delegator, a PII scanner), add an integration test that exercises the real plugin through the manager, so the interaction is covered and not just the policy's intent. Test the failure paths too: a PDP that denies, a token exchange that returns a short scope, a scanner that flags content. Those are the branches policy exists to handle.
 
-    assert result.continue_processing is True
-    assert result.violation is None
+## Running
+
+```bash
+cargo test -p cpex-tutorial     # the policy tests above
+cargo test --workspace          # everything, including the runtime and APL suites
 ```
 
-### Testing Payload Modification
-
-```python
-@pytest.mark.asyncio
-async def test_pii_redaction_removes_emails():
-    config = PluginConfig(
-        name="test_redactor",
-        kind="plugins.pii.PIIRedactionPlugin",
-        version="1.0.0",
-        hooks=["tool_pre_invoke"],
-    )
-
-    from plugins.pii import PIIRedactionPlugin
-
-    plugin = PIIRedactionPlugin(config)
-
-    payload = ToolPreInvokePayload(
-        name="send_email",
-        args={"body": "Contact alice@example.com for details"},
-    )
-    context = PluginContext(global_context=GlobalContext(request_id="test-003"))
-
-    result = await plugin.redact_pii(payload, context)
-
-    assert result.continue_processing is True
-    assert result.modified_payload is not None
-    assert "alice@example.com" not in result.modified_payload.args["body"]
-    assert "[REDACTED]" in result.modified_payload.args["body"]
-```
-
----
-
-## Integration Testing
-
-Use `PluginManager` with a test configuration to verify the full pipeline — mode ordering, priority, chaining, and condition matching.
-
-```python
-import tempfile
-from pathlib import Path
-
-import pytest
-import yaml
-
-from cpex.framework import GlobalContext, PluginManager, ToolPreInvokePayload
-
-
-@pytest.fixture
-async def manager(tmp_path):
-    config = {
-        "plugin_dirs": ["./plugins"],
-        "plugins": [
-            {
-                "name": "blocker",
-                "kind": "plugins.tool_blocker.ToolBlockerPlugin",
-                "version": "1.0.0",
-                "hooks": ["tool_pre_invoke"],
-                "mode": "sequential",
-                "priority": 10,
-                "config": {"blocked_tools": ["dangerous_tool"]},
-            },
-            {
-                "name": "redactor",
-                "kind": "plugins.pii.PIIRedactionPlugin",
-                "version": "1.0.0",
-                "hooks": ["tool_pre_invoke"],
-                "mode": "transform",
-                "priority": 20,
-            },
-        ],
-    }
-
-    config_path = tmp_path / "config.yaml"
-    config_path.write_text(yaml.dump(config))
-
-    mgr = PluginManager(str(config_path))
-    await mgr.initialize()
-    yield mgr
-    await mgr.shutdown()
-    PluginManager.reset()
-
-
-@pytest.mark.asyncio
-async def test_pipeline_blocks_before_transform(manager):
-    payload = ToolPreInvokePayload(name="dangerous_tool", args={"data": "alice@example.com"})
-    context = GlobalContext(request_id="test-pipeline")
-
-    result, _ = await manager.invoke_hook("tool_pre_invoke", payload, context)
-
-    # Sequential blocker runs first (priority 10) and halts the pipeline
-    assert result.continue_processing is False
-    assert result.violation.code == "TOOL_BLOCKED"
-
-
-@pytest.mark.asyncio
-async def test_pipeline_chains_transform(manager):
-    payload = ToolPreInvokePayload(
-        name="web_search",
-        args={"query": "contact alice@example.com"},
-    )
-    context = GlobalContext(request_id="test-chain")
-
-    result, _ = await manager.invoke_hook("tool_pre_invoke", payload, context)
-
-    # Blocker allows (not in blocked list), redactor transforms
-    assert result.continue_processing is True
-    if result.modified_payload:
-        assert "alice@example.com" not in result.modified_payload.args["query"]
-```
-
----
-
-## Important: Reset Between Tests
-
-`PluginManager` uses a Borg singleton pattern — all instances share state. Always call `PluginManager.reset()` in your teardown to clear shared state between tests:
-
-```python
-@pytest.fixture(autouse=True)
-def reset_manager():
-    yield
-    PluginManager.reset()
-```
-
----
-
-## Testing with `invoke_hook_for_plugin`
-
-To test a specific plugin in isolation within the manager (bypassing priority ordering), use `invoke_hook_for_plugin`:
-
-```python
-@pytest.mark.asyncio
-async def test_specific_plugin(manager):
-    payload = ToolPreInvokePayload(name="calculator", args={"a": "5"})
-    context = GlobalContext(request_id="test-specific")
-
-    result = await manager.invoke_hook_for_plugin(
-        name="redactor",
-        hook_type="tool_pre_invoke",
-        payload=payload,
-        context=context,
-    )
-
-    assert result.continue_processing is True
-```
-
----
-
-## Pytest Configuration
-
-All hook methods are async, so you need `pytest-asyncio`. Add to your `pyproject.toml`:
-
-```toml
-[tool.pytest.ini_options]
-asyncio_mode = "auto"
-```
-
-Or mark individual tests with `@pytest.mark.asyncio`.
+Copy [`examples/tutorial/tests/policy_tests.rs`](https://github.com/contextforge-org/cpex/tree/main/examples/tutorial/tests/policy_tests.rs) as the starting point for tests against your own policy.

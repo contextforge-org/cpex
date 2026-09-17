@@ -1,0 +1,75 @@
+# =============================================================================
+# CPEX Tutorial: SPIRE overlay for Module 16 (Workload identity / SVID).
+# =============================================================================
+# OPT-IN. Modules 0 to 15 do not need this file; bring it up only for module 16.
+# It is ADDITIVE over idp/docker-compose.yml:
+#
+#   * bumps Keycloak to 26.6.1 and turns on `spiffe:v1` (the native SPIFFE
+#     identity provider, which lets a client present its JWT-SVID as an RFC 7523
+#     client_assertion of type ...:jwt-spiffe, which is how an SVID enters
+#     OAuth per draft-ietf-oauth-spiffe-client-auth). Also keeps
+#     `token-exchange-standard` on for leg 2 (the scope-down exchange).
+#   * adds spire-server (the SPIFFE authority) + spire-oidc (its JWKS/OIDC
+#     discovery provider on :8443) so Keycloak can validate the SVID.
+#
+# We mint SVIDs directly off the server (no agent, no attestation): a genuine
+# SPIRE-signed SVID against SPIRE's real JWKS, in two containers.
+#
+#   # Bring up the tutorial IdP + SPIRE:
+#   docker compose -f idp/docker-compose.yml -f idp/docker-compose.spire.yml up -d
+#
+#   # Configure Keycloak to trust SPIRE and bind the agent's SPIFFE ID:
+#   ./idp/spire/setup-spiffe.sh
+#
+#   # Mint the agent's JWT-SVID (audience = the tutorial realm's issuer):
+#   docker compose -f idp/docker-compose.yml -f idp/docker-compose.spire.yml \
+#     exec spire-server /opt/spire/bin/spire-server jwt mint \
+#       -spiffeID spiffe://cpex.tutorial/agent/hr-copilot \
+#       -audience http://localhost:8081/realms/cpex-tutorial
+#
+# NEVER use any part of this stack in production.
+# =============================================================================
+
+services:
+  # Override the base Keycloak: newer image + SPIFFE feature. Every other
+  # setting (ports, realm import, admin creds, healthcheck) is inherited.
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.6.1
+    environment:
+      # token-exchange-standard -> RFC 8693 exchange (leg 2), as before.
+      # spiffe:v1               -> native SPIFFE identity provider + the
+      #                            federated-jwt client authenticator (leg 1).
+      KC_FEATURES: token-exchange-standard,spiffe:v1
+
+  spire-server:
+    image: ghcr.io/spiffe/spire-server:1.9.6
+    container_name: cpex-tutorial-spire-server
+    command: ["-config", "/opt/spire/conf/server/server.conf"]
+    volumes:
+      - ./spire/server/server.conf:/opt/spire/conf/server/server.conf:ro
+      - spire-server-data:/opt/spire/data/server
+      # Shared admin socket dir; spire-oidc reads the bundle through it.
+      - spire-server-socket:/tmp/spire-server/private
+    healthcheck:
+      test: ["CMD", "/opt/spire/bin/spire-server", "healthcheck"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  spire-oidc:
+    image: ghcr.io/spiffe/oidc-discovery-provider:1.9.6
+    container_name: cpex-tutorial-spire-oidc
+    command: ["-config", "/opt/spire/conf/oidc/oidc-discovery-provider.conf"]
+    depends_on:
+      spire-server:
+        condition: service_healthy
+    volumes:
+      - ./spire/oidc/oidc-discovery-provider.conf:/opt/spire/conf/oidc/oidc-discovery-provider.conf:ro
+      - spire-server-socket:/tmp/spire-server/private:ro
+    ports:
+      - "8443:8443"
+
+volumes:
+  spire-server-data:
+  spire-server-socket:

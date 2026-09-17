@@ -1,0 +1,50 @@
+# Module 17, Multi-issuer identity (trust more than one IdP).
+#
+# Every module so far trusted ONE issuer. But a real enforcement point often
+# fronts users from several identity providers at once: your own workforce IdP
+# plus a partner org's, say. CPEX resolves a token by matching its `iss` claim
+# to the right trusted issuer and validating it against THAT issuer's JWKS,
+# so a single resolver can accept both, each on its own keys.
+#
+# Here one `keycloak` resolver trusts two realms (two issuers in the same
+# Keycloak, but they could be entirely separate IdPs): the home realm
+# `cpex-tutorial` (alice) and a partner realm `cpex-partner` (pat). A token
+# whose issuer is in neither list is rejected with `auth.untrusted_issuer`.
+
+plugins:
+  - name: keycloak
+    kind: identity/jwt
+    hooks: [identity.resolve]
+    config:
+      role: user
+      header: Authorization
+      claim_mapper: standard
+      trusted_issuers:
+        # Home issuer: your own workforce realm.
+        - issuer: http://localhost:8081/realms/cpex-tutorial
+          audiences: [cpex-tutorial]
+          algorithms: [RS256]
+          decoding_key:
+            kind: jwks_url
+            url: http://localhost:8081/realms/cpex-tutorial/protocol/openid-connect/certs
+            insecure_http: true
+          leeway_seconds: 60
+        # Partner issuer: a different realm, validated on ITS OWN keys.
+        - issuer: http://localhost:8081/realms/cpex-partner
+          audiences: [cpex-tutorial]
+          algorithms: [RS256]
+          decoding_key:
+            kind: jwks_url
+            url: http://localhost:8081/realms/cpex-partner/protocol/openid-connect/certs
+            insecure_http: true
+          leeway_seconds: 60
+
+routes:
+  # One route, one rule. It doesn't care WHICH issuer vouched for the caller,
+  # only that some trusted one did and the resolved subject has role.hr.
+  - tool: get_compensation
+    authentication:
+      - keycloak
+    authorization:
+      pre_invocation:
+        - "require(role.hr)"

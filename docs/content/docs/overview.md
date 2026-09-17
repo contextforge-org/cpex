@@ -3,43 +3,72 @@ title: "Overview"
 weight: 10
 ---
 
-# Overview
+# How CPEX Works
 
-## Why CPEX?
+## A running scenario
 
-AI systems interact with tools, APIs, data sources, and other agents. Adding guardrails, observability, or policy checks typically means embedding that logic directly into application code — leading to duplication, tight coupling, and drift.
+Picture one agent serving several people. It answers questions by calling tools (an HR records service, a code repository, an email sender), invoking other agents over A2A, running inference, and fetching prompts and resources. The backends are shared. The callers are not: an HR analyst, an engineer, and a support rep each drive the same agent with different identities and different entitlements.
 
-CPEX introduces **standardized interception hooks** between your application and its operations. Plugins attach to these hooks and run automatically, keeping enforcement logic separate from business logic.
+![One agent serves three users across HR, repo, and email backends; CPEX policy produces a different outcome per identity](images/demo_scenario.png)
 
-## How It Works
+The **R1–R6** labels in the diagram are the six requirements this scenario places on the enforcement point. Each is a control CPEX applies, and each maps to a later page:
 
-Your application defines **hooks** — named interception points before and after critical operations. Plugins register against these hooks and execute automatically when triggered. The plugin manager handles registration, ordering, execution, timeouts, and error isolation.
+| Label | Requirement | Where |
+|-------|-------------|-------|
+| R1 | Resolve the real user behind the agent | [Identity]({{< relref "/docs/apl/identity" >}}) |
+| R2 | Same request, different data (redact per identity) | [Effects]({{< relref "/docs/apl/effects" >}}) |
+| R3 | Enforce on inputs and results (validate args, shape output) | [APL]({{< relref "/docs/apl" >}}) |
+| R4 | Delegate downstream with a narrower credential | [Delegation]({{< relref "/docs/apl/delegation" >}}) |
+| R5 | Remember the session (carry state across calls) | [Session Tainting]({{< relref "/docs/apl/tainting" >}}) |
+| R6 | Out-of-band elicitations (human approval) | [Elicitation]({{< relref "/docs/apl/elicitation" >}}) |
 
-```goat
-  .---.        .----.        .-------.         .------.        .---.
- | App +----->| Hook +----->| Manager +------>| Result +----->| App |
-  '---'        '----'        '---+---'         '------'        '---'
-                                 |
-                     .-----------+-----------.
-                    |            |            |
-                    v            v            v
-                .--------.   .--------.   .--------.
-               | Plugin A | | Plugin B | | Plugin C |
-                '--------'   '--------'   '--------'
+The agent's LLM decides which operation to run. It is untrusted. CPEX sits between it and every capability, and decides what actually happens. For each operation, CPEX resolves the caller's identity, evaluates the APL policy attached to that operation, and applies the resulting effects before anything reaches the backend. The same four phases run every time: validate arguments, evaluate policy, transform the result, run post-policy checks.
+
+## Same request, different data
+
+The clearest demonstration is redaction on the wire. Three callers issue the identical request, `get_compensation`. The backend returns the same record. What each caller receives differs, because policy decides per identity.
+
+```yaml
+routes:
+  - tool: get_compensation
+    authorization:
+      pre_invocation:
+        - "require(role.hr)"
+    result:
+      ssn: "str | redact(!perm.view_ssn)"
 ```
 
-When a hook fires, the plugin manager dispatches the payload to every registered plugin in priority order. Each plugin can:
+- An HR analyst with the `view_ssn` permission gets the full record.
+- An HR analyst without `view_ssn` gets the same record with the SSN redacted before it leaves CPEX. The backend never sees the difference; the redaction happens at the boundary.
+- An engineer is denied at `require(role.hr)`. The call never reaches the backend.
 
-- **Allow** execution to continue unchanged
-- **Modify** the payload (e.g., redact sensitive data, inject defaults)
-- **Block** execution with a violation (e.g., deny a prohibited tool call)
+![Three identical get_compensation requests pass through CPEX APL policy and produce three outcomes by identity: the full record for HR with view_ssn, the record with SSN redacted for HR without view_ssn, and a deny for non-HR callers](images/overview_outcomes.png)
 
-You get a deterministic pipeline with no surprises.
+No application code changed between the three outcomes. The policy did.
 
-## Built-in Hooks
+## State that follows the session
 
-CPEX ships with hooks for common AI operations — tools, prompts, resources, agents, HTTP requests, identity resolution, and a unified Common Message Format for cross-cutting policy evaluation. You can also [register your own hooks]({{< relref "/docs/hooks#custom-hooks" >}}) for any domain.
+Some controls depend on what already happened. When a caller reads compensation data, the policy above marks the session with `taint(secret, session)`. A later operation can refuse based on that label, even when its own payload is clean:
 
-## Next Steps
+```yaml
+routes:
+  - tool: send_email
+    authorization:
+      pre_invocation:
+        - "require(perm.email_send)"
+        - "security.labels contains \"secret\": deny('session touched secret data', 'session_tainted')"
+```
 
-Ready to build? The [Quick Start]({{< relref "/docs/quickstart" >}}) gets you a working plugin in five minutes.
+An email with no sensitive content in its body is still blocked if the session previously read secret data. This is a write-down control, and the LLM cannot route around it because the taint lives in CPEX, not in the conversation. See [Session Tainting]({{< relref "/docs/apl/tainting" >}}) for how labels propagate and persist.
+
+## Where the boundary sits
+
+CPEX is the boundary, but the boundary can be placed in more than one spot. The policy does not change; the enforcement point does.
+
+A gateway in front of a tool server controls inbound calls. A sidecar on the agent controls its outbound calls. An in-framework integration controls operations as the runtime issues them. The same APL policy enforces in all three. [Deployment]({{< relref "/docs/deployment" >}}) walks through each.
+
+## What to read next
+
+- [APL]({{< relref "/docs/apl" >}}): the enforcement-pipeline configuration.
+- [Identity]({{< relref "/docs/apl/identity" >}}): how callers are resolved into the attributes policy reads.
+- [Quick Start]({{< relref "/docs/quickstart" >}}): stand up CPEX and run this scenario.

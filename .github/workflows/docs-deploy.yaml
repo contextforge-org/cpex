@@ -28,13 +28,13 @@ jobs:
       PAGES_BASE_URL: ""
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           submodules: recursive
 
       - name: Setup Pages
         id: pages
-        uses: actions/configure-pages@v5
+        uses: actions/configure-pages@v6
 
       - name: Setup Hugo
         uses: peaceiris/actions-hugo@v3
@@ -49,7 +49,7 @@ jobs:
         run: hugo --minify --baseURL "${PAGES_BASE_URL}/"
 
       - name: Upload artifact
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@v5
         with:
           path: docs/public
 

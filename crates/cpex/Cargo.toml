@@ -1,0 +1,86 @@
+# Location: ./crates/cpex/Cargo.toml
+# Copyright 2025
+# SPDX-License-Identifier: Apache-2.0
+# Authors: Fred Araujo
+#
+# cpex — host facade.
+#
+# One dependency instead of a dozen: re-exports the host runtime
+# (PluginManager, AplOptions, register_apl). The bundled plugins, PDPs, and
+# session stores live in `cpex-builtins` and are pulled in only when the
+# `builtins` / `full` feature (or a granular plugin feature) is enabled — so
+# the default `cpex = "0.2"` is the engine alone, no plugins compiled.
+#
+#   cpex = { version = "0.2.1", features = ["builtins"] }            # default builtin set
+#   cpex = { version = "0.2.1", features = ["jwt", "cedar"] }        # a minimal subset
+#
+# then `cpex::install_builtins(&mgr)` registers every enabled factory and
+# installs the APL config visitor in one call.
+
+[package]
+name = "cpex"
+description = "CPEX host facade — re-exports the runtime and (optionally) the feature-gated builtin extensions."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+rust-version.workspace = true
+# Use the project's root README as this crate's crates.io page (inherited path
+# is workspace-root-relative; cargo bundles it into the published .crate).
+readme.workspace = true
+
+# Build docs.rs with every extension enabled. The default build is engine-only
+# (`default = []`), which omits cpex-builtins entirely — so without this the
+# builtins re-exports and `install_builtins` are absent and the intra-doc link
+# to `cpex-builtins` does not resolve on docs.rs.
+[package.metadata.docs.rs]
+all-features = true
+
+[features]
+# Engine only by default: no builtin plugins are compiled in. Opt into the
+# bundled extensions with `builtins` (the common in-process set), `full`
+# (everything, incl. the Valkey session store), or a granular plugin
+# feature. Each enables the optional `cpex-builtins` dependency and forwards
+# to its matching cpex-builtins feature.
+default = []
+
+builtins = ["cpex-builtins/default"]
+full = ["cpex-builtins/full"]
+
+# Granular passthroughs — each pulls exactly one builtin via cpex-builtins.
+jwt = ["cpex-builtins/identity-jwt"]
+oauth = ["cpex-builtins/delegator-oauth"]
+pii = ["cpex-builtins/pii-scanner"]
+audit = ["cpex-builtins/audit-logger"]
+elicitation-ciba = ["cpex-builtins/elicitation-ciba"]
+cedar = ["cpex-builtins/cedar-direct"]
+cel = ["cpex-builtins/cel"]
+valkey = ["cpex-builtins/valkey"]
+
+# Out-of-process host for existing Python CPEX plugins. Not part of
+# `builtins` / `full`: those are the in-process bundled extension set, while
+# this pulls a host that spawns a `worker.py` subprocess per plugin.
+python-host = ["dep:cpex-hosts-python"]
+
+[dependencies]
+# Host runtime — always present, this is the point of the facade.
+cpex-core = { workspace = true }
+apl-core = { workspace = true }
+apl-cmf = { workspace = true }
+apl-cpex = { workspace = true }
+
+# Python plugin host — runs each Python plugin out-of-process, in its own
+# virtualenv, from the Rust PluginManager. Present only with `python-host`.
+cpex-hosts-python = { workspace = true, optional = true, default-features = false }
+
+# Bundled extension set — present only when a builtins feature is enabled.
+# `default-features = false` so the granular plugin features compose; an
+# enabling feature turns on exactly the cpex-builtins features it names.
+cpex-builtins = { workspace = true, optional = true, default-features = false }
+
+[lints]
+workspace = true

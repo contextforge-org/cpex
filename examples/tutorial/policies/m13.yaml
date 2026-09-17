@@ -1,0 +1,65 @@
+# Module 13, Delegation subject: client (the agent scopes its OWN token).
+#
+# Modules 6 and 12 minted a downstream token on behalf of a signed-in *user*.
+# But sometimes the caller is not a person at all: an agent authenticates to
+# the IdP as its own OAuth client (client_credentials) and arrives holding a
+# normal bearer token that speaks for itself, not for any human.
+#
+#   subject: client   scope the CALLER's own client token. It's a one-leg
+#                     RFC 8693 exchange. The agent already did the
+#                     authenticate leg upstream, so CPEX only narrows the
+#                     token to the downstream audience.
+#
+# This is different from `subject: this_workload` (module 12): there the
+# GATEWAY mints a fresh token from its own credentials and no caller token is
+# read. Here the AGENT presents a token and CPEX scopes THAT, so, like
+# `subject: user`, it needs an inbound credential, just a client one instead
+# of a user one.
+#
+# See the cookbook, Recipe 5 (Scope a token the agent already holds).
+
+plugins:
+  # Resolve the agent's inbound token into the CLIENT slot. `role: client` is
+  # what routes it to `client` (not `subject`); the delegation below then
+  # selects it with `subject: client`. The token is aud'd to cpex-gateway
+  # (the enforcement point), so this resolver trusts that audience.
+  - name: keycloak-agent
+    kind: identity/jwt
+    hooks: [identity.resolve]
+    config:
+      role: client
+      header: Authorization
+      claim_mapper: standard
+      trusted_issuers:
+        - issuer: http://localhost:8081/realms/cpex-tutorial
+          audiences: [cpex-gateway]
+          algorithms: [RS256]
+          decoding_key:
+            kind: jwks_url
+            url: http://localhost:8081/realms/cpex-tutorial/protocol/openid-connect/certs
+            insecure_http: true
+          leeway_seconds: 60
+
+  - name: workday-oauth
+    kind: delegator/oauth
+    hooks: [token.delegate]
+    capabilities: [read_inbound_credentials, write_delegated_tokens]
+    config:
+      token_endpoint: http://localhost:8081/realms/cpex-tutorial/protocol/openid-connect/token
+      client_id: cpex-gateway
+      client_secret_source:
+        kind: literal
+        secret: gateway-dev-secret
+      insecure_http: true
+
+routes:
+  # The agent scopes its own client token down to the github-api audience.
+  # `subject: client` exchanges the CALLER's client token, so, like
+  # subject: user, an anonymous request has nothing to exchange and fails.
+  - tool: search_repos
+    authentication:
+      - keycloak-agent
+    authorization:
+      pre_invocation:
+        - "delegate(workday-oauth, target: github-api, audience: github-api, subject: client)"
+        - "require(delegation.granted)"

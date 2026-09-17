@@ -1,0 +1,37 @@
+# Location: ./builtins/plugins/audit-logger/Cargo.toml
+# Copyright 2026
+# SPDX-License-Identifier: Apache-2.0
+# Authors: Teryl Taylor
+#
+# cpex-plugin-audit-logger — CMF plugin that emits a structured audit
+# record for every dispatched request. Subject, client, action,
+# delegation outcome, and capability-filtered context fields land
+# in a single JSON line per call. Always allows; never blocks.
+
+[package]
+name = "cpex-plugin-audit-logger"
+version.workspace      = true
+edition.workspace      = true
+license.workspace      = true
+authors.workspace      = true
+description = "CPEX CMF plugin — structured per-request audit logging."
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+cpex-core = { workspace = true }
+
+async-trait = { workspace = true }
+chrono      = { workspace = true }
+serde       = { workspace = true }
+serde_json  = { workspace = true }
+tracing     = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }
+
+[lints]
+workspace = true

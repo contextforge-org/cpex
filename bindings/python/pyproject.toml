@@ -1,0 +1,27 @@
+# Location: ./bindings/python/pyproject.toml
+# Copyright 2025
+# SPDX-License-Identifier: Apache-2.0
+# Authors: Ted Habeck
+
+[build-system]
+requires = ["maturin>=1,<2"]
+build-backend = "maturin"
+
+[project]
+name = "cpex"
+requires-python = ">=3.10"
+description = "Rust-backed CPEX plugin runtime for Python"
+license = { text = "Apache-2.0" }
+dynamic = ["version"]
+
+[tool.maturin]
+# Native module is compiled to cpex._lib
+module-name = "cpex._lib"
+# Python source package lives under bindings/python/python/
+python-source = "python"
+# Activate the PyO3 extension-module feature (required for cdylib linking)
+features = ["pyo3/extension-module"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

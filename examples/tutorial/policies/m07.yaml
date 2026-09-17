@@ -1,0 +1,57 @@
+# Module 7, Information flow (Tainting)
+#
+# Most authorization systems judge each request in isolation. CPEX can
+# carry security state across a whole session, so a later request can be
+# denied because of what an earlier one did. This stops write-down: data
+# read under one clearance leaking out through a lower-clearance channel.
+#
+# Two routes, one session:
+#
+#   * get_compensation taints the session with the label `secret` when it
+#     runs. `taint(secret, session)` records that the session has now
+#     touched sensitive data. The label persists in the session store.
+#
+#   * send_email refuses if the session already carries `secret`. The
+#     guard `security.labels contains "secret": deny(...)` reads the
+#     accumulated session state, not just this request's arguments.
+#
+# So the same send_email call is allowed in a fresh session and denied in
+# a session that previously read compensation. The email's own content is
+# irrelevant; the session's history is what blocks it.
+#
+# Session state lives in an in-memory store here. In production you would
+# point it at Valkey (see idp/docker-compose.yml, the `valkey` profile) so
+# state survives across processes.
+
+plugins:
+  - name: keycloak
+    kind: identity/jwt
+    hooks: [identity.resolve]
+    config:
+      claim_mapper: standard
+      trusted_issuers:
+        - issuer: http://localhost:8081/realms/cpex-tutorial
+          audiences: [cpex-tutorial]
+          algorithms: [RS256]
+          decoding_key:
+            kind: jwks_url
+            url: http://localhost:8081/realms/cpex-tutorial/protocol/openid-connect/certs
+            insecure_http: true
+          leeway_seconds: 60
+
+routes:
+  - tool: get_compensation
+    authentication:
+      - keycloak
+    authorization:
+      pre_invocation:
+        - "require(role.hr)"
+        - "taint(secret, session)"
+
+  - tool: send_email
+    authentication:
+      - keycloak
+    authorization:
+      pre_invocation:
+        - "require(authenticated)"
+        - "security.labels contains \"secret\": deny('write-down blocked: this session read secret data', 'session_tainted')"
