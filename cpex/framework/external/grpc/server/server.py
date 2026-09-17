@@ -23,9 +23,13 @@ from google.protobuf import json_format
 from google.protobuf.struct_pb2 import Struct
 
 # First-Party
-from cpex.framework.external.grpc.proto import plugin_service_pb2, plugin_service_pb2_grpc
+from cpex.framework.external.grpc.proto import (
+    plugin_service_pb2,
+    plugin_service_pb2_grpc,
+)
 from cpex.framework.external.mcp.server.server import ExternalPluginServer
 from cpex.framework.external.proto_convert import (
+    populate_proto_result,
     proto_context_to_pydantic,
     pydantic_context_to_proto,
 )
@@ -173,7 +177,7 @@ class GrpcPluginServicer(plugin_service_pb2_grpc.PluginServiceServicer):
             else:
                 # Convert result to Struct (still polymorphic)
                 if "result" in result:
-                    json_format.ParseDict(result["result"], response.result)
+                    populate_proto_result(result["result"], response)
                 # Convert context to explicit proto message
                 if "context" in result:
                     ctx = result["context"]

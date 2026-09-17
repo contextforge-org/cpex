@@ -15,6 +15,19 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Framework-generated `PluginViolationError` exceptions now expose an immutable
+  `denial_outcome` for Gateway telemetry. The snapshot contains trusted denying-control
+  identity and execution state, validated violation code and protocol/HTTP status, plus
+  explicit generic boolean/numeric metrics from the new optional
+  `PluginResult.denial_metadata` field. Ordinary `metadata` is never forwarded. It
+  excludes payloads, headers, violation details, free-form text, and arbitrary metadata
+  ([#178](https://github.com/contextforge-org/cpex/issues/178)).
+- MCP, gRPC and Unix result paths retain opt-in denial metrics. The protobuf paths
+  use typed numeric fields to preserve signed 64-bit integers without rounding.
+  See [the cross-runtime and Gateway contract](docs/specs/denial-telemetry-contract.md).
+
 ## [0.1.4] - 2026-08-07
 
 ### Added
