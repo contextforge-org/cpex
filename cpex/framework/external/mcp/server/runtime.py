@@ -5,31 +5,31 @@ Copyright 2025
 SPDX-License-Identifier: Apache-2.0
 Authors: Fred Araujo, Teryl Taylor
 
-MCP Plugin Runtime using FastMCP with SSL/TLS support.
+MCP Plugin Runtime using MCPServer with SSL/TLS support.
 
 This runtime does the following:
-- Uses FastMCP from the MCP Python SDK
+- Uses MCPServer from the MCP Python SDK
 - Supports both mTLS and non-mTLS configurations
 - Reads configuration from PLUGINS_SERVER_* environment variables or uses configurations
   the plugin config.yaml
 - Implements all plugin hook tools (get_plugin_configs, tool_pre_invoke, etc.)
 
 Examples:
-    Create an SSL-capable FastMCP server:
+    Create an SSL-capable MCPServer:
 
     >>> from cpex.framework.models import MCPServerConfig
     >>> config = MCPServerConfig(host="localhost", port=8000)
-    >>> server = SSLCapableFastMCP(server_config=config, name="TestServer")
-    >>> server.settings.host
+    >>> server = SSLCapableMCPServer(server_config=config, name="TestServer")
+    >>> server.server_config.host
     'localhost'
-    >>> server.settings.port
+    >>> server.server_config.port
     8000
 
     Check SSL configuration returns empty dict when TLS is not configured:
 
     >>> from cpex.framework.models import MCPServerConfig
     >>> config = MCPServerConfig(host="127.0.0.1", port=8000, tls=None)
-    >>> server = SSLCapableFastMCP(server_config=config, name="NoTLSServer")
+    >>> server = SSLCapableMCPServer(server_config=config, name="NoTLSServer")
     >>> ssl_config = server._get_ssl_config()
     >>> ssl_config
     {}
@@ -38,20 +38,20 @@ Examples:
 
     >>> from cpex.framework.models import MCPServerConfig
     >>> config = MCPServerConfig(host="localhost", port=9000)
-    >>> server = SSLCapableFastMCP(server_config=config, name="ConfigTest")
+    >>> server = SSLCapableMCPServer(server_config=config, name="ConfigTest")
     >>> server.server_config.host
     'localhost'
     >>> server.server_config.port
     9000
 
-    Settings are properly passed to FastMCP:
+    Settings are properly passed to MCPServer:
 
     >>> from cpex.framework.models import MCPServerConfig
     >>> config = MCPServerConfig(host="0.0.0.0", port=8080)
-    >>> server = SSLCapableFastMCP(server_config=config, name="SettingsTest")
-    >>> server.settings.host
+    >>> server = SSLCapableMCPServer(server_config=config, name="SettingsTest")
+    >>> server.server_config.host
     '0.0.0.0'
-    >>> server.settings.port
+    >>> server.server_config.port
     8080
 """
 
@@ -66,7 +66,7 @@ import uvicorn
 
 # Third-Party
 from fastapi import Response, status
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 from mcp.server.transport_security import TransportSecuritySettings
 from prometheus_client import REGISTRY, Gauge, generate_latest
 
@@ -185,33 +185,33 @@ async def invoke_hook(hook_type: str, plugin_name: str, payload: Dict[str, Any],
     return await SERVER.invoke_hook(hook_type, plugin_name, payload, context)
 
 
-class SSLCapableFastMCP(FastMCP):
-    """FastMCP server with SSL/TLS support using MCPServerConfig.
+class SSLCapableMCPServer(MCPServer):
+    """MCPServer with SSL/TLS support using MCPServerConfig.
 
     Examples:
-        Create an SSL-capable FastMCP server:
+        Create an SSL-capable MCPServer:
 
         >>> from cpex.framework.models import MCPServerConfig
         >>> config = MCPServerConfig(host="127.0.0.1", port=8000)
-        >>> server = SSLCapableFastMCP(server_config=config, name="TestServer")
-        >>> server.settings.host
+        >>> server = SSLCapableMCPServer(server_config=config, name="TestServer")
+        >>> server.server_config.host
         '127.0.0.1'
-        >>> server.settings.port
+        >>> server.server_config.port
         8000
     """
 
     def __init__(self, server_config: MCPServerConfig, *args, **kwargs):
-        """Initialize an SSL capable Fast MCP server.
+        """Initialize an SSL capable MCPServer.
 
         Args:
             server_config: the MCP server configuration including mTLS information.
-            *args: Additional positional arguments passed to FastMCP.
-            **kwargs: Additional keyword arguments passed to FastMCP.
+            *args: Additional positional arguments passed to MCPServer.
+            **kwargs: Additional keyword arguments passed to MCPServer.
 
         Examples:
             >>> from cpex.framework.models import MCPServerConfig
             >>> config = MCPServerConfig(host="0.0.0.0", port=9000)
-            >>> server = SSLCapableFastMCP(server_config=config, name="PluginServer")
+            >>> server = SSLCapableMCPServer(server_config=config, name="PluginServer")
             >>> server.server_config.host
             '0.0.0.0'
             >>> server.server_config.port
@@ -220,13 +220,14 @@ class SSLCapableFastMCP(FastMCP):
         # Load server config from environment
 
         self.server_config = server_config
-        # Override FastMCP settings with our server config
-        if "host" not in kwargs:
-            kwargs["host"] = self.server_config.host
-        if "port" not in kwargs:
-            kwargs["port"] = self.server_config.port
-        if self.server_config.uds and kwargs.get("transport_security") is None:
-            kwargs["transport_security"] = TransportSecuritySettings(
+        # MCPServer v2 does not accept host/port/transport_security in __init__;
+        # transport_security is passed to streamable_http_app(), host/port to run methods.
+        kwargs.pop("host", None)
+        kwargs.pop("port", None)
+
+        transport_security = kwargs.pop("transport_security", None)
+        if self.server_config.uds and transport_security is None:
+            transport_security = TransportSecuritySettings(
                 enable_dns_rebinding_protection=True,
                 allowed_hosts=[
                     "127.0.0.1",
@@ -245,6 +246,7 @@ class SSLCapableFastMCP(FastMCP):
                     "http://[::1]:*",
                 ],
             )
+        self._transport_security = transport_security
 
         super().__init__(*args, **kwargs)
 
@@ -257,7 +259,7 @@ class SSLCapableFastMCP(FastMCP):
         Examples:
             >>> from cpex.framework.models import MCPServerConfig
             >>> config = MCPServerConfig(host="127.0.0.1", port=8000, tls=None)
-            >>> server = SSLCapableFastMCP(server_config=config, name="TestServer")
+            >>> server = SSLCapableMCPServer(server_config=config, name="TestServer")
             >>> ssl_config = server._get_ssl_config()
             >>> ssl_config
             {}
@@ -361,10 +363,10 @@ class SSLCapableFastMCP(FastMCP):
         # Create a minimal Starlette app with only the health endpoint
         health_app = Starlette(routes=routes)
 
-        logger.info(f"Starting HTTP health check server on {self.settings.host}:{health_port}")
+        logger.info(f"Starting HTTP health check server on {self.server_config.host}:{health_port}")
         config = uvicorn.Config(
             app=health_app,
-            host=self.settings.host,
+            host=self.server_config.host,
             port=health_port,
             log_level="warning",  # Reduce noise from health checks
         )
@@ -379,13 +381,16 @@ class SSLCapableFastMCP(FastMCP):
 
             >>> from cpex.framework.models import MCPServerConfig
             >>> config = MCPServerConfig(host="0.0.0.0", port=9000)
-            >>> server = SSLCapableFastMCP(server_config=config, name="HTTPServer")
-            >>> server.settings.host
+            >>> server = SSLCapableMCPServer(server_config=config, name="HTTPServer")
+            >>> server.server_config.host
             '0.0.0.0'
-            >>> server.settings.port
+            >>> server.server_config.port
             9000
         """
-        starlette_app = self.streamable_http_app()
+        starlette_app = self.streamable_http_app(
+            transport_security=self._transport_security,
+            host=self.server_config.host,
+        )
 
         # Add health check endpoint to main app
         # Third-Party
@@ -438,8 +443,8 @@ class SSLCapableFastMCP(FastMCP):
         ssl_config = self._get_ssl_config()
         config_kwargs = {
             "app": starlette_app,
-            "host": self.settings.host,
-            "port": self.settings.port,
+            "host": self.server_config.host,
+            "port": self.server_config.port,
             "log_level": self.settings.log_level.lower(),
         }
         config_kwargs.update(ssl_config)
@@ -450,13 +455,13 @@ class SSLCapableFastMCP(FastMCP):
             config_kwargs["uds"] = self.server_config.uds
             logger.info(f"Starting plugin server on unix socket {self.server_config.uds}")
         else:
-            logger.info(f"Starting plugin server on {self.settings.host}:{self.settings.port}")
+            logger.info(f"Starting plugin server on {self.server_config.host}:{self.server_config.port}")
         config = uvicorn.Config(**config_kwargs)  # type: ignore[arg-type]
         server = uvicorn.Server(config)
 
         # If SSL is enabled, start a separate HTTP health check server
         if ssl_config and not self.server_config.uds:
-            health_port = self.settings.port + 1000  # Use port+1000 for health checks
+            health_port = self.server_config.port + 1000  # Use port+1000 for health checks
             logger.info(f"SSL enabled - starting separate HTTP health check on port {health_port}")
             # Run both servers concurrently
             await asyncio.gather(server.serve(), self._start_health_check_server(health_port))
@@ -466,7 +471,7 @@ class SSLCapableFastMCP(FastMCP):
 
 
 async def run() -> None:
-    """Run the external plugin server with FastMCP.
+    """Run the external plugin server with MCPServer.
 
     Supports both stdio and HTTP transports. Auto-detects transport based on stdin
     (if stdin is not a TTY, uses stdio mode), or you can explicitly set PLUGINS_TRANSPORT.
@@ -491,7 +496,7 @@ async def run() -> None:
         >>> SERVER is None
         True
 
-        FastMCP server names are defined as constants:
+        MCPServer names are defined as constants:
 
         >>> from cpex.framework.constants import MCP_SERVER_NAME
         >>> isinstance(MCP_SERVER_NAME, str)
@@ -524,13 +529,13 @@ async def run() -> None:
 
     try:
         if transport == "stdio":
-            # Create basic FastMCP server for stdio (no SSL support needed for stdio)
-            mcp = FastMCP(
+            # Create basic MCPServer for stdio (no SSL support needed for stdio)
+            mcp = MCPServer(
                 name=MCP_SERVER_NAME,
                 instructions=MCP_SERVER_INSTRUCTIONS,
             )
 
-            # Register module-level tool functions with FastMCP
+            # Register module-level tool functions with MCPServer
             mcp.tool(name=GET_PLUGIN_CONFIGS)(get_plugin_configs)
             mcp.tool(name=GET_PLUGIN_CONFIG)(get_plugin_config)
             mcp.tool(name=INVOKE_HOOK)(invoke_hook)
@@ -538,19 +543,19 @@ async def run() -> None:
             PLUGIN_INFO.labels(server_name=MCP_SERVER_NAME, transport="stdio", ssl_enabled="false").set(1)
 
             # Run with stdio transport
-            logger.info("Starting MCP plugin server with FastMCP (stdio transport)")
+            logger.info("Starting MCP plugin server with MCPServer (stdio transport)")
             await mcp.run_stdio_async()
 
         else:  # http or streamablehttp
             server_config: MCPServerConfig = SERVER.get_server_config()
-            # Create FastMCP server with SSL support
-            mcp = SSLCapableFastMCP(
+            # Create MCPServer with SSL support
+            mcp = SSLCapableMCPServer(
                 server_config,
                 name=MCP_SERVER_NAME,
                 instructions=MCP_SERVER_INSTRUCTIONS,
             )
 
-            # Register module-level tool functions with FastMCP
+            # Register module-level tool functions with MCPServer
             mcp.tool(name=GET_PLUGIN_CONFIGS)(get_plugin_configs)
             mcp.tool(name=GET_PLUGIN_CONFIG)(get_plugin_config)
             mcp.tool(name=INVOKE_HOOK)(invoke_hook)
@@ -564,7 +569,7 @@ async def run() -> None:
                     f"Prometheus metrics available at http://{server_config.host}:{server_config.port}/metrics/prometheus"
                 )
             # Run with streamable-http transport
-            logger.info("Starting MCP plugin server with FastMCP (HTTP transport)")
+            logger.info("Starting MCP plugin server with MCPServer (HTTP transport)")
             await mcp.run_streamable_http_async()
 
     except Exception:

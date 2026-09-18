@@ -23,7 +23,7 @@ import zipfile
 from pathlib import Path
 from typing import Any, Optional
 
-import httpx
+import httpx2
 import yaml
 from github import Auth, Github
 from packaging.version import InvalidVersion, Version
@@ -292,7 +292,7 @@ class PluginCatalog:
             encoding="utf-8",
         )
 
-    def save_manifest_content(self, content: str, path, repo_url: httpx.URL):
+    def save_manifest_content(self, content: str, path, repo_url: httpx2.URL):
         """
         write the manifest content to the supplied path relative to the ouptut folder,
         injecting the monorepo.package_source value before saving the file.
@@ -333,11 +333,11 @@ class PluginCatalog:
         """
         self.save_content(self.catalog_folder, content, path)
 
-    def download_contents(self, git_url: str, headers, path: str, repo_url: httpx.URL):
+    def download_contents(self, git_url: str, headers, path: str, repo_url: httpx2.URL):
         """
         Download the contents of the file using the github REST API.
         """
-        result = httpx.get(git_url, headers=headers, timeout=30.0)
+        result = httpx2.get(git_url, headers=headers, timeout=30.0)
         if result.status_code == 200:
             js = result.json()
             b64_content = js["content"]
@@ -456,7 +456,7 @@ class PluginCatalog:
             return None
 
     def _transform_manifest_data(
-        self, manifest_content: dict, name: str, member: str | None, repo_url: httpx.URL
+        self, manifest_content: dict, name: str, member: str | None, repo_url: httpx2.URL
     ) -> dict:
         """Apply standard transformations to manifest data.
 
@@ -507,7 +507,7 @@ class PluginCatalog:
         item: dict,
         name: str,
         member: str,
-        repo_url: httpx.URL,
+        repo_url: httpx2.URL,
         headers,
         relpath: Path,
         repo_path: str,
@@ -548,7 +548,7 @@ class PluginCatalog:
         return True
 
     def _process_version_item(
-        self, item: dict, member: str, name: str, repo_url: httpx.URL, headers, relpath, repo_path, gh_repo
+        self, item: dict, member: str, name: str, repo_url: httpx2.URL, headers, relpath, repo_path, gh_repo
     ) -> None:
         """Find plugin-versions.json files relative to the supplied member folder,
         download and save the manifest, updating the monorepo's package_folder, package_source and repo_url attributes
@@ -566,7 +566,7 @@ class PluginCatalog:
             return
         relpath.write_text(version_data, encoding="utf-8")
 
-    def find_and_save_plugin_versions_json(self, member: str, name: str, repo_url: httpx.URL, headers, gh_repo) -> None:
+    def find_and_save_plugin_versions_json(self, member: str, name: str, repo_url: httpx2.URL, headers, gh_repo) -> None:
         """Find plugin-versions.json files relative to the supplied member folder,
         download and save the manifest, updating the monorepo's package_folder, package_source and repo_url attributes
         Args:
@@ -590,7 +590,7 @@ class PluginCatalog:
             self._process_version_item(item, member, name, repo_url, headers, relpath, repo_path, gh_repo)
 
     def find_and_save_plugin_manifest(
-        self, member: str, name: str, repo_url: httpx.URL, headers, gh_repo
+        self, member: str, name: str, repo_url: httpx2.URL, headers, gh_repo
     ) -> PluginManifest | None:
         """Find plugin-manifest*.yaml files relative to the supplied member folder,
         download and save the manifest, updating the monorepo's package_folder, package_source and repo_url attributes
@@ -620,7 +620,7 @@ class PluginCatalog:
 
         return None
 
-    def _process_pyproject(self, gh_repo, item, repo_url: httpx.URL, headers) -> None:
+    def _process_pyproject(self, gh_repo, item, repo_url: httpx2.URL, headers) -> None:
         """Process a single pyproject.toml file.
 
         Args:
@@ -672,7 +672,7 @@ class PluginCatalog:
         repo_cache: dict[str, Any] = {}
 
         for repo in self.monorepos:
-            repo_url = httpx.URL(repo.strip())
+            repo_url = httpx2.URL(repo.strip())
             repo_path = repo_url.path.removeprefix("/")
 
             try:

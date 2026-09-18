@@ -16,8 +16,8 @@ from unittest.mock import AsyncMock, Mock, patch
 
 # Third-Party
 import pytest
-from mcp.types import CallToolResult
-from mcp.types import TextContent as MCPTextContent
+from mcp_types import CallToolResult
+from mcp_types import TextContent as MCPTextContent
 
 # First-Party
 from cpex.framework import (

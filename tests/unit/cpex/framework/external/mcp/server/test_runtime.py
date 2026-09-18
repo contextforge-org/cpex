@@ -198,9 +198,9 @@ def test_ssl_config_with_tls(tmp_path):
         ),
     )
 
-    server = object.__new__(runtime.SSLCapableFastMCP)
+    server = object.__new__(runtime.SSLCapableMCPServer)
     server.server_config = config
-    ssl_config = runtime.SSLCapableFastMCP._get_ssl_config(server)
+    ssl_config = runtime.SSLCapableMCPServer._get_ssl_config(server)
 
     assert ssl_config["ssl_keyfile"] == str(key_path)
     assert ssl_config["ssl_certfile"] == str(cert_path)
@@ -210,7 +210,8 @@ def test_ssl_config_with_tls(tmp_path):
 
 @pytest.mark.asyncio
 async def test_start_health_check_server(monkeypatch):
-    server = object.__new__(runtime.SSLCapableFastMCP)
+    server = object.__new__(runtime.SSLCapableMCPServer)
+    server.server_config = SimpleNamespace(host="127.0.0.1", port=8000, uds=None, tls=None)
     server.settings = SimpleNamespace(host="127.0.0.1", port=8000, log_level="INFO")
 
     served = MagicMock()
@@ -225,7 +226,7 @@ async def test_start_health_check_server(monkeypatch):
     monkeypatch.setattr(runtime.uvicorn, "Config", lambda **kwargs: SimpleNamespace(**kwargs))
     monkeypatch.setattr(runtime.uvicorn, "Server", lambda config: DummyServer(config))
 
-    await runtime.SSLCapableFastMCP._start_health_check_server(server, 9000)
+    await runtime.SSLCapableMCPServer._start_health_check_server(server, 9000)
     served.assert_called_once()
 
 
@@ -233,12 +234,13 @@ async def test_start_health_check_server(monkeypatch):
 async def test_run_streamable_http_async_with_ssl(monkeypatch):
     from cpex.framework.models import MCPServerConfig
 
-    server = object.__new__(runtime.SSLCapableFastMCP)
+    server = object.__new__(runtime.SSLCapableMCPServer)
     server.server_config = MCPServerConfig(host="127.0.0.1", port=8000)
+    server._transport_security = None
     server.settings = SimpleNamespace(host="127.0.0.1", port=8000, log_level="INFO")
-    server.streamable_http_app = lambda: SimpleNamespace(routes=[])
+    server.streamable_http_app = lambda **kwargs: SimpleNamespace(routes=[])
 
-    monkeypatch.setattr(runtime.SSLCapableFastMCP, "_get_ssl_config", lambda self: {"ssl_keyfile": "/tmp/key.pem"})
+    monkeypatch.setattr(runtime.SSLCapableMCPServer, "_get_ssl_config", lambda self: {"ssl_keyfile": "/tmp/key.pem"})
     monkeypatch.setattr(server, "_start_health_check_server", AsyncMock())
 
     served = MagicMock()
@@ -253,7 +255,7 @@ async def test_run_streamable_http_async_with_ssl(monkeypatch):
     monkeypatch.setattr(runtime.uvicorn, "Config", lambda **kwargs: SimpleNamespace(**kwargs))
     monkeypatch.setattr(runtime.uvicorn, "Server", lambda config: DummyServer(config))
 
-    await runtime.SSLCapableFastMCP.run_streamable_http_async(server)
+    await runtime.SSLCapableMCPServer.run_streamable_http_async(server)
     assert server._start_health_check_server.await_count == 1
     served.assert_called_once()
 
@@ -287,7 +289,7 @@ async def test_run_stdio_transport(monkeypatch):
             created["ran_stdio"] = True
 
     monkeypatch.setattr(runtime, "ExternalPluginServer", lambda: DummyServer())
-    monkeypatch.setattr(runtime, "FastMCP", DummyFastMCP)
+    monkeypatch.setattr(runtime, "MCPServer", DummyFastMCP)
     monkeypatch.setenv("PLUGINS_TRANSPORT", "stdio")
 
     try:
@@ -331,7 +333,7 @@ async def test_run_stdio_transport_ignores_malformed_server_port(monkeypatch):
 
     settings.cache_clear()
     monkeypatch.setattr(runtime, "ExternalPluginServer", lambda: DummyServer())
-    monkeypatch.setattr(runtime, "FastMCP", DummyFastMCP)
+    monkeypatch.setattr(runtime, "MCPServer", DummyFastMCP)
     monkeypatch.setenv("PLUGINS_SERVER_PORT", "abc")
     monkeypatch.setenv("PLUGINS_TRANSPORT", "stdio")
 
@@ -374,7 +376,7 @@ async def test_run_http_transport(monkeypatch):
             created["ran_http"] = True
 
     monkeypatch.setattr(runtime, "ExternalPluginServer", lambda: DummyServer())
-    monkeypatch.setattr(runtime, "SSLCapableFastMCP", DummyMCP)
+    monkeypatch.setattr(runtime, "SSLCapableMCPServer", DummyMCP)
     monkeypatch.setenv("PLUGINS_TRANSPORT", "http")
 
     try:

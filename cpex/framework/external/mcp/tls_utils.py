@@ -103,7 +103,7 @@ def create_ssl_context(tls_config: MCPClientTLSConfig, plugin_name: str) -> ssl.
         plugin_name: Name of the plugin (for error messages)
 
     Returns:
-        Configured SSLContext ready for use with httpx or other SSL connections
+        Configured SSLContext ready for use with httpx2 or other SSL connections
 
     Raises:
         PluginError: If SSL context configuration fails

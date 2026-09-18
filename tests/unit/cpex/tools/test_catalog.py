@@ -18,7 +18,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, Mock, patch
 
 # Third-Party
-import httpx
+import httpx2
 import pytest
 import yaml
 
@@ -193,7 +193,7 @@ available_hooks: [tools]
 default_configs:
   key: value
 """
-        repo_url = httpx.URL("https://github.com/org/repo")
+        repo_url = httpx2.URL("https://github.com/org/repo")
         catalog.save_manifest_content(manifest_yaml, "test_plugin/plugin-manifest.yaml", repo_url)
 
         saved_file = tmp_path / "catalog" / "test_plugin" / "plugin-manifest.yaml"
@@ -221,7 +221,7 @@ available_hooks: [tools]
 default_config:
   key: value
 """
-        repo_url = httpx.URL("https://github.com/org/repo")
+        repo_url = httpx2.URL("https://github.com/org/repo")
         catalog.save_manifest_content(manifest_yaml, "test_plugin/plugin-manifest.yaml", repo_url)
 
         saved_file = tmp_path / "catalog" / "test_plugin" / "plugin-manifest.yaml"
@@ -246,7 +246,7 @@ author: Test Author
 available_hooks: [tools]
 default_configs: null
 """
-        repo_url = httpx.URL("https://github.com/org/repo")
+        repo_url = httpx2.URL("https://github.com/org/repo")
         catalog.save_manifest_content(manifest_yaml, "test_plugin/plugin-manifest.yaml", repo_url)
 
         saved_file = tmp_path / "catalog" / "test_plugin" / "plugin-manifest.yaml"
@@ -261,7 +261,7 @@ class TestPluginCatalogDownloadOperations:
 
     def test_download_contents_success(self, tmp_path, mock_github_env):
         """Test successful download of contents."""
-        with patch("cpex.tools.catalog.httpx.get") as mock_get:
+        with patch("cpex.tools.catalog.httpx2.get") as mock_get:
             catalog = PluginCatalog()
             catalog.catalog_folder = str(tmp_path / "catalog")
 
@@ -273,7 +273,7 @@ class TestPluginCatalogDownloadOperations:
             mock_response.json.return_value = {"content": b64_content}
             mock_get.return_value = mock_response
 
-            repo_url = httpx.URL("https://github.com/org/repo")
+            repo_url = httpx2.URL("https://github.com/org/repo")
             # download_contents calls create_catalog_folder which creates the directory
             # then save_manifest_content writes the file
             catalog.download_contents("https://api.github.com/file", {}, "test_plugin/plugin-manifest.yaml", repo_url)
@@ -283,7 +283,7 @@ class TestPluginCatalogDownloadOperations:
     def test_download_contents_failure(self, tmp_path, mock_github_env):
         """Test failed download of contents."""
         with (
-            patch("cpex.tools.catalog.httpx.get") as mock_get,
+            patch("cpex.tools.catalog.httpx2.get") as mock_get,
             patch("cpex.tools.catalog.logger") as mock_logger,
         ):
             catalog = PluginCatalog()
@@ -293,7 +293,7 @@ class TestPluginCatalogDownloadOperations:
             mock_response.status_code = 404
             mock_get.return_value = mock_response
 
-            repo_url = httpx.URL("https://github.com/org/repo")
+            repo_url = httpx2.URL("https://github.com/org/repo")
             catalog.download_contents("https://api.github.com/file", {}, "test/plugin-manifest.yaml", repo_url)
 
             mock_logger.error.assert_called_once()
@@ -693,7 +693,7 @@ class TestPluginCatalogFindAndSavePluginManifest:
         mock_repo.get_contents.return_value = mock_file_content
         catalog.gh.get_repo = Mock(return_value=mock_repo)
 
-        repo_url = httpx.URL("https://github.com/org/repo")
+        repo_url = httpx2.URL("https://github.com/org/repo")
         catalog.find_and_save_plugin_manifest("test_plugin", "test_plugin", repo_url, {}, mock_repo)
 
         saved_file = tmp_path / "catalog" / "test_plugin" / "plugin-manifest.yaml"
@@ -705,7 +705,7 @@ class TestPluginCatalogUpdateCatalogWithPyproject:
 
     def test_update_catalog_with_pyproject_success(self, tmp_path, mock_github_env):
         """Test successful catalog update with pyproject.toml files."""
-        with patch("cpex.tools.catalog.httpx.get") as mock_get:
+        with patch("cpex.tools.catalog.httpx2.get") as mock_get:
             catalog = PluginCatalog()
             catalog.catalog_folder = str(tmp_path / "catalog")
             catalog.monorepos = ["https://github.com/org/repo"]
@@ -970,7 +970,7 @@ class TestPluginCatalogProcessPyproject:
         item.name = "pyproject.toml"
         item.path = "plugin1/pyproject.toml"
 
-        repo_url = httpx.URL("https://github.com/org/repo")
+        repo_url = httpx2.URL("https://github.com/org/repo")
         headers = {}
 
         # Should raise exception
@@ -1056,7 +1056,7 @@ class TestPluginCatalogProcessManifestItem:
 
             item = {"name": "README.md", "path": "plugin1/README.md", "git_url": "https://api.github.com/file"}
 
-            repo_url = httpx.URL("https://github.com/org/repo")
+            repo_url = httpx2.URL("https://github.com/org/repo")
             relpath = tmp_path / "catalog" / "plugin1" / "plugin-manifest.yaml"
             mock_repo = Mock()
             result = catalog._process_manifest_item(
@@ -1081,7 +1081,7 @@ class TestPluginCatalogProcessManifestItem:
                 "git_url": "https://api.github.com/file",
             }
             mock_repo = Mock()
-            repo_url = httpx.URL("https://github.com/org/repo")
+            repo_url = httpx2.URL("https://github.com/org/repo")
             relpath = tmp_path / "catalog" / "plugin1" / "plugin-manifest.yaml"
 
             result = catalog._process_manifest_item(
@@ -1103,7 +1103,7 @@ class TestPluginCatalogFindAndSavePluginManifestExtended:
         # Mock _search_github_code to return None
         catalog._search_github_code = Mock(return_value=None)
         mock_repo = Mock()
-        repo_url = httpx.URL("https://github.com/org/repo")
+        repo_url = httpx2.URL("https://github.com/org/repo")
         result = catalog.find_and_save_plugin_manifest("plugin1", "plugin1", repo_url, {}, mock_repo)
 
         assert result is None
@@ -1164,7 +1164,7 @@ class TestPluginCatalogVersionsJson:
         catalog.catalog_folder = str(tmp_path / "catalog")
 
         mock_repo = Mock()
-        repo_url = httpx.URL("https://github.com/org/repo")
+        repo_url = httpx2.URL("https://github.com/org/repo")
 
         catalog._search_github_code_for_versions_json = Mock(
             return_value=[
@@ -1193,7 +1193,7 @@ class TestPluginCatalogVersionsJson:
         catalog._search_github_code_for_versions_json = Mock(return_value=None)
 
         mock_repo = Mock()
-        repo_url = httpx.URL("https://github.com/org/repo")
+        repo_url = httpx2.URL("https://github.com/org/repo")
 
         result = catalog.find_and_save_plugin_versions_json("plugin1", "plugin1", repo_url, {}, mock_repo)
 
@@ -1337,7 +1337,7 @@ class TestPluginCatalogTransformManifestDataWithNullMember:
             "available_hooks": ["tools"],
         }
 
-        repo_url = httpx.URL("https://github.com/org/repo")
+        repo_url = httpx2.URL("https://github.com/org/repo")
         result = catalog._transform_manifest_data(manifest_content, "test_plugin", None, repo_url)
 
         assert result["name"] == "test_plugin"
@@ -1784,7 +1784,7 @@ version = "1.0.0"
         mock_file_content.decoded_content = pyproject_content.encode("utf-8")
         mock_repo.get_contents.return_value = mock_file_content
 
-        repo_url = httpx.URL("https://github.com/org/repo")
+        repo_url = httpx2.URL("https://github.com/org/repo")
 
         with patch.object(catalog, "find_and_save_plugin_manifest") as mock_find:
             catalog._process_pyproject(mock_repo, mock_item, repo_url, {})
@@ -3983,7 +3983,7 @@ class TestConvertFqnKind:
         catalog = PluginCatalog()
         content = {"kind": "some_odd_token", "default_configs": {}}
         result = catalog._transform_manifest_data(
-            content, name="odd", member=None, repo_url=httpx.URL("https://github.com/org/repo")
+            content, name="odd", member=None, repo_url=httpx2.URL("https://github.com/org/repo")
         )
         # Kind is left as-is; no exception, manifest not dropped.
         assert result["kind"] == "some_odd_token"

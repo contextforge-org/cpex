@@ -99,8 +99,6 @@ class TestCleanupSession:
         plugin._http = MagicMock()
         plugin._write = MagicMock()
         plugin._stdio = MagicMock()
-        plugin._get_session_id = MagicMock()
-        plugin._session_id = "test-session-id"
         plugin._exit_stack = AsyncMock()
         plugin._stdio_exit_stack = AsyncMock()
 
@@ -110,8 +108,6 @@ class TestCleanupSession:
         assert plugin._http is None
         assert plugin._write is None
         assert plugin._stdio is None
-        assert plugin._get_session_id is None
-        assert plugin._session_id is None
 
     @pytest.mark.asyncio
     async def test_cleanup_session_closes_exit_stacks(self, mock_http_plugin_config):
@@ -213,8 +209,7 @@ class TestInvokeHookWithReconnection:
         mock_session = AsyncMock()
         plugin._session = mock_session
 
-        from mcp import McpError
-        from mcp.types import ErrorData
+        from mcp import MCPError
 
         call_count = 0
 
@@ -222,8 +217,8 @@ class TestInvokeHookWithReconnection:
             nonlocal call_count
             call_count += 1
             if call_count == 1:
-                raise McpError(ErrorData(code=-1, message="Connection lost"))
-            from mcp.types import CallToolResult, TextContent
+                raise MCPError(-1, "Connection lost")
+            from mcp_types import CallToolResult, TextContent
 
             return CallToolResult(content=[TextContent(type="text", text='{"result": {"name": "test", "args": {}}}')])
 
@@ -250,7 +245,7 @@ class TestInvokeHookWithReconnection:
             call_count += 1
             if call_count == 1:
                 raise PluginError(error=PluginErrorModel(message="Session terminated", plugin_name="TestHTTPPlugin"))
-            from mcp.types import CallToolResult, TextContent
+            from mcp_types import CallToolResult, TextContent
 
             return CallToolResult(content=[TextContent(type="text", text='{"result": {"name": "test", "args": {}}}')])
 
@@ -263,6 +258,8 @@ class TestInvokeHookWithReconnection:
                 result = await plugin.invoke_hook("tool_pre_invoke", payload, mock_plugin_context)
                 mock_reconnect.assert_called_once()
                 assert result is not None
+                # The call is retried after reconnect: first raises, second succeeds.
+                assert call_count == 2
 
     @pytest.mark.asyncio
     async def test_invoke_hook_no_reconnect_on_other_plugin_errors(self, mock_http_plugin_config, mock_plugin_context):
@@ -292,11 +289,10 @@ class TestInvokeHookWithReconnection:
         mock_session = AsyncMock()
         plugin._session = mock_session
 
-        from mcp import McpError
-        from mcp.types import ErrorData
+        from mcp import MCPError
 
         async def mock_call_tool(*args, **kwargs):
-            raise McpError(ErrorData(code=-1, message="Connection lost"))
+            raise MCPError(-1, "Connection lost")
 
         mock_session.call_tool = mock_call_tool
 

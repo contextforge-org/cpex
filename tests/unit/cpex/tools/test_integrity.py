@@ -11,7 +11,7 @@ import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import httpx
+import httpx2
 import pytest
 
 from cpex.tools.integrity import (
@@ -100,7 +100,7 @@ class TestComputeFileHash:
 class TestFetchPyPiPackageHashes:
     """Tests for fetch_pypi_package_hashes function."""
 
-    @patch("cpex.tools.integrity.httpx.Client")
+    @patch("cpex.tools.integrity.httpx2.Client")
     def test_fetch_hashes_success(self, mock_client_class):
         """Test successful hash fetching from PyPI."""
         mock_response = MagicMock()
@@ -131,7 +131,7 @@ class TestFetchPyPiPackageHashes:
         assert "package-1.0.0-py3-none-any.whl" in hashes
         assert hashes["package-1.0.0-py3-none-any.whl"]["sha256"] == "789ghi012jkl"
 
-    @patch("cpex.tools.integrity.httpx.Client")
+    @patch("cpex.tools.integrity.httpx2.Client")
     def test_fetch_hashes_test_pypi(self, mock_client_class):
         """Test fetching from test.pypi.org."""
         mock_response = MagicMock()
@@ -147,14 +147,14 @@ class TestFetchPyPiPackageHashes:
         call_args = mock_client.get.call_args[0][0]
         assert "test.pypi.org" in call_args
 
-    @patch("cpex.tools.integrity.httpx.Client")
+    @patch("cpex.tools.integrity.httpx2.Client")
     def test_fetch_hashes_package_not_found(self, mock_client_class):
         """Test handling of 404 response."""
         mock_client = MagicMock()
         mock_response = MagicMock()
         mock_response.status_code = 404
         mock_client.get.return_value = mock_response
-        mock_response.raise_for_status.side_effect = httpx.HTTPStatusError(
+        mock_response.raise_for_status.side_effect = httpx2.HTTPStatusError(
             "404", request=MagicMock(), response=mock_response
         )
         mock_client.__enter__.return_value = mock_client
@@ -163,18 +163,18 @@ class TestFetchPyPiPackageHashes:
         with pytest.raises(RuntimeError, match="Package .* not found"):
             fetch_pypi_package_hashes("nonexistent-package")
 
-    @patch("cpex.tools.integrity.httpx.Client")
+    @patch("cpex.tools.integrity.httpx2.Client")
     def test_fetch_hashes_network_error(self, mock_client_class):
         """Test handling of network errors."""
         mock_client = MagicMock()
-        mock_client.get.side_effect = httpx.RequestError("Connection failed")
+        mock_client.get.side_effect = httpx2.RequestError("Connection failed")
         mock_client.__enter__.return_value = mock_client
         mock_client_class.return_value = mock_client
 
         with pytest.raises(RuntimeError, match="Network error"):
             fetch_pypi_package_hashes("test-package")
 
-    @patch("cpex.tools.integrity.httpx.Client")
+    @patch("cpex.tools.integrity.httpx2.Client")
     def test_fetch_hashes_no_urls(self, mock_client_class):
         """Test handling of package with no distribution files."""
         mock_response = MagicMock()
@@ -188,7 +188,7 @@ class TestFetchPyPiPackageHashes:
 
         assert hashes == {}
 
-    @patch("cpex.tools.integrity.httpx.Client")
+    @patch("cpex.tools.integrity.httpx2.Client")
     def test_fetch_hashes_missing_sha256(self, mock_client_class):
         """Test handling of files without SHA256 digests."""
         mock_response = MagicMock()
@@ -351,7 +351,7 @@ class TestIntegrityVerificationError:
 class TestIntegrationScenarios:
     """Integration tests for complete verification workflows."""
 
-    @patch("cpex.tools.integrity.httpx.Client")
+    @patch("cpex.tools.integrity.httpx2.Client")
     def test_full_verification_workflow(self, mock_client_class, tmp_path):
         """Test complete workflow: fetch hashes, download, verify."""
         # Setup mock PyPI response
@@ -385,7 +385,7 @@ class TestIntegrationScenarios:
 
         assert result is True
 
-    @patch("cpex.tools.integrity.httpx.Client")
+    @patch("cpex.tools.integrity.httpx2.Client")
     def test_verification_with_tampered_package(self, mock_client_class, tmp_path):
         """Test detection of tampered package."""
         # Setup mock with original hash

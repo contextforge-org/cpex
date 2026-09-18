@@ -36,7 +36,7 @@ import logging
 from pathlib import Path
 from typing import Optional
 
-import httpx
+import httpx2
 
 logger = logging.getLogger(__name__)
 
@@ -162,16 +162,16 @@ def fetch_pypi_package_hashes(
     logger.debug("Fetching package hashes from: %s", url)
 
     try:
-        with httpx.Client(timeout=timeout) as client:
+        with httpx2.Client(timeout=timeout) as client:
             response = client.get(url)
             response.raise_for_status()
             data = response.json()
 
-    except httpx.HTTPStatusError as e:
+    except httpx2.HTTPStatusError as e:
         if e.response.status_code == 404:
             raise RuntimeError(f"Package '{package_name}' not found on {'test.' if use_test else ''}PyPI") from e
         raise RuntimeError(f"Failed to fetch package metadata: {e}") from e
-    except httpx.RequestError as e:
+    except httpx2.RequestError as e:
         raise RuntimeError(f"Network error fetching package metadata: {e}") from e
     except Exception as e:
         raise RuntimeError(f"Unexpected error fetching package metadata: {e}") from e

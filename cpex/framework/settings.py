@@ -349,7 +349,7 @@ class PluginsGrpcClientMtlsSettings(BaseSettings):
 
 
 class PluginsHttpClientSettings(BaseSettings):
-    """Lightweight settings for HTTP client (httpx) configuration."""
+    """Lightweight settings for HTTP client (httpx2) configuration."""
 
     skip_ssl_verify: bool = False
     httpx_max_connections: int = 200

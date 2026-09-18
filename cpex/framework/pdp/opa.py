@@ -38,7 +38,7 @@ import logging
 import time
 from typing import Any
 
-import httpx
+import httpx2
 
 from cpex.framework.pdp.base import PdpError, PdpResolver, PdpResult
 
@@ -92,8 +92,8 @@ class OpaResolver(PdpResolver):
         """
         self._endpoint_template = endpoint
         self.fail_open = fail_open
-        self._client = httpx.AsyncClient(
-            timeout=httpx.Timeout(timeout_ms / 1000.0),
+        self._client = httpx2.AsyncClient(
+            timeout=httpx2.Timeout(timeout_ms / 1000.0),
             headers=headers or {},
         )
 
@@ -133,7 +133,7 @@ class OpaResolver(PdpResolver):
             response.raise_for_status()
             return self._parse_response(response.json(), latency_ms)
 
-        except httpx.TimeoutException as e:
+        except httpx2.TimeoutException as e:
             latency_ms = (time.monotonic() - start) * 1000
             logger.warning("OPA timeout after %.1fms: %s", latency_ms, endpoint)
             if self.fail_open:
@@ -148,7 +148,7 @@ class OpaResolver(PdpResolver):
                 cause=e,
             )
 
-        except httpx.HTTPStatusError as e:
+        except httpx2.HTTPStatusError as e:
             latency_ms = (time.monotonic() - start) * 1000
             logger.error("OPA HTTP %d from %s", e.response.status_code, endpoint)
             if self.fail_open:
@@ -163,7 +163,7 @@ class OpaResolver(PdpResolver):
                 cause=e,
             )
 
-        except httpx.HTTPError as e:
+        except httpx2.HTTPError as e:
             latency_ms = (time.monotonic() - start) * 1000
             logger.error("OPA connection error: %s", e)
             if self.fail_open:
