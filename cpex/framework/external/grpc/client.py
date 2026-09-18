@@ -25,9 +25,19 @@ from google.protobuf.struct_pb2 import Struct
 from cpex.framework.base import Plugin
 from cpex.framework.constants import IGNORE_CONFIG_EXTERNAL
 from cpex.framework.errors import PluginError, convert_exception_to_error
-from cpex.framework.external.grpc.proto import plugin_service_pb2, plugin_service_pb2_grpc
-from cpex.framework.external.grpc.tls_utils import create_insecure_channel, create_secure_channel
-from cpex.framework.external.proto_convert import pydantic_context_to_proto, update_pydantic_context_from_proto
+from cpex.framework.external.grpc.proto import (
+    plugin_service_pb2,
+    plugin_service_pb2_grpc,
+)
+from cpex.framework.external.grpc.tls_utils import (
+    create_insecure_channel,
+    create_secure_channel,
+)
+from cpex.framework.external.proto_convert import (
+    proto_result_to_dict,
+    pydantic_context_to_proto,
+    update_pydantic_context_from_proto,
+)
 from cpex.framework.hooks.registry import get_hook_registry
 from cpex.framework.models import (
     GRPCClientTLSConfig,
@@ -258,7 +268,7 @@ class GrpcExternalPlugin(Plugin):
 
             # Parse and return result
             if response.HasField("result"):
-                result_dict = json_format.MessageToDict(response.result)
+                result_dict = proto_result_to_dict(response)
                 return result_type.model_validate(result_dict)
 
             raise PluginError(
