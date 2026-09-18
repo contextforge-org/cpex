@@ -70,7 +70,15 @@ class ConfigLoader:
             with open(os.path.normpath(config), "r", encoding="utf-8") as file:
                 template = file.read()
                 if use_jinja:
-                    jinja_env = SandboxedEnvironment(loader=jinja2.BaseLoader(), autoescape=True)
+                    # Use DebugUndefined so that ONLY `env.*` references (the values passed to
+                    # render()) are substituted; any other ``{{ ... }}`` in the config — e.g. a
+                    # plugin's default_template that it renders itself at runtime — is left
+                    # verbatim as ``{{ name }}`` instead of being silently blanked to "".
+                    # Without this, the default Undefined renders every non-env placeholder to an
+                    # empty string at load time, so a plugin that stores a runtime template in its
+                    # config (WebhookNotification's default_template) ends up with an all-empty,
+                    # invalid body. See issue #81.
+                    jinja_env = SandboxedEnvironment(loader=jinja2.BaseLoader(), autoescape=True, undefined=jinja2.DebugUndefined)
                     rendered_template = jinja_env.from_string(template).render(env=os.environ)
                 else:
                     rendered_template = template
