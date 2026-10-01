@@ -351,6 +351,16 @@ impl PluginRegistry {
         Ok(())
     }
 
+    /// Collect the audit sinks among the registered plugins. A plugin opts in
+    /// by overriding `Plugin::as_audit_handler`; most return `None`. The
+    /// manager attaches these to the executor's verdict emit.
+    pub fn audit_handlers(&self) -> Vec<Arc<dyn crate::audit::AuditHandler>> {
+        self.plugins
+            .values()
+            .filter_map(|r| r.plugin().clone().as_audit_handler())
+            .collect()
+    }
+
     /// Internal: register handler under one or more hook names.
     fn register_for_names_inner(
         &mut self,

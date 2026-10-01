@@ -86,6 +86,44 @@ pub trait PluginPayload: Send + Sync + 'static {
 
     /// Downcast to a concrete type via `&mut dyn Any`.
     fn as_any_mut(&mut self) -> &mut dyn Any;
+
+    /// Canonical bytes of this payload for content-addressed audit provenance,
+    /// or `None` for payloads that can't or shouldn't be serialized (the
+    /// default). The bytes feed a content hash — **only the digest is
+    /// retained, never the bytes** — so a node's provenance is recorded
+    /// without re-spilling its (possibly sensitive) content. Computed only
+    /// when content provenance is enabled, so the default keeps the hot path
+    /// free.
+    ///
+    /// **Byte-stability (what a consumer may assume).**
+    /// `impl_plugin_payload!(_, audit_serialize)` derives this by round-tripping
+    /// through `serde_json::Value` — whose `Map` is a `BTreeMap`, so object keys
+    /// are sorted. Identical content therefore serializes to identical bytes
+    /// across runs and processes, and **two equal digests mean "same content"
+    /// within a deployment**. It is *sorted-key JSON, not full RFC 8785 (JCS)*:
+    /// number formatting follows `serde_json` and is stable within a
+    /// `serde_json` version but is not guaranteed by a canonicalization spec
+    /// across toolchains. So treat digest equality as same-content within a
+    /// build; do not assume cross-toolchain canonicalization. A hand-written
+    /// `audit_bytes` must preserve this property (a canonical, deterministic
+    /// encoding) or its hashes will not be comparable.
+    fn audit_bytes(&self) -> Option<Vec<u8>> {
+        None
+    }
+}
+
+/// The content hash of canonical audit bytes — a content-addressed provenance
+/// ref (`sha256:<hex>`). Only the digest is kept; the bytes are never retained.
+pub fn content_hash(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    use std::fmt::Write as _;
+    let digest = Sha256::digest(bytes);
+    let mut s = String::with_capacity(7 + 64);
+    s.push_str("sha256:");
+    for b in digest {
+        let _ = write!(s, "{b:02x}");
+    }
+    s
 }
 
 impl fmt::Debug for dyn PluginPayload {
@@ -122,4 +160,73 @@ macro_rules! impl_plugin_payload {
             }
         }
     };
+    // `audit_serialize`: opt in to content-provenance hashing for a
+    // `Serialize` payload. `audit_bytes` round-trips through `Value` so object
+    // keys are sorted (serde_json's Map is a BTreeMap without `preserve_order`)
+    // — canonical, cross-process-stable bytes even when the payload holds
+    // HashMaps.
+    ($ty:ty, audit_serialize) => {
+        impl $crate::hooks::payload::PluginPayload for $ty {
+            fn clone_boxed(&self) -> Box<dyn $crate::hooks::payload::PluginPayload> {
+                Box::new(self.clone())
+            }
+            fn as_any(&self) -> &dyn std::any::Any {
+                self
+            }
+            fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+                self
+            }
+            fn audit_bytes(&self) -> Option<Vec<u8>> {
+                let value = serde_json::to_value(self).ok()?;
+                serde_json::to_vec(&value).ok()
+            }
+        }
+    };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde::Serialize;
+
+    #[derive(Clone, Serialize)]
+    struct Doc {
+        a: u32,
+        note: String,
+    }
+    crate::impl_plugin_payload!(Doc, audit_serialize);
+
+    #[derive(Clone)]
+    struct Opaque;
+    crate::impl_plugin_payload!(Opaque);
+
+    #[test]
+    fn audit_serialize_is_some_and_deterministic() {
+        let d = Doc {
+            a: 1,
+            note: "hi".into(),
+        };
+        let b1 = d.audit_bytes().expect("serializable payload → Some");
+        let b2 = d.clone().audit_bytes().expect("Some");
+        assert_eq!(b1, b2, "canonical bytes are deterministic");
+    }
+
+    #[test]
+    fn default_audit_bytes_is_none() {
+        // A payload that did not opt into `audit_serialize` yields no bytes.
+        assert!(Opaque.audit_bytes().is_none());
+    }
+
+    #[test]
+    fn content_hash_is_prefixed_and_stable() {
+        let h = content_hash(b"hello");
+        assert!(h.starts_with("sha256:"));
+        assert_eq!(h.len(), "sha256:".len() + 64, "sha256 hex is 64 chars");
+        assert_eq!(content_hash(b"hello"), h, "deterministic");
+        assert_ne!(
+            content_hash(b"world"),
+            h,
+            "different input → different hash"
+        );
+    }
 }

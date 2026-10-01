@@ -51,6 +51,7 @@ use zeroize::Zeroizing;
 
 use cpex_core::context::PluginContext;
 use cpex_core::delegation::{DelegationPayload, DelegationSubject, TokenDelegateHook};
+use cpex_core::effect::{EffectRecord, EffectState};
 use cpex_core::error::{PluginError, PluginViolation};
 use cpex_core::extensions::raw_credentials::RawDelegatedToken;
 use cpex_core::hooks::payload::Extensions;
@@ -275,6 +276,89 @@ impl OAuthDelegator {
             )),
         }
     }
+
+    /// Bracket a token-mint I/O with write-ahead effect audit. Durably records
+    /// the mint *intent* (fail-closed — no durable record, no mint) before
+    /// `mint` runs, then records the outcome:
+    ///
+    /// - `Confirmed` on success, or on a 2xx we couldn't parse (the token *was*
+    ///   minted; we just couldn't read it);
+    /// - `Rejected` on a definitive IdP rejection (a non-2xx response —
+    ///   provably not minted);
+    /// - `Unknown` on an ambiguous failure (timeout / unreachable — the mint
+    ///   may or may not have landed), left for the recovery sweep.
+    ///
+    /// A no-op unless the operator granted this plugin the `emit_effect`
+    /// capability *and* configured an effect WAL; otherwise `begin_effect` /
+    /// `complete_effect` do nothing and this just runs `mint`.
+    async fn audit_mint<F, Fut, T>(
+        &self,
+        ext: &Extensions,
+        description: &str,
+        audience: &str,
+        scope: &str,
+        mint: F,
+    ) -> Result<T, PluginViolation>
+    where
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = Result<T, PluginViolation>>,
+    {
+        let intent =
+            EffectRecord::prepared("token_mint", description.to_string(), new_effect_key())
+                .with_detail("audience", audience.to_string())
+                .with_detail("scope", scope.to_string())
+                .with_detail("token_endpoint", self.typed.token_endpoint.clone());
+
+        // Write-ahead, fail-closed: if the intent can't be durably recorded,
+        // do not mint.
+        if let Err(e) = ext.begin_effect(&intent).await {
+            return Err(PluginViolation::new(
+                "delegation.effect_wal_failed",
+                format!("could not durably record token-mint intent: {e}"),
+            ));
+        }
+
+        let outcome = mint().await;
+
+        let state = match &outcome {
+            Ok(_) => EffectState::Confirmed,
+            Err(v) => match v.code.as_str() {
+                // A non-2xx IdP response — provably not minted.
+                "delegation.idp_rejected" => EffectState::Rejected,
+                // 2xx but unparseable: the token WAS minted; we just couldn't
+                // read it. The effect happened, even though the delegation fails.
+                "delegation.bad_response" => EffectState::Confirmed,
+                // Timeout / unreachable — the mint may have landed; reconcile.
+                _ => EffectState::Unknown,
+            },
+        };
+        // Best-effort completion: the act already happened, so a completion
+        // write failure is not fatal (recovery reconciles by the intent's
+        // key). It must not be silent, though — mirror the core primitive and
+        // log, so a persistently failing WAL is visible rather than hidden.
+        if let Err(e) = ext.complete_effect(&intent, state).await {
+            tracing::warn!(
+                effect_key = %intent.key,
+                error = %e,
+                "failed to write token-mint effect completion; \
+                 recovery will reconcile by key"
+            );
+        }
+
+        outcome
+    }
+}
+
+/// A fresh per-mint effect key — a unique attempt id in the effect WAL. OAuth
+/// token exchange has no idempotency key, so this identifies the attempt for
+/// the WAL rather than enabling IdP reconciliation.
+///
+/// There is deliberately no OAuth-specific `EffectReconciler`: an IdP exposes
+/// no lookup by mint key, so an `unknown` mint cannot be resolved against it —
+/// the core `LogUnknownsReconciler` default (log + leave `unknown`) is exactly
+/// the honest behavior, and nothing here is plugin-specific.
+fn new_effect_key() -> String {
+    uuid::Uuid::new_v4().to_string()
 }
 
 /// Subset of the RFC 8693 response we care about.
@@ -307,13 +391,21 @@ impl Plugin for OAuthDelegator {
     fn config(&self) -> &PluginConfig {
         &self.cfg
     }
+
+    /// This plugin mints tokens through the effect emitter (see `audit_mint`),
+    /// so it declares that fact — the manager warns at startup if `emit_effect`
+    /// was not granted, rather than letting the write-ahead audit silently
+    /// no-op.
+    fn emits_effects(&self) -> bool {
+        true
+    }
 }
 
 impl HookHandler<TokenDelegateHook> for OAuthDelegator {
     async fn handle(
         &self,
         payload: &DelegationPayload,
-        _ext: &Extensions,
+        ext: &Extensions,
         _ctx: &mut PluginContext,
     ) -> PluginResult<DelegationPayload> {
         // `subject: this_workload` means *we* are the principal. There
@@ -356,7 +448,16 @@ impl HookHandler<TokenDelegateHook> for OAuthDelegator {
         // own `bearer` directly. `Cow` avoids cloning the (already
         // borrowed) bearer on the non-workload path.
         let subject_token: Cow<str> = if is_workload {
-            match self.mint_base_token(bearer).await {
+            match self
+                .audit_mint(
+                    ext,
+                    "base-token mint (client_credentials)",
+                    audience,
+                    &scope,
+                    || self.mint_base_token(bearer),
+                )
+                .await
+            {
                 Ok(token) => Cow::Owned(token),
                 Err(violation) => return PluginResult::deny(violation),
             }
@@ -412,63 +513,80 @@ impl HookHandler<TokenDelegateHook> for OAuthDelegator {
             form.push(("actor_token_type", &self.typed.actor_token_type));
         }
 
-        // POST to the IdP. Basic auth carries our client credentials.
-        let response = match self
-            .http
-            .post(&self.typed.token_endpoint)
-            .basic_auth(&self.typed.client_id, Some(self.client_secret.as_str()))
-            .form(&form)
-            .send()
+        // POST to the IdP, bracketed by write-ahead effect audit. Basic auth
+        // carries our client credentials.
+        let parsed = match self
+            .audit_mint(
+                ext,
+                "token exchange (RFC 8693)",
+                audience,
+                &scope,
+                || async {
+                    let response = match self
+                        .http
+                        .post(&self.typed.token_endpoint)
+                        .basic_auth(&self.typed.client_id, Some(self.client_secret.as_str()))
+                        .form(&form)
+                        .send()
+                        .await
+                    {
+                        Ok(r) => r,
+                        Err(e) if e.is_timeout() => {
+                            return Err(PluginViolation::new(
+                                "delegation.idp_timeout",
+                                format!(
+                                    "token-exchange to {} timed out",
+                                    self.typed.token_endpoint
+                                ),
+                            ));
+                        },
+                        Err(e) => {
+                            return Err(PluginViolation::new(
+                                "delegation.idp_unreachable",
+                                format!(
+                                    "token-exchange POST to {} failed: {e}",
+                                    self.typed.token_endpoint,
+                                ),
+                            ));
+                        },
+                    };
+
+                    let status = response.status();
+                    if !status.is_success() {
+                        // Surface the standard `error` / `error_description` fields
+                        // from the IdP; fall back to the status code.
+                        let body = response.text().await.unwrap_or_default();
+                        let (code, reason) = match serde_json::from_str::<TokenErrorResponse>(&body)
+                        {
+                            Ok(err) => {
+                                let mut reason = err.error.clone();
+                                if let Some(desc) = err.error_description {
+                                    reason.push_str(": ");
+                                    reason.push_str(&desc);
+                                }
+                                ("delegation.idp_rejected", reason)
+                            },
+                            Err(_) => (
+                                "delegation.idp_rejected",
+                                format!("IdP returned {status}: {body}"),
+                            ),
+                        };
+                        return Err(PluginViolation::new(code, reason));
+                    }
+
+                    match response.json::<TokenExchangeResponse>().await {
+                        Ok(p) => Ok(p),
+                        Err(e) => Err(PluginViolation::new(
+                            "delegation.bad_response",
+                            format!("IdP response wasn't valid token-exchange JSON: {e}"),
+                        )),
+                    }
+                },
+            )
             .await
         {
-            Ok(r) => r,
-            Err(e) if e.is_timeout() => {
-                return PluginResult::deny(PluginViolation::new(
-                    "delegation.idp_timeout",
-                    format!("token-exchange to {} timed out", self.typed.token_endpoint),
-                ));
-            },
-            Err(e) => {
-                return PluginResult::deny(PluginViolation::new(
-                    "delegation.idp_unreachable",
-                    format!(
-                        "token-exchange POST to {} failed: {e}",
-                        self.typed.token_endpoint,
-                    ),
-                ));
-            },
-        };
-
-        let status = response.status();
-        if !status.is_success() {
-            // Try to surface the standard `error` / `error_description`
-            // fields from the IdP. Fall back to status code.
-            let body = response.text().await.unwrap_or_default();
-            let (code, reason) = match serde_json::from_str::<TokenErrorResponse>(&body) {
-                Ok(err) => {
-                    let mut reason = err.error.clone();
-                    if let Some(desc) = err.error_description {
-                        reason.push_str(": ");
-                        reason.push_str(&desc);
-                    }
-                    ("delegation.idp_rejected", reason)
-                },
-                Err(_) => (
-                    "delegation.idp_rejected",
-                    format!("IdP returned {status}: {body}"),
-                ),
-            };
-            return PluginResult::deny(PluginViolation::new(code, reason));
-        }
-
-        let parsed = match response.json::<TokenExchangeResponse>().await {
             Ok(p) => p,
-            Err(e) => {
-                return PluginResult::deny(PluginViolation::new(
-                    "delegation.bad_response",
-                    format!("IdP response wasn't valid token-exchange JSON: {e}"),
-                ));
-            },
+            Err(v) => return PluginResult::deny(v),
         };
 
         // Compute effective scopes. IdP's `scope` field wins (it

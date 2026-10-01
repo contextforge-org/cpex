@@ -28,10 +28,13 @@
 //                     approval, confirmation, step-up, …)
 // - [`error`] — Error types, violations, and result types
 
+pub mod audit;
 pub mod cmf;
 pub mod config;
 pub mod context;
+pub mod decision;
 pub mod delegation;
+pub mod effect;
 pub mod elicitation;
 pub mod error;
 pub mod executor;

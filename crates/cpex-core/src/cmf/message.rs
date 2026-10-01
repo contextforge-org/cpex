@@ -224,7 +224,7 @@ pub struct MessagePayload {
     pub message: Message,
 }
 
-crate::impl_plugin_payload!(MessagePayload);
+crate::impl_plugin_payload!(MessagePayload, audit_serialize);
 
 crate::define_hook! {
     /// CMF message evaluation hook.

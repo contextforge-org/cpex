@@ -728,3 +728,137 @@ async fn leg1_rejection_does_not_leak_the_client_assertion() {
         violation.reason,
     );
 }
+
+// =====================================================================
+// Effect audit — the token mint is recorded as a write-ahead effect.
+// =====================================================================
+
+/// Build a manager whose delegator holds the `emit_effect` capability, with a
+/// capturing audit sink attached. Returns the manager and the shared record of
+/// (effect kind, state) the sink observed.
+async fn build_manager_with_effect_audit(
+    token_endpoint: &str,
+) -> (
+    Arc<PluginManager>,
+    Arc<std::sync::Mutex<Vec<(String, String)>>>,
+) {
+    use cpex_core::audit::AuditHandler;
+    use cpex_core::decision::DecisionLog;
+    use cpex_core::effect::EffectRecord;
+    use cpex_core::hooks::payload::PluginPayload;
+    use std::sync::Mutex;
+
+    struct CapturingEffectAudit {
+        seen: Arc<Mutex<Vec<(String, String)>>>,
+    }
+    #[async_trait::async_trait]
+    impl AuditHandler for CapturingEffectAudit {
+        async fn handle(&self, _p: &dyn PluginPayload, _e: &Extensions, _d: &DecisionLog) {}
+        async fn on_effect(&self, effect: &EffectRecord, _ext: &Extensions) {
+            self.seen
+                .lock()
+                .unwrap()
+                .push((effect.kind.clone(), format!("{:?}", effect.state)));
+        }
+    }
+
+    let mut cfg = plugin_config(token_endpoint);
+    cfg.capabilities.insert("emit_effect".into());
+    let delegator = OAuthDelegator::new(cfg.clone()).expect("delegator constructs");
+    let mgr = Arc::new(PluginManager::default());
+    mgr.register_handler_for_names::<TokenDelegateHook, _>(
+        Arc::new(delegator),
+        cfg,
+        &[HOOK_TOKEN_DELEGATE],
+    )
+    .unwrap();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    mgr.register_audit_handler(Arc::new(CapturingEffectAudit { seen: seen.clone() }));
+    mgr.initialize().await.unwrap();
+    (mgr, seen)
+}
+
+/// A successful exchange records the mint as prepared → confirmed.
+#[tokio::test]
+async fn successful_mint_emits_prepared_then_confirmed() {
+    let mut server = Server::new_async().await;
+    let _mock = server
+        .mock("POST", "/oauth/token")
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body(
+            json!({
+                "access_token": "minted-downstream-jwt",
+                "expires_in": 300,
+                "scope": "read:compensation",
+            })
+            .to_string(),
+        )
+        .create_async()
+        .await;
+
+    let (mgr, seen) =
+        build_manager_with_effect_audit(&format!("{}/oauth/token", server.url())).await;
+    let payload = build_payload(
+        "get_compensation",
+        "https://hr.example.com",
+        &["read:compensation"],
+    );
+    let result = invoke(&mgr, payload).await;
+    assert!(
+        result.continue_processing,
+        "mint should succeed: {:?}",
+        result.violation
+    );
+
+    let seen = seen.lock().unwrap();
+    assert!(
+        seen.iter()
+            .any(|(k, s)| k == "token_mint" && s == "Prepared"),
+        "write-ahead prepared intent emitted; got {seen:?}",
+    );
+    assert!(
+        seen.iter()
+            .any(|(k, s)| k == "token_mint" && s == "Confirmed"),
+        "confirmed outcome emitted; got {seen:?}",
+    );
+}
+
+/// A definitive IdP rejection (HTTP 400) records the mint as prepared →
+/// rejected, and denies the delegation.
+#[tokio::test]
+async fn rejected_mint_emits_prepared_then_rejected() {
+    let mut server = Server::new_async().await;
+    let _mock = server
+        .mock("POST", "/oauth/token")
+        .with_status(400)
+        .with_header("content-type", "application/json")
+        .with_body(json!({ "error": "invalid_grant" }).to_string())
+        .create_async()
+        .await;
+
+    let (mgr, seen) =
+        build_manager_with_effect_audit(&format!("{}/oauth/token", server.url())).await;
+    let payload = build_payload(
+        "get_compensation",
+        "https://hr.example.com",
+        &["read:compensation"],
+    );
+    let result = invoke(&mgr, payload).await;
+    assert!(
+        !result.continue_processing,
+        "a 400 must deny the delegation"
+    );
+
+    let seen = seen.lock().unwrap();
+    assert!(
+        seen.iter()
+            .any(|(k, s)| k == "token_mint" && s == "Prepared"),
+        "prepared intent emitted even on rejection; got {seen:?}",
+    );
+    assert!(
+        seen.iter()
+            .any(|(k, s)| k == "token_mint" && s == "Rejected"),
+        "rejected outcome emitted; got {seen:?}",
+    );
+}

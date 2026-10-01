@@ -59,6 +59,8 @@ serde_json = { workspace = true }
 tokio = { workspace = true }
 chrono = { workspace = true }
 tracing = { workspace = true }
+# `uuid` for the per-mint effect key (a unique attempt id in the effect WAL).
+uuid = { workspace = true }
 
 # `base64` decodes the minted token's JWT payload for a best-effort,
 # read-only interop check (did the IdP honor the RFC 8693 `actor_token`

@@ -1452,11 +1452,17 @@ mod tests {
         rc
     }
 
-    /// Panic in a plugin must be caught at the FFI boundary and mapped
-    /// to `RC_PANIC` rather than unwinding across `extern "C"` (UB on
-    /// Rust < 1.81; abort on >= 1.81).
+    /// A panic in a plugin body is contained by the executor's serial phase
+    /// (`catch_unwind`), converted to a plugin error, and handled by the
+    /// plugin's `on_error` — exactly like the concurrent phase. With the
+    /// default `on_error=Fail` it becomes a fail-closed **deny**, so the
+    /// invocation completes normally (`RC_OK`) rather than aborting to
+    /// `RC_PANIC`. The panic is recorded on the decision log and in the deny
+    /// violation (code `plugin_panic` — asserted at the core level in
+    /// `manager::tests`). `RC_PANIC` still covers panics outside a plugin body
+    /// (config load, registration, executor internals).
     #[test]
-    fn cpex_invoke_returns_rc_panic_when_plugin_panics() {
+    fn cpex_invoke_contains_plugin_panic_as_deny() {
         let mgr = build_test_manager();
         // Defer cleanup so a test failure doesn't leak the manager.
         struct ManagerGuard(*mut CpexManagerInner);
@@ -1476,13 +1482,14 @@ mod tests {
             let init_rc = cpex_initialize(mgr);
             assert_eq!(init_rc, RC_OK, "init should succeed");
 
-            // Invoke with the registered hook — plugin panics, caught
-            // by run_safely's catch_unwind, mapped to RC_PANIC.
+            // Invoke with the registered hook — the plugin panics, but the
+            // serial phase contains it into a fail-closed deny, so the call
+            // completes as RC_OK rather than aborting to RC_PANIC.
             let bytes = payload_bytes("trigger");
             let rc = invoke_for_test(mgr, PAYLOAD_GENERIC, &bytes);
             assert_eq!(
-                rc, RC_PANIC,
-                "panic should be caught and surfaced as RC_PANIC, got {}",
+                rc, RC_OK,
+                "a contained plugin panic completes as a deny (RC_OK), got {}",
                 rc,
             );
         }

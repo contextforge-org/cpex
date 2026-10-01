@@ -115,6 +115,59 @@ pub struct PluginSettings {
     /// investigate the entity-name growth.
     #[serde(default = "default_route_cache_max_entries")]
     pub route_cache_max_entries: usize,
+
+    /// Optional path to a durable write-ahead log for irreversible-effect
+    /// audit records (token mints, approval grants). When set, `begin_effect`
+    /// becomes crash-safe and fail-closed — the intent is fsync'd before the
+    /// act. When unset (default), effect auditing is ordering-only: records
+    /// still reach the audit sinks, but without durability. Opt-in — basic
+    /// logging leaves this empty.
+    #[serde(default)]
+    pub effect_log_path: Option<String>,
+
+    /// Override the effect WAL's auto-compaction threshold — the number of
+    /// appends between automatic compactions. Only meaningful with
+    /// `effect_log_path` set; `0` disables auto-compaction (compaction then
+    /// happens only on an explicit recovery). Unset uses the built-in default.
+    #[serde(default)]
+    pub effect_log_compaction_threshold: Option<usize>,
+
+    /// Capture content-addressed provenance for audit: the executor hashes the
+    /// payload at pipeline entry (`sha256:<hex>`) so audit sinks can record an
+    /// input content ref without the raw content. Off by default — hashing is
+    /// on the request path, so it is opt-in. Only the digest is kept, never the
+    /// bytes.
+    #[serde(default)]
+    pub capture_content_provenance: bool,
+
+    /// Optional namespace prefixing the audit stream ids, so a host's decision
+    /// and effect records are attributable to *its* stream (a pod name, gateway
+    /// id, etc.) instead of the bare per-type labels. When set to `"gw-1"`, the
+    /// two streams become `"gw-1:decision"` / `"gw-1:effect"` — the type suffix
+    /// stays, so each remains independently gap-free (its completeness proof is
+    /// intact). Unset (default) keeps the bare `"decision"` / `"effect"` labels.
+    /// Empty/whitespace is rejected at config validation.
+    ///
+    /// The `:` separator is not forbidden inside the namespace, so a consumer
+    /// recovering the type or the namespace from a stream id must split on the
+    /// **last** colon (`rsplit_once(':')`) — `"a:b:decision"` is namespace
+    /// `"a:b"`, type `"decision"`.
+    #[serde(default)]
+    pub audit_stream_namespace: Option<String>,
+
+    /// Programmatic-only override for the audit epoch (the executor's generation
+    /// identifier). **Deliberately not part of the YAML surface** (`serde(skip)`):
+    /// the epoch must strictly increase per executor generation so a new
+    /// generation is distinguishable from record loss, and a static file value
+    /// cannot do that — it would pin the epoch and silently break the guarantee.
+    /// Note a reload (`load_config`) is itself a new generation (fresh executor,
+    /// stream counters reset to 0), so an override must yield a strictly larger
+    /// value on *every* load, not just once per process boot — supply it from a
+    /// source that guarantees that (a persisted / StatefulSet generation counter),
+    /// owning the invariant. Unset (default) keeps CPEX's wall-clock epoch, which
+    /// advances on its own and is correct with no configuration.
+    #[serde(skip)]
+    pub audit_epoch: Option<u64>,
 }
 
 impl Default for PluginSettings {
@@ -126,6 +179,11 @@ impl Default for PluginSettings {
             parallel_execution_within_band: false,
             fail_on_plugin_error: false,
             route_cache_max_entries: default_route_cache_max_entries(),
+            effect_log_path: None,
+            effect_log_compaction_threshold: None,
+            capture_content_provenance: false,
+            audit_stream_namespace: None,
+            audit_epoch: None,
         }
     }
 }
@@ -711,6 +769,36 @@ pub(crate) fn validate_config(config: &CpexConfig) -> Result<(), Box<PluginError
                 message: format!("duplicate plugin name: '{}'", plugin.name),
             }));
         }
+
+        // `emit_effect` is only honored in modes whose phase wires a live
+        // effect emitter (Sequential / Transform). In any other mode the
+        // capability would silently no-op at runtime — the mint runs with no
+        // write-ahead record and no fail-closed guarantee — so reject the
+        // combination here rather than let it fail open.
+        if plugin.capabilities.contains("emit_effect") && !plugin.mode.grants_effect_emitter() {
+            return Err(Box::new(PluginError::Config {
+                message: format!(
+                    "plugin '{}' declares the 'emit_effect' capability with mode '{}', \
+                     which cannot emit effects (only sequential/transform can); \
+                     effect calls would silently no-op",
+                    plugin.name, plugin.mode
+                ),
+            }));
+        }
+    }
+
+    // An empty or whitespace-only audit stream namespace would prefix the
+    // stream ids as `":decision"` / `":effect"` — a silent misconfiguration, not
+    // a useful identity. Reject it so the operator's mistake surfaces at load
+    // rather than in the audit stream. (Absent → bare labels, which is fine.)
+    if let Some(ns) = &config.plugin_settings.audit_stream_namespace {
+        if ns.trim().is_empty() {
+            return Err(Box::new(PluginError::Config {
+                message: "plugin_settings.audit_stream_namespace is empty or whitespace-only; \
+                          omit it for the default stream labels, or set a non-empty identity"
+                    .to_string(),
+            }));
+        }
     }
 
     if config.routing_enabled() {
@@ -1160,6 +1248,124 @@ plugins:
             .unwrap_err()
             .to_string()
             .contains("duplicate plugin name"));
+    }
+
+    #[test]
+    fn emit_effect_rejected_in_non_emitting_modes() {
+        // Concurrent / audit / fire_and_forget don't wire an effect emitter,
+        // so `emit_effect` there would silently no-op — reject at config.
+        for mode in ["concurrent", "audit", "fire_and_forget"] {
+            let yaml = format!(
+                "plugins:\n  - name: minter\n    kind: builtin\n    mode: {mode}\n    \
+                 hooks: [tool_pre_invoke]\n    capabilities: [emit_effect]\n"
+            );
+            let err = parse_config(&yaml).unwrap_err().to_string().to_lowercase();
+            assert!(
+                err.contains("emit_effect") && err.contains(mode),
+                "mode {mode} should be rejected; got: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn emit_effect_allowed_in_emitting_modes() {
+        // Sequential / transform run through the serial phase, which grants
+        // the emitter — so `emit_effect` is honored and must pass validation.
+        for mode in ["sequential", "transform"] {
+            let yaml = format!(
+                "plugins:\n  - name: minter\n    kind: builtin\n    mode: {mode}\n    \
+                 hooks: [tool_pre_invoke]\n    capabilities: [emit_effect]\n"
+            );
+            assert!(
+                parse_config(&yaml).is_ok(),
+                "mode {mode} should be allowed to emit effects"
+            );
+        }
+    }
+
+    #[test]
+    fn parses_effect_log_settings() {
+        let yaml = r#"
+plugin_settings:
+  effect_log_path: /var/lib/cpex/effects.wal
+  effect_log_compaction_threshold: 256
+plugins: []
+"#;
+        let cfg = parse_config(yaml).unwrap();
+        assert_eq!(
+            cfg.plugin_settings.effect_log_path.as_deref(),
+            Some("/var/lib/cpex/effects.wal")
+        );
+        assert_eq!(
+            cfg.plugin_settings.effect_log_compaction_threshold,
+            Some(256)
+        );
+    }
+
+    #[test]
+    fn effect_log_settings_default_to_none() {
+        let cfg = parse_config("plugins: []\n").unwrap();
+        assert!(cfg.plugin_settings.effect_log_path.is_none());
+        assert!(cfg
+            .plugin_settings
+            .effect_log_compaction_threshold
+            .is_none());
+    }
+
+    #[test]
+    fn parses_audit_stream_namespace_but_not_epoch() {
+        // The namespace is a normal YAML knob. The epoch is `serde(skip)`
+        // on purpose — a static file value can't stay monotonic across boots,
+        // so even if someone writes it in YAML it must NOT be honored; it's a
+        // programmatic-only override.
+        let yaml = r#"
+plugin_settings:
+  audit_stream_namespace: gw-1
+  audit_epoch: 7
+plugins: []
+"#;
+        let cfg = parse_config(yaml).unwrap();
+        assert_eq!(
+            cfg.plugin_settings.audit_stream_namespace.as_deref(),
+            Some("gw-1")
+        );
+        assert!(
+            cfg.plugin_settings.audit_epoch.is_none(),
+            "audit_epoch is not part of the YAML surface (serde skip)"
+        );
+
+        // It is still settable in code — the programmatic override path.
+        let mut cfg = cfg;
+        cfg.plugin_settings.audit_epoch = Some(7);
+        assert_eq!(cfg.plugin_settings.audit_epoch, Some(7));
+    }
+
+    #[test]
+    fn audit_stream_identity_defaults_to_none() {
+        let cfg = parse_config("plugins: []\n").unwrap();
+        assert!(cfg.plugin_settings.audit_stream_namespace.is_none());
+        assert!(cfg.plugin_settings.audit_epoch.is_none());
+    }
+
+    #[test]
+    fn empty_audit_stream_namespace_is_rejected() {
+        // An empty/whitespace namespace would prefix as ":decision"; reject it
+        // at validation instead of emitting a silently malformed stream id.
+        for ns in ["\"\"", "\"   \""] {
+            let yaml = format!("plugin_settings:\n  audit_stream_namespace: {ns}\nplugins: []\n");
+            let err = parse_config(&yaml).expect_err("empty/whitespace namespace must be rejected");
+            assert!(
+                err.to_string().contains("audit_stream_namespace"),
+                "error names the offending setting, got: {err}"
+            );
+        }
+        // A real namespace still loads.
+        let ok = parse_config("plugin_settings:\n  audit_stream_namespace: gw-1\nplugins: []\n")
+            .expect("non-empty namespace loads");
+        assert_eq!(
+            ok.plugin_settings.audit_stream_namespace.as_deref(),
+            Some("gw-1")
+        );
     }
 
     #[test]

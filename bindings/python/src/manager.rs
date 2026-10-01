@@ -358,15 +358,16 @@ mod tests {
         manager
     }
 
-    /// The `tokio::spawn` in `invoke_hook` must catch a panicking plugin and
-    /// surface `JoinError::is_panic()` rather than aborting the process or
-    /// leaking the panic to the pyo3_async_runtimes dispatch task.
-    ///
-    /// This is the Rust-level regression test for the panic-isolation
-    /// guarantee; the Python-level guarantee is that `invoke_hook` raises
-    /// `RuntimeError` rather than `pyo3_async_runtimes.RustPanic`.
+    /// A panicking plugin in the serial phase is contained by the executor
+    /// (`catch_unwind`) and handled by `on_error` — with the default
+    /// `on_error=Fail` it becomes a fail-closed deny, exactly like the
+    /// concurrent phase. So the spawned invoke **completes** (no
+    /// `JoinError::is_panic`), the result is a deny, and the panic is recorded
+    /// in the violation with code `plugin_panic` and its message preserved. The
+    /// `tokio::spawn`/`JoinError` net in `invoke_hook` remains for panics
+    /// outside a contained plugin body.
     #[tokio::test]
-    async fn invoke_on_panicking_plugin_returns_join_error_is_panic() {
+    async fn invoke_on_panicking_plugin_is_contained_as_deny() {
         let manager = build_panicking_manager();
         manager.initialize().await.expect("initialize");
 
@@ -383,27 +384,29 @@ mod tests {
         })
         .await;
 
+        // The panic is contained, so the spawned task completes rather than
+        // unwinding.
         assert!(
-            join_result.is_err(),
-            "spawned task should have failed due to panic"
+            join_result.is_ok(),
+            "the invoke task should complete, not unwind, on a contained panic"
         );
-        let join_err = join_result.unwrap_err();
-        assert!(
-            join_err.is_panic(),
-            "JoinError should report is_panic()=true, not a cancellation"
-        );
+        let (result, _bg) = join_result.unwrap();
 
-        // Verify the panic message is extractable — this is the same downcast
-        // logic used in invoke_hook to build the RuntimeError message.
-        let payload = join_err.into_panic();
-        let msg = payload
-            .downcast_ref::<&str>()
-            .copied()
-            .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
-            .unwrap_or("unknown panic");
+        // Default on_error=Fail turns the panic into a fail-closed deny ...
         assert!(
-            msg.contains("simulated panic"),
-            "panic message should propagate, got: {msg}"
+            !result.continue_processing,
+            "a contained plugin panic denies the request"
+        );
+        // ... coded plugin_panic, with the panic message preserved.
+        let violation = result.violation.expect("a deny carries a violation");
+        assert_eq!(
+            violation.code, "plugin_panic",
+            "a contained plugin panic is coded plugin_panic"
+        );
+        assert!(
+            violation.reason.contains("simulated panic"),
+            "panic message should propagate, got: {}",
+            violation.reason
         );
     }
 

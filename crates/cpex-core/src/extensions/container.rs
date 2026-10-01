@@ -122,6 +122,14 @@ pub struct Extensions {
     pub labels_write_token: Option<WriteToken>,
     #[serde(skip)]
     pub delegation_write_token: Option<WriteToken>,
+
+    /// Effect emitter — a capability handle, set by the executor per plugin
+    /// (capability `emit_effect`), NOT serialized. Like the write tokens:
+    /// `filter_extensions` never sets it; the executor does, for capable
+    /// plugins, right before `handle`. Used by `begin_effect` /
+    /// `complete_effect` to emit irreversible-effect records to audit sinks.
+    #[serde(skip)]
+    pub effect_emitter: crate::effect::EffectEmitterSlot,
 }
 
 impl Clone for Extensions {
@@ -145,7 +153,99 @@ impl Clone for Extensions {
             http_write_token: None,
             labels_write_token: None,
             delegation_write_token: None,
+            // Capability handle — set fresh per-invoke by the executor, never
+            // cloned (same policy as the write tokens above).
+            effect_emitter: crate::effect::EffectEmitterSlot::empty(),
         }
+    }
+}
+
+impl Extensions {
+    /// Emit an irreversible effect's `prepared` intent to the audit sinks —
+    /// the write-ahead point (slice 2 emits; durability is a later slice).
+    /// No-op unless the plugin holds the `emit_effect` capability (the
+    /// executor sets `effect_emitter` only for those).
+    pub async fn begin_effect(
+        &self,
+        effect: &crate::effect::EffectRecord,
+    ) -> Result<(), Box<crate::error::PluginError>> {
+        match self.effect_emitter.emitter() {
+            Some(emitter) => {
+                let prepared = effect
+                    .clone()
+                    .into_state(crate::effect::EffectState::Prepared);
+                emitter.emit(&prepared, self).await
+            },
+            // No capability → nothing to durably record, nothing to emit.
+            None => Ok(()),
+        }
+    }
+
+    /// Emit an effect's terminal outcome (`Confirmed` / `Rejected` /
+    /// `Unknown`). No-op without the `emit_effect` capability. Unlike
+    /// `begin_effect`, a durable-write failure here is not fail-closed — the
+    /// act already happened; the record stays `prepared`/`unknown` for the
+    /// recovery sweep (slice 3b) to reconcile — so callers may log-and-continue.
+    pub async fn complete_effect(
+        &self,
+        effect: &crate::effect::EffectRecord,
+        state: crate::effect::EffectState,
+    ) -> Result<(), Box<crate::error::PluginError>> {
+        match self.effect_emitter.emitter() {
+            Some(emitter) => {
+                let done = effect.clone().into_state(state);
+                emitter.emit(&done, self).await
+            },
+            None => Ok(()),
+        }
+    }
+
+    /// Perform an irreversible external effect under framework-mediated
+    /// write-ahead. Brackets `act` — the actual I/O, e.g. a token mint at an
+    /// IdP — between a durable, fail-closed [`Self::begin_effect`] and a
+    /// best-effort [`Self::complete_effect`], so a caller cannot skip,
+    /// reorder, or forget the durability protocol.
+    ///
+    /// - If the write-ahead fails, `act` never runs and the error is returned
+    ///   (fail-closed: no durable intent → no act).
+    /// - On `Ok`, the effect is recorded `confirmed`.
+    /// - On `Err`, it is recorded `unknown` — **not** `rejected`: a failed call
+    ///   may still have taken effect at the participant (e.g. the response was
+    ///   lost after the act landed), so recovery reconciles it via `key` rather
+    ///   than assuming it didn't happen.
+    ///
+    /// This is the primitive builtins mint *through*; the structural
+    /// enforcement is that a builtin never performs the I/O itself, only via
+    /// primitives built on this bracket.
+    pub async fn perform_effect<F, Fut, T>(
+        &self,
+        effect: &crate::effect::EffectRecord,
+        act: F,
+    ) -> Result<T, Box<crate::error::PluginError>>
+    where
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = Result<T, Box<crate::error::PluginError>>>,
+    {
+        // Write-ahead: durable and fail-closed. If it errors, the act never runs.
+        self.begin_effect(effect).await?;
+
+        // The irreversible act.
+        let outcome = act().await;
+
+        // Record the terminal state. `Err` → `Unknown` (conservative): a failed
+        // call may still have landed at the participant, so reconciliation via
+        // K decides — never assume rejection. Best-effort: the act has already
+        // happened, so a completion-write failure is logged, not fatal.
+        let terminal = if outcome.is_ok() {
+            crate::effect::EffectState::Confirmed
+        } else {
+            crate::effect::EffectState::Unknown
+        };
+        if let Err(e) = self.complete_effect(effect, terminal).await {
+            tracing::warn!(effect_key = %effect.key, "effect completion not durably recorded: {e}");
+        }
+
+        outcome
     }
 }
 
@@ -502,6 +602,111 @@ mod tests {
     use crate::extensions::{
         DelegationExtension, HttpExtension, RequestExtension, SecurityExtension,
     };
+
+    /// The mediated `perform_effect` bracket: write-ahead before the act,
+    /// terminal state after — `confirmed` on success, `unknown` on failure
+    /// (never assume rejection), and fail-closed if the write-ahead fails.
+    #[tokio::test]
+    async fn perform_effect_mediates_write_ahead() {
+        use crate::effect::{EffectEmitter, EffectRecord, EffectState};
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Mutex;
+
+        #[derive(Debug)]
+        struct RecordingEmitter {
+            states: Arc<Mutex<Vec<EffectState>>>,
+            fail_begin: bool,
+        }
+        #[async_trait::async_trait]
+        impl EffectEmitter for RecordingEmitter {
+            async fn emit(
+                &self,
+                effect: &EffectRecord,
+                _ext: &Extensions,
+            ) -> Result<(), Box<crate::error::PluginError>> {
+                if self.fail_begin && effect.state == EffectState::Prepared {
+                    return Err(crate::error::PluginError::Config {
+                        message: "wal down".into(),
+                    }
+                    .boxed());
+                }
+                self.states.lock().unwrap().push(effect.state.clone());
+                Ok(())
+            }
+        }
+
+        fn ext_with(states: &Arc<Mutex<Vec<EffectState>>>, fail_begin: bool) -> Extensions {
+            let mut ext = Extensions::default();
+            ext.effect_emitter =
+                crate::effect::EffectEmitterSlot::installed(Arc::new(RecordingEmitter {
+                    states: states.clone(),
+                    fail_begin,
+                }));
+            ext
+        }
+
+        // 1. Success → prepared, confirmed; act ran; value returned.
+        {
+            let states = Arc::new(Mutex::new(Vec::new()));
+            let ext = ext_with(&states, false);
+            let ran = Arc::new(AtomicBool::new(false));
+            let ran2 = ran.clone();
+            let effect = EffectRecord::prepared("token_mint", "ok", "k-ok");
+            let out: Result<u32, _> = ext
+                .perform_effect(&effect, || async move {
+                    ran2.store(true, Ordering::SeqCst);
+                    Ok(42)
+                })
+                .await;
+            assert_eq!(out.unwrap(), 42);
+            assert!(ran.load(Ordering::SeqCst), "act ran");
+            assert_eq!(
+                *states.lock().unwrap(),
+                vec![EffectState::Prepared, EffectState::Confirmed]
+            );
+        }
+
+        // 2. Act fails → prepared, unknown (conservative, not rejected).
+        {
+            let states = Arc::new(Mutex::new(Vec::new()));
+            let ext = ext_with(&states, false);
+            let effect = EffectRecord::prepared("token_mint", "boom", "k-boom");
+            let out: Result<u32, _> = ext
+                .perform_effect(&effect, || async move {
+                    Err(crate::error::PluginError::Config {
+                        message: "mint failed".into(),
+                    }
+                    .boxed())
+                })
+                .await;
+            assert!(out.is_err());
+            assert_eq!(
+                *states.lock().unwrap(),
+                vec![EffectState::Prepared, EffectState::Unknown]
+            );
+        }
+
+        // 3. Write-ahead fails → act never runs, error returned, nothing recorded.
+        {
+            let states = Arc::new(Mutex::new(Vec::new()));
+            let ext = ext_with(&states, true);
+            let ran = Arc::new(AtomicBool::new(false));
+            let ran2 = ran.clone();
+            let effect = EffectRecord::prepared("token_mint", "nope", "k-nope");
+            let out: Result<u32, _> = ext
+                .perform_effect(&effect, || async move {
+                    ran2.store(true, Ordering::SeqCst);
+                    Ok(7)
+                })
+                .await;
+            assert!(out.is_err(), "begin failure is fail-closed");
+            assert!(
+                !ran.load(Ordering::SeqCst),
+                "act must not run without durable intent"
+            );
+            assert!(states.lock().unwrap().is_empty());
+        }
+    }
 
     fn make_extensions() -> Extensions {
         let mut security = SecurityExtension::default();
