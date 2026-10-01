@@ -47,7 +47,7 @@ uuid        = { workspace = true }
 # field would wipe one of those copies and leave the rest, which reads as a
 # control that is not one. The real boundary is the worker process, and it is
 # documented as such in `credentials`' "Residual exposure" note.
-sha2 = "0.10"
+sha2 = "0.11"
 
 # `process` and `io-util` are absent from the workspace tokio floor (the
 # embedded library never spawns children). This host's whole job is a

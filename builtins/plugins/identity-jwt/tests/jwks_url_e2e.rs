@@ -34,6 +34,7 @@ use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
 use mockito::Server;
 use rsa::pkcs1::EncodeRsaPublicKey;
 use rsa::pkcs8::{EncodePrivateKey, LineEnding};
+use rsa::rand_core::OsRng;
 use rsa::traits::PublicKeyParts;
 use rsa::{RsaPrivateKey, RsaPublicKey};
 use serde_json::{json, Value};
@@ -110,7 +111,7 @@ fn resolver_config(jwks_url: &str) -> PluginConfig {
 #[tokio::test(flavor = "multi_thread")]
 async fn initialize_fetches_jwks_and_validates_token() {
     // 1. Generate a keypair and serve its public key as a JWKS.
-    let mut rng = rand::thread_rng();
+    let mut rng = OsRng;
     let priv_key = RsaPrivateKey::new(&mut rng, 2048).expect("generate RSA");
     let pub_key = RsaPublicKey::from(&priv_key);
     let priv_pem = priv_key
@@ -198,7 +199,7 @@ async fn initialize_fetches_jwks_and_validates_token() {
 /// `PluginManager::initialize()`.
 #[tokio::test(flavor = "multi_thread")]
 async fn skipping_initialize_rejects_with_untrusted_issuer() {
-    let mut rng = rand::thread_rng();
+    let mut rng = OsRng;
     let priv_key = RsaPrivateKey::new(&mut rng, 2048).expect("generate RSA");
     let pub_key = RsaPublicKey::from(&priv_key);
     let priv_pem = priv_key
@@ -309,7 +310,7 @@ fn mint_jwt_with_kid(private_pem: &str, kid: &str, claims: Value) -> String {
 /// first key (A) and reject the valid token as signature_invalid.
 #[tokio::test(flavor = "multi_thread")]
 async fn kid_selects_correct_key_when_jwks_has_multiple() {
-    let mut rng = rand::thread_rng();
+    let mut rng = OsRng;
     let priv_a = RsaPrivateKey::new(&mut rng, 2048).expect("rsa a");
     let priv_b = RsaPrivateKey::new(&mut rng, 2048).expect("rsa b");
     let pub_a = RsaPublicKey::from(&priv_a);
@@ -376,7 +377,7 @@ async fn kid_selects_correct_key_when_jwks_has_multiple() {
 /// from forgery at the audit layer.
 #[tokio::test(flavor = "multi_thread")]
 async fn unknown_kid_yields_unknown_kid_violation() {
-    let mut rng = rand::thread_rng();
+    let mut rng = OsRng;
     let priv_key = RsaPrivateKey::new(&mut rng, 2048).expect("rsa");
     let pub_key = RsaPublicKey::from(&priv_key);
     let priv_pem = priv_key
@@ -519,7 +520,7 @@ async fn jwks_fetch_times_out_when_endpoint_stalls() {
 /// empty key.
 #[tokio::test(flavor = "multi_thread")]
 async fn jwks_unreachable_at_initialize_soft_fails() {
-    let mut rng = rand::thread_rng();
+    let mut rng = OsRng;
     let priv_key = RsaPrivateKey::new(&mut rng, 2048).expect("rsa");
     let priv_pem = priv_key
         .to_pkcs8_pem(LineEnding::LF)
@@ -592,7 +593,7 @@ async fn jwks_refresh_picks_up_rotated_key() {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
 
-    let mut rng = rand::thread_rng();
+    let mut rng = OsRng;
     let priv_a = RsaPrivateKey::new(&mut rng, 2048).expect("rsa a");
     let priv_b = RsaPrivateKey::new(&mut rng, 2048).expect("rsa b");
     let pub_a = RsaPublicKey::from(&priv_a);

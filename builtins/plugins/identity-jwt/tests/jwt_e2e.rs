@@ -31,6 +31,7 @@ use cpex_core::plugin::{OnError, PluginConfig, PluginMode};
 use cpex_plugin_identity_jwt::JwtIdentityResolver;
 
 use rsa::pkcs8::{EncodePrivateKey, EncodePublicKey, LineEnding};
+use rsa::rand_core::OsRng;
 use rsa::{RsaPrivateKey, RsaPublicKey};
 
 use serde_json::{json, Value};
@@ -52,7 +53,7 @@ struct Keypair {
 fn keypair() -> &'static Keypair {
     static KP: OnceLock<Keypair> = OnceLock::new();
     KP.get_or_init(|| {
-        let mut rng = rand::thread_rng();
+        let mut rng = OsRng;
         let priv_key = RsaPrivateKey::new(&mut rng, 2048).expect("generate RSA");
         let pub_key = RsaPublicKey::from(&priv_key);
         Keypair {

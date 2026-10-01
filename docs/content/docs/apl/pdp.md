@@ -71,6 +71,8 @@ authorization:
     - cel: { expr: "subject.department == 'compliance' || 'admin' in subject.roles" }
 ```
 
+With CEL 0.14, use `in` for list membership; container `.contains()` and the default `min`/`max` functions are unavailable. If the host registers custom CEL functions, give them names distinct from built-ins such as `double`, whose overloads may take precedence.
+
 ## How it connects to the pipeline
 
 A PDP resolver is registered with the manager like any other capability. When the evaluator hits a PDP effect, it dispatches to the resolver for that dialect, passing the attribute bag and the call's arguments, and routes the `Allow` / `Deny` decision through `on_allow` / `on_deny`. The decision and its diagnostics are recorded in the audit log. See [Effects]({{< relref "/docs/apl/effects" >}}) for how PDP reactions sequence with the rest of a policy.

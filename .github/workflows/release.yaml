@@ -35,7 +35,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Install Rust 1.96.0
-        uses: dtolnay/rust-toolchain@1.96.0
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.96.0"
       - name: Check tag == workspace version
         if: github.event_name == 'push'
         env:
@@ -58,7 +60,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Install Rust 1.96.0
-        uses: dtolnay/rust-toolchain@1.96.0
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.96.0"
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace
 
@@ -69,7 +73,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Install Rust 1.96.0
-        uses: dtolnay/rust-toolchain@1.96.0
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.96.0"
       # NOTE: intentionally NO Swatinem/rust-cache here. A restored partial
       # `~/.cargo/registry` index makes `cargo package/publish --locked` abort
       # with "cannot update the lock file" against the sparse index even when
