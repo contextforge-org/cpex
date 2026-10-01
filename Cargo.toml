@@ -15,6 +15,7 @@ members = [
     "crates/cpex-sdk",
     "crates/cpex-builtins",
     "crates/cpex-ffi",
+    "crates/cpex-wasm-host",
     "crates/apl-core",
     "crates/apl-cmf",
     "crates/apl-cpex",
@@ -35,9 +36,21 @@ members = [
     # or `maturin develop` to build this crate explicitly.
     "bindings/python",
 ]
+exclude = [
+    "crates/cpex-wasm-plugin",
+]
 
 # `default-members` controls what `cargo build` / `cargo test` (with no
 # `-p` or `--workspace` flag) picks up. Two members are held out:
+#
+#   * `bindings/python` — links libpython, so including it would make a plain
+#     `cargo build` require a Python dev install (KD3).
+#   * `builtins/session/valkey` — pulls a redis client + a rustls TLS stack,
+#     which slows every default build.
+#
+# Everything else, including `crates/cpex-hosts-python` (pure Rust; it only
+# *spawns* a Python subprocess, never links one), builds by default.
+#
 #
 #   * `bindings/python` — links libpython, so including it would make a plain
 #     `cargo build` require a Python dev install (KD3).
@@ -128,6 +141,7 @@ regex = "1"
 cpex-core                     = { path = "crates/cpex-core",                   version = "0.2.2" }
 cpex-orchestration            = { path = "crates/cpex-orchestration",          version = "0.2.2" }
 cpex-sdk                      = { path = "crates/cpex-sdk",                     version = "0.2.2" }
+cpex-wasm-host                = { path = "crates/cpex-wasm-host",              version = "0.2.2" }
 cpex-builtins                 = { path = "crates/cpex-builtins",               version = "0.2.2", default-features = false }
 apl-core                      = { path = "crates/apl-core",                    version = "0.2.2" }
 apl-cmf                       = { path = "crates/apl-cmf",                      version = "0.2.2" }

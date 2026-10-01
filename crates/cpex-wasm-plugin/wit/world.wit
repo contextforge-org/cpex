@@ -1,0 +1,678 @@
+// Location: ./crates/cpex-wasm-plugin/wit/world.wit
+// Copyright 2025
+// SPDX-License-Identifier: Apache-2.0
+// Authors: Shriti Priya
+//
+// WIT world definition for the CPEX plugin component.
+// Defines the types and exported function that the WASM host uses to invoke plugins.
+//
+// Supports arbitrary payload types via the hook-payload variant:
+// - cmf: structured CMF MessagePayload (field-by-field conversion, no full-payload serialization)
+// - custom: any serializable payload as JSON bytes with a type discriminator
+
+package cpex:plugin;
+
+interface types {
+
+  // ---------------------------------------------------------------------------
+  // CMF enums: 
+  // ---------------------------------------------------------------------------
+
+  // Verified
+  enum role {
+    system,
+    developer,
+    user,
+    assistant,
+    tool,
+  }
+
+  // Verified
+  enum channel {
+    analysis,
+    commentary,
+    final,
+  }
+  
+  // Verified
+  enum resource-type {
+    file,
+    blob,
+    uri,
+    database,
+    api,
+    memory,
+    artifact,
+  }
+
+  // ---------------------------------------------------------------------------
+  // CMF content parts
+  // ---------------------------------------------------------------------------
+  // Verified
+  record image-source {
+    source-type: string,
+    data: string,
+    media-type: option<string>,
+  }
+  
+  // Verified
+  record video-source {
+    source-type: string,
+    data: string,
+    media-type: option<string>,
+    duration-ms: option<u64>,
+  }
+
+  // Verified
+  record audio-source {
+    source-type: string,
+    data: string,
+    media-type: option<string>,
+    duration-ms: option<u64>,
+  }
+
+  // Verified
+  record document-source {
+    source-type: string,
+    data: string,
+    media-type: option<string>,
+    title: option<string>,
+  }
+
+  // Verified
+  record tool-call {
+    tool-call-id: string,
+    name: string,
+    // arguments is a JSON object string (HashMap<String, serde_json::Value>)
+    arguments: string,
+    namespace: option<string>,
+  }
+  
+  // Verified
+  record tool-result {
+    tool-call-id: string,
+    tool-name: string,
+    // content is a JSON string (serde_json::Value)
+    content: string,
+    is-error: bool,
+  }
+
+  // Verified
+  record cmf-resource {
+    resource-request-id: string,
+    uri: string,
+    name: option<string>,
+    description: option<string>,
+    resource-type: resource-type,
+    content: option<string>,
+    blob: option<list<u8>>,
+    mime-type: option<string>,
+    size-bytes: option<u64>,
+    // annotations is a JSON object string (HashMap<String, serde_json::Value>)
+    annotations: string,
+    version: option<string>,
+  }
+
+  // Verified
+  record resource-reference {
+    resource-request-id: string,
+    uri: string,
+    name: option<string>,
+    resource-type: resource-type,
+    range-start: option<u64>,
+    range-end: option<u64>,
+    selector: option<string>,
+  }
+
+  // Verified
+  record prompt-request {
+    prompt-request-id: string,
+    name: string,
+    // arguments is a JSON object string (HashMap<String, serde_json::Value>)
+    arguments: string,
+    server-id: option<string>,
+  }
+
+  // Verified
+  record prompt-result {
+    prompt-request-id: string,
+    prompt-name: string,
+    // messages is a JSON array string (Vec<Message>) — cannot be list<message>
+    // because message → content-part → prompt-result is a recursive cycle,
+    // which WIT does not support without indirection.
+    messages: string,
+    content: option<string>,
+    is-error: bool,
+    error-message: option<string>,
+  }
+
+  // Verified
+  variant content-part {
+    text(string),
+    thinking(string),
+    tool-call(tool-call),
+    tool-result(tool-result),
+    cmf-resource(cmf-resource),
+    resource-ref(resource-reference),
+    prompt-request(prompt-request),
+    prompt-result(prompt-result),
+    image(image-source),
+    video(video-source),
+    audio(audio-source),
+    document(document-source),
+  }
+
+  // Verified
+  record message {
+    schema-version: string,
+    role: role,
+    content: list<content-part>,
+    channel: option<channel>,
+  }
+
+  // Verified
+  record message-payload {
+    message: message,
+  }
+
+  // ---------------------------------------------------------------------------
+  // Custom payload for arbitrary types
+  // ---------------------------------------------------------------------------
+
+  record custom-payload {
+    payload-type: string,
+    payload-data: list<u8>,
+  }
+
+  // ---------------------------------------------------------------------------
+  // Identity payload (IdentityResolve hook)
+  // Note: raw_token is #[serde(skip)] in Rust — never crosses the WASM
+  // boundary. WASM handlers resolve identity from source/headers/claims.
+  // ---------------------------------------------------------------------------
+
+  // Verified
+  enum token-source {
+    bearer,
+    user-token,
+    mtls,
+    spiffe-jwt-svid,
+    api-key,
+    // custom source name carried as a string alongside this enum value
+    // via identity-payload.source-custom when this variant is selected
+    custom,
+  }
+
+  // Verified
+  record identity-payload {
+    // Input fields (host-supplied, read-only for handlers)
+    source: token-source,
+    // non-empty when source = custom
+    source-custom: option<string>,
+    source-header: option<string>,
+    // request headers as key-value pairs — escape hatch for custom auth flows
+    headers: list<tuple<string, string>>,
+    client-host: option<string>,
+    client-port: option<u16>,
+
+    // Output fields (handlers populate these on the returned payload)
+    subject: option<subject-extension>,
+    client: option<client-extension>,
+    caller-workload: option<workload-identity>,
+    // initial delegation chain parsed from act/equivalent claims
+    delegation: option<delegation-extension>,
+    // resolved_at as ISO 8601 string (DateTime<Utc>)
+    resolved-at: option<string>,
+    // raw decoded token claims as a JSON object string (HashMap<String, Value>)
+    raw-claims: option<string>,
+  }
+
+  // ---------------------------------------------------------------------------
+  // Delegation payload (TokenDelegate hook)
+  // Note: bearer_token and delegated_token.token are #[serde(skip)] in Rust —
+  // they never cross the WASM boundary. WASM handlers can attenuat scopes and
+  // populate delegation_update/metadata but cannot mint raw tokens.
+  // ---------------------------------------------------------------------------
+
+  enum target-type {
+    tool,
+    agent,
+    %resource,
+    service,
+    // custom target kind name carried in delegation-payload.target-type-custom
+    custom,
+  }
+
+  enum auth-enforced-by {
+    caller,
+    target,
+    both,
+  }
+
+  enum delegation-mode {
+    on-behalf-of-user,
+    as-gateway,
+  }
+
+  record attenuation-config {
+    capabilities: list<string>,
+    resource-template: option<string>,
+    actions: list<string>,
+    ttl-seconds: option<u64>,
+  }
+
+  // Minted outbound credential (token bytes are #[serde(skip)] — omitted).
+  record raw-delegated-token {
+    outbound-header: string,
+    audience: string,
+    scopes: list<string>,
+    // expires_at as ISO 8601 string (DateTime<Utc>)
+    expires-at: string,
+  }
+
+  record delegation-payload {
+    // Input fields (host-supplied, read-only for handlers)
+    target-name: string,
+    target-type: target-type,
+    // non-empty when target-type = custom
+    target-type-custom: option<string>,
+    target-audience: option<string>,
+    required-permissions: list<string>,
+    trust-domain: option<string>,
+    auth-enforced-by: auth-enforced-by,
+    route-attenuation: option<attenuation-config>,
+
+    // Output fields (handlers populate these on the returned payload)
+    // token bytes omitted — raw credential material never crosses the sandbox
+    delegated-token: option<raw-delegated-token>,
+    delegation-update: option<delegation-extension>,
+    delegation-mode: option<delegation-mode>,
+    // minted_at as ISO 8601 string (DateTime<Utc>)
+    minted-at: option<string>,
+    // handler metadata as a JSON object string (HashMap<String, Value>)
+    metadata: option<string>,
+  }
+
+  variant hook-payload {
+    cmf(message-payload),
+    identity(identity-payload),
+    delegation(delegation-payload),
+    custom(custom-payload),
+  }
+
+  // ---------------------------------------------------------------------------
+  // Plugin context
+  // ---------------------------------------------------------------------------
+
+  // State entries are typed key-value pairs (serde_json::Value serialized per
+  // entry as a JSON string) rather than a single opaque JSON blob.
+  record context-entry {
+    key: string,
+    // value is a JSON string representing serde_json::Value
+    value: string,
+  }
+
+  record plugin-context {
+    local-state: list<context-entry>,
+    global-state: list<context-entry>,
+  }
+
+  // ---------------------------------------------------------------------------
+  // Extensions — base four
+  // ---------------------------------------------------------------------------
+
+  record request-extension {
+    environment: option<string>,
+    request-id: option<string>,
+    timestamp: option<string>,
+    trace-id: option<string>,
+    span-id: option<string>,
+  }
+
+  enum subject-type {
+    user,
+    agent,
+    service,
+    system,
+  }
+
+  record subject-extension {
+    id: option<string>,
+    subject-type: option<subject-type>,
+    roles: list<string>,
+    permissions: list<string>,
+    teams: list<string>,
+    claims: list<tuple<string, string>>,
+  }
+
+  // ---------------------------------------------------------------------------
+  // Security extension — full coverage
+  // ---------------------------------------------------------------------------
+
+  enum client-trust-level {
+    first-party,
+    third-party,
+    internal,
+    // custom trust level — name carried in client-trust-level-custom on
+    // client-extension when this variant is not sufficient
+  }
+
+  record client-extension {
+    client-id: string,
+    client-name: option<string>,
+    trust-level: client-trust-level,
+    // custom trust level name when trust-level cannot represent it
+    trust-level-custom: option<string>,
+    authorized-scopes: list<string>,
+    authorized-audiences: list<string>,
+    roles: list<string>,
+    permissions: list<string>,
+    teams: list<string>,
+    // claims values are JSON strings (serde_json::Value per entry)
+    claims: list<tuple<string, string>>,
+  }
+
+  record workload-identity {
+    spiffe-id: option<string>,
+    trust-domain: option<string>,
+    // attested-at as ISO 8601 string (DateTime<Utc>)
+    attested-at: option<string>,
+    attestor: option<string>,
+    selectors: list<string>,
+    client-id: option<string>,
+  }
+
+  record object-security-profile {
+    managed-by: option<string>,
+    permissions: list<string>,
+    trust-domain: option<string>,
+    data-scope: list<string>,
+  }
+
+  record retention-policy {
+    max-age-seconds: option<u64>,
+    policy: string,
+    delete-after: option<string>,
+  }
+
+  record data-policy {
+    apply-labels: list<string>,
+    // None = all actions allowed; Some([]) = no actions allowed
+    allowed-actions: option<list<string>>,
+    denied-actions: list<string>,
+    retention: option<retention-policy>,
+  }
+
+  record security-extension {
+    labels: list<string>,
+    classification: option<string>,
+    subject: option<subject-extension>,
+    client: option<client-extension>,
+    caller-workload: option<workload-identity>,
+    this-workload: option<workload-identity>,
+    auth-method: option<string>,
+    // object security profiles keyed by object name
+    objects: list<tuple<string, object-security-profile>>,
+    // data policies keyed by data element name
+    data: list<tuple<string, data-policy>>,
+  }
+
+  record http-extension {
+    request-headers: list<tuple<string, string>>,
+    response-headers: list<tuple<string, string>>,
+    method: option<string>,
+    path: option<string>,
+    host: option<string>,
+    scheme: option<string>,
+  }
+
+  record meta-extension {
+    entity-type: option<string>,
+    entity-name: option<string>,
+    tags: list<string>,
+    scope: option<string>,
+    properties: list<tuple<string, string>>,
+  }
+
+  // ---------------------------------------------------------------------------
+  // Overflow extension types — typed
+  // ---------------------------------------------------------------------------
+
+  record conversation-context {
+    // history entries are JSON strings (serde_json::Value per entry)
+    history: list<string>,
+    summary: option<string>,
+    topics: list<string>,
+  }
+
+  record agent-extension {
+    input: option<string>,
+    session-id: option<string>,
+    conversation-id: option<string>,
+    turn: option<u32>,
+    agent-id: option<string>,
+    parent-agent-id: option<string>,
+    conversation: option<conversation-context>,
+  }
+
+  record tool-metadata {
+    name: string,
+    title: option<string>,
+    description: option<string>,
+    // input-schema and output-schema are JSON strings (serde_json::Value)
+    input-schema: option<string>,
+    output-schema: option<string>,
+    server-id: option<string>,
+    namespace: option<string>,
+    // annotation values are JSON strings (serde_json::Value)
+    annotations: list<tuple<string, string>>,
+  }
+
+  record resource-metadata {
+    uri: string,
+    name: option<string>,
+    description: option<string>,
+    mime-type: option<string>,
+    server-id: option<string>,
+    // annotation values are JSON strings (serde_json::Value)
+    annotations: list<tuple<string, string>>,
+  }
+
+  record prompt-metadata {
+    name: string,
+    description: option<string>,
+    // arguments is a JSON array string (Vec<serde_json::Value>)
+    arguments: option<string>,
+    server-id: option<string>,
+    // annotation values are JSON strings (serde_json::Value)
+    annotations: list<tuple<string, string>>,
+  }
+
+  record mcp-extension {
+    tool: option<tool-metadata>,
+    // renamed from `resource` to avoid WIT keyword conflict
+    resource-info: option<resource-metadata>,
+    prompt: option<prompt-metadata>,
+  }
+
+  // stop-reason: `return-complete` maps to Rust `StopReason::Return`
+  // (renamed to avoid the WIT `return` keyword)
+  enum stop-reason {
+    end,
+    return-complete,
+    call,
+    max-tokens,
+    stop-sequence,
+  }
+
+  record token-usage {
+    input-tokens: u32,
+    output-tokens: u32,
+    total-tokens: u32,
+  }
+
+  record completion-extension {
+    stop-reason: option<stop-reason>,
+    tokens: option<token-usage>,
+    model: option<string>,
+    raw-format: option<string>,
+    created-at: option<string>,
+    latency-ms: option<u64>,
+  }
+
+  record provenance-extension {
+    source: option<string>,
+    message-id: option<string>,
+    parent-id: option<string>,
+  }
+
+  record llm-extension {
+    model-id: option<string>,
+    provider: option<string>,
+    capabilities: list<string>,
+  }
+
+  record framework-extension {
+    framework: option<string>,
+    framework-version: option<string>,
+    node-id: option<string>,
+    graph-id: option<string>,
+    // metadata is a JSON object string (HashMap<String, serde_json::Value>)
+    metadata: option<string>,
+  }
+
+  record authorization-detail {
+    detail-type: string,
+    // option<list> preserves None (no constraint) vs Some([]) (empty = deny all)
+    locations: option<list<string>>,
+    actions: option<list<string>>,
+    datatypes: option<list<string>>,
+    identifier: option<string>,
+    privileges: option<list<string>>,
+    // extra holds flattened RFC 9396 extension fields as a JSON object string
+    extra: option<string>,
+  }
+
+  enum delegation-strategy {
+    token-exchange,
+    client-credentials,
+    spiffe-svid,
+    passthrough,
+    ucan,
+    transaction-token,
+  }
+
+  record delegation-hop {
+    subject-id: string,
+    subject-type: option<subject-type>,
+    audience: option<string>,
+    scopes-granted: list<string>,
+    authorization-details: list<authorization-detail>,
+    // timestamp as ISO 8601 string (DateTime<Utc>)
+    timestamp: string,
+    ttl-seconds: option<u64>,
+    strategy: option<delegation-strategy>,
+    // carries the name when Rust DelegationStrategy::Custom(s) is used
+    strategy-custom: option<string>,
+    from-cache: bool,
+  }
+
+  record delegation-extension {
+    chain: list<delegation-hop>,
+    depth: u32,
+    origin-subject-id: option<string>,
+    actor-subject-id: option<string>,
+    delegated: bool,
+    // age-seconds as string to avoid f64 portability issues
+    age-seconds: string,
+  }
+
+  // ---------------------------------------------------------------------------
+  // Extensions container
+  // ---------------------------------------------------------------------------
+
+  record extensions {
+    request: option<request-extension>,
+    security: option<security-extension>,
+    http: option<http-extension>,
+    meta: option<meta-extension>,
+    agent: option<agent-extension>,
+    mcp: option<mcp-extension>,
+    completion: option<completion-extension>,
+    provenance: option<provenance-extension>,
+    llm: option<llm-extension>,
+    framework: option<framework-extension>,
+    delegation: option<delegation-extension>,
+    // custom: escape hatch for plugin-defined arbitrary key-value data
+    // (maps to cpex-core Extensions.custom: Option<HashMap<String, Value>>)
+    custom: option<string>,
+  }
+
+  // ---------------------------------------------------------------------------
+  // Violation and result
+  // ---------------------------------------------------------------------------
+
+  record plugin-violation {
+    code: string,
+    reason: string,
+    description: option<string>,
+    // details is a JSON object string (HashMap<String, serde_json::Value>)
+    details: string,
+    plugin-name: option<string>,
+    proto-error-code: option<s64>,
+  }
+
+  // Verified
+  // metadata is a JSON string (serde_json::Value)
+  record hook-result {
+    continue-processing: bool,
+    modified-payload: option<hook-payload>,
+    modified-extensions: option<extensions>,
+    modified-context: option<plugin-context>,
+    violation: option<plugin-violation>,
+    metadata: option<string>,
+  }
+}
+
+interface host-logging {
+  enum log-level {
+    trace,
+    debug,
+    info,
+    warn,
+    error,
+  }
+
+  log: func(level: log-level, message: string);
+}
+
+/// Known hook names (not exhaustive - hosts may define custom hooks):
+///
+/// Legacy (typed payloads):
+///   "tool_pre_invoke", "tool_post_invoke"
+///   "prompt_pre_fetch", "prompt_post_fetch"
+///   "resource_pre_fetch", "resource_post_fetch"
+///   "identity_resolve", "token_delegate"
+///
+/// CMF (MessagePayload):
+///   "cmf.tool_pre_invoke", "cmf.tool_post_invoke"
+///   "cmf.llm_input", "cmf.llm_output"
+///   "cmf.prompt_pre_fetch", "cmf.prompt_post_fetch"
+///   "cmf.resource_pre_fetch", "cmf.resource_post_fetch"
+world plugin {
+  import wasi:io/poll@0.2.6;
+  import wasi:io/error@0.2.6;
+  import wasi:io/streams@0.2.6;
+  import wasi:clocks/monotonic-clock@0.2.6;
+  import wasi:http/types@0.2.6;
+  import wasi:http/outgoing-handler@0.2.6;
+  import host-logging;
+
+  use types.{hook-payload, extensions, plugin-context, hook-result};
+
+  export handle-hook: func(
+    hook-name: string,
+    payload: hook-payload,
+    extensions: extensions,
+    ctx: plugin-context
+  ) -> hook-result;
+}

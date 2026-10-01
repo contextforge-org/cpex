@@ -1,0 +1,119 @@
+# Filesystem Sandbox Permissions Demo Configuration
+#
+# Demonstrates all six WASI filesystem permission levels from policy_loader.rs.
+# One plugin (fs-sandbox-demo) handles every route. The caller passes
+# "operation" and "path" as tool arguments; the plugin attempts the operation
+# and returns ALLOW if WASI permits it or DENY if the sandbox blocks it.
+#
+# Permission levels and what they enforce:
+#
+#   read-only       DirPerms::READ,            FilePerms::READ
+#                   → can list + read; write/create/delete denied
+#
+#   full-access     DirPerms::READ | MUTATE,   FilePerms::READ | WRITE
+#                   → all operations permitted
+#
+#   drop-box        DirPerms::MUTATE,           FilePerms::WRITE
+#                   → write only; list_dir and read denied
+#
+#   fixed-mutable   DirPerms::READ,             FilePerms::READ | WRITE
+#                   → read + overwrite existing files; create_dir denied
+#
+#   list-only       DirPerms::READ,             FilePerms::empty()
+#                   → list directory only; read/write file contents denied
+#
+#   private-scratch DirPerms::MUTATE,           FilePerms::READ | WRITE
+#                   → full file I/O; list_dir denied
+#
+# Data directories (pre-created under examples/data/):
+#   rules/    — seeded with policy.yaml  (read-only scenario)
+#   cache/    — empty                    (full-access scenario)
+#   audit/    — empty                    (drop-box scenario)
+#   counters/ — seeded with rate.txt     (fixed-mutable scenario)
+#   plugins/  — seeded with a stub .wasm (list-only scenario)
+#   scratch/  — empty                    (private-scratch scenario)
+
+plugin_settings:
+  routing_enabled: true
+
+plugins:
+  - name: fs-sandbox-demo
+    kind: wasm://fs-sandbox-demo.wasm
+    hooks: [cmf.tool_pre_invoke]
+    mode: sequential
+    priority: 10
+    on_error: fail
+    config:
+      sandbox_policy:
+        allowed_filesystem:
+          # read-only: list + read files; write/create/delete blocked by WASI
+          - dir: examples/data/rules
+            permission: read-only
+
+          # full-access: read, write, create dirs, delete — all permitted
+          - dir: examples/data/cache
+            permission: full-access
+
+          # drop-box: write files only; list_dir and read denied by WASI
+          - dir: examples/data/audit
+            permission: drop-box
+
+          # fixed-mutable: read + overwrite existing files; create_dir denied
+          - dir: examples/data/counters
+            permission: fixed-mutable
+
+          # list-only: enumerate filenames only; opening file contents denied
+          - dir: examples/data/plugins
+            permission: list-only
+
+          # private-scratch: write + read files; list_dir denied by WASI
+          - dir: examples/data/scratch
+            permission: private-scratch
+
+        allowed_network: []
+        allowed_env: []
+        resources:
+          max_memory_bytes: 10485760    # 10 MB
+          max_fuel: 1000000000          # 1 B instructions
+          max_execution_time_ms: 5000   # 5 s per invocation
+          max_instances: 10
+          max_tables: 10
+
+# Each route targets one permission scenario.
+# Send the matching operation + path in the tool arguments to trigger it.
+#
+# Examples:
+#   read-only    → operation: read,       path: examples/data/rules/policy.yaml   → ALLOW
+#   read-only    → operation: write,      path: examples/data/rules/policy.yaml   → DENY
+#   full-access  → operation: write,      path: examples/data/cache/output.txt    → ALLOW
+#   drop-box     → operation: write,      path: examples/data/audit/event.log     → ALLOW
+#   drop-box     → operation: read,       path: examples/data/audit/event.log     → DENY
+#   drop-box     → operation: list_dir,   path: examples/data/audit               → DENY
+#   fixed-mutable→ operation: write,      path: examples/data/counters/rate.txt   → ALLOW
+#   fixed-mutable→ operation: create_dir, path: examples/data/counters/new        → DENY
+#   list-only    → operation: list_dir,   path: examples/data/plugins             → ALLOW
+#   list-only    → operation: read,       path: examples/data/plugins/fs-sandbox-demo.wasm → DENY
+#   private-scratch → operation: write,   path: examples/data/scratch/tmp.bin     → ALLOW
+#   private-scratch → operation: list_dir,path: examples/data/scratch             → DENY
+
+routes:
+  - tool: fs_read_only
+    plugins: [fs-sandbox-demo]
+
+  - tool: fs_full_access
+    plugins: [fs-sandbox-demo]
+
+  - tool: fs_drop_box
+    plugins: [fs-sandbox-demo]
+
+  - tool: fs_fixed_mutable
+    plugins: [fs-sandbox-demo]
+
+  - tool: fs_list_only
+    plugins: [fs-sandbox-demo]
+
+  - tool: fs_private_scratch
+    plugins: [fs-sandbox-demo]
+
+  - tool: "*"
+    plugins: [fs-sandbox-demo]

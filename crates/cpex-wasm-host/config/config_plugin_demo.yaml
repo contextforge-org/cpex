@@ -1,0 +1,121 @@
+# WASM Plugin Demo Configuration
+#
+# Four WASM plugins using custom ToolInvokePayload, policy groups with
+# tag-based activation, and routes that map tools to different plugin
+# combinations. Mirrors the native cpex-core/examples/plugin_demo.yaml.
+
+plugin_settings:
+  routing_enabled: true
+  plugin_timeout: 30
+
+global:
+  policies:
+    # "all" is reserved — these plugins fire on every invocation
+    all:
+      plugins: [identity-resolver]
+    # "pii" group — activated when a route has the "pii" tag
+    pii:
+      plugins: [pii-guard]
+    # "external_authz" group — activated when a route has the
+    # "needs_remote_authz" tag. Fires the RemoteAuthz WASM plugin.
+    external_authz:
+      plugins: [remote-authz]
+
+plugins:
+  - name: identity-resolver
+    kind: wasm://tool-invoke-checker.wasm
+    hooks: [tool_pre_invoke, tool_post_invoke]
+    mode: sequential
+    priority: 10
+    on_error: fail
+    config:
+      sandbox_policy:
+        allowed_filesystem: []
+        allowed_network: []
+        allowed_env: []
+        resources:
+          max_memory_bytes: 10485760
+          max_fuel: 1000000000
+          max_execution_time_ms: 5000
+          max_instances: 10
+          max_tables: 10
+
+  - name: pii-guard
+    kind: wasm://pii-guard.wasm
+    hooks: [tool_pre_invoke]
+    mode: sequential
+    priority: 20
+    on_error: fail
+    config:
+      sandbox_policy:
+        allowed_filesystem: []
+        allowed_network: []
+        allowed_env: []
+        resources:
+          max_memory_bytes: 10485760
+          max_fuel: 1000000000
+          max_execution_time_ms: 5000
+          max_instances: 10
+          max_tables: 10
+
+  - name: remote-authz
+    kind: wasm://remote-authz.wasm
+    hooks: [tool_pre_invoke]
+    mode: sequential
+    priority: 30
+    on_error: fail
+    config:
+      sandbox_policy:
+        allowed_filesystem: []
+        allowed_network: []
+        allowed_env: []
+        resources:
+          max_memory_bytes: 10485760
+          max_fuel: 1000000000
+          max_execution_time_ms: 5000
+          max_instances: 10
+          max_tables: 10
+
+  - name: audit-logger
+    kind: wasm://audit-logger-custom.wasm
+    hooks: [tool_pre_invoke, tool_post_invoke]
+    mode: fire_and_forget
+    priority: 100
+    on_error: ignore
+    config:
+      sandbox_policy:
+        allowed_filesystem: []
+        allowed_network: []
+        allowed_env: []
+        resources:
+          max_memory_bytes: 10485760
+          max_fuel: 1000000000
+          max_execution_time_ms: 5000
+          max_instances: 10
+          max_tables: 10
+
+routes:
+  # HR compensation tool — contains PII, gets full security stack
+  - tool: get_compensation
+    meta:
+      tags: [pii, hr]
+    plugins:
+      - audit-logger
+
+  # Public department listing — standard security only
+  - tool: list_departments
+    plugins:
+      - audit-logger
+
+  # Tool that requires remote authz — triggers the async plugin
+  # on top of the standard "all" policy stack.
+  - tool: query_external_data
+    meta:
+      tags: [external_authz]
+    plugins:
+      - audit-logger
+
+  # Wildcard — catch-all for unmatched tools
+  - tool: "*"
+    plugins:
+      - audit-logger

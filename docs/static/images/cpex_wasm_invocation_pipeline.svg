@@ -1,0 +1,95 @@
+<svg width="100%" viewBox="0 0 680 640" role="img" xmlns="http://www.w3.org/2000/svg">
+<title>WASM plugin invocation pipeline showing request and response paths</title>
+<desc>Your Code calls invoke_named, PluginManager routes to plugins, WasmBridgeHandler converts types and validates, Wasmtime Sandbox enforces limits, Guest Plugin executes. Response flows back with validation at each layer.</desc>
+<defs>
+<marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M2 2L8 5L2 8" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker>
+</defs>
+
+<!-- Column headers -->
+<text x="220" y="18" text-anchor="middle" font-family="-apple-system, system-ui, sans-serif" font-size="11" font-weight="500" fill="rgb(82,81,78)">REQUEST</text>
+<text x="500" y="18" text-anchor="middle" font-family="-apple-system, system-ui, sans-serif" font-size="11" font-weight="500" fill="rgb(82,81,78)">RESPONSE</text>
+
+<!-- Your Code -->
+<rect x="120" y="30" width="440" height="40" rx="8" fill="rgb(255,255,255)" stroke="rgb(11,11,11)" stroke-opacity="0.2" stroke-width="1"/>
+<text x="340" y="50" text-anchor="middle" dominant-baseline="central" font-family="-apple-system, system-ui, sans-serif" font-size="13" font-weight="500" fill="rgb(11,11,11)">Your Code</text>
+
+<!-- Request arrow down from Your Code -->
+<line x1="220" y1="72" x2="220" y2="102" marker-end="url(#arrow)" stroke="rgb(59,130,246)" stroke-width="1.5"/>
+<text x="228" y="88" text-anchor="start" font-family="-apple-system, system-ui, sans-serif" font-size="9" fill="rgb(59,130,246)">invoke_named(hook, payload, ext, ctx)</text>
+
+<!-- Response arrow up to Your Code -->
+<line x1="500" y1="102" x2="500" y2="72" marker-end="url(#arrow)" stroke="rgb(22,163,74)" stroke-width="1.5"/>
+<text x="508" y="88" text-anchor="start" font-family="-apple-system, system-ui, sans-serif" font-size="9" fill="rgb(22,163,74)">PipelineResult</text>
+
+<!-- PluginManager -->
+<rect x="120" y="106" width="440" height="48" rx="8" fill="rgb(255,255,255)" stroke="rgb(11,11,11)" stroke-opacity="0.2" stroke-width="1"/>
+<text x="340" y="122" text-anchor="middle" dominant-baseline="central" font-family="-apple-system, system-ui, sans-serif" font-size="13" font-weight="500" fill="rgb(11,11,11)">PluginManager</text>
+<text x="340" y="140" text-anchor="middle" dominant-baseline="central" font-family="-apple-system, system-ui, sans-serif" font-size="10" fill="rgb(82,81,78)">routes hook to matching plugin(s), applies on_error policy (Fail/Ignore/Disable)</text>
+
+<!-- Request arrow down -->
+<line x1="220" y1="156" x2="220" y2="186" marker-end="url(#arrow)" stroke="rgb(59,130,246)" stroke-width="1.5"/>
+<text x="228" y="172" text-anchor="start" font-family="-apple-system, system-ui, sans-serif" font-size="9" fill="rgb(59,130,246)">dispatch to WasmBridgeHandler</text>
+
+<!-- Response arrow up -->
+<line x1="500" y1="186" x2="500" y2="156" marker-end="url(#arrow)" stroke="rgb(22,163,74)" stroke-width="1.5"/>
+<text x="508" y="172" text-anchor="start" font-family="-apple-system, system-ui, sans-serif" font-size="9" fill="rgb(22,163,74)">merge into pipeline</text>
+
+<!-- WasmBridgeHandler -->
+<rect x="120" y="190" width="440" height="130" rx="8" fill="rgb(255,255,255)" stroke="rgb(11,11,11)" stroke-opacity="0.2" stroke-width="1"/>
+<text x="340" y="208" text-anchor="middle" dominant-baseline="central" font-family="-apple-system, system-ui, sans-serif" font-size="13" font-weight="500" fill="rgb(11,11,11)">WasmBridgeHandler</text>
+
+<!-- Request side steps -->
+<text x="136" y="230" text-anchor="start" font-family="-apple-system, system-ui, sans-serif" font-size="10" fill="rgb(59,130,246)">▼ Request path:</text>
+<text x="136" y="246" text-anchor="start" font-family="-apple-system, system-ui, sans-serif" font-size="10" fill="rgb(11,11,11)">1. Convert native → WIT</text>
+<text x="136" y="262" text-anchor="start" font-family="-apple-system, system-ui, sans-serif" font-size="10" fill="rgb(11,11,11)">2. Acquire Mutex</text>
+<text x="136" y="278" text-anchor="start" font-family="-apple-system, system-ui, sans-serif" font-size="10" fill="rgb(11,11,11)">3. Call SandboxManager</text>
+
+<!-- Response side steps -->
+<text x="380" y="230" text-anchor="start" font-family="-apple-system, system-ui, sans-serif" font-size="10" fill="rgb(22,163,74)">▲ Response path:</text>
+<text x="380" y="246" text-anchor="start" font-family="-apple-system, system-ui, sans-serif" font-size="10" fill="rgb(11,11,11)">4. Convert WIT → native (cow_copy)</text>
+<text x="380" y="262" text-anchor="start" font-family="-apple-system, system-ui, sans-serif" font-size="10" fill="rgb(11,11,11)">5. Validate modifications</text>
+<text x="380" y="278" text-anchor="start" font-family="-apple-system, system-ui, sans-serif" font-size="10" fill="rgb(11,11,11)">6. Context writeback</text>
+
+<!-- Error path note -->
+<text x="340" y="306" text-anchor="middle" font-family="-apple-system, system-ui, sans-serif" font-size="9" fill="rgb(220,38,38)">On error: classify_wasm_error → PluginError (Timeout / Trap / FuelExhausted)</text>
+
+<!-- Request arrow down -->
+<line x1="220" y1="322" x2="220" y2="352" marker-end="url(#arrow)" stroke="rgb(59,130,246)" stroke-width="1.5"/>
+<text x="228" y="338" text-anchor="start" font-family="-apple-system, system-ui, sans-serif" font-size="9" fill="rgb(59,130,246)">WIT types (payload, extensions, ctx)</text>
+
+<!-- Response arrow up -->
+<line x1="500" y1="352" x2="500" y2="322" marker-end="url(#arrow)" stroke="rgb(22,163,74)" stroke-width="1.5"/>
+<text x="508" y="338" text-anchor="start" font-family="-apple-system, system-ui, sans-serif" font-size="9" fill="rgb(22,163,74)">HookResult</text>
+
+<!-- Wasmtime Sandbox -->
+<rect x="120" y="356" width="440" height="110" rx="8" fill="rgb(255,255,255)" stroke="rgb(11,11,11)" stroke-opacity="0.2" stroke-width="1"/>
+<text x="340" y="374" text-anchor="middle" dominant-baseline="central" font-family="-apple-system, system-ui, sans-serif" font-size="13" font-weight="500" fill="rgb(11,11,11)">Wasmtime Sandbox (SandboxManager)</text>
+<text x="136" y="396" text-anchor="start" font-family="-apple-system, system-ui, sans-serif" font-size="10" fill="rgb(11,11,11)">• Reset fuel + epoch deadline (fresh budget per call)</text>
+<text x="136" y="414" text-anchor="start" font-family="-apple-system, system-ui, sans-serif" font-size="10" fill="rgb(11,11,11)">• Isolated linear memory (Store persists across calls)</text>
+<text x="136" y="432" text-anchor="start" font-family="-apple-system, system-ui, sans-serif" font-size="10" fill="rgb(11,11,11)">• Epoch ticker (1ms) enforces wall-clock timeout</text>
+<text x="136" y="450" text-anchor="start" font-family="-apple-system, system-ui, sans-serif" font-size="10" fill="rgb(11,11,11)">• NetworkPolicy intercepts outbound HTTP</text>
+
+<!-- Request arrow down -->
+<line x1="220" y1="468" x2="220" y2="498" marker-end="url(#arrow)" stroke="rgb(59,130,246)" stroke-width="1.5"/>
+<text x="228" y="484" text-anchor="start" font-family="-apple-system, system-ui, sans-serif" font-size="9" fill="rgb(59,130,246)">call handle-hook</text>
+
+<!-- Response arrow up -->
+<line x1="500" y1="498" x2="500" y2="468" marker-end="url(#arrow)" stroke="rgb(22,163,74)" stroke-width="1.5"/>
+<text x="508" y="484" text-anchor="start" font-family="-apple-system, system-ui, sans-serif" font-size="9" fill="rgb(22,163,74)">return HookResult</text>
+
+<!-- Guest Plugin -->
+<rect x="120" y="502" width="440" height="56" rx="8" fill="rgb(255,255,255)" stroke="rgb(11,11,11)" stroke-opacity="0.2" stroke-width="1"/>
+<text x="340" y="522" text-anchor="middle" dominant-baseline="central" font-family="-apple-system, system-ui, sans-serif" font-size="13" font-weight="500" fill="rgb(11,11,11)">Guest Plugin (.wasm)</text>
+<text x="340" y="542" text-anchor="middle" dominant-baseline="central" font-family="-apple-system, system-ui, sans-serif" font-size="10" fill="rgb(82,81,78)">handle-hook(hook-name, payload, extensions, ctx) → HookResult</text>
+
+<!-- Legend -->
+<line x1="140" y1="586" x2="170" y2="586" stroke="rgb(59,130,246)" stroke-width="1.5"/>
+<text x="176" y="586" dominant-baseline="central" font-family="-apple-system, system-ui, sans-serif" font-size="10" fill="rgb(82,81,78)">Request path</text>
+<line x1="290" y1="586" x2="320" y2="586" stroke="rgb(22,163,74)" stroke-width="1.5"/>
+<text x="326" y="586" dominant-baseline="central" font-family="-apple-system, system-ui, sans-serif" font-size="10" fill="rgb(82,81,78)">Response path</text>
+<line x1="430" y1="586" x2="460" y2="586" stroke="rgb(220,38,38)" stroke-width="1.5" stroke-dasharray="4 2"/>
+<text x="466" y="586" dominant-baseline="central" font-family="-apple-system, system-ui, sans-serif" font-size="10" fill="rgb(82,81,78)">Error path</text>
+
+<!-- Footer -->
+<text x="340" y="616" text-anchor="middle" font-family="-apple-system, system-ui, sans-serif" font-size="9" fill="rgb(82,81,78)">All data crosses the WASM boundary by value — no shared pointers between host and guest memory</text>
+</svg>

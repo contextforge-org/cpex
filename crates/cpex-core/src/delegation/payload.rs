@@ -57,6 +57,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
+#[cfg(feature = "runtime")]
 use crate::executor::PipelineResult;
 use crate::extensions::raw_credentials::{DelegationMode, TokenRole};
 use crate::extensions::{
@@ -542,6 +543,9 @@ impl DelegationPayload {
         }
     }
 
+    // -------- Host-side application helpers --------
+
+    #[cfg(feature = "runtime")]
     /// Pull the resolved `DelegationPayload` out of a `PipelineResult`
     /// returned by `mgr.invoke_named::<TokenDelegateHook>(...)`.
     /// Returns `None` when the pipeline was denied or when the result's
@@ -576,6 +580,13 @@ impl DelegationPayload {
     /// principal fields are read out of the request's `Extensions`
     /// here rather than asking outbound callers to thread them
     /// through:
+    ///
+    /// - `subject_id` from `security.subject.id`, empty when no user
+    ///   took part (a workload acting autonomously).
+    /// - `workload_id` from `security.caller_workload.spiffe_id`,
+    ///   populated only when [`involves_workload`] — i.e. when a
+    ///   workload credential was the subject or the RFC 8693 actor.
+    ///
     ///
     /// - `subject_id` from `security.subject.id`, empty when no user
     ///   took part (a workload acting autonomously).
@@ -671,6 +682,13 @@ impl DelegationPayload {
 }
 
 impl_plugin_payload!(DelegationPayload);
+
+// WASM transport: `bearer_token` and `delegated_token.token` are
+// `#[serde(skip)]`, so raw credential material never crosses the
+// sandbox boundary. A WASM handler can attenuate scopes and populate
+// `delegation_update` / `metadata`, but token minting that must
+// return the raw token stays in-process.
+crate::impl_wasm_payload!(DelegationPayload, "cpex.delegation");
 
 #[cfg(test)]
 mod tests {

@@ -123,3 +123,81 @@ macro_rules! impl_plugin_payload {
         }
     };
 }
+
+// ---------------------------------------------------------------------------
+// WasmSerializablePayload — opt-in WASM transport trait
+// ---------------------------------------------------------------------------
+
+/// Opt-in trait for payload types that can cross the WASM serialization boundary.
+///
+/// Implement this (via [`impl_wasm_payload!`]) for any payload type that WASM
+/// plugins should be able to receive or return. The type discriminator string
+/// is embedded in the WIT `custom-payload` record so the host and guest can
+/// agree on which concrete type to deserialize.
+///
+/// # Example
+///
+/// ```
+/// use serde::{Deserialize, Serialize};
+/// use cpex_core::{impl_plugin_payload, impl_wasm_payload};
+///
+/// #[derive(Debug, Clone, Serialize, Deserialize)]
+/// struct ToolInvokePayload {
+///     tool_name: String,
+///     user: String,
+/// }
+///
+/// impl_plugin_payload!(ToolInvokePayload);
+/// impl_wasm_payload!(ToolInvokePayload, "cpex.tool_invoke");
+/// ```
+pub trait WasmSerializablePayload: PluginPayload {
+    /// Type discriminator used in the WIT `custom-payload` record.
+    ///
+    /// Must be unique across all payload types registered with the host.
+    /// Convention: `"<namespace>.<type>"` (e.g. `"cmf.message"`, `"cpex.tool_invoke"`).
+    fn payload_type_name() -> &'static str
+    where
+        Self: Sized;
+
+    /// Serialize this payload to JSON bytes for WASM transport.
+    fn to_wasm_bytes(&self) -> Result<Vec<u8>, serde_json::Error>;
+
+    /// Deserialize a payload from JSON bytes received from WASM.
+    fn from_wasm_bytes(bytes: &[u8]) -> Result<Self, serde_json::Error>
+    where
+        Self: Sized;
+}
+
+/// Implements [`WasmSerializablePayload`] for a type that is `Serialize + Deserialize`.
+///
+/// The type must already implement [`PluginPayload`] (via [`impl_plugin_payload!`]).
+///
+/// ```
+/// use serde::{Deserialize, Serialize};
+/// use cpex_core::{impl_plugin_payload, impl_wasm_payload};
+///
+/// #[derive(Debug, Clone, Serialize, Deserialize)]
+/// struct ToolInvokePayload {
+///     tool_name: String,
+///     user: String,
+/// }
+///
+/// impl_plugin_payload!(ToolInvokePayload);
+/// impl_wasm_payload!(ToolInvokePayload, "cpex.tool_invoke");
+/// ```
+#[macro_export]
+macro_rules! impl_wasm_payload {
+    ($ty:ty, $name:literal) => {
+        impl $crate::hooks::payload::WasmSerializablePayload for $ty {
+            fn payload_type_name() -> &'static str {
+                $name
+            }
+            fn to_wasm_bytes(&self) -> Result<Vec<u8>, serde_json::Error> {
+                serde_json::to_vec(self)
+            }
+            fn from_wasm_bytes(bytes: &[u8]) -> Result<Self, serde_json::Error> {
+                serde_json::from_slice(bytes)
+            }
+        }
+    };
+}

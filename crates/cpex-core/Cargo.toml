@@ -20,9 +20,12 @@ keywords.workspace = true
 categories.workspace = true
 rust-version.workspace = true
 
+[features]
+default = ["runtime"]
+runtime = ["dep:tokio", "dep:tokio-util", "dep:cpex-orchestration", "dep:arc-swap"]
+
 [dependencies]
-tokio = { workspace = true }
-tokio-util = { workspace = true }
+# --- Always-on dependencies (WASM-compatible) ---
 serde = { workspace = true }
 serde_yaml = { workspace = true }
 serde_json = { workspace = true }
@@ -31,17 +34,15 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true }
 hashbrown = { workspace = true }
-arc-swap = { workspace = true }
 wildmatch = { workspace = true }
 chrono = { workspace = true }
-# Zeroizing wrapper for raw credential material in RawCredentialsExtension.
-# `derive` feature pulls the proc-macro so we can `#[derive(Zeroize)]` on
-# token-bearing structs in a future slice; for now only the
-# `Zeroizing<String>` wrapper is used directly.
 zeroize = { version = "1.8", features = ["zeroize_derive"] }
-# Shared concurrency primitive used by `executor::run_concurrent_phase`
-# (and apl-core's `Effect::Parallel`). Leaf crate, no cycles back here.
-cpex-orchestration = { workspace = true }
+
+# --- Runtime-only dependencies (require tokio, not WASM-compatible) ---
+tokio = { workspace = true, optional = true }
+tokio-util = { workspace = true, optional = true }
+arc-swap = { workspace = true, optional = true }
+cpex-orchestration = { workspace = true, optional = true }
 
 [lints]
 workspace = true

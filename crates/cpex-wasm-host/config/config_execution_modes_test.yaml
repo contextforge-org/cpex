@@ -1,0 +1,58 @@
+# Execution Modes Test Configuration
+#
+# Tests concurrent and fire_and_forget plugin execution modes.
+# Uses noop (always allow) plugins to verify pipeline behavior.
+
+plugin_settings:
+  routing_enabled: true
+  plugin_timeout: 30
+
+plugins:
+  - name: concurrent-a
+    kind: wasm://noop.wasm
+    hooks: [cmf.tool_pre_invoke]
+    mode: concurrent
+    priority: 10
+    on_error: fail
+    config:
+      sandbox_policy:
+        allowed_filesystem: []
+        allowed_network: []
+        allowed_env: []
+        resources:
+          max_fuel: 1000000000
+          max_execution_time_ms: 5000
+
+  - name: concurrent-b
+    kind: wasm://noop.wasm
+    hooks: [cmf.tool_pre_invoke]
+    mode: concurrent
+    priority: 20
+    on_error: fail
+    config:
+      sandbox_policy:
+        allowed_filesystem: []
+        allowed_network: []
+        allowed_env: []
+        resources:
+          max_fuel: 1000000000
+          max_execution_time_ms: 5000
+
+  - name: fire-and-forget-a
+    kind: wasm://noop.wasm
+    hooks: [cmf.tool_post_invoke]
+    mode: fire_and_forget
+    priority: 10
+    on_error: ignore
+    config:
+      sandbox_policy:
+        allowed_filesystem: []
+        allowed_network: []
+        allowed_env: []
+        resources:
+          max_fuel: 1000000000
+          max_execution_time_ms: 5000
+
+routes:
+  - tool: "*"
+    plugins: []
