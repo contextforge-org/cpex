@@ -13,6 +13,7 @@ package cpex
 
 /*
 #cgo LDFLAGS: -L${SRCDIR}/../../target/release -lcpex_ffi
+#cgo darwin LDFLAGS: -framework CoreFoundation -framework Security
 
 #include <stdint.h>
 #include <stdlib.h>
