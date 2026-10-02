@@ -31,7 +31,7 @@ source $HOME/.cargo/env
 Verify the installation:
 
 ```bash
-rustc --version   # should be 1.75+ (we develop on 1.94)
+rustc --version   # should be 1.96 or newer (see rust-toolchain.toml)
 cargo --version
 ```
 

@@ -95,9 +95,9 @@ jobs:
           # This is how the workflow is exercised without a real release.
           if [ "$DRY_RUN" = "true" ]; then
             echo "::group::dry run — cargo package (no upload)"
-            # Verify the crates.io-published set only; the two publish=false
-            # FFI crates are not part of the registry release.
-            cargo package --workspace --locked --exclude cpex-ffi --exclude cpex-demo-ffi
+            # Verify the crates.io-published set only; these three
+            # publish=false crates are not part of the registry release.
+            cargo package --workspace --locked --exclude cpex-ffi --exclude cpex-demo-ffi --exclude cpex-tutorial
             echo "::endgroup::"
             exit 0
           fi
@@ -119,9 +119,12 @@ jobs:
             cpex-plugin-elicitation-ciba
             cpex-pdp-cedar-direct
             cpex-pdp-cel
+            cpex-pdp-opa
             cpex-session-valkey
+            cpex-hosts-python
             cpex-builtins
             cpex
+            cpex-python
           )
           for c in "${crates[@]}"; do
             echo "::group::publish $c"
