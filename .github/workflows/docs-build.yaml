@@ -50,7 +50,12 @@ jobs:
       - name: Check links
         uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8 # v2
         with:
-          args: --no-progress --root-dir "${{ github.workspace }}/docs/public" "docs/public/**/*.html"
+          # GitHub intermittently returns 503 for bursts of links to the demo
+          # repository. Slow requests per host and retry transient failures.
+          args: >-
+            --no-progress --host-concurrency 2 --host-request-interval 250ms
+            --max-retries 5 --retry-wait-time 2
+            --root-dir "${{ github.workspace }}/docs/public" "docs/public/**/*.html"
           fail: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
