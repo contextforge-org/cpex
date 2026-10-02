@@ -11,3 +11,7 @@ example\.com
 # resolve once merged to the default branch, so checking them on a feature branch
 # produces false failures. The repository structure itself validates these paths.
 github\.com/contextforge-org/cpex
+
+# GitHub's blob pages intermittently return 503 to the link checker. The docs
+# workflow verifies these paths against the demo repository tree through the API.
+^https://github\.com/praxis-proxy/demos/blob/main/

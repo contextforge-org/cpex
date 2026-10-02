@@ -59,3 +59,41 @@ jobs:
           fail: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check demo source links
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            if gh api 'repos/praxis-proxy/demos/git/trees/main?recursive=1' > "$RUNNER_TEMP/demo-tree.json"; then
+              break
+            fi
+            if [ "$attempt" -eq 3 ]; then exit 1; fi
+            sleep "$((attempt * 2))"
+          done
+          python3 - "$RUNNER_TEMP/demo-tree.json" <<'PY'
+          import json
+          import re
+          import sys
+          from pathlib import Path
+
+          tree = json.loads(Path(sys.argv[1]).read_text())
+          if tree.get("truncated"):
+              raise SystemExit("Demo repository tree was truncated")
+          available = {entry["path"] for entry in tree["tree"] if entry["type"] == "blob"}
+          prefix = "https://github.com/praxis-proxy/demos/blob/main/"
+          pattern = re.compile(re.escape(prefix) + r"([^)\s#?]+)")
+          missing = []
+          checked = set()
+          for source in Path("docs/content").rglob("*.md"):
+              for path in pattern.findall(source.read_text()):
+                  checked.add(path)
+                  if path not in available:
+                      missing.append((source, path))
+          for source, path in missing:
+              print(f"::error file={source}::Broken demo source link: {prefix}{path}")
+          print(f"Checked {len(checked)} demo source links against the repository tree")
+          if missing:
+              raise SystemExit(1)
+          PY
