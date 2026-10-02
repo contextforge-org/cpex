@@ -219,22 +219,11 @@ pub fn scaffold_plugin(
 ///
 /// # Why the test builds the venv instead of letting the host do it
 ///
-/// The Python framework's declared dependencies currently have no satisfiable
-/// resolution: `pyproject.toml` requires `mcp>=1.26`, but
-/// `cpex.framework.__init__` imports its MCP client, which does
-/// `from mcp import McpError` — a symbol mcp renamed to `MCPError` in 1.26. A
-/// clean install therefore pulls an mcp whose API the framework cannot import,
-/// and the worker dies with an `ImportError` before reading a task. Adding
-/// `mcp<1.26` to the requirements file instead makes pip fail outright with
-/// `ResolutionImpossible`, because that contradicts the framework's own floor.
-///
-/// The only combination that runs is "install as declared, then downgrade mcp"
-/// — two sequential pip passes. The venv manager issues one `pip install -r`,
-/// which is correct for a working package; contorting production code around a
-/// contradictory upstream manifest would be the wrong fix, and the Python
-/// framework is out of scope here. So the test arranges the venv and the host
-/// then finds it cached, which exercises a real host path
-/// (`CacheVerdict::Valid` → reuse) rather than bypassing one.
+/// Older Python framework checkouts import `McpError` while declaring
+/// `mcp>=1.26`, which renamed it to `MCPError`. For those checkouts only, the
+/// test installs the framework as declared and then downgrades `mcp`. Newer
+/// checkouts import `MCPError` and must keep the declared version. The host
+/// then finds the pre-built venv cached, exercising its real reuse path.
 ///
 /// Returns `Err` with a printable reason when the venv cannot be built.
 pub fn prebuild_venv(
@@ -287,21 +276,28 @@ pub fn prebuild_venv(
             source.as_os_str(),
         ],
     )?;
-    // Pass 2: downgrade mcp to a version whose API the framework can import.
-    // pip warns about the deliberate conflict; that warning is expected.
-    run(
-        &python,
-        &[
-            "-m".as_ref(),
-            "pip".as_ref(),
-            "install".as_ref(),
-            "-q".as_ref(),
-            "mcp<1.26".as_ref(),
-        ],
-    )?;
+    // Legacy sources import McpError; current 0.1.x imports MCPError and
+    // fails if we downgrade its correctly resolved mcp package.
+    let mcp_client = source.join("cpex/framework/external/mcp/client.py");
+    let mcp_client_source = std::fs::read_to_string(&mcp_client)
+        .map_err(|e| format!("could not inspect {}: {e}", mcp_client.display()))?;
+    if mcp_client_source.contains("McpError") {
+        // pip warns about the deliberate conflict with the old checkout's
+        // declared floor; that warning is expected in this test venv.
+        run(
+            &python,
+            &[
+                "-m".as_ref(),
+                "pip".as_ref(),
+                "install".as_ref(),
+                "-q".as_ref(),
+                "mcp<1.26".as_ref(),
+            ],
+        )?;
+    }
 
     // Metadata matching what the host computes, so its cache check says Valid
-    // and `initialize()` skips the (unsatisfiable) reinstall.
+    // and `initialize()` skips reinstalling the prepared environment.
     let requirements = plugin_dir.join(package).join("requirements.txt");
     let metadata = serde_json::json!({
         "venv_path": layout.venv_path.display().to_string(),
