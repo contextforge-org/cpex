@@ -58,6 +58,7 @@
 // keeps the intended sharing while removing the mutual-destruction window.
 
 use std::collections::BTreeSet;
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -152,7 +153,12 @@ pub fn hash_file_or_empty(path: Option<&Path>) -> String {
         },
         None => hasher.update(b""),
     }
-    format!("{:x}", hasher.finalize())
+    let digest = hasher.finalize();
+    let mut hex = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        let _ = write!(hex, "{byte:02x}");
+    }
+    hex
 }
 
 /// Filesystem-safe stem for a fully-qualified class name.

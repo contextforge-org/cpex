@@ -229,11 +229,10 @@ CPEX_PYTHON_SOURCE=/path/to/cpex-python \
 
 Two environmental caveats, both upstream of this crate:
 
-- The Python framework's declared dependencies currently have no satisfiable
-  resolution — `pyproject.toml` requires `mcp>=1.26`, but the framework imports
-  `McpError`, which mcp renamed to `MCPError` in 1.26. The e2e tests therefore
-  pre-build the venv in two pip passes (install as declared, then downgrade
-  `mcp`) and let the host reuse it via its own cache.
+- Older Python framework checkouts import `McpError` while declaring
+  `mcp>=1.26`, which renamed that symbol to `MCPError`. The e2e tests downgrade
+  `mcp` in their pre-built venv only for those older checkouts. Current checkouts
+  use the declared version, and the host reuses the cached venv in both cases.
 - The Python hook registry registers no `cmf.*` hooks, so a CMF round-trip
   cannot be proven end to end yet. The host's CMF routing is covered by unit
   tests, and the e2e suite asserts that a CMF hook is rejected cleanly rather

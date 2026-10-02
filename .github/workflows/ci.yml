@@ -34,8 +34,9 @@ jobs:
         with:
           fetch-depth: 1
       - name: Install Rust 1.96.0
-        uses: dtolnay/rust-toolchain@1.96.0
+        uses: dtolnay/rust-toolchain@stable
         with:
+          toolchain: "1.96.0"
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
       - name: rustfmt
@@ -70,7 +71,9 @@ jobs:
         with:
           fetch-depth: 1
       - name: Install Rust 1.96.0
-        uses: dtolnay/rust-toolchain@1.96.0
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.96.0"
       - uses: Swatinem/rust-cache@v2
       - name: cargo test
         # Valkey/testcontainers integration tests are `#[ignore]`d by default
@@ -112,11 +115,13 @@ jobs:
           path: cpex-python
           fetch-depth: 1
       - name: Install Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - name: Install Rust 1.96.0
-        uses: dtolnay/rust-toolchain@1.96.0
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.96.0"
       - uses: Swatinem/rust-cache@v2
       - name: make test-python-e2e
         env:
@@ -133,9 +138,11 @@ jobs:
         with:
           fetch-depth: 1
       - name: Install Rust 1.96.0
-        uses: dtolnay/rust-toolchain@1.96.0
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.96.0"
       - name: Install Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7
         with:
           go-version: "1.25.4"
       - uses: Swatinem/rust-cache@v2
@@ -154,7 +161,9 @@ jobs:
         with:
           fetch-depth: 1
       - name: Install Rust 1.96.0
-        uses: dtolnay/rust-toolchain@1.96.0
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.96.0"
       # NOTE: intentionally NO Swatinem/rust-cache here, AND we wipe the registry
       # index before packaging. The committed Cargo.lock is byte-identical to a
       # fresh x86_64 resolution (verified in an amd64 container), so the lock is
