@@ -43,7 +43,7 @@ apl-core = { workspace = true }
 # `arc` is load-bearing: it switches regorus's internal reference counting to
 # atomic `Arc` so `Engine` is `Send`/`Sync` and the resolver can be shared
 # across worker threads behind `Arc<dyn PdpResolver>`.
-regorus = { version = "0.11", default-features = false, features = [
+regorus = { version = "0.12", default-features = false, features = [
     "arc",
     "std",
     "rvm",
