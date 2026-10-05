@@ -42,7 +42,7 @@ cpex-core = { workspace = true }
 # timing sidechannel) with no fixed release — which then propagates the
 # advisory to every downstream consumer of this plugin. aws-lc-rs keeps
 # `rsa` out of the runtime tree at the cost of a C/cmake build step.
-jsonwebtoken = { version = "10", features = ["aws_lc_rs"] }
+jsonwebtoken = { version = "11", features = ["aws_lc_rs"] }
 
 # `base64` for the peek-at-iss helper (split + URL_SAFE_NO_PAD decode
 # of the middle JWT segment). Pinned to 0.22 to match what
