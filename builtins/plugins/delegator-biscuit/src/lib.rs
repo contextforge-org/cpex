@@ -6,9 +6,10 @@
 // cpex-plugin-delegator-biscuit — `TokenDelegateHandler` backed by biscuit
 // capability-token attenuation.
 //
-// The host registers this against `token.delegate`; outbound
-// forwarding plugins invoke `mgr.invoke_named::<TokenDelegateHook>(...)`
-// with a `DelegationPayload` whose `bearer_token` is a base64-
+// The host registers this against `token.delegate` on a PPE
+// `PolicyEngine`; outbound forwarding plugins invoke
+// `engine.invoke_named::<TokenDelegateHook>(...)` with a
+// `DelegationPayload` whose `bearer_token` is a base64-
 // encoded biscuit. This handler parses + verifies the inbound
 // biscuit against the configured root public key, appends a
 // delegation block that narrows the capabilities per the route's
@@ -22,9 +23,6 @@
 // block (the inbound) + one delegation block (our attenuation).
 // Subsequent hops can each append further blocks. Completion blocks
 // (post-execution audit) are a future hook family.
-//
-// Scope: module structure only. Real implementation and integration
-// tests land later.
 
 pub mod config;
 pub mod delegator;

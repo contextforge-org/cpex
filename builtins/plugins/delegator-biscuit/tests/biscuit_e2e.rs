@@ -3,12 +3,13 @@
 // SPDX-License-Identifier: Apache-2.0
 // Authors: Teryl Taylor
 //
-// End-to-end tests for `BiscuitDelegator`. Generates a root keypair
-// in-process, mints an authority-only biscuit (the "inbound"), runs
-// the delegator's `handle()`, and verifies that the resulting
-// attenuated biscuit is well-formed: the root key still verifies
-// the chain, and the new delegation block carries the expected
-// `delegated_to` / `audience` / `operation` checks.
+// End-to-end tests for `BiscuitDelegator` on a `PolicyEngine`. Each
+// test loads a PPE config document through a test-local factory,
+// generates a root keypair in-process, mints an authority-only
+// biscuit (the "inbound"), dispatches `token.delegate`, and verifies
+// that the resulting attenuated biscuit is well-formed: the root key
+// still verifies the chain, and the new delegation block carries the
+// expected `delegated_to` / `audience` / `operation` / time checks.
 
 use std::sync::Arc;
 
@@ -16,15 +17,20 @@ use biscuit_auth::{
     builder::{AuthorizerBuilder, BlockBuilder},
     Biscuit, KeyPair,
 };
+use chrono::Utc;
 
-use cpex_core::delegation::{
+use praxis_policy_core::delegation::{
     AttenuationConfig, AuthEnforcedBy, DelegationPayload, TargetType, TokenDelegateHook,
     HOOK_TOKEN_DELEGATE,
 };
-use cpex_core::extensions::raw_credentials::DelegationMode;
-use cpex_core::hooks::payload::Extensions;
-use cpex_core::manager::PluginManager;
-use cpex_core::plugin::{OnError, PluginConfig, PluginMode};
+use praxis_policy_core::engine::PolicyEngine;
+use praxis_policy_core::error::PluginError;
+use praxis_policy_core::executor::PipelineResult;
+use praxis_policy_core::extensions::raw_credentials::DelegationMode;
+use praxis_policy_core::factory::{PluginFactory, PluginInstance};
+use praxis_policy_core::hooks::payload::Extensions;
+use praxis_policy_core::hooks::TypedHandlerAdapter;
+use praxis_policy_core::plugin::PluginConfig;
 
 use cpex_plugin_delegator_biscuit::BiscuitDelegator;
 
@@ -33,6 +39,8 @@ use serde_json::json;
 // =====================================================================
 // Fixtures
 // =====================================================================
+
+const KIND: &str = "delegator/biscuit";
 
 struct Roots {
     keypair: KeyPair,
@@ -44,6 +52,24 @@ fn roots() -> &'static Roots {
     ROOTS.get_or_init(|| Roots {
         keypair: KeyPair::new(),
     })
+}
+
+/// Test-local factory: builds a `BiscuitDelegator` from the plugin's
+/// config entry and registers it on `token.delegate`, the same way a
+/// host wires any delegator kind into the engine.
+struct BiscuitDelegatorFactory;
+
+impl PluginFactory for BiscuitDelegatorFactory {
+    fn create(&self, config: &PluginConfig) -> Result<PluginInstance, Box<PluginError>> {
+        let delegator = Arc::new(BiscuitDelegator::new(config.clone())?);
+        let handler = Arc::new(TypedHandlerAdapter::<TokenDelegateHook, _>::new(
+            Arc::clone(&delegator),
+        ));
+        Ok(PluginInstance {
+            plugin: delegator,
+            handlers: vec![(HOOK_TOKEN_DELEGATE, handler)],
+        })
+    }
 }
 
 /// Mint a fresh authority-only biscuit carrying the given Datalog
@@ -61,36 +87,49 @@ fn mint_inbound_biscuit(authority_datalog: &str) -> String {
         .expect("biscuit serializes")
 }
 
-fn plugin_config() -> PluginConfig {
-    let pub_hex = hex::encode(roots().keypair.public().to_bytes());
-    PluginConfig {
-        name: "biscuit-delegator".into(),
-        kind: "test".into(),
-        hooks: vec![HOOK_TOKEN_DELEGATE.into()],
-        mode: PluginMode::Sequential,
-        priority: 10,
-        on_error: OnError::Fail,
-        config: Some(json!({
-            "root_public_key": { "kind": "hex", "hex": pub_hex },
-            "default_outbound_header": "Authorization",
-            "default_ttl_seconds": 300,
-        })),
-        ..Default::default()
-    }
+/// PPE config document for one biscuit delegator. Delegation is
+/// host-dispatched (`invoke_named`), not reached from a policy step,
+/// so the document uses hook dispatch and the plugin declares the
+/// `token.delegate` hook itself. The delegator reads nothing from
+/// the request extensions, so it declares no capabilities.
+fn config_yaml(root_key_hex: &str, outbound_header: &str, ttl_seconds: u64) -> String {
+    format!(
+        r#"
+engine_settings:
+  dispatch: hooks
+plugins:
+  - name: biscuit-delegator
+    kind: {KIND}
+    hooks: [{HOOK_TOKEN_DELEGATE}]
+    mode: sequential
+    on_error: fail
+    config:
+      root_public_key:
+        kind: hex
+        hex: "{root_key_hex}"
+      default_outbound_header: {outbound_header}
+      default_ttl_seconds: {ttl_seconds}
+"#
+    )
 }
 
-async fn build_manager() -> Arc<PluginManager> {
-    let cfg = plugin_config();
-    let delegator = BiscuitDelegator::new(cfg.clone()).expect("delegator constructs");
-    let mgr = Arc::new(PluginManager::default());
-    mgr.register_handler_for_names::<TokenDelegateHook, _>(
-        Arc::new(delegator),
-        cfg,
-        &[HOOK_TOKEN_DELEGATE],
-    )
-    .unwrap();
-    mgr.initialize().await.unwrap();
-    mgr
+fn load_engine(yaml: &str) -> Result<Arc<PolicyEngine>, Box<PluginError>> {
+    let engine = Arc::new(PolicyEngine::default());
+    engine.register_factory(KIND, Box::new(BiscuitDelegatorFactory));
+    engine.load_config_yaml(yaml)?;
+    Ok(engine)
+}
+
+async fn build_engine_with(outbound_header: &str, ttl_seconds: u64) -> Arc<PolicyEngine> {
+    let pub_hex = hex::encode(roots().keypair.public().to_bytes());
+    let engine =
+        load_engine(&config_yaml(&pub_hex, outbound_header, ttl_seconds)).expect("config loads");
+    engine.initialize().await.expect("engine initializes");
+    engine
+}
+
+async fn build_engine() -> Arc<PolicyEngine> {
+    build_engine_with("Authorization", 300).await
 }
 
 fn build_payload(
@@ -112,11 +151,8 @@ fn build_payload(
         })
 }
 
-async fn invoke(
-    mgr: &Arc<PluginManager>,
-    payload: DelegationPayload,
-) -> cpex_core::executor::PipelineResult {
-    let (result, _bg) = mgr
+async fn invoke(engine: &Arc<PolicyEngine>, payload: DelegationPayload) -> PipelineResult {
+    let (result, _bg) = engine
         .invoke_named::<TokenDelegateHook>(
             HOOK_TOKEN_DELEGATE,
             payload,
@@ -125,6 +161,21 @@ async fn invoke(
         )
         .await;
     result
+}
+
+/// Pull the `check if time($t), $t <= N` bound out of a block's
+/// printed Datalog.
+fn expiry_bound(block_source: &str) -> i64 {
+    let marker = "$t <= ";
+    let start = block_source
+        .find(marker)
+        .expect("delegation block carries a time-bound check")
+        + marker.len();
+    let digits: String = block_source[start..]
+        .chars()
+        .take_while(|c| c.is_ascii_digit())
+        .collect();
+    digits.parse().expect("time bound is an integer")
 }
 
 // =====================================================================
@@ -143,7 +194,7 @@ async fn happy_path_attenuates_biscuit() {
         "#,
     );
 
-    let mgr = build_manager().await;
+    let engine = build_engine().await;
     let payload = build_payload(
         inbound.clone(),
         "get_compensation",
@@ -151,7 +202,7 @@ async fn happy_path_attenuates_biscuit() {
         &["read"],
     );
 
-    let result = invoke(&mgr, payload).await;
+    let result = invoke(&engine, payload).await;
     assert!(
         result.continue_processing,
         "happy path should mint a token: violation = {:?}",
@@ -217,7 +268,7 @@ async fn happy_path_attenuates_biscuit() {
 #[tokio::test]
 async fn attenuated_token_denies_wrong_operation() {
     let inbound = mint_inbound_biscuit(r#"right("read");"#);
-    let mgr = build_manager().await;
+    let engine = build_engine().await;
     let payload = build_payload(
         inbound,
         "get_compensation",
@@ -225,7 +276,7 @@ async fn attenuated_token_denies_wrong_operation() {
         &["read"],
     );
 
-    let result = invoke(&mgr, payload).await;
+    let result = invoke(&engine, payload).await;
     assert!(result.continue_processing);
     let final_payload = DelegationPayload::from_pipeline_result(&result).unwrap();
     let minted = final_payload.delegated_token.as_ref().unwrap();
@@ -258,7 +309,7 @@ async fn wrong_root_key_rejects() {
         .to_base64()
         .unwrap();
 
-    let mgr = build_manager().await;
+    let engine = build_engine().await;
     let payload = build_payload(
         foreign_biscuit,
         "tool",
@@ -266,7 +317,7 @@ async fn wrong_root_key_rejects() {
         &["read"],
     );
 
-    let result = invoke(&mgr, payload).await;
+    let result = invoke(&engine, payload).await;
     assert!(!result.continue_processing);
     let v = result.violation.expect("rejection should surface");
     assert_eq!(v.code, "delegation.token_invalid");
@@ -276,11 +327,11 @@ async fn wrong_root_key_rejects() {
 /// parsing attempted.
 #[tokio::test]
 async fn empty_bearer_token_rejects() {
-    let mgr = build_manager().await;
+    let engine = build_engine().await;
     let payload =
         DelegationPayload::new("", "tool").with_target_audience("https://downstream.example.com");
 
-    let result = invoke(&mgr, payload).await;
+    let result = invoke(&engine, payload).await;
     assert!(!result.continue_processing);
     let v = result.violation.expect("rejection should surface");
     assert_eq!(v.code, "delegation.bad_request");
@@ -292,10 +343,10 @@ async fn empty_bearer_token_rejects() {
 #[tokio::test]
 async fn missing_audience_rejects() {
     let inbound = mint_inbound_biscuit(r#"right("read");"#);
-    let mgr = build_manager().await;
+    let engine = build_engine().await;
     let payload = DelegationPayload::new(inbound, "tool"); // no audience
 
-    let result = invoke(&mgr, payload).await;
+    let result = invoke(&engine, payload).await;
     assert!(!result.continue_processing);
     let v = result.violation.expect("rejection should surface");
     assert_eq!(v.code, "delegation.bad_request");
@@ -306,7 +357,7 @@ async fn missing_audience_rejects() {
 /// `delegation.token_invalid`.
 #[tokio::test]
 async fn malformed_bearer_token_rejects() {
-    let mgr = build_manager().await;
+    let engine = build_engine().await;
     let payload = build_payload(
         "this-is-not-a-biscuit".to_string(),
         "tool",
@@ -314,8 +365,103 @@ async fn malformed_bearer_token_rejects() {
         &["read"],
     );
 
-    let result = invoke(&mgr, payload).await;
+    let result = invoke(&engine, payload).await;
     assert!(!result.continue_processing);
     let v = result.violation.expect("rejection should surface");
     assert_eq!(v.code, "delegation.token_invalid");
+}
+
+/// The appended delegation block's caveats follow the config and the
+/// request: the block names the target and audience, checks each
+/// required permission, and bounds time at the shorter of the
+/// configured default TTL and the route hint. The minted token uses
+/// the configured outbound header.
+#[tokio::test]
+async fn delegation_block_caveats_match_config() {
+    let inbound = mint_inbound_biscuit(r#"right("read"); right("write");"#);
+    // Default TTL (60s) is shorter than the route hint (120s), so
+    // the configured default wins.
+    let engine = build_engine_with("X-AIP-Token", 60).await;
+    let payload = build_payload(
+        inbound,
+        "get_compensation",
+        "https://hr.example.com",
+        &["read", "write"],
+    );
+
+    let before = Utc::now().timestamp();
+    let result = invoke(&engine, payload).await;
+    let after = Utc::now().timestamp();
+    assert!(
+        result.continue_processing,
+        "delegation should succeed: violation = {:?}",
+        result.violation,
+    );
+
+    let final_payload = DelegationPayload::from_pipeline_result(&result).unwrap();
+    let minted = final_payload.delegated_token.as_ref().unwrap();
+    assert_eq!(minted.outbound_header, "X-AIP-Token");
+    assert_eq!(minted.scopes, vec!["read", "write", "audit"]);
+
+    let attenuated = Biscuit::from_base64(&*minted.token, roots().keypair.public()).unwrap();
+    let last = attenuated.block_count() - 1;
+    let block = attenuated
+        .print_block_source(last)
+        .expect("delegation block prints");
+
+    assert!(
+        block.contains(r#"delegated_to("get_compensation");"#),
+        "{block}"
+    );
+    assert!(
+        block.contains(r#"audience("https://hr.example.com");"#),
+        "{block}"
+    );
+    assert!(block.contains(r#"check if operation("read");"#), "{block}");
+    assert!(block.contains(r#"check if operation("write");"#), "{block}");
+    // Route capabilities are recorded as token scopes, not caveats.
+    assert!(!block.contains(r#"operation("audit")"#), "{block}");
+
+    let bound = expiry_bound(&block);
+    assert!(
+        (before + 60..=after + 60).contains(&bound),
+        "time bound {bound} should be now + 60s (window {before}..={after})",
+    );
+
+    // A verifier past the bound is denied by the time caveat.
+    let mut late = AuthorizerBuilder::new()
+        .code(format!(
+            r#"operation("read"); operation("write"); time({}); allow if true;"#,
+            bound + 1
+        ))
+        .unwrap()
+        .build(&attenuated)
+        .unwrap();
+    assert!(
+        late.authorize().is_err(),
+        "token must be unusable past its time bound",
+    );
+}
+
+/// A root key that is not a valid Ed25519 public key fails at plugin
+/// construction, so the config never loads, and the error names the
+/// plugin and the offending field.
+#[tokio::test]
+async fn invalid_root_key_fails_plugin_initialization() {
+    for (bad_hex, expect) in [
+        ("deadbeef", "32 bytes"),
+        ("not-hex-at-all", "isn't valid hex"),
+    ] {
+        let Err(err) = load_engine(&config_yaml(bad_hex, "Authorization", 300)) else {
+            panic!("an invalid root key must fail to load ({bad_hex})");
+        };
+        let msg = err.to_string();
+        assert!(
+            matches!(*err, PluginError::Config { .. }),
+            "expected a config error, got {err:?}",
+        );
+        assert!(msg.contains("biscuit-delegator"), "names the plugin: {msg}");
+        assert!(msg.contains("root_public_key"), "names the field: {msg}");
+        assert!(msg.contains(expect), "explains the fault: {msg}");
+    }
 }
