@@ -28,18 +28,10 @@ name = "_lib"
 crate-type = ["cdylib"]
 
 [dependencies]
-cpex-core = { workspace = true }
+praxis-policy-core = { workspace = true }
 
-# The builtin extension set — mirrors the feature set shipped by cpex-ffi.
-cpex-builtins = { workspace = true, default-features = false, features = [
-    "pii-scanner",
-    "audit-logger",
-    "identity-jwt",
-    "delegator-oauth",
-    "cedar-direct",
-    "cel",
-    "valkey",
-] }
+# The builtin extension set and HTTP transport, matching cpex-ffi.
+praxis-policy = { workspace = true, features = ["builtins", "http-hyper"] }
 
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -58,3 +50,6 @@ tokio = { workspace = true, features = ["rt", "macros"] }
 
 [features]
 default = []
+
+[lints]
+workspace = true

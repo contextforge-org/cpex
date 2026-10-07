@@ -25,27 +25,17 @@ rust-version.workspace = true
 crate-type = ["lib", "cdylib", "staticlib"]
 
 [dependencies]
-cpex-core = { workspace = true }
-# APL governance layer — bundled so Go/Python hosts can enable APL
-# policies and route handlers via the `cpex_apl_install` FFI entry point.
-apl-cpex = { workspace = true }
-# The builtin extension set. `cpex_apl_install` delegates registration to
-# cpex-builtins, whose `register_builtins` expands to explicit
-# `register_factory` calls — so the factory symbols survive in the
-# staticlib (no inventory/linkme link-section GC hazard). The feature set
-# below is the exact bundle the default `.a` ships: four hook plugins, both
-# bundled PDPs (cedar-direct and cel), and the Valkey session store. Valkey
-# pulls a redis client + rustls TLS stack, so it adds materially to the `.a`
-# size and to the musl cross-build surface.
-cpex-builtins = { workspace = true, default-features = false, features = [
-    "pii-scanner",
-    "audit-logger",
-    "identity-jwt",
-    "delegator-oauth",
-    "cedar-direct",
-    "cel",
-    "valkey",
-] }
+praxis-policy-core = { workspace = true }
+# APL governance layer, so Go/Python hosts can enable APL policies and route
+# handlers via the `cpex_apl_install` FFI entry point.
+praxis-policy-apl-runtime = { workspace = true }
+# The engine facade with every stable builtin and the bundled hyper transport.
+# Its `register_builtin_plugins` expands to explicit `register_factory` calls,
+# so the factory symbols survive in the staticlib (no inventory/linkme
+# link-section GC hazard). The Valkey session store pulls a redis client and a
+# rustls TLS stack, so it adds materially to the `.a` size and to the musl
+# cross-build surface.
+praxis-policy = { workspace = true, features = ["builtins", "http-hyper"] }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -55,7 +45,7 @@ tracing = { workspace = true }
 
 [features]
 # No opt-in features: the bundled set (including the Valkey session store) is
-# fixed in the cpex-builtins dependency above.
+# fixed in the praxis-policy dependency above.
 default = []
 
 [dev-dependencies]

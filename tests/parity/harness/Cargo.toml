@@ -8,8 +8,7 @@
 #   cargo run -p cpex-parity-harness -- capture
 #   cargo test -p cpex-parity-harness
 #
-# Held out of the workspace default-members: it pulls the full builtin set,
-# including the Valkey session store and its redis/TLS stack.
+# Held out of the workspace default-members: run it explicitly.
 
 [package]
 name = "cpex-parity-harness"
@@ -28,8 +27,8 @@ path = "src/main.rs"
 
 [dependencies]
 # Engine under test. Everything specific to it lives in `src/engine.rs`.
-cpex = { path = "../../../crates/cpex", features = ["full"] }
-cpex-core = { workspace = true }
+cpex = { path = "../../../crates/cpex" }
+praxis-policy-core = { workspace = true }
 
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "sync", "time", "macros"] }
 async-trait = { workspace = true }
