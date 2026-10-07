@@ -8,12 +8,19 @@ without needing a Rust toolchain.
 This document covers what is published, how to consume and verify
 an artifact, and the FFI ABI policy that makes the contract durable.
 
-> **APL bundled.** The published `.a` includes the APL (Attribute Policy
-> Language) governance layer and its standard plugin/PDP factories
-> (`validator/pii-scan`, `audit/logger`, `identity/jwt`,
-> `delegator/oauth`, `cedar-direct`). Enable it on a manager via
-> `cpex_apl_install` (Go: `PluginManager.EnableAPL()`) after
-> `cpex_manager_new_default` and before `cpex_load_config`.
+> **Builtins bundled.** The published `.a` includes the APL (Attribute
+> Policy Language) governance layer and every non-experimental PPE builtin:
+> plugin kinds `identity/jwt`, `identity/api-key`, `delegator/oauth` and
+> `elicitation/ciba`; PDPs `cedar-direct`, `cel` and `opa`; the `valkey`
+> session store; and the `env`, `file` and `vault` secret providers, plus
+> an outbound HTTP transport. Enable them on an engine with
+> `cpex_apl_install(engine, flags)` after `cpex_engine_new_default` and
+> before `cpex_load_config`. Pass `CPEX_APL_ALLOW_PRIVATE_DESTINATIONS`
+> (`1`) in `flags` to let builtins reach private or loopback addresses;
+> they are blocked by default. Call `cpex_refresh_secrets` on a schedule
+> to re-read secrets, and `cpex_secrets_last_success` to check their
+> health. The authoritative list of bundled kinds and hook names is
+> `crates/cpex-ffi/tests/fixtures/wire_compat.json`.
 
 ## What is published
 

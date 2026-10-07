@@ -598,6 +598,8 @@ name = "cpex-ffi"
 version = "0.2.3"
 dependencies = [
  "async-trait",
+ "aws-lc-rs",
+ "jsonwebtoken",
  "praxis-policy",
  "praxis-policy-apl-runtime",
  "praxis-policy-core",
