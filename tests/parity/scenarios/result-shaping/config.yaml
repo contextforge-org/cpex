@@ -1,0 +1,31 @@
+# Result shaping: field redaction and masking on the post phase.
+#
+# Source: examples/tutorial/policies/m03.yaml, with identity from m02 so the
+# permission and role predicates have callers that satisfy them.
+
+plugins:
+  - name: idp
+    kind: identity/jwt
+    hooks: [identity.resolve]
+    config:
+      claim_mapper: standard
+      trusted_issuers:
+        - issuer: https://idp.parity.test
+          audiences: [cpex-parity]
+          algorithms: [EdDSA]
+          decoding_key:
+            kind: jwks_url
+            url: "{{MOCK_URL}}/jwks"
+            insecure_http: true
+          leeway_seconds: 60
+
+routes:
+  - tool: get_compensation
+    authentication:
+      - idp
+    authorization:
+      pre_invocation: []
+    result:
+      ssn: "str | redact(!perm.view_ssn)"
+      salary: "int | redact(!role.hr)"
+      employee_id: "str | mask(4)"

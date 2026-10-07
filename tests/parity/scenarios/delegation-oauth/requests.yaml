@@ -1,0 +1,58 @@
+description: >-
+  Delegation mints a scoped downstream token for an authorized caller, is
+  skipped when the role gate denies first, and fails closed when the token
+  endpoint refuses the audience.
+
+mocks:
+  - method: GET
+    path: /jwks
+    builtin: jwks
+  - method: POST
+    path: /token
+    form: {audience: workday-api}
+    json:
+      access_token: parity-test-only-workday-access-token
+      token_type: Bearer
+      expires_in: 300
+      issued_token_type: "urn:ietf:params:oauth:token-type:access_token"
+  - method: POST
+    path: /token
+    form: {audience: github-api}
+    status: 400
+    json: {error: invalid_target, error_description: audience not allowed for this client}
+
+tokens:
+  alice:
+    claims: {iss: https://idp.parity.test, aud: cpex-parity, sub: alice, iat: 1767225600, exp: 4102444800, roles: [hr]}
+  evan:
+    claims: {iss: https://idp.parity.test, aud: cpex-parity, sub: evan, iat: 1767225600, exp: 4102444800, roles: [engineer]}
+
+requests:
+  - kind: mediate
+    id: hr-delegated
+    caller: {token: alice}
+    tool: get_compensation
+    args: {employee_id: e-1001}
+    backend: {employee_id: e-1001, salary: 185000}
+
+  - kind: mediate
+    id: hr-delegated-again
+    note: Same caller and audience; shows whether the minted token is reused.
+    caller: {token: alice}
+    tool: get_compensation
+    args: {employee_id: e-1002}
+    backend: {employee_id: e-1002, salary: 172000}
+
+  - kind: mediate
+    id: engineer-denied-before-delegation
+    caller: {token: evan}
+    tool: get_compensation
+    args: {employee_id: e-1001}
+    backend: {employee_id: e-1001, salary: 185000}
+
+  - kind: mediate
+    id: audience-refused
+    caller: {token: evan}
+    tool: read_repo
+    args: {repo: cpex}
+    backend: {repo: cpex, default_branch: main}

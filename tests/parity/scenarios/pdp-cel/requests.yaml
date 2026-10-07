@@ -1,0 +1,63 @@
+description: >-
+  CEL decisions over role and argument attributes, with and without a
+  custom on_deny code.
+
+mocks:
+  - method: GET
+    path: /jwks
+    builtin: jwks
+
+tokens:
+  evan:
+    claims: {iss: https://idp.parity.test, aud: cpex-parity, sub: evan, iat: 1767225600, exp: 4102444800, roles: [engineer]}
+  sam:
+    claims: {iss: https://idp.parity.test, aud: cpex-parity, sub: sam, iat: 1767225600, exp: 4102444800, roles: [security]}
+  alice:
+    claims: {iss: https://idp.parity.test, aud: cpex-parity, sub: alice, iat: 1767225600, exp: 4102444800, roles: [hr]}
+
+requests:
+  - kind: mediate
+    id: engineer-internal
+    caller: {token: evan}
+    tool: search_repos
+    args: {query: cpex, visibility: internal}
+    backend: {repos: [cpex-internal]}
+
+  - kind: mediate
+    id: engineer-public
+    caller: {token: evan}
+    tool: search_repos
+    args: {query: cpex, visibility: public}
+    backend: {repos: [cpex]}
+
+  - kind: mediate
+    id: security-public
+    caller: {token: sam}
+    tool: search_repos
+    args: {query: cpex, visibility: public}
+    backend: {repos: [cpex]}
+
+  - kind: mediate
+    id: hr-public
+    caller: {token: alice}
+    tool: search_repos
+    args: {query: cpex, visibility: public}
+    backend: {repos: [cpex]}
+
+  - kind: mediate
+    id: anonymous-internal
+    tool: search_repos
+    args: {query: cpex, visibility: internal}
+    backend: {repos: [cpex-internal]}
+
+  - kind: mediate
+    id: list-security
+    caller: {token: sam}
+    tool: list_repos
+    backend: {repos: [cpex, cpex-internal]}
+
+  - kind: mediate
+    id: list-engineer-default-code
+    caller: {token: evan}
+    tool: list_repos
+    backend: {repos: [cpex, cpex-internal]}

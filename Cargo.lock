@@ -880,6 +880,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "cpex-parity-harness"
+version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "aws-lc-rs",
+ "base64 0.22.1",
+ "cpex",
+ "cpex-core",
+ "form_urlencoded",
+ "redis",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "sha2 0.10.9",
+ "tiny_http",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "cpex-pdp-cedar-direct"
 version = "0.2.3"
 dependencies = [

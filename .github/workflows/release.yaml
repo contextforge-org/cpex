@@ -95,9 +95,9 @@ jobs:
           # This is how the workflow is exercised without a real release.
           if [ "$DRY_RUN" = "true" ]; then
             echo "::group::dry run — cargo package (no upload)"
-            # Verify the crates.io-published set only; these three
+            # Verify the crates.io-published set only; these four
             # publish=false crates are not part of the registry release.
-            cargo package --workspace --locked --exclude cpex-ffi --exclude cpex-demo-ffi --exclude cpex-tutorial
+            cargo package --workspace --locked --exclude cpex-ffi --exclude cpex-demo-ffi --exclude cpex-tutorial --exclude cpex-parity-harness
             echo "::endgroup::"
             exit 0
           fi

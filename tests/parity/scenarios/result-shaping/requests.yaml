@@ -1,0 +1,45 @@
+description: >-
+  The same backend record seen by callers with different roles and
+  permissions: ssn redacted without view_ssn, salary redacted without hr,
+  employee_id always masked.
+
+mocks:
+  - method: GET
+    path: /jwks
+    builtin: jwks
+
+tokens:
+  alice:
+    claims: {iss: https://idp.parity.test, aud: cpex-parity, sub: alice, iat: 1767225600, exp: 4102444800, roles: [hr], permissions: [view_ssn]}
+  harry:
+    claims: {iss: https://idp.parity.test, aud: cpex-parity, sub: harry, iat: 1767225600, exp: 4102444800, roles: [hr]}
+  evan:
+    claims: {iss: https://idp.parity.test, aud: cpex-parity, sub: evan, iat: 1767225600, exp: 4102444800, roles: [engineer]}
+
+requests:
+  - kind: mediate
+    id: hr-with-view-ssn
+    caller: {token: alice}
+    tool: get_compensation
+    args: {employee_id: e-1001}
+    backend: {employee_id: e-1001-7734, name: Dana Diaz, ssn: 123-45-6789, salary: 185000}
+
+  - kind: mediate
+    id: hr-without-view-ssn
+    caller: {token: harry}
+    tool: get_compensation
+    args: {employee_id: e-1001}
+    backend: {employee_id: e-1001-7734, name: Dana Diaz, ssn: 123-45-6789, salary: 185000}
+
+  - kind: mediate
+    id: engineer
+    caller: {token: evan}
+    tool: get_compensation
+    args: {employee_id: e-1001}
+    backend: {employee_id: e-1001-7734, name: Dana Diaz, ssn: 123-45-6789, salary: 185000}
+
+  - kind: mediate
+    id: anonymous
+    tool: get_compensation
+    args: {employee_id: e-1001}
+    backend: {employee_id: e-1001-7734, name: Dana Diaz, ssn: 123-45-6789, salary: 185000}

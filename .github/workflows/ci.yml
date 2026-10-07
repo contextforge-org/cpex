@@ -180,13 +180,14 @@ jobs:
       # inter-crate deps) on every push/PR, long before a release tag. Mirrors
       # `make publish-dry` and the release workflow's dry-run. The
       # `publish = false` crates are excluded (not part of the registry set):
-      # the two FFI crates and the tutorial companion crate.
+      # the two FFI crates, the tutorial companion crate, and the parity
+      # capture harness.
       - name: cargo package (no upload)
         run: |
           # Drop any pre-seeded registry index/cache so cargo fetches fresh and
           # --locked resolves against a clean index (see note above).
           rm -rf ~/.cargo/registry/index ~/.cargo/registry/cache
-          cargo package --workspace --locked --exclude cpex-ffi --exclude cpex-demo-ffi --exclude cpex-tutorial
+          cargo package --workspace --locked --exclude cpex-ffi --exclude cpex-demo-ffi --exclude cpex-tutorial --exclude cpex-parity-harness
 
   docs:
     name: Docs Build

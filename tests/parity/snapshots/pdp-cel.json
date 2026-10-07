@@ -1,0 +1,889 @@
+{
+  "config": "scenarios/pdp-cel/config.yaml",
+  "description": "CEL decisions over role and argument attributes, with and without a custom on_deny code.",
+  "load": {
+    "ok": true,
+    "upstream_calls": [
+      {
+        "form": {},
+        "method": "GET",
+        "path": "/jwks"
+      }
+    ]
+  },
+  "requests": [
+    {
+      "code": null,
+      "decision": "allow",
+      "id": "engineer-internal",
+      "kind": "mediate",
+      "result": {
+        "repos": [
+          "cpex-internal"
+        ]
+      },
+      "stages": [
+        {
+          "continue": true,
+          "errors": [],
+          "extensions": {
+            "agent": null,
+            "delegation": null,
+            "http": null,
+            "meta": {
+              "entity_name": "search_repos",
+              "entity_type": "tool",
+              "tags": []
+            },
+            "raw_credentials": null,
+            "security": null
+          },
+          "hook": "identity.resolve",
+          "payload": {
+            "identity": {
+              "caller_workload": null,
+              "client": null,
+              "delegation": null,
+              "raw_claims": {
+                "aud": "cpex-parity",
+                "exp": 4102444800,
+                "iat": 1767225600,
+                "iss": "https://idp.parity.test",
+                "roles": [
+                  "engineer"
+                ],
+                "sub": "evan"
+              },
+              "raw_credentials": {
+                "delegated_tokens": [],
+                "inbound_tokens": [
+                  {
+                    "kind": "jwt",
+                    "role": "user",
+                    "source_header": "Authorization",
+                    "token": "<token>"
+                  }
+                ]
+              },
+              "subject": {
+                "claims": {},
+                "id": "evan",
+                "permissions": [],
+                "roles": [
+                  "engineer"
+                ],
+                "teams": []
+              }
+            }
+          },
+          "payload_modified": true,
+          "violation": null
+        },
+        {
+          "continue": true,
+          "errors": [],
+          "extensions": {
+            "agent": null,
+            "delegation": null,
+            "http": null,
+            "meta": {
+              "entity_name": "search_repos",
+              "entity_type": "tool",
+              "tags": []
+            },
+            "raw_credentials": {
+              "delegated_tokens": [],
+              "inbound_tokens": [
+                {
+                  "kind": "jwt",
+                  "role": "user",
+                  "source_header": "Authorization",
+                  "token": "<token>"
+                }
+              ]
+            },
+            "security": {
+              "auth_method": null,
+              "caller_workload": null,
+              "classification": null,
+              "client": null,
+              "labels": [],
+              "subject": {
+                "claims": {},
+                "id": "evan",
+                "permissions": [],
+                "roles": [
+                  "engineer"
+                ],
+                "teams": []
+              }
+            }
+          },
+          "hook": "cmf.tool_pre_invoke",
+          "payload": null,
+          "payload_modified": false,
+          "violation": null
+        },
+        {
+          "continue": true,
+          "errors": [],
+          "extensions": {
+            "agent": null,
+            "delegation": null,
+            "http": null,
+            "meta": {
+              "entity_name": "search_repos",
+              "entity_type": "tool",
+              "tags": []
+            },
+            "raw_credentials": {
+              "delegated_tokens": [],
+              "inbound_tokens": [
+                {
+                  "kind": "jwt",
+                  "role": "user",
+                  "source_header": "Authorization",
+                  "token": "<token>"
+                }
+              ]
+            },
+            "security": {
+              "auth_method": null,
+              "caller_workload": null,
+              "classification": null,
+              "client": null,
+              "labels": [],
+              "subject": {
+                "claims": {},
+                "id": "evan",
+                "permissions": [],
+                "roles": [
+                  "engineer"
+                ],
+                "teams": []
+              }
+            }
+          },
+          "hook": "cmf.tool_post_invoke",
+          "payload": null,
+          "payload_modified": false,
+          "violation": null
+        }
+      ],
+      "upstream_calls": []
+    },
+    {
+      "code": "repo.policy_denied",
+      "decision": "deny",
+      "id": "engineer-public",
+      "kind": "mediate",
+      "result": null,
+      "stages": [
+        {
+          "continue": true,
+          "errors": [],
+          "extensions": {
+            "agent": null,
+            "delegation": null,
+            "http": null,
+            "meta": {
+              "entity_name": "search_repos",
+              "entity_type": "tool",
+              "tags": []
+            },
+            "raw_credentials": null,
+            "security": null
+          },
+          "hook": "identity.resolve",
+          "payload": {
+            "identity": {
+              "caller_workload": null,
+              "client": null,
+              "delegation": null,
+              "raw_claims": {
+                "aud": "cpex-parity",
+                "exp": 4102444800,
+                "iat": 1767225600,
+                "iss": "https://idp.parity.test",
+                "roles": [
+                  "engineer"
+                ],
+                "sub": "evan"
+              },
+              "raw_credentials": {
+                "delegated_tokens": [],
+                "inbound_tokens": [
+                  {
+                    "kind": "jwt",
+                    "role": "user",
+                    "source_header": "Authorization",
+                    "token": "<token>"
+                  }
+                ]
+              },
+              "subject": {
+                "claims": {},
+                "id": "evan",
+                "permissions": [],
+                "roles": [
+                  "engineer"
+                ],
+                "teams": []
+              }
+            }
+          },
+          "payload_modified": true,
+          "violation": null
+        },
+        {
+          "continue": false,
+          "errors": [],
+          "extensions": {
+            "agent": null,
+            "delegation": null,
+            "http": null,
+            "meta": {
+              "entity_name": "search_repos",
+              "entity_type": "tool",
+              "tags": []
+            },
+            "raw_credentials": {
+              "delegated_tokens": [],
+              "inbound_tokens": [
+                {
+                  "kind": "jwt",
+                  "role": "user",
+                  "source_header": "Authorization",
+                  "token": "<token>"
+                }
+              ]
+            },
+            "security": {
+              "auth_method": null,
+              "caller_workload": null,
+              "classification": null,
+              "client": null,
+              "labels": [],
+              "subject": {
+                "claims": {},
+                "id": "evan",
+                "permissions": [],
+                "roles": [
+                  "engineer"
+                ],
+                "teams": []
+              }
+            }
+          },
+          "hook": "cmf.tool_pre_invoke",
+          "payload": null,
+          "payload_modified": false,
+          "violation": {
+            "code": "repo.policy_denied",
+            "description": null,
+            "details": {},
+            "plugin": "apl::tool::search_repos::pre",
+            "proto_error_code": null,
+            "reason": "engineers read internal only; security reads any"
+          }
+        }
+      ],
+      "upstream_calls": []
+    },
+    {
+      "code": null,
+      "decision": "allow",
+      "id": "security-public",
+      "kind": "mediate",
+      "result": {
+        "repos": [
+          "cpex"
+        ]
+      },
+      "stages": [
+        {
+          "continue": true,
+          "errors": [],
+          "extensions": {
+            "agent": null,
+            "delegation": null,
+            "http": null,
+            "meta": {
+              "entity_name": "search_repos",
+              "entity_type": "tool",
+              "tags": []
+            },
+            "raw_credentials": null,
+            "security": null
+          },
+          "hook": "identity.resolve",
+          "payload": {
+            "identity": {
+              "caller_workload": null,
+              "client": null,
+              "delegation": null,
+              "raw_claims": {
+                "aud": "cpex-parity",
+                "exp": 4102444800,
+                "iat": 1767225600,
+                "iss": "https://idp.parity.test",
+                "roles": [
+                  "security"
+                ],
+                "sub": "sam"
+              },
+              "raw_credentials": {
+                "delegated_tokens": [],
+                "inbound_tokens": [
+                  {
+                    "kind": "jwt",
+                    "role": "user",
+                    "source_header": "Authorization",
+                    "token": "<token>"
+                  }
+                ]
+              },
+              "subject": {
+                "claims": {},
+                "id": "sam",
+                "permissions": [],
+                "roles": [
+                  "security"
+                ],
+                "teams": []
+              }
+            }
+          },
+          "payload_modified": true,
+          "violation": null
+        },
+        {
+          "continue": true,
+          "errors": [],
+          "extensions": {
+            "agent": null,
+            "delegation": null,
+            "http": null,
+            "meta": {
+              "entity_name": "search_repos",
+              "entity_type": "tool",
+              "tags": []
+            },
+            "raw_credentials": {
+              "delegated_tokens": [],
+              "inbound_tokens": [
+                {
+                  "kind": "jwt",
+                  "role": "user",
+                  "source_header": "Authorization",
+                  "token": "<token>"
+                }
+              ]
+            },
+            "security": {
+              "auth_method": null,
+              "caller_workload": null,
+              "classification": null,
+              "client": null,
+              "labels": [],
+              "subject": {
+                "claims": {},
+                "id": "sam",
+                "permissions": [],
+                "roles": [
+                  "security"
+                ],
+                "teams": []
+              }
+            }
+          },
+          "hook": "cmf.tool_pre_invoke",
+          "payload": null,
+          "payload_modified": false,
+          "violation": null
+        },
+        {
+          "continue": true,
+          "errors": [],
+          "extensions": {
+            "agent": null,
+            "delegation": null,
+            "http": null,
+            "meta": {
+              "entity_name": "search_repos",
+              "entity_type": "tool",
+              "tags": []
+            },
+            "raw_credentials": {
+              "delegated_tokens": [],
+              "inbound_tokens": [
+                {
+                  "kind": "jwt",
+                  "role": "user",
+                  "source_header": "Authorization",
+                  "token": "<token>"
+                }
+              ]
+            },
+            "security": {
+              "auth_method": null,
+              "caller_workload": null,
+              "classification": null,
+              "client": null,
+              "labels": [],
+              "subject": {
+                "claims": {},
+                "id": "sam",
+                "permissions": [],
+                "roles": [
+                  "security"
+                ],
+                "teams": []
+              }
+            }
+          },
+          "hook": "cmf.tool_post_invoke",
+          "payload": null,
+          "payload_modified": false,
+          "violation": null
+        }
+      ],
+      "upstream_calls": []
+    },
+    {
+      "code": "repo.policy_denied",
+      "decision": "deny",
+      "id": "hr-public",
+      "kind": "mediate",
+      "result": null,
+      "stages": [
+        {
+          "continue": true,
+          "errors": [],
+          "extensions": {
+            "agent": null,
+            "delegation": null,
+            "http": null,
+            "meta": {
+              "entity_name": "search_repos",
+              "entity_type": "tool",
+              "tags": []
+            },
+            "raw_credentials": null,
+            "security": null
+          },
+          "hook": "identity.resolve",
+          "payload": {
+            "identity": {
+              "caller_workload": null,
+              "client": null,
+              "delegation": null,
+              "raw_claims": {
+                "aud": "cpex-parity",
+                "exp": 4102444800,
+                "iat": 1767225600,
+                "iss": "https://idp.parity.test",
+                "roles": [
+                  "hr"
+                ],
+                "sub": "alice"
+              },
+              "raw_credentials": {
+                "delegated_tokens": [],
+                "inbound_tokens": [
+                  {
+                    "kind": "jwt",
+                    "role": "user",
+                    "source_header": "Authorization",
+                    "token": "<token>"
+                  }
+                ]
+              },
+              "subject": {
+                "claims": {},
+                "id": "alice",
+                "permissions": [],
+                "roles": [
+                  "hr"
+                ],
+                "teams": []
+              }
+            }
+          },
+          "payload_modified": true,
+          "violation": null
+        },
+        {
+          "continue": false,
+          "errors": [],
+          "extensions": {
+            "agent": null,
+            "delegation": null,
+            "http": null,
+            "meta": {
+              "entity_name": "search_repos",
+              "entity_type": "tool",
+              "tags": []
+            },
+            "raw_credentials": {
+              "delegated_tokens": [],
+              "inbound_tokens": [
+                {
+                  "kind": "jwt",
+                  "role": "user",
+                  "source_header": "Authorization",
+                  "token": "<token>"
+                }
+              ]
+            },
+            "security": {
+              "auth_method": null,
+              "caller_workload": null,
+              "classification": null,
+              "client": null,
+              "labels": [],
+              "subject": {
+                "claims": {},
+                "id": "alice",
+                "permissions": [],
+                "roles": [
+                  "hr"
+                ],
+                "teams": []
+              }
+            }
+          },
+          "hook": "cmf.tool_pre_invoke",
+          "payload": null,
+          "payload_modified": false,
+          "violation": {
+            "code": "repo.policy_denied",
+            "description": null,
+            "details": {},
+            "plugin": "apl::tool::search_repos::pre",
+            "proto_error_code": null,
+            "reason": "engineers read internal only; security reads any"
+          }
+        }
+      ],
+      "upstream_calls": []
+    },
+    {
+      "code": "routes.tool:search_repos.apl.pre_invocation[0]",
+      "decision": "deny",
+      "id": "anonymous-internal",
+      "kind": "mediate",
+      "result": null,
+      "stages": [
+        {
+          "continue": false,
+          "errors": [],
+          "extensions": {
+            "agent": null,
+            "delegation": null,
+            "http": null,
+            "meta": {
+              "entity_name": "search_repos",
+              "entity_type": "tool",
+              "tags": []
+            },
+            "raw_credentials": null,
+            "security": null
+          },
+          "hook": "cmf.tool_pre_invoke",
+          "payload": null,
+          "payload_modified": false,
+          "violation": {
+            "code": "routes.tool:search_repos.apl.pre_invocation[0]",
+            "description": null,
+            "details": {},
+            "plugin": "apl::tool::search_repos::pre",
+            "proto_error_code": null,
+            "reason": "access denied"
+          }
+        }
+      ],
+      "upstream_calls": []
+    },
+    {
+      "code": null,
+      "decision": "allow",
+      "id": "list-security",
+      "kind": "mediate",
+      "result": {
+        "repos": [
+          "cpex",
+          "cpex-internal"
+        ]
+      },
+      "stages": [
+        {
+          "continue": true,
+          "errors": [],
+          "extensions": {
+            "agent": null,
+            "delegation": null,
+            "http": null,
+            "meta": {
+              "entity_name": "list_repos",
+              "entity_type": "tool",
+              "tags": []
+            },
+            "raw_credentials": null,
+            "security": null
+          },
+          "hook": "identity.resolve",
+          "payload": {
+            "identity": {
+              "caller_workload": null,
+              "client": null,
+              "delegation": null,
+              "raw_claims": {
+                "aud": "cpex-parity",
+                "exp": 4102444800,
+                "iat": 1767225600,
+                "iss": "https://idp.parity.test",
+                "roles": [
+                  "security"
+                ],
+                "sub": "sam"
+              },
+              "raw_credentials": {
+                "delegated_tokens": [],
+                "inbound_tokens": [
+                  {
+                    "kind": "jwt",
+                    "role": "user",
+                    "source_header": "Authorization",
+                    "token": "<token>"
+                  }
+                ]
+              },
+              "subject": {
+                "claims": {},
+                "id": "sam",
+                "permissions": [],
+                "roles": [
+                  "security"
+                ],
+                "teams": []
+              }
+            }
+          },
+          "payload_modified": true,
+          "violation": null
+        },
+        {
+          "continue": true,
+          "errors": [],
+          "extensions": {
+            "agent": null,
+            "delegation": null,
+            "http": null,
+            "meta": {
+              "entity_name": "list_repos",
+              "entity_type": "tool",
+              "tags": []
+            },
+            "raw_credentials": {
+              "delegated_tokens": [],
+              "inbound_tokens": [
+                {
+                  "kind": "jwt",
+                  "role": "user",
+                  "source_header": "Authorization",
+                  "token": "<token>"
+                }
+              ]
+            },
+            "security": {
+              "auth_method": null,
+              "caller_workload": null,
+              "classification": null,
+              "client": null,
+              "labels": [],
+              "subject": {
+                "claims": {},
+                "id": "sam",
+                "permissions": [],
+                "roles": [
+                  "security"
+                ],
+                "teams": []
+              }
+            }
+          },
+          "hook": "cmf.tool_pre_invoke",
+          "payload": null,
+          "payload_modified": false,
+          "violation": null
+        },
+        {
+          "continue": true,
+          "errors": [],
+          "extensions": {
+            "agent": null,
+            "delegation": null,
+            "http": null,
+            "meta": {
+              "entity_name": "list_repos",
+              "entity_type": "tool",
+              "tags": []
+            },
+            "raw_credentials": {
+              "delegated_tokens": [],
+              "inbound_tokens": [
+                {
+                  "kind": "jwt",
+                  "role": "user",
+                  "source_header": "Authorization",
+                  "token": "<token>"
+                }
+              ]
+            },
+            "security": {
+              "auth_method": null,
+              "caller_workload": null,
+              "classification": null,
+              "client": null,
+              "labels": [],
+              "subject": {
+                "claims": {},
+                "id": "sam",
+                "permissions": [],
+                "roles": [
+                  "security"
+                ],
+                "teams": []
+              }
+            }
+          },
+          "hook": "cmf.tool_post_invoke",
+          "payload": null,
+          "payload_modified": false,
+          "violation": null
+        }
+      ],
+      "upstream_calls": []
+    },
+    {
+      "code": "cel",
+      "decision": "deny",
+      "id": "list-engineer-default-code",
+      "kind": "mediate",
+      "result": null,
+      "stages": [
+        {
+          "continue": true,
+          "errors": [],
+          "extensions": {
+            "agent": null,
+            "delegation": null,
+            "http": null,
+            "meta": {
+              "entity_name": "list_repos",
+              "entity_type": "tool",
+              "tags": []
+            },
+            "raw_credentials": null,
+            "security": null
+          },
+          "hook": "identity.resolve",
+          "payload": {
+            "identity": {
+              "caller_workload": null,
+              "client": null,
+              "delegation": null,
+              "raw_claims": {
+                "aud": "cpex-parity",
+                "exp": 4102444800,
+                "iat": 1767225600,
+                "iss": "https://idp.parity.test",
+                "roles": [
+                  "engineer"
+                ],
+                "sub": "evan"
+              },
+              "raw_credentials": {
+                "delegated_tokens": [],
+                "inbound_tokens": [
+                  {
+                    "kind": "jwt",
+                    "role": "user",
+                    "source_header": "Authorization",
+                    "token": "<token>"
+                  }
+                ]
+              },
+              "subject": {
+                "claims": {},
+                "id": "evan",
+                "permissions": [],
+                "roles": [
+                  "engineer"
+                ],
+                "teams": []
+              }
+            }
+          },
+          "payload_modified": true,
+          "violation": null
+        },
+        {
+          "continue": false,
+          "errors": [],
+          "extensions": {
+            "agent": null,
+            "delegation": null,
+            "http": null,
+            "meta": {
+              "entity_name": "list_repos",
+              "entity_type": "tool",
+              "tags": []
+            },
+            "raw_credentials": {
+              "delegated_tokens": [],
+              "inbound_tokens": [
+                {
+                  "kind": "jwt",
+                  "role": "user",
+                  "source_header": "Authorization",
+                  "token": "<token>"
+                }
+              ]
+            },
+            "security": {
+              "auth_method": null,
+              "caller_workload": null,
+              "classification": null,
+              "client": null,
+              "labels": [],
+              "subject": {
+                "claims": {},
+                "id": "evan",
+                "permissions": [],
+                "roles": [
+                  "engineer"
+                ],
+                "teams": []
+              }
+            }
+          },
+          "hook": "cmf.tool_pre_invoke",
+          "payload": null,
+          "payload_modified": false,
+          "violation": {
+            "code": "cel",
+            "description": null,
+            "details": {},
+            "plugin": "apl::tool::list_repos::pre",
+            "proto_error_code": null,
+            "reason": "CEL expression evaluated to false"
+          }
+        }
+      ],
+      "upstream_calls": []
+    }
+  ],
+  "scenario": "pdp-cel"
+}

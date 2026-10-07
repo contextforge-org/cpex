@@ -1,0 +1,53 @@
+# OAuth token exchange (RFC 8693) through a delegate step.
+#
+# Source: examples/tutorial/policies/m06.yaml, with the parity mock IdP and
+# mock token endpoint. The client secret comes from a file the harness
+# writes at run time.
+
+plugins:
+  - name: idp
+    kind: identity/jwt
+    hooks: [identity.resolve]
+    config:
+      claim_mapper: standard
+      trusted_issuers:
+        - issuer: https://idp.parity.test
+          audiences: [cpex-parity]
+          algorithms: [EdDSA]
+          decoding_key:
+            kind: jwks_url
+            url: "{{MOCK_URL}}/jwks"
+            insecure_http: true
+          leeway_seconds: 60
+
+  - name: workday-oauth
+    kind: delegator/oauth
+    hooks: [token.delegate]
+    capabilities: [read_inbound_credentials, write_delegated_tokens]
+    config:
+      token_endpoint: "{{MOCK_URL}}/token"
+      client_id: cpex-gateway
+      client_secret_source:
+        kind: file
+        path: "{{CLIENT_SECRET_FILE}}"
+      insecure_http: true
+
+routes:
+  - tool: get_compensation
+    authentication:
+      - idp
+    authorization:
+      pre_invocation:
+        - "require(role.hr)"
+        - "delegate(workday-oauth, target: workday-api, audience: workday-api)"
+        - "require(delegation.granted)"
+
+  # The mock token endpoint refuses this audience.
+  - tool: read_repo
+    authentication:
+      - idp
+    authorization:
+      pre_invocation:
+        - "require(authenticated)"
+        - "delegate(workday-oauth, target: github-api, audience: github-api)"
+        - "require(delegation.granted)"

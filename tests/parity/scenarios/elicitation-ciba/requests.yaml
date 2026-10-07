@@ -1,0 +1,129 @@
+description: >-
+  A first call suspends pending the manager's CIBA approval; resuming with
+  the elicitation id proceeds when approved, denies when refused, and stays
+  pending while the approver has not answered.
+
+mocks:
+  - method: GET
+    path: /jwks
+    builtin: jwks
+  # Backchannel authentication: one auth_req_id per approver.
+  - method: POST
+    path: /ciba/auth
+    form: {login_hint: mona}
+    json: {auth_req_id: REQ-mona, expires_in: 300, interval: 5}
+  - method: POST
+    path: /ciba/auth
+    form: {login_hint: dana}
+    json: {auth_req_id: REQ-dana, expires_in: 300, interval: 5}
+  - method: POST
+    path: /ciba/auth
+    form: {login_hint: pat}
+    json: {auth_req_id: REQ-pat, expires_in: 300, interval: 5}
+  # Token polling: the first poll for each request is pending (it runs
+  # inside the dispatching call). After that mona approves, dana refuses,
+  # and pat never answers.
+  - method: POST
+    path: /ciba/token
+    form: {auth_req_id: REQ-mona}
+    max_hits: 1
+    status: 400
+    json: {error: authorization_pending}
+  - method: POST
+    path: /ciba/token
+    form: {auth_req_id: REQ-dana}
+    max_hits: 1
+    status: 400
+    json: {error: authorization_pending}
+  - method: POST
+    path: /ciba/token
+    form: {auth_req_id: REQ-mona}
+    json:
+      access_token: parity-test-only-ciba-access-token
+      token_type: Bearer
+      # Unsigned test id_token; payload {"preferred_username":"mona","sub":"u-mona"}.
+      id_token: aaa.eyJwcmVmZXJyZWRfdXNlcm5hbWUiOiJtb25hIiwic3ViIjoidS1tb25hIn0.sig
+  - method: POST
+    path: /ciba/token
+    form: {auth_req_id: REQ-dana}
+    status: 400
+    json: {error: access_denied}
+  - method: POST
+    path: /ciba/token
+    form: {auth_req_id: REQ-pat}
+    status: 400
+    json: {error: authorization_pending}
+
+tokens:
+  evan:
+    claims: {iss: https://idp.parity.test, aud: cpex-parity, sub: evan, iat: 1767225600, exp: 4102444800, roles: [engineer], manager: mona}
+  harry:
+    claims: {iss: https://idp.parity.test, aud: cpex-parity, sub: harry, iat: 1767225600, exp: 4102444800, roles: [hr], manager: dana}
+  ivy:
+    claims: {iss: https://idp.parity.test, aud: cpex-parity, sub: ivy, iat: 1767225600, exp: 4102444800, roles: [engineer], manager: pat}
+  noah:
+    claims: {iss: https://idp.parity.test, aud: cpex-parity, sub: noah, iat: 1767225600, exp: 4102444800, roles: [engineer]}
+
+requests:
+  - kind: mediate
+    id: anonymous-denied
+    tool: send_email
+    args: {to: partner@external.example, subject: proposal}
+    backend: {sent: true}
+
+  - kind: mediate
+    id: approved-first-call-pending
+    caller: {token: evan}
+    tool: send_email
+    args: {to: partner@external.example, subject: proposal}
+    backend: {sent: true}
+
+  - kind: mediate
+    id: approved-resume-allowed
+    caller: {token: evan, resume: approved-first-call-pending}
+    tool: send_email
+    args: {to: partner@external.example, subject: proposal}
+    backend: {sent: true}
+
+  - kind: mediate
+    id: approved-resume-by-other-subject
+    note: A different caller echoes evan's elicitation id.
+    caller: {token: harry, resume: approved-first-call-pending}
+    tool: send_email
+    args: {to: partner@external.example, subject: proposal}
+    backend: {sent: true}
+
+  - kind: mediate
+    id: refused-first-call-pending
+    caller: {token: harry}
+    tool: send_email
+    args: {to: vendor@external.example, subject: contract}
+    backend: {sent: true}
+
+  - kind: mediate
+    id: refused-resume-denied
+    caller: {token: harry, resume: refused-first-call-pending}
+    tool: send_email
+    args: {to: vendor@external.example, subject: contract}
+    backend: {sent: true}
+
+  - kind: mediate
+    id: unanswered-first-call-pending
+    caller: {token: ivy}
+    tool: send_email
+    args: {to: press@external.example, subject: launch}
+    backend: {sent: true}
+
+  - kind: mediate
+    id: unanswered-resume-still-pending
+    caller: {token: ivy, resume: unanswered-first-call-pending}
+    tool: send_email
+    args: {to: press@external.example, subject: launch}
+    backend: {sent: true}
+
+  - kind: mediate
+    id: no-approver-claim
+    caller: {token: noah}
+    tool: send_email
+    args: {to: partner@external.example, subject: proposal}
+    backend: {sent: true}

@@ -1,0 +1,452 @@
+{
+  "config": "scenarios/pdp-cedar/config.yaml",
+  "description": "Cedar permit, default deny, and an explicit forbid that names its policy id in the violation code.",
+  "load": {
+    "ok": true,
+    "upstream_calls": [
+      {
+        "form": {},
+        "method": "GET",
+        "path": "/jwks"
+      }
+    ]
+  },
+  "requests": [
+    {
+      "code": null,
+      "decision": "allow",
+      "id": "hr-permitted",
+      "kind": "mediate",
+      "result": {
+        "employee_id": "e-1001",
+        "salary": 185000
+      },
+      "stages": [
+        {
+          "continue": true,
+          "errors": [],
+          "extensions": {
+            "agent": null,
+            "delegation": null,
+            "http": null,
+            "meta": {
+              "entity_name": "get_compensation",
+              "entity_type": "tool",
+              "tags": []
+            },
+            "raw_credentials": null,
+            "security": null
+          },
+          "hook": "identity.resolve",
+          "payload": {
+            "identity": {
+              "caller_workload": null,
+              "client": null,
+              "delegation": null,
+              "raw_claims": {
+                "aud": "cpex-parity",
+                "exp": 4102444800,
+                "iat": 1767225600,
+                "iss": "https://idp.parity.test",
+                "roles": [
+                  "hr"
+                ],
+                "sub": "alice"
+              },
+              "raw_credentials": {
+                "delegated_tokens": [],
+                "inbound_tokens": [
+                  {
+                    "kind": "jwt",
+                    "role": "user",
+                    "source_header": "Authorization",
+                    "token": "<token>"
+                  }
+                ]
+              },
+              "subject": {
+                "claims": {},
+                "id": "alice",
+                "permissions": [],
+                "roles": [
+                  "hr"
+                ],
+                "teams": []
+              }
+            }
+          },
+          "payload_modified": true,
+          "violation": null
+        },
+        {
+          "continue": true,
+          "errors": [],
+          "extensions": {
+            "agent": null,
+            "delegation": null,
+            "http": null,
+            "meta": {
+              "entity_name": "get_compensation",
+              "entity_type": "tool",
+              "tags": []
+            },
+            "raw_credentials": {
+              "delegated_tokens": [],
+              "inbound_tokens": [
+                {
+                  "kind": "jwt",
+                  "role": "user",
+                  "source_header": "Authorization",
+                  "token": "<token>"
+                }
+              ]
+            },
+            "security": {
+              "auth_method": null,
+              "caller_workload": null,
+              "classification": null,
+              "client": null,
+              "labels": [],
+              "subject": {
+                "claims": {},
+                "id": "alice",
+                "permissions": [],
+                "roles": [
+                  "hr"
+                ],
+                "teams": []
+              }
+            }
+          },
+          "hook": "cmf.tool_pre_invoke",
+          "payload": null,
+          "payload_modified": false,
+          "violation": null
+        },
+        {
+          "continue": true,
+          "errors": [],
+          "extensions": {
+            "agent": null,
+            "delegation": null,
+            "http": null,
+            "meta": {
+              "entity_name": "get_compensation",
+              "entity_type": "tool",
+              "tags": []
+            },
+            "raw_credentials": {
+              "delegated_tokens": [],
+              "inbound_tokens": [
+                {
+                  "kind": "jwt",
+                  "role": "user",
+                  "source_header": "Authorization",
+                  "token": "<token>"
+                }
+              ]
+            },
+            "security": {
+              "auth_method": null,
+              "caller_workload": null,
+              "classification": null,
+              "client": null,
+              "labels": [],
+              "subject": {
+                "claims": {},
+                "id": "alice",
+                "permissions": [],
+                "roles": [
+                  "hr"
+                ],
+                "teams": []
+              }
+            }
+          },
+          "hook": "cmf.tool_post_invoke",
+          "payload": null,
+          "payload_modified": false,
+          "violation": null
+        }
+      ],
+      "upstream_calls": []
+    },
+    {
+      "code": "cedar.default_deny",
+      "decision": "deny",
+      "id": "engineer-default-deny",
+      "kind": "mediate",
+      "result": null,
+      "stages": [
+        {
+          "continue": true,
+          "errors": [],
+          "extensions": {
+            "agent": null,
+            "delegation": null,
+            "http": null,
+            "meta": {
+              "entity_name": "get_compensation",
+              "entity_type": "tool",
+              "tags": []
+            },
+            "raw_credentials": null,
+            "security": null
+          },
+          "hook": "identity.resolve",
+          "payload": {
+            "identity": {
+              "caller_workload": null,
+              "client": null,
+              "delegation": null,
+              "raw_claims": {
+                "aud": "cpex-parity",
+                "exp": 4102444800,
+                "iat": 1767225600,
+                "iss": "https://idp.parity.test",
+                "roles": [
+                  "engineer"
+                ],
+                "sub": "evan"
+              },
+              "raw_credentials": {
+                "delegated_tokens": [],
+                "inbound_tokens": [
+                  {
+                    "kind": "jwt",
+                    "role": "user",
+                    "source_header": "Authorization",
+                    "token": "<token>"
+                  }
+                ]
+              },
+              "subject": {
+                "claims": {},
+                "id": "evan",
+                "permissions": [],
+                "roles": [
+                  "engineer"
+                ],
+                "teams": []
+              }
+            }
+          },
+          "payload_modified": true,
+          "violation": null
+        },
+        {
+          "continue": false,
+          "errors": [],
+          "extensions": {
+            "agent": null,
+            "delegation": null,
+            "http": null,
+            "meta": {
+              "entity_name": "get_compensation",
+              "entity_type": "tool",
+              "tags": []
+            },
+            "raw_credentials": {
+              "delegated_tokens": [],
+              "inbound_tokens": [
+                {
+                  "kind": "jwt",
+                  "role": "user",
+                  "source_header": "Authorization",
+                  "token": "<token>"
+                }
+              ]
+            },
+            "security": {
+              "auth_method": null,
+              "caller_workload": null,
+              "classification": null,
+              "client": null,
+              "labels": [],
+              "subject": {
+                "claims": {},
+                "id": "evan",
+                "permissions": [],
+                "roles": [
+                  "engineer"
+                ],
+                "teams": []
+              }
+            }
+          },
+          "hook": "cmf.tool_pre_invoke",
+          "payload": null,
+          "payload_modified": false,
+          "violation": {
+            "code": "cedar.default_deny",
+            "description": null,
+            "details": {},
+            "plugin": "apl::tool::get_compensation::pre",
+            "proto_error_code": null,
+            "reason": "no Cedar permit policy matched the request"
+          }
+        }
+      ],
+      "upstream_calls": []
+    },
+    {
+      "code": "contractor-forbid",
+      "decision": "deny",
+      "id": "contractor-forbidden",
+      "kind": "mediate",
+      "result": null,
+      "stages": [
+        {
+          "continue": true,
+          "errors": [],
+          "extensions": {
+            "agent": null,
+            "delegation": null,
+            "http": null,
+            "meta": {
+              "entity_name": "get_compensation",
+              "entity_type": "tool",
+              "tags": []
+            },
+            "raw_credentials": null,
+            "security": null
+          },
+          "hook": "identity.resolve",
+          "payload": {
+            "identity": {
+              "caller_workload": null,
+              "client": null,
+              "delegation": null,
+              "raw_claims": {
+                "aud": "cpex-parity",
+                "exp": 4102444800,
+                "iat": 1767225600,
+                "iss": "https://idp.parity.test",
+                "roles": [
+                  "contractor",
+                  "hr"
+                ],
+                "sub": "carl"
+              },
+              "raw_credentials": {
+                "delegated_tokens": [],
+                "inbound_tokens": [
+                  {
+                    "kind": "jwt",
+                    "role": "user",
+                    "source_header": "Authorization",
+                    "token": "<token>"
+                  }
+                ]
+              },
+              "subject": {
+                "claims": {},
+                "id": "carl",
+                "permissions": [],
+                "roles": [
+                  "contractor",
+                  "hr"
+                ],
+                "teams": []
+              }
+            }
+          },
+          "payload_modified": true,
+          "violation": null
+        },
+        {
+          "continue": false,
+          "errors": [],
+          "extensions": {
+            "agent": null,
+            "delegation": null,
+            "http": null,
+            "meta": {
+              "entity_name": "get_compensation",
+              "entity_type": "tool",
+              "tags": []
+            },
+            "raw_credentials": {
+              "delegated_tokens": [],
+              "inbound_tokens": [
+                {
+                  "kind": "jwt",
+                  "role": "user",
+                  "source_header": "Authorization",
+                  "token": "<token>"
+                }
+              ]
+            },
+            "security": {
+              "auth_method": null,
+              "caller_workload": null,
+              "classification": null,
+              "client": null,
+              "labels": [],
+              "subject": {
+                "claims": {},
+                "id": "carl",
+                "permissions": [],
+                "roles": [
+                  "contractor",
+                  "hr"
+                ],
+                "teams": []
+              }
+            }
+          },
+          "hook": "cmf.tool_pre_invoke",
+          "payload": null,
+          "payload_modified": false,
+          "violation": {
+            "code": "contractor-forbid",
+            "description": null,
+            "details": {},
+            "plugin": "apl::tool::get_compensation::pre",
+            "proto_error_code": null,
+            "reason": "denied by Cedar policy: contractor-forbid"
+          }
+        }
+      ],
+      "upstream_calls": []
+    },
+    {
+      "code": "pdp:Cedar",
+      "decision": "deny",
+      "id": "anonymous",
+      "kind": "mediate",
+      "result": null,
+      "stages": [
+        {
+          "continue": false,
+          "errors": [],
+          "extensions": {
+            "agent": null,
+            "delegation": null,
+            "http": null,
+            "meta": {
+              "entity_name": "get_compensation",
+              "entity_type": "tool",
+              "tags": []
+            },
+            "raw_credentials": null,
+            "security": null
+          },
+          "hook": "cmf.tool_pre_invoke",
+          "payload": null,
+          "payload_modified": false,
+          "violation": {
+            "code": "pdp:Cedar",
+            "description": null,
+            "details": {},
+            "plugin": "apl::tool::get_compensation::pre",
+            "proto_error_code": null,
+            "reason": "PDP error: PDP dispatch failed: Cedar request needs a principal but bag has no `subject.id` — install an identity-hook plugin upstream of APL policy"
+          }
+        }
+      ],
+      "upstream_calls": []
+    }
+  ],
+  "scenario": "pdp-cedar"
+}

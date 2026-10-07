@@ -1,0 +1,45 @@
+# CEL PDP decision.
+#
+# Source: examples/tutorial/policies/m05.yaml, with the parity mock IdP.
+
+global:
+  apl:
+    pdp:
+      - kind: cel
+
+plugins:
+  - name: idp
+    kind: identity/jwt
+    hooks: [identity.resolve]
+    config:
+      claim_mapper: standard
+      trusted_issuers:
+        - issuer: https://idp.parity.test
+          audiences: [cpex-parity]
+          algorithms: [EdDSA]
+          decoding_key:
+            kind: jwks_url
+            url: "{{MOCK_URL}}/jwks"
+            insecure_http: true
+          leeway_seconds: 60
+
+routes:
+  - tool: search_repos
+    authentication:
+      - idp
+    authorization:
+      pre_invocation:
+        - "require(authenticated)"
+        - cel:
+            expr: "(has(role.engineer) && role.engineer && args.visibility == 'internal') || (has(role.security) && role.security)"
+            on_deny:
+              - "deny('engineers read internal only; security reads any', 'repo.policy_denied')"
+
+  # No on_deny: the CEL step's own denial code surfaces.
+  - tool: list_repos
+    authentication:
+      - idp
+    authorization:
+      pre_invocation:
+        - cel:
+            expr: "has(role.security) && role.security"

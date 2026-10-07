@@ -1,0 +1,53 @@
+# Location: ./tests/parity/harness/Cargo.toml
+# SPDX-License-Identifier: Apache-2.0
+#
+# Parity capture harness. Replays the request sets under tests/parity/scenarios
+# through the engine and writes normalized decision snapshots to
+# tests/parity/snapshots. Not published.
+#
+#   cargo run -p cpex-parity-harness -- capture
+#   cargo test -p cpex-parity-harness
+#
+# Held out of the workspace default-members: it pulls the full builtin set,
+# including the Valkey session store and its redis/TLS stack.
+
+[package]
+name = "cpex-parity-harness"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+publish = false
+
+[package.metadata.release]
+release = false
+
+[[bin]]
+name = "parity-capture"
+path = "src/main.rs"
+
+[dependencies]
+# Engine under test. Everything specific to it lives in `src/engine.rs`.
+cpex = { path = "../../../crates/cpex", features = ["full"] }
+cpex-core = { workspace = true }
+
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "sync", "time", "macros"] }
+async-trait = { workspace = true }
+tracing = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+
+# Test-only JWT signing (Ed25519 keys derived from fixed labels) and the
+# mock IdP / CIBA endpoints.
+aws-lc-rs = "1"
+base64 = "0.22"
+sha2 = "0.10"
+tiny_http = "0.12"
+form_urlencoded = "1"
+
+# Raw keyspace export from the Valkey store written during capture.
+redis = { version = "1.2", default-features = false }
+
+[lints]
+workspace = true

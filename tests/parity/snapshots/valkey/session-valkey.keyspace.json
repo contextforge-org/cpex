@@ -1,0 +1,19 @@
+{
+  "key_prefix": "taint:v1",
+  "keys": {
+    "taint:v1:11f9b4e44119d0438aea644ad512daf0be939ba023ac40af0013172d32b89a97": {
+      "members": [
+        "secret"
+      ],
+      "ttl": "set",
+      "type": "set"
+    },
+    "taint:v1:855912aa9820fe0a7b54da2cbc5456b801313979c103c5420c8320ad1710b2b9": {
+      "members": [
+        "secret"
+      ],
+      "ttl": "set",
+      "type": "set"
+    }
+  }
+}

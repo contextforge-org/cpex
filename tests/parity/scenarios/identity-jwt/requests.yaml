@@ -1,0 +1,104 @@
+description: >-
+  JWT identity against a JWKS URL: valid tokens resolve a subject and gate
+  on role; expired, wrong-audience, untrusted-issuer, forged, unknown-kid
+  and malformed tokens are rejected with their auth codes.
+
+mocks:
+  - method: GET
+    path: /jwks
+    builtin: jwks
+
+tokens:
+  alice:
+    claims: {iss: https://idp.parity.test, aud: cpex-parity, sub: alice, iat: 1767225600, exp: 4102444800, roles: [hr], permissions: [view_ssn], teams: [people-ops]}
+  evan:
+    claims: {iss: https://idp.parity.test, aud: cpex-parity, sub: evan, iat: 1767225600, exp: 4102444800, roles: [engineer]}
+  alice_expired:
+    claims: {iss: https://idp.parity.test, aud: cpex-parity, sub: alice, iat: 999990000, exp: 1000000000, roles: [hr]}
+  alice_wrong_aud:
+    claims: {iss: https://idp.parity.test, aud: some-other-api, sub: alice, iat: 1767225600, exp: 4102444800, roles: [hr]}
+  alice_untrusted_iss:
+    claims: {iss: https://evil.parity.test, aud: cpex-parity, sub: alice, iat: 1767225600, exp: 4102444800, roles: [hr]}
+  alice_forged:
+    key: rogue
+    kid: parity-primary
+    claims: {iss: https://idp.parity.test, aud: cpex-parity, sub: alice, iat: 1767225600, exp: 4102444800, roles: [hr]}
+  alice_unknown_kid:
+    kid: parity-retired
+    claims: {iss: https://idp.parity.test, aud: cpex-parity, sub: alice, iat: 1767225600, exp: 4102444800, roles: [hr]}
+
+requests:
+  - kind: mediate
+    id: anonymous-get-compensation
+    tool: get_compensation
+    args: {employee_id: e-1001}
+    backend: {employee_id: e-1001, salary: 185000}
+
+  - kind: mediate
+    id: anonymous-search-repos
+    tool: search_repos
+    args: {query: cpex, visibility: public}
+    backend: {repos: [cpex, cpex-docs]}
+
+  - kind: mediate
+    id: hr-allowed
+    caller: {token: alice}
+    tool: get_compensation
+    args: {employee_id: e-1001}
+    backend: {employee_id: e-1001, salary: 185000}
+
+  - kind: mediate
+    id: engineer-denied-by-role
+    caller: {token: evan}
+    tool: get_compensation
+    args: {employee_id: e-1001}
+    backend: {employee_id: e-1001, salary: 185000}
+
+  - kind: mediate
+    id: expired-token
+    caller: {token: alice_expired}
+    tool: get_compensation
+    args: {employee_id: e-1001}
+    backend: {employee_id: e-1001, salary: 185000}
+
+  - kind: mediate
+    id: wrong-audience
+    caller: {token: alice_wrong_aud}
+    tool: get_compensation
+    args: {employee_id: e-1001}
+    backend: {employee_id: e-1001, salary: 185000}
+
+  - kind: mediate
+    id: untrusted-issuer
+    caller: {token: alice_untrusted_iss}
+    tool: get_compensation
+    args: {employee_id: e-1001}
+    backend: {employee_id: e-1001, salary: 185000}
+
+  - kind: mediate
+    id: forged-signature
+    caller: {token: alice_forged}
+    tool: get_compensation
+    args: {employee_id: e-1001}
+    backend: {employee_id: e-1001, salary: 185000}
+
+  - kind: mediate
+    id: unknown-kid
+    caller: {token: alice_unknown_kid}
+    tool: get_compensation
+    args: {employee_id: e-1001}
+    backend: {employee_id: e-1001, salary: 185000}
+
+  - kind: mediate
+    id: malformed-token
+    caller: {raw_token: not-a-jwt}
+    tool: get_compensation
+    args: {employee_id: e-1001}
+    backend: {employee_id: e-1001, salary: 185000}
+
+  - kind: mediate
+    id: authenticated-open-route
+    caller: {token: evan}
+    tool: search_repos
+    args: {query: cpex, visibility: internal}
+    backend: {repos: [cpex-internal]}

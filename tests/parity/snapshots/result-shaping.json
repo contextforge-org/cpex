@@ -1,0 +1,656 @@
+{
+  "config": "scenarios/result-shaping/config.yaml",
+  "description": "The same backend record seen by callers with different roles and permissions: ssn redacted without view_ssn, salary redacted without hr, employee_id always masked.",
+  "load": {
+    "ok": true,
+    "upstream_calls": [
+      {
+        "form": {},
+        "method": "GET",
+        "path": "/jwks"
+      }
+    ]
+  },
+  "requests": [
+    {
+      "code": null,
+      "decision": "allow",
+      "id": "hr-with-view-ssn",
+      "kind": "mediate",
+      "result": {
+        "employee_id": "*******7734",
+        "name": "Dana Diaz",
+        "salary": 185000,
+        "ssn": "123-45-6789"
+      },
+      "stages": [
+        {
+          "continue": true,
+          "errors": [],
+          "extensions": {
+            "agent": null,
+            "delegation": null,
+            "http": null,
+            "meta": {
+              "entity_name": "get_compensation",
+              "entity_type": "tool",
+              "tags": []
+            },
+            "raw_credentials": null,
+            "security": null
+          },
+          "hook": "identity.resolve",
+          "payload": {
+            "identity": {
+              "caller_workload": null,
+              "client": null,
+              "delegation": null,
+              "raw_claims": {
+                "aud": "cpex-parity",
+                "exp": 4102444800,
+                "iat": 1767225600,
+                "iss": "https://idp.parity.test",
+                "permissions": [
+                  "view_ssn"
+                ],
+                "roles": [
+                  "hr"
+                ],
+                "sub": "alice"
+              },
+              "raw_credentials": {
+                "delegated_tokens": [],
+                "inbound_tokens": [
+                  {
+                    "kind": "jwt",
+                    "role": "user",
+                    "source_header": "Authorization",
+                    "token": "<token>"
+                  }
+                ]
+              },
+              "subject": {
+                "claims": {},
+                "id": "alice",
+                "permissions": [
+                  "view_ssn"
+                ],
+                "roles": [
+                  "hr"
+                ],
+                "teams": []
+              }
+            }
+          },
+          "payload_modified": true,
+          "violation": null
+        },
+        {
+          "continue": true,
+          "errors": [],
+          "extensions": {
+            "agent": null,
+            "delegation": null,
+            "http": null,
+            "meta": {
+              "entity_name": "get_compensation",
+              "entity_type": "tool",
+              "tags": []
+            },
+            "raw_credentials": {
+              "delegated_tokens": [],
+              "inbound_tokens": [
+                {
+                  "kind": "jwt",
+                  "role": "user",
+                  "source_header": "Authorization",
+                  "token": "<token>"
+                }
+              ]
+            },
+            "security": {
+              "auth_method": null,
+              "caller_workload": null,
+              "classification": null,
+              "client": null,
+              "labels": [],
+              "subject": {
+                "claims": {},
+                "id": "alice",
+                "permissions": [
+                  "view_ssn"
+                ],
+                "roles": [
+                  "hr"
+                ],
+                "teams": []
+              }
+            }
+          },
+          "hook": "cmf.tool_pre_invoke",
+          "payload": null,
+          "payload_modified": false,
+          "violation": null
+        },
+        {
+          "continue": true,
+          "errors": [],
+          "extensions": {
+            "agent": null,
+            "delegation": null,
+            "http": null,
+            "meta": {
+              "entity_name": "get_compensation",
+              "entity_type": "tool",
+              "tags": []
+            },
+            "raw_credentials": {
+              "delegated_tokens": [],
+              "inbound_tokens": [
+                {
+                  "kind": "jwt",
+                  "role": "user",
+                  "source_header": "Authorization",
+                  "token": "<token>"
+                }
+              ]
+            },
+            "security": {
+              "auth_method": null,
+              "caller_workload": null,
+              "classification": null,
+              "client": null,
+              "labels": [],
+              "subject": {
+                "claims": {},
+                "id": "alice",
+                "permissions": [
+                  "view_ssn"
+                ],
+                "roles": [
+                  "hr"
+                ],
+                "teams": []
+              }
+            }
+          },
+          "hook": "cmf.tool_post_invoke",
+          "payload": {
+            "cmf": {
+              "message": {
+                "content": [
+                  {
+                    "content": {
+                      "content": {
+                        "employee_id": "*******7734",
+                        "name": "Dana Diaz",
+                        "salary": 185000,
+                        "ssn": "123-45-6789"
+                      },
+                      "is_error": false,
+                      "tool_call_id": "parity-call",
+                      "tool_name": "get_compensation"
+                    },
+                    "content_type": "tool_result"
+                  }
+                ],
+                "role": "tool",
+                "schema_version": "2.0"
+              }
+            }
+          },
+          "payload_modified": true,
+          "violation": null
+        }
+      ],
+      "upstream_calls": []
+    },
+    {
+      "code": null,
+      "decision": "allow",
+      "id": "hr-without-view-ssn",
+      "kind": "mediate",
+      "result": {
+        "employee_id": "*******7734",
+        "name": "Dana Diaz",
+        "salary": 185000,
+        "ssn": "[REDACTED]"
+      },
+      "stages": [
+        {
+          "continue": true,
+          "errors": [],
+          "extensions": {
+            "agent": null,
+            "delegation": null,
+            "http": null,
+            "meta": {
+              "entity_name": "get_compensation",
+              "entity_type": "tool",
+              "tags": []
+            },
+            "raw_credentials": null,
+            "security": null
+          },
+          "hook": "identity.resolve",
+          "payload": {
+            "identity": {
+              "caller_workload": null,
+              "client": null,
+              "delegation": null,
+              "raw_claims": {
+                "aud": "cpex-parity",
+                "exp": 4102444800,
+                "iat": 1767225600,
+                "iss": "https://idp.parity.test",
+                "roles": [
+                  "hr"
+                ],
+                "sub": "harry"
+              },
+              "raw_credentials": {
+                "delegated_tokens": [],
+                "inbound_tokens": [
+                  {
+                    "kind": "jwt",
+                    "role": "user",
+                    "source_header": "Authorization",
+                    "token": "<token>"
+                  }
+                ]
+              },
+              "subject": {
+                "claims": {},
+                "id": "harry",
+                "permissions": [],
+                "roles": [
+                  "hr"
+                ],
+                "teams": []
+              }
+            }
+          },
+          "payload_modified": true,
+          "violation": null
+        },
+        {
+          "continue": true,
+          "errors": [],
+          "extensions": {
+            "agent": null,
+            "delegation": null,
+            "http": null,
+            "meta": {
+              "entity_name": "get_compensation",
+              "entity_type": "tool",
+              "tags": []
+            },
+            "raw_credentials": {
+              "delegated_tokens": [],
+              "inbound_tokens": [
+                {
+                  "kind": "jwt",
+                  "role": "user",
+                  "source_header": "Authorization",
+                  "token": "<token>"
+                }
+              ]
+            },
+            "security": {
+              "auth_method": null,
+              "caller_workload": null,
+              "classification": null,
+              "client": null,
+              "labels": [],
+              "subject": {
+                "claims": {},
+                "id": "harry",
+                "permissions": [],
+                "roles": [
+                  "hr"
+                ],
+                "teams": []
+              }
+            }
+          },
+          "hook": "cmf.tool_pre_invoke",
+          "payload": null,
+          "payload_modified": false,
+          "violation": null
+        },
+        {
+          "continue": true,
+          "errors": [],
+          "extensions": {
+            "agent": null,
+            "delegation": null,
+            "http": null,
+            "meta": {
+              "entity_name": "get_compensation",
+              "entity_type": "tool",
+              "tags": []
+            },
+            "raw_credentials": {
+              "delegated_tokens": [],
+              "inbound_tokens": [
+                {
+                  "kind": "jwt",
+                  "role": "user",
+                  "source_header": "Authorization",
+                  "token": "<token>"
+                }
+              ]
+            },
+            "security": {
+              "auth_method": null,
+              "caller_workload": null,
+              "classification": null,
+              "client": null,
+              "labels": [],
+              "subject": {
+                "claims": {},
+                "id": "harry",
+                "permissions": [],
+                "roles": [
+                  "hr"
+                ],
+                "teams": []
+              }
+            }
+          },
+          "hook": "cmf.tool_post_invoke",
+          "payload": {
+            "cmf": {
+              "message": {
+                "content": [
+                  {
+                    "content": {
+                      "content": {
+                        "employee_id": "*******7734",
+                        "name": "Dana Diaz",
+                        "salary": 185000,
+                        "ssn": "[REDACTED]"
+                      },
+                      "is_error": false,
+                      "tool_call_id": "parity-call",
+                      "tool_name": "get_compensation"
+                    },
+                    "content_type": "tool_result"
+                  }
+                ],
+                "role": "tool",
+                "schema_version": "2.0"
+              }
+            }
+          },
+          "payload_modified": true,
+          "violation": null
+        }
+      ],
+      "upstream_calls": []
+    },
+    {
+      "code": null,
+      "decision": "allow",
+      "id": "engineer",
+      "kind": "mediate",
+      "result": {
+        "employee_id": "*******7734",
+        "name": "Dana Diaz",
+        "salary": "[REDACTED]",
+        "ssn": "[REDACTED]"
+      },
+      "stages": [
+        {
+          "continue": true,
+          "errors": [],
+          "extensions": {
+            "agent": null,
+            "delegation": null,
+            "http": null,
+            "meta": {
+              "entity_name": "get_compensation",
+              "entity_type": "tool",
+              "tags": []
+            },
+            "raw_credentials": null,
+            "security": null
+          },
+          "hook": "identity.resolve",
+          "payload": {
+            "identity": {
+              "caller_workload": null,
+              "client": null,
+              "delegation": null,
+              "raw_claims": {
+                "aud": "cpex-parity",
+                "exp": 4102444800,
+                "iat": 1767225600,
+                "iss": "https://idp.parity.test",
+                "roles": [
+                  "engineer"
+                ],
+                "sub": "evan"
+              },
+              "raw_credentials": {
+                "delegated_tokens": [],
+                "inbound_tokens": [
+                  {
+                    "kind": "jwt",
+                    "role": "user",
+                    "source_header": "Authorization",
+                    "token": "<token>"
+                  }
+                ]
+              },
+              "subject": {
+                "claims": {},
+                "id": "evan",
+                "permissions": [],
+                "roles": [
+                  "engineer"
+                ],
+                "teams": []
+              }
+            }
+          },
+          "payload_modified": true,
+          "violation": null
+        },
+        {
+          "continue": true,
+          "errors": [],
+          "extensions": {
+            "agent": null,
+            "delegation": null,
+            "http": null,
+            "meta": {
+              "entity_name": "get_compensation",
+              "entity_type": "tool",
+              "tags": []
+            },
+            "raw_credentials": {
+              "delegated_tokens": [],
+              "inbound_tokens": [
+                {
+                  "kind": "jwt",
+                  "role": "user",
+                  "source_header": "Authorization",
+                  "token": "<token>"
+                }
+              ]
+            },
+            "security": {
+              "auth_method": null,
+              "caller_workload": null,
+              "classification": null,
+              "client": null,
+              "labels": [],
+              "subject": {
+                "claims": {},
+                "id": "evan",
+                "permissions": [],
+                "roles": [
+                  "engineer"
+                ],
+                "teams": []
+              }
+            }
+          },
+          "hook": "cmf.tool_pre_invoke",
+          "payload": null,
+          "payload_modified": false,
+          "violation": null
+        },
+        {
+          "continue": true,
+          "errors": [],
+          "extensions": {
+            "agent": null,
+            "delegation": null,
+            "http": null,
+            "meta": {
+              "entity_name": "get_compensation",
+              "entity_type": "tool",
+              "tags": []
+            },
+            "raw_credentials": {
+              "delegated_tokens": [],
+              "inbound_tokens": [
+                {
+                  "kind": "jwt",
+                  "role": "user",
+                  "source_header": "Authorization",
+                  "token": "<token>"
+                }
+              ]
+            },
+            "security": {
+              "auth_method": null,
+              "caller_workload": null,
+              "classification": null,
+              "client": null,
+              "labels": [],
+              "subject": {
+                "claims": {},
+                "id": "evan",
+                "permissions": [],
+                "roles": [
+                  "engineer"
+                ],
+                "teams": []
+              }
+            }
+          },
+          "hook": "cmf.tool_post_invoke",
+          "payload": {
+            "cmf": {
+              "message": {
+                "content": [
+                  {
+                    "content": {
+                      "content": {
+                        "employee_id": "*******7734",
+                        "name": "Dana Diaz",
+                        "salary": "[REDACTED]",
+                        "ssn": "[REDACTED]"
+                      },
+                      "is_error": false,
+                      "tool_call_id": "parity-call",
+                      "tool_name": "get_compensation"
+                    },
+                    "content_type": "tool_result"
+                  }
+                ],
+                "role": "tool",
+                "schema_version": "2.0"
+              }
+            }
+          },
+          "payload_modified": true,
+          "violation": null
+        }
+      ],
+      "upstream_calls": []
+    },
+    {
+      "code": null,
+      "decision": "allow",
+      "id": "anonymous",
+      "kind": "mediate",
+      "result": {
+        "employee_id": "*******7734",
+        "name": "Dana Diaz",
+        "salary": "[REDACTED]",
+        "ssn": "[REDACTED]"
+      },
+      "stages": [
+        {
+          "continue": true,
+          "errors": [],
+          "extensions": {
+            "agent": null,
+            "delegation": null,
+            "http": null,
+            "meta": {
+              "entity_name": "get_compensation",
+              "entity_type": "tool",
+              "tags": []
+            },
+            "raw_credentials": null,
+            "security": null
+          },
+          "hook": "cmf.tool_pre_invoke",
+          "payload": null,
+          "payload_modified": false,
+          "violation": null
+        },
+        {
+          "continue": true,
+          "errors": [],
+          "extensions": {
+            "agent": null,
+            "delegation": null,
+            "http": null,
+            "meta": {
+              "entity_name": "get_compensation",
+              "entity_type": "tool",
+              "tags": []
+            },
+            "raw_credentials": null,
+            "security": null
+          },
+          "hook": "cmf.tool_post_invoke",
+          "payload": {
+            "cmf": {
+              "message": {
+                "content": [
+                  {
+                    "content": {
+                      "content": {
+                        "employee_id": "*******7734",
+                        "name": "Dana Diaz",
+                        "salary": "[REDACTED]",
+                        "ssn": "[REDACTED]"
+                      },
+                      "is_error": false,
+                      "tool_call_id": "parity-call",
+                      "tool_name": "get_compensation"
+                    },
+                    "content_type": "tool_result"
+                  }
+                ],
+                "role": "tool",
+                "schema_version": "2.0"
+              }
+            }
+          },
+          "payload_modified": true,
+          "violation": null
+        }
+      ],
+      "upstream_calls": []
+    }
+  ],
+  "scenario": "result-shaping"
+}

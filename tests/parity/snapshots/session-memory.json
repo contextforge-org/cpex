@@ -1,0 +1,1359 @@
+{
+  "config": "scenarios/session-memory/config.yaml",
+  "description": "A session that read compensation is tainted `secret`, and a later email in that session is denied. Fresh sessions and other subjects using the same session id are unaffected.",
+  "load": {
+    "ok": true,
+    "upstream_calls": [
+      {
+        "form": {},
+        "method": "GET",
+        "path": "/jwks"
+      }
+    ]
+  },
+  "requests": [
+    {
+      "code": null,
+      "decision": "allow",
+      "id": "email-before-taint",
+      "kind": "mediate",
+      "result": {
+        "sent": true
+      },
+      "stages": [
+        {
+          "continue": true,
+          "errors": [],
+          "extensions": {
+            "agent": {
+              "session_id": "sess-1"
+            },
+            "delegation": null,
+            "http": null,
+            "meta": {
+              "entity_name": "send_email",
+              "entity_type": "tool",
+              "tags": []
+            },
+            "raw_credentials": null,
+            "security": null
+          },
+          "hook": "identity.resolve",
+          "payload": {
+            "identity": {
+              "caller_workload": null,
+              "client": null,
+              "delegation": null,
+              "raw_claims": {
+                "aud": "cpex-parity",
+                "exp": 4102444800,
+                "iat": 1767225600,
+                "iss": "https://idp.parity.test",
+                "roles": [
+                  "hr"
+                ],
+                "sub": "alice"
+              },
+              "raw_credentials": {
+                "delegated_tokens": [],
+                "inbound_tokens": [
+                  {
+                    "kind": "jwt",
+                    "role": "user",
+                    "source_header": "Authorization",
+                    "token": "<token>"
+                  }
+                ]
+              },
+              "subject": {
+                "claims": {},
+                "id": "alice",
+                "permissions": [],
+                "roles": [
+                  "hr"
+                ],
+                "teams": []
+              }
+            }
+          },
+          "payload_modified": true,
+          "violation": null
+        },
+        {
+          "continue": true,
+          "errors": [],
+          "extensions": {
+            "agent": {
+              "session_id": "sess-1"
+            },
+            "delegation": null,
+            "http": null,
+            "meta": {
+              "entity_name": "send_email",
+              "entity_type": "tool",
+              "tags": []
+            },
+            "raw_credentials": {
+              "delegated_tokens": [],
+              "inbound_tokens": [
+                {
+                  "kind": "jwt",
+                  "role": "user",
+                  "source_header": "Authorization",
+                  "token": "<token>"
+                }
+              ]
+            },
+            "security": {
+              "auth_method": null,
+              "caller_workload": null,
+              "classification": null,
+              "client": null,
+              "labels": [],
+              "subject": {
+                "claims": {},
+                "id": "alice",
+                "permissions": [],
+                "roles": [
+                  "hr"
+                ],
+                "teams": []
+              }
+            }
+          },
+          "hook": "cmf.tool_pre_invoke",
+          "payload": null,
+          "payload_modified": false,
+          "violation": null
+        },
+        {
+          "continue": true,
+          "errors": [],
+          "extensions": {
+            "agent": {
+              "session_id": "sess-1"
+            },
+            "delegation": null,
+            "http": null,
+            "meta": {
+              "entity_name": "send_email",
+              "entity_type": "tool",
+              "tags": []
+            },
+            "raw_credentials": {
+              "delegated_tokens": [],
+              "inbound_tokens": [
+                {
+                  "kind": "jwt",
+                  "role": "user",
+                  "source_header": "Authorization",
+                  "token": "<token>"
+                }
+              ]
+            },
+            "security": {
+              "auth_method": null,
+              "caller_workload": null,
+              "classification": null,
+              "client": null,
+              "labels": [],
+              "subject": {
+                "claims": {},
+                "id": "alice",
+                "permissions": [],
+                "roles": [
+                  "hr"
+                ],
+                "teams": []
+              }
+            }
+          },
+          "hook": "cmf.tool_post_invoke",
+          "payload": null,
+          "payload_modified": false,
+          "violation": null
+        }
+      ],
+      "upstream_calls": []
+    },
+    {
+      "code": null,
+      "decision": "allow",
+      "id": "read-compensation-taints",
+      "kind": "mediate",
+      "result": {
+        "employee_id": "e-1001",
+        "salary": 185000
+      },
+      "stages": [
+        {
+          "continue": true,
+          "errors": [],
+          "extensions": {
+            "agent": {
+              "session_id": "sess-1"
+            },
+            "delegation": null,
+            "http": null,
+            "meta": {
+              "entity_name": "get_compensation",
+              "entity_type": "tool",
+              "tags": []
+            },
+            "raw_credentials": null,
+            "security": null
+          },
+          "hook": "identity.resolve",
+          "payload": {
+            "identity": {
+              "caller_workload": null,
+              "client": null,
+              "delegation": null,
+              "raw_claims": {
+                "aud": "cpex-parity",
+                "exp": 4102444800,
+                "iat": 1767225600,
+                "iss": "https://idp.parity.test",
+                "roles": [
+                  "hr"
+                ],
+                "sub": "alice"
+              },
+              "raw_credentials": {
+                "delegated_tokens": [],
+                "inbound_tokens": [
+                  {
+                    "kind": "jwt",
+                    "role": "user",
+                    "source_header": "Authorization",
+                    "token": "<token>"
+                  }
+                ]
+              },
+              "subject": {
+                "claims": {},
+                "id": "alice",
+                "permissions": [],
+                "roles": [
+                  "hr"
+                ],
+                "teams": []
+              }
+            }
+          },
+          "payload_modified": true,
+          "violation": null
+        },
+        {
+          "continue": true,
+          "errors": [],
+          "extensions": {
+            "agent": {
+              "session_id": "sess-1"
+            },
+            "delegation": null,
+            "http": null,
+            "meta": {
+              "entity_name": "get_compensation",
+              "entity_type": "tool",
+              "tags": []
+            },
+            "raw_credentials": {
+              "delegated_tokens": [],
+              "inbound_tokens": [
+                {
+                  "kind": "jwt",
+                  "role": "user",
+                  "source_header": "Authorization",
+                  "token": "<token>"
+                }
+              ]
+            },
+            "security": {
+              "auth_method": null,
+              "caller_workload": null,
+              "classification": null,
+              "client": null,
+              "labels": [],
+              "subject": {
+                "claims": {},
+                "id": "alice",
+                "permissions": [],
+                "roles": [
+                  "hr"
+                ],
+                "teams": []
+              }
+            }
+          },
+          "hook": "cmf.tool_pre_invoke",
+          "payload": null,
+          "payload_modified": false,
+          "violation": null
+        },
+        {
+          "continue": true,
+          "errors": [],
+          "extensions": {
+            "agent": {
+              "session_id": "sess-1"
+            },
+            "delegation": null,
+            "http": null,
+            "meta": {
+              "entity_name": "get_compensation",
+              "entity_type": "tool",
+              "tags": []
+            },
+            "raw_credentials": {
+              "delegated_tokens": [],
+              "inbound_tokens": [
+                {
+                  "kind": "jwt",
+                  "role": "user",
+                  "source_header": "Authorization",
+                  "token": "<token>"
+                }
+              ]
+            },
+            "security": {
+              "auth_method": null,
+              "caller_workload": null,
+              "classification": null,
+              "client": null,
+              "labels": [],
+              "subject": {
+                "claims": {},
+                "id": "alice",
+                "permissions": [],
+                "roles": [
+                  "hr"
+                ],
+                "teams": []
+              }
+            }
+          },
+          "hook": "cmf.tool_post_invoke",
+          "payload": null,
+          "payload_modified": false,
+          "violation": null
+        }
+      ],
+      "upstream_calls": []
+    },
+    {
+      "code": "session_tainted",
+      "decision": "deny",
+      "id": "email-after-taint-denied",
+      "kind": "mediate",
+      "result": null,
+      "stages": [
+        {
+          "continue": true,
+          "errors": [],
+          "extensions": {
+            "agent": {
+              "session_id": "sess-1"
+            },
+            "delegation": null,
+            "http": null,
+            "meta": {
+              "entity_name": "send_email",
+              "entity_type": "tool",
+              "tags": []
+            },
+            "raw_credentials": null,
+            "security": null
+          },
+          "hook": "identity.resolve",
+          "payload": {
+            "identity": {
+              "caller_workload": null,
+              "client": null,
+              "delegation": null,
+              "raw_claims": {
+                "aud": "cpex-parity",
+                "exp": 4102444800,
+                "iat": 1767225600,
+                "iss": "https://idp.parity.test",
+                "roles": [
+                  "hr"
+                ],
+                "sub": "alice"
+              },
+              "raw_credentials": {
+                "delegated_tokens": [],
+                "inbound_tokens": [
+                  {
+                    "kind": "jwt",
+                    "role": "user",
+                    "source_header": "Authorization",
+                    "token": "<token>"
+                  }
+                ]
+              },
+              "subject": {
+                "claims": {},
+                "id": "alice",
+                "permissions": [],
+                "roles": [
+                  "hr"
+                ],
+                "teams": []
+              }
+            }
+          },
+          "payload_modified": true,
+          "violation": null
+        },
+        {
+          "continue": false,
+          "errors": [],
+          "extensions": {
+            "agent": {
+              "session_id": "sess-1"
+            },
+            "delegation": null,
+            "http": null,
+            "meta": {
+              "entity_name": "send_email",
+              "entity_type": "tool",
+              "tags": []
+            },
+            "raw_credentials": {
+              "delegated_tokens": [],
+              "inbound_tokens": [
+                {
+                  "kind": "jwt",
+                  "role": "user",
+                  "source_header": "Authorization",
+                  "token": "<token>"
+                }
+              ]
+            },
+            "security": {
+              "auth_method": null,
+              "caller_workload": null,
+              "classification": null,
+              "client": null,
+              "labels": [],
+              "subject": {
+                "claims": {},
+                "id": "alice",
+                "permissions": [],
+                "roles": [
+                  "hr"
+                ],
+                "teams": []
+              }
+            }
+          },
+          "hook": "cmf.tool_pre_invoke",
+          "payload": null,
+          "payload_modified": false,
+          "violation": {
+            "code": "session_tainted",
+            "description": null,
+            "details": {},
+            "plugin": "apl::tool::send_email::pre",
+            "proto_error_code": null,
+            "reason": "write-down blocked: this session read secret data"
+          }
+        }
+      ],
+      "upstream_calls": []
+    },
+    {
+      "code": null,
+      "decision": "allow",
+      "id": "fresh-session-allowed",
+      "kind": "mediate",
+      "result": {
+        "sent": true
+      },
+      "stages": [
+        {
+          "continue": true,
+          "errors": [],
+          "extensions": {
+            "agent": {
+              "session_id": "sess-2"
+            },
+            "delegation": null,
+            "http": null,
+            "meta": {
+              "entity_name": "send_email",
+              "entity_type": "tool",
+              "tags": []
+            },
+            "raw_credentials": null,
+            "security": null
+          },
+          "hook": "identity.resolve",
+          "payload": {
+            "identity": {
+              "caller_workload": null,
+              "client": null,
+              "delegation": null,
+              "raw_claims": {
+                "aud": "cpex-parity",
+                "exp": 4102444800,
+                "iat": 1767225600,
+                "iss": "https://idp.parity.test",
+                "roles": [
+                  "hr"
+                ],
+                "sub": "alice"
+              },
+              "raw_credentials": {
+                "delegated_tokens": [],
+                "inbound_tokens": [
+                  {
+                    "kind": "jwt",
+                    "role": "user",
+                    "source_header": "Authorization",
+                    "token": "<token>"
+                  }
+                ]
+              },
+              "subject": {
+                "claims": {},
+                "id": "alice",
+                "permissions": [],
+                "roles": [
+                  "hr"
+                ],
+                "teams": []
+              }
+            }
+          },
+          "payload_modified": true,
+          "violation": null
+        },
+        {
+          "continue": true,
+          "errors": [],
+          "extensions": {
+            "agent": {
+              "session_id": "sess-2"
+            },
+            "delegation": null,
+            "http": null,
+            "meta": {
+              "entity_name": "send_email",
+              "entity_type": "tool",
+              "tags": []
+            },
+            "raw_credentials": {
+              "delegated_tokens": [],
+              "inbound_tokens": [
+                {
+                  "kind": "jwt",
+                  "role": "user",
+                  "source_header": "Authorization",
+                  "token": "<token>"
+                }
+              ]
+            },
+            "security": {
+              "auth_method": null,
+              "caller_workload": null,
+              "classification": null,
+              "client": null,
+              "labels": [],
+              "subject": {
+                "claims": {},
+                "id": "alice",
+                "permissions": [],
+                "roles": [
+                  "hr"
+                ],
+                "teams": []
+              }
+            }
+          },
+          "hook": "cmf.tool_pre_invoke",
+          "payload": null,
+          "payload_modified": false,
+          "violation": null
+        },
+        {
+          "continue": true,
+          "errors": [],
+          "extensions": {
+            "agent": {
+              "session_id": "sess-2"
+            },
+            "delegation": null,
+            "http": null,
+            "meta": {
+              "entity_name": "send_email",
+              "entity_type": "tool",
+              "tags": []
+            },
+            "raw_credentials": {
+              "delegated_tokens": [],
+              "inbound_tokens": [
+                {
+                  "kind": "jwt",
+                  "role": "user",
+                  "source_header": "Authorization",
+                  "token": "<token>"
+                }
+              ]
+            },
+            "security": {
+              "auth_method": null,
+              "caller_workload": null,
+              "classification": null,
+              "client": null,
+              "labels": [],
+              "subject": {
+                "claims": {},
+                "id": "alice",
+                "permissions": [],
+                "roles": [
+                  "hr"
+                ],
+                "teams": []
+              }
+            }
+          },
+          "hook": "cmf.tool_post_invoke",
+          "payload": null,
+          "payload_modified": false,
+          "violation": null
+        }
+      ],
+      "upstream_calls": []
+    },
+    {
+      "code": null,
+      "decision": "allow",
+      "id": "other-subject-same-session-id",
+      "kind": "mediate",
+      "result": {
+        "sent": true
+      },
+      "stages": [
+        {
+          "continue": true,
+          "errors": [],
+          "extensions": {
+            "agent": {
+              "session_id": "sess-1"
+            },
+            "delegation": null,
+            "http": null,
+            "meta": {
+              "entity_name": "send_email",
+              "entity_type": "tool",
+              "tags": []
+            },
+            "raw_credentials": null,
+            "security": null
+          },
+          "hook": "identity.resolve",
+          "payload": {
+            "identity": {
+              "caller_workload": null,
+              "client": null,
+              "delegation": null,
+              "raw_claims": {
+                "aud": "cpex-parity",
+                "exp": 4102444800,
+                "iat": 1767225600,
+                "iss": "https://idp.parity.test",
+                "roles": [
+                  "engineer"
+                ],
+                "sub": "evan"
+              },
+              "raw_credentials": {
+                "delegated_tokens": [],
+                "inbound_tokens": [
+                  {
+                    "kind": "jwt",
+                    "role": "user",
+                    "source_header": "Authorization",
+                    "token": "<token>"
+                  }
+                ]
+              },
+              "subject": {
+                "claims": {},
+                "id": "evan",
+                "permissions": [],
+                "roles": [
+                  "engineer"
+                ],
+                "teams": []
+              }
+            }
+          },
+          "payload_modified": true,
+          "violation": null
+        },
+        {
+          "continue": true,
+          "errors": [],
+          "extensions": {
+            "agent": {
+              "session_id": "sess-1"
+            },
+            "delegation": null,
+            "http": null,
+            "meta": {
+              "entity_name": "send_email",
+              "entity_type": "tool",
+              "tags": []
+            },
+            "raw_credentials": {
+              "delegated_tokens": [],
+              "inbound_tokens": [
+                {
+                  "kind": "jwt",
+                  "role": "user",
+                  "source_header": "Authorization",
+                  "token": "<token>"
+                }
+              ]
+            },
+            "security": {
+              "auth_method": null,
+              "caller_workload": null,
+              "classification": null,
+              "client": null,
+              "labels": [],
+              "subject": {
+                "claims": {},
+                "id": "evan",
+                "permissions": [],
+                "roles": [
+                  "engineer"
+                ],
+                "teams": []
+              }
+            }
+          },
+          "hook": "cmf.tool_pre_invoke",
+          "payload": null,
+          "payload_modified": false,
+          "violation": null
+        },
+        {
+          "continue": true,
+          "errors": [],
+          "extensions": {
+            "agent": {
+              "session_id": "sess-1"
+            },
+            "delegation": null,
+            "http": null,
+            "meta": {
+              "entity_name": "send_email",
+              "entity_type": "tool",
+              "tags": []
+            },
+            "raw_credentials": {
+              "delegated_tokens": [],
+              "inbound_tokens": [
+                {
+                  "kind": "jwt",
+                  "role": "user",
+                  "source_header": "Authorization",
+                  "token": "<token>"
+                }
+              ]
+            },
+            "security": {
+              "auth_method": null,
+              "caller_workload": null,
+              "classification": null,
+              "client": null,
+              "labels": [],
+              "subject": {
+                "claims": {},
+                "id": "evan",
+                "permissions": [],
+                "roles": [
+                  "engineer"
+                ],
+                "teams": []
+              }
+            }
+          },
+          "hook": "cmf.tool_post_invoke",
+          "payload": null,
+          "payload_modified": false,
+          "violation": null
+        }
+      ],
+      "upstream_calls": []
+    },
+    {
+      "code": null,
+      "decision": "allow",
+      "id": "taint-without-session-id",
+      "kind": "mediate",
+      "result": {
+        "employee_id": "e-1003",
+        "salary": 99000
+      },
+      "stages": [
+        {
+          "continue": true,
+          "errors": [],
+          "extensions": {
+            "agent": null,
+            "delegation": null,
+            "http": null,
+            "meta": {
+              "entity_name": "get_compensation",
+              "entity_type": "tool",
+              "tags": []
+            },
+            "raw_credentials": null,
+            "security": null
+          },
+          "hook": "identity.resolve",
+          "payload": {
+            "identity": {
+              "caller_workload": null,
+              "client": null,
+              "delegation": null,
+              "raw_claims": {
+                "aud": "cpex-parity",
+                "exp": 4102444800,
+                "iat": 1767225600,
+                "iss": "https://idp.parity.test",
+                "roles": [
+                  "hr"
+                ],
+                "sub": "alice"
+              },
+              "raw_credentials": {
+                "delegated_tokens": [],
+                "inbound_tokens": [
+                  {
+                    "kind": "jwt",
+                    "role": "user",
+                    "source_header": "Authorization",
+                    "token": "<token>"
+                  }
+                ]
+              },
+              "subject": {
+                "claims": {},
+                "id": "alice",
+                "permissions": [],
+                "roles": [
+                  "hr"
+                ],
+                "teams": []
+              }
+            }
+          },
+          "payload_modified": true,
+          "violation": null
+        },
+        {
+          "continue": true,
+          "errors": [],
+          "extensions": {
+            "agent": null,
+            "delegation": null,
+            "http": null,
+            "meta": {
+              "entity_name": "get_compensation",
+              "entity_type": "tool",
+              "tags": []
+            },
+            "raw_credentials": {
+              "delegated_tokens": [],
+              "inbound_tokens": [
+                {
+                  "kind": "jwt",
+                  "role": "user",
+                  "source_header": "Authorization",
+                  "token": "<token>"
+                }
+              ]
+            },
+            "security": {
+              "auth_method": null,
+              "caller_workload": null,
+              "classification": null,
+              "client": null,
+              "labels": [],
+              "subject": {
+                "claims": {},
+                "id": "alice",
+                "permissions": [],
+                "roles": [
+                  "hr"
+                ],
+                "teams": []
+              }
+            }
+          },
+          "hook": "cmf.tool_pre_invoke",
+          "payload": null,
+          "payload_modified": false,
+          "violation": null
+        },
+        {
+          "continue": true,
+          "errors": [],
+          "extensions": {
+            "agent": null,
+            "delegation": null,
+            "http": null,
+            "meta": {
+              "entity_name": "get_compensation",
+              "entity_type": "tool",
+              "tags": []
+            },
+            "raw_credentials": {
+              "delegated_tokens": [],
+              "inbound_tokens": [
+                {
+                  "kind": "jwt",
+                  "role": "user",
+                  "source_header": "Authorization",
+                  "token": "<token>"
+                }
+              ]
+            },
+            "security": {
+              "auth_method": null,
+              "caller_workload": null,
+              "classification": null,
+              "client": null,
+              "labels": [],
+              "subject": {
+                "claims": {},
+                "id": "alice",
+                "permissions": [],
+                "roles": [
+                  "hr"
+                ],
+                "teams": []
+              }
+            }
+          },
+          "hook": "cmf.tool_post_invoke",
+          "payload": null,
+          "payload_modified": false,
+          "violation": null
+        }
+      ],
+      "upstream_calls": []
+    },
+    {
+      "code": "session_tainted",
+      "decision": "deny",
+      "id": "email-without-session-id",
+      "kind": "mediate",
+      "result": null,
+      "stages": [
+        {
+          "continue": true,
+          "errors": [],
+          "extensions": {
+            "agent": null,
+            "delegation": null,
+            "http": null,
+            "meta": {
+              "entity_name": "send_email",
+              "entity_type": "tool",
+              "tags": []
+            },
+            "raw_credentials": null,
+            "security": null
+          },
+          "hook": "identity.resolve",
+          "payload": {
+            "identity": {
+              "caller_workload": null,
+              "client": null,
+              "delegation": null,
+              "raw_claims": {
+                "aud": "cpex-parity",
+                "exp": 4102444800,
+                "iat": 1767225600,
+                "iss": "https://idp.parity.test",
+                "roles": [
+                  "hr"
+                ],
+                "sub": "alice"
+              },
+              "raw_credentials": {
+                "delegated_tokens": [],
+                "inbound_tokens": [
+                  {
+                    "kind": "jwt",
+                    "role": "user",
+                    "source_header": "Authorization",
+                    "token": "<token>"
+                  }
+                ]
+              },
+              "subject": {
+                "claims": {},
+                "id": "alice",
+                "permissions": [],
+                "roles": [
+                  "hr"
+                ],
+                "teams": []
+              }
+            }
+          },
+          "payload_modified": true,
+          "violation": null
+        },
+        {
+          "continue": false,
+          "errors": [],
+          "extensions": {
+            "agent": null,
+            "delegation": null,
+            "http": null,
+            "meta": {
+              "entity_name": "send_email",
+              "entity_type": "tool",
+              "tags": []
+            },
+            "raw_credentials": {
+              "delegated_tokens": [],
+              "inbound_tokens": [
+                {
+                  "kind": "jwt",
+                  "role": "user",
+                  "source_header": "Authorization",
+                  "token": "<token>"
+                }
+              ]
+            },
+            "security": {
+              "auth_method": null,
+              "caller_workload": null,
+              "classification": null,
+              "client": null,
+              "labels": [],
+              "subject": {
+                "claims": {},
+                "id": "alice",
+                "permissions": [],
+                "roles": [
+                  "hr"
+                ],
+                "teams": []
+              }
+            }
+          },
+          "hook": "cmf.tool_pre_invoke",
+          "payload": null,
+          "payload_modified": false,
+          "violation": {
+            "code": "session_tainted",
+            "description": null,
+            "details": {},
+            "plugin": "apl::tool::send_email::pre",
+            "proto_error_code": null,
+            "reason": "write-down blocked: this session read secret data"
+          }
+        }
+      ],
+      "upstream_calls": []
+    },
+    {
+      "code": "routes.tool:get_compensation.apl.pre_invocation[0]",
+      "decision": "deny",
+      "id": "engineer-denied-no-taint",
+      "kind": "mediate",
+      "result": null,
+      "stages": [
+        {
+          "continue": true,
+          "errors": [],
+          "extensions": {
+            "agent": {
+              "session_id": "sess-3"
+            },
+            "delegation": null,
+            "http": null,
+            "meta": {
+              "entity_name": "get_compensation",
+              "entity_type": "tool",
+              "tags": []
+            },
+            "raw_credentials": null,
+            "security": null
+          },
+          "hook": "identity.resolve",
+          "payload": {
+            "identity": {
+              "caller_workload": null,
+              "client": null,
+              "delegation": null,
+              "raw_claims": {
+                "aud": "cpex-parity",
+                "exp": 4102444800,
+                "iat": 1767225600,
+                "iss": "https://idp.parity.test",
+                "roles": [
+                  "engineer"
+                ],
+                "sub": "evan"
+              },
+              "raw_credentials": {
+                "delegated_tokens": [],
+                "inbound_tokens": [
+                  {
+                    "kind": "jwt",
+                    "role": "user",
+                    "source_header": "Authorization",
+                    "token": "<token>"
+                  }
+                ]
+              },
+              "subject": {
+                "claims": {},
+                "id": "evan",
+                "permissions": [],
+                "roles": [
+                  "engineer"
+                ],
+                "teams": []
+              }
+            }
+          },
+          "payload_modified": true,
+          "violation": null
+        },
+        {
+          "continue": false,
+          "errors": [],
+          "extensions": {
+            "agent": {
+              "session_id": "sess-3"
+            },
+            "delegation": null,
+            "http": null,
+            "meta": {
+              "entity_name": "get_compensation",
+              "entity_type": "tool",
+              "tags": []
+            },
+            "raw_credentials": {
+              "delegated_tokens": [],
+              "inbound_tokens": [
+                {
+                  "kind": "jwt",
+                  "role": "user",
+                  "source_header": "Authorization",
+                  "token": "<token>"
+                }
+              ]
+            },
+            "security": {
+              "auth_method": null,
+              "caller_workload": null,
+              "classification": null,
+              "client": null,
+              "labels": [],
+              "subject": {
+                "claims": {},
+                "id": "evan",
+                "permissions": [],
+                "roles": [
+                  "engineer"
+                ],
+                "teams": []
+              }
+            }
+          },
+          "hook": "cmf.tool_pre_invoke",
+          "payload": null,
+          "payload_modified": false,
+          "violation": {
+            "code": "routes.tool:get_compensation.apl.pre_invocation[0]",
+            "description": null,
+            "details": {},
+            "plugin": "apl::tool::get_compensation::pre",
+            "proto_error_code": null,
+            "reason": "access denied"
+          }
+        }
+      ],
+      "upstream_calls": []
+    },
+    {
+      "code": null,
+      "decision": "allow",
+      "id": "engineer-email-after-denied-read",
+      "kind": "mediate",
+      "result": {
+        "sent": true
+      },
+      "stages": [
+        {
+          "continue": true,
+          "errors": [],
+          "extensions": {
+            "agent": {
+              "session_id": "sess-3"
+            },
+            "delegation": null,
+            "http": null,
+            "meta": {
+              "entity_name": "send_email",
+              "entity_type": "tool",
+              "tags": []
+            },
+            "raw_credentials": null,
+            "security": null
+          },
+          "hook": "identity.resolve",
+          "payload": {
+            "identity": {
+              "caller_workload": null,
+              "client": null,
+              "delegation": null,
+              "raw_claims": {
+                "aud": "cpex-parity",
+                "exp": 4102444800,
+                "iat": 1767225600,
+                "iss": "https://idp.parity.test",
+                "roles": [
+                  "engineer"
+                ],
+                "sub": "evan"
+              },
+              "raw_credentials": {
+                "delegated_tokens": [],
+                "inbound_tokens": [
+                  {
+                    "kind": "jwt",
+                    "role": "user",
+                    "source_header": "Authorization",
+                    "token": "<token>"
+                  }
+                ]
+              },
+              "subject": {
+                "claims": {},
+                "id": "evan",
+                "permissions": [],
+                "roles": [
+                  "engineer"
+                ],
+                "teams": []
+              }
+            }
+          },
+          "payload_modified": true,
+          "violation": null
+        },
+        {
+          "continue": true,
+          "errors": [],
+          "extensions": {
+            "agent": {
+              "session_id": "sess-3"
+            },
+            "delegation": null,
+            "http": null,
+            "meta": {
+              "entity_name": "send_email",
+              "entity_type": "tool",
+              "tags": []
+            },
+            "raw_credentials": {
+              "delegated_tokens": [],
+              "inbound_tokens": [
+                {
+                  "kind": "jwt",
+                  "role": "user",
+                  "source_header": "Authorization",
+                  "token": "<token>"
+                }
+              ]
+            },
+            "security": {
+              "auth_method": null,
+              "caller_workload": null,
+              "classification": null,
+              "client": null,
+              "labels": [],
+              "subject": {
+                "claims": {},
+                "id": "evan",
+                "permissions": [],
+                "roles": [
+                  "engineer"
+                ],
+                "teams": []
+              }
+            }
+          },
+          "hook": "cmf.tool_pre_invoke",
+          "payload": null,
+          "payload_modified": false,
+          "violation": null
+        },
+        {
+          "continue": true,
+          "errors": [],
+          "extensions": {
+            "agent": {
+              "session_id": "sess-3"
+            },
+            "delegation": null,
+            "http": null,
+            "meta": {
+              "entity_name": "send_email",
+              "entity_type": "tool",
+              "tags": []
+            },
+            "raw_credentials": {
+              "delegated_tokens": [],
+              "inbound_tokens": [
+                {
+                  "kind": "jwt",
+                  "role": "user",
+                  "source_header": "Authorization",
+                  "token": "<token>"
+                }
+              ]
+            },
+            "security": {
+              "auth_method": null,
+              "caller_workload": null,
+              "classification": null,
+              "client": null,
+              "labels": [],
+              "subject": {
+                "claims": {},
+                "id": "evan",
+                "permissions": [],
+                "roles": [
+                  "engineer"
+                ],
+                "teams": []
+              }
+            }
+          },
+          "hook": "cmf.tool_post_invoke",
+          "payload": null,
+          "payload_modified": false,
+          "violation": null
+        }
+      ],
+      "upstream_calls": []
+    }
+  ],
+  "scenario": "session-memory"
+}

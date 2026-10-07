@@ -1,0 +1,1269 @@
+{
+  "config": "scenarios/elicitation-ciba/config.yaml",
+  "description": "A first call suspends pending the manager's CIBA approval; resuming with the elicitation id proceeds when approved, denies when refused, and stays pending while the approver has not answered.",
+  "load": {
+    "ok": true,
+    "upstream_calls": [
+      {
+        "form": {},
+        "method": "GET",
+        "path": "/jwks"
+      }
+    ]
+  },
+  "requests": [
+    {
+      "code": "routes.tool:send_email.apl.pre_invocation[0]",
+      "decision": "deny",
+      "id": "anonymous-denied",
+      "kind": "mediate",
+      "result": null,
+      "stages": [
+        {
+          "continue": false,
+          "errors": [],
+          "extensions": {
+            "agent": null,
+            "delegation": null,
+            "http": null,
+            "meta": {
+              "entity_name": "send_email",
+              "entity_type": "tool",
+              "tags": []
+            },
+            "raw_credentials": null,
+            "security": null
+          },
+          "hook": "cmf.tool_pre_invoke",
+          "payload": null,
+          "payload_modified": false,
+          "violation": {
+            "code": "routes.tool:send_email.apl.pre_invocation[0]",
+            "description": null,
+            "details": {},
+            "plugin": "apl::tool::send_email::pre",
+            "proto_error_code": null,
+            "reason": "access denied"
+          }
+        }
+      ],
+      "upstream_calls": []
+    },
+    {
+      "code": "elicitation.pending",
+      "decision": "pending",
+      "id": "approved-first-call-pending",
+      "kind": "mediate",
+      "result": null,
+      "stages": [
+        {
+          "continue": true,
+          "errors": [],
+          "extensions": {
+            "agent": null,
+            "delegation": null,
+            "http": null,
+            "meta": {
+              "entity_name": "send_email",
+              "entity_type": "tool",
+              "tags": []
+            },
+            "raw_credentials": null,
+            "security": null
+          },
+          "hook": "identity.resolve",
+          "payload": {
+            "identity": {
+              "caller_workload": null,
+              "client": null,
+              "delegation": null,
+              "raw_claims": {
+                "aud": "cpex-parity",
+                "exp": 4102444800,
+                "iat": 1767225600,
+                "iss": "https://idp.parity.test",
+                "manager": "mona",
+                "roles": [
+                  "engineer"
+                ],
+                "sub": "evan"
+              },
+              "raw_credentials": {
+                "delegated_tokens": [],
+                "inbound_tokens": [
+                  {
+                    "kind": "jwt",
+                    "role": "user",
+                    "source_header": "Authorization",
+                    "token": "<token>"
+                  }
+                ]
+              },
+              "subject": {
+                "claims": {
+                  "manager": "mona"
+                },
+                "id": "evan",
+                "permissions": [],
+                "roles": [
+                  "engineer"
+                ],
+                "teams": []
+              }
+            }
+          },
+          "payload_modified": true,
+          "violation": null
+        },
+        {
+          "continue": false,
+          "errors": [],
+          "extensions": {
+            "agent": null,
+            "delegation": null,
+            "http": null,
+            "meta": {
+              "entity_name": "send_email",
+              "entity_type": "tool",
+              "tags": []
+            },
+            "raw_credentials": {
+              "delegated_tokens": [],
+              "inbound_tokens": [
+                {
+                  "kind": "jwt",
+                  "role": "user",
+                  "source_header": "Authorization",
+                  "token": "<token>"
+                }
+              ]
+            },
+            "security": {
+              "auth_method": null,
+              "caller_workload": null,
+              "classification": null,
+              "client": null,
+              "labels": [],
+              "subject": {
+                "claims": {
+                  "manager": "mona"
+                },
+                "id": "evan",
+                "permissions": [],
+                "roles": [
+                  "engineer"
+                ],
+                "teams": []
+              }
+            }
+          },
+          "hook": "cmf.tool_pre_invoke",
+          "payload": null,
+          "payload_modified": false,
+          "violation": {
+            "code": "elicitation.pending",
+            "description": null,
+            "details": {
+              "approver": "mona",
+              "elicitation_id": "REQ-mona",
+              "expires_at": "<time>",
+              "plugin": "manager-approval"
+            },
+            "plugin": "apl::tool::send_email::pre",
+            "proto_error_code": -32120,
+            "reason": "awaiting approval `REQ-mona` via `manager-approval` — retry with this id"
+          }
+        }
+      ],
+      "upstream_calls": [
+        {
+          "form": {
+            "binding_message": "Approve-outbound-email",
+            "login_hint": "mona",
+            "requested_expiry": "300",
+            "scope": "openid"
+          },
+          "method": "POST",
+          "path": "/ciba/auth"
+        },
+        {
+          "form": {
+            "auth_req_id": "REQ-mona",
+            "grant_type": "urn:openid:params:grant-type:ciba"
+          },
+          "method": "POST",
+          "path": "/ciba/token"
+        }
+      ]
+    },
+    {
+      "code": null,
+      "decision": "allow",
+      "id": "approved-resume-allowed",
+      "kind": "mediate",
+      "result": {
+        "sent": true
+      },
+      "stages": [
+        {
+          "continue": true,
+          "errors": [],
+          "extensions": {
+            "agent": null,
+            "delegation": null,
+            "http": {
+              "request_headers": {
+                "X-Policy-Elicitation-Id": "REQ-mona"
+              },
+              "response_headers": {}
+            },
+            "meta": {
+              "entity_name": "send_email",
+              "entity_type": "tool",
+              "tags": []
+            },
+            "raw_credentials": null,
+            "security": null
+          },
+          "hook": "identity.resolve",
+          "payload": {
+            "identity": {
+              "caller_workload": null,
+              "client": null,
+              "delegation": null,
+              "raw_claims": {
+                "aud": "cpex-parity",
+                "exp": 4102444800,
+                "iat": 1767225600,
+                "iss": "https://idp.parity.test",
+                "manager": "mona",
+                "roles": [
+                  "engineer"
+                ],
+                "sub": "evan"
+              },
+              "raw_credentials": {
+                "delegated_tokens": [],
+                "inbound_tokens": [
+                  {
+                    "kind": "jwt",
+                    "role": "user",
+                    "source_header": "Authorization",
+                    "token": "<token>"
+                  }
+                ]
+              },
+              "subject": {
+                "claims": {
+                  "manager": "mona"
+                },
+                "id": "evan",
+                "permissions": [],
+                "roles": [
+                  "engineer"
+                ],
+                "teams": []
+              }
+            }
+          },
+          "payload_modified": true,
+          "violation": null
+        },
+        {
+          "continue": true,
+          "errors": [],
+          "extensions": {
+            "agent": null,
+            "delegation": null,
+            "http": {
+              "request_headers": {
+                "X-Policy-Elicitation-Id": "REQ-mona"
+              },
+              "response_headers": {}
+            },
+            "meta": {
+              "entity_name": "send_email",
+              "entity_type": "tool",
+              "tags": []
+            },
+            "raw_credentials": {
+              "delegated_tokens": [],
+              "inbound_tokens": [
+                {
+                  "kind": "jwt",
+                  "role": "user",
+                  "source_header": "Authorization",
+                  "token": "<token>"
+                }
+              ]
+            },
+            "security": {
+              "auth_method": null,
+              "caller_workload": null,
+              "classification": null,
+              "client": null,
+              "labels": [],
+              "subject": {
+                "claims": {
+                  "manager": "mona"
+                },
+                "id": "evan",
+                "permissions": [],
+                "roles": [
+                  "engineer"
+                ],
+                "teams": []
+              }
+            }
+          },
+          "hook": "cmf.tool_pre_invoke",
+          "payload": null,
+          "payload_modified": false,
+          "violation": null
+        },
+        {
+          "continue": true,
+          "errors": [],
+          "extensions": {
+            "agent": null,
+            "delegation": null,
+            "http": {
+              "request_headers": {
+                "X-Policy-Elicitation-Id": "REQ-mona"
+              },
+              "response_headers": {}
+            },
+            "meta": {
+              "entity_name": "send_email",
+              "entity_type": "tool",
+              "tags": []
+            },
+            "raw_credentials": {
+              "delegated_tokens": [],
+              "inbound_tokens": [
+                {
+                  "kind": "jwt",
+                  "role": "user",
+                  "source_header": "Authorization",
+                  "token": "<token>"
+                }
+              ]
+            },
+            "security": {
+              "auth_method": null,
+              "caller_workload": null,
+              "classification": null,
+              "client": null,
+              "labels": [],
+              "subject": {
+                "claims": {
+                  "manager": "mona"
+                },
+                "id": "evan",
+                "permissions": [],
+                "roles": [
+                  "engineer"
+                ],
+                "teams": []
+              }
+            }
+          },
+          "hook": "cmf.tool_post_invoke",
+          "payload": null,
+          "payload_modified": false,
+          "violation": null
+        }
+      ],
+      "upstream_calls": [
+        {
+          "form": {
+            "auth_req_id": "REQ-mona",
+            "grant_type": "urn:openid:params:grant-type:ciba"
+          },
+          "method": "POST",
+          "path": "/ciba/token"
+        }
+      ]
+    },
+    {
+      "code": null,
+      "decision": "allow",
+      "id": "approved-resume-by-other-subject",
+      "kind": "mediate",
+      "result": {
+        "sent": true
+      },
+      "stages": [
+        {
+          "continue": true,
+          "errors": [],
+          "extensions": {
+            "agent": null,
+            "delegation": null,
+            "http": {
+              "request_headers": {
+                "X-Policy-Elicitation-Id": "REQ-mona"
+              },
+              "response_headers": {}
+            },
+            "meta": {
+              "entity_name": "send_email",
+              "entity_type": "tool",
+              "tags": []
+            },
+            "raw_credentials": null,
+            "security": null
+          },
+          "hook": "identity.resolve",
+          "payload": {
+            "identity": {
+              "caller_workload": null,
+              "client": null,
+              "delegation": null,
+              "raw_claims": {
+                "aud": "cpex-parity",
+                "exp": 4102444800,
+                "iat": 1767225600,
+                "iss": "https://idp.parity.test",
+                "manager": "dana",
+                "roles": [
+                  "hr"
+                ],
+                "sub": "harry"
+              },
+              "raw_credentials": {
+                "delegated_tokens": [],
+                "inbound_tokens": [
+                  {
+                    "kind": "jwt",
+                    "role": "user",
+                    "source_header": "Authorization",
+                    "token": "<token>"
+                  }
+                ]
+              },
+              "subject": {
+                "claims": {
+                  "manager": "dana"
+                },
+                "id": "harry",
+                "permissions": [],
+                "roles": [
+                  "hr"
+                ],
+                "teams": []
+              }
+            }
+          },
+          "payload_modified": true,
+          "violation": null
+        },
+        {
+          "continue": true,
+          "errors": [],
+          "extensions": {
+            "agent": null,
+            "delegation": null,
+            "http": {
+              "request_headers": {
+                "X-Policy-Elicitation-Id": "REQ-mona"
+              },
+              "response_headers": {}
+            },
+            "meta": {
+              "entity_name": "send_email",
+              "entity_type": "tool",
+              "tags": []
+            },
+            "raw_credentials": {
+              "delegated_tokens": [],
+              "inbound_tokens": [
+                {
+                  "kind": "jwt",
+                  "role": "user",
+                  "source_header": "Authorization",
+                  "token": "<token>"
+                }
+              ]
+            },
+            "security": {
+              "auth_method": null,
+              "caller_workload": null,
+              "classification": null,
+              "client": null,
+              "labels": [],
+              "subject": {
+                "claims": {
+                  "manager": "dana"
+                },
+                "id": "harry",
+                "permissions": [],
+                "roles": [
+                  "hr"
+                ],
+                "teams": []
+              }
+            }
+          },
+          "hook": "cmf.tool_pre_invoke",
+          "payload": null,
+          "payload_modified": false,
+          "violation": null
+        },
+        {
+          "continue": true,
+          "errors": [],
+          "extensions": {
+            "agent": null,
+            "delegation": null,
+            "http": {
+              "request_headers": {
+                "X-Policy-Elicitation-Id": "REQ-mona"
+              },
+              "response_headers": {}
+            },
+            "meta": {
+              "entity_name": "send_email",
+              "entity_type": "tool",
+              "tags": []
+            },
+            "raw_credentials": {
+              "delegated_tokens": [],
+              "inbound_tokens": [
+                {
+                  "kind": "jwt",
+                  "role": "user",
+                  "source_header": "Authorization",
+                  "token": "<token>"
+                }
+              ]
+            },
+            "security": {
+              "auth_method": null,
+              "caller_workload": null,
+              "classification": null,
+              "client": null,
+              "labels": [],
+              "subject": {
+                "claims": {
+                  "manager": "dana"
+                },
+                "id": "harry",
+                "permissions": [],
+                "roles": [
+                  "hr"
+                ],
+                "teams": []
+              }
+            }
+          },
+          "hook": "cmf.tool_post_invoke",
+          "payload": null,
+          "payload_modified": false,
+          "violation": null
+        }
+      ],
+      "upstream_calls": []
+    },
+    {
+      "code": "elicitation.pending",
+      "decision": "pending",
+      "id": "refused-first-call-pending",
+      "kind": "mediate",
+      "result": null,
+      "stages": [
+        {
+          "continue": true,
+          "errors": [],
+          "extensions": {
+            "agent": null,
+            "delegation": null,
+            "http": null,
+            "meta": {
+              "entity_name": "send_email",
+              "entity_type": "tool",
+              "tags": []
+            },
+            "raw_credentials": null,
+            "security": null
+          },
+          "hook": "identity.resolve",
+          "payload": {
+            "identity": {
+              "caller_workload": null,
+              "client": null,
+              "delegation": null,
+              "raw_claims": {
+                "aud": "cpex-parity",
+                "exp": 4102444800,
+                "iat": 1767225600,
+                "iss": "https://idp.parity.test",
+                "manager": "dana",
+                "roles": [
+                  "hr"
+                ],
+                "sub": "harry"
+              },
+              "raw_credentials": {
+                "delegated_tokens": [],
+                "inbound_tokens": [
+                  {
+                    "kind": "jwt",
+                    "role": "user",
+                    "source_header": "Authorization",
+                    "token": "<token>"
+                  }
+                ]
+              },
+              "subject": {
+                "claims": {
+                  "manager": "dana"
+                },
+                "id": "harry",
+                "permissions": [],
+                "roles": [
+                  "hr"
+                ],
+                "teams": []
+              }
+            }
+          },
+          "payload_modified": true,
+          "violation": null
+        },
+        {
+          "continue": false,
+          "errors": [],
+          "extensions": {
+            "agent": null,
+            "delegation": null,
+            "http": null,
+            "meta": {
+              "entity_name": "send_email",
+              "entity_type": "tool",
+              "tags": []
+            },
+            "raw_credentials": {
+              "delegated_tokens": [],
+              "inbound_tokens": [
+                {
+                  "kind": "jwt",
+                  "role": "user",
+                  "source_header": "Authorization",
+                  "token": "<token>"
+                }
+              ]
+            },
+            "security": {
+              "auth_method": null,
+              "caller_workload": null,
+              "classification": null,
+              "client": null,
+              "labels": [],
+              "subject": {
+                "claims": {
+                  "manager": "dana"
+                },
+                "id": "harry",
+                "permissions": [],
+                "roles": [
+                  "hr"
+                ],
+                "teams": []
+              }
+            }
+          },
+          "hook": "cmf.tool_pre_invoke",
+          "payload": null,
+          "payload_modified": false,
+          "violation": {
+            "code": "elicitation.pending",
+            "description": null,
+            "details": {
+              "approver": "dana",
+              "elicitation_id": "REQ-dana",
+              "expires_at": "<time>",
+              "plugin": "manager-approval"
+            },
+            "plugin": "apl::tool::send_email::pre",
+            "proto_error_code": -32120,
+            "reason": "awaiting approval `REQ-dana` via `manager-approval` — retry with this id"
+          }
+        }
+      ],
+      "upstream_calls": [
+        {
+          "form": {
+            "binding_message": "Approve-outbound-email",
+            "login_hint": "dana",
+            "requested_expiry": "300",
+            "scope": "openid"
+          },
+          "method": "POST",
+          "path": "/ciba/auth"
+        },
+        {
+          "form": {
+            "auth_req_id": "REQ-dana",
+            "grant_type": "urn:openid:params:grant-type:ciba"
+          },
+          "method": "POST",
+          "path": "/ciba/token"
+        }
+      ]
+    },
+    {
+      "code": "routes.tool:send_email.apl.pre_invocation[1]",
+      "decision": "deny",
+      "id": "refused-resume-denied",
+      "kind": "mediate",
+      "result": null,
+      "stages": [
+        {
+          "continue": true,
+          "errors": [],
+          "extensions": {
+            "agent": null,
+            "delegation": null,
+            "http": {
+              "request_headers": {
+                "X-Policy-Elicitation-Id": "REQ-dana"
+              },
+              "response_headers": {}
+            },
+            "meta": {
+              "entity_name": "send_email",
+              "entity_type": "tool",
+              "tags": []
+            },
+            "raw_credentials": null,
+            "security": null
+          },
+          "hook": "identity.resolve",
+          "payload": {
+            "identity": {
+              "caller_workload": null,
+              "client": null,
+              "delegation": null,
+              "raw_claims": {
+                "aud": "cpex-parity",
+                "exp": 4102444800,
+                "iat": 1767225600,
+                "iss": "https://idp.parity.test",
+                "manager": "dana",
+                "roles": [
+                  "hr"
+                ],
+                "sub": "harry"
+              },
+              "raw_credentials": {
+                "delegated_tokens": [],
+                "inbound_tokens": [
+                  {
+                    "kind": "jwt",
+                    "role": "user",
+                    "source_header": "Authorization",
+                    "token": "<token>"
+                  }
+                ]
+              },
+              "subject": {
+                "claims": {
+                  "manager": "dana"
+                },
+                "id": "harry",
+                "permissions": [],
+                "roles": [
+                  "hr"
+                ],
+                "teams": []
+              }
+            }
+          },
+          "payload_modified": true,
+          "violation": null
+        },
+        {
+          "continue": false,
+          "errors": [],
+          "extensions": {
+            "agent": null,
+            "delegation": null,
+            "http": {
+              "request_headers": {
+                "X-Policy-Elicitation-Id": "REQ-dana"
+              },
+              "response_headers": {}
+            },
+            "meta": {
+              "entity_name": "send_email",
+              "entity_type": "tool",
+              "tags": []
+            },
+            "raw_credentials": {
+              "delegated_tokens": [],
+              "inbound_tokens": [
+                {
+                  "kind": "jwt",
+                  "role": "user",
+                  "source_header": "Authorization",
+                  "token": "<token>"
+                }
+              ]
+            },
+            "security": {
+              "auth_method": null,
+              "caller_workload": null,
+              "classification": null,
+              "client": null,
+              "labels": [],
+              "subject": {
+                "claims": {
+                  "manager": "dana"
+                },
+                "id": "harry",
+                "permissions": [],
+                "roles": [
+                  "hr"
+                ],
+                "teams": []
+              }
+            }
+          },
+          "hook": "cmf.tool_pre_invoke",
+          "payload": null,
+          "payload_modified": false,
+          "violation": {
+            "code": "routes.tool:send_email.apl.pre_invocation[1]",
+            "description": null,
+            "details": {},
+            "plugin": "apl::tool::send_email::pre",
+            "proto_error_code": null,
+            "reason": "elicitation denied by approver"
+          }
+        }
+      ],
+      "upstream_calls": [
+        {
+          "form": {
+            "auth_req_id": "REQ-dana",
+            "grant_type": "urn:openid:params:grant-type:ciba"
+          },
+          "method": "POST",
+          "path": "/ciba/token"
+        }
+      ]
+    },
+    {
+      "code": "elicitation.pending",
+      "decision": "pending",
+      "id": "unanswered-first-call-pending",
+      "kind": "mediate",
+      "result": null,
+      "stages": [
+        {
+          "continue": true,
+          "errors": [],
+          "extensions": {
+            "agent": null,
+            "delegation": null,
+            "http": null,
+            "meta": {
+              "entity_name": "send_email",
+              "entity_type": "tool",
+              "tags": []
+            },
+            "raw_credentials": null,
+            "security": null
+          },
+          "hook": "identity.resolve",
+          "payload": {
+            "identity": {
+              "caller_workload": null,
+              "client": null,
+              "delegation": null,
+              "raw_claims": {
+                "aud": "cpex-parity",
+                "exp": 4102444800,
+                "iat": 1767225600,
+                "iss": "https://idp.parity.test",
+                "manager": "pat",
+                "roles": [
+                  "engineer"
+                ],
+                "sub": "ivy"
+              },
+              "raw_credentials": {
+                "delegated_tokens": [],
+                "inbound_tokens": [
+                  {
+                    "kind": "jwt",
+                    "role": "user",
+                    "source_header": "Authorization",
+                    "token": "<token>"
+                  }
+                ]
+              },
+              "subject": {
+                "claims": {
+                  "manager": "pat"
+                },
+                "id": "ivy",
+                "permissions": [],
+                "roles": [
+                  "engineer"
+                ],
+                "teams": []
+              }
+            }
+          },
+          "payload_modified": true,
+          "violation": null
+        },
+        {
+          "continue": false,
+          "errors": [],
+          "extensions": {
+            "agent": null,
+            "delegation": null,
+            "http": null,
+            "meta": {
+              "entity_name": "send_email",
+              "entity_type": "tool",
+              "tags": []
+            },
+            "raw_credentials": {
+              "delegated_tokens": [],
+              "inbound_tokens": [
+                {
+                  "kind": "jwt",
+                  "role": "user",
+                  "source_header": "Authorization",
+                  "token": "<token>"
+                }
+              ]
+            },
+            "security": {
+              "auth_method": null,
+              "caller_workload": null,
+              "classification": null,
+              "client": null,
+              "labels": [],
+              "subject": {
+                "claims": {
+                  "manager": "pat"
+                },
+                "id": "ivy",
+                "permissions": [],
+                "roles": [
+                  "engineer"
+                ],
+                "teams": []
+              }
+            }
+          },
+          "hook": "cmf.tool_pre_invoke",
+          "payload": null,
+          "payload_modified": false,
+          "violation": {
+            "code": "elicitation.pending",
+            "description": null,
+            "details": {
+              "approver": "pat",
+              "elicitation_id": "REQ-pat",
+              "expires_at": "<time>",
+              "plugin": "manager-approval"
+            },
+            "plugin": "apl::tool::send_email::pre",
+            "proto_error_code": -32120,
+            "reason": "awaiting approval `REQ-pat` via `manager-approval` — retry with this id"
+          }
+        }
+      ],
+      "upstream_calls": [
+        {
+          "form": {
+            "binding_message": "Approve-outbound-email",
+            "login_hint": "pat",
+            "requested_expiry": "300",
+            "scope": "openid"
+          },
+          "method": "POST",
+          "path": "/ciba/auth"
+        },
+        {
+          "form": {
+            "auth_req_id": "REQ-pat",
+            "grant_type": "urn:openid:params:grant-type:ciba"
+          },
+          "method": "POST",
+          "path": "/ciba/token"
+        }
+      ]
+    },
+    {
+      "code": "elicitation.pending",
+      "decision": "pending",
+      "id": "unanswered-resume-still-pending",
+      "kind": "mediate",
+      "result": null,
+      "stages": [
+        {
+          "continue": true,
+          "errors": [],
+          "extensions": {
+            "agent": null,
+            "delegation": null,
+            "http": {
+              "request_headers": {
+                "X-Policy-Elicitation-Id": "REQ-pat"
+              },
+              "response_headers": {}
+            },
+            "meta": {
+              "entity_name": "send_email",
+              "entity_type": "tool",
+              "tags": []
+            },
+            "raw_credentials": null,
+            "security": null
+          },
+          "hook": "identity.resolve",
+          "payload": {
+            "identity": {
+              "caller_workload": null,
+              "client": null,
+              "delegation": null,
+              "raw_claims": {
+                "aud": "cpex-parity",
+                "exp": 4102444800,
+                "iat": 1767225600,
+                "iss": "https://idp.parity.test",
+                "manager": "pat",
+                "roles": [
+                  "engineer"
+                ],
+                "sub": "ivy"
+              },
+              "raw_credentials": {
+                "delegated_tokens": [],
+                "inbound_tokens": [
+                  {
+                    "kind": "jwt",
+                    "role": "user",
+                    "source_header": "Authorization",
+                    "token": "<token>"
+                  }
+                ]
+              },
+              "subject": {
+                "claims": {
+                  "manager": "pat"
+                },
+                "id": "ivy",
+                "permissions": [],
+                "roles": [
+                  "engineer"
+                ],
+                "teams": []
+              }
+            }
+          },
+          "payload_modified": true,
+          "violation": null
+        },
+        {
+          "continue": false,
+          "errors": [],
+          "extensions": {
+            "agent": null,
+            "delegation": null,
+            "http": {
+              "request_headers": {
+                "X-Policy-Elicitation-Id": "REQ-pat"
+              },
+              "response_headers": {}
+            },
+            "meta": {
+              "entity_name": "send_email",
+              "entity_type": "tool",
+              "tags": []
+            },
+            "raw_credentials": {
+              "delegated_tokens": [],
+              "inbound_tokens": [
+                {
+                  "kind": "jwt",
+                  "role": "user",
+                  "source_header": "Authorization",
+                  "token": "<token>"
+                }
+              ]
+            },
+            "security": {
+              "auth_method": null,
+              "caller_workload": null,
+              "classification": null,
+              "client": null,
+              "labels": [],
+              "subject": {
+                "claims": {
+                  "manager": "pat"
+                },
+                "id": "ivy",
+                "permissions": [],
+                "roles": [
+                  "engineer"
+                ],
+                "teams": []
+              }
+            }
+          },
+          "hook": "cmf.tool_pre_invoke",
+          "payload": null,
+          "payload_modified": false,
+          "violation": {
+            "code": "elicitation.pending",
+            "description": null,
+            "details": {
+              "elicitation_id": "REQ-pat",
+              "plugin": "manager-approval"
+            },
+            "plugin": "apl::tool::send_email::pre",
+            "proto_error_code": -32120,
+            "reason": "awaiting approval `REQ-pat` via `manager-approval` — retry with this id"
+          }
+        }
+      ],
+      "upstream_calls": [
+        {
+          "form": {
+            "auth_req_id": "REQ-pat",
+            "grant_type": "urn:openid:params:grant-type:ciba"
+          },
+          "method": "POST",
+          "path": "/ciba/token"
+        }
+      ]
+    },
+    {
+      "code": "routes.tool:send_email.apl.pre_invocation[1]",
+      "decision": "deny",
+      "id": "no-approver-claim",
+      "kind": "mediate",
+      "result": null,
+      "stages": [
+        {
+          "continue": true,
+          "errors": [],
+          "extensions": {
+            "agent": null,
+            "delegation": null,
+            "http": null,
+            "meta": {
+              "entity_name": "send_email",
+              "entity_type": "tool",
+              "tags": []
+            },
+            "raw_credentials": null,
+            "security": null
+          },
+          "hook": "identity.resolve",
+          "payload": {
+            "identity": {
+              "caller_workload": null,
+              "client": null,
+              "delegation": null,
+              "raw_claims": {
+                "aud": "cpex-parity",
+                "exp": 4102444800,
+                "iat": 1767225600,
+                "iss": "https://idp.parity.test",
+                "roles": [
+                  "engineer"
+                ],
+                "sub": "noah"
+              },
+              "raw_credentials": {
+                "delegated_tokens": [],
+                "inbound_tokens": [
+                  {
+                    "kind": "jwt",
+                    "role": "user",
+                    "source_header": "Authorization",
+                    "token": "<token>"
+                  }
+                ]
+              },
+              "subject": {
+                "claims": {},
+                "id": "noah",
+                "permissions": [],
+                "roles": [
+                  "engineer"
+                ],
+                "teams": []
+              }
+            }
+          },
+          "payload_modified": true,
+          "violation": null
+        },
+        {
+          "continue": false,
+          "errors": [],
+          "extensions": {
+            "agent": null,
+            "delegation": null,
+            "http": null,
+            "meta": {
+              "entity_name": "send_email",
+              "entity_type": "tool",
+              "tags": []
+            },
+            "raw_credentials": {
+              "delegated_tokens": [],
+              "inbound_tokens": [
+                {
+                  "kind": "jwt",
+                  "role": "user",
+                  "source_header": "Authorization",
+                  "token": "<token>"
+                }
+              ]
+            },
+            "security": {
+              "auth_method": null,
+              "caller_workload": null,
+              "classification": null,
+              "client": null,
+              "labels": [],
+              "subject": {
+                "claims": {},
+                "id": "noah",
+                "permissions": [],
+                "roles": [
+                  "engineer"
+                ],
+                "teams": []
+              }
+            }
+          },
+          "hook": "cmf.tool_pre_invoke",
+          "payload": null,
+          "payload_modified": false,
+          "violation": {
+            "code": "routes.tool:send_email.apl.pre_invocation[1]",
+            "description": null,
+            "details": {},
+            "plugin": "apl::tool::send_email::pre",
+            "proto_error_code": null,
+            "reason": "elicitation `from` attribute `claim.manager` did not resolve to an identity"
+          }
+        }
+      ],
+      "upstream_calls": []
+    }
+  ],
+  "scenario": "elicitation-ciba"
+}

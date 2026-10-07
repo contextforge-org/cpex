@@ -443,13 +443,14 @@ release: release-tool
 	@$(CARGO) release $(RELEASE_ARG) --workspace --no-publish --no-push --execute
 
 # Build + verify a .crate for every crates.io-published member without
-# uploading — the same check the release workflow's dry-run runs. The three
+# uploading — the same check the release workflow's dry-run runs. The four
 # `publish = false` crates are excluded (cpex-ffi ships as signed prebuilt
-# artifacts; cpex-demo-ffi and cpex-tutorial are examples). CI runs this on a
+# artifacts; cpex-demo-ffi and cpex-tutorial are examples; cpex-parity-harness
+# is a test harness). CI runs this on a
 # clean checkout; --allow-dirty lets you run it locally with work in progress.
 .PHONY: publish-dry
 publish-dry:
-	@$(CARGO) package --workspace --locked --allow-dirty --exclude cpex-ffi --exclude cpex-demo-ffi --exclude cpex-tutorial
+	@$(CARGO) package --workspace --locked --allow-dirty --exclude cpex-ffi --exclude cpex-demo-ffi --exclude cpex-tutorial --exclude cpex-parity-harness
 
 # Tag the current commit across the three namespaces the project releases on,
 # then push all three. The `v<version>` tag is what the CI release workflow
