@@ -8,7 +8,7 @@
 //   cargo run -p cpex-tutorial --example m01_hello
 //   cargo run -p cpex-tutorial --example m01_hello -- --check
 //
-// The smallest possible CPEX host: build a PluginManager, install the
+// The smallest possible CPEX host: build a PolicyEngine, install the
 // builtins, load a policy, and dispatch two operations through it. No IdP
 // yet, every caller is anonymous. You will see one route deny (it
 // requires an authenticated caller) and one route allow (it has no rule).
@@ -17,7 +17,7 @@
 
 use std::sync::Arc;
 
-use cpex::PluginManager;
+use cpex::PolicyEngine;
 use cpex_tutorial::backends;
 use cpex_tutorial::ui;
 use cpex_tutorial::{mediate, Caller};
@@ -32,12 +32,16 @@ const POLICY: &str = include_str!("../policies/m01.yaml");
 async fn main() {
     ui::module_banner("Module 1: Hello, enforcement");
 
-    // --- Set up the enforcement point (3 lines a real host also writes) ---
-    let mgr = Arc::new(PluginManager::default());
-    cpex::install_builtins(&mgr);
-    mgr.load_config_yaml(POLICY)
+    // --- Set up the enforcement point (the same steps a real host writes) ---
+    let engine = Arc::new(PolicyEngine::default());
+    cpex::install_builtins(&engine);
+    // The HTTP transport builtins use to reach an IdP. Module 1 calls no IdP,
+    // but every module installs it the same way; see `install_http_transport`.
+    cpex_tutorial::install_http_transport(&engine);
+    engine
+        .load_config_yaml(POLICY)
         .expect("policy m01.yaml should load");
-    mgr.initialize().await.expect("initialize");
+    engine.initialize().await.expect("initialize");
 
     // Everyone is anonymous in module 1, no token.
     let caller = Caller::anonymous();
@@ -47,7 +51,7 @@ async fn main() {
     //     anonymous caller, so the backend never runs. ---
     ui::scenario("anonymous → get_compensation (route requires authentication)");
     let outcome = mediate(
-        &mgr,
+        &engine,
         &caller,
         "get_compensation",
         json!({ "employee_id": "e-1001" }),
@@ -61,7 +65,7 @@ async fn main() {
     //     returns the backend's result. ---
     ui::scenario("anonymous → search_repos (route has no rule)");
     let outcome = mediate(
-        &mgr,
+        &engine,
         &caller,
         "search_repos",
         json!({ "visibility": "public" }),

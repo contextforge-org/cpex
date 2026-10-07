@@ -13,21 +13,18 @@
 // like a builtin. This one is a "business hours" guard: it denies a call
 // whose `hour` argument falls outside the open/close window in its config.
 //
-// The traits come from cpex-sdk (the lean plugin-author crate). The
-// factory and handler-adapter plumbing come from cpex-core, the same
-// pattern every builtin uses.
+// The traits, the factory and the handler-adapter plumbing all come from
+// `cpex::prelude`, the same pattern every builtin uses.
 
 use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use cpex::PluginManager;
-use cpex_core::factory::{PluginFactory, PluginInstance};
-use cpex_core::hooks::adapter::TypedHandlerAdapter;
-use cpex_sdk::{
+use cpex::prelude::{
     CmfHook, Extensions, HookHandler, MessagePayload, Plugin, PluginConfig, PluginContext,
-    PluginError, PluginResult, PluginViolation,
+    PluginError, PluginFactory, PluginInstance, PluginResult, PluginViolation, TypedHandlerAdapter,
 };
+use cpex::PolicyEngine;
 
 use cpex_tutorial::backends;
 use cpex_tutorial::ui;
@@ -119,21 +116,23 @@ impl PluginFactory for BusinessHoursFactory {
 async fn main() {
     ui::module_banner("Module 9: Write your own plugin");
 
-    let mgr = Arc::new(PluginManager::default());
+    let engine = Arc::new(PolicyEngine::default());
     // Register the custom factory BEFORE loading config, so the APL visitor
     // can resolve `kind: business-hours` to it.
-    mgr.register_factory("business-hours", Box::new(BusinessHoursFactory));
-    cpex::install_builtins(&mgr);
-    mgr.load_config_yaml(POLICY)
+    engine.register_factory("business-hours", Box::new(BusinessHoursFactory));
+    cpex::install_builtins(&engine);
+    cpex_tutorial::install_http_transport(&engine);
+    engine
+        .load_config_yaml(POLICY)
         .expect("policy m09.yaml should load");
-    mgr.initialize().await.expect("initialize");
+    engine.initialize().await.expect("initialize");
 
     let caller = Caller::anonymous();
     let mut all_passed = true;
 
     ui::scenario("get_compensation at 10:00 (within 9-17 window)");
     let o = mediate(
-        &mgr,
+        &engine,
         &caller,
         "get_compensation",
         json!({ "employee_id": "e-1001", "hour": 10 }),
@@ -145,7 +144,7 @@ async fn main() {
 
     ui::scenario("get_compensation at 22:00 (outside the window)");
     let o = mediate(
-        &mgr,
+        &engine,
         &caller,
         "get_compensation",
         json!({ "employee_id": "e-1001", "hour": 22 }),

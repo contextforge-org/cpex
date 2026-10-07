@@ -24,6 +24,7 @@ plugins:
   - name: keycloak
     kind: identity/jwt
     hooks: [identity.resolve]
+    capabilities: [perform_http]
     config:
       claim_mapper: standard
       trusted_issuers:
@@ -43,7 +44,8 @@ plugins:
     # it) and write the minted downstream token. Declaring these here lets
     # the route surface them to the enforcement boundary; without them the
     # inbound token is filtered out before the exchange and it fails.
-    capabilities: [read_inbound_credentials, write_delegated_tokens]
+    # perform_http lets it call the token endpoint.
+    capabilities: [read_inbound_credentials, write_delegated_tokens, perform_http]
     config:
       token_endpoint: http://localhost:8081/realms/cpex-tutorial/protocol/openid-connect/token
       client_id: cpex-gateway

@@ -19,7 +19,7 @@
 
 use std::sync::Arc;
 
-use cpex::PluginManager;
+use cpex::PolicyEngine;
 use cpex_tutorial::backends;
 use cpex_tutorial::ui;
 use cpex_tutorial::{mediate, Caller, Outcome};
@@ -32,11 +32,14 @@ const POLICY: &str = include_str!("../policies/m04.yaml");
 async fn main() {
     ui::module_banner("Module 4: Effects and sequencing");
 
-    let mgr = Arc::new(PluginManager::default());
-    cpex::install_builtins(&mgr);
-    mgr.load_config_yaml(POLICY)
+    let engine = Arc::new(PolicyEngine::default());
+    cpex::install_builtins(&engine);
+    cpex_tutorial::install_http_transport(&engine);
+    cpex_tutorial::audit::register(&engine);
+    engine
+        .load_config_yaml(POLICY)
         .expect("policy m04.yaml should load");
-    mgr.initialize().await.expect("initialize");
+    engine.initialize().await.expect("initialize");
 
     let caller = Caller::anonymous();
     let mut all_passed = true;
@@ -45,7 +48,7 @@ async fn main() {
     //     deny() guard halts with code `email.external_blocked`. ---
     ui::scenario("send_email to an external recipient (custom deny guard halts)");
     let outcome = mediate(
-        &mgr,
+        &engine,
         &caller,
         "send_email",
         json!({ "to": "attacker@evil.example", "subject": "hi", "external": true }),
@@ -69,7 +72,7 @@ async fn main() {
     //     anonymous caller with a different code. Proof of ordering. ---
     ui::scenario("send_email to an internal recipient (guard passes, auth check halts)");
     let outcome = mediate(
-        &mgr,
+        &engine,
         &caller,
         "send_email",
         json!({ "to": "coworker@corp.example", "subject": "hi", "external": false }),

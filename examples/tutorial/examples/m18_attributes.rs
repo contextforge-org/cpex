@@ -18,7 +18,7 @@
 
 use std::sync::Arc;
 
-use cpex::PluginManager;
+use cpex::PolicyEngine;
 use cpex_tutorial::backends;
 use cpex_tutorial::idp;
 use cpex_tutorial::ui;
@@ -42,11 +42,13 @@ async fn token(user: &str) -> Caller {
 async fn main() {
     ui::module_banner("Module 18: Static attributes (operator facts in the data.* tree)");
 
-    let mgr = Arc::new(PluginManager::default());
-    cpex::install_builtins(&mgr);
-    mgr.load_config_yaml(POLICY)
+    let engine = Arc::new(PolicyEngine::default());
+    cpex::install_builtins(&engine);
+    cpex_tutorial::install_http_transport(&engine);
+    engine
+        .load_config_yaml(POLICY)
         .expect("policy m18.yaml should load (run from the repo root so attribute_files resolves)");
-    mgr.initialize().await.expect("initialize");
+    engine.initialize().await.expect("initialize");
 
     let alice = token("alice").await;
     let mut all_passed = true;
@@ -55,7 +57,7 @@ async fn main() {
     // file, so it's refused. Nothing about alice changed.
     ui::scenario("alice → get_compensation (data.controls says this tool is disabled)");
     let o = mediate(
-        &mgr,
+        &engine,
         &alice,
         "get_compensation",
         json!({ "employee_id": "e-1001" }),
@@ -68,7 +70,7 @@ async fn main() {
     // search_repos is switched ON in the same file, so the same caller passes.
     ui::scenario("alice → search_repos (data.controls says this tool is enabled)");
     let o = mediate(
-        &mgr,
+        &engine,
         &alice,
         "search_repos",
         json!({ "visibility": "internal" }),

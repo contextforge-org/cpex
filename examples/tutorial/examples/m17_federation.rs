@@ -18,7 +18,7 @@
 
 use std::sync::Arc;
 
-use cpex::PluginManager;
+use cpex::PolicyEngine;
 use cpex_tutorial::backends;
 use cpex_tutorial::idp;
 use cpex_tutorial::ui;
@@ -40,11 +40,13 @@ fn or_exit(r: Result<String, String>) -> String {
 async fn main() {
     ui::module_banner("Module 17: Multi-issuer identity (trust more than one IdP)");
 
-    let mgr = Arc::new(PluginManager::default());
-    cpex::install_builtins(&mgr);
-    mgr.load_config_yaml(POLICY)
+    let engine = Arc::new(PolicyEngine::default());
+    cpex::install_builtins(&engine);
+    cpex_tutorial::install_http_transport(&engine);
+    engine
+        .load_config_yaml(POLICY)
         .expect("policy m17.yaml should load");
-    mgr.initialize().await.expect("initialize");
+    engine.initialize().await.expect("initialize");
 
     // Home realm: alice, minted from cpex-tutorial.
     let alice = Caller::with_token(or_exit(idp::mint_token("alice", "alice").await));
@@ -61,7 +63,7 @@ async fn main() {
 
     ui::scenario("alice (home realm cpex-tutorial) → get_compensation (issuer #1, role.hr)");
     let o = mediate(
-        &mgr,
+        &engine,
         &alice,
         "get_compensation",
         json!({ "employee_id": "e-1001" }),
@@ -75,7 +77,7 @@ async fn main() {
         "pat (partner realm cpex-partner) → get_compensation (issuer #2, validated on ITS keys)",
     );
     let o = mediate(
-        &mgr,
+        &engine,
         &pat,
         "get_compensation",
         json!({ "employee_id": "e-1001" }),
@@ -87,7 +89,7 @@ async fn main() {
 
     ui::scenario("outsider (master realm, an untrusted issuer) → get_compensation (rejected)");
     let o = mediate(
-        &mgr,
+        &engine,
         &outsider,
         "get_compensation",
         json!({ "employee_id": "e-1001" }),

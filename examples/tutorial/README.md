@@ -15,8 +15,10 @@ cargo run -p cpex-tutorial --example m01_hello -- --check # scripted assertions 
 | `src/mediate.rs` | `mediate()`, the enforcement loop a host owns, wrapped in one call. **Harness code, not a CPEX API** (see the note at the top of the file). |
 | `src/backends.rs` | Fake HR / repo / email tools. They hold data and do no enforcement; policy in front of them decides who sees what. |
 | `src/idp.rs` | Mint a token from the tutorial Keycloak realm; wait for it to be ready. |
+| `src/audit.rs` | A one-line audit plugin (`kind: tutorial/audit-line`) used by module 4 and the capstone. It prints the tool name and argument keys, never argument values. |
 | `src/approvals.rs` | A tiny `curl`-driven approval channel for the elicitation module. |
 | `src/ui.rs` | Shared console formatting and the `--check` assertion helpers. |
+| `src/lib.rs` | `install_http_transport()`, the HTTP transport every module installs. It allows private destinations so the builtins can reach the IdP on `localhost`. **Not a production setting.** |
 | `examples/mNN_*.rs` | One binary per tutorial module. |
 | `policies/mNN.yaml` | The APL each module loads. **These are yours to edit**; that is the point. Reset with `git checkout -- examples/tutorial/policies`. |
 | `idp/` | `docker-compose.yml` + `realm-export.json` for the tutorial Keycloak. |
@@ -29,6 +31,8 @@ Modules 0–1 need no IdP. Module 2 onward resolve real tokens, so start Keycloa
 docker compose -f examples/tutorial/idp/docker-compose.yml up -d   # ~30s first boot
 docker compose -f examples/tutorial/idp/docker-compose.yml down    # resets everything
 ```
+
+The identity, delegation and approval builtins reach Keycloak through the HTTP transport the host installs, and each of those plugins declares the `perform_http` capability in its policy. The tutorial transport allows private and loopback destinations because the IdP runs on `localhost`; a production host keeps the default (`cpex::install_default_http_transport`) or brings its own.
 
 The realm takes a few seconds to import. Wait for it before running an IdP-backed module (a call returning `auth.jwks_unavailable` means it was still booting):
 

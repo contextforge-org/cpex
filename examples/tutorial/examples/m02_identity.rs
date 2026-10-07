@@ -20,7 +20,7 @@
 
 use std::sync::Arc;
 
-use cpex::PluginManager;
+use cpex::PolicyEngine;
 use cpex_tutorial::backends;
 use cpex_tutorial::idp;
 use cpex_tutorial::ui;
@@ -34,11 +34,13 @@ const POLICY: &str = include_str!("../policies/m02.yaml");
 async fn main() {
     ui::module_banner("Module 2: Who's calling? (Identity)");
 
-    let mgr = Arc::new(PluginManager::default());
-    cpex::install_builtins(&mgr);
-    mgr.load_config_yaml(POLICY)
+    let engine = Arc::new(PolicyEngine::default());
+    cpex::install_builtins(&engine);
+    cpex_tutorial::install_http_transport(&engine);
+    engine
+        .load_config_yaml(POLICY)
         .expect("policy m02.yaml should load");
-    mgr.initialize().await.expect("initialize");
+    engine.initialize().await.expect("initialize");
 
     let alice = match idp::mint_token("alice", "alice").await {
         Ok(t) => Caller::with_token(t),
@@ -59,7 +61,7 @@ async fn main() {
 
     ui::scenario("alice (hr) → get_compensation");
     let outcome = mediate(
-        &mgr,
+        &engine,
         &alice,
         "get_compensation",
         json!({ "employee_id": "e-1001" }),
@@ -71,7 +73,7 @@ async fn main() {
 
     ui::scenario("evan (engineer) → get_compensation (fails require(role.hr))");
     let outcome = mediate(
-        &mgr,
+        &engine,
         &evan,
         "get_compensation",
         json!({ "employee_id": "e-1001" }),
@@ -84,7 +86,7 @@ async fn main() {
     ui::scenario("garbage token → get_compensation (rejected at validation)");
     let bogus = Caller::with_token("not.a.jwt");
     let outcome = mediate(
-        &mgr,
+        &engine,
         &bogus,
         "get_compensation",
         json!({ "employee_id": "e-1001" }),

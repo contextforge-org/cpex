@@ -17,7 +17,7 @@
 
 use std::sync::Arc;
 
-use cpex::PluginManager;
+use cpex::PolicyEngine;
 use cpex_tutorial::backends;
 use cpex_tutorial::ui;
 use cpex_tutorial::{mediate, Caller, Outcome};
@@ -30,18 +30,20 @@ const POLICY: &str = include_str!("../policies/m03.yaml");
 async fn main() {
     ui::module_banner("Module 3: Shaping data");
 
-    let mgr = Arc::new(PluginManager::default());
-    cpex::install_builtins(&mgr);
-    mgr.load_config_yaml(POLICY)
+    let engine = Arc::new(PolicyEngine::default());
+    cpex::install_builtins(&engine);
+    cpex_tutorial::install_http_transport(&engine);
+    engine
+        .load_config_yaml(POLICY)
         .expect("policy m03.yaml should load");
-    mgr.initialize().await.expect("initialize");
+    engine.initialize().await.expect("initialize");
 
     let caller = Caller::anonymous();
     let mut all_passed = true;
 
     ui::scenario("anonymous → get_compensation (result pipeline redacts ssn + salary, masks id)");
     let outcome = mediate(
-        &mgr,
+        &engine,
         &caller,
         "get_compensation",
         json!({ "employee_id": "e-1001" }),

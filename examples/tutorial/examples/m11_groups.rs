@@ -19,7 +19,7 @@
 
 use std::sync::Arc;
 
-use cpex::PluginManager;
+use cpex::PolicyEngine;
 use cpex_tutorial::backends;
 use cpex_tutorial::idp;
 use cpex_tutorial::ui;
@@ -43,11 +43,13 @@ async fn token(user: &str) -> Caller {
 async fn main() {
     ui::module_banner("Module 11: Organizing policy (Groups)");
 
-    let mgr = Arc::new(PluginManager::default());
-    cpex::install_builtins(&mgr);
-    mgr.load_config_yaml(POLICY)
+    let engine = Arc::new(PolicyEngine::default());
+    cpex::install_builtins(&engine);
+    cpex_tutorial::install_http_transport(&engine);
+    engine
+        .load_config_yaml(POLICY)
         .expect("policy m11.yaml should load");
-    mgr.initialize().await.expect("initialize");
+    engine.initialize().await.expect("initialize");
 
     let alice = token("alice").await;
     let evan = token("evan").await;
@@ -57,7 +59,7 @@ async fn main() {
         "alice (hr) → get_compensation (group resolves her token, require(role.hr) passes)",
     );
     let o = mediate(
-        &mgr,
+        &engine,
         &alice,
         "get_compensation",
         json!({ "employee_id": "e-1001" }),
@@ -69,7 +71,7 @@ async fn main() {
 
     ui::scenario("evan (engineer) → get_compensation (resolved by the same group, denied at require(role.hr))");
     let o = mediate(
-        &mgr,
+        &engine,
         &evan,
         "get_compensation",
         json!({ "employee_id": "e-1001" }),
@@ -82,7 +84,7 @@ async fn main() {
     // The engineering route: same group, a different requirement.
     ui::scenario("evan (engineer) → search_repos (same group, require(role.engineer) passes)");
     let o = mediate(
-        &mgr,
+        &engine,
         &evan,
         "search_repos",
         json!({ "visibility": "internal" }),
@@ -94,7 +96,7 @@ async fn main() {
 
     ui::scenario("alice (hr) → search_repos (denied at require(role.engineer))");
     let o = mediate(
-        &mgr,
+        &engine,
         &alice,
         "search_repos",
         json!({ "visibility": "internal" }),
@@ -108,7 +110,7 @@ async fn main() {
         "alice (hr) → send_email (group resolves her token; require(authenticated) passes)",
     );
     let o = mediate(
-        &mgr,
+        &engine,
         &alice,
         "send_email",
         json!({ "to": "coworker@corp.example", "subject": "lunch" }),

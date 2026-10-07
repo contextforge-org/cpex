@@ -8,6 +8,9 @@
 #   * salary is redacted unless the caller has the hr role.
 #   * employee_id is always masked to its last 4 characters.
 #
+# The `allow` step is there because an `authorization:` block must name
+# at least one step; the interesting part of this route is `result:`.
+#
 # A pipeline entry reads `<field>: "<type> | <op>(<when>)"`. The op runs
 # only when its predicate is true; `redact(!perm.view_ssn)` means "redact
 # when the caller does NOT have view_ssn."
@@ -20,7 +23,8 @@
 routes:
   - tool: get_compensation
     authorization:
-      pre_invocation: []
+      pre_invocation:
+        - "allow"
     result:
       ssn: "str | redact(!perm.view_ssn)"
       salary: "int | redact(!role.hr)"

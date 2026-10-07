@@ -16,7 +16,7 @@
 
 use std::sync::Arc;
 
-use cpex::PluginManager;
+use cpex::PolicyEngine;
 use cpex_tutorial::backends;
 use cpex_tutorial::ui;
 use cpex_tutorial::{mediate, Caller};
@@ -29,10 +29,12 @@ const M04: &str = include_str!("../policies/m04.yaml");
 async fn main() {
     ui::module_banner("Module 10: Testing your policy");
 
-    let mgr = Arc::new(PluginManager::default());
-    cpex::install_builtins(&mgr);
-    mgr.load_config_yaml(M04).expect("policy should load");
-    mgr.initialize().await.expect("initialize");
+    let engine = Arc::new(PolicyEngine::default());
+    cpex::install_builtins(&engine);
+    cpex_tutorial::install_http_transport(&engine);
+    cpex_tutorial::audit::register(&engine);
+    engine.load_config_yaml(M04).expect("policy should load");
+    engine.initialize().await.expect("initialize");
 
     // A table of expectations. Each row is a policy assertion.
     let cases = [
@@ -54,7 +56,7 @@ async fn main() {
             "{tool} {args} → expect {}",
             if want_allowed { "ALLOW" } else { "DENY" }
         ));
-        let outcome = mediate(&mgr, &Caller::anonymous(), tool, args, |a| {
+        let outcome = mediate(&engine, &Caller::anonymous(), tool, args, |a| {
             backends::dispatch(tool, a)
         })
         .await;
