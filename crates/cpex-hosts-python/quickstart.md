@@ -1,4 +1,4 @@
-# quickstart instructions - Installing and runing existing Python CPEX plugins out-of-process from the Rust PluginManager
+# quickstart instructions - Installing and runing existing Python CPEX plugins out-of-process from the Rust PolicyEngine
 
 ## First steps
 - create a folder to setup CPEX (Rust) + (Pythyon)
@@ -55,18 +55,35 @@ cargo add serde_json
 
 ```
 
+## Adapting the installer-written config
+
+`cpex plugin install` writes `plugins/config.yaml` in the pre-PPE shape. Make
+three edits before loading it:
+
+- Delete the top-level `plugin_dirs:` key. PPE rejects it; the host always uses
+  `plugins/` at the project root.
+- Add `engine_settings:` with `dispatch: hooks`, so each plugin fires at the
+  hooks it declares without a `routes:` or `authorization:` block.
+- Rename `identity_resolve` to `identity.resolve` and `token_delegate` to
+  `token.delegate` in any `hooks:` list. The host translates them back to the
+  names the Python worker knows.
+
+The unprefixed `tool_pre_invoke` can stay: the 0.1.x worker registers no
+`cmf.*` hooks, so the driver below registers `tool_pre_invoke` as a host hook
+before loading the config.
+
 ## Example driver program (replaces code-review/python-tests/src/main.rs)
 
 ```rust
 use std::path::{PathBuf};
 use std::sync::Arc;
 use std::collections::HashMap;
-use cpex::cpex_core::manager::PluginManager;
-use cpex::cpex_core::factory::PluginFactoryRegistry;
-use cpex::cpex_core::config::parse_config;
-use cpex::cpex_core::hooks::types::hook_names;
-use cpex::cpex_core::error::PluginError;
-use cpex::cpex_core::extensions::{
+use cpex::PolicyEngine;
+use cpex::praxis_policy_core::factory::PluginFactoryRegistry;
+use cpex::praxis_policy_core::config::parse_config;
+use cpex::praxis_policy_core::hooks::{register_hook_metadata, HookMetadata};
+use cpex::praxis_policy_core::error::PluginError;
+use cpex::praxis_policy_core::extensions::{
     AgentExtension, Extensions, HttpExtension, RequestExtension, SecurityExtension,
 };
 use cpex::cpex_hosts_python::{IsolatedVenvFactory, KIND};
@@ -91,8 +108,11 @@ const INBOUND_LABEL: &str = "CONFIG-E2E-LABEL-4f18";
 /// absence from the serialized task, so it has to be unique enough that a match
 /// anywhere in the JSON is conclusive.
 const SENSITIVE_HEADER_VALUE: &str = "Bearer config-e2e-must-not-travel";
-/// The repository root — `plugins/config.yaml` and the installed plugin's
-/// `plugin_dirs` are both relative to it.
+/// The unprefixed tool hook the installed plugin implements. PPE does not
+/// dispatch it, so the driver registers it as a host hook.
+const TOOL_PRE_INVOKE: &str = "tool_pre_invoke";
+
+/// The project root. `plugins/config.yaml` and the installed plugin live under it.
 fn repo_root() -> PathBuf {
     // CARGO_MANIFEST_DIR = ./
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -145,11 +165,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let yaml = std::fs::read_to_string(&config_path).map_err(|e| PluginError::Config {
         message: format!("failed to read config file '{}': {}", config_path.display(), e),
     })?;
-    let cpex_config = parse_config(&yaml).unwrap();
+    // Before parsing: the loader rejects a hook it has no metadata for.
+    register_hook_metadata(TOOL_PRE_INVOKE, HookMetadata::permissive());
+    let config = parse_config(&yaml)?;
     let mut factories = PluginFactoryRegistry::new();
     factories.register(KIND, Box::new(IsolatedVenvFactory));
 
-    let manager = PluginManager::from_config(cpex_config, &factories).unwrap();
+    let manager = PolicyEngine::from_config(config, &factories)?;
     manager
         .initialize()
         .await
@@ -176,7 +198,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let (result, _background) = manager
         .invoke_by_name(
-            hook_names::TOOL_PRE_INVOKE,
+            TOOL_PRE_INVOKE,
             Box::new(payload),
             inbound.clone(),
             None,

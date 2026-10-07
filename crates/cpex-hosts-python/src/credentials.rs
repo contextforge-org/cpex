@@ -12,7 +12,7 @@
 // out-of-process identity resolver or token delegator cannot do its job over
 // that channel.
 //
-// This module is the narrow, documented exception `cpex-core`'s
+// This module is the narrow, documented exception `praxis-policy-core`'s
 // `RawCredentialsExtension` points at: a dedicated DTO
 // carries the token as a plain string, built only on the capability-gated
 // dispatch path for the two hooks whose Python payload models a raw token at
@@ -47,10 +47,10 @@
 
 use std::collections::{HashMap, HashSet};
 
-use cpex_core::extensions::raw_credentials::{
+use praxis_policy_core::extensions::raw_credentials::{
     DelegationKey, DelegationMode, RawDelegatedToken, RawInboundToken, TokenKind, TokenRole,
 };
-use cpex_core::extensions::Extensions;
+use praxis_policy_core::extensions::Extensions;
 use serde::Serialize;
 use serde_json::Value;
 
@@ -94,7 +94,7 @@ impl std::fmt::Debug for CredentialDto {
     }
 }
 
-/// `credential.inbound` — built from `RawInboundToken`, for `identity_resolve`.
+/// `credential.inbound`: built from `RawInboundToken`, for `identity.resolve`.
 ///
 /// The worker maps these onto `IdentityPayload`: `token` → `raw_token`, `kind`
 /// → `source`, `headers` → `headers` (with the plaintext scrubbed out of the
@@ -132,8 +132,8 @@ impl std::fmt::Debug for InboundCredential {
     }
 }
 
-/// `credential.delegated` — built from `RawDelegatedToken`, for
-/// `token_delegate`.
+/// `credential.delegated`: built from `RawDelegatedToken`, for
+/// `token.delegate`.
 ///
 /// The worker maps `token` → `DelegationPayload.bearer_token`; the rest is
 /// audit and validation context.
@@ -187,7 +187,7 @@ fn token_kind_wire_name(kind: &TokenKind) -> &'static str {
 /// Attach the `credential` object to a task, when the hook and the plugin's
 /// declared capabilities both call for it.
 ///
-/// A no-op for every hook other than `identity_resolve` and `token_delegate`,
+/// A no-op for every hook other than `identity.resolve` and `token.delegate`,
 /// and for any plugin that declared neither capability.
 pub fn attach_credential(
     task: &mut Value,
@@ -318,7 +318,7 @@ fn inbound_from_token(
     })
 }
 
-/// The audience the `token_delegate` hook was invoked for, if the payload names
+/// The audience the `token.delegate` hook was invoked for, if the payload names
 /// one.
 ///
 /// `DelegationPayload.target_audience` is optional, so a `None` here means the
@@ -450,7 +450,7 @@ fn delegated_from_token(
 mod tests {
     use std::sync::Arc;
 
-    use cpex_core::extensions::raw_credentials::{DelegationKey, RawCredentialsExtension};
+    use praxis_policy_core::extensions::raw_credentials::{DelegationKey, RawCredentialsExtension};
 
     use super::*;
 
@@ -494,12 +494,12 @@ mod tests {
         serde_json::json!({ "task_type": "load_and_run_hook" })
     }
 
-    /// A `token_delegate` task whose payload names the audience the delegation
+    /// A `token.delegate` task whose payload names the audience the delegation
     /// is for — the shape `plugin.rs` actually builds.
     fn delegate_task(target_audience: &str) -> Value {
         serde_json::json!({
             "task_type": "load_and_run_hook",
-            "hook_type": "token_delegate",
+            "hook_type": "token.delegate",
             "payload": {
                 "target_name": "billing",
                 "target_type": "tool",
@@ -538,13 +538,13 @@ mod tests {
         }
     }
 
-    /// The delegated token a `token_delegate` dispatch would carry, or the
+    /// The delegated token a `token.delegate` dispatch would carry, or the
     /// fail-closed error.
     fn pick_delegated(extensions: &Extensions, target_audience: &str) -> Result<String, HostError> {
         let mut task = delegate_task(target_audience);
         attach_credential(
             &mut task,
-            "token_delegate",
+            "token.delegate",
             extensions,
             &caps(&[CAP_READ_DELEGATED]),
         )?;
@@ -561,7 +561,7 @@ mod tests {
         let mut task = task();
         attach_credential(
             &mut task,
-            "identity_resolve",
+            "identity.resolve",
             &extensions_with_credentials(),
             &caps(&[CAP_READ_INBOUND]),
         )
@@ -582,7 +582,7 @@ mod tests {
         let mut task = task();
         attach_credential(
             &mut task,
-            "identity_resolve",
+            "identity.resolve",
             &extensions_with_credentials(),
             &caps(&[]),
         )
@@ -609,7 +609,7 @@ mod tests {
         let mut declaring = task();
         attach_credential(
             &mut declaring,
-            "identity_resolve",
+            "identity.resolve",
             &extensions,
             &caps(&[CAP_READ_INBOUND]),
         )
@@ -618,7 +618,7 @@ mod tests {
         let mut non_declaring = task();
         attach_credential(
             &mut non_declaring,
-            "identity_resolve",
+            "identity.resolve",
             &extensions,
             &caps(&[]),
         )
@@ -641,7 +641,7 @@ mod tests {
         let mut identity = task();
         attach_credential(
             &mut identity,
-            "identity_resolve",
+            "identity.resolve",
             &extensions,
             &caps(&[CAP_READ_DELEGATED]),
         )
@@ -651,7 +651,7 @@ mod tests {
         let mut delegate = task();
         attach_credential(
             &mut delegate,
-            "token_delegate",
+            "token.delegate",
             &extensions,
             &caps(&[CAP_READ_INBOUND]),
         )
@@ -664,7 +664,7 @@ mod tests {
         let mut task = task();
         attach_credential(
             &mut task,
-            "token_delegate",
+            "token.delegate",
             &extensions_with_credentials(),
             &caps(&[CAP_READ_DELEGATED]),
         )
@@ -688,7 +688,13 @@ mod tests {
             "prompt_pre_fetch",
             "resource_post_fetch",
             "cmf.tool_pre_invoke",
+            "cmf.prompt_pre_invoke",
+            "http.request",
             "some_custom_hook",
+            // The unprefixed names PPE no longer dispatches. A host that
+            // registers them gets the generic payload and no credential.
+            "identity_resolve",
+            "token_delegate",
         ] {
             let mut task = task();
             attach_credential(
@@ -715,7 +721,7 @@ mod tests {
         // as unauthenticated.
         let err = attach_credential(
             &mut task(),
-            "identity_resolve",
+            "identity.resolve",
             &Extensions::default(),
             &caps(&[CAP_READ_INBOUND]),
         )
@@ -741,7 +747,7 @@ mod tests {
 
         let err = attach_credential(
             &mut task(),
-            "identity_resolve",
+            "identity.resolve",
             &extensions,
             &caps(&[CAP_READ_INBOUND]),
         )
@@ -768,7 +774,7 @@ mod tests {
 
             let err = attach_credential(
                 &mut task(),
-                "identity_resolve",
+                "identity.resolve",
                 &extensions,
                 &caps(&[CAP_READ_INBOUND]),
             )
@@ -792,7 +798,7 @@ mod tests {
 
         let err = attach_credential(
             &mut task(),
-            "token_delegate",
+            "token.delegate",
             &extensions,
             &caps(&[CAP_READ_DELEGATED]),
         )
@@ -814,14 +820,14 @@ mod tests {
 
         let err = attach_credential(
             &mut task(),
-            "identity_resolve",
+            "identity.resolve",
             &extensions,
             &caps(&[CAP_READ_INBOUND]),
         )
         .expect_err("errors");
         let message = err.to_string();
         assert!(
-            message.contains("identity_resolve"),
+            message.contains("identity.resolve"),
             "the message should name the hook: {message}"
         );
         assert!(message.contains("empty"));
@@ -996,7 +1002,7 @@ mod tests {
         let mut task = task();
         attach_credential(
             &mut task,
-            "identity_resolve",
+            "identity.resolve",
             &extensions,
             &caps(&[CAP_READ_INBOUND]),
         )
@@ -1009,7 +1015,7 @@ mod tests {
         let mut task = task();
         attach_credential(
             &mut task,
-            "identity_resolve",
+            "identity.resolve",
             &extensions_with_credentials(),
             &caps(&[CAP_READ_INBOUND]),
         )
@@ -1055,7 +1061,7 @@ mod tests {
         let mut task = task();
         attach_credential(
             &mut task,
-            "token_delegate",
+            "token.delegate",
             &extensions,
             &caps(&[CAP_READ_DELEGATED]),
         )
@@ -1254,7 +1260,7 @@ mod tests {
             });
             attach_credential(
                 &mut task,
-                "token_delegate",
+                "token.delegate",
                 &extensions_from(tokens.clone()),
                 &caps(&[CAP_READ_DELEGATED]),
             )

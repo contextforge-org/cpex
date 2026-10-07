@@ -19,13 +19,21 @@
 // single `P: PluginPayload`. Outbound, serialization is a downcast chain
 // (mirroring `cpex-ffi`'s ordering) because the concrete type arrives erased.
 // Inbound, the hook *name* selects which typed payload a `modified_payload`
-// deserializes into — a `PayloadKind` per hook name, with `cmf.` routing to
-// `MessagePayload` and unrecognized names to the generic payload.
+// deserializes into: a `PayloadKind` per name in the hook table, and the
+// generic payload for any name outside it. The same table translates PPE's
+// dispatched names to the spellings the Python worker registers.
 
-use cpex_core::cmf::MessagePayload;
-use cpex_core::error::PluginViolation;
-use cpex_core::executor::ErasedResultFields;
-use cpex_core::hooks::payload::PluginPayload;
+use praxis_policy_core::cmf::constants::{
+    HOOK_CMF_LLM_INPUT, HOOK_CMF_LLM_OUTPUT, HOOK_CMF_PROMPT_POST_INVOKE,
+    HOOK_CMF_PROMPT_PRE_INVOKE, HOOK_CMF_RESOURCE_POST_FETCH, HOOK_CMF_RESOURCE_PRE_FETCH,
+    HOOK_CMF_TOOL_POST_INVOKE, HOOK_CMF_TOOL_PRE_INVOKE,
+};
+use praxis_policy_core::cmf::MessagePayload;
+use praxis_policy_core::delegation::HOOK_TOKEN_DELEGATE;
+use praxis_policy_core::error::PluginViolation;
+use praxis_policy_core::executor::ErasedResultFields;
+use praxis_policy_core::hooks::payload::PluginPayload;
+use praxis_policy_core::identity::HOOK_IDENTITY_RESOLVE;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -36,27 +44,24 @@ use crate::legacy::payloads::{
     ToolPreInvokePayload,
 };
 
-/// Prefix that marks a CMF hook name.
-pub const CMF_PREFIX: &str = "cmf.";
-
 /// Wraps any JSON value for hooks with no typed payload.
 ///
 /// The third copy of this type in the workspace — `cpex-ffi` and the Python
-/// bindings each define their own, because cpex-core exports the
+/// bindings each define their own, because praxis-policy-core exports the
 /// `impl_plugin_payload!` macro but not a shared struct. Consolidating all
-/// three into cpex-core is deferred follow-up work; it would touch the FFI and
+/// three into praxis-policy-core is deferred follow-up work; it would touch the FFI and
 /// the bindings, and is not needed to ship this host.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GenericPayload {
     pub value: Value,
 }
 
-cpex_core::impl_plugin_payload!(GenericPayload);
+praxis_policy_core::impl_plugin_payload!(GenericPayload);
 
 /// Which payload type a hook name maps to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PayloadKind {
-    /// Any `cmf.*` hook — the CMF message payload.
+    /// A `cmf.*` hook PPE dispatches: the CMF message payload.
     CmfMessage,
     ToolPreInvoke,
     ToolPostInvoke,
@@ -64,39 +69,152 @@ pub enum PayloadKind {
     PromptPostFetch,
     ResourcePreFetch,
     ResourcePostFetch,
+    /// `identity.resolve`: carries the inbound credential.
     IdentityResolve,
+    /// `token.delegate`: carries the delegated token.
     TokenDelegate,
-    /// No typed payload for this name — carry the JSON as-is.
+    /// No typed payload for this name: carry the JSON as-is.
     Generic,
+}
+
+/// One row of the hook table: the name the engine dispatches, the payload it
+/// carries, and the name the Python worker knows it by.
+struct HookRoute {
+    dispatched: &'static str,
+    kind: PayloadKind,
+    worker: &'static str,
+}
+
+/// Every hook name this host gives a typed payload, keyed on the name the
+/// engine dispatches.
+///
+/// The CMF rows and the identity and delegation rows are PPE's dispatched
+/// names. The Python framework still keys its payload registry, its hook
+/// methods and its credential handling on the older spellings, so the
+/// `worker` column translates on the wire: `identity.resolve` reaches the
+/// worker as `identity_resolve`, `token.delegate` as `token_delegate`, and the
+/// CMF prompt pair as `cmf.prompt_pre_fetch` / `cmf.prompt_post_fetch`.
+///
+/// The six unprefixed tool, prompt and resource rows are not PPE hooks. PPE's
+/// config loader rejects them unless a host registers hook metadata for them
+/// and then invokes them with the matching typed payload, so they stay for
+/// such hosts. The unprefixed `identity_resolve` and `token_delegate` are
+/// deliberately absent: raw credentials travel only on PPE's names.
+const HOOK_ROUTES: &[HookRoute] = &[
+    route(
+        HOOK_CMF_TOOL_PRE_INVOKE,
+        PayloadKind::CmfMessage,
+        HOOK_CMF_TOOL_PRE_INVOKE,
+    ),
+    route(
+        HOOK_CMF_TOOL_POST_INVOKE,
+        PayloadKind::CmfMessage,
+        HOOK_CMF_TOOL_POST_INVOKE,
+    ),
+    route(
+        HOOK_CMF_LLM_INPUT,
+        PayloadKind::CmfMessage,
+        HOOK_CMF_LLM_INPUT,
+    ),
+    route(
+        HOOK_CMF_LLM_OUTPUT,
+        PayloadKind::CmfMessage,
+        HOOK_CMF_LLM_OUTPUT,
+    ),
+    route(
+        HOOK_CMF_PROMPT_PRE_INVOKE,
+        PayloadKind::CmfMessage,
+        "cmf.prompt_pre_fetch",
+    ),
+    route(
+        HOOK_CMF_PROMPT_POST_INVOKE,
+        PayloadKind::CmfMessage,
+        "cmf.prompt_post_fetch",
+    ),
+    route(
+        HOOK_CMF_RESOURCE_PRE_FETCH,
+        PayloadKind::CmfMessage,
+        HOOK_CMF_RESOURCE_PRE_FETCH,
+    ),
+    route(
+        HOOK_CMF_RESOURCE_POST_FETCH,
+        PayloadKind::CmfMessage,
+        HOOK_CMF_RESOURCE_POST_FETCH,
+    ),
+    route(
+        HOOK_IDENTITY_RESOLVE,
+        PayloadKind::IdentityResolve,
+        "identity_resolve",
+    ),
+    route(
+        HOOK_TOKEN_DELEGATE,
+        PayloadKind::TokenDelegate,
+        "token_delegate",
+    ),
+    route(
+        "tool_pre_invoke",
+        PayloadKind::ToolPreInvoke,
+        "tool_pre_invoke",
+    ),
+    route(
+        "tool_post_invoke",
+        PayloadKind::ToolPostInvoke,
+        "tool_post_invoke",
+    ),
+    route(
+        "prompt_pre_fetch",
+        PayloadKind::PromptPreFetch,
+        "prompt_pre_fetch",
+    ),
+    route(
+        "prompt_post_fetch",
+        PayloadKind::PromptPostFetch,
+        "prompt_post_fetch",
+    ),
+    route(
+        "resource_pre_fetch",
+        PayloadKind::ResourcePreFetch,
+        "resource_pre_fetch",
+    ),
+    route(
+        "resource_post_fetch",
+        PayloadKind::ResourcePostFetch,
+        "resource_post_fetch",
+    ),
+];
+
+const fn route(dispatched: &'static str, kind: PayloadKind, worker: &'static str) -> HookRoute {
+    HookRoute {
+        dispatched,
+        kind,
+        worker,
+    }
+}
+
+fn lookup_route(hook_name: &str) -> Option<&'static HookRoute> {
+    HOOK_ROUTES.iter().find(|r| r.dispatched == hook_name)
 }
 
 /// Resolve a hook name to its payload kind.
 ///
-/// The `cmf.` prefix is checked first: `cmf.tool_pre_invoke` must route to the
-/// CMF message payload, not to the legacy tool payload whose name it contains.
+/// Exact match against the hook table. A name the table does not hold,
+/// including a custom `cmf.`-prefixed one, gets the generic payload.
 pub fn payload_kind_for_hook(hook_name: &str) -> PayloadKind {
-    use cpex_core::hooks::types::hook_names;
+    lookup_route(hook_name).map_or(PayloadKind::Generic, |r| r.kind)
+}
 
-    if hook_name.starts_with(CMF_PREFIX) {
-        return PayloadKind::CmfMessage;
-    }
-
-    match hook_name {
-        hook_names::TOOL_PRE_INVOKE => PayloadKind::ToolPreInvoke,
-        hook_names::TOOL_POST_INVOKE => PayloadKind::ToolPostInvoke,
-        hook_names::PROMPT_PRE_FETCH => PayloadKind::PromptPreFetch,
-        hook_names::PROMPT_POST_FETCH => PayloadKind::PromptPostFetch,
-        hook_names::RESOURCE_PRE_FETCH => PayloadKind::ResourcePreFetch,
-        hook_names::RESOURCE_POST_FETCH => PayloadKind::ResourcePostFetch,
-        hook_names::IDENTITY_RESOLVE => PayloadKind::IdentityResolve,
-        hook_names::TOKEN_DELEGATE => PayloadKind::TokenDelegate,
-        _ => PayloadKind::Generic,
-    }
+/// The hook name the Python worker knows `hook_name` by.
+///
+/// Used for the task's `hook_type` and the plugin config's `hooks` list, so the
+/// worker finds the right payload model, hook method and credential slot. A
+/// name outside the hook table passes through unchanged.
+pub fn worker_hook_name(hook_name: &str) -> &str {
+    lookup_route(hook_name).map_or(hook_name, |r| r.worker)
 }
 
 /// Whether a hook carries raw credentials.
 ///
-/// Only `identity_resolve` and `token_delegate` do: they are the only two
+/// Only `identity.resolve` and `token.delegate` do: they are the only two
 /// hooks whose Python payload models a raw token at all
 /// (`IdentityPayload.raw_token`, `DelegationPayload.bearer_token`). The Python
 /// `Extensions` model has no raw-credential slot, so no other hook has
@@ -212,7 +330,7 @@ pub fn deserialize_payload(
 pub fn response_to_result(
     hook_name: &str,
     response: Value,
-    inbound: &cpex_core::extensions::Extensions,
+    inbound: &praxis_policy_core::extensions::Extensions,
 ) -> Result<ErasedResultFields, HostError> {
     let continue_processing = response
         .get("continue_processing")
@@ -292,34 +410,62 @@ mod tests {
     /// tokens — so a gated slot in a response is dropped rather than applied.
     /// `extensions::tests` and `tests/extensions_merge_e2e.rs` cover the
     /// token-bearing cases.
-    fn no_inbound() -> cpex_core::extensions::Extensions {
-        cpex_core::extensions::Extensions::default()
+    fn no_inbound() -> praxis_policy_core::extensions::Extensions {
+        praxis_policy_core::extensions::Extensions::default()
     }
 
     // --- hook name resolution -----------------------------------------------
 
     #[test]
-    fn cmf_hooks_route_to_the_message_payload() {
-        // The CMF-parity acceptance example. `cmf.tool_pre_invoke` contains the
-        // legacy name as a substring, so a match that checked the suffix or
-        // used `contains` would mis-route it to the tool payload.
+    fn every_ppe_cmf_hook_routes_to_the_message_payload() {
+        for hook in [
+            "cmf.tool_pre_invoke",
+            "cmf.tool_post_invoke",
+            "cmf.llm_input",
+            "cmf.llm_output",
+            "cmf.prompt_pre_invoke",
+            "cmf.prompt_post_invoke",
+            "cmf.resource_pre_fetch",
+            "cmf.resource_post_fetch",
+        ] {
+            assert_eq!(
+                payload_kind_for_hook(hook),
+                PayloadKind::CmfMessage,
+                "hook '{hook}' resolved wrongly"
+            );
+        }
+    }
+
+    #[test]
+    fn the_table_covers_every_cmf_hook_ppe_dispatches() {
+        // A CMF hook added upstream would otherwise fall to the generic payload
+        // and lose its typed modified payload without any error.
+        for hook in praxis_policy_core::hooks::builtin_hook_types() {
+            let name = hook.as_str();
+            if name.starts_with("cmf.") {
+                assert_eq!(
+                    payload_kind_for_hook(name),
+                    PayloadKind::CmfMessage,
+                    "PPE dispatches '{name}' but the hook table does not route it"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn identity_and_delegation_route_under_ppe_names() {
         assert_eq!(
-            payload_kind_for_hook("cmf.tool_pre_invoke"),
-            PayloadKind::CmfMessage
+            payload_kind_for_hook("identity.resolve"),
+            PayloadKind::IdentityResolve
         );
         assert_eq!(
-            payload_kind_for_hook("cmf.llm_input"),
-            PayloadKind::CmfMessage
-        );
-        assert_eq!(
-            payload_kind_for_hook("cmf.some_future_hook"),
-            PayloadKind::CmfMessage,
-            "any cmf.* name is a message payload, even one this host predates"
+            payload_kind_for_hook("token.delegate"),
+            PayloadKind::TokenDelegate
         );
     }
 
     #[test]
-    fn every_legacy_hook_resolves_to_its_own_typed_payload() {
+    fn host_registered_legacy_hooks_keep_their_typed_payloads() {
         let expected = [
             ("tool_pre_invoke", PayloadKind::ToolPreInvoke),
             ("tool_post_invoke", PayloadKind::ToolPostInvoke),
@@ -327,8 +473,6 @@ mod tests {
             ("prompt_post_fetch", PayloadKind::PromptPostFetch),
             ("resource_pre_fetch", PayloadKind::ResourcePreFetch),
             ("resource_post_fetch", PayloadKind::ResourcePostFetch),
-            ("identity_resolve", PayloadKind::IdentityResolve),
-            ("token_delegate", PayloadKind::TokenDelegate),
         ];
 
         for (hook, kind) in expected {
@@ -339,37 +483,62 @@ mod tests {
             );
         }
 
-        // All eight are distinct — a copy-paste in the match arms would show up
-        // here rather than as a wrong payload at runtime.
+        // All six are distinct: a copy-paste in the table would show up here
+        // rather than as a wrong payload at runtime.
         let kinds: std::collections::HashSet<_> =
             expected.iter().map(|(_, k)| format!("{k:?}")).collect();
         assert_eq!(
             kinds.len(),
-            8,
+            6,
             "each legacy hook needs its own payload kind"
         );
     }
 
     #[test]
-    fn an_unknown_hook_name_falls_back_to_the_generic_payload() {
-        assert_eq!(
-            payload_kind_for_hook("some_custom_hook"),
-            PayloadKind::Generic
-        );
-        assert_eq!(payload_kind_for_hook(""), PayloadKind::Generic);
+    fn a_hook_outside_the_table_falls_back_to_the_generic_payload() {
+        for hook in [
+            "some_custom_hook",
+            "",
+            // A custom name with the CMF prefix is not a CMF hook PPE dispatches.
+            "cmf.some_future_hook",
+            // PPE's own HTTP and elicitation hooks have no Python payload model.
+            "http.request",
+            "elicit",
+            // The unprefixed identity and delegation names are gone: credentials
+            // travel only on PPE's names.
+            "identity_resolve",
+            "token_delegate",
+            // The old CMF prompt spelling is the worker's, not a dispatched name.
+            "cmf.prompt_pre_fetch",
+        ] {
+            assert_eq!(
+                payload_kind_for_hook(hook),
+                PayloadKind::Generic,
+                "'{hook}' must not get a typed payload"
+            );
+            assert_eq!(
+                worker_hook_name(hook),
+                hook,
+                "'{hook}' must reach the worker unchanged"
+            );
+        }
     }
 
     #[test]
     fn only_identity_and_delegation_are_credential_hooks() {
-        assert!(is_credential_hook("identity_resolve"));
-        assert!(is_credential_hook("token_delegate"));
+        assert!(is_credential_hook("identity.resolve"));
+        assert!(is_credential_hook("token.delegate"));
 
         for hook in [
+            "identity_resolve",
+            "token_delegate",
             "tool_pre_invoke",
             "tool_post_invoke",
             "prompt_pre_fetch",
             "resource_pre_fetch",
             "cmf.tool_pre_invoke",
+            "cmf.prompt_pre_invoke",
+            "http.request",
             "unknown",
         ] {
             assert!(
@@ -377,6 +546,55 @@ mod tests {
                 "'{hook}' must not receive credentials"
             );
         }
+    }
+
+    #[test]
+    fn ppe_names_translate_to_the_worker_spelling() {
+        let expected = [
+            ("identity.resolve", "identity_resolve"),
+            ("token.delegate", "token_delegate"),
+            ("cmf.prompt_pre_invoke", "cmf.prompt_pre_fetch"),
+            ("cmf.prompt_post_invoke", "cmf.prompt_post_fetch"),
+            ("cmf.tool_pre_invoke", "cmf.tool_pre_invoke"),
+            ("cmf.tool_post_invoke", "cmf.tool_post_invoke"),
+            ("cmf.llm_input", "cmf.llm_input"),
+            ("cmf.llm_output", "cmf.llm_output"),
+            ("cmf.resource_pre_fetch", "cmf.resource_pre_fetch"),
+            ("cmf.resource_post_fetch", "cmf.resource_post_fetch"),
+            ("tool_pre_invoke", "tool_pre_invoke"),
+        ];
+        for (dispatched, worker) in expected {
+            assert_eq!(worker_hook_name(dispatched), worker, "{dispatched}");
+        }
+    }
+
+    #[test]
+    fn identity_and_delegation_modified_payloads_keep_their_types() {
+        let boxed = deserialize_payload(
+            "identity.resolve",
+            serde_json::json!({ "raw_token": "**********", "source": "bearer" }),
+        )
+        .expect("parses");
+        assert!(
+            boxed
+                .as_any()
+                .downcast_ref::<IdentityResolvePayload>()
+                .is_some(),
+            "identity.resolve must come back as the identity payload"
+        );
+
+        let boxed = deserialize_payload(
+            "token.delegate",
+            serde_json::json!({ "target_name": "billing-api" }),
+        )
+        .expect("parses");
+        assert!(
+            boxed
+                .as_any()
+                .downcast_ref::<TokenDelegatePayload>()
+                .is_some(),
+            "token.delegate must come back as the delegation payload"
+        );
     }
 
     // --- outbound serialization ---------------------------------------------
@@ -411,7 +629,7 @@ mod tests {
 
     #[test]
     fn a_cmf_message_payload_serializes_as_itself() {
-        use cpex_core::cmf::{Message, Role};
+        use praxis_policy_core::cmf::{Message, Role};
 
         let payload = MessagePayload {
             message: Message::text(Role::User, "what is the weather?"),
@@ -424,7 +642,7 @@ mod tests {
     fn an_unforwardable_payload_type_errors_rather_than_sending_null() {
         #[derive(Debug, Clone)]
         struct ForeignPayload;
-        cpex_core::impl_plugin_payload!(ForeignPayload);
+        praxis_policy_core::impl_plugin_payload!(ForeignPayload);
 
         let err =
             serialize_payload(&ForeignPayload).expect_err("an unknown type cannot be forwarded");
@@ -447,7 +665,7 @@ mod tests {
 
     #[test]
     fn a_cmf_modified_payload_deserializes_as_a_message_payload() {
-        use cpex_core::cmf::{Message, Role};
+        use praxis_policy_core::cmf::{Message, Role};
 
         // Round-tripped through the real type so the JSON matches the CMF
         // schema rather than a hand-guessed shape.

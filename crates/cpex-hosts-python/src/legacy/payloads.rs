@@ -17,7 +17,7 @@
 // fields, so both get a hand-written `Debug` that prints a placeholder instead
 // of the value. A derive would put credential material into any `{:?}` — a
 // tracing call, an `unwrap()` panic message, an assertion failure. The
-// equivalent gap on the pre-existing cpex-core types is deferred follow-up
+// equivalent gap on the pre-existing praxis-policy-core types is deferred follow-up
 // work; these new types do not reintroduce it.
 
 use std::collections::HashMap;
@@ -41,7 +41,7 @@ pub struct ToolPreInvokePayload {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub headers: Option<HashMap<String, String>>,
 }
-cpex_core::impl_plugin_payload!(ToolPreInvokePayload);
+praxis_policy_core::impl_plugin_payload!(ToolPreInvokePayload);
 
 /// `tool_post_invoke` — mirrors `ToolPostInvokePayload`.
 ///
@@ -53,7 +53,7 @@ pub struct ToolPostInvokePayload {
     #[serde(default)]
     pub result: serde_json::Value,
 }
-cpex_core::impl_plugin_payload!(ToolPostInvokePayload);
+praxis_policy_core::impl_plugin_payload!(ToolPostInvokePayload);
 
 /// `prompt_pre_fetch` — mirrors `PromptPrehookPayload`.
 ///
@@ -66,7 +66,7 @@ pub struct PromptPreFetchPayload {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub args: Option<HashMap<String, String>>,
 }
-cpex_core::impl_plugin_payload!(PromptPreFetchPayload);
+praxis_policy_core::impl_plugin_payload!(PromptPreFetchPayload);
 
 /// `prompt_post_fetch` — mirrors `PromptPosthookPayload`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -76,7 +76,7 @@ pub struct PromptPostFetchPayload {
     #[serde(default)]
     pub result: serde_json::Value,
 }
-cpex_core::impl_plugin_payload!(PromptPostFetchPayload);
+praxis_policy_core::impl_plugin_payload!(PromptPostFetchPayload);
 
 /// `resource_pre_fetch` — mirrors `ResourcePreFetchPayload`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -86,7 +86,7 @@ pub struct ResourcePreFetchPayload {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<HashMap<String, serde_json::Value>>,
 }
-cpex_core::impl_plugin_payload!(ResourcePreFetchPayload);
+praxis_policy_core::impl_plugin_payload!(ResourcePreFetchPayload);
 
 /// `resource_post_fetch` — mirrors `ResourcePostFetchPayload`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -96,9 +96,10 @@ pub struct ResourcePostFetchPayload {
     #[serde(default)]
     pub content: serde_json::Value,
 }
-cpex_core::impl_plugin_payload!(ResourcePostFetchPayload);
+praxis_policy_core::impl_plugin_payload!(ResourcePostFetchPayload);
 
-/// `identity_resolve` — mirrors `IdentityPayload`.
+/// `identity.resolve` mirrors `IdentityPayload`. The worker knows the hook as
+/// `identity_resolve`.
 ///
 /// `raw_token` is `SecretStr` on the Python side and redacts on serialization,
 /// so the value that travels in *this* field is a placeholder, never the real
@@ -130,7 +131,7 @@ pub struct IdentityResolvePayload {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client_port: Option<u16>,
 }
-cpex_core::impl_plugin_payload!(IdentityResolvePayload);
+praxis_policy_core::impl_plugin_payload!(IdentityResolvePayload);
 
 impl std::fmt::Debug for IdentityResolvePayload {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -163,7 +164,8 @@ pub struct AttenuationConfig {
     pub ttl_seconds: Option<i64>,
 }
 
-/// `token_delegate` — mirrors `DelegationPayload`.
+/// `token.delegate` mirrors `DelegationPayload`. The worker knows the hook as
+/// `token_delegate`.
 ///
 /// `bearer_token` is `SecretStr | None` on the Python side and redacts on
 /// serialization, so this field carries a placeholder. The plaintext travels
@@ -196,7 +198,7 @@ pub struct TokenDelegatePayload {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bearer_token: Option<String>,
 }
-cpex_core::impl_plugin_payload!(TokenDelegatePayload);
+praxis_policy_core::impl_plugin_payload!(TokenDelegatePayload);
 
 fn default_target_type() -> String {
     "tool".to_string()

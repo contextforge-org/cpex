@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use cpex_core::{
+use praxis_policy_core::{
     context::PluginContext,
     error::PluginError,
     extensions::Extensions,
@@ -85,8 +85,8 @@ const RESPAWN_BUDGET_RESET_SECS: u64 = 60;
 /// This is the sole source of the worker's `sys.path` entries and of the
 /// directory the venv is built under. It is *not* configurable per plugin: a
 /// `plugin_dirs:` key inside a plugin's `config:` block is ignored (see
-/// `VenvConfig`), as is the top-level `plugin_dirs:` YAML key, which
-/// `cpex_core` already parses and discards.
+/// `VenvConfig`). A top-level `plugin_dirs:` YAML key is rejected by the
+/// config loader.
 ///
 /// # Why a fixed default rather than a config key
 ///
@@ -167,8 +167,8 @@ const WORKER_KNOWN_CAPABILITIES: &[&str] = &[
 ///
 /// # `plugin_dirs` is deliberately absent
 ///
-/// A `plugin_dirs:` key in this block is **ignored**, as is the top-level
-/// `plugin_dirs:` YAML key. Plugin directories are not configurable: the host
+/// A `plugin_dirs:` key in this block is **ignored**; a top-level
+/// `plugin_dirs:` YAML key fails the config load. Plugin directories are not configurable: the host
 /// always uses `<project root>/plugins`, which is where `cpex plugin install`
 /// puts them. See `DEFAULT_PLUGIN_DIR`. Serde ignores unknown fields, so an
 /// existing config that still carries the key parses without error — the value
@@ -218,7 +218,7 @@ impl VenvConfig {
     /// Parse the venv settings out of a plugin entry's `config` map.
     ///
     /// A missing or malformed `class_name` is a config error, not a panic —
-    /// the manager surfaces it against the plugin name at load time.
+    /// the engine surfaces it against the plugin name at load time.
     pub fn from_plugin_config(config: &PluginConfig) -> Result<Self, Box<PluginError>> {
         let raw = config
             .config
@@ -349,7 +349,7 @@ impl IsolatedPythonPlugin {
         // A layout that will not resolve leaves the venv absent. That is a
         // config error in production, but the failure belongs in
         // `initialize()` rather than here: the factory should still hand back a
-        // named plugin the manager can report against.
+        // named plugin the engine can report against.
         let venv = VenvManager::new(
             &plugin_dirs,
             &venv_config.class_name,
@@ -511,7 +511,7 @@ impl IsolatedPythonPlugin {
         } else {
             // Never initialized is not a respawn case — respawning here would
             // paper over a lifecycle bug (or an initialize() that failed and
-            // was rolled back) by silently starting a worker the manager does
+            // was rolled back) by silently starting a worker the engine does
             // not know about.
             return Err(to_plugin_error(HostError::WorkerStart {
                 message: "plugin has no worker — initialize() did not run or it failed".into(),
@@ -799,10 +799,18 @@ impl IsolatedPythonPlugin {
         // `security.labels` empty and `http` as `None` no matter what it
         // declared. The two filters are now given the same input, so the second
         // one is idempotent rather than destructive.
+        // Hook names travel in the spelling the worker registers, which differs
+        // from PPE's for the identity, delegation and CMF prompt hooks.
+        let worker_hooks: Vec<&str> = self
+            .config
+            .hooks
+            .iter()
+            .map(|hook| conversion::worker_hook_name(hook))
+            .collect();
         let config_json = serde_json::json!({
             "name": self.config.name,
             "kind": self.config.kind,
-            "hooks": self.config.hooks,
+            "hooks": worker_hooks,
             "capabilities": self.worker_capabilities(),
             "config": self.config.config.clone().unwrap_or(serde_json::Value::Null),
         });
@@ -826,7 +834,7 @@ impl IsolatedPythonPlugin {
             "plugin_dirs": self.plugin_dirs,
             "class_name": self.venv_config.class_name,
             "config": config_string,
-            "hook_type": hook_name,
+            "hook_type": conversion::worker_hook_name(hook_name),
             "plugin_name": self.config.name,
             "payload": payload,
             "context": {
@@ -859,7 +867,7 @@ impl Plugin for IsolatedPythonPlugin {
 
     /// Build the venv (or reuse a cached one) and launch the worker.
     ///
-    /// Heavy setup lives here rather than on the invoke path: the manager
+    /// Heavy setup lives here rather than on the invoke path: the engine
     /// awaits this once per plugin, with rollback on failure.
     async fn initialize(&self) -> Result<(), Box<PluginError>> {
         let worker = self
@@ -1013,8 +1021,15 @@ impl AnyHookHandler for PythonHookAdapter {
         Ok(Box::new(fields))
     }
 
+    /// The hook family the declared name belongs to, so the registry's family
+    /// check accepts this handler. The adapter forwards whatever payload the
+    /// hook carries, so it serves the family of any name it is declared on. A
+    /// name with no family in the hook metadata reports itself, which the
+    /// registry accepts.
     fn hook_type_name(&self) -> &'static str {
-        self.hook_name
+        praxis_policy_core::hooks::lookup_hook_metadata(self.hook_name)
+            .and_then(|meta| meta.family)
+            .unwrap_or(self.hook_name)
     }
 }
 
@@ -1185,32 +1200,46 @@ mod tests {
     }
 
     #[test]
-    fn the_top_level_plugin_dirs_key_is_also_ignored() {
-        // `cpex plugin install` writes the key here. cpex_core parses and
-        // discards it; this pins that it does not reach the host either.
-        let yaml = r#"
-plugin_dirs: ["./top-level-dirs"]
-plugins:
-  - name: py-plugin
-    kind: isolated_venv
-    hooks: [tool_pre_invoke]
-    config:
-      class_name: my_pkg.Minimal
-"#;
-        let cpex_config: cpex_core::config::CpexConfig =
-            serde_yaml::from_str(yaml).expect("valid YAML");
-        assert_eq!(
-            cpex_config.plugin_dirs,
-            vec!["./top-level-dirs"],
-            "the top-level key still parses — it is simply not the host's source"
-        );
+    fn ppe_hook_names_reach_the_worker_in_its_own_spelling() {
+        // The Python framework keys payload models, hook methods and credential
+        // handling on the older names, so the task's `hook_type` and the
+        // config's `hooks` list both carry the worker's spelling.
+        let mut config = config_with(serde_json::json!({"class_name": "my_pkg.Minimal"}));
+        config.hooks = vec![
+            "identity.resolve".into(),
+            "token.delegate".into(),
+            "cmf.prompt_pre_invoke".into(),
+            "cmf.tool_pre_invoke".into(),
+        ];
+        let plugin = IsolatedPythonPlugin::from_config(&config).expect("parses");
 
-        let plugin =
-            IsolatedPythonPlugin::from_config(&cpex_config.plugins[0]).expect("config parses");
+        for (dispatched, worker) in [
+            ("identity.resolve", "identity_resolve"),
+            ("token.delegate", "token_delegate"),
+            ("cmf.prompt_pre_invoke", "cmf.prompt_pre_fetch"),
+            ("cmf.tool_pre_invoke", "cmf.tool_pre_invoke"),
+        ] {
+            let task = plugin
+                .build_task(dispatched, serde_json::json!({}), &PluginContext::new())
+                .expect("task builds");
+            assert_eq!(task["hook_type"], worker, "hook_type for {dispatched}");
+        }
+
+        let task = plugin
+            .build_task(
+                "identity.resolve",
+                serde_json::json!({}),
+                &PluginContext::new(),
+            )
+            .expect("task builds");
         assert_eq!(
-            plugin.plugin_dirs(),
-            [expected_default_dir()],
-            "the top-level key must not steer the host's plugin dir"
+            worker_config(&task)["hooks"],
+            serde_json::json!([
+                "identity_resolve",
+                "token_delegate",
+                "cmf.prompt_pre_fetch",
+                "cmf.tool_pre_invoke"
+            ])
         );
     }
 
@@ -1474,10 +1503,10 @@ while True:
         hook: &'static str,
         payload: &dyn PluginPayload,
         ctx: &mut PluginContext,
-    ) -> Result<cpex_core::executor::ErasedResultFields, Box<PluginError>> {
+    ) -> Result<praxis_policy_core::executor::ErasedResultFields, Box<PluginError>> {
         let adapter = PythonHookAdapter::new(Arc::clone(plugin), hook);
         let erased = adapter.invoke(payload, &Extensions::default(), ctx).await?;
-        Ok(cpex_core::executor::extract_erased(erased)
+        Ok(praxis_policy_core::executor::extract_erased(erased)
             .expect("the adapter returns ErasedResultFields"))
     }
 
@@ -1662,8 +1691,11 @@ while True:
         let (dir, plugin) = adapter_plugin(&["cmf.tool_pre_invoke"], &[]).await;
         set_mode(&dir, "allow");
 
-        let payload = cpex_core::cmf::MessagePayload {
-            message: cpex_core::cmf::Message::text(cpex_core::cmf::Role::User, "hello"),
+        let payload = praxis_policy_core::cmf::MessagePayload {
+            message: praxis_policy_core::cmf::Message::text(
+                praxis_policy_core::cmf::Role::User,
+                "hello",
+            ),
         };
         let mut ctx = PluginContext::new();
         invoke(&plugin, "cmf.tool_pre_invoke", &payload, &mut ctx)
@@ -1711,12 +1743,12 @@ while True:
         ) {
             return;
         }
-        use cpex_core::extensions::raw_credentials::{
+        use praxis_policy_core::extensions::raw_credentials::{
             RawCredentialsExtension, RawInboundToken, TokenKind, TokenRole,
         };
 
         let (dir, plugin) =
-            adapter_plugin(&["identity_resolve"], &["read_inbound_credentials"]).await;
+            adapter_plugin(&["identity.resolve"], &["read_inbound_credentials"]).await;
         set_mode(&dir, "allow");
 
         let mut raw = RawCredentialsExtension::default();
@@ -1731,7 +1763,7 @@ while True:
 
         let payload = crate::legacy::IdentityResolvePayload::default();
         let mut ctx = PluginContext::new();
-        let adapter = PythonHookAdapter::new(Arc::clone(&plugin), "identity_resolve");
+        let adapter = PythonHookAdapter::new(Arc::clone(&plugin), "identity.resolve");
         adapter
             .invoke(&payload, &extensions, &mut ctx)
             .await
@@ -1740,6 +1772,63 @@ while True:
         let task = last_task(&dir);
         assert_eq!(task["credential"]["inbound"]["token"], "E2E-SECRET-TOKEN");
         assert_eq!(task["credential"]["inbound"]["kind"], "jwt");
+        assert_eq!(
+            task["hook_type"], "identity_resolve",
+            "the worker registers the identity hook under its own spelling"
+        );
+
+        plugin.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_credential_capability_attaches_the_dto_on_a_delegation_hook() {
+        if crate::testing::skip_without_python3(
+            "a_credential_capability_attaches_the_dto_on_a_delegation_hook",
+        ) {
+            return;
+        }
+        use praxis_policy_core::extensions::raw_credentials::{
+            DelegationKey, DelegationMode, RawCredentialsExtension, RawDelegatedToken,
+        };
+
+        let (dir, plugin) = adapter_plugin(&["token.delegate"], &["read_delegated_tokens"]).await;
+        set_mode(&dir, "allow");
+
+        let audience = "https://billing.example.com";
+        let mut raw = RawCredentialsExtension::default();
+        raw.delegated_tokens.insert(
+            DelegationKey::new(DelegationMode::OnBehalfOfUser, audience, vec![]),
+            RawDelegatedToken::new(
+                "E2E-DELEGATED-TOKEN",
+                "Authorization",
+                audience,
+                vec![],
+                chrono::Utc::now(),
+            ),
+        );
+        let extensions = Extensions {
+            raw_credentials: Some(Arc::new(raw)),
+            ..Default::default()
+        };
+
+        let payload = crate::legacy::TokenDelegatePayload {
+            target_name: "billing".into(),
+            target_audience: Some(audience.into()),
+            ..Default::default()
+        };
+        let mut ctx = PluginContext::new();
+        let adapter = PythonHookAdapter::new(Arc::clone(&plugin), "token.delegate");
+        adapter
+            .invoke(&payload, &extensions, &mut ctx)
+            .await
+            .expect("dispatch succeeds");
+
+        let task = last_task(&dir);
+        assert_eq!(
+            task["credential"]["delegated"]["token"],
+            "E2E-DELEGATED-TOKEN"
+        );
+        assert_eq!(task["hook_type"], "token_delegate");
 
         plugin.shutdown().await.unwrap();
     }
@@ -1751,12 +1840,12 @@ while True:
         ) {
             return;
         }
-        use cpex_core::extensions::raw_credentials::{
+        use praxis_policy_core::extensions::raw_credentials::{
             RawCredentialsExtension, RawInboundToken, TokenKind, TokenRole,
         };
 
         // Same hook, same request — this plugin simply declared nothing.
-        let (dir, plugin) = adapter_plugin(&["identity_resolve"], &[]).await;
+        let (dir, plugin) = adapter_plugin(&["identity.resolve"], &[]).await;
         set_mode(&dir, "allow");
 
         let mut raw = RawCredentialsExtension::default();
@@ -1771,7 +1860,7 @@ while True:
 
         let payload = crate::legacy::IdentityResolvePayload::default();
         let mut ctx = PluginContext::new();
-        let adapter = PythonHookAdapter::new(Arc::clone(&plugin), "identity_resolve");
+        let adapter = PythonHookAdapter::new(Arc::clone(&plugin), "identity.resolve");
         adapter
             .invoke(&payload, &extensions, &mut ctx)
             .await
@@ -1880,7 +1969,7 @@ while True:
             return;
         }
         let (dir, plugin) =
-            uninitialized_adapter_plugin(&["identity_resolve"], &["read_inbound_credentials"]);
+            uninitialized_adapter_plugin(&["identity.resolve"], &["read_inbound_credentials"]);
         // A worker predating the handshake: replies "task type not supported."
         set_handshake_mode(&dir, "unsupported");
 
@@ -1979,12 +2068,12 @@ while True:
         ) {
             return;
         }
-        use cpex_core::extensions::raw_credentials::{
+        use praxis_policy_core::extensions::raw_credentials::{
             RawCredentialsExtension, RawInboundToken, TokenKind, TokenRole,
         };
 
         let (dir, plugin) =
-            adapter_plugin(&["identity_resolve"], &["read_inbound_credentials"]).await;
+            adapter_plugin(&["identity.resolve"], &["read_inbound_credentials"]).await;
         set_mode(&dir, "allow");
 
         let mut raw = RawCredentialsExtension::default();
@@ -1998,7 +2087,7 @@ while True:
         };
 
         let payload = crate::legacy::IdentityResolvePayload::default();
-        let adapter = PythonHookAdapter::new(Arc::clone(&plugin), "identity_resolve");
+        let adapter = PythonHookAdapter::new(Arc::clone(&plugin), "identity.resolve");
 
         let mut ctx = PluginContext::new();
         adapter
@@ -2044,11 +2133,11 @@ while True:
         ) {
             return;
         }
-        use cpex_core::extensions::raw_credentials::{
+        use praxis_policy_core::extensions::raw_credentials::{
             RawCredentialsExtension, RawInboundToken, TokenKind, TokenRole,
         };
 
-        let (dir, plugin) = adapter_plugin(&["identity_resolve"], &[]).await;
+        let (dir, plugin) = adapter_plugin(&["identity.resolve"], &[]).await;
         set_mode(&dir, "allow");
 
         let mut raw = RawCredentialsExtension::default();
@@ -2062,7 +2151,7 @@ while True:
         };
 
         let payload = crate::legacy::IdentityResolvePayload::default();
-        let adapter = PythonHookAdapter::new(Arc::clone(&plugin), "identity_resolve");
+        let adapter = PythonHookAdapter::new(Arc::clone(&plugin), "identity.resolve");
 
         let mut ctx = PluginContext::new();
         adapter

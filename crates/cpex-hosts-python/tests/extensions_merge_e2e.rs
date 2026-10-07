@@ -6,12 +6,12 @@
 // End-to-end: extensions delivered to, and returned from, an out-of-process
 // Python plugin — with the mutability tiers enforced by the real executor.
 //
-// # Why these go through `PluginManager` rather than the adapter alone
+// # Why these go through `PolicyEngine` rather than the adapter alone
 //
 // The unit tests in `src/extensions.rs` cover the wire shape and every *deny*
 // outcome. They cannot cover the accept outcomes, and that is by design:
 // `http`, `security`, and `delegation` writes are gated by a `WriteToken`, and
-// `WriteToken::new()` is `pub(crate)` to `cpex-core`. This crate cannot mint
+// `WriteToken::new()` is `pub(crate)` to `praxis-policy-core`. This crate cannot mint
 // one even in a test — which is exactly the property that makes the gate
 // trustworthy.
 //
@@ -77,14 +77,14 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use cpex_core::extensions::{Extensions, HttpExtension, SecurityExtension};
-use cpex_core::plugin::PluginConfig;
 use cpex_hosts_python::extensions::{EXTENSIONS_FIELD, MODIFIED_EXTENSIONS_FIELD};
 use cpex_hosts_python::factory::KIND;
 use cpex_hosts_python::testing::{
     prebuild_venv, python_source, scaffold_plugin, skip, skip_without_python3,
     worker_delivers_extensions, TempDir,
 };
+use praxis_policy_core::extensions::{Extensions, HttpExtension, SecurityExtension};
+use praxis_policy_core::plugin::PluginConfig;
 
 /// Fully-qualified class name of the fixture plugin.
 const FIXTURE_CLASS: &str = "ext_pkg.extensions_plugin.ExtensionsAwarePlugin";
@@ -238,7 +238,7 @@ fn inbound_extensions() -> Extensions {
     }
 }
 
-/// The legacy `tool_pre_invoke` hook, as a type the manager can dispatch.
+/// The legacy `tool_pre_invoke` hook, as a type the engine can dispatch.
 ///
 /// `invoke_named` is generic over `HookTypeDef` to recover the payload type for
 /// the typed handler path. The Python host registers type-erased handlers, so
@@ -246,11 +246,34 @@ fn inbound_extensions() -> Extensions {
 /// serializes, which is this crate's `legacy::ToolPreInvokePayload`.
 struct ToolPreInvoke;
 
-impl cpex_core::hooks::trait_def::HookTypeDef for ToolPreInvoke {
+impl praxis_policy_core::hooks::trait_def::HookTypeDef for ToolPreInvoke {
     type Payload = cpex_hosts_python::legacy::ToolPreInvokePayload;
-    type Result =
-        cpex_core::hooks::trait_def::PluginResult<cpex_hosts_python::legacy::ToolPreInvokePayload>;
+    type Result = praxis_policy_core::hooks::trait_def::PluginResult<
+        cpex_hosts_python::legacy::ToolPreInvokePayload,
+    >;
     const NAME: &'static str = "tool_pre_invoke";
+}
+
+/// Engine settings that fire each plugin at the hooks it declares, so the test
+/// needs no `routes:` or `authorization:` block.
+fn hooks_dispatch() -> praxis_policy_core::config::EngineSettings {
+    praxis_policy_core::config::EngineSettings {
+        dispatch: praxis_policy_core::config::DispatchMode::Hooks,
+        ..Default::default()
+    }
+}
+
+/// Register `tool_pre_invoke` as a host hook.
+///
+/// PPE does not dispatch the unprefixed name, and its config loader refuses a
+/// hook it has no metadata for. The 0.1.x Python worker registers no `cmf.*`
+/// hooks, so these tests drive the plugin through the legacy tool hook, the
+/// way a host keeping that hook would: register it first, then load.
+fn register_legacy_tool_hook() {
+    praxis_policy_core::hooks::register_hook_metadata(
+        "tool_pre_invoke",
+        praxis_policy_core::hooks::HookMetadata::permissive(),
+    );
 }
 
 fn plugin_config(capabilities: &[&str]) -> PluginConfig {
@@ -434,17 +457,17 @@ async fn an_appended_label_is_dropped_without_the_capability() {
 /// that built into the repository's real `plugins/` would be both destructive
 /// and dependent on developer-machine state. The temp-dir overrides are
 /// builder-only (`with_plugin_dirs` / `with_worker_cwd`) by design, so this
-/// factory applies them and hands the manager the finished plugin. Everything
-/// downstream — capability filtering, write-token minting, the copy-on-write
-/// merge — is the real manager path, which is what these tests exist to cover.
+/// factory applies them and hands the engine the finished plugin. Everything
+/// downstream (capability filtering, write-token minting, the copy-on-write
+/// merge) is the real engine path, which is what these tests exist to cover.
 mod temp_dir_factory {
     use std::path::PathBuf;
     use std::sync::Arc;
 
-    use cpex_core::error::PluginError;
-    use cpex_core::factory::{PluginFactory, PluginInstance};
-    use cpex_core::plugin::PluginConfig;
     use cpex_hosts_python::plugin::{IsolatedPythonPlugin, PythonHookAdapter};
+    use praxis_policy_core::error::PluginError;
+    use praxis_policy_core::factory::{PluginFactory, PluginInstance};
+    use praxis_policy_core::plugin::PluginConfig;
 
     /// Distinct from `factory::KIND` so registering this never shadows the real
     /// factory for any other test in the binary.
@@ -467,7 +490,10 @@ mod temp_dir_factory {
                 .hooks
                 .iter()
                 .map(
-                    |hook| -> (&'static str, Arc<dyn cpex_core::registry::AnyHookHandler>) {
+                    |hook| -> (
+                        &'static str,
+                        Arc<dyn praxis_policy_core::registry::AnyHookHandler>,
+                    ) {
                         let leaked: &'static str = Box::leak(hook.clone().into_boxed_str());
                         (
                             leaked,
@@ -485,7 +511,7 @@ mod temp_dir_factory {
 /// Register the Python plugin on `tool_pre_invoke`, run one pipeline pass, and
 /// return the fixture's recorded verdict plus the merged extensions.
 ///
-/// Going through `PluginManager` is the point: it is what filters extensions per
+/// Going through `PolicyEngine` is the point: it is what filters extensions per
 /// capability, mints the write tokens, and runs the copy-on-write merge that
 /// validates the plugin's return.
 async fn run_pipeline(
@@ -493,15 +519,16 @@ async fn run_pipeline(
     plugin_dir: &Path,
     capabilities: &[&str],
 ) -> (String, Extensions) {
-    use cpex_core::config::CpexConfig;
-    use cpex_core::manager::{ManagerConfig, PluginManager};
+    use praxis_policy_core::config::PolicyConfig;
+    use praxis_policy_core::engine::{PolicyEngine, PolicyEngineConfig};
 
     let mut config = plugin_config(capabilities);
     // The temp-dir redirection rides on the factory (see `temp_dir_factory`),
     // not on a config key the host ignores.
     config.kind = temp_dir_factory::KIND.into();
 
-    let manager = PluginManager::new(ManagerConfig::default());
+    register_legacy_tool_hook();
+    let manager = PolicyEngine::new(PolicyEngineConfig::default());
     manager.register_factory(
         temp_dir_factory::KIND,
         Box::new(temp_dir_factory::TempDirFactory {
@@ -510,8 +537,9 @@ async fn run_pipeline(
         }),
     );
     manager
-        .load_config(CpexConfig {
+        .load_config(PolicyConfig {
             plugins: vec![config],
+            engine_settings: hooks_dispatch(),
             ..Default::default()
         })
         .expect("the config loads");
@@ -557,14 +585,14 @@ mod fake_worker {
     use std::sync::Arc;
 
     use async_trait::async_trait;
-    use cpex_core::context::PluginContext;
-    use cpex_core::error::PluginError;
-    use cpex_core::executor::ErasedResultFields;
-    use cpex_core::extensions::Extensions;
-    use cpex_core::factory::{PluginFactory, PluginInstance};
-    use cpex_core::hooks::PluginPayload;
-    use cpex_core::plugin::{Plugin, PluginConfig};
-    use cpex_core::registry::AnyHookHandler;
+    use praxis_policy_core::context::PluginContext;
+    use praxis_policy_core::error::PluginError;
+    use praxis_policy_core::executor::ErasedResultFields;
+    use praxis_policy_core::extensions::Extensions;
+    use praxis_policy_core::factory::{PluginFactory, PluginInstance};
+    use praxis_policy_core::hooks::PluginPayload;
+    use praxis_policy_core::plugin::{Plugin, PluginConfig};
+    use praxis_policy_core::registry::AnyHookHandler;
     use serde_json::Value;
 
     /// Kind name for the stand-in factory.
@@ -648,8 +676,8 @@ async fn merge_through_executor(
     capabilities: &[&str],
     response: serde_json::Value,
 ) -> Option<Extensions> {
-    use cpex_core::config::CpexConfig;
-    use cpex_core::manager::{ManagerConfig, PluginManager};
+    use praxis_policy_core::config::PolicyConfig;
+    use praxis_policy_core::engine::{PolicyEngine, PolicyEngineConfig};
 
     let config = PluginConfig {
         name: "fake-worker".into(),
@@ -661,11 +689,13 @@ async fn merge_through_executor(
         ..Default::default()
     };
 
-    let manager = PluginManager::new(ManagerConfig::default());
+    register_legacy_tool_hook();
+    let manager = PolicyEngine::new(PolicyEngineConfig::default());
     manager.register_factory(fake_worker::KIND, Box::new(fake_worker::FakeWorkerFactory));
     manager
-        .load_config(CpexConfig {
+        .load_config(PolicyConfig {
             plugins: vec![config],
+            engine_settings: hooks_dispatch(),
             ..Default::default()
         })
         .expect("the config loads");

@@ -175,4 +175,31 @@ plugins:
         assert_eq!(engine.plugin_count(), 1);
         assert!(engine.has_hooks_for("cmf.tool_pre_invoke"));
     }
+
+    /// The documented path: register the facade's factory on an engine, then
+    /// load YAML. Covers the identity and delegation hooks too, whose handlers
+    /// must pass the engine's hook-family check.
+    #[test]
+    fn register_factory_then_load_yaml_wires_the_python_host() {
+        let engine = std::sync::Arc::new(PolicyEngine::default());
+        engine.register_factory(ISOLATED_VENV_KIND, Box::new(IsolatedVenvFactory));
+        engine
+            .load_config_yaml(
+                r#"
+engine_settings:
+  dispatch: hooks
+plugins:
+  - name: py-identity
+    kind: isolated_venv
+    hooks: [identity.resolve, token.delegate, cmf.tool_pre_invoke]
+    config:
+      class_name: my_pkg.Resolver
+"#,
+            )
+            .expect("the isolated_venv kind resolves through the facade");
+
+        for hook in ["identity.resolve", "token.delegate", "cmf.tool_pre_invoke"] {
+            assert!(engine.has_hooks_for(hook), "no handler on {hook}");
+        }
+    }
 }

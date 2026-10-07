@@ -32,16 +32,16 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use cpex_core::context::PluginContext;
-use cpex_core::extensions::Extensions;
-use cpex_core::plugin::{Plugin, PluginConfig};
-use cpex_core::registry::AnyHookHandler;
 use cpex_hosts_python::factory::KIND;
 use cpex_hosts_python::legacy::ToolPreInvokePayload;
 use cpex_hosts_python::plugin::{IsolatedPythonPlugin, PythonHookAdapter};
 use cpex_hosts_python::testing::{
     prebuild_venv, python_source, scaffold_plugin, skip, skip_without_python3, TempDir,
 };
+use praxis_policy_core::context::PluginContext;
+use praxis_policy_core::extensions::Extensions;
+use praxis_policy_core::plugin::{Plugin, PluginConfig};
+use praxis_policy_core::registry::AnyHookHandler;
 
 /// A Python plugin that marks the filesystem when its hook body runs, so the
 /// test can prove the plugin *executed* rather than merely that a response
@@ -156,14 +156,15 @@ async fn invoke(
     plugin: &Arc<IsolatedPythonPlugin>,
     hook: &'static str,
     payload: &ToolPreInvokePayload,
-) -> Result<cpex_core::executor::ErasedResultFields, String> {
+) -> Result<praxis_policy_core::executor::ErasedResultFields, String> {
     let adapter = PythonHookAdapter::new(Arc::clone(plugin), hook);
     let mut ctx = PluginContext::new();
     let erased = adapter
         .invoke(payload, &Extensions::default(), &mut ctx)
         .await
         .map_err(|e| e.to_string())?;
-    Ok(cpex_core::executor::extract_erased(erased).expect("adapter returns ErasedResultFields"))
+    Ok(praxis_policy_core::executor::extract_erased(erased)
+        .expect("adapter returns ErasedResultFields"))
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -309,8 +310,11 @@ async fn a_cmf_hook_is_rejected_cleanly_by_a_framework_that_has_no_cmf_hooks() {
     let plugin = plugin_for(&config, &plugin_dir, dir.path());
     plugin.initialize().await.expect("initializes");
 
-    let payload = cpex_core::cmf::MessagePayload {
-        message: cpex_core::cmf::Message::text(cpex_core::cmf::Role::User, "what is the weather?"),
+    let payload = praxis_policy_core::cmf::MessagePayload {
+        message: praxis_policy_core::cmf::Message::text(
+            praxis_policy_core::cmf::Role::User,
+            "what is the weather?",
+        ),
     };
     let adapter = PythonHookAdapter::new(Arc::clone(&plugin), "cmf.tool_pre_invoke");
     let mut ctx = PluginContext::new();

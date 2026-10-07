@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Authors: Ted Habeck
 //
-// Host-internal errors and their mapping to `cpex_core::error::PluginError`.
+// Host-internal errors and their mapping to `praxis_policy_core::error::PluginError`.
 //
 // The host distinguishes failure modes the executor cannot see — a venv that
 // would not build, a worker that died mid-flight, a task over the size cap —
@@ -14,7 +14,7 @@
 use std::collections::HashMap;
 use std::fmt;
 
-use cpex_core::error::PluginError;
+use praxis_policy_core::error::PluginError;
 
 /// Cap on the stderr excerpt carried in `PluginError::Execution.details`.
 ///

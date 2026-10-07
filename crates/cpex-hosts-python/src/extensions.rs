@@ -57,12 +57,12 @@
 
 use std::collections::HashMap;
 
-use cpex_core::extensions::container::{chain_extends, OwnedExtensions};
-use cpex_core::extensions::delegation::DelegationExtension;
-use cpex_core::extensions::guarded::Guarded;
-use cpex_core::extensions::http::HttpExtension;
-use cpex_core::extensions::security::SecurityExtension;
-use cpex_core::extensions::Extensions;
+use praxis_policy_core::extensions::container::{chain_extends, OwnedExtensions};
+use praxis_policy_core::extensions::delegation::DelegationExtension;
+use praxis_policy_core::extensions::guarded::Guarded;
+use praxis_policy_core::extensions::http::HttpExtension;
+use praxis_policy_core::extensions::security::SecurityExtension;
+use praxis_policy_core::extensions::Extensions;
 use serde_json::Value;
 use tracing::warn;
 
@@ -121,6 +121,7 @@ fn sanitize_http(http: &HttpExtension) -> HttpExtension {
     HttpExtension {
         request_headers: strip_sensitive(&http.request_headers),
         response_headers: strip_sensitive(&http.response_headers),
+        status: http.status,
         method: http.method.clone(),
         path: http.path.clone(),
         host: http.host.clone(),
@@ -130,8 +131,8 @@ fn sanitize_http(http: &HttpExtension) -> HttpExtension {
 
 /// Build the returned `http` value: worker headers, canonical request line.
 ///
-/// The worker's return contributes header maps only. `method`, `path`, `host`,
-/// and `scheme` are taken from `inbound` — the value the executor issued —
+/// The worker's return contributes header maps only. `status`, `method`, `path`,
+/// `host`, and `scheme` are taken from `inbound` (the value the executor issued)
 /// because policies gate on them (CHANGELOG 0.2.2) and `write_headers` does not
 /// authorize rewriting request identity. `host` especially must trace back to a
 /// validated authority, which a worker's JSON is not.
@@ -145,6 +146,7 @@ fn returned_http(returned: &HttpExtension, inbound: Option<&HttpExtension>) -> H
     HttpExtension {
         request_headers: strip_sensitive(&returned.request_headers),
         response_headers: strip_sensitive(&returned.response_headers),
+        status: inbound.and_then(|h| h.status),
         method: inbound.and_then(|h| h.method.clone()),
         path: inbound.and_then(|h| h.path.clone()),
         host: inbound.and_then(|h| h.host.clone()),
@@ -319,7 +321,7 @@ pub fn owned_from_returned_slot(
     // The three writable-but-gated slots are honored only when the executor
     // issued the matching write token on the inbound view. The token is the
     // host's *only* evidence that the plugin declared the write capability —
-    // `WriteToken::new()` is `pub(crate)` to `cpex-core`, so this crate cannot
+    // `WriteToken::new()` is `pub(crate)` to `praxis-policy-core`, so this crate cannot
     // mint one, and a token can never be forged out of worker JSON. An edit
     // without the token is dropped and the inbound value stands.
     //
@@ -430,8 +432,8 @@ mod tests {
     use std::collections::HashSet;
     use std::sync::Arc;
 
-    use cpex_core::extensions::agent::AgentExtension;
-    use cpex_core::extensions::monotonic::MonotonicSet;
+    use praxis_policy_core::extensions::agent::AgentExtension;
+    use praxis_policy_core::extensions::monotonic::MonotonicSet;
 
     use super::*;
 
@@ -607,7 +609,7 @@ mod tests {
 
     #[test]
     fn raw_credentials_never_appear_on_the_wire() {
-        use cpex_core::extensions::raw_credentials::{
+        use praxis_policy_core::extensions::raw_credentials::{
             RawCredentialsExtension, RawInboundToken, TokenKind, TokenRole,
         };
 
@@ -743,7 +745,7 @@ mod tests {
 
     // The three gated slots below can only be *accepted* when the executor
     // issued a write token, and `WriteToken::new()` is `pub(crate)` to
-    // `cpex-core` — this crate cannot mint one even in a test. That is the
+    // `praxis-policy-core`, so this crate cannot mint one even in a test. That is the
     // security property, so these tests assert the deny side here and the
     // accept side is covered end-to-end through the real executor in
     // `tests/extensions_merge_e2e.rs`, where tokens come from capabilities.
@@ -944,7 +946,7 @@ mod tests {
         // itself is asserted directly against the shared `chain_extends`
         // predicate the merge uses — the accept path needs a real executor
         // token and lives in `tests/extensions_merge_e2e.rs`.
-        use cpex_core::extensions::delegation::DelegationHop;
+        use praxis_policy_core::extensions::delegation::DelegationHop;
 
         let hop = |id: &str, scopes: Vec<&str>| DelegationHop {
             subject_id: id.into(),
