@@ -5,7 +5,7 @@
 //
 // CMF (ContextForge Message Format) types for Go.
 //
-// Mirrors the Rust types in crates/cpex-core/src/cmf/. The Message
+// Mirrors the Rust types in praxis_policy_core::cmf. The Message
 // struct carries typed content parts (text, tool calls, resources,
 // media, etc.) without extensions — those are passed separately.
 //
@@ -18,7 +18,7 @@ package cpex
 import "github.com/vmihailenco/msgpack/v5"
 
 // MessagePayload wraps a Message for FFI transport.
-// Matches Rust's cpex_core::cmf::MessagePayload.
+// Matches Rust's praxis_policy_core::cmf::MessagePayload.
 type MessagePayload struct {
 	Message Message `msgpack:"message"`
 }

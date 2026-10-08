@@ -22,29 +22,15 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use cpex_core::cmf::{ContentPart, MessagePayload};
-use cpex_core::context::PluginContext;
-use cpex_core::error::{PluginError, PluginViolation};
-use cpex_core::factory::{PluginFactory, PluginInstance};
-use cpex_core::hooks::adapter::TypedHandlerAdapter;
-use cpex_core::hooks::payload::Extensions;
-use cpex_core::hooks::trait_def::{HookHandler, HookTypeDef, PluginResult};
-use cpex_core::plugin::{Plugin, PluginConfig};
-
-// ---------------------------------------------------------------------------
-// CMF Hook Type
-// ---------------------------------------------------------------------------
-
-/// Hook type for CMF message processing. The hook *name* varies
-/// (cmf.tool_pre_invoke, cmf.tool_post_invoke, etc.) but the payload
-/// is always MessagePayload.
-pub struct CmfHook;
-
-impl HookTypeDef for CmfHook {
-    type Payload = MessagePayload;
-    type Result = PluginResult<MessagePayload>;
-    const NAME: &'static str = "cmf";
-}
+use praxis_policy_core::cmf::{CmfHook, ContentPart, MessagePayload};
+use praxis_policy_core::context::PluginContext;
+use praxis_policy_core::engine::PolicyEngine;
+use praxis_policy_core::error::{PluginError, PluginViolation};
+use praxis_policy_core::factory::{PluginFactory, PluginInstance};
+use praxis_policy_core::hooks::adapter::TypedHandlerAdapter;
+use praxis_policy_core::hooks::payload::Extensions;
+use praxis_policy_core::hooks::trait_def::{HookHandler, PluginResult};
+use praxis_policy_core::plugin::{Plugin, PluginConfig};
 
 // ---------------------------------------------------------------------------
 // Tool Policy Plugin
@@ -264,11 +250,8 @@ impl PluginFactory for HeaderInjectorFactory {
     }
 }
 
-/// Register CMF demo plugin factories on a manager.
-pub fn register_cmf_factories(manager: &cpex_core::manager::PluginManager) {
-    manager.register_factory("builtin/cmf-tool-policy", Box::new(ToolPolicyFactory));
-    manager.register_factory(
-        "builtin/cmf-header-injector",
-        Box::new(HeaderInjectorFactory),
-    );
+/// Register CMF demo plugin factories on an engine.
+pub fn register_cmf_factories(engine: &PolicyEngine) {
+    engine.register_factory("demo/cmf-tool-policy", Box::new(ToolPolicyFactory));
+    engine.register_factory("demo/cmf-header-injector", Box::new(HeaderInjectorFactory));
 }

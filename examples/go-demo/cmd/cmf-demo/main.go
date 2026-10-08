@@ -32,7 +32,7 @@ package main
 #cgo darwin LDFLAGS: -framework CoreFoundation -framework Security
 #include <stdlib.h>
 
-int cpex_demo_register_factories(void* mgr);
+int cpex_demo_register_factories(void* engine);
 */
 import "C"
 
@@ -49,13 +49,13 @@ func main() {
 	fmt.Println()
 
 	// --- Setup ---
-	mgr, err := cpex.NewPluginManagerDefault()
+	engine, err := cpex.NewPolicyEngineDefault()
 	if err != nil {
-		fatal("create manager: %v", err)
+		fatal("create engine: %v", err)
 	}
-	defer mgr.Shutdown()
+	defer engine.Shutdown()
 
-	err = mgr.RegisterFactories(func(handle unsafe.Pointer) error {
+	err = engine.RegisterFactories(func(handle unsafe.Pointer) error {
 		if C.cpex_demo_register_factories(handle) != 0 {
 			return fmt.Errorf("factory registration failed")
 		}
@@ -74,17 +74,17 @@ func main() {
 		}
 	}
 
-	if err := mgr.LoadConfig(string(yaml)); err != nil {
+	if err := engine.LoadConfig(string(yaml)); err != nil {
 		fatal("load config: %v", err)
 	}
-	if err := mgr.Initialize(); err != nil {
+	if err := engine.Initialize(); err != nil {
 		fatal("initialize: %v", err)
 	}
 
-	fmt.Printf("Plugins loaded: %d\n", mgr.PluginCount())
+	fmt.Printf("Plugins loaded: %d\n", engine.PluginCount())
 	fmt.Printf("Hooks: cmf.tool_pre_invoke=%v  cmf.tool_post_invoke=%v\n\n",
-		mgr.HasHooksFor("cmf.tool_pre_invoke"),
-		mgr.HasHooksFor("cmf.tool_post_invoke"),
+		engine.HasHooksFor("cmf.tool_pre_invoke"),
+		engine.HasHooksFor("cmf.tool_post_invoke"),
 	)
 
 	// -----------------------------------------------------------------------
@@ -130,7 +130,7 @@ func main() {
 		},
 	}
 
-	result, ct, bg, err := mgr.InvokeByName("cmf.tool_pre_invoke",
+	result, ct, bg, err := engine.InvokeByName("cmf.tool_pre_invoke",
 		cpex.PayloadCMFMessage, msg, ext, nil)
 	if err != nil {
 		fatal("invoke: %v", err)
@@ -147,7 +147,7 @@ func main() {
 
 	ext.Security.Labels = []string{"PII", "HR"} // now has PII label
 
-	result, ct, bg, err = mgr.InvokeByName("cmf.tool_pre_invoke",
+	result, ct, bg, err = engine.InvokeByName("cmf.tool_pre_invoke",
 		cpex.PayloadCMFMessage, msg, ext, nil)
 	if err != nil {
 		fatal("invoke: %v", err)
@@ -208,7 +208,7 @@ func main() {
 		},
 	}
 
-	result2, ct2, bg2, err := mgr.InvokeByName("cmf.tool_post_invoke",
+	result2, ct2, bg2, err := engine.InvokeByName("cmf.tool_post_invoke",
 		cpex.PayloadCMFMessage, resultMsg, postExt, ct)
 	if err != nil {
 		fatal("post-invoke: %v", err)
@@ -249,7 +249,7 @@ func main() {
 		},
 	}
 
-	result, ct, bg, err = mgr.InvokeByName("cmf.tool_pre_invoke",
+	result, ct, bg, err = engine.InvokeByName("cmf.tool_pre_invoke",
 		cpex.PayloadCMFMessage, textMsg, textExt, nil)
 	if err != nil {
 		fatal("invoke: %v", err)

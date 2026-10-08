@@ -1,4 +1,4 @@
-// Location: ./go/cpex/manager_test.go
+// Location: ./go/cpex/engine_test.go
 // Copyright 2025
 // SPDX-License-Identifier: Apache-2.0
 // Authors: Teryl Taylor
@@ -21,57 +21,57 @@ import (
 	"github.com/vmihailenco/msgpack/v5"
 )
 
-func TestNewPluginManagerDefault(t *testing.T) {
-	mgr, err := NewPluginManagerDefault()
+func TestNewPolicyEngineDefault(t *testing.T) {
+	eng, err := NewPolicyEngineDefault()
 	if err != nil {
-		t.Fatalf("NewPluginManagerDefault failed: %v", err)
+		t.Fatalf("NewPolicyEngineDefault failed: %v", err)
 	}
-	defer mgr.Shutdown()
+	defer eng.Shutdown()
 
-	if mgr.PluginCount() != 0 {
-		t.Errorf("expected 0 plugins, got %d", mgr.PluginCount())
+	if eng.PluginCount() != 0 {
+		t.Errorf("expected 0 plugins, got %d", eng.PluginCount())
 	}
 
-	if mgr.HasHooksFor("test_hook") {
+	if eng.HasHooksFor("test_hook") {
 		t.Error("expected no hooks registered")
 	}
 }
 
-func TestNewPluginManagerFromYAML(t *testing.T) {
+func TestNewPolicyEngineFromYAML(t *testing.T) {
 	yaml := `
-plugin_settings:
+engine_settings:
   plugin_timeout: 30
 `
-	mgr, err := NewPluginManager(yaml)
+	eng, err := NewPolicyEngine(yaml)
 	if err != nil {
-		t.Fatalf("NewPluginManager failed: %v", err)
+		t.Fatalf("NewPolicyEngine failed: %v", err)
 	}
-	defer mgr.Shutdown()
+	defer eng.Shutdown()
 
-	if err := mgr.Initialize(); err != nil {
+	if err := eng.Initialize(); err != nil {
 		t.Fatalf("Initialize failed: %v", err)
 	}
 
-	if mgr.PluginCount() != 0 {
-		t.Errorf("expected 0 plugins, got %d", mgr.PluginCount())
+	if eng.PluginCount() != 0 {
+		t.Errorf("expected 0 plugins, got %d", eng.PluginCount())
 	}
 }
 
-func TestNewPluginManagerInvalidYAML(t *testing.T) {
-	_, err := NewPluginManager("not: [valid: yaml: {{}")
+func TestNewPolicyEngineInvalidYAML(t *testing.T) {
+	_, err := NewPolicyEngine("not: [valid: yaml: {{}")
 	if err == nil {
 		t.Error("expected error for invalid YAML")
 	}
 }
 
 func TestInvokeByNameNoPlugins(t *testing.T) {
-	mgr, err := NewPluginManagerDefault()
+	eng, err := NewPolicyEngineDefault()
 	if err != nil {
-		t.Fatalf("NewPluginManagerDefault failed: %v", err)
+		t.Fatalf("NewPolicyEngineDefault failed: %v", err)
 	}
-	defer mgr.Shutdown()
+	defer eng.Shutdown()
 
-	if err := mgr.Initialize(); err != nil {
+	if err := eng.Initialize(); err != nil {
 		t.Fatalf("Initialize failed: %v", err)
 	}
 
@@ -88,7 +88,7 @@ func TestInvokeByNameNoPlugins(t *testing.T) {
 		},
 	}
 
-	result, ctxTable, bg, err := mgr.InvokeByName("test_hook", PayloadGeneric, payload, ext, nil)
+	result, ctxTable, bg, err := eng.InvokeByName("test_hook", PayloadGeneric, payload, ext, nil)
 	if err != nil {
 		t.Fatalf("InvokeByName failed: %v", err)
 	}
@@ -105,13 +105,13 @@ func TestInvokeByNameNoPlugins(t *testing.T) {
 }
 
 func TestInvokeByNameWithContextTableThreading(t *testing.T) {
-	mgr, err := NewPluginManagerDefault()
+	eng, err := NewPolicyEngineDefault()
 	if err != nil {
-		t.Fatalf("NewPluginManagerDefault failed: %v", err)
+		t.Fatalf("NewPolicyEngineDefault failed: %v", err)
 	}
-	defer mgr.Shutdown()
+	defer eng.Shutdown()
 
-	if err := mgr.Initialize(); err != nil {
+	if err := eng.Initialize(); err != nil {
 		t.Fatalf("Initialize failed: %v", err)
 	}
 
@@ -119,7 +119,7 @@ func TestInvokeByNameWithContextTableThreading(t *testing.T) {
 	ext := &Extensions{}
 
 	// First invocation — nil context table
-	result1, ctxTable1, bg1, err := mgr.InvokeByName("hook1", PayloadGeneric, payload, ext, nil)
+	result1, ctxTable1, bg1, err := eng.InvokeByName("hook1", PayloadGeneric, payload, ext, nil)
 	if err != nil {
 		t.Fatalf("first invoke failed: %v", err)
 	}
@@ -130,7 +130,7 @@ func TestInvokeByNameWithContextTableThreading(t *testing.T) {
 	}
 
 	// Second invocation — thread context table from first
-	result2, ctxTable2, bg2, err := mgr.InvokeByName("hook2", PayloadGeneric, payload, ext, ctxTable1)
+	result2, ctxTable2, bg2, err := eng.InvokeByName("hook2", PayloadGeneric, payload, ext, ctxTable1)
 	if err != nil {
 		t.Fatalf("second invoke failed: %v", err)
 	}
@@ -144,19 +144,19 @@ func TestInvokeByNameWithContextTableThreading(t *testing.T) {
 }
 
 func TestBackgroundTasksWait(t *testing.T) {
-	mgr, err := NewPluginManagerDefault()
+	eng, err := NewPolicyEngineDefault()
 	if err != nil {
-		t.Fatalf("NewPluginManagerDefault failed: %v", err)
+		t.Fatalf("NewPolicyEngineDefault failed: %v", err)
 	}
-	defer mgr.Shutdown()
+	defer eng.Shutdown()
 
-	if err := mgr.Initialize(); err != nil {
+	if err := eng.Initialize(); err != nil {
 		t.Fatalf("Initialize failed: %v", err)
 	}
 
 	payload := map[string]any{"test": true}
 
-	result, ctxTable, bg, err := mgr.InvokeByName("test", PayloadGeneric, payload, nil, nil)
+	result, ctxTable, bg, err := eng.InvokeByName("test", PayloadGeneric, payload, nil, nil)
 	if err != nil {
 		t.Fatalf("invoke failed: %v", err)
 	}
@@ -174,15 +174,15 @@ func TestBackgroundTasksWait(t *testing.T) {
 	}
 }
 
-// Concurrent goroutines invoking against a single manager must be safe
+// Concurrent goroutines invoking against a single engine must be safe
 // (validates the P0 #1 aliased-&mut fix and the Pass 2 RWMutex). Run
 // under -race to surface any data races on the handle.
 func TestConcurrentInvokesAreSafe(t *testing.T) {
-	mgr, err := NewPluginManagerDefault()
+	eng, err := NewPolicyEngineDefault()
 	if err != nil {
-		t.Fatalf("NewPluginManagerDefault failed: %v", err)
+		t.Fatalf("NewPolicyEngineDefault failed: %v", err)
 	}
-	defer mgr.Shutdown()
+	defer eng.Shutdown()
 
 	const goroutines = 32
 	const callsPerGoroutine = 16
@@ -194,7 +194,7 @@ func TestConcurrentInvokesAreSafe(t *testing.T) {
 			defer wg.Done()
 			for j := 0; j < callsPerGoroutine; j++ {
 				payload := map[string]any{"i": i, "j": j}
-				_, ct, bg, err := mgr.InvokeByName("noop", PayloadGeneric, payload, nil, nil)
+				_, ct, bg, err := eng.InvokeByName("noop", PayloadGeneric, payload, nil, nil)
 				if err != nil {
 					t.Errorf("invoke failed: %v", err)
 					return
@@ -213,11 +213,11 @@ func TestConcurrentInvokesAreSafe(t *testing.T) {
 
 // Calling Shutdown while goroutines are mid-invoke must not double-free
 // or panic. After Shutdown, in-flight invokes should observe that the
-// manager is shutdown and return an error gracefully.
+// engine is shutdown and return an error gracefully.
 func TestShutdownDuringInvokesIsSafe(t *testing.T) {
-	mgr, err := NewPluginManagerDefault()
+	eng, err := NewPolicyEngineDefault()
 	if err != nil {
-		t.Fatalf("NewPluginManagerDefault failed: %v", err)
+		t.Fatalf("NewPolicyEngineDefault failed: %v", err)
 	}
 
 	// Spawn workers that invoke in a tight loop until they observe shutdown.
@@ -234,7 +234,7 @@ func TestShutdownDuringInvokesIsSafe(t *testing.T) {
 				default:
 				}
 				payload := map[string]any{"x": 1}
-				_, ct, bg, err := mgr.InvokeByName("noop", PayloadGeneric, payload, nil, nil)
+				_, ct, bg, err := eng.InvokeByName("noop", PayloadGeneric, payload, nil, nil)
 				if err != nil {
 					// Expected once Shutdown lands; just stop.
 					return
@@ -250,36 +250,36 @@ func TestShutdownDuringInvokesIsSafe(t *testing.T) {
 	}
 
 	// Let them spin for a moment, then shutdown.
-	mgr.Shutdown()
+	eng.Shutdown()
 	close(stop)
 	wg.Wait()
 
 	// Second Shutdown must be a no-op (P1 #4 fix — finalizer cleared,
 	// double-call returns immediately).
-	mgr.Shutdown()
+	eng.Shutdown()
 }
 
-// BackgroundTasks.Wait() called after the manager has been Shutdown
+// BackgroundTasks.Wait() called after the engine has been Shutdown
 // must return ErrCpexInvalidHandle without crashing or reading
 // uninitialized output pointers. Direct regression for the P1 #3 +
-// P1 #5 fix path where bg holds a *PluginManager and checks handle
-// nullness under the manager's RWMutex.
+// P1 #5 fix path where bg holds a *PolicyEngine and checks handle
+// nullness under the engine's RWMutex.
 func TestBackgroundTasksWaitAfterShutdownReturnsTypedError(t *testing.T) {
-	mgr, err := NewPluginManagerDefault()
+	eng, err := NewPolicyEngineDefault()
 	if err != nil {
-		t.Fatalf("NewPluginManagerDefault failed: %v", err)
+		t.Fatalf("NewPolicyEngineDefault failed: %v", err)
 	}
-	if err := mgr.Initialize(); err != nil {
+	if err := eng.Initialize(); err != nil {
 		t.Fatalf("Initialize failed: %v", err)
 	}
 
-	_, _, bg, err := mgr.InvokeByName("noop", PayloadGeneric, map[string]any{}, nil, nil)
+	_, _, bg, err := eng.InvokeByName("noop", PayloadGeneric, map[string]any{}, nil, nil)
 	if err != nil {
 		t.Fatalf("InvokeByName failed: %v", err)
 	}
 
-	// Tear the manager down BEFORE waiting on the background tasks.
-	mgr.Shutdown()
+	// Tear the engine down BEFORE waiting on the background tasks.
+	eng.Shutdown()
 
 	// Wait must observe the shutdown handle and return a typed error
 	// — not panic, not segfault on a stale C pointer, not silently
@@ -298,43 +298,43 @@ func TestBackgroundTasksWaitAfterShutdownReturnsTypedError(t *testing.T) {
 // rejects unknown values with RC_PARSE_ERROR, which the Go side
 // classifies via errorFromRC.
 func TestInvokeUnknownPayloadTypeReturnsParseError(t *testing.T) {
-	mgr, err := NewPluginManagerDefault()
+	eng, err := NewPolicyEngineDefault()
 	if err != nil {
-		t.Fatalf("NewPluginManagerDefault failed: %v", err)
+		t.Fatalf("NewPolicyEngineDefault failed: %v", err)
 	}
-	defer mgr.Shutdown()
-	if err := mgr.Initialize(); err != nil {
+	defer eng.Shutdown()
+	if err := eng.Initialize(); err != nil {
 		t.Fatalf("Initialize failed: %v", err)
 	}
 
 	const unknownType uint8 = 99 // not in the FFI payload registry
-	_, _, _, err = mgr.InvokeByName("test_hook", unknownType, map[string]any{}, nil, nil)
+	_, _, _, err = eng.InvokeByName("test_hook", unknownType, map[string]any{}, nil, nil)
 	if !errors.Is(err, ErrCpexParse) {
 		t.Errorf("expected ErrCpexParse for unknown payload_type, got %v", err)
 	}
 }
 
-// IsInitialized reports manager lifecycle accurately: false until
+// IsInitialized reports engine lifecycle accurately: false until
 // Initialize is called, true after, false again after Shutdown.
 // Validates agent-native gap #4 — introspection FFI.
 func TestIsInitializedTracksLifecycle(t *testing.T) {
-	mgr, err := NewPluginManagerDefault()
+	eng, err := NewPolicyEngineDefault()
 	if err != nil {
-		t.Fatalf("NewPluginManagerDefault failed: %v", err)
+		t.Fatalf("NewPolicyEngineDefault failed: %v", err)
 	}
 
-	if mgr.IsInitialized() {
+	if eng.IsInitialized() {
 		t.Error("expected IsInitialized=false before Initialize")
 	}
-	if err := mgr.Initialize(); err != nil {
+	if err := eng.Initialize(); err != nil {
 		t.Fatalf("Initialize failed: %v", err)
 	}
-	if !mgr.IsInitialized() {
+	if !eng.IsInitialized() {
 		t.Error("expected IsInitialized=true after Initialize")
 	}
 
-	mgr.Shutdown()
-	if mgr.IsInitialized() {
+	eng.Shutdown()
+	if eng.IsInitialized() {
 		t.Error("expected IsInitialized=false after Shutdown")
 	}
 }
@@ -342,34 +342,34 @@ func TestIsInitializedTracksLifecycle(t *testing.T) {
 // PluginNames returns the names of plugins registered via YAML config.
 // Validates agent-native gap #4 — introspection FFI.
 func TestPluginNamesEmptyByDefault(t *testing.T) {
-	mgr, err := NewPluginManagerDefault()
+	eng, err := NewPolicyEngineDefault()
 	if err != nil {
-		t.Fatalf("NewPluginManagerDefault failed: %v", err)
+		t.Fatalf("NewPolicyEngineDefault failed: %v", err)
 	}
-	defer mgr.Shutdown()
+	defer eng.Shutdown()
 
-	names, err := mgr.PluginNames()
+	names, err := eng.PluginNames()
 	if err != nil {
 		t.Fatalf("PluginNames failed: %v", err)
 	}
 	if len(names) != 0 {
-		t.Errorf("expected empty plugin names on a default manager, got %v", names)
+		t.Errorf("expected empty plugin names on a default engine, got %v", names)
 	}
 }
 
 // BackgroundTasks.Wait returns []PluginError (structured) — gap #3.
 // On a no-plugin invoke the slice is empty but non-nil-shaped.
 func TestBackgroundTasksWaitReturnsStructuredErrors(t *testing.T) {
-	mgr, err := NewPluginManagerDefault()
+	eng, err := NewPolicyEngineDefault()
 	if err != nil {
-		t.Fatalf("NewPluginManagerDefault failed: %v", err)
+		t.Fatalf("NewPolicyEngineDefault failed: %v", err)
 	}
-	defer mgr.Shutdown()
-	if err := mgr.Initialize(); err != nil {
+	defer eng.Shutdown()
+	if err := eng.Initialize(); err != nil {
 		t.Fatalf("Initialize failed: %v", err)
 	}
 
-	_, _, bg, err := mgr.InvokeByName("test", PayloadGeneric, map[string]any{}, nil, nil)
+	_, _, bg, err := eng.InvokeByName("test", PayloadGeneric, map[string]any{}, nil, nil)
 	if err != nil {
 		t.Fatalf("Invoke failed: %v", err)
 	}
@@ -379,43 +379,43 @@ func TestBackgroundTasksWaitReturnsStructuredErrors(t *testing.T) {
 		t.Errorf("Wait failed: %v", err)
 	}
 	// errs is []PluginError — typed at compile time. Empty for a
-	// no-plugin manager, but the structured type is what we wanted.
+	// no-plugin engine, but the structured type is what we wanted.
 	if len(errs) != 0 {
 		t.Errorf("expected no errors on no-plugin invoke, got %d: %v", len(errs), errs)
 	}
 }
 
-// Operations on a shutdown manager must return an error wrapping
+// Operations on a shutdown engine must return an error wrapping
 // ErrCpexInvalidHandle so callers can classify with errors.Is.
 // Validates the P2 #18 typed-error mapping end-to-end.
 func TestOperationsAfterShutdownReturnTypedError(t *testing.T) {
-	mgr, err := NewPluginManagerDefault()
+	eng, err := NewPolicyEngineDefault()
 	if err != nil {
-		t.Fatalf("NewPluginManagerDefault failed: %v", err)
+		t.Fatalf("NewPolicyEngineDefault failed: %v", err)
 	}
-	mgr.Shutdown()
+	eng.Shutdown()
 
-	if err := mgr.Initialize(); !errors.Is(err, ErrCpexInvalidHandle) {
+	if err := eng.Initialize(); !errors.Is(err, ErrCpexInvalidHandle) {
 		t.Errorf("Initialize after shutdown: expected ErrCpexInvalidHandle, got %v", err)
 	}
-	if err := mgr.LoadConfig("plugin_settings: {}"); !errors.Is(err, ErrCpexInvalidHandle) {
+	if err := eng.LoadConfig("engine_settings: {}"); !errors.Is(err, ErrCpexInvalidHandle) {
 		t.Errorf("LoadConfig after shutdown: expected ErrCpexInvalidHandle, got %v", err)
 	}
-	_, _, _, err = mgr.InvokeByName("test", PayloadGeneric, map[string]any{}, nil, nil)
+	_, _, _, err = eng.InvokeByName("test", PayloadGeneric, map[string]any{}, nil, nil)
 	if !errors.Is(err, ErrCpexInvalidHandle) {
 		t.Errorf("InvokeByName after shutdown: expected ErrCpexInvalidHandle, got %v", err)
 	}
 }
 
-func TestPluginManagerDoubleShutdown(t *testing.T) {
-	mgr, err := NewPluginManagerDefault()
+func TestPolicyEngineDoubleShutdown(t *testing.T) {
+	eng, err := NewPolicyEngineDefault()
 	if err != nil {
-		t.Fatalf("NewPluginManagerDefault failed: %v", err)
+		t.Fatalf("NewPolicyEngineDefault failed: %v", err)
 	}
 
-	mgr.Shutdown()
+	eng.Shutdown()
 	// Second shutdown should not panic
-	mgr.Shutdown()
+	eng.Shutdown()
 }
 
 func TestContextTableDoubleClose(t *testing.T) {
@@ -489,13 +489,13 @@ func msgpackMarshal(v any) ([]byte, error) {
 // ---------------------------------------------------------------------------
 
 func TestInvokeTypedGenericPayload(t *testing.T) {
-	mgr, err := NewPluginManagerDefault()
+	eng, err := NewPolicyEngineDefault()
 	if err != nil {
-		t.Fatalf("NewPluginManagerDefault failed: %v", err)
+		t.Fatalf("NewPolicyEngineDefault failed: %v", err)
 	}
-	defer mgr.Shutdown()
+	defer eng.Shutdown()
 
-	if err := mgr.Initialize(); err != nil {
+	if err := eng.Initialize(); err != nil {
 		t.Fatalf("Initialize failed: %v", err)
 	}
 
@@ -505,7 +505,7 @@ func TestInvokeTypedGenericPayload(t *testing.T) {
 	}
 
 	result, ct, bg, err := Invoke[map[string]any](
-		mgr, "test_hook", PayloadGeneric, payload, &Extensions{}, nil,
+		eng, "test_hook", PayloadGeneric, payload, &Extensions{}, nil,
 	)
 	if err != nil {
 		t.Fatalf("Invoke failed: %v", err)
@@ -523,13 +523,13 @@ func TestInvokeTypedGenericPayload(t *testing.T) {
 }
 
 func TestInvokeTypedCMFPayload(t *testing.T) {
-	mgr, err := NewPluginManagerDefault()
+	eng, err := NewPolicyEngineDefault()
 	if err != nil {
-		t.Fatalf("NewPluginManagerDefault failed: %v", err)
+		t.Fatalf("NewPolicyEngineDefault failed: %v", err)
 	}
-	defer mgr.Shutdown()
+	defer eng.Shutdown()
 
-	if err := mgr.Initialize(); err != nil {
+	if err := eng.Initialize(); err != nil {
 		t.Fatalf("Initialize failed: %v", err)
 	}
 
@@ -553,7 +553,7 @@ func TestInvokeTypedCMFPayload(t *testing.T) {
 	}
 
 	result, ct, bg, err := Invoke[MessagePayload](
-		mgr, "cmf.tool_pre_invoke", PayloadCMFMessage, msg, ext, nil,
+		eng, "cmf.tool_pre_invoke", PayloadCMFMessage, msg, ext, nil,
 	)
 	if err != nil {
 		t.Fatalf("Invoke failed: %v", err)
@@ -567,13 +567,13 @@ func TestInvokeTypedCMFPayload(t *testing.T) {
 }
 
 func TestInvokeTypedContextThreading(t *testing.T) {
-	mgr, err := NewPluginManagerDefault()
+	eng, err := NewPolicyEngineDefault()
 	if err != nil {
-		t.Fatalf("NewPluginManagerDefault failed: %v", err)
+		t.Fatalf("NewPolicyEngineDefault failed: %v", err)
 	}
-	defer mgr.Shutdown()
+	defer eng.Shutdown()
 
-	if err := mgr.Initialize(); err != nil {
+	if err := eng.Initialize(); err != nil {
 		t.Fatalf("Initialize failed: %v", err)
 	}
 
@@ -581,7 +581,7 @@ func TestInvokeTypedContextThreading(t *testing.T) {
 
 	// First call — nil context table
 	r1, ct1, bg1, err := Invoke[map[string]any](
-		mgr, "hook1", PayloadGeneric, payload, &Extensions{}, nil,
+		eng, "hook1", PayloadGeneric, payload, &Extensions{}, nil,
 	)
 	if err != nil {
 		t.Fatalf("first invoke failed: %v", err)
@@ -594,7 +594,7 @@ func TestInvokeTypedContextThreading(t *testing.T) {
 
 	// Second call — thread context table
 	r2, ct2, bg2, err := Invoke[map[string]any](
-		mgr, "hook2", PayloadGeneric, payload, &Extensions{}, ct1,
+		eng, "hook2", PayloadGeneric, payload, &Extensions{}, ct1,
 	)
 	if err != nil {
 		t.Fatalf("second invoke failed: %v", err)
@@ -1140,35 +1140,35 @@ func TestMessagePayloadSerialization(t *testing.T) {
 	}
 }
 
-func TestLoadConfigOnDefaultManager(t *testing.T) {
-	mgr, err := NewPluginManagerDefault()
+func TestLoadConfigOnDefaultEngine(t *testing.T) {
+	eng, err := NewPolicyEngineDefault()
 	if err != nil {
-		t.Fatalf("NewPluginManagerDefault failed: %v", err)
+		t.Fatalf("NewPolicyEngineDefault failed: %v", err)
 	}
-	defer mgr.Shutdown()
+	defer eng.Shutdown()
 
 	// LoadConfig with valid YAML (no plugins, just settings)
-	err = mgr.LoadConfig(`
-plugin_settings:
+	err = eng.LoadConfig(`
+engine_settings:
   plugin_timeout: 30
 `)
 	if err != nil {
 		t.Fatalf("LoadConfig failed: %v", err)
 	}
 
-	if err := mgr.Initialize(); err != nil {
+	if err := eng.Initialize(); err != nil {
 		t.Fatalf("Initialize failed: %v", err)
 	}
 }
 
 func TestLoadConfigInvalidYAML(t *testing.T) {
-	mgr, err := NewPluginManagerDefault()
+	eng, err := NewPolicyEngineDefault()
 	if err != nil {
-		t.Fatalf("NewPluginManagerDefault failed: %v", err)
+		t.Fatalf("NewPolicyEngineDefault failed: %v", err)
 	}
-	defer mgr.Shutdown()
+	defer eng.Shutdown()
 
-	err = mgr.LoadConfig("not: [valid: yaml: {{}")
+	err = eng.LoadConfig("not: [valid: yaml: {{}")
 	if err == nil {
 		t.Error("expected error for invalid YAML")
 	}
@@ -1195,12 +1195,12 @@ func TestLoadConfigInvalidYAML(t *testing.T) {
 //  4. Calls Close() on the original ContextTable — must NOT crash.
 //     Pre-fix this was a UAF (free of already-freed memory).
 func TestInvokeByNameErrorDoesNotUAFContextTable(t *testing.T) {
-	mgr, err := NewPluginManagerDefault()
+	eng, err := NewPolicyEngineDefault()
 	if err != nil {
-		t.Fatalf("NewPluginManagerDefault failed: %v", err)
+		t.Fatalf("NewPolicyEngineDefault failed: %v", err)
 	}
-	defer mgr.Shutdown()
-	if err := mgr.Initialize(); err != nil {
+	defer eng.Shutdown()
+	if err := eng.Initialize(); err != nil {
 		t.Fatalf("Initialize failed: %v", err)
 	}
 
@@ -1208,7 +1208,7 @@ func TestInvokeByNameErrorDoesNotUAFContextTable(t *testing.T) {
 	//    ContextTable. Calling Close() on this pre-fix would have
 	//    been the second free.
 	payload := map[string]any{"tool_name": "test"}
-	_, ctxTable, bg, err := mgr.InvokeByName("hook1", PayloadGeneric, payload, &Extensions{}, nil)
+	_, ctxTable, bg, err := eng.InvokeByName("hook1", PayloadGeneric, payload, &Extensions{}, nil)
 	if err != nil {
 		t.Fatalf("first invoke failed: %v", err)
 	}
@@ -1223,7 +1223,7 @@ func TestInvokeByNameErrorDoesNotUAFContextTable(t *testing.T) {
 	//    that error path is now POST-consumption of the input
 	//    context_table.
 	const unknownPayloadType uint8 = 99
-	_, _, _, err = mgr.InvokeByName("hook2", unknownPayloadType, payload, &Extensions{}, ctxTable)
+	_, _, _, err = eng.InvokeByName("hook2", unknownPayloadType, payload, &Extensions{}, ctxTable)
 	if err == nil {
 		t.Fatal("expected error from invoke with unknown payload_type")
 	}
@@ -1243,37 +1243,37 @@ func TestInvokeByNameErrorDoesNotUAFContextTable(t *testing.T) {
 }
 
 // TestInvokeByNameConsumesContextTableOnRcError pins the other half
-// of the P0-1 contract — even when the manager rejects the call with
+// of the P0-1 contract — even when the engine rejects the call with
 // a validation-class error (here: shutdown after first invoke), the
 // caller's ContextTable handle is nil'd unconditionally.
 //
 // Verifies: no leak of the input Box when Rust never gets to write
 // the output; Close() on the input is a safe no-op.
 func TestInvokeByNameConsumesContextTableEvenOnShutdownPath(t *testing.T) {
-	mgr, err := NewPluginManagerDefault()
+	eng, err := NewPolicyEngineDefault()
 	if err != nil {
-		t.Fatalf("NewPluginManagerDefault failed: %v", err)
+		t.Fatalf("NewPolicyEngineDefault failed: %v", err)
 	}
-	if err := mgr.Initialize(); err != nil {
-		mgr.Shutdown()
+	if err := eng.Initialize(); err != nil {
+		eng.Shutdown()
 		t.Fatalf("Initialize failed: %v", err)
 	}
 
 	payload := map[string]any{"tool_name": "test"}
-	_, ctxTable, bg, err := mgr.InvokeByName("hook1", PayloadGeneric, payload, &Extensions{}, nil)
+	_, ctxTable, bg, err := eng.InvokeByName("hook1", PayloadGeneric, payload, &Extensions{}, nil)
 	if err != nil {
-		mgr.Shutdown()
+		eng.Shutdown()
 		t.Fatalf("first invoke failed: %v", err)
 	}
 	bg.Close()
 
-	// Shut down the manager — Go-side short-circuit will return
+	// Shut down the engine — Go-side short-circuit will return
 	// ErrCpexInvalidHandle WITHOUT calling cpex_invoke. The Go
 	// wrapper hasn't touched ctxTable yet in this case (early
 	// return at m.handle == nil), so ctxTable.handle remains live.
-	mgr.Shutdown()
+	eng.Shutdown()
 
-	_, _, _, err = mgr.InvokeByName("hook2", PayloadGeneric, payload, &Extensions{}, ctxTable)
+	_, _, _, err = eng.InvokeByName("hook2", PayloadGeneric, payload, &Extensions{}, ctxTable)
 	if !errors.Is(err, ErrCpexInvalidHandle) {
 		t.Errorf("expected ErrCpexInvalidHandle after shutdown, got %v", err)
 	}
@@ -1281,5 +1281,39 @@ func TestInvokeByNameConsumesContextTableEvenOnShutdownPath(t *testing.T) {
 	// Even though the Go-side short-circuit didn't transit our
 	// handle to Rust, Close() must still be safe — it's a legal
 	// thing for callers to do.
+	ctxTable.Close()
+}
+
+// InvokeResolved shares cpex_invoke's ownership contract: the input
+// ContextTable is consumed on every return path, so an error return
+// must leave the caller's handle nil and Close() a no-op.
+func TestInvokeResolvedErrorDoesNotUAFContextTable(t *testing.T) {
+	eng, err := NewPolicyEngineDefault()
+	if err != nil {
+		t.Fatalf("NewPolicyEngineDefault failed: %v", err)
+	}
+	defer eng.Shutdown()
+	if err := eng.Initialize(); err != nil {
+		t.Fatalf("Initialize failed: %v", err)
+	}
+
+	payload := map[string]any{"tool_name": "test"}
+	_, ctxTable, bg, err := eng.InvokeByName("hook1", PayloadGeneric, payload, &Extensions{}, nil)
+	if err != nil {
+		t.Fatalf("first invoke failed: %v", err)
+	}
+	bg.Close()
+	if ctxTable == nil || ctxTable.handle == nil {
+		t.Fatal("expected a non-nil ContextTable from the first invoke")
+	}
+
+	const unknownPayloadType uint8 = 99
+	_, _, _, err = eng.InvokeResolved(IdentityPayload{}, "hook2", unknownPayloadType, payload, &Extensions{}, ctxTable)
+	if !errors.Is(err, ErrCpexParse) {
+		t.Fatalf("expected ErrCpexParse from an unknown payload type, got %v", err)
+	}
+	if ctxTable.handle != nil {
+		t.Errorf("input ContextTable.handle should be nil after an InvokeResolved error; got %p", ctxTable.handle)
+	}
 	ctxTable.Close()
 }

@@ -3,13 +3,13 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 // IdentityPayload — Go view of the identity.resolve hook's input/output
-// state (crates/cpex-core/src/identity/payload.rs).
+// state (praxis_policy_core::identity::IdentityPayload).
 //
 // Hosts that don't run in-process Rust (i.e. the Go FFI bindings) drive
 // identity resolution like this:
 //
 //	idp := cpex.NewIdentityPayload(cpex.TokenSourceBearer, headers)
-//	res, ct, bg, err := mgr.InvokeByName(
+//	res, ct, bg, err := engine.InvokeByName(
 //	    cpex.HookIdentityResolve, cpex.PayloadIdentity, idp, ext, nil)
 //	// On success res.ModifiedPayload holds the resolved IdentityPayload.
 //	resolved, _ := cpex.DeserializePayload[cpex.IdentityPayload](res)
@@ -26,7 +26,7 @@ import "github.com/vmihailenco/msgpack/v5"
 
 // HookIdentityResolve is the hook name the identity resolver chain is
 // registered under. Matches HOOK_IDENTITY_RESOLVE in
-// crates/cpex-core/src/identity/hook.rs.
+// praxis_policy_core::identity.
 const HookIdentityResolve = "identity.resolve"
 
 // TokenSource values identify where a credential comes from. Wire form

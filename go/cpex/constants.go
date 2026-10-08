@@ -28,7 +28,7 @@ const (
 
 // ContentType values — the discriminator for ContentPart's tagged union.
 // Wire-compatible with Rust's `#[serde(tag = "content_type")]` enum in
-// `crates/cpex-core/src/cmf/`. Every string literal in cmf.go's encoder /
+// `praxis_policy_core::cmf`. Every string literal in cmf.go's encoder /
 // decoder / constructor switches resolves to one of these.
 const (
 	ContentTypeText          = "text"

@@ -7,7 +7,7 @@
 //
 // All types use msgpack struct tags matching the Rust field names
 // for zero-copy serialization across the FFI boundary. Extension
-// types mirror crates/cpex-core/src/extensions/.
+// types mirror praxis_policy_core::extensions.
 
 package cpex
 
@@ -135,7 +135,7 @@ type AgentExtension struct {
 }
 
 // ConversationContext is per-conversation summary state, shared across
-// turns. Mirrors `cpex_core::extensions::agent::ConversationContext`.
+// turns. Mirrors `praxis_policy_core::extensions::agent::ConversationContext`.
 type ConversationContext struct {
 	// Recent conversation history, lightweight summaries (free-form
 	// JSON-style values to match Rust's Vec<serde_json::Value>).

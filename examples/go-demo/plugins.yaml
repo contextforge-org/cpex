@@ -5,55 +5,37 @@
 #
 # CPEX Go Demo — plugin configuration
 #
-# Three plugins with routing rules that demonstrate:
-#   - Identity validation on every invocation (global policy)
-#   - PII guarding on tagged tools (tag-based policy group)
+# Three host demo plugins on the demo's own hooks (demo.tool_pre_invoke and
+# demo.tool_post_invoke, registered by the demo FFI crate):
+#   - Identity validation on every invocation
+#   - PII guarding on tools tagged `pii` (the plugin reads the tag)
 #   - Audit logging on all tools (fire-and-forget)
+#
+# Hook dispatch: each plugin fires at the hooks it declares, ordered by
+# priority within its mode. No routes, groups or global policy.
 
-plugin_settings:
-  routing_enabled: true
+engine_settings:
+  dispatch: hooks
   plugin_timeout: 30
-
-global:
-  policies:
-    all:
-      plugins: [identity-checker]
-    pii:
-      plugins: [pii-guard]
 
 plugins:
   - name: identity-checker
-    kind: builtin/identity
-    hooks: [tool_pre_invoke, tool_post_invoke]
+    kind: demo/identity
+    hooks: [demo.tool_pre_invoke, demo.tool_post_invoke]
     mode: sequential
     priority: 10
     on_error: fail
 
   - name: pii-guard
-    kind: builtin/pii
-    hooks: [tool_pre_invoke]
+    kind: demo/pii
+    hooks: [demo.tool_pre_invoke]
     mode: sequential
     priority: 20
     on_error: fail
 
   - name: audit-logger
-    kind: builtin/audit
-    hooks: [tool_pre_invoke, tool_post_invoke]
+    kind: demo/audit
+    hooks: [demo.tool_pre_invoke, demo.tool_post_invoke]
     mode: fire_and_forget
     priority: 100
     on_error: ignore
-
-routes:
-  - tool: get_compensation
-    meta:
-      tags: [pii, hr]
-    plugins:
-      - audit-logger
-
-  - tool: list_departments
-    plugins:
-      - audit-logger
-
-  - tool: "*"
-    plugins:
-      - audit-logger

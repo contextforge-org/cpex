@@ -1,11 +1,11 @@
 # CPEX Go SDK
 
-Go bindings for the CPEX plugin runtime. Wraps the Rust core via cgo — all plugin execution happens in Rust, called from Go through MessagePack-serialized payloads and opaque handles.
+Go bindings for the CPEX policy engine. Wraps the Rust engine via cgo — all plugin execution happens in Rust, called from Go through MessagePack-serialized payloads and opaque handles.
 
 ## Prerequisites
 
-- **Go 1.21+**
-- **Rust toolchain** (stable, 1.75+)
+- **Go 1.25+**
+- **Rust toolchain** (stable, 1.92+)
 - **Built Rust library**: the Go SDK links against `libcpex_ffi.a`
 
 ```bash
@@ -17,11 +17,15 @@ cargo build --release -p cpex-ffi
 
 ```
 go/cpex/
-  ffi.go          — cgo declarations (C function signatures)
-  manager.go      — PluginManager, ContextTable, BackgroundTasks
+  ffi.go          — cgo declarations (C function signatures) and link flags
+  abi.go          — FFI ABI version check at package init
+  engine.go       — PolicyEngine, ContextTable, BackgroundTasks
+  apl.go          — EnableAPL: builtins, HTTP transport, secret providers
+  secrets.go      — RefreshSecrets, SecretsLastSuccess
   types.go        — Extensions, PipelineResult, payload constants
   cmf.go          — CMF Message, ContentPart, domain objects
-  manager_test.go — tests (require built libcpex_ffi)
+  identity.go     — IdentityPayload for identity.resolve
+  *_test.go       — tests (require built libcpex_ffi)
 ```
 
 ## Quick Start
@@ -29,27 +33,35 @@ go/cpex/
 ```go
 import cpex "github.com/contextforge-org/cpex/go/cpex"
 
-// 1. Create a manager
-mgr, err := cpex.NewPluginManagerDefault()
-defer mgr.Shutdown()
+// 1. Create an engine
+engine, err := cpex.NewPolicyEngineDefault()
+if err != nil { ... }
+defer engine.Shutdown()
 
-// 2. Register plugin factories (Rust-side, via callback)
-mgr.RegisterFactories(func(handle unsafe.Pointer) error {
+// 2. Install the CPEX builtins (identity/jwt, delegator/oauth, PDPs, Vault, ...).
+//    Private and loopback destinations are blocked unless you opt in.
+engine.EnableAPL(cpex.WithPrivateDestinations())
+
+// 3. Optionally register your own Rust plugin factories (via callback)
+engine.RegisterFactories(func(handle unsafe.Pointer) error {
     C.my_register_factories(handle)
     return nil
 })
 
-// 3. Load YAML config
-mgr.LoadConfig(yamlString)
+// 4. Load YAML config
+engine.LoadConfig(yamlString)
 
-// 4. Initialize plugins
-mgr.Initialize()
+// 5. Initialize plugins
+engine.Initialize()
 
-// 5. Invoke a hook
-result, ct, bg, err := mgr.InvokeByName(
-    "tool_pre_invoke",
-    cpex.PayloadGeneric,
-    map[string]any{"tool_name": "get_compensation", "user": "alice"},
+// 6. Invoke a hook
+payload := cpex.MessagePayload{Message: cpex.NewMessage("assistant",
+    cpex.NewToolCallPart(cpex.ToolCall{ToolCallID: "tc-1", Name: "get_compensation"}),
+)}
+result, ct, bg, err := engine.InvokeByName(
+    "cmf.tool_pre_invoke",
+    cpex.PayloadCMFMessage,
+    payload,
     &cpex.Extensions{
         Meta: &cpex.MetaExtension{
             EntityType: "tool",
@@ -67,16 +79,46 @@ if result.IsDenied() {
 }
 ```
 
+Hook names follow the engine: `cmf.tool_pre_invoke`, `cmf.tool_post_invoke`, `cmf.prompt_pre_invoke`, `cmf.prompt_post_invoke`, `cmf.resource_pre_fetch`, `cmf.resource_post_fetch`, `identity.resolve`, `token.delegate`, and so on. The old unprefixed names (`tool_pre_invoke`, `identity_resolve`, ...) are rejected at config load.
+
 ## Lifecycle
 
 ```
-NewPluginManagerDefault()
-    → RegisterFactories(fn)     // register Rust plugin factories
+NewPolicyEngineDefault()
+    → EnableAPL(opts...)        // optional: builtins, transport, secret providers
+    → RegisterFactories(fn)     // optional: your own Rust plugin factories
     → LoadConfig(yaml)          // parse YAML, instantiate plugins
-    → Initialize()              // call plugin.initialize() on all
+    → Initialize()              // call plugin.initialize() on all, resolve secrets
     → InvokeByName(...)         // invoke hooks, get results
+    → RefreshSecrets()          // optional, on a schedule: re-read secrets
     → Shutdown()                // call plugin.shutdown(), free resources
 ```
+
+`NewPolicyEngine(yaml)` creates an engine and loads the config in one step. It registers no builtins, so it suits configs that only name plugins registered in Rust.
+
+## Builtins and Egress
+
+`EnableAPL` installs every bundled builtin, one outbound HTTP transport, and the `env`, `file` and `vault` secret providers. Plugins that reach the network (`jwks_url`, OAuth delegation, CIBA, Vault) must declare `capabilities: [perform_http]`.
+
+The transport refuses private, loopback and link-local destinations by default. Pass `cpex.WithPrivateDestinations()` to allow them, for example for a local IdP or an in-cluster Vault. This is a host decision; no policy document can turn it on. `EnableAPL` is idempotent: a second call does nothing, whatever its options.
+
+## Secrets
+
+The engine resolves secrets once, at `Initialize`, and never re-reads them on its own:
+
+```go
+report, err := engine.RefreshSecrets()   // Updated, Unchanged, Failed
+at, ok, err := engine.SecretsLastSuccess("vault")
+if !ok {
+    // the provider's last refresh failed, or it is not declared
+}
+```
+
+A value that fails to re-read keeps its last-good bytes and is listed in `report.Failed`.
+
+## ABI Check
+
+On package init the binding compares its expected FFI ABI version (3) with the one `libcpex_ffi` reports and panics on a mismatch, naming both versions. Rebuild `libcpex_ffi` from the same CPEX release as the Go module.
 
 ## Payload Types
 
@@ -108,7 +150,7 @@ The `ContentPart` tagged union supports all 12 content types:
 
 ## Extensions
 
-Extensions are passed separately from the payload. Each extension type maps to a Rust extension in `crates/cpex-core/src/extensions/`:
+Extensions are passed separately from the payload. Each extension type maps to a Rust extension in `praxis_policy_core::extensions`:
 
 - `MetaExtension` — entity identification for route resolution
 - `SecurityExtension` — labels, classification, subject identity
@@ -127,11 +169,11 @@ Extensions are passed separately from the payload. Each extension type maps to a
 Pass the `ContextTable` from one invocation to the next to preserve per-plugin state across hooks:
 
 ```go
-result1, ct1, bg1, _ := mgr.InvokeByName("tool_pre_invoke", ...)
+result1, ct1, bg1, _ := engine.InvokeByName("cmf.tool_pre_invoke", ...)
 bg1.Close()
 
 // Thread context table into post-invoke
-result2, ct2, bg2, _ := mgr.InvokeByName("tool_post_invoke", ..., ct1)
+result2, ct2, bg2, _ := engine.InvokeByName("cmf.tool_post_invoke", ..., ct1)
 bg2.Close()
 ct2.Close()
 ```
@@ -163,7 +205,7 @@ edition = "2021"
 crate-type = ["staticlib", "cdylib"]
 
 [dependencies]
-cpex-core = { path = "path/to/crates/cpex-core" }
+praxis-policy-core = "=0.4.1"
 cpex-ffi = { path = "path/to/crates/cpex-ffi" }
 async-trait = "0.1"
 tracing = "0.1"
@@ -176,22 +218,27 @@ tracing = "0.1"
 ```rust
 use std::sync::Arc;
 use async_trait::async_trait;
-use cpex_core::context::PluginContext;
-use cpex_core::error::{PluginError, PluginViolation};
-use cpex_core::factory::{PluginFactory, PluginInstance};
-use cpex_core::hooks::adapter::TypedHandlerAdapter;
-use cpex_core::hooks::payload::Extensions;
-use cpex_core::hooks::trait_def::{HookHandler, HookTypeDef, PluginResult};
-use cpex_core::plugin::{Plugin, PluginConfig};
+use praxis_policy_core::context::PluginContext;
+use praxis_policy_core::error::{PluginError, PluginViolation};
+use praxis_policy_core::factory::{PluginFactory, PluginInstance};
+use praxis_policy_core::hooks::adapter::TypedHandlerAdapter;
+use praxis_policy_core::hooks::payload::Extensions;
+use praxis_policy_core::hooks::trait_def::{HookHandler, HookTypeDef, PluginResult};
+use praxis_policy_core::engine::PolicyEngine;
+use praxis_policy_core::hooks::{register_hook_metadata, HookMetadata, HookPhase};
+use praxis_policy_core::plugin::{Plugin, PluginConfig};
 use cpex_ffi::GenericPayload;
 
-// Hook type — the NAME can be any string; Go callers use this name
+// Hook type. NAME identifies the hook family; the hook name Go callers
+// invoke is HOOK_MY, registered below.
 pub struct MyHook;
 impl HookTypeDef for MyHook {
     type Payload = GenericPayload;
     type Result = PluginResult<GenericPayload>;
     const NAME: &'static str = "my_hook";
 }
+
+pub const HOOK_MY: &str = "my.hook";
 
 // Plugin implementation
 struct RateLimiter {
@@ -204,7 +251,7 @@ impl Plugin for RateLimiter {
 }
 
 impl HookHandler<MyHook> for RateLimiter {
-    fn handle(
+    async fn handle(
         &self,
         payload: &GenericPayload,
         extensions: &Extensions,
@@ -218,12 +265,12 @@ impl HookHandler<MyHook> for RateLimiter {
 // Factory — creates plugin instances from YAML config
 pub struct RateLimiterFactory;
 impl PluginFactory for RateLimiterFactory {
-    fn create(&self, config: &PluginConfig) -> Result<PluginInstance, PluginError> {
+    fn create(&self, config: &PluginConfig) -> Result<PluginInstance, Box<PluginError>> {
         let plugin = Arc::new(RateLimiter { cfg: config.clone() });
         Ok(PluginInstance {
             plugin: plugin.clone(),
             handlers: vec![
-                ("my_hook", Arc::new(
+                (HOOK_MY, Arc::new(
                     TypedHandlerAdapter::<MyHook, _>::new(plugin),
                 )),
             ],
@@ -231,8 +278,14 @@ impl PluginFactory for RateLimiterFactory {
     }
 }
 
-pub fn register_factories(manager: &mut cpex_core::manager::PluginManager) {
-    manager.register_factory("my/rate-limiter", Box::new(RateLimiterFactory));
+pub fn register_factories(engine: &PolicyEngine) {
+    // The config loader refuses a hook name it has no metadata for, so
+    // describe the host hook before any config naming it loads.
+    register_hook_metadata(
+        HOOK_MY,
+        HookMetadata { family: Some(MyHook::NAME), entity_type: None, phase: HookPhase::Unphased },
+    );
+    engine.register_factory("my/rate-limiter", Box::new(RateLimiterFactory));
 }
 ```
 
@@ -250,13 +303,13 @@ use std::os::raw::c_int;
 
 #[no_mangle]
 pub unsafe extern "C" fn my_register_factories(
-    mgr: *mut cpex_ffi::CpexManagerInner,
+    handle: *mut cpex_ffi::CpexEngineInner,
 ) -> c_int {
-    let inner = match mgr.as_mut() {
-        Some(m) => m,
+    let inner = match handle.as_ref() {
+        Some(h) => h,
         None => return -1,
     };
-    my_plugin::register_factories(&mut inner.manager);
+    my_plugin::register_factories(&inner.engine);
     0
 }
 ```
@@ -266,31 +319,32 @@ pub unsafe extern "C" fn my_register_factories(
 ```go
 /*
 #cgo LDFLAGS: -L/path/to/target/release -lmy_plugins_ffi -lm -ldl -lpthread
-int my_register_factories(void* mgr);
+int my_register_factories(void* engine);
 */
 import "C"
 
-mgr, _ := cpex.NewPluginManagerDefault()
+engine, _ := cpex.NewPolicyEngineDefault()
 
-mgr.RegisterFactories(func(handle unsafe.Pointer) error {
+engine.RegisterFactories(func(handle unsafe.Pointer) error {
     if C.my_register_factories(handle) != 0 {
         return fmt.Errorf("factory registration failed")
     }
     return nil
 })
 
-mgr.LoadConfig(yaml)  // YAML references kind: "my/rate-limiter"
-mgr.Initialize()
+engine.LoadConfig(yaml)  // YAML references kind: "my/rate-limiter"
+engine.Initialize()
 
-result, ct, bg, _ := mgr.InvokeByName("my_hook", cpex.PayloadGeneric, payload, ext, nil)
+result, ct, bg, _ := engine.InvokeByName("my.hook", cpex.PayloadGeneric, payload, ext, nil)
 ```
 
 ### Key points
 
 - `extern crate cpex_ffi;` in your `lib.rs` ensures all core FFI symbols are included in your staticlib — Go links only your library
-- The `CpexManagerInner` type from `cpex_ffi` gives you access to the `manager` field for factory registration
-- Your C function signature is `int my_register_factories(void* mgr)` — Go passes the SDK's internal handle via the `RegisterFactories` callback
+- The `CpexEngineInner` type from `cpex_ffi` gives you access to the `engine` field (an `Arc<PolicyEngine>`) for factory registration
+- Your C function signature is `int my_register_factories(void* engine)` — Go passes the SDK's internal handle via the `RegisterFactories` callback
 - The YAML `kind` field must match what you pass to `register_factory()`
+- A config that declares `hooks:` and `priority:` on its plugins needs `engine_settings: {dispatch: hooks}`. Under the default `dispatch: policy`, call `EnableAPL` and name the plugin from a policy step such as `run(my-plugin)` instead
 
 ## Adding a New Payload Type
 
@@ -298,7 +352,7 @@ The payload type registry maps a `uint8` discriminator to a Rust type for FFI de
 
 ### Rust side (3 files)
 
-**1. Define the type** (in `cpex-core` or your own crate):
+**1. Define the type** (in your own crate):
 
 ```rust
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -306,13 +360,13 @@ pub struct MyPayload {
     pub field_a: String,
     pub field_b: i64,
 }
-cpex_core::impl_plugin_payload!(MyPayload);
+praxis_policy_core::impl_plugin_payload!(MyPayload);
 ```
 
 **2. Register in FFI** (`crates/cpex-ffi/src/lib.rs`):
 
 ```rust
-pub const PAYLOAD_MY_TYPE: u8 = 2;
+pub const PAYLOAD_MY_TYPE: u8 = 3;
 
 // In deserialize_payload():
 PAYLOAD_MY_TYPE => {
@@ -331,7 +385,7 @@ if let Some(mp) = payload.as_any().downcast_ref::<MyPayload>() {
 **3. Define the Go struct** (`go/cpex/types.go` or a new file):
 
 ```go
-const PayloadMyType uint8 = 2
+const PayloadMyType uint8 = 3
 
 type MyPayload struct {
     FieldA string `msgpack:"field_a"`
@@ -342,7 +396,7 @@ type MyPayload struct {
 ### Use it
 
 ```go
-result, ct, bg, _ := mgr.InvokeByName("my_hook", cpex.PayloadMyType, payload, ext, nil)
+result, ct, bg, _ := engine.InvokeByName("my.hook", cpex.PayloadMyType, payload, ext, nil)
 
 // Deserialize modified payload from result
 modified, _ := cpex.DeserializePayload[MyPayload](result)
@@ -356,7 +410,7 @@ modified, _ := cpex.DeserializePayload[MyPayload](result)
 # Build the Rust library first
 cargo build --release -p cpex-ffi
 
-# Run Go tests
+# Run Go tests (add -race for the race detector)
 cd go/cpex && go test -v ./...
 ```
 
@@ -364,4 +418,4 @@ cd go/cpex && go test -v ./...
 
 - [Go Demo Examples](../../examples/go-demo/README.md) — runnable demos with YAML configs
 - [Rust Core README](../../crates/README.md) — core runtime documentation
-- [Rust Examples](../../crates/cpex-core/examples/README.md) — native Rust examples
+- [Tutorial](../../examples/tutorial/README.md): policy examples, builtins and custom plugins
