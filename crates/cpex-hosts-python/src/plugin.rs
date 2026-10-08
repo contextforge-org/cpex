@@ -29,6 +29,7 @@ use praxis_policy_core::{
 use serde::Deserialize;
 
 use crate::error::HostError;
+use crate::legacy::cmf_shim;
 use crate::venv::VenvManager;
 use crate::worker::WorkerClient;
 use crate::{conversion, credentials};
@@ -682,11 +683,30 @@ impl IsolatedPythonPlugin {
     /// every existing plugin.
     async fn verify_worker_understands(&self, worker: &WorkerClient) -> Result<(), HostError> {
         let required = self.required_worker_features();
+
+        // A plugin on a `cmf.*` hook also needs the report, to choose between
+        // native dispatch and the legacy payload shim. It requires nothing, so
+        // a probe that fails outright leaves the report unset and the adapter
+        // falls back to the shim, the conservative choice.
+        let declares_cmf_hook = self.config.hooks.iter().any(|h| cmf_shim::is_cmf_hook(h));
         if required.is_empty() {
+            if declares_cmf_hook {
+                match worker.capabilities().await {
+                    Ok(reported) => self.log_cmf_dispatch(&reported),
+                    Err(e) => tracing::warn!(
+                        plugin = %self.config.name,
+                        "worker capabilities probe failed ({e}); serving cmf hooks through the \
+                         legacy payload shim"
+                    ),
+                }
+            }
             return Ok(());
         }
 
         let reported = worker.capabilities().await?;
+        if declares_cmf_hook {
+            self.log_cmf_dispatch(&reported);
+        }
         let missing: Vec<&str> = required
             .iter()
             .copied()
@@ -740,6 +760,20 @@ impl IsolatedPythonPlugin {
         })
     }
 
+    /// Say once, at startup, how this plugin's `cmf.*` hooks will be served.
+    fn log_cmf_dispatch(&self, reported: &crate::worker::WorkerCapabilities) {
+        if reported.has(crate::worker::FEATURE_CMF_HOOKS) {
+            tracing::debug!(plugin = %self.config.name, "worker serves cmf hooks natively");
+        } else {
+            tracing::info!(
+                plugin = %self.config.name,
+                "worker does not claim `{}`; serving cmf tool, prompt and resource hooks \
+                 through the legacy payload shim",
+                crate::worker::FEATURE_CMF_HOOKS
+            );
+        }
+    }
+
     /// The wire features this plugin's declaration commits the host to using.
     ///
     /// Derived from the declaration rather than from what a given request
@@ -781,9 +815,13 @@ impl IsolatedPythonPlugin {
     /// `PluginConfig(**config_raw)`, and `context` is the worker's own
     /// `{state, global_context, metadata}` shape rather than the Rust
     /// `PluginContext` layout.
+    ///
+    /// `legacy_cmf` selects the legacy payload shim's hook names for the
+    /// `cmf.*` hooks: true for a worker that does not claim `cmf_hooks`.
     fn build_task(
         &self,
         hook_name: &str,
+        legacy_cmf: bool,
         payload: serde_json::Value,
         ctx: &PluginContext,
     ) -> Result<serde_json::Value, HostError> {
@@ -800,12 +838,13 @@ impl IsolatedPythonPlugin {
         // declared. The two filters are now given the same input, so the second
         // one is idempotent rather than destructive.
         // Hook names travel in the spelling the worker registers, which differs
-        // from PPE's for the identity, delegation and CMF prompt hooks.
+        // from PPE's for the identity, delegation and CMF prompt hooks, and for
+        // every shimmed CMF hook.
         let worker_hooks: Vec<&str> = self
             .config
             .hooks
             .iter()
-            .map(|hook| conversion::worker_hook_name(hook))
+            .map(|hook| worker_hook_for(hook, legacy_cmf))
             .collect();
         let config_json = serde_json::json!({
             "name": self.config.name,
@@ -834,7 +873,7 @@ impl IsolatedPythonPlugin {
             "plugin_dirs": self.plugin_dirs,
             "class_name": self.venv_config.class_name,
             "config": config_string,
-            "hook_type": conversion::worker_hook_name(hook_name),
+            "hook_type": worker_hook_for(hook_name, legacy_cmf),
             "plugin_name": self.config.name,
             "payload": payload,
             "context": {
@@ -916,6 +955,26 @@ impl Plugin for IsolatedPythonPlugin {
     }
 }
 
+/// The hook name the worker knows `hook_name` by, given how `cmf.*` hooks are
+/// being served.
+fn worker_hook_for(hook_name: &str, legacy_cmf: bool) -> &str {
+    if legacy_cmf {
+        if let Some(legacy) = cmf_shim::legacy_hook_name(hook_name) {
+            return legacy;
+        }
+    }
+    conversion::worker_hook_name(hook_name)
+}
+
+/// Whether `worker` must be served `cmf.*` hooks through the legacy payload
+/// shim: true unless its handshake claimed `cmf_hooks`. A worker that was never
+/// asked, or could not answer, gets the shim.
+fn needs_legacy_cmf(worker: &WorkerClient) -> bool {
+    !worker
+        .reported_capabilities()
+        .is_some_and(|c| c.has(crate::worker::FEATURE_CMF_HOOKS))
+}
+
 /// Resolve an absolute `python3` from PATH.
 ///
 /// `WorkerClient::spawn` takes an interpreter path rather than doing a PATH
@@ -980,10 +1039,28 @@ impl AnyHookHandler for PythonHookAdapter {
         let plugin_name = &self.plugin.config.name;
         let to_plugin_error = |e: HostError| e.into_plugin_error(plugin_name);
 
-        let payload_json = conversion::serialize_payload(payload).map_err(to_plugin_error)?;
+        // The worker first: whether it serves `cmf.*` hooks natively decides
+        // what the task carries, and a respawn inside `worker()` may replace it
+        // with one that answers differently.
+        let worker = self.plugin.worker().await?;
+        let legacy_cmf = needs_legacy_cmf(&worker);
+
+        // A worker that predates `cmf.*` hooks gets the legacy typed payload
+        // under the legacy hook name. A message the legacy payload cannot
+        // represent, and the LLM hooks, fail closed here.
+        let shim = if legacy_cmf && cmf_shim::is_cmf_hook(self.hook_name) {
+            Some(cmf_shim::to_legacy(self.hook_name, payload).map_err(to_plugin_error)?)
+        } else {
+            None
+        };
+
+        let payload_json = match shim.as_ref() {
+            Some(shim) => shim.payload().clone(),
+            None => conversion::serialize_payload(payload).map_err(to_plugin_error)?,
+        };
         let mut task = self
             .plugin
-            .build_task(self.hook_name, payload_json, ctx)
+            .build_task(self.hook_name, legacy_cmf, payload_json, ctx)
             .map_err(to_plugin_error)?;
 
         // Raw credentials, for the two hooks that carry them and only for a
@@ -1001,8 +1078,7 @@ impl AnyHookHandler for PythonHookAdapter {
         // would see in-process. Attaches nothing when no slot is visible.
         crate::extensions::attach_extensions(&mut task, extensions).map_err(to_plugin_error)?;
 
-        let worker = self.plugin.worker().await?;
-        let response = worker.send_task(task).await.map_err(to_plugin_error)?;
+        let mut response = worker.send_task(task).await.map_err(to_plugin_error)?;
 
         // A completed round trip is the only proof a (possibly respawned) worker
         // actually serves requests, so it is what returns the respawn budget.
@@ -1012,12 +1088,30 @@ impl AnyHookHandler for PythonHookAdapter {
         // before the result is returned, so a plugin's context writes survive.
         apply_context_deltas(&response, ctx);
 
+        // Under the shim the modified payload is a legacy one, so it is taken
+        // out before the generic conversion (which would parse it as a CMF
+        // message) and mapped back onto the original message afterwards.
+        // Allow, deny and the violation are converted unchanged.
+        let legacy_modified = match shim {
+            Some(_) => response
+                .as_object_mut()
+                .and_then(|r| r.remove("modified_payload")),
+            None => None,
+        };
+
         // `extensions` is passed back in so the returned-extensions path can
         // reuse the inbound `Arc`s for immutable slots and read the write
         // tokens the executor issued. The executor's copy-on-write merge then
         // validates the result against the mutability tiers.
-        let fields = conversion::response_to_result(self.hook_name, response, extensions)
+        let mut fields = conversion::response_to_result(self.hook_name, response, extensions)
             .map_err(to_plugin_error)?;
+
+        if let (Some(shim), Some(modified)) = (shim.as_ref(), legacy_modified) {
+            if !modified.is_null() {
+                let message = shim.apply_modified(modified).map_err(to_plugin_error)?;
+                fields.modified_payload = Some(Box::new(message));
+            }
+        }
         Ok(Box::new(fields))
     }
 
@@ -1220,7 +1314,12 @@ mod tests {
             ("cmf.tool_pre_invoke", "cmf.tool_pre_invoke"),
         ] {
             let task = plugin
-                .build_task(dispatched, serde_json::json!({}), &PluginContext::new())
+                .build_task(
+                    dispatched,
+                    false,
+                    serde_json::json!({}),
+                    &PluginContext::new(),
+                )
                 .expect("task builds");
             assert_eq!(task["hook_type"], worker, "hook_type for {dispatched}");
         }
@@ -1228,6 +1327,7 @@ mod tests {
         let task = plugin
             .build_task(
                 "identity.resolve",
+                false,
                 serde_json::json!({}),
                 &PluginContext::new(),
             )
@@ -1239,6 +1339,40 @@ mod tests {
                 "token_delegate",
                 "cmf.prompt_pre_fetch",
                 "cmf.tool_pre_invoke"
+            ])
+        );
+    }
+
+    #[test]
+    fn under_the_shim_cmf_hooks_reach_the_worker_under_legacy_names() {
+        let mut config = config_with(serde_json::json!({"class_name": "my_pkg.Minimal"}));
+        config.hooks = vec![
+            "cmf.tool_pre_invoke".into(),
+            "cmf.prompt_post_invoke".into(),
+            "cmf.resource_pre_fetch".into(),
+            "cmf.llm_input".into(),
+            "identity.resolve".into(),
+        ];
+        let plugin = IsolatedPythonPlugin::from_config(&config).expect("parses");
+
+        let task = plugin
+            .build_task(
+                "cmf.prompt_post_invoke",
+                true,
+                serde_json::json!({}),
+                &PluginContext::new(),
+            )
+            .expect("task builds");
+        assert_eq!(task["hook_type"], "prompt_post_fetch");
+        assert_eq!(
+            worker_config(&task)["hooks"],
+            serde_json::json!([
+                "tool_pre_invoke",
+                "prompt_post_fetch",
+                "resource_pre_fetch",
+                // No legacy name; the adapter refuses it before any task is built.
+                "cmf.llm_input",
+                "identity_resolve"
             ])
         );
     }
@@ -1257,6 +1391,7 @@ mod tests {
         let task = plugin
             .build_task(
                 "tool_pre_invoke",
+                false,
                 serde_json::json!({"name": "t"}),
                 &PluginContext::new(),
             )
@@ -1284,6 +1419,7 @@ mod tests {
             .expect("parses")
             .build_task(
                 "tool_pre_invoke",
+                false,
                 serde_json::json!({"name": "t"}),
                 &PluginContext::new(),
             )
@@ -1393,6 +1529,8 @@ while True:
             print(json.dumps({"status": "error", "message": "task type not supported.", "request_id": rid}), flush=True)
             continue
         features = [] if hs == "no_features" else ["credential", "extensions", "modified_extensions"]
+        if hs == "cmf":
+            features.append("cmf_hooks")
         print(json.dumps({
             "status": "success", "protocol_version": 1,
             "features": features, "cpex_version": "0.1.2", "request_id": rid,
@@ -1684,11 +1822,16 @@ while True:
     }
 
     #[tokio::test]
-    async fn a_cmf_hook_sends_the_message_payload_shape() {
-        if crate::testing::skip_without_python3("a_cmf_hook_sends_the_message_payload_shape") {
+    async fn a_cmf_hook_sends_the_message_payload_shape_to_a_cmf_worker() {
+        if crate::testing::skip_without_python3(
+            "a_cmf_hook_sends_the_message_payload_shape_to_a_cmf_worker",
+        ) {
             return;
         }
-        let (dir, plugin) = adapter_plugin(&["cmf.tool_pre_invoke"], &[]).await;
+        let (dir, plugin) = uninitialized_adapter_plugin(&["cmf.tool_pre_invoke"], &[]);
+        // A worker claiming `cmf_hooks` gets the CMF message, not the shim.
+        set_handshake_mode(&dir, "cmf");
+        plugin.initialize().await.expect("the stub worker launches");
         set_mode(&dir, "allow");
 
         let payload = praxis_policy_core::cmf::MessagePayload {
@@ -1707,6 +1850,174 @@ while True:
         assert_eq!(
             task["payload"]["message"]["role"], "user",
             "a cmf hook must send the CMF message payload, not the generic wrapper"
+        );
+
+        plugin.shutdown().await.unwrap();
+    }
+
+    /// A CMF tool call wrapped in unrelated parts, for the shim dispatch tests.
+    fn cmf_tool_call(q: &str) -> praxis_policy_core::cmf::MessagePayload {
+        use praxis_policy_core::cmf::{ContentPart, Message, Role, ToolCall};
+        praxis_policy_core::cmf::MessagePayload {
+            message: Message::with_content(
+                Role::Assistant,
+                vec![
+                    ContentPart::Text {
+                        text: "calling search".into(),
+                    },
+                    ContentPart::ToolCall {
+                        content: ToolCall {
+                            tool_call_id: "call-7".into(),
+                            name: "search".into(),
+                            arguments: std::collections::HashMap::from([(
+                                "q".into(),
+                                serde_json::json!(q),
+                            )]),
+                            namespace: None,
+                        },
+                    },
+                ],
+            ),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_cmf_hook_reaches_an_old_worker_as_the_legacy_payload() {
+        if crate::testing::skip_without_python3(
+            "a_cmf_hook_reaches_an_old_worker_as_the_legacy_payload",
+        ) {
+            return;
+        }
+        // The default stub handshake claims no `cmf_hooks`, like a 0.1.x worker.
+        let (dir, plugin) = adapter_plugin(&["cmf.tool_pre_invoke"], &[]).await;
+        set_mode(&dir, "allow");
+
+        let mut ctx = PluginContext::new();
+        let fields = invoke(
+            &plugin,
+            "cmf.tool_pre_invoke",
+            &cmf_tool_call("rust"),
+            &mut ctx,
+        )
+        .await
+        .expect("the shimmed round trip succeeds");
+        assert!(fields.continue_processing);
+        assert!(fields.modified_payload.is_none());
+
+        let task = last_task(&dir);
+        assert_eq!(task["hook_type"], "tool_pre_invoke");
+        assert_eq!(
+            task["payload"],
+            serde_json::json!({"name": "search", "args": {"q": "rust"}})
+        );
+        assert_eq!(
+            worker_config(&task)["hooks"],
+            serde_json::json!(["tool_pre_invoke"])
+        );
+
+        plugin.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_legacy_modification_maps_back_onto_the_cmf_message() {
+        if crate::testing::skip_without_python3(
+            "a_legacy_modification_maps_back_onto_the_cmf_message",
+        ) {
+            return;
+        }
+        let (dir, plugin) = adapter_plugin(&["cmf.tool_pre_invoke"], &[]).await;
+        // Returns `{"name": "search", "args": {"q": "[REDACTED]"}}`.
+        set_mode(&dir, "modify");
+
+        let mut ctx = PluginContext::new();
+        let fields = invoke(
+            &plugin,
+            "cmf.tool_pre_invoke",
+            &cmf_tool_call("alice@example.com"),
+            &mut ctx,
+        )
+        .await
+        .unwrap();
+
+        let modified = fields.modified_payload.expect("the modification survives");
+        let message = modified
+            .as_any()
+            .downcast_ref::<praxis_policy_core::cmf::MessagePayload>()
+            .expect("a cmf hook's modification must come back as a MessagePayload");
+        let json = serde_json::to_value(message).unwrap();
+        assert_eq!(json["message"]["content"][0]["text"], "calling search");
+        assert_eq!(
+            json["message"]["content"][1]["content"]["arguments"]["q"],
+            "[REDACTED]"
+        );
+        assert_eq!(
+            json["message"]["content"][1]["content"]["tool_call_id"],
+            "call-7"
+        );
+
+        plugin.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_legacy_deny_passes_through_the_shim_unchanged() {
+        if crate::testing::skip_without_python3("a_legacy_deny_passes_through_the_shim_unchanged") {
+            return;
+        }
+        let (dir, plugin) = adapter_plugin(&["cmf.tool_pre_invoke"], &[]).await;
+        set_mode(&dir, "deny");
+
+        let mut ctx = PluginContext::new();
+        let fields = invoke(
+            &plugin,
+            "cmf.tool_pre_invoke",
+            &cmf_tool_call("x"),
+            &mut ctx,
+        )
+        .await
+        .unwrap();
+
+        assert!(!fields.continue_processing);
+        let violation = fields.violation.expect("the deny keeps its violation");
+        assert_eq!(violation.code, "PII_DETECTED");
+        assert_eq!(violation.details["field"], "q");
+
+        plugin.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_unrepresentable_message_fails_closed_before_reaching_the_worker() {
+        if crate::testing::skip_without_python3(
+            "an_unrepresentable_message_fails_closed_before_reaching_the_worker",
+        ) {
+            return;
+        }
+        let (dir, plugin) = adapter_plugin(&["cmf.tool_pre_invoke", "cmf.llm_input"], &[]).await;
+        set_mode(&dir, "allow");
+
+        let no_tool_call = praxis_policy_core::cmf::MessagePayload {
+            message: praxis_policy_core::cmf::Message::text(
+                praxis_policy_core::cmf::Role::User,
+                "hello",
+            ),
+        };
+        for hook in ["cmf.tool_pre_invoke", "cmf.llm_input"] {
+            let mut ctx = PluginContext::new();
+            let Err(err) = invoke(&plugin, hook, &no_tool_call, &mut ctx).await else {
+                panic!("'{hook}' must fail closed rather than allow");
+            };
+            let message = err.to_string();
+            assert!(message.contains(hook), "names the hook: {message}");
+            assert!(message.contains("py-plugin"), "names the plugin: {message}");
+            match *err {
+                PluginError::Execution { ref code, .. } => {
+                    assert_eq!(code.as_deref(), Some("legacy_shim_unsupported"));
+                },
+                ref other => panic!("expected an Execution error, got {other:?}"),
+            }
+        }
+        assert!(
+            !dir.path().join("last_task.json").exists(),
+            "nothing may reach the worker for a message the shim refused"
         );
 
         plugin.shutdown().await.unwrap();

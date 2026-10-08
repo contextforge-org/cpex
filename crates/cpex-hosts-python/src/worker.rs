@@ -65,6 +65,13 @@ pub const FEATURE_CREDENTIAL: &str = "credential";
 /// Worker feature name for delivering the task's `extensions` field to a hook.
 pub const FEATURE_EXTENSIONS: &str = "extensions";
 
+/// Worker feature name for serving PPE's `cmf.*` hooks natively, with the CMF
+/// `MessagePayload` and the `cmf.*` hook names.
+///
+/// A worker that does not claim it gets the legacy payload shim instead (see
+/// `crate::legacy::cmf_shim`). No released worker claims it yet.
+pub const FEATURE_CMF_HOOKS: &str = "cmf_hooks";
+
 /// What a worker reported it can do, from the spawn-time handshake.
 ///
 /// An empty feature set is a valid, meaningful answer: it is what an old worker
@@ -247,6 +254,13 @@ pub struct WorkerClient {
 
     /// Per-invocation response timeout.
     timeout_secs: u64,
+
+    /// What the spawn-time handshake reported, once it has run.
+    ///
+    /// Held on the client rather than the plugin so a respawned worker starts
+    /// with no report and has to be asked again: the replacement may come from
+    /// a rebuilt venv with a different `worker.py`.
+    reported: std::sync::OnceLock<WorkerCapabilities>,
 }
 
 /// Manual rather than derived: the outbound channel carries serialized task
@@ -335,7 +349,14 @@ impl WorkerClient {
             child: Mutex::new(Some(child)),
             max_content_size,
             timeout_secs,
+            reported: std::sync::OnceLock::new(),
         })
+    }
+
+    /// The handshake report from the last successful [`Self::capabilities`]
+    /// call, or `None` if the worker was never asked.
+    pub fn reported_capabilities(&self) -> Option<&WorkerCapabilities> {
+        self.reported.get()
     }
 
     /// Build a `WorkerDied` error, appending recent stderr when there is any.
@@ -472,7 +493,9 @@ impl WorkerClient {
                     "worker does not implement the capabilities handshake; \
                      treating it as supporting no gated wire features"
                 );
-                return Ok(WorkerCapabilities::none());
+                let none = WorkerCapabilities::none();
+                let _ = self.reported.set(none.clone());
+                return Ok(none);
             },
             Err(e) => return Err(e),
         };
@@ -488,7 +511,7 @@ impl WorkerClient {
             })
             .unwrap_or_default();
 
-        Ok(WorkerCapabilities {
+        let reported = WorkerCapabilities {
             protocol_version: response
                 .get("protocol_version")
                 .and_then(Value::as_u64)
@@ -498,7 +521,9 @@ impl WorkerClient {
                 .get("cpex_version")
                 .and_then(Value::as_str)
                 .map(str::to_string),
-        })
+        };
+        let _ = self.reported.set(reported.clone());
+        Ok(reported)
     }
 
     /// Ask the worker to exit, then wait out the grace window and kill it.

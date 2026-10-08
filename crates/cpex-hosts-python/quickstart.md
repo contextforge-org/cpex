@@ -64,13 +64,16 @@ three edits before loading it:
   `plugins/` at the project root.
 - Add `engine_settings:` with `dispatch: hooks`, so each plugin fires at the
   hooks it declares without a `routes:` or `authorization:` block.
-- Rename `identity_resolve` to `identity.resolve` and `token_delegate` to
-  `token.delegate` in any `hooks:` list. The host translates them back to the
+- Rename the hooks in any `hooks:` list to PPE's names: `tool_pre_invoke` to
+  `cmf.tool_pre_invoke`, `identity_resolve` to `identity.resolve`, and
+  `token_delegate` to `token.delegate`. The host translates them back to the
   names the Python worker knows.
 
-The unprefixed `tool_pre_invoke` can stay: the 0.1.x worker registers no
-`cmf.*` hooks, so the driver below registers `tool_pre_invoke` as a host hook
-before loading the config.
+The plugin itself needs no change. The 0.1.x worker registers no `cmf.*` hooks,
+so the host serves `cmf.tool_pre_invoke` to it through the legacy payload shim:
+the plugin's `tool_pre_invoke` receives the usual `ToolPreInvokePayload`
+(`name` plus `args`), and a modified payload maps back onto the CMF message.
+See the README's "legacy payload shim" section for every hook it covers.
 
 ## Example driver program (replaces code-review/python-tests/src/main.rs)
 
@@ -81,15 +84,12 @@ use std::collections::HashMap;
 use cpex::PolicyEngine;
 use cpex::praxis_policy_core::factory::PluginFactoryRegistry;
 use cpex::praxis_policy_core::config::parse_config;
-use cpex::praxis_policy_core::hooks::{register_hook_metadata, HookMetadata};
 use cpex::praxis_policy_core::error::PluginError;
 use cpex::praxis_policy_core::extensions::{
     AgentExtension, Extensions, HttpExtension, RequestExtension, SecurityExtension,
 };
 use cpex::cpex_hosts_python::{IsolatedVenvFactory, KIND};
-use cpex::cpex_hosts_python::legacy::{
-    IdentityResolvePayload, TokenDelegatePayload, ToolPreInvokePayload,
-};
+use cpex::praxis_policy_core::cmf::{ContentPart, Message, MessagePayload, Role, ToolCall};
 
 /// Marker `TestPlugin.identity_resolve` writes when `raw_token` arrives with a
 /// non-empty secret value — evidence the field survived the wire as a populated
@@ -108,9 +108,9 @@ const INBOUND_LABEL: &str = "CONFIG-E2E-LABEL-4f18";
 /// absence from the serialized task, so it has to be unique enough that a match
 /// anywhere in the JSON is conclusive.
 const SENSITIVE_HEADER_VALUE: &str = "Bearer config-e2e-must-not-travel";
-/// The unprefixed tool hook the installed plugin implements. PPE does not
-/// dispatch it, so the driver registers it as a host hook.
-const TOOL_PRE_INVOKE: &str = "tool_pre_invoke";
+/// The PPE hook the driver dispatches. The installed plugin implements the
+/// legacy `tool_pre_invoke`, which the host reaches through the shim.
+const TOOL_PRE_INVOKE: &str = "cmf.tool_pre_invoke";
 
 /// The project root. `plugins/config.yaml` and the installed plugin live under it.
 fn repo_root() -> PathBuf {
@@ -165,8 +165,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let yaml = std::fs::read_to_string(&config_path).map_err(|e| PluginError::Config {
         message: format!("failed to read config file '{}': {}", config_path.display(), e),
     })?;
-    // Before parsing: the loader rejects a hook it has no metadata for.
-    register_hook_metadata(TOOL_PRE_INVOKE, HookMetadata::permissive());
     let config = parse_config(&yaml)?;
     let mut factories = PluginFactoryRegistry::new();
     factories.register(KIND, Box::new(IsolatedVenvFactory));
@@ -177,15 +175,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await
         .expect("the venv resolves and the worker starts");
 
-    // `tool_pre_invoke` carries the native Pydantic shape the Python plugin
-    // expects — `name` plus `args` — not the generic wrapper.
-    let payload = ToolPreInvokePayload {
-        name: "test_tool".to_string(),
-        args: Some(HashMap::from([(
-            "query".to_string(),
-            serde_json::json!("hello world"),
-        )])),
-        headers: None,
+    // A CMF tool call. The host turns it into the `name` plus `args` payload
+    // the plugin's legacy `tool_pre_invoke` expects.
+    let payload = MessagePayload {
+        message: Message::with_content(
+            Role::Assistant,
+            vec![ContentPart::ToolCall {
+                content: ToolCall {
+                    tool_call_id: "call-1".to_string(),
+                    name: "test_tool".to_string(),
+                    arguments: HashMap::from([(
+                        "query".to_string(),
+                        serde_json::json!("hello world"),
+                    )]),
+                    namespace: None,
+                },
+            }],
+        ),
     };
 
     // Populated extensions rather than `Extensions::default()`. The default is
@@ -207,7 +213,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     manager.shutdown().await;
 
-    println!("Hello, CPEX!");
+    println!(
+        "allowed={} errors={:?} violation={:?}",
+        result.continue_processing, result.errors, result.violation
+    );
     Ok(())
 }
 ```

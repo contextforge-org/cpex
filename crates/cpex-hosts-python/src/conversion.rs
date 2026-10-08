@@ -95,6 +95,11 @@ struct HookRoute {
 /// worker as `identity_resolve`, `token.delegate` as `token_delegate`, and the
 /// CMF prompt pair as `cmf.prompt_pre_fetch` / `cmf.prompt_post_fetch`.
 ///
+/// The CMF rows describe a worker that claims the `cmf_hooks` handshake
+/// feature. Any other worker gets the tool, prompt and resource CMF hooks
+/// through `crate::legacy::cmf_shim` instead, which picks the legacy payload
+/// and hook name itself and refuses the LLM hooks.
+///
 /// The six unprefixed tool, prompt and resource rows are not PPE hooks. PPE's
 /// config loader rejects them unless a host registers hook metadata for them
 /// and then invokes them with the matching typed payload, so they stay for

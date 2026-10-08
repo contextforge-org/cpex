@@ -5,16 +5,17 @@
 //
 // End-to-end through the *engine*: load `plugins/config.yaml`, register the
 // `isolated_venv` factory, and invoke hooks on cpex-test-plugin:
-// `tool_pre_invoke`, plus the two credential-adjacent hooks `identity.resolve`
-// and `token.delegate`.
+// `cmf.tool_pre_invoke`, plus the two credential-adjacent hooks
+// `identity.resolve` and `token.delegate`.
 //
 // # The installer config predates PPE
 //
 // `cpex plugin install` writes a top-level `plugin_dirs:` key and the
 // unprefixed hook names. PPE rejects both, so the test migrates the document
-// the way an operator must (see `migrate_installer_config`) and registers
-// `tool_pre_invoke` as a host hook, because the 0.1.x worker registers no
-// `cmf.*` hooks.
+// the way an operator must (see `migrate_installer_config`). The plugin still
+// implements the legacy `tool_pre_invoke`; the 0.1.x worker claims no
+// `cmf_hooks`, so the host serves `cmf.tool_pre_invoke` to it through the
+// legacy payload shim.
 //
 // # What this covers that `isolated_venv_e2e.rs` does not
 //
@@ -26,7 +27,7 @@
 // catches a config-shape or dispatch-wiring break that a direct adapter call
 // would not see.
 //
-// `tool_pre_invoke` also carries populated `Extensions`, which makes this the
+// `cmf.tool_pre_invoke` also carries populated `Extensions`, which makes this the
 // only test that drives the extensions channel against an installer-written
 // config — one that declares `capabilities: []`. `extensions_merge_e2e.rs` owns
 // the observation and merge behaviour with a 3-arg fixture and explicit
@@ -42,11 +43,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use cpex_hosts_python::factory::{IsolatedVenvFactory, KIND};
-use cpex_hosts_python::legacy::{
-    IdentityResolvePayload, TokenDelegatePayload, ToolPreInvokePayload,
-};
+use cpex_hosts_python::legacy::{IdentityResolvePayload, TokenDelegatePayload};
 use cpex_hosts_python::plugin::IsolatedPythonPlugin;
 use cpex_hosts_python::testing::{skip, skip_without_python3};
+use praxis_policy_core::cmf::{ContentPart, Message, MessagePayload, Role, ToolCall};
 use praxis_policy_core::delegation::HOOK_TOKEN_DELEGATE;
 use praxis_policy_core::engine::{PolicyEngine, PolicyEngineConfig};
 use praxis_policy_core::extensions::{
@@ -54,9 +54,12 @@ use praxis_policy_core::extensions::{
 };
 use praxis_policy_core::identity::HOOK_IDENTITY_RESOLVE;
 
-/// The unprefixed tool hook the 0.1.x worker and `TestPlugin` implement. PPE does
-/// not dispatch it, so the test registers it as a host hook first.
-const TOOL_PRE_INVOKE: &str = "tool_pre_invoke";
+/// The PPE hook the tool test dispatches on.
+const TOOL_PRE_INVOKE: &str = "cmf.tool_pre_invoke";
+
+/// Marker `TestPlugin.tool_pre_invoke` writes: the legacy method the shim
+/// reaches for `cmf.tool_pre_invoke`.
+const TOOL_PRE_INVOKE_MARKER: &str = "tool_pre_invoke";
 
 /// Marker files `TestPlugin` writes, named after its Python hook methods. The
 /// host translates PPE's dispatched names to these on the wire.
@@ -98,11 +101,10 @@ fn repo_root() -> PathBuf {
 /// Rewrite an installer-written config into one PPE accepts.
 ///
 /// Drops the top-level `plugin_dirs:` key, which PPE rejects, renames the
-/// unprefixed identity and delegation hooks to PPE's names, and selects
+/// unprefixed tool, identity and delegation hooks to PPE's names, and selects
 /// `dispatch: hooks` when the document has no `engine_settings:`, since the
 /// installer writes no `routes:` or `authorization:` block. These are the edits
 /// an operator makes by hand when moving an installed Python plugin onto PPE.
-/// The unprefixed tool hook stays: the caller registers it as a host hook.
 fn migrate_installer_config(yaml: &str) -> String {
     let mut doc: serde_yaml::Value = serde_yaml::from_str(yaml).expect("config.yaml is YAML");
     let root = doc.as_mapping_mut().expect("config.yaml is a mapping");
@@ -125,6 +127,7 @@ fn migrate_installer_config(yaml: &str) -> String {
             };
             for hook in hooks {
                 let renamed = match hook.as_str() {
+                    Some("tool_pre_invoke") => TOOL_PRE_INVOKE,
                     Some("identity_resolve") => HOOK_IDENTITY_RESOLVE,
                     Some("token_delegate") => HOOK_TOKEN_DELEGATE,
                     _ => continue,
@@ -138,10 +141,6 @@ fn migrate_installer_config(yaml: &str) -> String {
 
 /// Build an engine from the migrated installer config.
 fn load_installed_config(config_path: &Path) -> Arc<PolicyEngine> {
-    praxis_policy_core::hooks::register_hook_metadata(
-        TOOL_PRE_INVOKE,
-        praxis_policy_core::hooks::HookMetadata::permissive(),
-    );
     let yaml = std::fs::read_to_string(config_path).expect("plugins/config.yaml is readable");
     let config = praxis_policy_core::config::parse_config(&migrate_installer_config(&yaml))
         .expect("the migrated plugins/config.yaml parses");
@@ -332,7 +331,7 @@ async fn config_yaml_dispatches_tool_pre_invoke_to_the_installed_plugin() {
     // The plugin's `tool_pre_invoke` writes `.tool_pre_invoke` at the worker's
     // cwd. Remove any stale copy so its existence proves *this* run executed
     // the hook body rather than a previous one.
-    let marker = clear_marker(&root, TOOL_PRE_INVOKE);
+    let marker = clear_marker(&root, TOOL_PRE_INVOKE_MARKER);
 
     // Loaded from disk with only the migration PPE requires, so a config.yaml
     // written by `cpex plugin install` is otherwise used as-is.
@@ -359,15 +358,23 @@ async fn config_yaml_dispatches_tool_pre_invoke_to_the_installed_plugin() {
         .await
         .expect("the venv resolves and the worker starts");
 
-    // `tool_pre_invoke` carries the native Pydantic shape the Python plugin
-    // expects — `name` plus `args` — not the generic wrapper.
-    let payload = ToolPreInvokePayload {
-        name: "test_tool".to_string(),
-        args: Some(HashMap::from([(
-            "query".to_string(),
-            serde_json::json!("hello world"),
-        )])),
-        headers: None,
+    // A CMF tool call. The shim turns it into the `name` plus `args` shape the
+    // plugin's legacy `tool_pre_invoke` expects.
+    let payload = MessagePayload {
+        message: Message::with_content(
+            Role::Assistant,
+            vec![ContentPart::ToolCall {
+                content: ToolCall {
+                    tool_call_id: "call-config-e2e-1".to_string(),
+                    name: "test_tool".to_string(),
+                    arguments: HashMap::from([(
+                        "query".to_string(),
+                        serde_json::json!("hello world"),
+                    )]),
+                    namespace: None,
+                },
+            }],
+        ),
     };
 
     // Populated extensions rather than `Extensions::default()`. The default is
@@ -384,7 +391,7 @@ async fn config_yaml_dispatches_tool_pre_invoke_to_the_installed_plugin() {
 
     manager.shutdown().await;
 
-    assert_allowed(&result, TOOL_PRE_INVOKE);
+    assert_allowed(&result, TOOL_PRE_INVOKE_MARKER);
 
     // The marker proves the plugin's hook body ran. Without it, a response
     // shaped like an allow is indistinguishable from the manager's
@@ -396,7 +403,7 @@ async fn config_yaml_dispatches_tool_pre_invoke_to_the_installed_plugin() {
     // the worker's Pydantic models reject surfaces as a validation error in
     // `errors` and no marker — which is precisely the break a `default()` input
     // could never detect.
-    assert_marker_written(&marker, TOOL_PRE_INVOKE);
+    assert_marker_written(&marker, TOOL_PRE_INVOKE_MARKER);
 
     // `modified_extensions` on an allowed pipeline is the *final* extensions
     // view, not a "something changed" signal — `PipelineResult::allowed_with`
@@ -484,14 +491,14 @@ async fn config_yaml_dispatches_tool_pre_invoke_to_the_installed_plugin() {
 }
 
 /// The two credential-adjacent hooks dispatch through the same config → factory
-/// → registry → executor → worker path as `tool_pre_invoke`.
+/// → registry → executor → worker path as `cmf.tool_pre_invoke`.
 ///
 /// # Why these two are worth their own test
 ///
 /// `identity.resolve` and `token.delegate` are the only hooks the host treats
 /// specially: `is_credential_hook` singles them out, and their payloads carry
 /// redacting fields (`raw_token`, `bearer_token`) that no other hook has. That
-/// makes them the two most likely to break in a way `tool_pre_invoke` cannot
+/// makes them the two most likely to break in a way the tool hook cannot
 /// detect — a payload-kind mapping that falls through to `PayloadKind::Generic`,
 /// for instance, still round-trips as an allow, so only a marker file
 /// distinguishes a real dispatch from a silent no-op. The plugin writes two
@@ -644,7 +651,7 @@ plugin_dirs:
 plugins:
   - name: cpex-test-plugin
     kind: isolated_venv
-    hooks: [identity_resolve, token_delegate]
+    hooks: [tool_pre_invoke, identity_resolve, token_delegate]
     version: 0.2.1
     config:
       class_name: cpex_test_plugin.plugin.TestPlugin
@@ -662,9 +669,11 @@ plugins:
     assert_eq!(
         config.plugins[0].hooks,
         vec![
+            TOOL_PRE_INVOKE.to_string(),
             HOOK_IDENTITY_RESOLVE.to_string(),
             HOOK_TOKEN_DELEGATE.to_string()
-        ]
+        ],
+        "the migrated names are PPE hooks, so no host hook registration is needed"
     );
 
     let plugin = IsolatedPythonPlugin::from_config(&config.plugins[0])

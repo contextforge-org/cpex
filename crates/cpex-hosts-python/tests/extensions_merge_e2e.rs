@@ -81,8 +81,9 @@ use cpex_hosts_python::extensions::{EXTENSIONS_FIELD, MODIFIED_EXTENSIONS_FIELD}
 use cpex_hosts_python::factory::KIND;
 use cpex_hosts_python::testing::{
     prebuild_venv, python_source, scaffold_plugin, skip, skip_without_python3,
-    worker_delivers_extensions, TempDir,
+    worker_delivers_extensions, TempDir, TempDirFactory, TEMP_DIR_KIND,
 };
+use praxis_policy_core::cmf::{ContentPart, Message, MessagePayload, Role, ToolCall};
 use praxis_policy_core::extensions::{Extensions, HttpExtension, SecurityExtension};
 use praxis_policy_core::plugin::PluginConfig;
 
@@ -238,20 +239,29 @@ fn inbound_extensions() -> Extensions {
     }
 }
 
-/// The legacy `tool_pre_invoke` hook, as a type the engine can dispatch.
+/// The PPE hook every test here dispatches on.
 ///
-/// `invoke_named` is generic over `HookTypeDef` to recover the payload type for
-/// the typed handler path. The Python host registers type-erased handlers, so
-/// only the payload type matters here — it must match what the adapter
-/// serializes, which is this crate's `legacy::ToolPreInvokePayload`.
-struct ToolPreInvoke;
+/// The fixture implements only the legacy `tool_pre_invoke`. A 0.1.x worker
+/// claims no `cmf_hooks`, so the host serves this hook to it through the legacy
+/// payload shim.
+const HOOK: &str = "cmf.tool_pre_invoke";
 
-impl praxis_policy_core::hooks::trait_def::HookTypeDef for ToolPreInvoke {
-    type Payload = cpex_hosts_python::legacy::ToolPreInvokePayload;
-    type Result = praxis_policy_core::hooks::trait_def::PluginResult<
-        cpex_hosts_python::legacy::ToolPreInvokePayload,
-    >;
-    const NAME: &'static str = "tool_pre_invoke";
+/// A CMF message holding one tool call, which the shim turns into the legacy
+/// `ToolPreInvokePayload` the fixture reads.
+fn tool_call_message() -> MessagePayload {
+    MessagePayload {
+        message: Message::with_content(
+            Role::Assistant,
+            vec![ContentPart::ToolCall {
+                content: ToolCall {
+                    tool_call_id: "call-ext-1".into(),
+                    name: "search".into(),
+                    arguments: Default::default(),
+                    namespace: None,
+                },
+            }],
+        ),
+    }
 }
 
 /// Engine settings that fire each plugin at the hooks it declares, so the test
@@ -263,24 +273,11 @@ fn hooks_dispatch() -> praxis_policy_core::config::EngineSettings {
     }
 }
 
-/// Register `tool_pre_invoke` as a host hook.
-///
-/// PPE does not dispatch the unprefixed name, and its config loader refuses a
-/// hook it has no metadata for. The 0.1.x Python worker registers no `cmf.*`
-/// hooks, so these tests drive the plugin through the legacy tool hook, the
-/// way a host keeping that hook would: register it first, then load.
-fn register_legacy_tool_hook() {
-    praxis_policy_core::hooks::register_hook_metadata(
-        "tool_pre_invoke",
-        praxis_policy_core::hooks::HookMetadata::permissive(),
-    );
-}
-
 fn plugin_config(capabilities: &[&str]) -> PluginConfig {
     PluginConfig {
         name: "extensions-aware".into(),
         kind: KIND.into(),
-        hooks: vec!["tool_pre_invoke".into()],
+        hooks: vec![HOOK.into()],
         capabilities: capabilities.iter().map(|c| (*c).to_string()).collect(),
         version: Some("1.0.0".into()),
         config: Some(serde_json::json!({
@@ -445,71 +442,8 @@ async fn an_appended_label_is_dropped_without_the_capability() {
     );
 }
 
-/// A factory that builds the real Python plugin against a scaffolded temp dir.
-///
-/// `IsolatedVenvFactory` deliberately ignores a `plugin_dirs` key in the
-/// `config:` block — the host always resolves `<project root>/plugins`, and the
-/// factory warns and drops the key rather than appearing to honour it. That is
-/// the right production behaviour, and it is covered by the factory's own unit
-/// tests, so it must not be relaxed to suit a test.
-///
-/// But it leaves these tests no config-only way to redirect the venv, and a run
-/// that built into the repository's real `plugins/` would be both destructive
-/// and dependent on developer-machine state. The temp-dir overrides are
-/// builder-only (`with_plugin_dirs` / `with_worker_cwd`) by design, so this
-/// factory applies them and hands the engine the finished plugin. Everything
-/// downstream (capability filtering, write-token minting, the copy-on-write
-/// merge) is the real engine path, which is what these tests exist to cover.
-mod temp_dir_factory {
-    use std::path::PathBuf;
-    use std::sync::Arc;
-
-    use cpex_hosts_python::plugin::{IsolatedPythonPlugin, PythonHookAdapter};
-    use praxis_policy_core::error::PluginError;
-    use praxis_policy_core::factory::{PluginFactory, PluginInstance};
-    use praxis_policy_core::plugin::PluginConfig;
-
-    /// Distinct from `factory::KIND` so registering this never shadows the real
-    /// factory for any other test in the binary.
-    pub const KIND: &str = "isolated_venv_temp_dir";
-
-    pub struct TempDirFactory {
-        pub plugin_dir: PathBuf,
-        pub worker_cwd: PathBuf,
-    }
-
-    impl PluginFactory for TempDirFactory {
-        fn create(&self, config: &PluginConfig) -> Result<PluginInstance, Box<PluginError>> {
-            let plugin = Arc::new(
-                IsolatedPythonPlugin::from_config(config)?
-                    .with_plugin_dirs(vec![self.plugin_dir.display().to_string()])
-                    .with_worker_cwd(self.worker_cwd.clone()),
-            );
-
-            let handlers: Vec<_> = config
-                .hooks
-                .iter()
-                .map(
-                    |hook| -> (
-                        &'static str,
-                        Arc<dyn praxis_policy_core::registry::AnyHookHandler>,
-                    ) {
-                        let leaked: &'static str = Box::leak(hook.clone().into_boxed_str());
-                        (
-                            leaked,
-                            Arc::new(PythonHookAdapter::new(Arc::clone(&plugin), leaked)),
-                        )
-                    },
-                )
-                .collect();
-
-            Ok(PluginInstance { plugin, handlers })
-        }
-    }
-}
-
-/// Register the Python plugin on `tool_pre_invoke`, run one pipeline pass, and
-/// return the fixture's recorded verdict plus the merged extensions.
+/// Register the Python plugin on `cmf.tool_pre_invoke`, run one pipeline pass,
+/// and return the fixture's recorded verdict plus the merged extensions.
 ///
 /// Going through `PolicyEngine` is the point: it is what filters extensions per
 /// capability, mints the write tokens, and runs the copy-on-write merge that
@@ -523,15 +457,14 @@ async fn run_pipeline(
     use praxis_policy_core::engine::{PolicyEngine, PolicyEngineConfig};
 
     let mut config = plugin_config(capabilities);
-    // The temp-dir redirection rides on the factory (see `temp_dir_factory`),
+    // The temp-dir redirection rides on the factory (see `TempDirFactory`),
     // not on a config key the host ignores.
-    config.kind = temp_dir_factory::KIND.into();
+    config.kind = TEMP_DIR_KIND.into();
 
-    register_legacy_tool_hook();
     let manager = PolicyEngine::new(PolicyEngineConfig::default());
     manager.register_factory(
-        temp_dir_factory::KIND,
-        Box::new(temp_dir_factory::TempDirFactory {
+        TEMP_DIR_KIND,
+        Box::new(TempDirFactory {
             plugin_dir: plugin_dir.to_path_buf(),
             worker_cwd: dir.path().to_path_buf(),
         }),
@@ -550,13 +483,13 @@ async fn run_pipeline(
 
     let inbound = inbound_extensions();
     let (result, _bg) = manager
-        .invoke_named::<ToolPreInvoke>(
-            "tool_pre_invoke",
-            cpex_hosts_python::legacy::ToolPreInvokePayload::default(),
-            inbound.clone(),
-            None,
-        )
+        .invoke_by_name(HOOK, Box::new(tool_call_message()), inbound.clone(), None)
         .await;
+    assert!(
+        result.errors.is_empty(),
+        "the pipeline recorded plugin errors: {:?}",
+        result.errors
+    );
 
     manager.shutdown().await;
 
@@ -639,7 +572,9 @@ mod fake_worker {
         }
 
         fn hook_type_name(&self) -> &'static str {
-            "tool_pre_invoke"
+            praxis_policy_core::hooks::lookup_hook_metadata(super::HOOK)
+                .and_then(|meta| meta.family)
+                .unwrap_or(super::HOOK)
         }
     }
 
@@ -660,7 +595,7 @@ mod fake_worker {
                     cfg: config.clone(),
                 }),
                 handlers: vec![(
-                    "tool_pre_invoke",
+                    super::HOOK,
                     Arc::new(FakeWorkerHandler { response }) as Arc<dyn AnyHookHandler>,
                 )],
             })
@@ -682,14 +617,13 @@ async fn merge_through_executor(
     let config = PluginConfig {
         name: "fake-worker".into(),
         kind: fake_worker::KIND.into(),
-        hooks: vec!["tool_pre_invoke".into()],
+        hooks: vec![HOOK.into()],
         capabilities: capabilities.iter().map(|c| (*c).to_string()).collect(),
         version: Some("1.0.0".into()),
         config: Some(serde_json::json!({"response": response})),
         ..Default::default()
     };
 
-    register_legacy_tool_hook();
     let manager = PolicyEngine::new(PolicyEngineConfig::default());
     manager.register_factory(fake_worker::KIND, Box::new(fake_worker::FakeWorkerFactory));
     manager
@@ -702,9 +636,9 @@ async fn merge_through_executor(
     manager.initialize().await.expect("the plugin initializes");
 
     let (result, _bg) = manager
-        .invoke_named::<ToolPreInvoke>(
-            "tool_pre_invoke",
-            cpex_hosts_python::legacy::ToolPreInvokePayload::default(),
+        .invoke_by_name(
+            HOOK,
+            Box::new(tool_call_message()),
             inbound_extensions(),
             None,
         )

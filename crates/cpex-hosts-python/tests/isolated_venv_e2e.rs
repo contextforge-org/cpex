@@ -37,9 +37,12 @@ use cpex_hosts_python::legacy::ToolPreInvokePayload;
 use cpex_hosts_python::plugin::{IsolatedPythonPlugin, PythonHookAdapter};
 use cpex_hosts_python::testing::{
     prebuild_venv, python_source, scaffold_plugin, skip, skip_without_python3, TempDir,
+    TempDirFactory, TEMP_DIR_KIND,
 };
+use praxis_policy_core::cmf::{ContentPart, Message, MessagePayload, Role, ToolCall};
 use praxis_policy_core::context::PluginContext;
 use praxis_policy_core::extensions::Extensions;
+use praxis_policy_core::hooks::payload::PluginPayload;
 use praxis_policy_core::plugin::{Plugin, PluginConfig};
 use praxis_policy_core::registry::AnyHookHandler;
 
@@ -54,7 +57,13 @@ from cpex.framework.models import PluginResult, PluginViolation
 
 
 class MarkerPlugin(Plugin):
-    """Writes a marker file, then allows — or denies when args say to."""
+    """Writes a marker file, then allows, denies, or rewrites args.
+
+    A 0.1.x-style plugin: it implements only the legacy `tool_pre_invoke` with
+    the typed `ToolPreInvokePayload`. Its config block's `mode` picks the
+    behavior: `gate` (the default) denies `q == "DENY-ME"`, and `rewrite`
+    replaces `q == "REWRITE-ME"` with `"rewritten"`.
+    """
 
     def __init__(self, config):
         super().__init__(config)
@@ -64,7 +73,15 @@ class MarkerPlugin(Plugin):
             f.write(f"ran:{payload.name}")
 
         args = payload.args or {}
-        if args.get("q") == "DENY-ME":
+        # Per plugin instance, so a chain of two can be told apart.
+        with open(os.path.join(os.getcwd(), f"saw-{self.name}.txt"), "w") as f:
+            f.write(f"{payload.name}:{args.get('q')}")
+
+        mode = (self._config.config or {}).get("mode", "gate")
+        if mode == "rewrite" and args.get("q") == "REWRITE-ME":
+            rewritten = payload.model_copy(update={"args": {**args, "q": "rewritten"}})
+            return PluginResult(continue_processing=True, modified_payload=rewritten)
+        if mode == "gate" and args.get("q") == "DENY-ME":
             return PluginResult(
                 continue_processing=False,
                 violation=PluginViolation(
@@ -155,7 +172,7 @@ fn plugin_for(
 async fn invoke(
     plugin: &Arc<IsolatedPythonPlugin>,
     hook: &'static str,
-    payload: &ToolPreInvokePayload,
+    payload: &dyn PluginPayload,
 ) -> Result<praxis_policy_core::executor::ErasedResultFields, String> {
     let adapter = PythonHookAdapter::new(Arc::clone(plugin), hook);
     let mut ctx = PluginContext::new();
@@ -273,36 +290,169 @@ async fn a_real_plugin_deny_surfaces_as_a_deny_result() {
     plugin.shutdown().await.unwrap();
 }
 
+/// A CMF tool call for `search` with one argument, between two unrelated
+/// parts, so an engine round trip can show those parts survive the shim.
+fn cmf_tool_call(q: &str) -> MessagePayload {
+    MessagePayload {
+        message: Message::with_content(
+            Role::Assistant,
+            vec![
+                ContentPart::Text {
+                    text: "calling search".into(),
+                },
+                ContentPart::ToolCall {
+                    content: ToolCall {
+                        tool_call_id: "call-e2e-1".into(),
+                        name: "search".into(),
+                        arguments: std::collections::HashMap::from([(
+                            "q".into(),
+                            serde_json::json!(q),
+                        )]),
+                        namespace: Some("acme".into()),
+                    },
+                },
+                ContentPart::Thinking {
+                    text: "unrelated reasoning".into(),
+                },
+            ],
+        ),
+    }
+}
+
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "requires python3 + a cpex Python checkout (CPEX_PYTHON_SOURCE); run via `make test-python-e2e`"]
-async fn a_cmf_hook_is_rejected_cleanly_by_a_framework_that_has_no_cmf_hooks() {
-    // The plan asks for a CMF round-trip here. It is not achievable against
-    // this framework version, and the reason is worth pinning rather than
-    // omitting: the Python hook registry knows only the legacy names —
-    // `get_result_type("cmf.tool_pre_invoke")` returns None, and
-    // `json_to_payload` raises "No payload defined for hook cmf.tool_pre_invoke".
-    // No `cmf.*` hook is registered anywhere in `cpex/framework/hooks/`.
-    //
-    // So the CMF path cannot be proven end to end until the Python side
-    // registers those hooks. What *is* provable, and asserted here, is that
-    // this host does its half correctly: it serializes the CMF message payload
-    // (not the generic wrapper — verified in the conversion and adapter unit
-    // tests), and the worker's rejection surfaces as a clean plugin error
-    // rather than a hang, a crash, or a silent allow. The last of those is the
-    // one that would matter in production: a CMF hook that quietly returned
-    // "allow" would bypass policy.
-    let Some(source) =
-        require_environment("a_cmf_hook_is_rejected_cleanly_by_a_framework_that_has_no_cmf_hooks")
-    else {
+async fn legacy_plugins_on_cmf_tool_pre_invoke_rewrite_and_deny_through_the_engine() {
+    // The 0.1.x worker registers no `cmf.*` hook and the fixture implements only
+    // the legacy `tool_pre_invoke`. Through the legacy payload shim both still
+    // run on PPE's `cmf.tool_pre_invoke`, in a real two-plugin pipeline: a
+    // rewriter (priority 10) modifies args, and a gate (priority 20) sees the
+    // rewritten args and denies on its own trigger.
+    let test = "legacy_plugins_on_cmf_tool_pre_invoke_rewrite_and_deny_through_the_engine";
+    let Some(source) = require_environment(test) else {
+        return;
+    };
+    let dir = TempDir::new();
+    let Some(plugin_dir) = setup(&dir, &source, test) else {
         return;
     };
 
+    use praxis_policy_core::config::{DispatchMode, EngineSettings, PolicyConfig};
+    use praxis_policy_core::engine::{PolicyEngine, PolicyEngineConfig};
+
+    let entry = |name: &str, mode: &str, priority: i32| {
+        let mut config = plugin_config(&["cmf.tool_pre_invoke"], &[]);
+        config.name = name.into();
+        config.kind = TEMP_DIR_KIND.into();
+        config.priority = priority;
+        config.config.as_mut().unwrap()["mode"] = serde_json::json!(mode);
+        config
+    };
+
+    let engine = PolicyEngine::new(PolicyEngineConfig::default());
+    engine.register_factory(
+        TEMP_DIR_KIND,
+        Box::new(TempDirFactory {
+            plugin_dir: plugin_dir.clone(),
+            worker_cwd: dir.path().to_path_buf(),
+        }),
+    );
+    engine
+        .load_config(PolicyConfig {
+            plugins: vec![entry("rewriter", "rewrite", 10), entry("gate", "gate", 20)],
+            engine_settings: EngineSettings {
+                dispatch: DispatchMode::Hooks,
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+        .expect("cmf.tool_pre_invoke is a PPE hook, so no host hook registration is needed");
+    engine
+        .initialize()
+        .await
+        .expect("the cached venv is reused and both workers start");
+
+    // --- the rewrite maps back onto the CMF message --------------------------
+    let original = cmf_tool_call("REWRITE-ME");
+    let (result, _bg) = engine
+        .invoke_by_name(
+            "cmf.tool_pre_invoke",
+            Box::new(original.clone()),
+            Extensions::default(),
+            None,
+        )
+        .await;
+    assert!(
+        result.errors.is_empty(),
+        "plugin errors: {:?}",
+        result.errors
+    );
+    assert!(
+        result.continue_processing,
+        "violation: {:?}",
+        result.violation
+    );
+
+    let modified = result
+        .modified_payload
+        .as_ref()
+        .expect("the rewriter's modification survives the pipeline");
+    let message = modified
+        .as_any()
+        .downcast_ref::<MessagePayload>()
+        .expect("a cmf hook's modification comes back as a MessagePayload");
+    let mut expected = serde_json::to_value(&original).unwrap();
+    expected["message"]["content"][1]["content"]["arguments"]["q"] = serde_json::json!("rewritten");
+    assert_eq!(
+        serde_json::to_value(message).unwrap(),
+        expected,
+        "only the tool call's args change; every other part and field survives"
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("saw-gate.txt")).unwrap(),
+        "search:rewritten",
+        "the gate, behind the rewriter, must see the rewritten args"
+    );
+
+    // --- a legacy deny passes through unchanged ------------------------------
+    let (result, _bg) = engine
+        .invoke_by_name(
+            "cmf.tool_pre_invoke",
+            Box::new(cmf_tool_call("DENY-ME")),
+            Extensions::default(),
+            None,
+        )
+        .await;
+    assert!(
+        result.errors.is_empty(),
+        "plugin errors: {:?}",
+        result.errors
+    );
+    assert!(!result.continue_processing, "the gate must deny");
+    let violation = result
+        .violation
+        .as_ref()
+        .expect("a deny carries its violation");
+    assert_eq!(violation.code, "FIXTURE_DENY");
+    assert_eq!(violation.reason, "denied by fixture");
+    assert_eq!(violation.details["arg"], "q");
+
+    engine.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires python3 + a cpex Python checkout (CPEX_PYTHON_SOURCE); run via `make test-python-e2e`"]
+async fn a_cmf_message_the_shim_cannot_represent_fails_closed() {
+    // A `cmf.tool_pre_invoke` message with no tool call has no legacy
+    // `ToolPreInvokePayload` to become. The host must refuse it with an error
+    // naming the hook and the plugin, not send the worker something it would
+    // misread and not report an allow: a silent allow on a CMF hook would
+    // bypass policy.
+    let test = "a_cmf_message_the_shim_cannot_represent_fails_closed";
+    let Some(source) = require_environment(test) else {
+        return;
+    };
     let dir = TempDir::new();
-    let Some(plugin_dir) = setup(
-        &dir,
-        &source,
-        "a_cmf_hook_is_rejected_cleanly_by_a_framework_that_has_no_cmf_hooks",
-    ) else {
+    let Some(plugin_dir) = setup(&dir, &source, test) else {
         return;
     };
     let config = plugin_config(&["cmf.tool_pre_invoke"], &[]);
@@ -310,34 +460,48 @@ async fn a_cmf_hook_is_rejected_cleanly_by_a_framework_that_has_no_cmf_hooks() {
     let plugin = plugin_for(&config, &plugin_dir, dir.path());
     plugin.initialize().await.expect("initializes");
 
-    let payload = praxis_policy_core::cmf::MessagePayload {
-        message: praxis_policy_core::cmf::Message::text(
-            praxis_policy_core::cmf::Role::User,
-            "what is the weather?",
-        ),
+    let payload = MessagePayload {
+        message: Message::text(Role::User, "what is the weather?"),
     };
     let adapter = PythonHookAdapter::new(Arc::clone(&plugin), "cmf.tool_pre_invoke");
     let mut ctx = PluginContext::new();
-    let result = adapter
+    let Err(err) = adapter
         .invoke(&payload, &Extensions::default(), &mut ctx)
-        .await;
-
-    let Err(err) = result else {
-        panic!(
-            "a framework with no cmf hooks must not report success — a silent allow on a CMF hook \
-             would bypass policy"
-        );
+        .await
+    else {
+        panic!("an unrepresentable cmf message must not report success");
     };
     let message = err.to_string();
     assert!(
-        message.contains("cmf.tool_pre_invoke") || message.to_lowercase().contains("payload"),
-        "the error should explain that the hook is unknown to the framework: {message}"
+        message.contains("cmf.tool_pre_invoke"),
+        "names the hook: {message}"
+    );
+    assert!(
+        message.contains("fixture-marker"),
+        "names the plugin: {message}"
+    );
+    assert!(
+        message.contains("no tool_call content part"),
+        "says why: {message}"
+    );
+    assert!(
+        !dir.path().join("marker.txt").exists(),
+        "the plugin must not have run"
     );
 
-    // Still healthy: one rejected hook must not poison the worker.
+    // The worker is untouched and still serves a representable message.
+    let fields = invoke(&plugin, "cmf.tool_pre_invoke", &cmf_tool_call("clean"))
+        .await
+        .expect("a tool call message round-trips");
+    assert!(fields.continue_processing);
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("marker.txt")).unwrap(),
+        "ran:search"
+    );
+
     assert!(
         plugin.shutdown().await.is_ok(),
-        "the worker should survive a rejected hook and shut down cleanly"
+        "the worker should shut down cleanly"
     );
 }
 

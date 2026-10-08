@@ -170,6 +170,14 @@ pub enum HostError {
     ///
     /// The message never contains token material.
     Credential { message: String },
+
+    /// A `cmf.*` hook could not be translated for a worker that predates
+    /// `cmf.*` hook support, so the host failed closed rather than dispatching
+    /// a payload the plugin would misread or skipping the plugin.
+    ///
+    /// Like `Protocol`, the message names shapes (part types, field names),
+    /// never payload values.
+    LegacyShim { hook: String, message: String },
 }
 
 impl fmt::Display for HostError {
@@ -204,6 +212,11 @@ impl fmt::Display for HostError {
             Self::WorkerError { message } => write!(f, "worker returned an error: {message}"),
             Self::Protocol { message } => write!(f, "protocol error: {message}"),
             Self::Credential { message } => write!(f, "credential error: {message}"),
+            Self::LegacyShim { hook, message } => write!(
+                f,
+                "hook '{hook}' cannot be served by this worker, which predates cmf hook \
+                 support: {message}"
+            ),
         }
     }
 }
@@ -225,6 +238,7 @@ impl HostError {
             Self::WorkerError { .. } => "worker_error",
             Self::Protocol { .. } => "protocol_error",
             Self::Credential { .. } => "credential_error",
+            Self::LegacyShim { .. } => "legacy_shim_unsupported",
         }
     }
 
@@ -267,7 +281,8 @@ impl HostError {
             | Self::WorkerDied { .. }
             | Self::WorkerError { .. }
             | Self::Protocol { .. }
-            | Self::Credential { .. } => {},
+            | Self::Credential { .. }
+            | Self::LegacyShim { .. } => {},
         }
         details
     }

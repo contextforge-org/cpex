@@ -11,7 +11,11 @@
 // ride PPE's `identity.resolve` and `token.delegate` hooks. The tool, prompt
 // and resource payloads have no PPE hook; they serve hosts that register the
 // unprefixed names themselves. `crate::conversion` holds the hook table.
+//
+// `cmf_shim` translates PPE's tool, prompt and resource `cmf.*` hooks into
+// these payloads for workers that predate `cmf.*` hook support.
 
+pub mod cmf_shim;
 pub mod payloads;
 
 pub use payloads::{

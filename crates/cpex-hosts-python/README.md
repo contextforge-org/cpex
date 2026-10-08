@@ -104,6 +104,50 @@ translates on the wire (the task's `hook_type` and the config's `hooks` list).
 | `token.delegate` | `TokenDelegatePayload` | `token_delegate` |
 | anything else | `GenericPayload` | unchanged |
 
+The `cmf.*` rows apply to a worker that claims the `cmf_hooks` feature in the
+spawn-time `capabilities` handshake. No released worker does yet, so in
+practice the `cmf.*` hooks go through the legacy payload shim below.
+
+### CMF hooks on workers without `cmf_hooks` (the legacy payload shim)
+
+The released 0.1.x Python SDK registers no `cmf.*` hook in the worker, and its
+plugins implement `tool_pre_invoke` and friends with the typed payloads. So for
+any worker that does not claim `cmf_hooks`, the host translates each tool,
+prompt and resource `cmf.*` hook into the legacy hook and payload the worker
+already knows, and maps the result back. A 0.1.x plugin keeps working with no
+SDK release: declare `cmf.tool_pre_invoke` and implement `tool_pre_invoke`.
+
+| PPE hook | Built from (CMF part) | Legacy hook and payload sent | Mapped back onto the part |
+|---|---|---|---|
+| `cmf.tool_pre_invoke` | `tool_call` | `tool_pre_invoke`: `{name, args}` | `name`, `arguments` |
+| `cmf.tool_post_invoke` | `tool_result` | `tool_post_invoke`: `{name: tool_name, result: content}` | `tool_name`, `content` |
+| `cmf.prompt_pre_invoke` | `prompt_request` | `prompt_pre_fetch`: `{prompt_id: name, args}` | `name`, `arguments` |
+| `cmf.prompt_post_invoke` | `prompt_result` | `prompt_post_fetch`: `{prompt_id: prompt_name, result: {messages: [{role, content: {type: "text", text}}], description: null}}` | `prompt_name`, `messages` (role and text; a message keeps its `channel`) |
+| `cmf.resource_pre_fetch` | `resource` or `resource_ref` | `resource_pre_fetch`: `{uri}` | `uri` |
+| `cmf.resource_post_fetch` | `resource` | `resource_post_fetch`: `{uri, content: {type: "resource", id, uri, mime_type, text}}` | `uri`, `content` (text), `mime_type` |
+
+The worker's `continue_processing` and `violation` pass through unchanged. A
+modified legacy payload replaces only the fields in the last column; every
+other content part, and every other field of the message and of the part, is
+kept as dispatched.
+
+The shim fails closed, with a `legacy_shim_unsupported` error naming the hook
+and the plugin, rather than allowing or skipping:
+
+- `cmf.llm_input` and `cmf.llm_output`, which have no legacy hook;
+- a message without exactly one content part of the kind in the second column
+  (for example a `cmf.tool_pre_invoke` message with no tool call, or with two);
+- a prompt argument that is not a string (the legacy `args` is
+  `dict[str, str]`);
+- a prompt result message that is not a single text part;
+- a resource with a binary `blob`, or a `resource_ref` on post-fetch;
+- a modified payload that sets something the message cannot hold: tool
+  `headers`, resource `metadata`, a prompt result `description`, a resource
+  `content.blob`, or non-text prompt message content.
+
+The shim lives in `src/legacy/cmf_shim.rs`. It goes away once every supported
+worker claims `cmf_hooks`.
+
 The unprefixed `tool_pre_invoke`, `tool_post_invoke`, `prompt_pre_fetch`,
 `prompt_post_fetch`, `resource_pre_fetch` and `resource_post_fetch` keep their
 typed payloads (`ToolPreInvokePayload` and so on). PPE does not dispatch them
