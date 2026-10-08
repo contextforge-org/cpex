@@ -115,8 +115,15 @@ pub unsafe extern "C" fn cpex_refresh_secrets(
         SafeRun::Ok(r) => r,
         other => return other.rc(),
     };
+    // Log only the names and the failure class. The full message stays in
+    // the report handed back to the caller.
     for failure in &report.failed {
-        tracing::warn!("cpex_refresh_secrets: {}", failure);
+        tracing::warn!(
+            secret = %failure.secret,
+            provider = %failure.provider,
+            kind = error_kind(&failure.source),
+            "cpex_refresh_secrets: secret refresh failed"
+        );
     }
 
     let wire = FfiRefreshReport::from(report);
