@@ -46,9 +46,6 @@ const PY_WALL_CLOCK_TIMEOUT: Duration = Duration::from_secs(60);
 #[pyclass(name = "PolicyEngine")]
 pub struct PyPolicyEngine {
     inner: Arc<PolicyEngine>,
-    /// Whether builtins, the transport and the secret providers are
-    /// installed. Install runs once per engine.
-    installed: AtomicBool,
     /// Set by `shutdown()`. PPE's shutdown is terminal, so every later
     /// call that would drive the engine raises instead.
     shut_down: Arc<AtomicBool>,
@@ -97,10 +94,9 @@ impl PyPolicyEngine {
 
         let engine = Self {
             inner: Arc::new(PolicyEngine::default()),
-            installed: AtomicBool::new(false),
             shut_down: Arc::new(AtomicBool::new(false)),
         };
-        builtins::install(&engine.inner, &engine.installed, allow_private_destinations);
+        builtins::install(&engine.inner, allow_private_destinations);
         engine
             .inner
             .load_config_yaml(&yaml)

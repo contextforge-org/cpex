@@ -47,12 +47,17 @@ routes:
 
 # Runs inside the fresh venv. Must not see the source tree.
 CHECK = """\
-import asyncio, sys
+import asyncio, importlib.resources, sys
 import cpex
 from cpex import PipelineResult, PluginManager, PolicyEngine
 
 assert "site-packages" in cpex.__file__, f"imported from the source tree: {cpex.__file__}"
 assert PluginManager is PolicyEngine
+
+# The stubs ship in the wheel: PEP 561 marker plus the native module's stub.
+pkg = importlib.resources.files("cpex")
+for stub in ("py.typed", "_lib.pyi"):
+    assert pkg.joinpath(stub).is_file(), f"wheel is missing cpex/{stub}"
 
 def call(args):
     return {"message": {"role": "assistant", "content": [{"content_type": "tool_call",

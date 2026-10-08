@@ -39,8 +39,8 @@ Before submitting a PR, make sure `make ci` passes.
 
 ## Coding standards
 
-- **Edition 2021**, MSRV **1.96**. Keep the toolchain, `clippy.toml` `msrv`, and
-  `rust-version` in sync when bumping.
+- **Edition 2024**, MSRV **1.96**. Keep the toolchain, `clippy.toml` `msrv`,
+  `rust-version` and the workspace `edition` in sync when bumping.
 - **Formatting:** `cargo fmt` (config in [`rustfmt.toml`](rustfmt.toml)). CI runs
   `cargo fmt --all -- --check`.
 - **Lints:** the workspace lint policy lives in `[workspace.lints]` in the root

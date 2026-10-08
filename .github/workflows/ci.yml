@@ -43,6 +43,10 @@ jobs:
         run: cargo fmt --all -- --check
       - name: clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
+      # The facade's optional `python-host` feature is off in the workspace
+      # run, so lint it on its own.
+      - name: clippy (cpex, all features)
+        run: cargo clippy -p cpex --all-targets --all-features -- -D warnings
 
   unused-deps:
     name: Unused deps (advisory)
@@ -81,6 +85,10 @@ jobs:
         # e2e tests are also `#[ignore]`d here — the `python-e2e` job below runs
         # them with a real interpreter and framework checkout.
         run: cargo test --workspace
+      - name: cargo test (cpex facade, python-host)
+        # Compiles the facade's python-host tests. They stop at plugin
+        # instantiation and never spawn an interpreter.
+        run: cargo test -p cpex --features python-host
 
   # The Python host's end-to-end tests, actually run.
   #
@@ -169,6 +177,21 @@ jobs:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
+    # Linux only: macOS runners have no Docker, so service containers are not
+    # available there. A blank image skips the service on that leg, and the
+    # Valkey acceptance test skips when CPEX_TEST_VALKEY_URL is empty.
+    services:
+      valkey:
+        image: ${{ matrix.os == 'ubuntu-latest' && 'valkey/valkey:8-alpine' || '' }}
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "valkey-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      CPEX_TEST_VALKEY_URL: ${{ matrix.os == 'ubuntu-latest' && 'redis://127.0.0.1:6379' || '' }}
     steps:
       - uses: actions/checkout@v7
         with:

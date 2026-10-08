@@ -11,14 +11,13 @@
 // during load.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use praxis_policy::{HyperTransport, install_builtins, registry_with_vault};
 use praxis_policy_core::engine::PolicyEngine;
 use praxis_policy_core::http::HttpTransport;
 
 /// Install the bundled builtins, one outbound HTTP transport and the
-/// secret providers on `engine`, once.
+/// secret providers on `engine`.
 ///
 /// What it installs:
 ///   - plugin factories: `identity/jwt`, `identity/api-key`,
@@ -34,19 +33,10 @@ use praxis_policy_core::http::HttpTransport;
 /// loopback and link-local addresses; without it such requests are
 /// refused. This is a host decision; no policy document can turn it on.
 ///
-/// `installed` guards the work: PPE's `install_builtins` appends a new
-/// APL visitor on every call, so a second install would walk `apl:`
-/// blocks twice. The flag is set before the work so a panic part way
-/// does not let a retry register a second visitor.
-pub fn install(
-    engine: &Arc<PolicyEngine>,
-    installed: &AtomicBool,
-    allow_private_destinations: bool,
-) {
-    if installed.swap(true, Ordering::AcqRel) {
-        return;
-    }
-
+/// Call it once per engine: PPE's `install_builtins` appends a new APL
+/// visitor on every call, so a second install would walk `apl:` blocks
+/// twice. `PolicyEngine::new` is the only caller.
+pub fn install(engine: &Arc<PolicyEngine>, allow_private_destinations: bool) {
     install_builtins(engine);
 
     let mut hyper = HyperTransport::new();

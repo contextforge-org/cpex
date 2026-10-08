@@ -32,7 +32,7 @@ CPEX now runs on the [praxis-policy engine](https://github.com/praxis-proxy/poli
 ### Changed
 
 - **BREAKING: `PluginManager` is `PolicyEngine` on every surface.** Rust `cpex::PolicyEngine`, Go `NewPolicyEngine` / `NewPolicyEngineDefault` / `PolicyEngine`. Python keeps `PluginManager` as an alias of `PolicyEngine`.
-- **BREAKING: C ABI version 3.** `cpex_manager_new*` is `cpex_engine_new*`, `CpexManagerInner` is `CpexEngineInner` (built with `CpexEngineInner::new`), and `cpex_apl_install` takes a `flags` argument. Go and the FFI artifact must be upgraded together.
+- **BREAKING: C ABI version 2 -> 3.** `cpex_manager_new*` is `cpex_engine_new*`, `CpexManagerInner` is `CpexEngineInner` (built with `CpexEngineInner::new`), and `cpex_apl_install` takes a `flags` argument. Go and the FFI artifact must be upgraded together.
 - **BREAKING: Rust paths follow PPE.** `cpex_sdk` items come from `cpex::prelude`, engine modules from `cpex::praxis_policy_core`, and `PipelineResult` from `cpex::praxis_policy_core::executor`.
 - **BREAKING: facade features removed.** `pii`, `audit`, `jwt`, `oauth`, `elicitation-ciba`, `cedar`, `cel`, `valkey`, `builtins` and `full` are gone. All stable builtins are always on; `python-host` is the only feature.
 - **BREAKING: hook names follow PPE.** The unprefixed names (`tool_pre_invoke`, `identity_resolve`, `token_delegate`, `prompt_pre_fetch` and the rest) are rejected at load. Use `cmf.*`, `cmf.prompt_pre_invoke`, `identity.resolve` and `token.delegate`.

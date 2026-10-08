@@ -127,6 +127,7 @@ lint:
 	@echo "🦀 fmt --check + clippy -D warnings ..."
 	@$(CARGO) fmt --all -- --check
 	@$(CARGO) clippy --workspace --all-targets -- -D warnings
+	@$(CARGO) clippy -p cpex --all-targets --all-features -- -D warnings
 	@echo "✅  lint passed"
 
 # Developer convenience: format, then apply clippy's machine-applicable fixes.
@@ -149,6 +150,7 @@ machete:
 .PHONY: test
 test:
 	@$(CARGO) test --workspace
+	@$(CARGO) test -p cpex --features python-host
 
 .PHONY: test-ffi
 test-ffi:

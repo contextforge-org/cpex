@@ -26,9 +26,6 @@ crate-type = ["lib", "cdylib", "staticlib"]
 
 [dependencies]
 praxis-policy-core = { workspace = true }
-# APL governance layer, so Go/Python hosts can enable APL policies and route
-# handlers via the `cpex_apl_install` FFI entry point.
-praxis-policy-apl-runtime = { workspace = true }
 # The engine facade with every stable builtin, the bundled hyper transport and
 # the Vault secret provider. `install_builtins` expands to explicit
 # `register_factory` calls, so the factory symbols survive in the staticlib (no

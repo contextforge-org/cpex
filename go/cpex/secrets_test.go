@@ -7,6 +7,9 @@ package cpex
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -65,5 +68,77 @@ func TestSecretsAfterShutdownReturnTypedError(t *testing.T) {
 	}
 	if _, _, err := eng.SecretsLastSuccess("env"); !errors.Is(err, ErrCpexInvalidHandle) {
 		t.Errorf("SecretsLastSuccess: expected ErrCpexInvalidHandle, got %v", err)
+	}
+}
+
+// A `kind: file` provider reports a rotation as an update and a missing
+// file as a failure, and its last success tracks the latest refresh.
+func TestRefreshSecretsReportsUpdatesAndFailures(t *testing.T) {
+	secretFile := filepath.Join(t.TempDir(), "api_key")
+	if err := os.WriteFile(secretFile, []byte("first"), 0o600); err != nil {
+		t.Fatalf("write secret: %v", err)
+	}
+	yaml := "engine_settings:\n  dispatch: hooks\n" +
+		"secrets:\n" +
+		"  providers:\n    local:\n      kind: file\n" +
+		"  values:\n    api_key:\n      provider: local\n      ref: " + secretFile + "\n"
+	eng := accEngine(t, yaml)
+
+	first, ok, err := eng.SecretsLastSuccess("local")
+	if err != nil {
+		t.Fatalf("SecretsLastSuccess failed: %v", err)
+	}
+	if !ok || first.IsZero() {
+		t.Fatalf("expected a last success after Initialize, got ok=%v at=%v", ok, first)
+	}
+
+	report, err := eng.RefreshSecrets()
+	if err != nil {
+		t.Fatalf("RefreshSecrets failed: %v", err)
+	}
+	if len(report.Updated) != 0 || report.Unchanged != 1 || len(report.Failed) != 0 {
+		t.Errorf("expected one unchanged secret, got %+v", report)
+	}
+
+	if err := os.WriteFile(secretFile, []byte("second"), 0o600); err != nil {
+		t.Fatalf("rewrite secret: %v", err)
+	}
+	report, err = eng.RefreshSecrets()
+	if err != nil {
+		t.Fatalf("RefreshSecrets failed: %v", err)
+	}
+	if len(report.Updated) != 1 || report.Updated[0] != "api_key" || report.Unchanged != 0 || len(report.Failed) != 0 {
+		t.Errorf("expected api_key updated, got %+v", report)
+	}
+	again, ok, err := eng.SecretsLastSuccess("local")
+	if err != nil {
+		t.Fatalf("SecretsLastSuccess failed: %v", err)
+	}
+	if !ok || again.Before(first) {
+		t.Errorf("expected last success at or after %v, got ok=%v at=%v", first, ok, again)
+	}
+
+	if err := os.Remove(secretFile); err != nil {
+		t.Fatalf("remove secret: %v", err)
+	}
+	report, err = eng.RefreshSecrets()
+	if err != nil {
+		t.Fatalf("RefreshSecrets failed: %v", err)
+	}
+	if len(report.Updated) != 0 || report.Unchanged != 0 || len(report.Failed) != 1 {
+		t.Fatalf("expected one failure, got %+v", report)
+	}
+	failure := report.Failed[0]
+	if failure.Secret != "api_key" || failure.Provider != "local" || failure.Kind != "not_found" {
+		t.Errorf("unexpected failure fields: %+v", failure)
+	}
+	if failure.Message == "" {
+		t.Error("expected a failure message")
+	}
+	if strings.Contains(failure.Message, "second") {
+		t.Error("the failure message must not carry the secret")
+	}
+	if at, ok, err := eng.SecretsLastSuccess("local"); err != nil || ok || !at.IsZero() {
+		t.Errorf("expected a failed refresh to clear last success, got ok=%v at=%v err=%v", ok, at, err)
 	}
 }

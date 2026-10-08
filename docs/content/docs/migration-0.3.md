@@ -105,6 +105,8 @@ The Go module and the FFI artifact must come from the same CPEX release. The pac
 
 `EnableAPL` now also installs the HTTP transport and the secret providers. It is idempotent: a second call does nothing, whatever its options. `InvokeByName` callers must pass the new hook names (see [Hook names](#hook-names)), and an `identity.resolve` call must carry the route's `Meta` (entity type and name) like any other hook.
 
+A plugin panic during `Invoke` now returns a nil error and a denied result whose violation code is `plugin_panic`. `ErrCpexPanic` is reserved for a panic in the FFI layer itself.
+
 `LoadConfig` returns a typed error (for example a parse or pipeline error) without the engine's message text. The full message, naming the rejected key, hook or plugin, goes to the `tracing` log, so route the FFI log somewhere you can read while migrating a config.
 
 ## C ABI v3
@@ -121,6 +123,8 @@ The Go module and the FFI artifact must come from the same CPEX release. The pac
 | (none) | `cpex_secrets_last_success(handle, provider, len, &unix_ms)` |
 
 The other entry points (`cpex_load_config`, `cpex_initialize`, `cpex_invoke`, `cpex_invoke_resolved`, `cpex_shutdown` and the free functions) keep their names and take the engine handle.
+
+A plugin panic inside `cpex_invoke` or `cpex_invoke_resolved` now returns `RC_OK` with a denied result whose violation code is `plugin_panic`. `RC_PANIC` is reserved for a panic in the FFI layer itself.
 
 `cpex_apl_install` installs the builtins, one HTTP transport and the `env`, `file` and `vault` secret providers, with Vault on the same transport. `flags` is a bit set:
 

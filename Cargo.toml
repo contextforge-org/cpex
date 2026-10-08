@@ -85,9 +85,8 @@ chrono = { version = "0.4", features = ["serde"] }
 # suite. All PPE crates move together. `praxis-policy` is the facade `cpex`
 # re-exports; kept crates that `cpex` itself depends on use
 # `praxis-policy-core` directly so there is no dependency cycle.
-praxis-policy             = { version = "=0.4.1", default-features = false }
-praxis-policy-core        = { version = "=0.4.1" }
-praxis-policy-apl-runtime = { version = "=0.4.1" }
+praxis-policy      = { version = "=0.4.1", default-features = false }
+praxis-policy-core = { version = "=0.4.1" }
 
 # Internal workspace crates — single source of truth for their path + version
 # requirement. Members depend on these via `{ workspace = true }` so a version
