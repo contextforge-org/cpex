@@ -23,12 +23,12 @@ pub mod valkey;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use engine::{Engine, ResolvedCaller};
 use keys::KeyRing;
 use mock::MockServer;
-use normalize::{to_snapshot_string, Scrubber};
+use normalize::{Scrubber, to_snapshot_string};
 use spec::{HookRenames, Request, Scenario};
 
 /// TEST-ONLY client secret handed to OAuth and CIBA plugins through a file

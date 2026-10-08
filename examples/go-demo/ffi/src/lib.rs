@@ -41,11 +41,12 @@ use std::os::raw::c_int;
 ///
 /// # Safety
 /// `handle` must be a valid handle from `cpex_engine_new_default`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn cpex_demo_register_factories(
     handle: *mut cpex_ffi::CpexEngineInner,
 ) -> c_int {
-    let inner = match handle.as_ref() {
+    // SAFETY: the caller guarantees `handle` is NULL or a live handle.
+    let inner = match unsafe { handle.as_ref() } {
         Some(h) => h,
         None => return -1,
     };

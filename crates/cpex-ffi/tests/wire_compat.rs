@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 use praxis_policy_core::engine::PolicyEngine;
 
-use common::{block_on, Engine};
+use common::{Engine, block_on};
 
 #[derive(serde::Deserialize)]
 struct Fixture {

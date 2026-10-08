@@ -21,9 +21,9 @@ use std::sync::Arc;
 
 use cpex::PolicyEngine;
 use cpex_tutorial::backends;
-use cpex_tutorial::{mediate, Caller, Outcome};
+use cpex_tutorial::{Caller, Outcome, mediate};
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 /// Load a policy string into a ready-to-use engine.
 async fn engine_with(policy: &str) -> Arc<PolicyEngine> {

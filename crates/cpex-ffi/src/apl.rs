@@ -27,10 +27,10 @@
 //         -> cpex_initialize
 
 use std::os::raw::c_int;
-use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 
-use praxis_policy::{install_builtins, registry_with_vault, HyperTransport};
+use praxis_policy::{HyperTransport, install_builtins, registry_with_vault};
 use praxis_policy_core::http::HttpTransport;
 
 use crate::{CpexEngineInner, RC_INVALID_HANDLE, RC_INVALID_INPUT, RC_OK, RC_PANIC};
@@ -78,9 +78,10 @@ pub const CPEX_APL_KNOWN_FLAGS: u32 = CPEX_APL_ALLOW_PRIVATE_DESTINATIONS;
 /// # Safety
 /// `handle` must be a valid handle returned by `cpex_engine_new_default`
 /// (or `cpex_engine_new`) and not yet shut down.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn cpex_apl_install(handle: *const CpexEngineInner, flags: u32) -> c_int {
-    let inner = match handle.as_ref() {
+    // SAFETY: the caller guarantees `handle` is NULL or a live handle.
+    let inner = match unsafe { handle.as_ref() } {
         Some(h) => h,
         None => return RC_INVALID_HANDLE,
     };

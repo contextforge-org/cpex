@@ -18,7 +18,7 @@ use serde_json::Value;
 
 use cpex_parity_harness::parity::{diff_scenario, to_allow_list_yaml};
 use cpex_parity_harness::spec::HookRenames;
-use cpex_parity_harness::{check_parity, default_root, replay, Options, Replay, Replayed, Status};
+use cpex_parity_harness::{Options, Replay, Replayed, Status, check_parity, default_root, replay};
 
 /// Both tests flush and fill the same Valkey database and scratch
 /// directories, so they take turns.

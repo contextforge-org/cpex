@@ -80,8 +80,8 @@ use std::sync::Arc;
 use cpex_hosts_python::extensions::{EXTENSIONS_FIELD, MODIFIED_EXTENSIONS_FIELD};
 use cpex_hosts_python::factory::KIND;
 use cpex_hosts_python::testing::{
-    prebuild_venv, python_source, scaffold_plugin, skip, skip_without_python3,
-    worker_delivers_extensions, TempDir, TempDirFactory, TEMP_DIR_KIND,
+    TEMP_DIR_KIND, TempDir, TempDirFactory, prebuild_venv, python_source, scaffold_plugin, skip,
+    skip_without_python3, worker_delivers_extensions,
 };
 use praxis_policy_core::cmf::{ContentPart, Message, MessagePayload, Role, ToolCall};
 use praxis_policy_core::extensions::{Extensions, HttpExtension, SecurityExtension};

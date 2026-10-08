@@ -118,10 +118,12 @@ fn project_root() -> PathBuf {
 /// if something later changes the process cwd between `initialize()` and an
 /// invocation.
 fn default_plugin_dirs() -> Vec<String> {
-    vec![project_root()
-        .join(DEFAULT_PLUGIN_DIR)
-        .display()
-        .to_string()]
+    vec![
+        project_root()
+            .join(DEFAULT_PLUGIN_DIR)
+            .display()
+            .to_string(),
+    ]
 }
 
 /// Global-state key a host can set to propagate its own request id into the
@@ -534,10 +536,10 @@ impl IsolatedPythonPlugin {
 
         // Re-check under the lock. A concurrent invocation may already have
         // done the work while this one waited.
-        if let Some(worker) = self.worker.read().await.clone() {
-            if worker.is_alive() {
-                return Ok(worker);
-            }
+        if let Some(worker) = self.worker.read().await.clone()
+            && worker.is_alive()
+        {
+            return Ok(worker);
         }
 
         let Some(attempt) = respawn.try_reserve() else {
@@ -570,10 +572,10 @@ impl IsolatedPythonPlugin {
 
         // Reap the corpse before replacing it, so the old process and its I/O
         // tasks are not left behind on every respawn.
-        if let Some(dead) = self.worker.write().await.take() {
-            if let Err(e) = dead.shutdown().await {
-                tracing::debug!(plugin = %self.config.name, "reaping the dead worker: {e}");
-            }
+        if let Some(dead) = self.worker.write().await.take()
+            && let Err(e) = dead.shutdown().await
+        {
+            tracing::debug!(plugin = %self.config.name, "reaping the dead worker: {e}");
         }
 
         // Same launch path as `initialize()` — see `launch_worker`.
@@ -942,13 +944,13 @@ impl Plugin for IsolatedPythonPlugin {
         // rebuild is not permanently downgraded to an in-place update by a stale
         // owner entry. Best-effort: a registry write failure must not turn a
         // clean shutdown into an error, since the venv itself is fine.
-        if let Some(venv) = self.venv.as_ref() {
-            if let Err(e) = venv.release_owner().await {
-                tracing::warn!(
-                    plugin = %self.config.name,
-                    "could not release the venv owner claim: {e}"
-                );
-            }
+        if let Some(venv) = self.venv.as_ref()
+            && let Err(e) = venv.release_owner().await
+        {
+            tracing::warn!(
+                plugin = %self.config.name,
+                "could not release the venv owner claim: {e}"
+            );
         }
 
         result
@@ -958,10 +960,8 @@ impl Plugin for IsolatedPythonPlugin {
 /// The hook name the worker knows `hook_name` by, given how `cmf.*` hooks are
 /// being served.
 fn worker_hook_for(hook_name: &str, legacy_cmf: bool) -> &str {
-    if legacy_cmf {
-        if let Some(legacy) = cmf_shim::legacy_hook_name(hook_name) {
-            return legacy;
-        }
+    if legacy_cmf && let Some(legacy) = cmf_shim::legacy_hook_name(hook_name) {
+        return legacy;
     }
     conversion::worker_hook_name(hook_name)
 }
@@ -1106,11 +1106,11 @@ impl AnyHookHandler for PythonHookAdapter {
         let mut fields = conversion::response_to_result(self.hook_name, response, extensions)
             .map_err(to_plugin_error)?;
 
-        if let (Some(shim), Some(modified)) = (shim.as_ref(), legacy_modified) {
-            if !modified.is_null() {
-                let message = shim.apply_modified(modified).map_err(to_plugin_error)?;
-                fields.modified_payload = Some(Box::new(message));
-            }
+        if let (Some(shim), Some(modified)) = (shim.as_ref(), legacy_modified)
+            && !modified.is_null()
+        {
+            let message = shim.apply_modified(modified).map_err(to_plugin_error)?;
+            fields.modified_payload = Some(Box::new(message));
         }
         Ok(Box::new(fields))
     }

@@ -23,12 +23,12 @@
 // generic payload for any name outside it. The same table translates PPE's
 // dispatched names to the spellings the Python worker registers.
 
+use praxis_policy_core::cmf::MessagePayload;
 use praxis_policy_core::cmf::constants::{
     HOOK_CMF_LLM_INPUT, HOOK_CMF_LLM_OUTPUT, HOOK_CMF_PROMPT_POST_INVOKE,
     HOOK_CMF_PROMPT_PRE_INVOKE, HOOK_CMF_RESOURCE_POST_FETCH, HOOK_CMF_RESOURCE_PRE_FETCH,
     HOOK_CMF_TOOL_POST_INVOKE, HOOK_CMF_TOOL_PRE_INVOKE,
 };
-use praxis_policy_core::cmf::MessagePayload;
 use praxis_policy_core::delegation::HOOK_TOKEN_DELEGATE;
 use praxis_policy_core::error::PluginViolation;
 use praxis_policy_core::executor::ErasedResultFields;
@@ -302,7 +302,9 @@ pub fn deserialize_payload(
         serde_json::from_value::<T>(value)
             .map(|p| Box::new(p) as Box<dyn PluginPayload>)
             .map_err(|e| HostError::Protocol {
-                message: format!("worker returned a modified payload that does not match hook '{hook_name}': {e}"),
+                message: format!(
+                    "worker returned a modified payload that does not match hook '{hook_name}': {e}"
+                ),
             })
     }
 

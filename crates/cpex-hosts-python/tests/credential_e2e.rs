@@ -37,14 +37,14 @@ use cpex_hosts_python::factory::KIND;
 use cpex_hosts_python::legacy::IdentityResolvePayload;
 use cpex_hosts_python::plugin::{IsolatedPythonPlugin, PythonHookAdapter};
 use cpex_hosts_python::testing::{
-    prebuild_venv, python_source, scaffold_plugin, skip, skip_without_python3,
-    worker_consumes_credentials, TempDir,
+    TempDir, prebuild_venv, python_source, scaffold_plugin, skip, skip_without_python3,
+    worker_consumes_credentials,
 };
 use praxis_policy_core::context::PluginContext;
+use praxis_policy_core::extensions::Extensions;
 use praxis_policy_core::extensions::raw_credentials::{
     RawCredentialsExtension, RawInboundToken, TokenKind, TokenRole,
 };
-use praxis_policy_core::extensions::Extensions;
 use praxis_policy_core::identity::HOOK_IDENTITY_RESOLVE;
 use praxis_policy_core::plugin::{Plugin, PluginConfig};
 use praxis_policy_core::registry::AnyHookHandler;

@@ -208,16 +208,13 @@ impl HookHandler<CmfHook> for HeaderInjectorPlugin {
             let mut owned = extensions.cow_copy();
 
             // Write to HTTP extension — requires write token from capability
-            if let Some(ref token) = owned.http_write_token {
-                if let Some(http) = owned.http.as_mut() {
-                    let h = http.write(token);
-                    h.set_response_header("X-Tool-Name", name);
-                    h.set_response_header(
-                        "X-Tool-Status",
-                        if is_error { "error" } else { "success" },
-                    );
-                    h.set_response_header("X-CPEX-Processed", "true");
-                }
+            if let Some(ref token) = owned.http_write_token
+                && let Some(http) = owned.http.as_mut()
+            {
+                let h = http.write(token);
+                h.set_response_header("X-Tool-Name", name);
+                h.set_response_header("X-Tool-Status", if is_error { "error" } else { "success" });
+                h.set_response_header("X-CPEX-Processed", "true");
             }
 
             return PluginResult::modify_extensions(owned);

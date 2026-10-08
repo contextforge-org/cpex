@@ -23,7 +23,7 @@ use cpex::PolicyEngine;
 use cpex_tutorial::backends;
 use cpex_tutorial::idp;
 use cpex_tutorial::ui;
-use cpex_tutorial::{mediate, Caller};
+use cpex_tutorial::{Caller, mediate};
 
 use serde_json::json;
 
@@ -97,7 +97,9 @@ async fn main() {
     ui::print_outcome(&o);
     all_passed &= ui::expect(&o, true);
 
-    ui::scenario("alice → search_repos (subject: this_workload, same result: the caller's identity is not used)");
+    ui::scenario(
+        "alice → search_repos (subject: this_workload, same result: the caller's identity is not used)",
+    );
     let o = mediate(
         &engine,
         &alice,
@@ -109,6 +111,8 @@ async fn main() {
     ui::print_outcome(&o);
     all_passed &= ui::expect(&o, true);
 
-    println!("`subject:` chooses whose authority the downstream token carries: the caller (user) or the gateway itself (this_workload).");
+    println!(
+        "`subject:` chooses whose authority the downstream token carries: the caller (user) or the gateway itself (this_workload)."
+    );
     ui::finish_check(all_passed);
 }

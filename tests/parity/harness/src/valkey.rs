@@ -7,7 +7,7 @@
 
 use std::collections::BTreeMap;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 /// Key prefix the session store writes under.
 pub const KEY_PREFIX: &str = "taint:v1";

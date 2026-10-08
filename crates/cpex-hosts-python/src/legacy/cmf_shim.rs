@@ -96,8 +96,8 @@ use praxis_policy_core::cmf::constants::{
 };
 use praxis_policy_core::cmf::{ContentPart, Message, MessagePayload, Resource, Role};
 use praxis_policy_core::hooks::payload::PluginPayload;
-use serde::de::DeserializeOwned;
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 use serde_json::Value;
 
 use super::payloads::{
@@ -331,7 +331,7 @@ impl ShimmedPayload {
                             None | Some(Value::Null) => None,
                             Some(Value::String(text)) => Some(text.clone()),
                             Some(_) => {
-                                return Err(self.error("`content.text` must be a string or null"))
+                                return Err(self.error("`content.text` must be a string or null"));
                             },
                         };
                         if let Some(mime) = fields.get("mime_type") {
@@ -341,7 +341,7 @@ impl ShimmedPayload {
                                 _ => {
                                     return Err(
                                         self.error("`content.mime_type` must be a string or null")
-                                    )
+                                    );
                                 },
                             };
                         }
@@ -497,7 +497,7 @@ pub fn to_legacy(
                 hook_name,
                 legacy,
                 &format!("the message has no {} content part", shim.part_name()),
-            ))
+            ));
         },
         many => {
             return Err(shim_error(
@@ -508,7 +508,7 @@ pub fn to_legacy(
                     many.len(),
                     shim.part_name()
                 ),
-            ))
+            ));
         },
     };
 
@@ -658,7 +658,7 @@ pub fn to_legacy(
             return Err(err(
                 "the message holds a resource_ref with no content, and the legacy post-fetch \
                  payload carries the content",
-            ))
+            ));
         },
         // `candidates` only holds parts `shim.matches` accepted, and every
         // accepted pairing is handled above.

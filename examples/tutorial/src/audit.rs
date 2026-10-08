@@ -20,13 +20,13 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 
+use cpex::PolicyEngine;
 use cpex::prelude::{
     CmfHook, ContentPart, Extensions, HookHandler, MessagePayload, Plugin, PluginConfig,
     PluginContext, PluginError, PluginFactory, PluginInstance, PluginResult, TypedHandlerAdapter,
 };
-use cpex::PolicyEngine;
 
 /// The `kind` a policy declares to use this plugin.
 pub const KIND: &str = "tutorial/audit-line";

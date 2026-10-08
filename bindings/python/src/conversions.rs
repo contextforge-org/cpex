@@ -13,7 +13,7 @@ use praxis_policy_core::cmf::MessagePayload;
 use praxis_policy_core::context::PluginContextTable;
 use praxis_policy_core::extensions::Extensions;
 use praxis_policy_core::hooks::payload::PluginPayload;
-use praxis_policy_core::identity::{IdentityPayload, HOOK_IDENTITY_RESOLVE};
+use praxis_policy_core::identity::{HOOK_IDENTITY_RESOLVE, IdentityPayload};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyDict, PyFloat, PyInt, PyList, PyString};

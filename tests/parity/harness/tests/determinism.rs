@@ -10,7 +10,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use cpex_parity_harness::{capture, default_root, Options, Status};
+use cpex_parity_harness::{Options, Status, capture, default_root};
 
 fn valkey_url() -> Option<String> {
     std::env::var("PARITY_VALKEY_URL")

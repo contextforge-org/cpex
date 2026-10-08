@@ -6,8 +6,8 @@
 // Maps Rust PluginError variants to Python exception types.
 
 use praxis_policy_core::error::PluginError;
-use pyo3::exceptions::{PyRuntimeError, PyTimeoutError, PyValueError};
 use pyo3::PyErr;
+use pyo3::exceptions::{PyRuntimeError, PyTimeoutError, PyValueError};
 
 /// Convert a `Box<PluginError>` into the appropriate Python exception.
 ///

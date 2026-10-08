@@ -33,7 +33,7 @@ pub mod idp;
 pub mod mediate;
 pub mod ui;
 
-pub use mediate::{mediate, Caller, Outcome};
+pub use mediate::{Caller, Outcome, mediate};
 
 use std::sync::Arc;
 

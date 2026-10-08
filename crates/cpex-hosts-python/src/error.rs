@@ -388,9 +388,11 @@ mod tests {
         let details = execution_details(pip_failure("", None));
 
         assert_eq!(details[DETAIL_EXIT_CODE], serde_json::Value::Null);
-        assert!(pip_failure("", None)
-            .to_string()
-            .contains("was killed by a signal"));
+        assert!(
+            pip_failure("", None)
+                .to_string()
+                .contains("was killed by a signal")
+        );
     }
 
     /// Long pip output is cut to the tail, where the actual error lives, and

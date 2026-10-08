@@ -15,21 +15,20 @@ use std::ptr;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use aws_lc_rs::rand::SystemRandom;
-use aws_lc_rs::signature::{EcdsaKeyPair, ECDSA_P256_SHA256_FIXED_SIGNING};
+use aws_lc_rs::signature::{ECDSA_P256_SHA256_FIXED_SIGNING, EcdsaKeyPair};
 use jsonwebtoken::jwk::{Jwk, JwkSet, KeyAlgorithm, PublicKeyUse};
-use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
+use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
 use serde_json::json;
 
 use cpex_ffi::{
-    cpex_free_bytes, cpex_refresh_secrets, cpex_secrets_last_success,
     CPEX_APL_ALLOW_PRIVATE_DESTINATIONS, PAYLOAD_IDENTITY, RC_INVALID_HANDLE, RC_INVALID_INPUT,
-    RC_OK, RC_PIPELINE_ERROR,
+    RC_OK, RC_PIPELINE_ERROR, cpex_free_bytes, cpex_refresh_secrets, cpex_secrets_last_success,
 };
-use praxis_policy_core::delegation::{DelegationPayload, TokenDelegateHook, HOOK_TOKEN_DELEGATE};
+use praxis_policy_core::delegation::{DelegationPayload, HOOK_TOKEN_DELEGATE, TokenDelegateHook};
 use praxis_policy_core::extensions::Extensions;
 use praxis_policy_core::identity::{IdentityPayload, TokenSource};
 
-use common::{block_on, capture_warnings, warnings_containing, Engine, MockServer};
+use common::{Engine, MockServer, block_on, capture_warnings, warnings_containing};
 
 const AUD: &str = "test-api";
 const JWKS_PATH: &str = "/realms/test/certs";

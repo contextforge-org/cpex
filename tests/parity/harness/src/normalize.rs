@@ -47,10 +47,10 @@ impl Scrubber {
         match v {
             Value::Object(m) => {
                 for (k, v) in m {
-                    if k.ends_with("_token") {
-                        if let Value::String(s) = v {
-                            self.add_secret(s.clone());
-                        }
+                    if k.ends_with("_token")
+                        && let Value::String(s) = v
+                    {
+                        self.add_secret(s.clone());
                     }
                     self.harvest_tokens(v);
                 }
@@ -89,10 +89,10 @@ impl Scrubber {
         if looks_like_jwt(&s) {
             return SCRUBBED_TOKEN.to_string();
         }
-        if let Some(url) = &self.mock_url {
-            if s.contains(url.as_str()) {
-                s = s.replace(url.as_str(), SCRUBBED_URL);
-            }
+        if let Some(url) = &self.mock_url
+            && s.contains(url.as_str())
+        {
+            s = s.replace(url.as_str(), SCRUBBED_URL);
         }
         s
     }

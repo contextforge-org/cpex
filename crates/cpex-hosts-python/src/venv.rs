@@ -236,15 +236,15 @@ pub fn evaluate_cache(
     }
 
     // Present-and-different invalidates; absent is "no signal" and skipped.
-    if let Some(cached) = metadata.manifest_version.as_deref() {
-        if Some(cached) != expected_manifest_version {
-            return CacheVerdict::ManifestVersionChanged;
-        }
+    if let Some(cached) = metadata.manifest_version.as_deref()
+        && Some(cached) != expected_manifest_version
+    {
+        return CacheVerdict::ManifestVersionChanged;
     }
-    if let Some(cached) = metadata.manifest_hash.as_deref() {
-        if Some(cached) != expected_manifest_hash {
-            return CacheVerdict::ManifestHashChanged;
-        }
+    if let Some(cached) = metadata.manifest_hash.as_deref()
+        && Some(cached) != expected_manifest_hash
+    {
+        return CacheVerdict::ManifestHashChanged;
     }
 
     CacheVerdict::Valid
@@ -1396,9 +1396,11 @@ mod tests {
         // an unreadable file must degrade to the previous rebuild behavior
         // rather than wedge startup.
         let dir = TempDir::new();
-        assert!(VenvOwners::load(&dir.path().join("nope.json"))
-            .owners
-            .is_empty());
+        assert!(
+            VenvOwners::load(&dir.path().join("nope.json"))
+                .owners
+                .is_empty()
+        );
 
         let corrupt = dir.path().join("owners.json");
         std::fs::write(&corrupt, "{ not json").unwrap();

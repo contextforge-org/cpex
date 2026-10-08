@@ -37,14 +37,14 @@ use std::sync::Arc;
 
 use serde_json::{Map, Value};
 
+use cpex::PolicyEngine;
 use cpex::prelude::{
     CmfHook, ContentPart, Extensions, Message, MessagePayload, Role, ToolCall, ToolResult,
 };
-use cpex::PolicyEngine;
 use praxis_policy_core::executor::PipelineResult;
 use praxis_policy_core::extensions::{AgentExtension, HttpExtension, MetaExtension};
 use praxis_policy_core::identity::{
-    IdentityHook, IdentityPayload, TokenSource, HOOK_IDENTITY_RESOLVE,
+    HOOK_IDENTITY_RESOLVE, IdentityHook, IdentityPayload, TokenSource,
 };
 
 /// Request header an agent echoes to resume a suspended elicitation. Its
@@ -230,25 +230,25 @@ where
     if !pre_result.continue_processing {
         // A suspended elicitation surfaces as a distinguished violation
         // carrying the elicitation id, not an ordinary denial.
-        if let Some(v) = &pre_result.violation {
-            if v.code == "elicitation.pending" {
-                let id = v
-                    .details
-                    .get("elicitation_id")
-                    .and_then(|x| x.as_str())
-                    .unwrap_or_default()
-                    .to_string();
-                let approver = v
-                    .details
-                    .get("approver")
-                    .and_then(|x| x.as_str())
-                    .unwrap_or("the approver")
-                    .to_string();
-                return Outcome::Pending {
-                    elicitation_id: id,
-                    approver,
-                };
-            }
+        if let Some(v) = &pre_result.violation
+            && v.code == "elicitation.pending"
+        {
+            let id = v
+                .details
+                .get("elicitation_id")
+                .and_then(|x| x.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let approver = v
+                .details
+                .get("approver")
+                .and_then(|x| x.as_str())
+                .unwrap_or("the approver")
+                .to_string();
+            return Outcome::Pending {
+                elicitation_id: id,
+                approver,
+            };
         }
         return denied(&pre_result);
     }

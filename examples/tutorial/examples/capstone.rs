@@ -26,7 +26,7 @@ use cpex::PolicyEngine;
 use cpex_tutorial::backends;
 use cpex_tutorial::idp;
 use cpex_tutorial::ui;
-use cpex_tutorial::{mediate, Caller, Outcome};
+use cpex_tutorial::{Caller, Outcome, mediate};
 
 use serde_json::json;
 
@@ -169,6 +169,8 @@ async fn main() {
     ui::print_outcome(&o);
     all_passed &= ui::expect(&o, false);
 
-    println!("One policy, one unchanged application. Identity, permission, and session history produced every outcome.");
+    println!(
+        "One policy, one unchanged application. Identity, permission, and session history produced every outcome."
+    );
     ui::finish_check(all_passed);
 }

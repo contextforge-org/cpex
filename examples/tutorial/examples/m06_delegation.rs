@@ -23,7 +23,7 @@ use cpex::PolicyEngine;
 use cpex_tutorial::backends;
 use cpex_tutorial::idp;
 use cpex_tutorial::ui;
-use cpex_tutorial::{mediate, Caller};
+use cpex_tutorial::{Caller, mediate};
 
 use serde_json::json;
 
@@ -79,6 +79,8 @@ async fn main() {
     ui::print_outcome(&o);
     all_passed &= ui::expect(&o, false);
 
-    println!("Delegation is a policy step: the caller's token was exchanged for a downstream-scoped one before the backend call.");
+    println!(
+        "Delegation is a policy step: the caller's token was exchanged for a downstream-scoped one before the backend call."
+    );
     ui::finish_check(all_passed);
 }

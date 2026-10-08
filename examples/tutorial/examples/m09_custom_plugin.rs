@@ -20,15 +20,15 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
+use cpex::PolicyEngine;
 use cpex::prelude::{
     CmfHook, Extensions, HookHandler, MessagePayload, Plugin, PluginConfig, PluginContext,
     PluginError, PluginFactory, PluginInstance, PluginResult, PluginViolation, TypedHandlerAdapter,
 };
-use cpex::PolicyEngine;
 
 use cpex_tutorial::backends;
 use cpex_tutorial::ui;
-use cpex_tutorial::{mediate, Caller, Outcome};
+use cpex_tutorial::{Caller, Outcome, mediate};
 
 use serde_json::json;
 

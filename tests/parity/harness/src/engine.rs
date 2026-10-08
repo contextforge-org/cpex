@@ -10,7 +10,7 @@
 use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 
 use cpex::{HyperTransport, PolicyEngine};
 use praxis_policy_core::cmf::content::{ToolCall, ToolResult};
@@ -23,7 +23,7 @@ use praxis_policy_core::extensions::{
 };
 use praxis_policy_core::identity::{IdentityHook, IdentityPayload, TokenSource};
 
-use crate::normalize::{sorted, SCRUBBED_TOKEN};
+use crate::normalize::{SCRUBBED_TOKEN, sorted};
 use crate::spec::{ExtensionsSpec, InvokeRequest, MediateHooks};
 
 // The go-demo CMF plugins (tool policy + header injector), compiled from

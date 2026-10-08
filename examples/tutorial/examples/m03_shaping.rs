@@ -20,7 +20,7 @@ use std::sync::Arc;
 use cpex::PolicyEngine;
 use cpex_tutorial::backends;
 use cpex_tutorial::ui;
-use cpex_tutorial::{mediate, Caller, Outcome};
+use cpex_tutorial::{Caller, Outcome, mediate};
 
 use serde_json::json;
 
@@ -57,17 +57,17 @@ async fn main() {
     // Field-level verification runs under --check only, so an interactive
     // "Try it" run (e.g. minting alice, where the SSN is meant to appear)
     // stays quiet; the printed result above already shows what was shaped.
-    if ui::check_mode() {
-        if let Outcome::Allowed { result } = &outcome {
-            let ssn = result.get("ssn").and_then(|v| v.as_str()).unwrap_or("");
-            let id = result
-                .get("employee_id")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            let ssn_redacted = ssn != "521-38-7710";
-            let id_masked = id != "e-1001";
-            all_passed &= ssn_redacted && id_masked;
-        }
+    if ui::check_mode()
+        && let Outcome::Allowed { result } = &outcome
+    {
+        let ssn = result.get("ssn").and_then(|v| v.as_str()).unwrap_or("");
+        let id = result
+            .get("employee_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let ssn_redacted = ssn != "521-38-7710";
+        let id_masked = id != "e-1001";
+        all_passed &= ssn_redacted && id_masked;
     }
     println!();
 

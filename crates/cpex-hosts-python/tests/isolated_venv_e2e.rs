@@ -36,8 +36,8 @@ use cpex_hosts_python::factory::KIND;
 use cpex_hosts_python::legacy::ToolPreInvokePayload;
 use cpex_hosts_python::plugin::{IsolatedPythonPlugin, PythonHookAdapter};
 use cpex_hosts_python::testing::{
-    prebuild_venv, python_source, scaffold_plugin, skip, skip_without_python3, TempDir,
-    TempDirFactory, TEMP_DIR_KIND,
+    TEMP_DIR_KIND, TempDir, TempDirFactory, prebuild_venv, python_source, scaffold_plugin, skip,
+    skip_without_python3,
 };
 use praxis_policy_core::cmf::{ContentPart, Message, MessagePayload, Role, ToolCall};
 use praxis_policy_core::context::PluginContext;

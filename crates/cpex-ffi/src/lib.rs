@@ -13,7 +13,7 @@
 // async plugin execution works from synchronous cgo calls.
 
 use std::os::raw::{c_char, c_int};
-use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::ptr;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
@@ -32,7 +32,7 @@ mod apl;
 // `cpex_secrets_last_success`.
 mod secrets;
 
-pub use apl::{cpex_apl_install, CPEX_APL_ALLOW_PRIVATE_DESTINATIONS, CPEX_APL_KNOWN_FLAGS};
+pub use apl::{CPEX_APL_ALLOW_PRIVATE_DESTINATIONS, CPEX_APL_KNOWN_FLAGS, cpex_apl_install};
 pub use secrets::{cpex_refresh_secrets, cpex_secrets_last_success};
 
 // FFI functions return c_int. 0 means success; negative codes classify
@@ -101,7 +101,7 @@ pub const FFI_ABI_VERSION: u32 = 3;
 ///
 /// Pure const access — no allocation, no runtime, no panics. Safe to
 /// call from anywhere including signal handlers.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn cpex_ffi_abi_version() -> u32 {
     FFI_ABI_VERSION
 }
@@ -141,7 +141,14 @@ const ENV_WORKER_THREADS: &str = "CPEX_FFI_WORKER_THREADS";
 /// Extracted from `shared_runtime` so it's unit-testable without
 /// touching the global `OnceLock`.
 fn worker_threads_from_env() -> Option<usize> {
-    let raw = std::env::var(ENV_WORKER_THREADS).ok()?;
+    parse_worker_threads(&std::env::var(ENV_WORKER_THREADS).ok()?)
+}
+
+/// Parse a raw `CPEX_FFI_WORKER_THREADS` value. Split from
+/// `worker_threads_from_env` so tests can cover the parsing without
+/// mutating the process environment, which is unsound while other test
+/// threads may read it.
+fn parse_worker_threads(raw: &str) -> Option<usize> {
     match raw.parse::<usize>() {
         Ok(n) if n > 0 => Some(n),
         Ok(_) => {
@@ -210,7 +217,7 @@ fn shared_runtime() -> &'static tokio::runtime::Runtime {
 /// Safe to call from a single thread before any engine creation.
 /// Calling after an engine exists is well-defined (returns
 /// `RC_INVALID_INPUT`) but does not change the active runtime.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn cpex_configure_runtime(worker_threads: c_int) -> c_int {
     if worker_threads <= 0 {
         return RC_INVALID_INPUT;
@@ -421,7 +428,9 @@ unsafe fn c_str_to_slice<'a>(ptr: *const c_char, len: c_int) -> Option<&'a str> 
     if ptr.is_null() || len <= 0 {
         return None;
     }
-    let bytes = std::slice::from_raw_parts(ptr as *const u8, len as usize);
+    // SAFETY: `ptr` is non-null and `len` is positive (checked above); the
+    // caller guarantees `ptr` points to `len` readable bytes that outlive `'a`.
+    let bytes = unsafe { std::slice::from_raw_parts(ptr as *const u8, len as usize) };
     std::str::from_utf8(bytes).ok()
 }
 
@@ -429,7 +438,9 @@ unsafe fn c_bytes_to_slice<'a>(ptr: *const u8, len: c_int) -> Option<&'a [u8]> {
     if ptr.is_null() || len <= 0 {
         return None;
     }
-    Some(std::slice::from_raw_parts(ptr, len as usize))
+    // SAFETY: `ptr` is non-null and `len` is positive (checked above); the
+    // caller guarantees `ptr` points to `len` readable bytes that outlive `'a`.
+    Some(unsafe { std::slice::from_raw_parts(ptr, len as usize) })
 }
 
 /// Allocate a byte buffer and return it to the caller.
@@ -475,12 +486,13 @@ fn alloc_bytes(data: &[u8]) -> (*mut u8, c_int) {
 ///
 /// # Safety
 /// `config_yaml` must be a valid pointer to `config_len` bytes of UTF-8.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn cpex_engine_new(
     config_yaml: *const c_char,
     config_len: c_int,
 ) -> *mut CpexEngineInner {
-    let yaml = match c_str_to_slice(config_yaml, config_len) {
+    // SAFETY: the caller guarantees `config_yaml` is NULL or points to `config_len` readable bytes.
+    let yaml = match unsafe { c_str_to_slice(config_yaml, config_len) } {
         Some(s) => s,
         None => return ptr::null_mut(),
     };
@@ -515,7 +527,7 @@ pub unsafe extern "C" fn cpex_engine_new(
 /// Create a new PolicyEngine with default config (no YAML).
 ///
 /// Useful when registering plugins programmatically.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn cpex_engine_new_default() -> *mut CpexEngineInner {
     let _ = shared_runtime();
     let engine = Arc::new(PolicyEngine::default());
@@ -533,18 +545,20 @@ pub extern "C" fn cpex_engine_new_default() -> *mut CpexEngineInner {
 /// the ArcSwap snapshot refactor (no exclusive access needed). Two
 /// callers loading config concurrently is safe; the snapshot swap is
 /// atomic copy-on-write, so they see consistent state per call.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn cpex_load_config(
     handle: *const CpexEngineInner,
     config_yaml: *const c_char,
     config_len: c_int,
 ) -> c_int {
-    let inner = match handle.as_ref() {
+    // SAFETY: the caller guarantees `handle` is NULL or a live handle.
+    let inner = match unsafe { handle.as_ref() } {
         Some(m) => m,
         None => return RC_INVALID_HANDLE,
     };
 
-    let yaml = match c_str_to_slice(config_yaml, config_len) {
+    // SAFETY: the caller guarantees `config_yaml` is NULL or points to `config_len` readable bytes.
+    let yaml = match unsafe { c_str_to_slice(config_yaml, config_len) } {
         Some(s) => s,
         None => return RC_INVALID_INPUT,
     };
@@ -585,9 +599,10 @@ pub unsafe extern "C" fn cpex_load_config(
 /// # Safety
 /// `handle` must be a valid handle from `cpex_engine_new`.
 /// `handle` is `*const`: `PolicyEngine::initialize` takes `&self`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn cpex_initialize(handle: *const CpexEngineInner) -> c_int {
-    let inner = match handle.as_ref() {
+    // SAFETY: the caller guarantees `handle` is NULL or a live handle.
+    let inner = match unsafe { handle.as_ref() } {
         Some(m) => m,
         None => return RC_INVALID_HANDLE,
     };
@@ -611,12 +626,14 @@ pub unsafe extern "C" fn cpex_initialize(handle: *const CpexEngineInner) -> c_in
 /// # Safety
 /// `handle` must be a valid handle from `cpex_engine_new`. After this
 /// call, the handle is invalid and must not be used.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn cpex_shutdown(handle: *mut CpexEngineInner) {
     if handle.is_null() {
         return;
     }
-    let inner = Box::from_raw(handle);
+    // SAFETY: `handle` is non-null and, per the caller contract, came from
+    // `Box::into_raw` in a constructor and has not been freed.
+    let inner = unsafe { Box::from_raw(handle) };
     // Wrap shutdown in catch_unwind + timeout so a misbehaving plugin
     // can't hang teardown forever or unwind across the FFI boundary.
     // We don't have a return value here — `inner` is dropped at function
@@ -630,17 +647,19 @@ pub unsafe extern "C" fn cpex_shutdown(handle: *mut CpexEngineInner) {
 ///
 /// # Safety
 /// `handle` must be valid. `hook_name` must point to `hook_len` bytes of UTF-8.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn cpex_has_hooks_for(
     handle: *const CpexEngineInner,
     hook_name: *const c_char,
     hook_len: c_int,
 ) -> c_int {
-    let inner = match handle.as_ref() {
+    // SAFETY: the caller guarantees `handle` is NULL or a live handle.
+    let inner = match unsafe { handle.as_ref() } {
         Some(m) => m,
         None => return 0,
     };
-    let name = match c_str_to_slice(hook_name, hook_len) {
+    // SAFETY: the caller guarantees `hook_name` is NULL or points to `hook_len` readable bytes.
+    let name = match unsafe { c_str_to_slice(hook_name, hook_len) } {
         Some(s) => s,
         None => return 0,
     };
@@ -657,9 +676,10 @@ pub unsafe extern "C" fn cpex_has_hooks_for(
 ///
 /// # Safety
 /// `handle` must be valid.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn cpex_plugin_count(handle: *const CpexEngineInner) -> c_int {
-    match handle.as_ref() {
+    // SAFETY: the caller guarantees `handle` is NULL or a live handle.
+    match unsafe { handle.as_ref() } {
         Some(m) => m.engine.plugin_count() as c_int,
         None => 0,
     }
@@ -672,9 +692,10 @@ pub unsafe extern "C" fn cpex_plugin_count(handle: *const CpexEngineInner) -> c_
 ///
 /// # Safety
 /// `handle` must be valid or NULL.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn cpex_is_initialized(handle: *const CpexEngineInner) -> c_int {
-    match handle.as_ref() {
+    // SAFETY: the caller guarantees `handle` is NULL or a live handle.
+    match unsafe { handle.as_ref() } {
         Some(m) if m.engine.is_initialized() => 1,
         _ => 0,
     }
@@ -689,13 +710,14 @@ pub unsafe extern "C" fn cpex_is_initialized(handle: *const CpexEngineInner) -> 
 ///
 /// # Safety
 /// `handle` must be valid. Output pointers must be writable.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn cpex_plugin_names(
     handle: *const CpexEngineInner,
     names_msgpack_out: *mut *mut u8,
     names_len_out: *mut c_int,
 ) -> c_int {
-    let inner = match handle.as_ref() {
+    // SAFETY: the caller guarantees `handle` is NULL or a live handle.
+    let inner = match unsafe { handle.as_ref() } {
         Some(m) => m,
         None => return RC_INVALID_HANDLE,
     };
@@ -706,8 +728,11 @@ pub unsafe extern "C" fn cpex_plugin_names(
         Err(_) => return RC_SERIALIZE_ERROR,
     };
     let (ptr, len) = alloc_bytes(&bytes);
-    *names_msgpack_out = ptr;
-    *names_len_out = len;
+    // SAFETY: the caller guarantees the output pointers are writable.
+    unsafe {
+        *names_msgpack_out = ptr;
+        *names_len_out = len;
+    }
     RC_OK
 }
 
@@ -749,7 +774,7 @@ pub unsafe extern "C" fn cpex_plugin_names(
 /// shape produced aliased `&mut` references when two goroutines called
 /// this concurrently — UB regardless of what the called code did. The
 /// `&self` API plus `*const` here is sound for parallel dispatch.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn cpex_invoke(
     handle: *const CpexEngineInner,
     hook_name: *const c_char,
@@ -770,10 +795,13 @@ pub unsafe extern "C" fn cpex_invoke(
     // out pointer is null/zero, so a downstream attempt to dereference
     // produces a clean null-deref crash rather than reading uninit
     // stack memory. The success path overwrites these at the end.
-    *result_msgpack_out = std::ptr::null_mut();
-    *result_len_out = 0;
-    *context_table_out = std::ptr::null_mut();
-    *bg_handle_out = std::ptr::null_mut();
+    // SAFETY: the caller guarantees the output pointers are writable.
+    unsafe {
+        *result_msgpack_out = std::ptr::null_mut();
+        *result_len_out = 0;
+        *context_table_out = std::ptr::null_mut();
+        *bg_handle_out = std::ptr::null_mut();
+    }
 
     // Take ownership of the input context_table *immediately*, before
     // any validation that could return an error code. From this point
@@ -796,24 +824,29 @@ pub unsafe extern "C" fn cpex_invoke(
         // into Some(...), the table value lives until invoke_by_name
         // either uses it or it's dropped on a Future-cancellation
         // path (RC_TIMEOUT). Either way the Box is gone.
-        let ct = Box::from_raw(context_table);
+        // SAFETY: `context_table` is non-null and, per the caller contract,
+        // a table handle from a prior invoke that has not been freed.
+        let ct = unsafe { Box::from_raw(context_table) };
         Some(ct.table)
     };
 
     // Validate engine handle. `input_ctx_table` already owns the
     // input data — if we return here, it drops cleanly.
-    let inner = match handle.as_ref() {
+    // SAFETY: the caller guarantees `handle` is NULL or a live handle.
+    let inner = match unsafe { handle.as_ref() } {
         Some(m) => m,
         None => return RC_INVALID_HANDLE,
     };
 
-    let name = match c_str_to_slice(hook_name, hook_len) {
+    // SAFETY: the caller guarantees `hook_name` is NULL or points to `hook_len` readable bytes.
+    let name = match unsafe { c_str_to_slice(hook_name, hook_len) } {
         Some(s) => s,
         None => return RC_INVALID_INPUT,
     };
 
     // Deserialize payload using the type registry
-    let payload_bytes = match c_bytes_to_slice(payload_msgpack, payload_len) {
+    // SAFETY: the caller guarantees `payload_msgpack` is NULL or points to `payload_len` readable bytes.
+    let payload_bytes = match unsafe { c_bytes_to_slice(payload_msgpack, payload_len) } {
         Some(b) => b,
         None => return RC_INVALID_INPUT,
     };
@@ -828,7 +861,8 @@ pub unsafe extern "C" fn cpex_invoke(
 
     // Deserialize extensions from MessagePack
     let extensions: Extensions = if extensions_len > 0 {
-        let ext_bytes = match c_bytes_to_slice(extensions_msgpack, extensions_len) {
+        // SAFETY: the caller guarantees `extensions_msgpack` is NULL or points to `extensions_len` readable bytes.
+        let ext_bytes = match unsafe { c_bytes_to_slice(extensions_msgpack, extensions_len) } {
             Some(b) => b,
             None => return RC_INVALID_INPUT,
         };
@@ -914,14 +948,17 @@ pub unsafe extern "C" fn cpex_invoke(
     };
 
     let (ptr, len) = alloc_bytes(&result_bytes);
-    *result_msgpack_out = ptr;
-    *result_len_out = len;
+    // SAFETY: the caller guarantees the output pointers are writable.
+    unsafe {
+        *result_msgpack_out = ptr;
+        *result_len_out = len;
 
-    *context_table_out = Box::into_raw(Box::new(CpexContextTableInner {
-        table: result.context_table,
-    }));
+        *context_table_out = Box::into_raw(Box::new(CpexContextTableInner {
+            table: result.context_table,
+        }));
 
-    *bg_handle_out = Box::into_raw(Box::new(CpexBackgroundTasksInner { tasks: bg }));
+        *bg_handle_out = Box::into_raw(Box::new(CpexBackgroundTasksInner { tasks: bg }));
+    }
 
     RC_OK
 }
@@ -949,7 +986,7 @@ pub unsafe extern "C" fn cpex_invoke(
 /// consumed unconditionally (used for the hook invoke; the internal
 /// identity invoke gets a fresh one); out params are null/zero on error
 /// and populated on `RC_OK`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn cpex_invoke_resolved(
     handle: *const CpexEngineInner,
     identity_msgpack: *const u8,
@@ -967,30 +1004,38 @@ pub unsafe extern "C" fn cpex_invoke_resolved(
     context_table_out: *mut *mut CpexContextTableInner,
     bg_handle_out: *mut *mut CpexBackgroundTasksInner,
 ) -> c_int {
-    *result_msgpack_out = std::ptr::null_mut();
-    *result_len_out = 0;
-    *context_table_out = std::ptr::null_mut();
-    *bg_handle_out = std::ptr::null_mut();
+    // SAFETY: the caller guarantees the output pointers are writable.
+    unsafe {
+        *result_msgpack_out = std::ptr::null_mut();
+        *result_len_out = 0;
+        *context_table_out = std::ptr::null_mut();
+        *bg_handle_out = std::ptr::null_mut();
+    }
 
     // Consume the input context table up front (used for the hook invoke),
     // matching cpex_invoke's unconditional-consume ownership contract.
     let input_ctx_table: Option<PluginContextTable> = if context_table.is_null() {
         None
     } else {
-        Some(Box::from_raw(context_table).table)
+        // SAFETY: `context_table` is non-null and, per the caller contract,
+        // a table handle from a prior invoke that has not been freed.
+        Some(unsafe { Box::from_raw(context_table) }.table)
     };
 
-    let inner = match handle.as_ref() {
+    // SAFETY: the caller guarantees `handle` is NULL or a live handle.
+    let inner = match unsafe { handle.as_ref() } {
         Some(m) => m,
         None => return RC_INVALID_HANDLE,
     };
 
-    let name = match c_str_to_slice(hook_name, hook_len) {
+    // SAFETY: the caller guarantees `hook_name` is NULL or points to `hook_len` readable bytes.
+    let name = match unsafe { c_str_to_slice(hook_name, hook_len) } {
         Some(s) => s,
         None => return RC_INVALID_INPUT,
     };
 
-    let payload_bytes = match c_bytes_to_slice(payload_msgpack, payload_len) {
+    // SAFETY: the caller guarantees `payload_msgpack` is NULL or points to `payload_len` readable bytes.
+    let payload_bytes = match unsafe { c_bytes_to_slice(payload_msgpack, payload_len) } {
         Some(b) => b,
         None => return RC_INVALID_INPUT,
     };
@@ -1003,7 +1048,8 @@ pub unsafe extern "C" fn cpex_invoke_resolved(
     };
 
     let base_extensions: Extensions = if extensions_len > 0 {
-        let ext_bytes = match c_bytes_to_slice(extensions_msgpack, extensions_len) {
+        // SAFETY: the caller guarantees `extensions_msgpack` is NULL or points to `extensions_len` readable bytes.
+        let ext_bytes = match unsafe { c_bytes_to_slice(extensions_msgpack, extensions_len) } {
             Some(b) => b,
             None => return RC_INVALID_INPUT,
         };
@@ -1028,7 +1074,8 @@ pub unsafe extern "C" fn cpex_invoke_resolved(
             .engine
             .has_hooks_for(praxis_policy_core::identity::HOOK_IDENTITY_RESOLVE)
     {
-        let id_bytes = match c_bytes_to_slice(identity_msgpack, identity_len) {
+        // SAFETY: the caller guarantees `identity_msgpack` is NULL or points to `identity_len` readable bytes.
+        let id_bytes = match unsafe { c_bytes_to_slice(identity_msgpack, identity_len) } {
             Some(b) => b,
             None => return RC_INVALID_INPUT,
         };
@@ -1065,15 +1112,19 @@ pub unsafe extern "C" fn cpex_invoke_resolved(
         // mtls) are synchronous and don't spawn background tasks, so the
         // identity bg is dropped.
         if !id_result.continue_processing {
-            return finish_pipeline_result(
-                id_result,
-                None,
-                payload_type,
-                result_msgpack_out,
-                result_len_out,
-                context_table_out,
-                bg_handle_out,
-            );
+            // SAFETY: the out pointers are forwarded from this function's
+            // caller, who guarantees they are writable.
+            return unsafe {
+                finish_pipeline_result(
+                    id_result,
+                    None,
+                    payload_type,
+                    result_msgpack_out,
+                    result_len_out,
+                    context_table_out,
+                    bg_handle_out,
+                )
+            };
         }
 
         match IdentityPayload::from_pipeline_result(&id_result) {
@@ -1094,15 +1145,19 @@ pub unsafe extern "C" fn cpex_invoke_resolved(
         other => return other.rc(),
     };
 
-    finish_pipeline_result(
-        result,
-        Some(bg),
-        payload_type,
-        result_msgpack_out,
-        result_len_out,
-        context_table_out,
-        bg_handle_out,
-    )
+    // SAFETY: the out pointers are forwarded from this function's caller,
+    // who guarantees they are writable.
+    unsafe {
+        finish_pipeline_result(
+            result,
+            Some(bg),
+            payload_type,
+            result_msgpack_out,
+            result_len_out,
+            context_table_out,
+            bg_handle_out,
+        )
+    }
 }
 
 /// Serialize a `(PipelineResult, Option<BackgroundTasks>)` into the FFI
@@ -1170,17 +1225,20 @@ unsafe fn finish_pipeline_result(
     };
 
     let (ptr, len) = alloc_bytes(&result_bytes);
-    *result_msgpack_out = ptr;
-    *result_len_out = len;
+    // SAFETY: the caller guarantees the output pointers are writable.
+    unsafe {
+        *result_msgpack_out = ptr;
+        *result_len_out = len;
 
-    *context_table_out = Box::into_raw(Box::new(CpexContextTableInner {
-        table: result.context_table,
-    }));
+        *context_table_out = Box::into_raw(Box::new(CpexContextTableInner {
+            table: result.context_table,
+        }));
 
-    *bg_handle_out = match bg {
-        Some(b) => Box::into_raw(Box::new(CpexBackgroundTasksInner { tasks: b })),
-        None => std::ptr::null_mut(),
-    };
+        *bg_handle_out = match bg {
+            Some(b) => Box::into_raw(Box::new(CpexBackgroundTasksInner { tasks: b })),
+            None => std::ptr::null_mut(),
+        };
+    }
 
     RC_OK
 }
@@ -1194,14 +1252,15 @@ unsafe fn finish_pipeline_result(
 /// `bg_handle` must be a valid handle from `cpex_invoke`.
 /// After this call, the handle is consumed and invalid.
 /// `handle` is `*const`: only the runtime is borrowed (`&self`).
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn cpex_wait_background(
     handle: *const CpexEngineInner,
     bg_handle: *mut CpexBackgroundTasksInner,
     errors_msgpack_out: *mut *mut u8,
     errors_len_out: *mut c_int,
 ) -> c_int {
-    let inner = match handle.as_ref() {
+    // SAFETY: the caller guarantees `handle` is NULL or a live handle.
+    let inner = match unsafe { handle.as_ref() } {
         Some(m) => m,
         None => {
             // Consume `bg_handle` even on the failure path — the Go
@@ -1209,7 +1268,9 @@ pub unsafe extern "C" fn cpex_wait_background(
             // dropping the Box here we'd leak the BackgroundTasks
             // allocation (and its still-running task handles).
             if !bg_handle.is_null() {
-                drop(Box::from_raw(bg_handle));
+                // SAFETY: `bg_handle` is non-null and, per the caller
+                // contract, a live handle from `cpex_invoke`.
+                drop(unsafe { Box::from_raw(bg_handle) });
             }
             return RC_INVALID_HANDLE;
         },
@@ -1222,12 +1283,17 @@ pub unsafe extern "C" fn cpex_wait_background(
             Err(_) => return RC_SERIALIZE_ERROR,
         };
         let (ptr, len) = alloc_bytes(&empty_bytes);
-        *errors_msgpack_out = ptr;
-        *errors_len_out = len;
+        // SAFETY: the caller guarantees the output pointers are writable.
+        unsafe {
+            *errors_msgpack_out = ptr;
+            *errors_len_out = len;
+        }
         return RC_OK;
     }
 
-    let bg = Box::from_raw(bg_handle);
+    // SAFETY: `bg_handle` is non-null (checked above) and, per the caller
+    // contract, a live handle from `cpex_invoke`.
+    let bg = unsafe { Box::from_raw(bg_handle) };
     // `inner` is now unused but the borrow proved the engine is alive
     // for the duration of this call (the read lock on the Go side).
     let _ = inner;
@@ -1249,8 +1315,11 @@ pub unsafe extern "C" fn cpex_wait_background(
     };
 
     let (ptr, len) = alloc_bytes(&error_bytes);
-    *errors_msgpack_out = ptr;
-    *errors_len_out = len;
+    // SAFETY: the caller guarantees the output pointers are writable.
+    unsafe {
+        *errors_msgpack_out = ptr;
+        *errors_len_out = len;
+    }
 
     RC_OK
 }
@@ -1261,10 +1330,12 @@ pub unsafe extern "C" fn cpex_wait_background(
 ///
 /// # Safety
 /// `bg_handle` must be valid or NULL.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn cpex_free_background(bg_handle: *mut CpexBackgroundTasksInner) {
     if !bg_handle.is_null() {
-        drop(Box::from_raw(bg_handle));
+        // SAFETY: `bg_handle` is non-null and, per the caller contract, a
+        // live handle from `cpex_invoke`.
+        drop(unsafe { Box::from_raw(bg_handle) });
     }
 }
 
@@ -1272,10 +1343,12 @@ pub unsafe extern "C" fn cpex_free_background(bg_handle: *mut CpexBackgroundTask
 ///
 /// # Safety
 /// `ct` must be valid or NULL.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn cpex_free_context_table(ct: *mut CpexContextTableInner) {
     if !ct.is_null() {
-        drop(Box::from_raw(ct));
+        // SAFETY: `ct` is non-null and, per the caller contract, a live
+        // context table handle from `cpex_invoke`.
+        drop(unsafe { Box::from_raw(ct) });
     }
 }
 
@@ -1284,14 +1357,16 @@ pub unsafe extern "C" fn cpex_free_context_table(ct: *mut CpexContextTableInner)
 /// # Safety
 /// `ptr` must have been allocated by this library (from `cpex_invoke`
 /// or `cpex_wait_background`). `len` must match the original allocation.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn cpex_free_bytes(ptr: *mut u8, len: c_int) {
     if ptr.is_null() || len <= 0 {
         return;
     }
     let layout = std::alloc::Layout::from_size_align(len as usize, 1)
         .expect("align 1 is always valid and len (a positive c_int) is far under isize::MAX");
-    std::alloc::dealloc(ptr, layout);
+    // SAFETY: per the caller contract, `ptr` came from `alloc_bytes` with
+    // this same `len` and alignment 1, and has not been freed.
+    unsafe { std::alloc::dealloc(ptr, layout) };
 }
 
 /// Pipeline result serialized across the FFI boundary.
@@ -1372,9 +1447,9 @@ mod tests {
     use std::sync::Arc;
 
     use async_trait::async_trait;
+    use praxis_policy_core::hooks::PluginResult;
     use praxis_policy_core::hooks::payload::Extensions;
     use praxis_policy_core::hooks::trait_def::HookTypeDef;
-    use praxis_policy_core::hooks::PluginResult;
     use praxis_policy_core::plugin::{Plugin, PluginConfig, PluginMode};
 
     /// Test hook type using GenericPayload — that's the type
@@ -1452,7 +1527,8 @@ mod tests {
         payload_type: u8,
         payload: &[u8],
     ) -> c_int {
-        invoke_and_decode(handle, payload_type, payload).0
+        // SAFETY: forwarded caller contract; `handle` is live or NULL.
+        unsafe { invoke_and_decode(handle, payload_type, payload).0 }
     }
 
     /// Like `invoke_for_test`, also returning the decoded result on
@@ -1468,34 +1544,43 @@ mod tests {
         let mut ct_out: *mut CpexContextTableInner = ptr::null_mut();
         let mut bg_out: *mut CpexBackgroundTasksInner = ptr::null_mut();
 
-        let rc = cpex_invoke(
-            handle,
-            hook_name.as_ptr() as *const c_char,
-            hook_name.len() as c_int,
-            payload_type,
-            payload.as_ptr(),
-            payload.len() as c_int,
-            ptr::null(),
-            0,
-            ptr::null_mut(),
-            &mut result_ptr,
-            &mut result_len,
-            &mut ct_out,
-            &mut bg_out,
-        );
+        // SAFETY: `handle` is live or NULL per the caller contract; the
+        // input slices are borrowed for the call and the out pointers are
+        // locals.
+        let rc = unsafe {
+            cpex_invoke(
+                handle,
+                hook_name.as_ptr() as *const c_char,
+                hook_name.len() as c_int,
+                payload_type,
+                payload.as_ptr(),
+                payload.len() as c_int,
+                ptr::null(),
+                0,
+                ptr::null_mut(),
+                &mut result_ptr,
+                &mut result_len,
+                &mut ct_out,
+                &mut bg_out,
+            )
+        };
 
         // Drain any output buffers / handles to avoid leaks across tests.
         let mut decoded = None;
-        if !result_ptr.is_null() {
-            let bytes = std::slice::from_raw_parts(result_ptr, result_len as usize);
-            decoded = Some(rmp_serde::from_slice(bytes).expect("decode FFI result"));
-            cpex_free_bytes(result_ptr, result_len);
-        }
-        if !ct_out.is_null() {
-            cpex_free_context_table(ct_out);
-        }
-        if !bg_out.is_null() {
-            cpex_free_background(bg_out);
+        // SAFETY: every non-null out value was just written by
+        // `cpex_invoke` and is freed exactly once here.
+        unsafe {
+            if !result_ptr.is_null() {
+                let bytes = std::slice::from_raw_parts(result_ptr, result_len as usize);
+                decoded = Some(rmp_serde::from_slice(bytes).expect("decode FFI result"));
+                cpex_free_bytes(result_ptr, result_len);
+            }
+            if !ct_out.is_null() {
+                cpex_free_context_table(ct_out);
+            }
+            if !bg_out.is_null() {
+                cpex_free_background(bg_out);
+            }
         }
         (rc, decoded)
     }
@@ -1569,48 +1654,24 @@ mod tests {
         }
     }
 
-    /// `worker_threads_from_env` parses CPEX_FFI_WORKER_THREADS into
-    /// a positive count, returning None for unset / zero / negative /
-    /// unparseable. This isolates the env-parsing logic from the
-    /// OnceLock-init path so we can test it deterministically.
+    /// `parse_worker_threads` turns a CPEX_FFI_WORKER_THREADS value into
+    /// a positive count, returning None for zero / negative /
+    /// unparseable. It takes the raw string so the test never mutates
+    /// the process environment, which would race other test threads.
     #[test]
-    fn worker_threads_from_env_parses_correctly() {
-        // Use a unique env var name per test invocation isn't possible
-        // (the function reads ENV_WORKER_THREADS specifically), so we
-        // serialize manipulation: set, read, restore. Run-time tests
-        // don't currently parallelize this var across threads.
-        let prev = std::env::var(ENV_WORKER_THREADS).ok();
-
-        // SAFETY: tests are single-threaded with respect to this env
-        // var (no other test reads/writes it). std::env::set_var is
-        // unsafe in multi-threaded programs reading other env vars
-        // concurrently; we accept that risk in the test harness.
-        let restore = |v: Option<String>| unsafe {
-            match v {
-                Some(s) => std::env::set_var(ENV_WORKER_THREADS, s),
-                None => std::env::remove_var(ENV_WORKER_THREADS),
-            }
-        };
-
-        unsafe {
-            std::env::set_var(ENV_WORKER_THREADS, "8");
-            assert_eq!(worker_threads_from_env(), Some(8));
-
-            std::env::set_var(ENV_WORKER_THREADS, "0");
-            assert_eq!(worker_threads_from_env(), None, "zero should fall back");
-
-            std::env::set_var(ENV_WORKER_THREADS, "garbage");
-            assert_eq!(
-                worker_threads_from_env(),
-                None,
-                "unparseable should fall back"
-            );
-
-            std::env::remove_var(ENV_WORKER_THREADS);
-            assert_eq!(worker_threads_from_env(), None, "unset should be None");
-        }
-
-        restore(prev);
+    fn parse_worker_threads_parses_correctly() {
+        assert_eq!(parse_worker_threads("8"), Some(8));
+        assert_eq!(parse_worker_threads("0"), None, "zero should fall back");
+        assert_eq!(
+            parse_worker_threads("-3"),
+            None,
+            "negative should fall back"
+        );
+        assert_eq!(
+            parse_worker_threads("garbage"),
+            None,
+            "unparseable should fall back"
+        );
     }
 
     /// `cpex_configure_runtime` rejects non-positive worker counts
@@ -1750,11 +1811,13 @@ routes:
 "#;
 
     unsafe fn load(handle: *const CpexEngineInner, yaml: &str) -> c_int {
-        cpex_load_config(handle, yaml.as_ptr() as *const c_char, yaml.len() as c_int)
+        // SAFETY: forwarded caller contract; `yaml` is borrowed for the call.
+        unsafe { cpex_load_config(handle, yaml.as_ptr() as *const c_char, yaml.len() as c_int) }
     }
 
     unsafe fn has_hook(handle: *const CpexEngineInner, hook: &str) -> c_int {
-        cpex_has_hooks_for(handle, hook.as_ptr() as *const c_char, hook.len() as c_int)
+        // SAFETY: forwarded caller contract; `hook` is borrowed for the call.
+        unsafe { cpex_has_hooks_for(handle, hook.as_ptr() as *const c_char, hook.len() as c_int) }
     }
 
     /// Full APL flow through the FFI surface: default engine, then

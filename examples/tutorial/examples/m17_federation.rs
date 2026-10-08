@@ -22,7 +22,7 @@ use cpex::PolicyEngine;
 use cpex_tutorial::backends;
 use cpex_tutorial::idp;
 use cpex_tutorial::ui;
-use cpex_tutorial::{mediate, Caller};
+use cpex_tutorial::{Caller, mediate};
 
 use serde_json::json;
 
@@ -99,6 +99,8 @@ async fn main() {
     ui::print_outcome(&o);
     all_passed &= ui::expect(&o, false);
 
-    println!("One resolver, two trusted issuers: CPEX validates each token on the keys of the issuer its `iss` names, and rejects the rest.");
+    println!(
+        "One resolver, two trusted issuers: CPEX validates each token on the keys of the issuer its `iss` names, and rejects the rest."
+    );
     ui::finish_check(all_passed);
 }

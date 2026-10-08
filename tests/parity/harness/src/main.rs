@@ -17,7 +17,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use cpex_parity_harness::parity::to_allow_list_yaml;
-use cpex_parity_harness::{capture, check_parity, default_out, default_root, Options, Status};
+use cpex_parity_harness::{Options, Status, capture, check_parity, default_out, default_root};
 
 fn usage() -> ExitCode {
     eprintln!(

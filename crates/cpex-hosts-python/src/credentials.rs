@@ -47,16 +47,16 @@
 
 use std::collections::{HashMap, HashSet};
 
+use praxis_policy_core::extensions::Extensions;
 use praxis_policy_core::extensions::raw_credentials::{
     DelegationKey, DelegationMode, RawDelegatedToken, RawInboundToken, TokenKind, TokenRole,
 };
-use praxis_policy_core::extensions::Extensions;
 use serde::Serialize;
 use serde_json::Value;
 
+use crate::PayloadKind;
 use crate::conversion::payload_kind_for_hook;
 use crate::error::HostError;
-use crate::PayloadKind;
 
 /// Task field the DTO rides on. Contract with `worker.py`'s
 /// `CREDENTIAL_FIELD`; both sides must agree verbatim.
@@ -624,12 +624,16 @@ mod tests {
         )
         .unwrap();
 
-        assert!(serde_json::to_string(&declaring)
-            .unwrap()
-            .contains(INBOUND_SECRET));
-        assert!(!serde_json::to_string(&non_declaring)
-            .unwrap()
-            .contains("INBOUND-SECRET-BYTES"));
+        assert!(
+            serde_json::to_string(&declaring)
+                .unwrap()
+                .contains(INBOUND_SECRET)
+        );
+        assert!(
+            !serde_json::to_string(&non_declaring)
+                .unwrap()
+                .contains("INBOUND-SECRET-BYTES")
+        );
     }
 
     #[test]

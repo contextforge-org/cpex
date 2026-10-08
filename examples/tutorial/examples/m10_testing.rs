@@ -19,7 +19,7 @@ use std::sync::Arc;
 use cpex::PolicyEngine;
 use cpex_tutorial::backends;
 use cpex_tutorial::ui;
-use cpex_tutorial::{mediate, Caller};
+use cpex_tutorial::{Caller, mediate};
 
 use serde_json::json;
 

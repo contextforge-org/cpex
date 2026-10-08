@@ -19,8 +19,8 @@
 // BackgroundTasks are dropped (not awaited per call); fire-and-forget tasks
 // run on the engine's TaskTracker and are drained by `shutdown()`.
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use praxis_policy_core::context::PluginContextTable;
@@ -355,9 +355,9 @@ mod tests {
     use praxis_policy_core::context::PluginContext;
     use praxis_policy_core::engine::PolicyEngine;
     use praxis_policy_core::extensions::Extensions;
+    use praxis_policy_core::hooks::PluginResult;
     use praxis_policy_core::hooks::payload::PluginPayload;
     use praxis_policy_core::hooks::trait_def::HookTypeDef;
-    use praxis_policy_core::hooks::PluginResult;
     use std::time::Duration;
 
     use praxis_policy_core::plugin::{Plugin, PluginConfig, PluginMode};

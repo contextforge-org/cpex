@@ -83,6 +83,6 @@ pub use conversion::{GenericPayload, PayloadKind};
 pub use credentials::CredentialDto;
 pub use error::HostError;
 pub use factory::{IsolatedVenvFactory, KIND};
-pub use plugin::{IsolatedPythonPlugin, VenvConfig, DEFAULT_PLUGIN_DIR};
+pub use plugin::{DEFAULT_PLUGIN_DIR, IsolatedPythonPlugin, VenvConfig};
 pub use venv::{CacheVerdict, EnsureOutcome, VenvManager};
 pub use worker::WorkerClient;

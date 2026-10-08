@@ -29,11 +29,11 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 
+use cpex::PolicyEngine;
 use cpex::prelude::{
     Extensions, HookHandler, Plugin, PluginConfig, PluginContext, PluginError, PluginFactory,
     PluginInstance, PluginResult, TypedHandlerAdapter,
 };
-use cpex::PolicyEngine;
 use praxis_policy_core::elicitation::{
     ElicitationHook, ElicitationOp, ElicitationOutcomeKind, ElicitationPayload,
     ElicitationStatusKind,
@@ -43,7 +43,7 @@ use cpex_tutorial::approvals::{ApprovalChannel, Status};
 use cpex_tutorial::backends;
 use cpex_tutorial::idp;
 use cpex_tutorial::ui;
-use cpex_tutorial::{mediate, Caller, Outcome};
+use cpex_tutorial::{Caller, Outcome, mediate};
 
 use serde_json::json;
 
@@ -236,9 +236,13 @@ async fn main() {
     ui::print_outcome(&outcome);
 
     if outcome.is_allowed() {
-        println!("The operation suspended until a human approved, then resumed. The agent could not proceed alone.");
+        println!(
+            "The operation suspended until a human approved, then resumed. The agent could not proceed alone."
+        );
     } else {
-        println!("The human denied the approval, so the suspended operation ended denied. The agent could not proceed alone.");
+        println!(
+            "The human denied the approval, so the suspended operation ended denied. The agent could not proceed alone."
+        );
     }
     // --check drives the approve path, so the resumed call must be allowed.
     all_passed &= ui::expect(&outcome, true);

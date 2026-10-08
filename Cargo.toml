@@ -6,7 +6,7 @@
 # Workspace root for the CPEX Rust crates.
 
 [workspace]
-resolver = "2"
+resolver = "3"
 members = [
     "crates/cpex",
     "crates/cpex-hosts-python",
@@ -48,7 +48,7 @@ default-members = [
 
 [workspace.package]
 version = "0.2.3"
-edition = "2021"
+edition = "2024"
 # MSRV — keep in sync with rust-toolchain.toml `channel` and clippy.toml `msrv`.
 rust-version = "1.96"
 license = "Apache-2.0"
@@ -106,7 +106,7 @@ cpex-hosts-python             = { path = "crates/cpex-hosts-python",           v
 # trade build time for a materially smaller archive.
 #
 # panic = "abort" is intentionally NOT set: cpex-ffi catches panics at its
-# `#[no_mangle]` boundary with `catch_unwind`, and aborting would turn a
+# `#[unsafe(no_mangle)]` boundary with `catch_unwind`, and aborting would turn a
 # recoverable policy panic into a host-process kill. Revisit only if that
 # boundary is reworked to not rely on unwinding.
 [profile.release]

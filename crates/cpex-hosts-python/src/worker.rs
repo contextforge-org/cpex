@@ -37,7 +37,7 @@ use std::sync::Arc;
 use serde_json::Value;
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
-use tokio::sync::{mpsc, oneshot, Mutex};
+use tokio::sync::{Mutex, mpsc, oneshot};
 
 use crate::error::HostError;
 
@@ -453,7 +453,7 @@ impl WorkerClient {
                 Ok(Err(_)) => {
                     return Err(self
                         .died("worker exited while the request was in flight")
-                        .await)
+                        .await);
                 },
                 Err(_) => {
                     self.pending.lock().await.remove(&request_id);
@@ -847,7 +847,7 @@ pub fn resolve_worker_script(venv_path: &Path, relative: &str) -> Result<PathBuf
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testing::{skip_without_python3, TempDir};
+    use crate::testing::{TempDir, skip_without_python3};
 
     /// A stub worker that speaks the same protocol as `worker.py`.
     ///

@@ -7,8 +7,8 @@
 
 use std::sync::Arc;
 
-use cpex::prelude::*;
 use cpex::PolicyEngine;
+use cpex::prelude::*;
 
 /// Load a one-plugin config on an engine with the builtins installed and
 /// return the error text (empty on success).

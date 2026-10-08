@@ -17,8 +17,8 @@ use std::os::raw::{c_char, c_int};
 use praxis_policy_core::secrets::{RefreshReport, SecretError};
 
 use crate::{
-    alloc_bytes, c_str_to_slice, run_safely, CpexEngineInner, SafeRun, RC_INVALID_HANDLE,
-    RC_INVALID_INPUT, RC_OK, RC_SERIALIZE_ERROR,
+    CpexEngineInner, RC_INVALID_HANDLE, RC_INVALID_INPUT, RC_OK, RC_SERIALIZE_ERROR, SafeRun,
+    alloc_bytes, c_str_to_slice, run_safely,
 };
 
 /// Refresh report as it crosses the FFI, MessagePack-encoded with named
@@ -94,7 +94,7 @@ fn error_kind(err: &SecretError) -> &'static str {
 /// # Safety
 /// `handle` must be a valid engine handle or NULL. Out pointers must be
 /// writable.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn cpex_refresh_secrets(
     handle: *const CpexEngineInner,
     report_msgpack_out: *mut *mut u8,
@@ -103,10 +103,14 @@ pub unsafe extern "C" fn cpex_refresh_secrets(
     if report_msgpack_out.is_null() || report_len_out.is_null() {
         return RC_INVALID_INPUT;
     }
-    *report_msgpack_out = std::ptr::null_mut();
-    *report_len_out = 0;
+    // SAFETY: the caller guarantees the output pointers are writable.
+    unsafe {
+        *report_msgpack_out = std::ptr::null_mut();
+        *report_len_out = 0;
+    }
 
-    let inner = match handle.as_ref() {
+    // SAFETY: the caller guarantees `handle` is NULL or a live handle.
+    let inner = match unsafe { handle.as_ref() } {
         Some(h) => h,
         None => return RC_INVALID_HANDLE,
     };
@@ -135,8 +139,11 @@ pub unsafe extern "C" fn cpex_refresh_secrets(
         },
     };
     let (ptr, len) = alloc_bytes(&bytes);
-    *report_msgpack_out = ptr;
-    *report_len_out = len;
+    // SAFETY: the caller guarantees the output pointers are writable.
+    unsafe {
+        *report_msgpack_out = ptr;
+        *report_len_out = len;
+    }
     RC_OK
 }
 
@@ -155,7 +162,7 @@ pub unsafe extern "C" fn cpex_refresh_secrets(
 /// # Safety
 /// `handle` must be a valid engine handle or NULL. `provider` must point
 /// to `provider_len` bytes. `unix_ms_out` must be writable.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn cpex_secrets_last_success(
     handle: *const CpexEngineInner,
     provider: *const c_char,
@@ -165,17 +172,25 @@ pub unsafe extern "C" fn cpex_secrets_last_success(
     if unix_ms_out.is_null() {
         return RC_INVALID_INPUT;
     }
-    *unix_ms_out = 0;
-    let inner = match handle.as_ref() {
+    // SAFETY: the caller guarantees the output pointers are writable.
+    unsafe {
+        *unix_ms_out = 0;
+    }
+    // SAFETY: the caller guarantees `handle` is NULL or a live handle.
+    let inner = match unsafe { handle.as_ref() } {
         Some(h) => h,
         None => return RC_INVALID_HANDLE,
     };
-    let name = match c_str_to_slice(provider, provider_len) {
+    // SAFETY: the caller guarantees `provider` is NULL or points to `provider_len` readable bytes.
+    let name = match unsafe { c_str_to_slice(provider, provider_len) } {
         Some(s) => s,
         None => return RC_INVALID_INPUT,
     };
     if let Some(at) = inner.engine.secrets_last_success(name) {
-        *unix_ms_out = at.timestamp_millis();
+        // SAFETY: the caller guarantees the output pointers are writable.
+        unsafe {
+            *unix_ms_out = at.timestamp_millis();
+        }
     }
     RC_OK
 }

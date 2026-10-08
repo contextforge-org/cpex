@@ -21,7 +21,7 @@ use cpex::PolicyEngine;
 use cpex_tutorial::backends;
 use cpex_tutorial::idp;
 use cpex_tutorial::ui;
-use cpex_tutorial::{mediate, Caller};
+use cpex_tutorial::{Caller, mediate};
 
 use serde_json::json;
 
@@ -89,6 +89,8 @@ async fn main() {
     ui::print_outcome(&o);
     all_passed &= ui::expect(&o, true);
 
-    println!("One CEL expression captured a rule that mixes role and argument. The PDP decided; CPEX enforced.");
+    println!(
+        "One CEL expression captured a rule that mixes role and argument. The PDP decided; CPEX enforced."
+    );
     ui::finish_check(all_passed);
 }

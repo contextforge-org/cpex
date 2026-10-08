@@ -57,12 +57,12 @@
 
 use std::collections::HashMap;
 
-use praxis_policy_core::extensions::container::{chain_extends, OwnedExtensions};
+use praxis_policy_core::extensions::Extensions;
+use praxis_policy_core::extensions::container::{OwnedExtensions, chain_extends};
 use praxis_policy_core::extensions::delegation::DelegationExtension;
 use praxis_policy_core::extensions::guarded::Guarded;
 use praxis_policy_core::extensions::http::HttpExtension;
 use praxis_policy_core::extensions::security::SecurityExtension;
-use praxis_policy_core::extensions::Extensions;
 use serde_json::Value;
 use tracing::warn;
 
@@ -336,13 +336,13 @@ pub fn owned_from_returned_slot(
     // Guarded — `write_headers`. Headers only: the request line
     // (`method`/`path`/`host`/`scheme`) is preserved from the inbound value,
     // which policies gate on and this capability does not cover.
-    if let Some(http) = slot::<HttpExtension>(object, "http")? {
-        if inbound.http_write_token.is_some() {
-            // Strip on the way back too. A plugin cannot inject a credential
-            // header into the pipeline through its return value.
-            owned.http = Some(Guarded::new(returned_http(&http, inbound.http.as_deref())));
-            applied = true;
-        }
+    if let Some(http) = slot::<HttpExtension>(object, "http")?
+        && inbound.http_write_token.is_some()
+    {
+        // Strip on the way back too. A plugin cannot inject a credential
+        // header into the pipeline through its return value.
+        owned.http = Some(Guarded::new(returned_http(&http, inbound.http.as_deref())));
+        applied = true;
     }
 
     // Monotonic — `append_labels`. Labels *only*. Everything else on the slot
@@ -351,21 +351,21 @@ pub fn owned_from_returned_slot(
     // identity — otherwise `append_labels` alone would let a plugin rewrite the
     // authenticated principal it was authenticated as. The executor re-checks
     // `before ⊆ after` and drops a removal.
-    if let Some(security) = slot::<SecurityExtension>(object, "security")? {
-        if inbound.labels_write_token.is_some() {
-            let mut merged = inbound
-                .security
-                .as_deref()
-                .cloned()
-                .unwrap_or_else(SecurityExtension::default);
-            // Append-only, and only into the set the plugin was shown. Assigning
-            // the returned set would let a shorter one read as a removal.
-            for label in security.labels.iter() {
-                merged.add_label(label.clone());
-            }
-            owned.security = Some(merged);
-            applied = true;
+    if let Some(security) = slot::<SecurityExtension>(object, "security")?
+        && inbound.labels_write_token.is_some()
+    {
+        let mut merged = inbound
+            .security
+            .as_deref()
+            .cloned()
+            .unwrap_or_else(SecurityExtension::default);
+        // Append-only, and only into the set the plugin was shown. Assigning
+        // the returned set would let a shorter one read as a removal.
+        for label in security.labels.iter() {
+            merged.add_label(label.clone());
         }
+        owned.security = Some(merged);
+        applied = true;
     }
 
     // Monotonic — `append_delegation`. Validated rather than accepted blind: the
@@ -374,25 +374,25 @@ pub fn owned_from_returned_slot(
     // the hop that recorded a scope narrowing widens effective authority — so the
     // whole edit is refused and the inbound chain stands. `depth` and `delegated`
     // are recomputed by the executor from the merged chain, never trusted here.
-    if let Some(delegation) = slot::<DelegationExtension>(object, "delegation")? {
-        if inbound.delegation_write_token.is_some() {
-            let inbound_chain = inbound
-                .delegation
-                .as_deref()
-                .map(|d| d.chain.as_slice())
-                .unwrap_or_default();
-            if chain_extends(inbound_chain, &delegation.chain) {
-                owned.delegation = Some(delegation);
-                applied = true;
-            } else {
-                warn!(
-                    inbound_hops = inbound_chain.len(),
-                    returned_hops = delegation.chain.len(),
-                    "dropping a returned delegation chain that does not extend the \
+    if let Some(delegation) = slot::<DelegationExtension>(object, "delegation")?
+        && inbound.delegation_write_token.is_some()
+    {
+        let inbound_chain = inbound
+            .delegation
+            .as_deref()
+            .map(|d| d.chain.as_slice())
+            .unwrap_or_default();
+        if chain_extends(inbound_chain, &delegation.chain) {
+            owned.delegation = Some(delegation);
+            applied = true;
+        } else {
+            warn!(
+                inbound_hops = inbound_chain.len(),
+                returned_hops = delegation.chain.len(),
+                "dropping a returned delegation chain that does not extend the \
                      one the plugin was given — an append-only chain cannot be \
                      shortened or rewritten"
-                );
-            }
+            );
         }
     }
 

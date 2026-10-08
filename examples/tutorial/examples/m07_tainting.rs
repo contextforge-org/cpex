@@ -21,7 +21,7 @@ use cpex::PolicyEngine;
 use cpex_tutorial::backends;
 use cpex_tutorial::idp;
 use cpex_tutorial::ui;
-use cpex_tutorial::{mediate, Caller};
+use cpex_tutorial::{Caller, mediate};
 
 use serde_json::json;
 
@@ -89,6 +89,8 @@ async fn main() {
     ui::print_outcome(&o);
     all_passed &= ui::expect(&o, false);
 
-    println!("Identical send_email call: allowed in the clean session, denied after the same session read secret data.");
+    println!(
+        "Identical send_email call: allowed in the clean session, denied after the same session read secret data."
+    );
     ui::finish_check(all_passed);
 }

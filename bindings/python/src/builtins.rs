@@ -10,10 +10,10 @@
 // `load_config_yaml`, so the APL visitor's `Weak<PolicyEngine>` upgrades
 // during load.
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
-use praxis_policy::{install_builtins, registry_with_vault, HyperTransport};
+use praxis_policy::{HyperTransport, install_builtins, registry_with_vault};
 use praxis_policy_core::engine::PolicyEngine;
 use praxis_policy_core::http::HttpTransport;
 

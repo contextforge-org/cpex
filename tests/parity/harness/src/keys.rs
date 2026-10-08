@@ -9,9 +9,9 @@
 // must never sign anything outside this harness.
 
 use aws_lc_rs::signature::{Ed25519KeyPair, KeyPair};
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
-use serde_json::{json, Value};
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 use crate::spec::TokenSpec;

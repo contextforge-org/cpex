@@ -18,9 +18,9 @@ use std::ptr;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use cpex_ffi::{
-    cpex_apl_install, cpex_engine_new_default, cpex_free_background, cpex_free_bytes,
-    cpex_free_context_table, cpex_initialize, cpex_invoke, cpex_load_config,
-    CpexBackgroundTasksInner, CpexContextTableInner, CpexEngineInner, RC_OK,
+    CpexBackgroundTasksInner, CpexContextTableInner, CpexEngineInner, RC_OK, cpex_apl_install,
+    cpex_engine_new_default, cpex_free_background, cpex_free_bytes, cpex_free_context_table,
+    cpex_initialize, cpex_invoke, cpex_load_config,
 };
 
 // ---------------------------------------------------------------------
@@ -89,10 +89,10 @@ fn serve(stream: TcpStream, routes: &Routes, hits: &Mutex<HashMap<String, usize>
         if reader.read_line(&mut line).unwrap_or(0) == 0 || line == "\r\n" {
             break;
         }
-        if let Some((name, value)) = line.split_once(':') {
-            if name.eq_ignore_ascii_case("content-length") {
-                content_length = value.trim().parse().unwrap_or(0);
-            }
+        if let Some((name, value)) = line.split_once(':')
+            && name.eq_ignore_ascii_case("content-length")
+        {
+            content_length = value.trim().parse().unwrap_or(0);
         }
     }
     let mut body = vec![0u8; content_length];

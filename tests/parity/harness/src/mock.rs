@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::keys::KeyRing;
 use crate::spec::MockRoute;
