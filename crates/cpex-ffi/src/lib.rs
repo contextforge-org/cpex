@@ -323,7 +323,8 @@ pub const PAYLOAD_CMF_MESSAGE: u8 = 1;
 /// `IdentityPayload` — the input/output state of the `identity.resolve`
 /// hook. Lets non-Rust hosts (the Go bindings) drive identity resolution
 /// over the FFI: send the request headers in, read the resolved
-/// `subject` / `client` / `raw_credentials` back out. Without this an
+/// `subject` / `client` / `raw_credentials` back out (the request
+/// headers are not echoed). Without this an
 /// FFI host can't run `identity.resolve` (its payload is neither a
 /// generic value nor a CMF message), so per-route APL gates that read
 /// `subject.*` never see a principal.
@@ -425,10 +426,19 @@ fn serialize_payload(payload: &dyn PluginPayload) -> Result<(u8, Vec<u8>), Strin
             .map(|b| (PAYLOAD_GENERIC, b))
             .map_err(|e| format!("generic payload serialize failed: {e}"));
     }
-    // Try IdentityPayload — carries the resolved subject/client/raw
-    // credentials back to an FFI host after `identity.resolve`.
+    // Try IdentityPayload: carries the resolved subject, client and claims
+    // back to an FFI host after `identity.resolve`. It comes back without
+    // its `headers`: they are the request headers the caller passed in,
+    // including the credential header (`Authorization` and the like), so
+    // echoing them would hand the inbound token back to anything that logs
+    // or forwards the result. The raw token field is skip-serialized by PPE.
     if let Some(idp) = payload.as_any().downcast_ref::<IdentityPayload>() {
-        return rmp_serde::to_vec_named(idp)
+        let mut value = serde_json::to_value(idp)
+            .map_err(|e| format!("identity payload serialize failed: {e}"))?;
+        if let serde_json::Value::Object(map) = &mut value {
+            map.remove("headers");
+        }
+        return rmp_serde::to_vec_named(&value)
             .map(|b| (PAYLOAD_IDENTITY, b))
             .map_err(|e| format!("identity payload serialize failed: {e}"));
     }
@@ -1787,6 +1797,36 @@ mod tests {
         // — guards against silent type-id/wire-format drift.
         let value: serde_json::Value = rmp_serde::from_slice(&bytes).expect("round-trip decode");
         assert_eq!(value, serde_json::json!({ "k": "v" }));
+    }
+
+    /// An identity result keeps its input and resolved fields but drops the
+    /// request `headers`, which carry the inbound credential.
+    #[test]
+    fn serialize_payload_drops_identity_headers() {
+        let idp: IdentityPayload = serde_json::from_value(serde_json::json!({
+            "source": "bearer",
+            "source_header": "authorization",
+            "headers": {"authorization": "Bearer secret-token", "x-trace": "t1"},
+            "client_host": "10.0.0.1",
+            "client_port": 443,
+            "subject": {"id": "alice"},
+            "raw_claims": {"sub": "alice"},
+        }))
+        .unwrap();
+        let (t, bytes) = serialize_payload(&idp).expect("identity should serialize");
+        assert_eq!(t, PAYLOAD_IDENTITY);
+        let value: serde_json::Value = rmp_serde::from_slice(&bytes).expect("round-trip decode");
+        assert!(value.get("headers").is_none(), "{value}");
+        assert!(!value.to_string().contains("secret-token"), "{value}");
+        assert_eq!(value["source"], "bearer");
+        assert_eq!(value["source_header"], "authorization");
+        assert_eq!(value["client_host"], "10.0.0.1");
+        assert_eq!(value["client_port"], 443);
+        assert_eq!(value["subject"]["id"], "alice");
+        assert_eq!(value["raw_claims"]["sub"], "alice");
+        // The bytes still decode as an identity payload on the other side.
+        let back: IdentityPayload = rmp_serde::from_slice(&bytes).expect("decode as identity");
+        assert!(back.subject.is_some());
     }
 
     /// `serialize_payload` returns `Err` for payload types the FFI

@@ -291,8 +291,7 @@ async fn a_real_plugin_deny_surfaces_as_a_deny_result() {
 }
 
 /// A CMF tool call for `search` with one argument, between two empty parts, so
-/// an engine round trip can show those parts survive the shim. A sibling part
-/// that carries text would be refused: the legacy plugin could not see it.
+/// an engine round trip can show those parts survive the shim.
 fn cmf_tool_call(q: &str) -> MessagePayload {
     MessagePayload {
         message: Message::with_content(

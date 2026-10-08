@@ -201,6 +201,14 @@ func TestAcceptanceJWTNonStringClaimsRoundTrip(t *testing.T) {
 			t.Errorf("subject id = %q", resolved.Subject.ID)
 		}
 		assertClaims(t, "resolved Subject.Claims", resolved.Subject.Claims)
+		// The request headers carry the inbound token, so the result does
+		// not echo them. The other input fields come back.
+		if len(resolved.Headers) != 0 {
+			t.Errorf("resolved payload echoes request headers: %v", resolved.Headers)
+		}
+		if resolved.Source != TokenSourceBearer {
+			t.Errorf("source = %q", resolved.Source)
+		}
 	})
 
 	t.Run("InvokeResolved extensions", func(t *testing.T) {

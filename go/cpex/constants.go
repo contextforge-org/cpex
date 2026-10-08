@@ -22,7 +22,8 @@ const (
 	PayloadCMFMessage uint8 = 1
 	// PayloadIdentity is an IdentityPayload — the input/output state of
 	// the identity.resolve hook. Send request headers in; read the
-	// resolved subject / client / raw credentials back out.
+	// resolved subject / client / raw credentials back out. The result
+	// does not echo the request headers.
 	PayloadIdentity uint8 = 2
 )
 

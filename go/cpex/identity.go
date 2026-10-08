@@ -43,7 +43,9 @@ const (
 // IdentityPayload mirrors the Rust IdentityPayload. Input fields
 // (Source, SourceHeader, Headers, ClientHost, ClientPort) are set by the
 // host before the call; output fields (Subject, Client, …) are populated
-// by the resolver chain and read back from the result.
+// by the resolver chain and read back from the result. The result leaves
+// Headers empty: they carry the inbound credential, so the engine does
+// not echo them back.
 //
 // raw_token is intentionally absent: it is #[serde(skip)] on the Rust
 // side (zeroized, never serialized). Tokens travel in Headers — each

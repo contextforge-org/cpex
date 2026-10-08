@@ -81,16 +81,17 @@
 //                     name, resource_type  kept: descriptive
 //                     range_start/end,     kept: they narrow what is read within
 //                     selector             the URI the plugin approved
-//   any other part    (the whole part)     refuse unless it is a text or
-//                                          thinking part with no text: the
-//                                          plugin never sees it, so a PII
-//                                          filter would pass it through
-//                                          unredacted. Applies to the pre hooks
-//                                          too: narration beside a tool call or
-//                                          prompt request is still content a
-//                                          filter is expected to have seen, and
-//                                          a worker that claims `cmf_hooks`
-//                                          receives the whole message instead
+//   any other part    (the whole part)     post hooks: refuse unless it is a
+//                                          text or thinking part with no text.
+//                                          The plugin never sees it, so a PII
+//                                          filter would pass result content
+//                                          through unredacted.
+//                                          pre hooks: kept. The plugin
+//                                          authorizes the call, request or URI
+//                                          it sees, and narration beside it
+//                                          goes back unchanged. A worker that
+//                                          claims `cmf_hooks` receives the
+//                                          whole message instead
 //
 // # Removing it
 //
@@ -158,6 +159,15 @@ impl Shim {
             Self::ResourcePreFetch => "resource_pre_fetch",
             Self::ResourcePostFetch => "resource_post_fetch",
         }
+    }
+
+    /// Whether this is a post hook, whose result content a plugin may need to
+    /// inspect or redact in full.
+    fn is_post(self) -> bool {
+        matches!(
+            self,
+            Self::ToolPostInvoke | Self::PromptPostFetch | Self::ResourcePostFetch
+        )
     }
 
     /// The CMF content part the legacy payload is built from, for diagnostics.
@@ -526,14 +536,16 @@ pub fn to_legacy(
         },
     };
 
-    // The legacy payload holds the one part. Anything else in the message
-    // would go downstream on allow without the plugin having seen it.
+    // The legacy payload holds the one part. On a post hook anything else in
+    // the message would go downstream on allow without the plugin having seen
+    // it. On a pre hook the plugin authorizes the part it sees, and siblings
+    // are returned unchanged.
     if let Some(sibling) = original
         .message
         .content
         .iter()
         .enumerate()
-        .find(|(i, p)| *i != part && carries_content(p))
+        .find(|(i, p)| shim.is_post() && *i != part && carries_content(p))
         .map(|(_, p)| p)
     {
         return Err(shim_error(
@@ -1611,19 +1623,32 @@ mod tests {
         ]
     }
 
+    /// Whether a shimmed hook is a post hook.
+    fn is_post_hook(hook: &str) -> bool {
+        hook.contains("_post_")
+    }
+
+    /// Sibling parts that carry text.
+    fn texty_siblings() -> [ContentPart; 2] {
+        [
+            ContentPart::Text {
+                text: "SSN 123-45-6789".into(),
+            },
+            ContentPart::Thinking {
+                text: "SSN 123-45-6789".into(),
+            },
+        ]
+    }
+
     #[test]
-    fn a_sibling_text_part_fails_closed_on_every_hook() {
-        // The plugin would approve the one part it sees while the text beside
-        // it went downstream unredacted.
-        for (hook, part) in each_hook_with_its_part() {
-            for sibling in [
-                ContentPart::Text {
-                    text: "SSN 123-45-6789".into(),
-                },
-                ContentPart::Thinking {
-                    text: "SSN 123-45-6789".into(),
-                },
-            ] {
+    fn a_sibling_text_part_fails_closed_on_post_hooks() {
+        // The plugin would approve the one result part it sees while the text
+        // beside it went downstream unredacted.
+        for (hook, part) in each_hook_with_its_part()
+            .into_iter()
+            .filter(|(h, _)| is_post_hook(h))
+        {
+            for sibling in texty_siblings() {
                 let payload = MessagePayload {
                     message: Message::with_content(Role::Assistant, vec![sibling, part.clone()]),
                 };
@@ -1631,6 +1656,64 @@ mod tests {
                 assert_shim_error(err, hook, "beside the");
             }
         }
+    }
+
+    #[test]
+    fn a_sibling_text_part_passes_through_on_pre_hooks() {
+        // The plugin authorizes the part it sees. Narration beside it is
+        // returned unchanged, through both an allow and a modification.
+        for (hook, part) in each_hook_with_its_part()
+            .into_iter()
+            .filter(|(h, _)| !is_post_hook(h))
+        {
+            for sibling in texty_siblings() {
+                let payload = MessagePayload {
+                    message: Message::with_content(
+                        Role::Assistant,
+                        vec![sibling.clone(), part.clone()],
+                    ),
+                };
+                let shimmed = to_legacy(hook, &payload).unwrap();
+                let back = shimmed.apply_modified(shimmed.payload().clone()).unwrap();
+                assert_eq!(back.message.content.len(), 2, "{hook}");
+                assert_eq!(
+                    serde_json::to_value(&back.message.content[0]).unwrap(),
+                    serde_json::to_value(&sibling).unwrap(),
+                    "{hook}"
+                );
+                assert_eq!(
+                    json_of(&back),
+                    json_of(&payload),
+                    "{hook}: an unmodified round trip changes nothing"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_pre_hook_rewrite_keeps_the_narration_sibling() {
+        let narration = ContentPart::Text {
+            text: "Let me look that up.".into(),
+        };
+        let payload = MessagePayload {
+            message: Message::with_content(
+                Role::Assistant,
+                vec![narration.clone(), tool_call(json!({"q": "a"}))],
+            ),
+        };
+        let shimmed = to_legacy("cmf.tool_pre_invoke", &payload).unwrap();
+        let back = shimmed
+            .apply_modified(json!({"name": "search", "args": {"q": "b"}}))
+            .unwrap();
+        let json = json_of(&back);
+        assert_eq!(
+            json["message"]["content"][0],
+            serde_json::to_value(&narration).unwrap()
+        );
+        assert_eq!(
+            json["message"]["content"][1]["content"]["arguments"]["q"],
+            "b"
+        );
     }
 
     #[test]
@@ -1664,11 +1747,11 @@ mod tests {
                     ContentPart::Text {
                         text: "SECRET-SIBLING-TEXT".into(),
                     },
-                    tool_call(json!({})),
+                    tool_result(json!({"text": "ok"})),
                 ],
             ),
         };
-        let err = to_legacy("cmf.tool_pre_invoke", &payload).unwrap_err();
+        let err = to_legacy("cmf.tool_post_invoke", &payload).unwrap_err();
         assert!(!err.to_string().contains("SECRET-SIBLING-TEXT"), "{err}");
     }
 

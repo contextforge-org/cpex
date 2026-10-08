@@ -2039,8 +2039,7 @@ while True:
     }
 
     /// A CMF tool call after an empty text part, for the shim dispatch tests.
-    /// The shim refuses a sibling part that carries text, and keeps an empty
-    /// one as it was.
+    /// The shim keeps the empty sibling part as it was.
     fn cmf_tool_call(q: &str) -> praxis_policy_core::cmf::MessagePayload {
         use praxis_policy_core::cmf::{ContentPart, Message, Role, ToolCall};
         praxis_policy_core::cmf::MessagePayload {
