@@ -50,6 +50,8 @@ Enforcement is three concerns, separated cleanly:
 
 APL leads. CMF gives policy a uniform thing to evaluate across tools, A2A, inference, prompts, and resources. The pipeline is the supporting execution layer: it is what lets a policy effect call a PDP, mint a token, scan for PII, or write an audit record. You reach for it when you extend the set of effects available to policy, not when you write policy.
 
+Since 0.3, all three layers come from the praxis-policy engine (PPE), the engine CPEX's own core was extracted into. CPEX consumes it from crates.io at an exact version and adds what an embedder needs around it: a Rust facade, Python and Go bindings, a C ABI, an out-of-process host for existing Python plugins, and a Biscuit delegator. The policy language and the model on this page are the same either way.
+
 ## The policy spectrum
 
 Different controls belong at different points. CPEX runs the same way at each of them, so you place a policy where its enforcement point is, not where the framework forces it.

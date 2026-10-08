@@ -61,7 +61,7 @@ global:
     endpoint: localhost:6379
 ```
 
-Labels are scoped per subject. Two callers sharing a session identifier do not share taint: a label set while acting as one subject does not leak into another subject's decisions. With the Valkey store, labels survive a gateway restart, so a long-running session's information-flow history is not lost.
+Labels are scoped per subject. Two callers sharing a session identifier do not share taint: a label set while acting as one subject does not leak into another subject's decisions. With the Valkey store, labels survive a gateway restart, so a long-running session's information-flow history is not lost. Labels written by CPEX 0.2.x are read back unchanged: the key layout is the same.
 
 ## How it connects to the pipeline
 

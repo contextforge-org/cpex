@@ -1,8 +1,10 @@
-# CPEX Go — Public API Specification
+# CPEX Go: Public API Specification
 
-**Status**: Draft
+**Status**: Design reference, names updated for CPEX 0.3.0 (C ABI v3)
 **Date**: May 2026
-**Source**: `github.com/contextforge-org/contextforge-plugins-framework/go/cpex`
+**Source**: `github.com/contextforge-org/cpex/go/cpex`
+
+> **Read this first.** This spec was written for CPEX 0.2. In 0.3.0 the Go package wraps the praxis-policy engine (PPE) through C ABI v3. Names below are updated (`PolicyEngine`, `NewPolicyEngine`, `cpex_engine_*`, PPE hook names), and the config example uses the 0.3.0 shape. New in 0.3.0 and not covered in depth here: `EnableAPL(opts...)` with `WithPrivateDestinations()`, `RefreshSecrets`, `SecretsLastSuccess`, and `PayloadIdentity`. The [Go package README](https://github.com/contextforge-org/cpex/tree/main/go/cpex) is the current reference, and the [migration guide](https://contextforge-org.github.io/cpex/docs/migration-0.3/) maps every 0.2 name.
 
 CPEX Go is the Golang consumption API for the ContextForge Plugin Extension Framework (CPEX). It embeds the Rust plugin runtime in-process via CGo/FFI, providing Go host systems with a high-performance hook-based extensibility layer. Payloads and extensions cross the FFI boundary as MessagePack bytes; plugin execution happens entirely in the Rust async runtime.
 
@@ -12,8 +14,8 @@ CPEX Go is the Golang consumption API for the ContextForge Plugin Extension Fram
 ┌──────────────────────────────────────────────────────┐
 │  Go Host (e.g., AuthBridge)                          │
 │                                                      │
-│   PluginManager  ───────────────────────────────┐    │
-│   │  NewPluginManager[Default]()                │    │
+│   PolicyEngine  ───────────────────────────────┐    │
+│   │  NewPolicyEngine[Default]()                │    │
 │   │  RegisterFactories(fn)                      │    │
 │   │  LoadConfig(yaml)                           │    │
 │   │  Initialize()                               │    │
@@ -25,10 +27,10 @@ CPEX Go is the Golang consumption API for the ContextForge Plugin Extension Fram
 │                        │ CGo / MessagePack           │
 ├────────────────────────┼─────────────────────────────┤
 │  libcpex_ffi (Rust)    ▼                             │
-│   cpex_manager_new / cpex_invoke / cpex_shutdown     │
+│   cpex_engine_new / cpex_invoke / cpex_shutdown     │
 │   ┌─────────────────────────────────────────────┐    │
-│   │  cpex-core (Rust)                           │    │
-│   │  • PluginManager → Executor → Plugins       │    │
+│   │  praxis-policy-core (Rust, PPE)             │    │
+│   │  • PolicyEngine → Executor → Plugins       │    │
 │   │  • tokio runtime (async plugin execution)   │    │
 │   │  • Phase ordering, capability gating        │    │
 │   │  • Route resolution, policy composition     │    │
@@ -40,12 +42,12 @@ CPEX Go is the Golang consumption API for the ContextForge Plugin Extension Fram
 
 - Plugins are written in Rust (native) and compiled into `libcpex_ffi`. The Go layer is the host embedding API, not a plugin authoring API.
 - The FFI boundary uses MessagePack for payloads/extensions and opaque handles for stateful objects (ContextTable, BackgroundTasks).
-- All `PluginManager`s in a process share a single tokio runtime (process-singleton via `OnceLock`). Async plugin execution works from synchronous CGo calls without exploding thread count under multi-tenant hosts. Worker thread count is configurable — see §5.8.
+- All `PolicyEngine`s in a process share a single tokio runtime (process-singleton via `OnceLock`). Async plugin execution works from synchronous CGo calls without exploding thread count under multi-tenant hosts. Worker thread count is configurable: see §5.8.
 
 ## 2. Package & Import
 
 ```go
-import cpex "github.com/contextforge-org/contextforge-plugins-framework/go/cpex"
+import cpex "github.com/contextforge-org/cpex/go/cpex"
 ```
 
 **Dependencies:**
@@ -72,13 +74,13 @@ CGo links against `libcpex_ffi` from `target/release/`.
 [ConfigureRuntime(N)]       ← optional, package-level, before any manager
         │
         ▼
-NewPluginManagerDefault()
+NewPolicyEngineDefault()
         │
         ▼
 RegisterFactories(fn)       ← register Rust plugin factories via callback
         │
         ▼
-LoadConfig(yaml)            ← YAML with plugin definitions, routing, policies
+LoadConfig(yaml)            ← YAML with plugin definitions, routes, groups
         │
         ▼
 Initialize()                ← instantiate and wire all plugins
@@ -95,7 +97,7 @@ Shutdown()                  ← graceful teardown
 | Operation | Method |
 |---|---|
 | Configure runtime (optional) | `cpex.ConfigureRuntime(workerThreads)` |
-| Create manager | `NewPluginManagerDefault()` or `NewPluginManager(yaml)` |
+| Create manager | `NewPolicyEngineDefault()` or `NewPolicyEngine(yaml)` |
 | Register factories | `mgr.RegisterFactories(fn)` |
 | Load config | `mgr.LoadConfig(yaml)` |
 | Initialize | `mgr.Initialize()` |
@@ -111,39 +113,39 @@ Shutdown()                  ← graceful teardown
 | Thread context | Pass returned `*ContextTable` to next invoke |
 | Wait background | `bg.Wait()` returns `([]PluginError, error)` |
 | Release background | `bg.Close()` |
-| Classify error | `errors.Is(err, ErrCpexTimeout)` (and other sentinels — §14) |
+| Classify error | `errors.Is(err, ErrCpexTimeout)` (and other sentinels: §14) |
 | Shutdown | `mgr.Shutdown()` |
 
 ## 5. Core Types
 
-### 5.1 PluginManager
+### 5.1 PolicyEngine
 
 The top-level object. Owns the Rust runtime and plugin registry.
 
 ```go
-type PluginManager struct { /* opaque CGo handle, sync.RWMutex */ }
+type PolicyEngine struct { /* opaque CGo handle, sync.RWMutex */ }
 
 // Construction
-func NewPluginManager(yaml string) (*PluginManager, error)
-func NewPluginManagerDefault() (*PluginManager, error)
+func NewPolicyEngine(yaml string) (*PolicyEngine, error)
+func NewPolicyEngineDefault() (*PolicyEngine, error)
 
 // Factory registration
-func (m *PluginManager) RegisterFactories(fn FactoryRegistrar) error
+func (m *PolicyEngine) RegisterFactories(fn FactoryRegistrar) error
 
 // Configuration
-func (m *PluginManager) LoadConfig(yaml string) error
+func (m *PolicyEngine) LoadConfig(yaml string) error
 
 // Initialization
-func (m *PluginManager) Initialize() error
+func (m *PolicyEngine) Initialize() error
 
 // Query
-func (m *PluginManager) HasHooksFor(hookName string) bool
-func (m *PluginManager) PluginCount() int
-func (m *PluginManager) IsInitialized() bool
-func (m *PluginManager) PluginNames() ([]string, error)
+func (m *PolicyEngine) HasHooksFor(hookName string) bool
+func (m *PolicyEngine) PluginCount() int
+func (m *PolicyEngine) IsInitialized() bool
+func (m *PolicyEngine) PluginNames() ([]string, error)
 
 // Invocation
-func (m *PluginManager) InvokeByName(
+func (m *PolicyEngine) InvokeByName(
     hookName string,
     payloadType uint8,
     payload any,
@@ -153,7 +155,7 @@ func (m *PluginManager) InvokeByName(
 
 // Typed invocation (generics)
 func Invoke[P any](
-    m *PluginManager,
+    m *PolicyEngine,
     hookName string,
     payloadType uint8,
     payload P,
@@ -162,14 +164,14 @@ func Invoke[P any](
 ) (*TypedPipelineResult[P], *ContextTable, *BackgroundTasks, error)
 
 // Teardown
-func (m *PluginManager) Shutdown()
+func (m *PolicyEngine) Shutdown()
 ```
 
 **Notes:**
-- `NewPluginManager(yaml)` creates the manager AND loads config in one call (factories auto-registered).
-- `NewPluginManagerDefault()` creates an empty manager — call `RegisterFactories` then `LoadConfig` separately.
+- `NewPolicyEngine(yaml)` creates the manager AND loads config in one call (factories auto-registered).
+- `NewPolicyEngineDefault()` creates an empty manager: call `RegisterFactories` then `LoadConfig` separately.
 - A Go finalizer calls `Shutdown()` if the caller forgets, but explicit `Shutdown()` is recommended.
-- The `PluginManager` wrapper holds a `sync.RWMutex` so `Shutdown()` cannot race with concurrent `Invoke*` calls; Operation methods take the read lock, lifecycle methods take the write lock.
+- The `PolicyEngine` wrapper holds a `sync.RWMutex` so `Shutdown()` cannot race with concurrent `Invoke*` calls; Operation methods take the read lock, lifecycle methods take the write lock.
 - `PluginNames()` returns the registered plugin names in registration order (no guaranteed sort).
 
 ### 5.2 FactoryRegistrar
@@ -221,9 +223,9 @@ func (bg *BackgroundTasks) Close()
 
 Handle to fire-and-forget tasks spawned by plugins (e.g., async audit logging). Tasks run in the shared Rust tokio runtime outside the request's latency budget.
 
-- `Wait()` blocks until all background tasks complete. Returns a structured `[]PluginError` from any that failed (typed shape — `PluginName`, `Code`, `Message`, etc.; see §5.7) plus an `error` for FFI-level failures (e.g., the manager was shut down between invoke and wait — returns `ErrCpexInvalidHandle`).
-- `Close()` releases the handle without waiting — tasks continue running.
-- The handle holds a `*PluginManager` reference and checks `mgr.handle != nil` under the manager's lock before calling into Rust, so `Wait()` after `Shutdown()` is safe (returns `ErrCpexInvalidHandle` rather than dereferencing freed memory).
+- `Wait()` blocks until all background tasks complete. Returns a structured `[]PluginError` from any that failed (typed shape: `PluginName`, `Code`, `Message`, etc.; see §5.7) plus an `error` for FFI-level failures (e.g., the manager was shut down between invoke and wait: returns `ErrCpexInvalidHandle`).
+- `Close()` releases the handle without waiting: tasks continue running.
+- The handle holds a `*PolicyEngine` reference and checks `mgr.handle != nil` under the manager's lock before calling into Rust, so `Wait()` after `Shutdown()` is safe (returns `ErrCpexInvalidHandle` rather than dereferencing freed memory).
 
 ### 5.5 PipelineResult
 
@@ -243,7 +245,7 @@ func (r *PipelineResult) DeserializeExtensions() (*Extensions, error)
 func DeserializePayload[T any](result *PipelineResult) (*T, error)
 ```
 
-`Errors` carries structured records for failures from plugins that ran with `on_error: ignore` or `on_error: disable` — previously these were only logged and invisible to callers. Use them to drive retry logic, dashboards, or audit trails. See §13.6 for the consumption pattern, and §5.7 for the synthetic FFI-layer record.
+`Errors` carries structured records for failures from plugins that ran with `on_error: ignore` or `on_error: disable`: previously these were only logged and invisible to callers. Use them to drive retry logic, dashboards, or audit trails. See §13.6 for the consumption pattern, and §5.7 for the synthetic FFI-layer record.
 
 ### 5.6 TypedPipelineResult
 
@@ -275,7 +277,7 @@ type PluginError struct {
 }
 ```
 
-Structured plugin failure record. Used by `PipelineResult.Errors`, `TypedPipelineResult[P].Errors`, and `BackgroundTasks.Wait()`. All entries are framework-emitted — plugins influence the record (via the error they return) but cannot forge `PluginName`, which is set by the executor from the registered plugin metadata.
+Structured plugin failure record. Used by `PipelineResult.Errors`, `TypedPipelineResult[P].Errors`, and `BackgroundTasks.Wait()`. All entries are framework-emitted: plugins influence the record (via the error they return) but cannot forge `PluginName`, which is set by the executor from the registered plugin metadata.
 
 **Reserved synthetic plugin names:**
 
@@ -306,7 +308,7 @@ Structured denial. `Code` is a machine-readable identifier; `Reason` is a short 
 func ConfigureRuntime(workerThreads int) error
 ```
 
-Sets the worker thread count for the shared tokio runtime that backs every `PluginManager` in the process. **Must** be called before the first `NewPluginManager*` — once a manager has been created the runtime is fixed for process lifetime.
+Sets the worker thread count for the shared tokio runtime that backs every `PolicyEngine` in the process. **Must** be called before the first `NewPolicyEngine*`: once a manager has been created the runtime is fixed for process lifetime.
 
 ```go
 // In main(), before any manager construction:
@@ -317,11 +319,11 @@ if err := cpex.ConfigureRuntime(8); err != nil {
 
 **Precedence (highest first):**
 
-1. `ConfigureRuntime(N)` — explicit FFI call, before first use.
-2. `CPEX_FFI_WORKER_THREADS` env var — operator-friendly default. Read once on lazy init.
-3. tokio default (`num_cpus`) — when neither knob is set.
+1. `ConfigureRuntime(N)`: explicit FFI call, before first use.
+2. `CPEX_FFI_WORKER_THREADS` env var: operator-friendly default. Read once on lazy init.
+3. tokio default (`num_cpus`): when neither knob is set.
 
-Use case: multi-tenant hosts that want to bound total worker threads regardless of how many `PluginManager`s are alive (one per tenant, dynamic plugin reload, etc.). Without this knob, N managers × `num_cpus` workers each can blow up the OS thread count.
+Use case: multi-tenant hosts that want to bound total worker threads regardless of how many `PolicyEngine`s are alive (one per tenant, dynamic plugin reload, etc.). Without this knob, N managers × `num_cpus` workers each can blow up the OS thread count.
 
 ## 6. Extensions
 
@@ -412,7 +414,7 @@ The `capabilities` list in a plugin's YAML config controls which extension field
 The Rust write pattern uses COW (copy-on-write) ownership:
 
 ```rust
-// In Plugin::handle — capability-gated extension modification
+// In Plugin::handle: capability-gated extension modification
 let mut owned = extensions.cow_copy();          // clone mutable slots
 
 if let Some(ref token) = owned.http_write_token {  // token present iff capability declared
@@ -445,8 +447,8 @@ CPEX uses a `payloadType` discriminator to tell the Rust core how to deserialize
 
 | Constant | Value | Payload Type |
 |---|---|---|
-| `PayloadGeneric` | `0` | `map[string]any` — untyped JSON-like payload |
-| `PayloadCMFMessage` | `1` | `MessagePayload` — CMF message |
+| `PayloadGeneric` | `0` | `map[string]any`: untyped JSON-like payload |
+| `PayloadCMFMessage` | `1` | `MessagePayload`: CMF message |
 
 Hosts define their own payload structs (e.g., `InboundPreValidationPayload`) and serialize them as `PayloadGeneric`. The type ID tells Rust how to deserialize; Go callers choose the ID and matching struct.
 
@@ -459,12 +461,12 @@ payload := map[string]any{
     "tool_name": "get_compensation",
     "user":      "alice",
 }
-result, ct, bg, err := mgr.InvokeByName("tool_pre_invoke", cpex.PayloadGeneric, payload, ext, nil)
+result, ct, bg, err := mgr.InvokeByName("demo.tool_pre_invoke", cpex.PayloadGeneric, payload, ext, nil)
 ```
 
 ### 7.3 CMF MessagePayload
 
-The ContextForge Message Format — a typed, multi-part message with schema versioning.
+The ContextForge Message Format: a typed, multi-part message with schema versioning.
 
 ```go
 type MessagePayload struct {
@@ -502,7 +504,7 @@ func NewMessage(role string, content ...ContentPart) Message
 
 Constructors follow Go's `NewXyz` convention so they don't shadow the like-named struct fields on `ContentPart` (e.g., the `ToolCallContent *ToolCall` field vs the `NewToolCallPart` constructor).
 
-Unknown `content_type` discriminators are preserved on decode via an internal `rawMap` and re-emitted unchanged on encode — so a Go host running an older SDK against a newer Rust runtime won't silently drop content parts it doesn't recognize.
+Unknown `content_type` discriminators are preserved on decode via an internal `rawMap` and re-emitted unchanged on encode: so a Go host running an older SDK against a newer Rust runtime won't silently drop content parts it doesn't recognize.
 
 **Example:**
 
@@ -525,37 +527,24 @@ result, ct, bg, err := cpex.Invoke[cpex.MessagePayload](
 
 ## 8. Hook Types (Built-in)
 
-Hooks are open strings — hosts define their own. The following are built into `cpex-core`:
+Hosts may define their own hooks. The following are built into the engine. The 0.2 unprefixed names (`tool_pre_invoke`, `prompt_pre_fetch`, `identity_resolve`, `token_delegate`, ...) are rejected at config load.
 
-### 8.1 Legacy Hooks (typed payloads)
+### 8.1 Engine Hooks
 
-| Hook Name | Lifecycle Stage |
-|---|---|
-| `tool_pre_invoke` | Before tool execution |
-| `tool_post_invoke` | After tool execution |
-| `prompt_pre_fetch` | Before prompt template fetch |
-| `prompt_post_fetch` | After prompt template fetch |
-| `resource_pre_fetch` | Before resource fetch |
-| `resource_post_fetch` | After resource fetch |
-| `identity_resolve` | Identity resolution |
-| `token_delegate` | Token delegation |
+| Hook Name | Lifecycle Stage | Payload |
+|---|---|---|
+| `cmf.tool_pre_invoke` / `cmf.tool_post_invoke` | Around tool execution | `MessagePayload` |
+| `cmf.llm_input` / `cmf.llm_output` | Around an LLM call | `MessagePayload` |
+| `cmf.prompt_pre_invoke` / `cmf.prompt_post_invoke` | Around a prompt fetch | `MessagePayload` |
+| `cmf.resource_pre_fetch` / `cmf.resource_post_fetch` | Around a resource fetch | `MessagePayload` |
+| `identity.resolve` | Identity resolution | `IdentityPayload` (`PayloadIdentity`) |
+| `token.delegate` | Token delegation | engine-internal |
+| `elicit` | Elicitation channel | engine-internal |
+| `http.request` / `http.response` | Generic HTTP | `HttpPayload` (not usable from Go in 0.3.0) |
 
-### 8.2 CMF Hooks (MessagePayload)
+### 8.2 Custom Hooks
 
-| Hook Name | Lifecycle Stage |
-|---|---|
-| `cmf.tool_pre_invoke` | Before tool execution (CMF message) |
-| `cmf.tool_post_invoke` | After tool execution (CMF message) |
-| `cmf.llm_input` | Before LLM call |
-| `cmf.llm_output` | After LLM response |
-| `cmf.prompt_pre_fetch` | Before prompt fetch (CMF) |
-| `cmf.prompt_post_fetch` | After prompt fetch (CMF) |
-| `cmf.resource_pre_fetch` | Before resource fetch (CMF) |
-| `cmf.resource_post_fetch` | After resource fetch (CMF) |
-
-### 8.3 Custom Hooks
-
-Hosts register their own hook names. Any string works:
+Hosts register their own hook names. The config loader refuses a hook name it has no metadata for, so the host's Rust FFI crate registers the metadata (`praxis_policy_core::hooks::register_hook_metadata`) before a config names it:
 
 ```go
 mgr.InvokeByName("inbound.pre_validation", cpex.PayloadGeneric, payload, ext, nil)
@@ -567,68 +556,66 @@ mgr.InvokeByName("outbound.pre_exchange", cpex.PayloadGeneric, payload, ext, nil
 Plugins are declared in YAML and loaded via `LoadConfig`. The YAML is parsed by the Rust core.
 
 ```yaml
-plugin_settings:
-  routing_enabled: true
-  plugin_timeout: 30
-
-global:
-  policies:
-    all:
-      plugins: [identity-checker]
-    pii:
-      plugins: [pii-guard]
+engine_settings:
+  plugin_timeout: 30          # dispatch: policy is the default
 
 plugins:
   - name: identity-checker
-    kind: builtin/identity
-    hooks: [tool_pre_invoke, tool_post_invoke]
-    mode: sequential
-    priority: 10
+    kind: demo/identity
+    hooks: [identity.resolve]
     on_error: fail
 
   - name: pii-guard
-    kind: builtin/pii
-    hooks: [tool_pre_invoke]
-    mode: sequential
-    priority: 20
+    kind: demo/pii
+    hooks: [cmf.tool_pre_invoke]
     on_error: fail
     capabilities:
       - read_labels
       - read_subject
 
   - name: audit-logger
-    kind: builtin/audit
-    hooks: [tool_pre_invoke, tool_post_invoke]
+    kind: demo/audit
+    hooks: [cmf.tool_pre_invoke, cmf.tool_post_invoke]
     mode: fire_and_forget
-    priority: 100
     on_error: ignore
 
   - name: header-injector
-    kind: builtin/cmf-header-injector
+    kind: demo/cmf-header-injector
     hooks: [cmf.tool_pre_invoke, cmf.tool_post_invoke]
-    mode: sequential
-    priority: 50
     on_error: ignore
     capabilities:
       - read_headers
       - write_headers
 
+global:
+  authentication: [identity-checker]
+  authorization:
+    pre_invocation:
+      - "run(audit-logger)"
+      - "run(header-injector)"
+
+groups:
+  pii:
+    authorization:
+      pre_invocation:
+        - "run(pii-guard)"
+
 routes:
-  # Tool-specific route — tags applied to all invocations of this tool
+  # Tool-specific route: joins the pii group
   - tool: get_compensation
-    meta:
-      tags: [pii, hr]
-    plugins:
-      - audit-logger
+    groups: [pii]
+    authorization:
+      pre_invocation:
+        - "require(role.hr)"
 
   - tool: list_departments
-    plugins:
-      - audit-logger
+    authorization:
+      pre_invocation: ["allow"]
 
-  # Wildcard route — applies to all tools not matched above
+  # Wildcard route: applies to all tools not matched above
   - tool: "*"
-    plugins:
-      - audit-logger
+    authorization:
+      pre_invocation: ["allow"]
 ```
 
 ### 9.1 Plugin Modes
@@ -661,30 +648,33 @@ The optional `capabilities` list controls which extension fields a plugin can re
 | `read_headers` | `HttpExtension.request_headers` (read) |
 | `write_headers` | `HttpExtension.response_headers` (read + write token) |
 
-Capabilities declared in YAML are enforced at the Rust core level — a plugin cannot write to extensions it did not declare. See §6.4 for the Rust-side write pattern.
+Capabilities declared in YAML are enforced at the Rust core level: a plugin cannot write to extensions it did not declare. See §6.4 for the Rust-side write pattern.
 
 ### 9.4 Routes
 
-Routes match invocations by tool name and apply additional plugin overrides or tag injection. Evaluated in order; first match wins. The `"*"` wildcard matches any tool not matched by an earlier route.
+Routes match invocations by tool name and carry the policy for that tool. The most specific match wins; the `"*"` wildcard matches any tool not matched by another route. Under the default `dispatch: policy`, a route names the plugins it runs with `run(name)` steps; the 0.2 route `plugins:` list is a load error.
 
 ```yaml
 routes:
-  # Exact match — injects meta tags for this tool's invocations
+  # Exact match: injects meta tags for this tool's invocations
   - tool: get_compensation
     meta:
       tags: [pii, hr]
-    plugins:
-      - audit-logger
+    authorization:
+      pre_invocation:
+        - "run(audit-logger)"
 
-  # Exact match — no meta tags
+  # Exact match: no meta tags
   - tool: list_departments
-    plugins:
-      - audit-logger
+    authorization:
+      pre_invocation:
+        - "run(audit-logger)"
 
-  # Wildcard — catch-all for remaining tools
+  # Wildcard: catch-all for remaining tools
   - tool: "*"
-    plugins:
-      - audit-logger
+    authorization:
+      pre_invocation:
+        - "run(audit-logger)"
 ```
 
 The `meta.tags` field under a route entry augments (or sets) the `MetaExtension.Tags` seen by plugins for that tool, enabling tag-based policy groups to trigger without requiring the Go caller to set tags on every invocation.
@@ -701,7 +691,7 @@ import (
     "os"
     "unsafe"
 
-    cpex "github.com/contextforge-org/contextforge-plugins-framework/go/cpex"
+    cpex "github.com/contextforge-org/cpex/go/cpex"
 )
 
 /*
@@ -715,7 +705,7 @@ import "C"
 
 func main() {
     // 1. Create manager
-    mgr, err := cpex.NewPluginManagerDefault()
+    mgr, err := cpex.NewPolicyEngineDefault()
     if err != nil {
         panic(err)
     }
@@ -761,7 +751,7 @@ func main() {
     }
 
     result, ct, bg, err := mgr.InvokeByName(
-        "tool_pre_invoke", cpex.PayloadGeneric,
+        "demo.tool_pre_invoke", cpex.PayloadGeneric,
         map[string]any{"tool_name": "get_compensation", "user": "alice"},
         ext, nil,
     )
@@ -778,7 +768,7 @@ func main() {
 
     // 6. Thread context into post-invoke
     result2, ct2, bg2, err := mgr.InvokeByName(
-        "tool_post_invoke", cpex.PayloadGeneric,
+        "demo.tool_post_invoke", cpex.PayloadGeneric,
         map[string]any{"tool_name": "get_compensation", "result": "..."},
         ext, ct, // pass context from pre-invoke
     )
@@ -826,7 +816,7 @@ Check for registered plugins before constructing payloads:
 
 ```go
 if !mgr.HasHooksFor("inbound.pre_validation") {
-    // No plugins configured — skip payload construction and FFI overhead
+    // No plugins configured: skip payload construction and FFI overhead
     return handleRequestDirectly(req)
 }
 
@@ -855,13 +845,13 @@ if result.IsDenied() {
 ### 13.2 Modified Payload
 
 ```go
-// Raw path — manual deserialization
+// Raw path: manual deserialization
 if len(result.ModifiedPayload) > 0 {
     modified, err := cpex.DeserializePayload[MyPayload](result)
     // use modified
 }
 
-// Typed path — automatic deserialization
+// Typed path: automatic deserialization
 typed, ct, bg, err := cpex.Invoke[MyPayload](mgr, hook, payloadType, payload, ext, nil)
 if typed.ModifiedPayload != nil {
     // use typed.ModifiedPayload directly
@@ -883,7 +873,7 @@ if len(result.ModifiedExtensions) > 0 {
 // Option A: Wait for background tasks (e.g., at request boundary)
 bgErrors, err := bg.Wait()
 if err != nil {
-    // FFI-level failure — e.g., ErrCpexInvalidHandle if the manager
+    // FFI-level failure: e.g., ErrCpexInvalidHandle if the manager
     // was shut down between Invoke and Wait. The handle is still
     // safely consumed; no need to call Close after a Wait error.
     log.Warn("bg.Wait failed:", err)
@@ -920,13 +910,13 @@ if result.IsDenied() { /* halted by a fail/deny plugin */ }
 // Pipeline ran to completion. Inspect any soft errors.
 for _, e := range result.Errors {
     if e.PluginName == "<ffi>" {
-        // Framework-emitted — e.g., the modified payload couldn't be
+        // Framework-emitted: e.g., the modified payload couldn't be
         // re-serialized across the FFI boundary. The rest of the
         // result is still valid; the plugin's modification was
         // dropped.
         metrics.Inc("cpex.ffi_serialize_error")
     } else {
-        // Plugin-attributed — the plugin failed but ran with
+        // Plugin-attributed: the plugin failed but ran with
         // on_error: ignore/disable, so we got here. Code is the
         // plugin's machine-readable identifier.
         log.Warn("plugin %s failed [%s]: %s", e.PluginName, e.Code, e.Message)
@@ -934,11 +924,11 @@ for _, e := range result.Errors {
 }
 ```
 
-Note that `result.Errors` is *separate* from `result.Violation` — a violation halts the pipeline (no further plugins run); errors recorded here mean the pipeline kept going.
+Note that `result.Errors` is *separate* from `result.Violation`: a violation halts the pipeline (no further plugins run); errors recorded here mean the pipeline kept going.
 
 ## 14. Error Handling
 
-CPEX Go classifies errors via typed sentinels. Use `errors.Is(err, ErrCpexX)` rather than string-matching `err.Error()` — the message text is not part of the API.
+CPEX Go classifies errors via typed sentinels. Use `errors.Is(err, ErrCpexX)` rather than string-matching `err.Error()`: the message text is not part of the API.
 
 ### 14.1 Sentinels
 
@@ -950,7 +940,7 @@ var (
     // Shutdown.
     ErrCpexInvalidHandle = errors.New("cpex: invalid handle ...")
 
-    // ErrCpexInvalidInput: caller-supplied input was malformed —
+    // ErrCpexInvalidInput: caller-supplied input was malformed:
     // bad UTF-8 in hookName, payloadType out of range, oversized
     // buffer, etc. Calling code bug.
     ErrCpexInvalidInput  = errors.New("cpex: invalid input")
@@ -960,7 +950,7 @@ var (
     // format mismatch between Go and Rust struct definitions.
     ErrCpexParse         = errors.New("cpex: parse / deserialize failed")
 
-    // ErrCpexPipeline: pipeline / lifecycle step failed —
+    // ErrCpexPipeline: pipeline / lifecycle step failed:
     // load_config returned Err, initialize returned Err, or a
     // plugin signalled failure during invoke (without timeout or
     // panic). The plugin's structured error is in result.Errors
@@ -968,7 +958,7 @@ var (
     ErrCpexPipeline      = errors.New("cpex: pipeline / lifecycle error")
 
     // ErrCpexSerialize: result serialization failed after the
-    // pipeline ran — usually OOM on rmp_serde::to_vec_named, or an
+    // pipeline ran: usually OOM on rmp_serde::to_vec_named, or an
     // unserializable JSON value. Distinct from the per-modified-
     // payload synthetic error in result.Errors (see §5.7).
     ErrCpexSerialize     = errors.New("cpex: result serialize failed")
@@ -995,14 +985,14 @@ if err != nil {
         metrics.Inc("cpex.timeout")
         return retryWithBackoff(req)
     case errors.Is(err, cpex.ErrCpexPanic):
-        // Plugin bug — log, alert, fail closed.
+        // Plugin bug: log, alert, fail closed.
         metrics.Inc("cpex.panic")
         return denyOnPluginPanic()
     case errors.Is(err, cpex.ErrCpexInvalidHandle):
-        // Manager has been shut down — recreate or fail closed.
+        // Manager has been shut down: recreate or fail closed.
         return errors.New("plugin runtime offline")
     default:
-        // ErrCpexParse / Serialize / Pipeline / InvalidInput —
+        // ErrCpexParse / Serialize / Pipeline / InvalidInput:
         // typically caller or config bugs.
         log.Error("cpex invoke:", err)
         return err
@@ -1016,8 +1006,8 @@ CPEX Go reports failures through two distinct channels, and they have different 
 
 | Channel | Triggers | Meaning |
 |---|---|---|
-| `error` return value | FFI-level failures (timeout, panic, parse, invalid handle) | The pipeline did not complete usefully — `result` is `nil` |
-| `result.Errors` | Plugin failures with `on_error: ignore` or `on_error: disable`; FFI-layer modified-payload serialize failures | The pipeline ran to completion — `result` is valid; treat as soft errors |
+| `error` return value | FFI-level failures (timeout, panic, parse, invalid handle) | The pipeline did not complete usefully: `result` is `nil` |
+| `result.Errors` | Plugin failures with `on_error: ignore` or `on_error: disable`; FFI-layer modified-payload serialize failures | The pipeline ran to completion: `result` is valid; treat as soft errors |
 
 A pipeline can return `err == nil`, `result.IsDenied() == false`, AND non-empty `result.Errors`. That means: "everything ran, nothing halted, but here are the things that didn't work." Don't ignore `result.Errors` just because `err` was nil.
 
@@ -1027,15 +1017,15 @@ All types use `msgpack` struct tags matching Rust field names for zero-copy seri
 
 **Rules:**
 - Go struct fields map 1:1 to Rust struct fields via `msgpack:"field_name"` tags.
-- Optional fields use `omitempty` — nil/zero values are not serialized.
+- Optional fields use `omitempty`: nil/zero values are not serialized.
 - `ContentPart` uses custom `EncodeMsgpack`/`DecodeMsgpack` for tagged-union encoding.
 - Byte slices (`[]byte`) are serialized as MessagePack binary, not arrays.
 
 ## 16. Thread Safety
 
-- `PluginManager` is safe for concurrent use from multiple goroutines. The Go wrapper holds a `sync.RWMutex` so concurrent `Invoke*` calls take the read lock while `Shutdown` takes the write lock — preventing a use-after-free if Shutdown lands between an in-flight invoke and its FFI return.
-- The Rust core uses `ArcSwap<RuntimeSnapshot>` for the registry — concurrent invokes read a stable snapshot; mutations clone-and-swap. This means an in-flight invoke sees the registry as it was when the invoke started, not as it is mid-call.
-- `ContextTable` is NOT safe for concurrent use — it represents per-request state that is threaded sequentially through hook invocations.
+- `PolicyEngine` is safe for concurrent use from multiple goroutines. The Go wrapper holds a `sync.RWMutex` so concurrent `Invoke*` calls take the read lock while `Shutdown` takes the write lock: preventing a use-after-free if Shutdown lands between an in-flight invoke and its FFI return.
+- The Rust core uses `ArcSwap<RuntimeSnapshot>` for the registry: concurrent invokes read a stable snapshot; mutations clone-and-swap. This means an in-flight invoke sees the registry as it was when the invoke started, not as it is mid-call.
+- `ContextTable` is NOT safe for concurrent use: it represents per-request state that is threaded sequentially through hook invocations.
 - `BackgroundTasks` is safe to call `Wait()` or `Close()` from any goroutine, but only once.
 
 ## 17. Gaps and Unimplemented Features
@@ -1044,15 +1034,15 @@ The following features exist in the Python CPEX implementation but are not yet e
 
 | Feature | Python Location | Status in Go |
 |---|---|---|
-| `invoke_hook_for_plugin(name, hook, payload)` | `manager.py` | Not implemented — no single-plugin invoke |
+| `invoke_hook_for_plugin(name, hook, payload)` | `manager.py` | Not implemented: no single-plugin invoke |
 | `HookPayloadPolicy` (field-level write control) | `manager.py` / `hooks/policies.py` | Handled in Rust core via plugin capabilities, not configurable from Go |
-| `TenantPluginManager` (per-tenant isolation) | `manager.py` | Not implemented — single global manager only (multi-tenant hosts can use one manager per tenant since Pass 9's shared runtime caps total threads) |
-| Plugin introspection | `hooks/registry.py` | Partial — `HasHooksFor`, `PluginCount`, `PluginNames`, `IsInitialized` exposed; per-hook plugin lookup is not |
-| Observability provider injection | `manager.py` | Not exposed — observability configured in Rust |
+| `TenantPolicyEngine` (per-tenant isolation) | `manager.py` | Not implemented: single global manager only (multi-tenant hosts can use one manager per tenant since Pass 9's shared runtime caps total threads) |
+| Plugin introspection | `hooks/registry.py` | Partial: `HasHooksFor`, `PluginCount`, `PluginNames`, `IsInitialized` exposed; per-hook plugin lookup is not |
+| Observability provider injection | `manager.py` | Not exposed: observability configured in Rust |
 | Plugin conditions (runtime skip) | `manager.py` | Handled in Rust core via YAML config (`MatchContext` evaluated against extensions) |
 | `OnError.DISABLE` runtime status query | `manager.py` | Not exposed (errors from disabled plugins surface in `result.Errors` though) |
-| `reset()` (reinitialize without restart) | `manager.py` | Not implemented — shutdown and recreate |
-| Programmatic capability gating | `extensions/tiers.py` | YAML-only — capabilities declared per-plugin in config (§9.3); no runtime API to override or rebind capabilities per-invoke |
+| `reset()` (reinitialize without restart) | `manager.py` | Not implemented: shutdown and recreate |
+| Programmatic capability gating | `extensions/tiers.py` | YAML-only: capabilities declared per-plugin in config (§9.3); no runtime API to override or rebind capabilities per-invoke |
 | gRPC/Unix/MCP external plugin transports | `framework/external/` | Not yet in Rust core |
 | Plugin loader with search paths | `loader/` | Rust uses factory registration instead |
 | PDP (AuthZen/OPA) integration | `framework/pdp/` | Not yet in Rust core |
@@ -1076,7 +1066,7 @@ The repo ships a Makefile with the canonical commands. The raw `cargo` / `go` in
 | `make go-test` / `go-test-race` | Go tests (with optional race detector) |
 | `make go-lint-check` | Read-only `gofmt -l` + `go vet` + `golangci-lint run` |
 | `make go-lint` (or `go-lint-fix`) | Mutating: `gofmt -w` + `vet` + `golangci-lint run --fix` |
-| `make examples-build` | Build all 4 examples — catches stale public-API usage |
+| `make examples-build` | Build all 4 examples: catches stale public-API usage |
 | `make examples-run` | Build + run each example end-to-end |
 | `make test-all` | `rust-test` + `go-test-race` (the canonical "everything") |
 | `make ci` | `rust-lint-check` + `test-all` + `examples-build` (the CI gate) |

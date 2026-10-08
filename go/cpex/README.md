@@ -1,11 +1,11 @@
 # CPEX Go SDK
 
-Go bindings for the CPEX policy engine. Wraps the Rust engine via cgo — all plugin execution happens in Rust, called from Go through MessagePack-serialized payloads and opaque handles.
+Go bindings for the CPEX policy engine. Wraps the Rust engine via cgo: all plugin execution happens in Rust, called from Go through MessagePack-serialized payloads and opaque handles.
 
 ## Prerequisites
 
 - **Go 1.25+**
-- **Rust toolchain** (stable, 1.92+)
+- **Rust toolchain** (1.96+, pinned in `rust-toolchain.toml`)
 - **Built Rust library**: the Go SDK links against `libcpex_ffi.a`
 
 ```bash
@@ -17,15 +17,15 @@ cargo build --release -p cpex-ffi
 
 ```
 go/cpex/
-  ffi.go          — cgo declarations (C function signatures) and link flags
-  abi.go          — FFI ABI version check at package init
-  engine.go       — PolicyEngine, ContextTable, BackgroundTasks
-  apl.go          — EnableAPL: builtins, HTTP transport, secret providers
-  secrets.go      — RefreshSecrets, SecretsLastSuccess
-  types.go        — Extensions, PipelineResult, payload constants
-  cmf.go          — CMF Message, ContentPart, domain objects
-  identity.go     — IdentityPayload for identity.resolve
-  *_test.go       — tests (require built libcpex_ffi)
+  ffi.go          cgo declarations (C function signatures) and link flags
+  abi.go          FFI ABI version check at package init
+  engine.go       PolicyEngine, ContextTable, BackgroundTasks
+  apl.go          EnableAPL: builtins, HTTP transport, secret providers
+  secrets.go      RefreshSecrets, SecretsLastSuccess
+  types.go        Extensions, PipelineResult, payload constants
+  cmf.go          CMF Message, ContentPart, domain objects
+  identity.go     IdentityPayload for identity.resolve
+  *_test.go       tests (require built libcpex_ffi)
 ```
 
 ## Quick Start
@@ -100,7 +100,11 @@ NewPolicyEngineDefault()
 
 `EnableAPL` installs every bundled builtin, one outbound HTTP transport, and the `env`, `file` and `vault` secret providers. Plugins that reach the network (`jwks_url`, OAuth delegation, CIBA, Vault) must declare `capabilities: [perform_http]`.
 
-The transport refuses private, loopback and link-local destinations by default. Pass `cpex.WithPrivateDestinations()` to allow them, for example for a local IdP or an in-cluster Vault. This is a host decision; no policy document can turn it on. `EnableAPL` is idempotent: a second call does nothing, whatever its options.
+The transport refuses private, loopback and link-local destinations by default. Pass `cpex.WithPrivateDestinations()` to allow them, for example for a local IdP. This is a host decision; no policy document can turn it on. `EnableAPL` is idempotent: a second call does nothing, whatever its options.
+
+`WithPrivateDestinations` is engine-wide. It lets every outbound builtin (JWKS, token exchange, CIBA, Vault) reach loopback, RFC 1918, link-local addresses including cloud metadata (`169.254.169.254`), and CGNAT. Use it for local development and demos only. A blocked JWKS fetch shows up as `auth.jwks_unavailable`; a blocked token exchange as `delegation.egress_denied`.
+
+`LoadConfig` returns a typed error without the engine's message. The message, naming the rejected key, hook or plugin, goes to the FFI's `tracing` log.
 
 ## Secrets
 
@@ -114,7 +118,7 @@ if !ok {
 }
 ```
 
-A value that fails to re-read keeps its last-good bytes and is listed in `report.Failed`.
+A value that fails to re-read keeps its last-good bytes and is listed in `report.Failed`. A host that uses Vault, or rotates any secret, must call `RefreshSecrets` on an interval (for example from a `time.Ticker`) and alarm when `SecretsLastSuccess` for a provider falls too far behind. Nothing else re-reads secrets, so the interval bounds how long a revoked credential stays in use.
 
 ## ABI Check
 
@@ -126,8 +130,11 @@ On package init the binding compares its expected FFI ABI version (3) with the o
 |----------------------|-------|----------------------------------|
 | `PayloadGeneric`     | 0     | Generic map payload (`map[string]any`) |
 | `PayloadCMFMessage`  | 1     | Typed CMF `MessagePayload`       |
+| `PayloadIdentity`    | 2     | `IdentityPayload` for `identity.resolve` |
 
-Use `PayloadGeneric` for simple key-value payloads. Use `PayloadCMFMessage` when sending structured CMF messages with typed content parts (tool calls, resources, media, etc.).
+Use `PayloadGeneric` for simple key-value payloads. Use `PayloadCMFMessage` when sending structured CMF messages with typed content parts (tool calls, resources, media, etc.). Use `PayloadIdentity` with `identity.resolve` (build it with `NewIdentityPayload`), and pass the route's `Meta` in the extensions: under the default `dispatch: policy`, the engine needs the entity to know which route's `authentication:` to run.
+
+The generic HTTP hooks (`http.request`, `http.response`) and `http:` routes are not usable from Go in this release: `HttpExtension` carries headers only, with no method, path or status.
 
 ## CMF Content Types
 
@@ -152,17 +159,17 @@ The `ContentPart` tagged union supports all 12 content types:
 
 Extensions are passed separately from the payload. Each extension type maps to a Rust extension in `praxis_policy_core::extensions`:
 
-- `MetaExtension` — entity identification for route resolution
-- `SecurityExtension` — labels, classification, subject identity
-- `HttpExtension` — request/response headers
-- `DelegationExtension` — token delegation chain
-- `AgentExtension` — agent session and conversation context
-- `RequestExtension` — environment, tracing, request ID
-- `MCPExtension` — MCP tool/resource/prompt metadata
-- `CompletionExtension` — LLM completion stats
-- `ProvenanceExtension` — message origin and threading
-- `LLMExtension` — model identity and capabilities
-- `FrameworkExtension` — agentic framework context
+- `MetaExtension`: entity identification for route resolution
+- `SecurityExtension`: labels, classification, subject identity
+- `HttpExtension`: request/response headers
+- `DelegationExtension`: token delegation chain
+- `AgentExtension`: agent session and conversation context
+- `RequestExtension`: environment, tracing, request ID
+- `MCPExtension`: MCP tool/resource/prompt metadata
+- `CompletionExtension`: LLM completion stats
+- `ProvenanceExtension`: message origin and threading
+- `LLMExtension`: model identity and capabilities
+- `FrameworkExtension`: agentic framework context
 
 ## Context Threading
 
@@ -262,7 +269,7 @@ impl HookHandler<MyHook> for RateLimiter {
     }
 }
 
-// Factory — creates plugin instances from YAML config
+// Factory: creates plugin instances from YAML config
 pub struct RateLimiterFactory;
 impl PluginFactory for RateLimiterFactory {
     fn create(&self, config: &PluginConfig) -> Result<PluginInstance, Box<PluginError>> {
@@ -340,9 +347,9 @@ result, ct, bg, _ := engine.InvokeByName("my.hook", cpex.PayloadGeneric, payload
 
 ### Key points
 
-- `extern crate cpex_ffi;` in your `lib.rs` ensures all core FFI symbols are included in your staticlib — Go links only your library
+- `extern crate cpex_ffi;` in your `lib.rs` ensures all core FFI symbols are included in your staticlib, so Go links only your library
 - The `CpexEngineInner` type from `cpex_ffi` gives you access to the `engine` field (an `Arc<PolicyEngine>`) for factory registration
-- Your C function signature is `int my_register_factories(void* engine)` — Go passes the SDK's internal handle via the `RegisterFactories` callback
+- Your C function signature is `int my_register_factories(void* engine)`. Go passes the SDK's internal handle via the `RegisterFactories` callback
 - The YAML `kind` field must match what you pass to `register_factory()`
 - A config that declares `hooks:` and `priority:` on its plugins needs `engine_settings: {dispatch: hooks}`. Under the default `dispatch: policy`, call `EnableAPL` and name the plugin from a policy step such as `run(my-plugin)` instead
 
@@ -402,7 +409,7 @@ result, ct, bg, _ := engine.InvokeByName("my.hook", cpex.PayloadMyType, payload,
 modified, _ := cpex.DeserializePayload[MyPayload](result)
 ```
 
-**Total: 5 touch points** — Rust struct, FFI constant, deserialize arm, serialize arm, Go struct. No framework registration or config changes needed.
+**Total: 5 touch points**: Rust struct, FFI constant, deserialize arm, serialize arm, Go struct. No framework registration or config changes needed.
 
 ## Tests
 
@@ -416,6 +423,7 @@ cd go/cpex && go test -v ./...
 
 ## See Also
 
-- [Go Demo Examples](../../examples/go-demo/README.md) — runnable demos with YAML configs
-- [Rust Core README](../../crates/README.md) — core runtime documentation
+- [Go Demo Examples](../../examples/go-demo/README.md): runnable demos with YAML configs
+- [Rust crates README](../../crates/README.md): the facade and the crates CPEX adds to the engine
+- [Migrating to 0.3](https://contextforge-org.github.io/cpex/docs/migration-0.3/): the Go, C ABI, hook and config changes from 0.2.x
 - [Tutorial](../../examples/tutorial/README.md): policy examples, builtins and custom plugins

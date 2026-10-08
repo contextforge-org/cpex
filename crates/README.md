@@ -40,5 +40,15 @@ engine.load_config_yaml(yaml)?;
 engine.initialize().await?;
 ```
 
+`install_default_http_transport` refuses private and loopback destinations.
+For a local IdP during development, install
+`HyperTransport::new().with_allow_private_destinations()` with
+`engine.set_http_transport(...)` instead; it opens every private address to
+every outbound builtin, so keep it out of production.
+
 Hook names, config keys and the plugin API follow PPE. See the PPE crate docs
-for `praxis-policy` and `praxis-policy-core` for the full reference.
+for `praxis-policy` and `praxis-policy-core` for the full reference, the
+[crate map](https://contextforge-org.github.io/cpex/docs/crates/) for what each
+crate holds, and the
+[migration guide](https://contextforge-org.github.io/cpex/docs/migration-0.3/)
+for changes from 0.2.x.

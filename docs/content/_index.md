@@ -38,3 +38,7 @@ Existing authorization systems (RBAC, ABAC, Cedar, OPA, AuthZEN) answer whether 
   [Vision &rarr;]({{< relref "/docs/vision" >}})
 
 {{% /columns %}}
+
+---
+
+**Upgrading from 0.2?** CPEX 0.3 runs on the praxis-policy engine. API names, hook names and several config keys changed; [Migrating to 0.3]({{< relref "/docs/migration-0.3" >}}) maps each one.

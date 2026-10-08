@@ -20,6 +20,7 @@ plugins:
   - name: jwt-user
     kind: identity/jwt
     hooks: [identity.resolve]
+    capabilities: [perform_http]   # fetches the issuer's JWKS
     config:
       role: user
       header: X-User-Token
@@ -32,6 +33,25 @@ plugins:
 ```
 
 The token is verified against the issuer's JWKS. Only after verification do its claims become attributes. An unverified or expired token resolves to no subject, and `require(authenticated)` denies.
+
+A `jwks_url` is an outbound call, so the plugin declares `perform_http` and the host installs an HTTP transport (see [Builtins]({{< relref "/docs/builtins#the-http-transport" >}})). The bundled transport refuses a JWKS URL on `localhost` or a private address unless the host opts in; a refused fetch denies with `auth.jwks_unavailable`. A token naming an unknown `kid` triggers one JWKS refetch, rate limited by `min_refresh_interval_secs`.
+
+## Which routes resolve identity
+
+Under the default `dispatch: policy`, identity plugins run only where a policy names them: an `authentication:` list on the route, a group it joins, its entity default, or `global:`. A route with none runs no identity resolution, so `authenticated` is false and no subject reaches it, even when the request carries a valid token.
+
+```yaml
+global:
+  authentication: [jwt-user]      # every route resolves the user
+
+routes:
+  - tool: get_compensation
+    authorization:
+      pre_invocation:
+        - "require(role.hr)"
+```
+
+Hosts that invoke `identity.resolve` themselves (Python and Go callers) pass the route's `meta.entity_type` and `meta.entity_name` with it, like any other hook, so the engine knows which route's `authentication:` to run.
 
 ## What lands in the bag
 
@@ -46,7 +66,7 @@ A resolved identity populates a flat attribute namespace that predicates read di
 | OAuth client | `client.client_id`, `client.authorized_scopes`, `client.role.<r>` |
 | Workload (SPIFFE / mTLS) | `caller_workload.spiffe_id`, `caller_workload.trust_domain` |
 
-So `require(role.hr)` is true when the verified token carried the `hr` role, and `redact(!perm.view_ssn)` redacts unless it carried the `view_ssn` permission.
+So `require(role.hr)` is true when the verified token carried the `hr` role, and `redact(!perm.view_ssn)` redacts unless it carried the `view_ssn` permission. Which claims become roles, permissions and teams is configurable per IdP; see [Identity Claim Mapping]({{< relref "/docs/identity-claim-mapping" >}}).
 
 ## Multiple sources
 
@@ -69,6 +89,7 @@ plugins:
   - name: jwt-workload
     kind: identity/jwt
     hooks: [identity.resolve]
+    capabilities: [perform_http]
     config:
       role: caller_workload
       header: X-Workload-Token
@@ -84,13 +105,13 @@ The SPIFFE ID is read from the SVID's `sub` claim, and the trust domain is deriv
 
 Note the distinction the bag makes between two different machine identities:
 
-- **`caller_workload`** — the attested workload on the inbound network peer. The agent calling *us*. Many different agents call through one gateway.
-- **`this_workload`** — this CPEX instance's *own* attested identity, used for outbound calls. A single principal.
+- **`caller_workload`**: the attested workload on the inbound network peer. The agent calling *us*. Many different agents call through one gateway.
+- **`this_workload`**: this CPEX instance's *own* attested identity, used for outbound calls. A single principal.
 
-They are not interchangeable, and confusing them is how a token minted for one agent ends up presented by another. Delegation depends on the distinction — see [Delegation]({{< relref "/docs/apl/delegation" >}}).
+They are not interchangeable, and confusing them is how a token minted for one agent ends up presented by another. Delegation depends on the distinction; see [Delegation]({{< relref "/docs/apl/delegation" >}}).
 
 ## How it connects to the pipeline
 
-Identity resolution is a hook (`identity.resolve`) that runs ahead of the route's policy phase. The resolved subject is filtered by each downstream plugin's declared capabilities (see [Extensions & Capability-Gating]({{< relref "/docs/extensions" >}})): a plugin only sees the identity fields it is entitled to. APL predicates read the same bag, gated the same way.
+Identity resolution is a hook (`identity.resolve`) that runs ahead of the route's policy phase, for the plugins the route's `authentication:` names. The resolved subject is filtered by each downstream plugin's declared capabilities (see [Extensions & Capability-Gating]({{< relref "/docs/extensions" >}})): a plugin only sees the identity fields it is entitled to. APL predicates read the same bag, gated the same way.
 
 Once identity is resolved, policy can authorize ([APL]({{< relref "/docs/apl" >}})), delegate downstream ([Delegation]({{< relref "/docs/apl/delegation" >}})), or hand a relationship decision to a PDP ([PDP Integration]({{< relref "/docs/apl/pdp" >}})).

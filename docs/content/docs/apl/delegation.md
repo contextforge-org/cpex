@@ -36,6 +36,8 @@ plugins:
   - name: workday-oauth
     kind: delegator/oauth
     hooks: [token.delegate]
+    # read the caller's inbound token, write the minted one, call the IdP
+    capabilities: [read_inbound_credentials, write_delegated_tokens, perform_http]
     config:
       token_endpoint: "https://idp.example.com/realms/agents/protocol/openid-connect/token"
       client_id: "cpex-gateway"
@@ -47,6 +49,10 @@ plugins:
 
 It exchanges the caller's inbound token for one scoped to `audience` with the requested `permissions`, and attaches it to the outbound request. The result populates delegation attributes that later rules read.
 
+The route must also resolve identity (an `authentication:` list at some scope), or there is no inbound token to exchange; the load reports such a route under `delegation_without_identity_resolution`. A token endpoint the host transport refuses (for example a private address without the host's opt-in) denies with `delegation.egress_denied`. A denial from the IdP carries the OAuth `error` code, not the IdP's `error_description`.
+
+Delegation runs from a Rust host, or from Go with `InvokeResolved`. The Python bindings do not carry inbound tokens into a delegation step.
+
 ## Choosing who the exchange is for
 
 By default a `delegate` step exchanges the **user's** token: the minted credential speaks for the user, on-behalf-of style. Two step keys change that:
@@ -56,13 +62,13 @@ By default a `delegate` step exchanges the **user's** token: the minted credenti
 | `subject` | Whose identity the minted token speaks for. | `user`, `client`, `caller_workload`, `this_workload` | `user` |
 | `actor` | An additional credential recorded as the RFC 8693 `actor_token`, naming who is *acting*. | `user`, `client`, `caller_workload` | none |
 
-`actor` accepts only inbound credentials, because an actor is by definition a party that presented itself to us. `subject` additionally accepts `this_workload` — us — which is the one principal with no inbound credential at all. (`gateway` is accepted as a deprecated alias of `this_workload`, from before CPEX was decoupled from the gateway shape.)
+`actor` accepts only inbound credentials, because an actor is by definition a party that presented itself to us. `subject` additionally accepts `this_workload` (us), which is the one principal with no inbound credential at all. (`gateway` is accepted as a deprecated alias of `this_workload`, from before CPEX was decoupled from the gateway shape.)
 
 ### On-behalf-of a user, with the agent named
 
 The common agentic shape: a user asked for something, and an agent is carrying it out. The user is the subject; the calling agent's SVID rides along as the actor, so CPEX asks the token service to record `act` alongside `sub`, letting the backend see both parties.
 
-Whether `act` lands in the minted token is the token service's call: RFC 8693 distinguishes *impersonation* (subject only, no `act`) from *delegation* (`act` records the actor), and only a service implementing the delegation path emits it. CPEX always sends the delegation request. Notably, Keycloak's Standard Token Exchange (v2) implements impersonation only and silently ignores `actor_token`, so no `act` appears there — capture the actor at the CPEX boundary (audit / downstream header) if your token service doesn't support delegation.
+Whether `act` lands in the minted token is the token service's call: RFC 8693 distinguishes *impersonation* (subject only, no `act`) from *delegation* (`act` records the actor), and only a service implementing the delegation path emits it. CPEX always sends the delegation request. Notably, Keycloak's Standard Token Exchange (v2) implements impersonation only and silently ignores `actor_token`, so no `act` appears there. Capture the actor at the CPEX boundary (audit / downstream header) if your token service doesn't support delegation.
 
 ```yaml
 pre_invocation:
@@ -93,12 +99,12 @@ pre_invocation:
               audience: workday-api, permissions: [read_compensation])"
 ```
 
-`subject: this_workload` has no inbound credential to exchange, so the delegator switches from RFC 8693 token exchange to an RFC 6749 §4.4 **`client_credentials`** grant: no `subject_token` is sent, and this instance's identity is the OAuth client identity it already authenticates with. Nothing extra to configure — the delegator's existing `client_id` / `client_secret` *is* this instance's identity.
+`subject: this_workload` has no inbound credential to exchange, so the delegator switches from RFC 8693 token exchange to an RFC 6749 §4.4 **`client_credentials`** grant: no `subject_token` is sent, and this instance's identity is the OAuth client identity it already authenticates with. Nothing extra to configure: the delegator's existing `client_id` / `client_secret` *is* this instance's identity.
 
 Two consequences worth understanding before choosing this shape:
 
 - **This instance is the only enforcement point.** The backend sees a token that says "this instance" and has no idea which agent triggered the call. Whatever the `require` gates allow is what happens; there is no second opinion downstream. Gate accordingly.
-- **The minted token cannot name the calling agent.** `actor_token` is a token-exchange parameter with no meaning under `client_credentials`, so it is not sent even if the step asks for one. Attribution to the calling agent lives in your audit log, not in the credential. Carrying the agent inside the token requires this instance to have a real subject credential of its own to exchange — its own SVID — which is not yet wired up.
+- **The minted token cannot name the calling agent.** `actor_token` is a token-exchange parameter with no meaning under `client_credentials`, so it is not sent even if the step asks for one. Attribution to the calling agent lives in your audit log, not in the credential. Carrying the agent inside the token requires this instance to have a real subject credential of its own to exchange (its own SVID), which is not yet wired up.
 
 ### Who the minted token speaks for
 
@@ -111,7 +117,7 @@ Each exchange is attributed to exactly one principal, and the attribution is **d
 | `caller_workload` | `as_caller_workload` | The calling agent |
 | `this_workload` | `as_this_workload` | This instance itself |
 
-There is deliberately **no `mode` key**. If routes could declare the attribution independently of the credential they hand over, a route could claim to act on behalf of a user while exchanging a workload SVID. Deriving it means the operator states one thing — which credential — and the consequence follows.
+There is deliberately **no `mode` key**. If routes could declare the attribution independently of the credential they hand over, a route could claim to act on behalf of a user while exchanging a workload SVID. Deriving it means the operator states one thing (which credential) and the consequence follows.
 
 The attribution is load-bearing beyond the audit trail: minted credentials are cached per `(subject, workload, audience, scopes, attribution)`, so tokens minted for one calling agent are never served to another.
 

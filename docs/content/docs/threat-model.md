@@ -35,10 +35,10 @@ Everything to the left of the monitor is assumed hostile, and nothing the policy
 | Confused deputy / privilege escalation | the agent acts with one blanket identity for all callers | identity resolved per caller from verified tokens; entitlements differ per subject, not per prompt ([Identity]({{< relref "/docs/apl/identity" >}})) |
 | Cross-request data exfiltration (write-down) | data read in one call leaves through a later, innocent-looking call | `taint(...)` labels the session in CPEX-owned state; later operations deny on the label even with clean payloads ([Session Tainting]({{< relref "/docs/apl/tainting" >}})) |
 | Credential exposure and over-broad tokens | backends receive the caller's raw IdP credential | `delegate(...)` exchanges it for a fresh audience-scoped token (RFC 8693); the granted scope is verified before use ([Delegation]({{< relref "/docs/apl/delegation" >}})) |
-| PII disclosure | sensitive values flow into arguments and out in results | PII scanning on `args`, field-level `redact`/`mask` pipelines on `result` ([Builtins]({{< relref "/docs/builtins" >}})) |
+| PII disclosure | sensitive values flow into arguments and out in results | field-level `redact`/`mask` pipelines on `result`, deny rules on `args`, and a host detector plugin where pattern matching is not enough ([Effects]({{< relref "/docs/apl/effects" >}}), [Builtins]({{< relref "/docs/builtins#not-builtins-the-pii-scanner-and-audit-logger" >}})) |
 | Unauthorized high-impact actions | the model triggers irreversible operations on its own authority | `require_approval(...)` suspends the call for out-of-band human sign-off ([Elicitation]({{< relref "/docs/apl/elicitation" >}})) |
 | Approval replay | one sign-off is reused for a larger or different action | approvals are scope-bound to the live arguments and validated on resume ([Elicitation]({{< relref "/docs/apl/elicitation" >}})) |
-| Unaccountable actions | no trustworthy record of what the agent did | an audit plugin emits an append-only record per decision, including denied attempts ([Patterns]({{< relref "/docs/patterns" >}})) |
+| Unaccountable actions | no trustworthy record of what the agent did | a host audit plugin or audit sink records each decision, including denied attempts ([Auditing]({{< relref "/docs/auditing" >}})) |
 
 No single row is load-bearing alone. The [defense-in-depth pattern]({{< relref "/docs/patterns#defense-in-depth" >}}) composes them in one route.
 
@@ -74,7 +74,7 @@ CPEX sits beside one agent and mediates its egress. Everything that agent emits 
 **Covers**
 
 - The complete outbound surface of the workload, including third-party APIs you do not control and could never gateway.
-- Workload identity: the `workload.*` attributes carry attested identity (SPIFFE / mTLS), so policy can bind decisions to which workload is calling, not just which user.
+- Workload identity: the `caller_workload.*` and `this_workload.*` attributes carry attested identity (SPIFFE / mTLS), so policy can bind decisions to which workload is calling, not just which user.
 - Exfiltration control for a specific agent: taint follows the session across every backend the agent reaches.
 
 **Does not cover**
@@ -103,6 +103,79 @@ CPEX runs inside the agent runtime and mediates operations as the framework issu
 ### Compose them
 
 The placements are not alternatives. The strongest posture pairs an in-framework monitor (rich context, soft and enforcement-tier policy) with a gateway or sidecar at an infrastructure boundary the agent process cannot rewrite (hard-tier policy: identity, information flow, audit). That is the policy spectrum from [Vision]({{< relref "/docs/vision#the-policy-spectrum" >}}): the same APL object at every point, so layering placements costs no policy duplication.
+
+## Builtins that reach outside the process
+
+Since 0.3.0 the Python and Go builds carry the same builtins as the Rust facade, including four that hold credentials or call out. Each widens what the host process is trusted with.
+
+### Vault secret provider
+
+The `vault` provider reads `secrets:` values from Vault KV v2 with Kubernetes or AppRole auth. The engine holds a Vault token and the resolved values in memory for the life of the process.
+
+- The address must be `https://` unless the document sets `insecure_http: true`. Keep it off outside local development.
+- An AppRole `secret_id` comes from an environment variable or a file. A `literal` is refused unless the document also sets `allow_insecure_literal: true`.
+- Kubernetes login rereads the projected service-account token on every login, so a rotated token is picked up.
+- Refresh reports and their log lines name the secret, the provider and a failure class, never the value. Treat the process's memory and core dumps as holding every declared secret.
+- Anyone who can edit the policy document chooses which Vault paths the process reads, within what the Vault role allows. Scope the role to the paths the policy needs.
+
+### Secret refresh is the host's responsibility
+
+The engine reads secrets once, at `initialize()`, and never re-reads on its own. A binding host that rotates credentials must call refresh (`refresh_secrets`, `RefreshSecrets`, `cpex_refresh_secrets`) on an interval and alarm when a provider's last success grows old. A failed re-read keeps the last good value, so a Vault outage degrades silently to a stale credential. The refresh interval is the upper bound on how long a revoked credential stays in use. A host that never calls refresh never rotates.
+
+### CIBA approval channel
+
+`elicitation/ciba` trusts the approver identity in the token the OP returns, because it arrives over a client-authenticated TLS poll; it does not verify that token's signature itself. Reach the CIBA and token endpoints over `https://` with real client credentials. See [Elicitation]({{< relref "/docs/apl/elicitation#a-note-on-genuineness-and-args-binding" >}}).
+
+### API-key directory
+
+`identity/api-key` resolves opaque keys against a file of SHA-256 digests or an HTTP directory.
+
+- The file stores digests, not keys. Use high-entropy keys so a leaked file does not yield to offline guessing.
+- A revoked key can still authenticate until the next successful file reload (`refresh_secs`) or until its HTTP cache entry expires (`cache.ttl_secs`). If a reload fails, old records stay in use up to `max_staleness_secs`, then lookups deny.
+- An HTTP directory is an outbound call: it needs `perform_http` and goes through the host transport.
+- The presented key is not kept in the raw credentials, so it is never forwarded downstream.
+
+### OPA decision point
+
+`opa` evaluates Rego in process (regorus); it makes no network call. Its inputs are the attribute bag plus structured `args` and `llm.request`, which come from the client. The sensitive headers `Authorization`, `Cookie` and `X-API-Key` are stripped before any PDP sees the request. PDP-generated errors name types, not values, but text a policy author writes (an OPA `reason`, an APL `deny('...')`) reaches the client verbatim: do not copy payload values into it.
+
+## Outbound HTTP and private destinations
+
+Every outbound builtin (JWKS fetch, token exchange, CIBA, API-key HTTP directory, Vault) uses one transport the host installs. The bundled transport refuses loopback, RFC 1918, link-local (including cloud metadata) and CGNAT addresses at the address it would dial, including hostnames that resolve only to such addresses. This blocks the common SSRF path where a policy author, or a token's issuer field, points a plugin at an internal service.
+
+Each surface has a host-side opt-in that lifts the block (`with_allow_private_destinations()`, `allow_private_destinations=True`, `WithPrivateDestinations()`, `CPEX_APL_ALLOW_PRIVATE_DESTINATIONS`). It is engine-wide: once set, every outbound builtin may reach every private address, including `169.254.169.254`. No policy document can set it. The tutorial and demos set it to reach a local IdP; production hosts should not. To reach an in-cluster IdP or Vault, install a host transport with explicit egress rules.
+
+A refused call fails closed: `delegation.egress_denied`, `elicitation.egress_denied`, or `auth.jwks_unavailable` for JWT, which an operator may read as an IdP outage.
+
+## The Python plugin host
+
+The `isolated_venv` host runs each Python plugin in its own subprocess and virtualenv, so a plugin crash or a dependency conflict stays out of the engine's process. It does not sandbox the plugin: the subprocess runs with the host's user and network access.
+
+For a Python worker that does not claim CMF support, the host translates each `cmf.*` hook into the legacy hook and payload the worker knows. Where it cannot represent a request faithfully (an LLM hook, a message with zero or several matching parts, a binary resource, a modified payload the message cannot hold), it fails closed with `legacy_shim_unsupported` rather than allowing or skipping the plugin.
+
+## Known limitations
+
+### Elicitation approval is not bound to the requester
+
+An approved elicitation id can be resumed by a different subject. The CIBA correlation store records the expected and resolved approver; resume replays a cached approval for any caller presenting the id, and validation compares the resolved approver with the one named at dispatch, not with the subject that asked. A caller who obtains another subject's approved id can use it once the approval lands.
+
+This is present in CPEX 0.2.3 and in PPE 0.4.1, which 0.3.0 runs on. An upstream fix is pending. Until it lands:
+
+- keep the approval `timeout` short, so an approved id is usable for as little time as possible;
+- treat elicitation ids as secrets: return them only to the requesting client, and keep them out of logs and shared transcripts other callers can read;
+- prefer approval flows where the approver, not the requester, holds the id needed to resume.
+
+### Audit sinks cannot run beside routes
+
+Under `dispatch: policy`, PPE 0.4.1 cannot attach an audit sink to a config that has routes: a sink no step names fails the load, and `run(<sink>)` denies. The "unaccountable actions" control above therefore needs a hook plugin that a `run(...)` step names, or a host that logs the `PipelineResult` of every call. A host that does neither has no decision record. See [Auditing]({{< relref "/docs/auditing" >}}).
+
+### Host-supplied client identity is visible only through `read_client`
+
+A host may pass `security.client` in the extensions it sends, but route rules see `client.*` only when a plugin the route references declares `read_client`. Otherwise the attributes read as absent. Rules written as `require(...)` then deny, which is safe; a rule that allows on the absence of a client attribute would not be. Resolve the client with an identity plugin on the route, and write client checks as `require(...)`.
+
+### HTTP routes are Rust-only
+
+`http:` routes and the `http.request` / `http.response` hooks work from a Rust host only. The Python and Go bindings cannot build the HTTP payload, so a binding host cannot enforce generic HTTP policy. Put that enforcement in a Rust host or gateway.
 
 ## Out of scope
 

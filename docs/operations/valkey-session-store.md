@@ -1,6 +1,6 @@
 # Operating the Valkey Session Store
 
-The Valkey-backed `SessionStore` (`cpex-session-valkey`) persists per-session
+The Valkey-backed session store (`kind: valkey`, from the praxis-policy builtins) persists per-session
 security **taint labels** across process restarts and shares them across
 gateway nodes. Those labels drive information-flow authorization, so the
 backend is **fail-closed**: any store error denies the request rather than
@@ -10,10 +10,14 @@ This runbook covers the operator-owned controls the backend depends on but
 **cannot enforce from the client**. Getting them wrong silently weakens the
 security guarantee, so treat this as part of the deployment contract.
 
-> Build note: the backend is compiled into the FFI artifact only with the
-> `valkey` cargo feature (`cargo build -p cpex-ffi --features valkey`).
-> Without it, the default in-process memory store is used and nothing here
-> applies.
+> Build note: since 0.3.0 the Valkey store is compiled into every CPEX
+> surface (the `cpex` facade, the Python package, the Go module and the FFI
+> artifact); there is no feature to enable. It is used only when the config
+> declares `global.session_store` with `kind: valkey`. Without it, the default
+> in-process memory store is used and nothing here applies.
+>
+> Labels written by CPEX 0.2.x are read back unchanged by 0.3.0: the key
+> layout under `taint:v1` is the same.
 
 ---
 
@@ -28,7 +32,7 @@ global:
     endpoint: valkey.internal:6379   # or rediss://valkey.internal:6379
     tls: true
     username: gateway                # ACL user (see §3)
-    password: ${VALKEY_PASSWORD}     # inject from a secrets manager
+    password: "<rendered at deploy time>"  # see Credentials in §3
     key_prefix: taint:v1             # default; bump only on schema change
     ttl_seconds: 86400               # optional sliding TTL (see §4)
     max_session_lifetime_seconds: 86400  # enables the TTL-soundness warning
@@ -52,10 +56,10 @@ maxmemory-policy noeviction
 Why: with any `*-lru` / `*-lfu` / `*-random` / `volatile-*` policy, Valkey
 can **silently evict** a live session's taint set under memory pressure. A
 later read then returns an empty set, the gateway under-labels, and may
-**over-authorize** — the exact fail-open this store exists to prevent. With
+**over-authorize**: the exact fail-open this store exists to prevent. With
 `noeviction`, a full instance instead fails *writes* with an error, which the
 backend converts into a denied request (fail-closed). The client cannot set
-or enforce this — it is a server config you own.
+or enforce this; it is a server config you own.
 
 Note the volatile policies are **not** safe here even though they sound
 scoped: the label keys carry a TTL (§4), so `volatile-lru`/`volatile-ttl`
@@ -68,21 +72,21 @@ valkey-cli CONFIG GET maxmemory-policy   # must be "noeviction"
 valkey-cli CONFIG GET maxmemory          # must be a non-zero bound
 ```
 
-- Alert if `evicted_keys` in `INFO stats` is ever non-zero — it must stay `0`.
+- Alert if `evicted_keys` in `INFO stats` is ever non-zero; it must stay `0`.
 - Watch `used_memory` vs `maxmemory` and the OOM write-error rate so you scale
   before the instance fills.
 
-This is operator-owned contract — the backend does **not** verify it for you.
+This is operator-owned contract: the backend does **not** verify it for you.
 A best-effort startup `CONFIG GET maxmemory-policy` self-check that warns when
 the policy is not `noeviction` is a deferred follow-up (it would require the
 connection pool to dial at config-load, which today it does not). Until then,
-the authoritative control — and its monitoring — is yours.
+the authoritative control, and its monitoring, is yours.
 
 ---
 
 ## 3. TLS and least-privilege ACL
 
-**TLS is required for any non-localhost endpoint** — the backend rejects a
+**TLS is required for any non-localhost endpoint**: the backend rejects a
 plaintext, non-localhost config at load. Security labels reveal which sessions
 carry sensitive taint; in plaintext they are exposed to passive interception
 and active MITM (label injection/suppression). Prefer **mTLS** so a stolen ACL
@@ -98,7 +102,7 @@ tls-ca-cert-file /etc/valkey/tls/ca.crt
 # tls-auth-clients yes   # require client certs (mTLS)
 ```
 
-**Minimum ACL** for the gateway user — it only needs `SADD`, `SMEMBERS`,
+**Minimum ACL** for the gateway user. It only needs `SADD`, `SMEMBERS`,
 `EXPIRE`, and (for the self-check) `CONFIG|GET`, scoped to the key prefix:
 
 ```
@@ -108,11 +112,15 @@ ACL SETUSER gateway on >$STRONG_SECRET resetchannels -@all \
 ```
 
 - `~taint:v1:*` confines key access to the label namespace.
-- Grant `+config|get` (the subcommand) — never bare `+config`.
+- Grant `+config|get` (the subcommand), never bare `+config`.
 - Consider giving `CONFIG|GET` to a separate health/admin user so the hot-path
   writer's surface stays minimal.
 
-**Credentials:** never hard-code the secret; inject from a secrets manager.
+**Credentials:** never commit the secret. The `password` field is read as a
+literal: CPEX does no `${ENV}` substitution in config, and this field does not
+take a `secrets:` reference. Render the document from your secrets manager at
+deploy time (for example a templated Kubernetes Secret mounted as the policy
+file), and keep that file readable only by the CPEX process.
 Valkey ACL users support multiple password hashes, enabling overlap rotation
 (add new, roll clients, drop old) with no downtime; with mTLS, rotate the
 client cert via `tls-auto-reload-interval`.
@@ -126,7 +134,7 @@ sliding TTL: refreshed on every load and append.
 
 **Soundness rule (R8):** a TTL is sound **only if it is ≥ the maximum lifetime
 of a session identity.** A shorter TTL lets accumulated taint expire while the
-session is still usable — a "downgrade-by-waiting": an adversary holds a
+session is still usable, a "downgrade-by-waiting": an adversary holds a
 tainted session, waits out the TTL, and resumes it clean. If your gateway's
 session identities are not bounded (e.g. header- or identity-derived ids with
 no expiry), **leave the TTL off.**
@@ -146,14 +154,14 @@ expire between requests and silently drop taint. Alert on
 
 The label keyspace is a **security system-of-record**, not a cache. Promoting
 Valkey to hold an authorization input inverts its default durability
-assumptions, so its on-disk persistence is part of the deployment contract —
+assumptions, so its on-disk persistence is part of the deployment contract:
 alongside `noeviction` (§2) and the TTL rule (§4), this closes the third way a
 label can silently vanish.
 
 **The failure mode this closes.** A `SADD` is acknowledged to the gateway, the
 node crashes before the write is fsync'd to disk, and the label is **gone**. On
-restart (or replica failover) the next read returns a normal `Ok(empty)` —
-*not* an error — so fail-closed never trips. The request proceeds with **less
+restart (or replica failover) the next read returns a normal `Ok(empty)`,
+*not* an error, so fail-closed never trips. The request proceeds with **less
 taint than actually accumulated**: a silent downgrade. Critically, this is
 **invisible to every alarm in §7** because nothing errors, which is exactly why
 it has to be closed at the server-config layer rather than detected at runtime.
@@ -177,7 +185,7 @@ appendfsync everysec   # or: always
 
 **Failover interaction with §6.** The "fail over to a healthy primary" guidance
 inherits Valkey's **asynchronous** replication: a failover can promote a replica
-that is missing the most recent un-replicated appends — the same downgrade by a
+that is missing the most recent un-replicated appends: the same downgrade by a
 different path. Tighten replication durability (e.g. `min-replicas-to-write` /
 `min-replicas-max-lag`, or `WAIT`-aware fronting) if your failover budget
 demands it.
@@ -192,7 +200,7 @@ startup `CONFIG GET appendonly` / `appendfsync` warning is a deferred follow-up
 ## 6. Topology, availability, and blast radius
 
 - **Single endpoint, primary-only reads.** The backend reads and writes one
-  endpoint and never read-splits to replicas — replica replication lag would
+  endpoint and never read-splits to replicas, because replica replication lag would
   return stale (smaller) label sets, a silent downgrade. Achieve HA by pointing
   `endpoint` at a fronting address (K8s Service, VIP, or proxy) that fails over
   to a healthy primary. Client-side Sentinel/Cluster are not supported in v0.
@@ -204,7 +212,7 @@ startup `CONFIG GET appendonly` / `appendfsync` warning is a deferred follow-up
   `command_timeout_ms` / `connect_timeout_ms` budgets bound how long a request
   waits before failing closed.
 
-- **Anonymous/sessionless traffic is unaffected** — requests with no resolved
+- **Anonymous/sessionless traffic is unaffected**: requests with no resolved
   session id never touch the store, so a Valkey outage does not deny them.
 
 - **No live-reload (v0).** Changing the `session_store` config requires a
@@ -228,10 +236,14 @@ startup `CONFIG GET appendonly` / `appendfsync` warning is a deferred follow-up
 
 ```
 docker compose -f deploy/valkey-compose.yml up -d
-VALKEY_TEST_URL=redis://127.0.0.1:6379 \
-  cargo test -p cpex-session-valkey --test valkey_store_integration -- --ignored
+PARITY_VALKEY_URL=redis://127.0.0.1:6379/0 cargo test -p cpex-parity-harness
 ```
 
+The parity harness replays the session-taint scenarios against the store and
+checks that labels a 0.2.3 run wrote are read back unchanged. It runs
+`FLUSHDB` on the database it is given, so point it at a throwaway instance.
+The store's own integration tests live in the praxis-policy repository.
+
 The compose file runs a `noeviction`-configured Valkey. It has no TLS/ACL and
-runs RDB-default (non-durable, no AOF) — those are dev-only conveniences;
+runs RDB-default (non-durable, no AOF). Those are dev-only conveniences;
 production must add TLS/ACL per §3 and AOF persistence per §5.

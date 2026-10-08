@@ -15,7 +15,7 @@ The demo realizes the [running scenario]({{< relref "/docs/overview" >}}): one a
 | Eve | HR, no `view_ssn` | Same record, SSN redacted on the wire |
 | Alice | Engineering | Denied HR tools; allowed internal repos, denied external |
 
-[Praxis](https://github.com/praxis-proxy/praxis) is an AI-native proxy built around a filter chain. CPEX ships as its `policy` filter (the `cpex-policy-engine` feature), so the gateway parses MCP JSON-RPC, runs the full policy pass, and only then forwards a scoped request upstream:
+[Praxis](https://github.com/praxis-proxy/praxis) is an AI-native proxy built around a filter chain. Its `policy` filter (the `policy-engine` feature) runs the praxis-policy engine (PPE), the same engine CPEX 0.3 embeds, so the gateway parses MCP JSON-RPC, runs the full policy pass, and only then forwards a scoped request upstream. The policy document is the same format a CPEX host loads:
 
 ![The Praxis demo topology: a chat agent calls the Praxis gateway over MCP, where the mcp, policy (CPEX), and router filters run in sequence before forwarding to the hr-mcp server; the policy filter is configured by policy.yaml and talks to Keycloak for identity, token exchange, and CIBA, and to Valkey for session taint, while Keycloak pushes CIBA approvals to the auth-channel UI](images/use_cases_topology.png)
 
@@ -34,8 +34,9 @@ Who may call this tool at all? The `get_compensation` route opens with an attrib
 ```yaml
 routes:
   - tool: get_compensation
-    pre_invocation:
-      - "require(role.hr)"
+    authorization:
+      pre_invocation:
+        - "require(role.hr)"
 ```
 
 Bob and Eve pass (HR role in their tokens). Alice is denied with a JSON-RPC error envelope before the request ever leaves the gateway; the backend never sees it. The demo resolves two identities per request, the human (`X-User-Token`) and the client (`Authorization`), each validated by its own `identity/jwt` plugin against Keycloak.
@@ -89,7 +90,7 @@ Run it: [`scenarios/08-bob-taint-deny.sh`](https://github.com/praxis-proxy/demos
 
 ## 5. PII guardrails on arguments
 
-Session taint is state-based; this control is content-based, and they complement each other. A validator plugin scans tool arguments for sensitive patterns and denies before dispatch:
+Session taint is state-based; this control is content-based, and they complement each other. A validator plugin scans tool arguments for sensitive patterns and denies before dispatch. The demo registers PPE's reference PII scanner as a host plugin; it is not a CPEX builtin (see [Builtins]({{< relref "/docs/builtins#not-builtins-the-pii-scanner-and-audit-logger" >}}) for how a Rust host registers it, and for alternatives):
 
 ```yaml
   - name: pii-scan
@@ -104,7 +105,7 @@ Session taint is state-based; this control is content-based, and they complement
 
 Bob pasting an SSN into an email body gets a deny, and the audit record of the attempt is still written: the route runs `run(audit-log)` before `run(pii-scan)`, so observation happens before the gate blocks. Flip `mode: deny` to `audit` to shadow-test the scanner against real traffic first (see [Patterns]({{< relref "/docs/patterns#shadow-rollout-with-audit-mode" >}})).
 
-Run it: [`scenarios/07-bob-pii-deny.sh`](https://github.com/praxis-proxy/demos/blob/main/demos/policy-engine/scenarios/07-bob-pii-deny.sh). More: [Builtins]({{< relref "/docs/builtins" >}}).
+Run it: [`scenarios/07-bob-pii-deny.sh`](https://github.com/praxis-proxy/demos/blob/main/demos/policy-engine/scenarios/07-bob-pii-deny.sh). More: [Builtins]({{< relref "/docs/builtins#reference-plugins-in-a-rust-host" >}}).
 
 ## 6. Human-in-the-loop approval
 
@@ -112,12 +113,13 @@ Some actions should not happen on the caller's authority alone. `adjust_compensa
 
 ```yaml
   - tool: adjust_compensation
-    pre_invocation:
-      - "require(role.hr)"
-      - when: "args.amount > 10000"
-        do:
-          - "require_approval(manager-approver, from: claim.manager, channel: \"ciba\", scope: \"args.amount <= 25000\", purpose: \"Approve a compensation adjustment\", timeout: 24h)"
-      - "run(audit-log)"
+    authorization:
+      pre_invocation:
+        - "require(role.hr)"
+        - when: "args.amount > 10000"
+          do:
+            - "require_approval(manager-approver, from: claim.manager, channel: \"ciba\", scope: \"args.amount <= 25000\", purpose: \"Approve a compensation adjustment\", timeout: 24h)"
+        - "run(audit-log)"
 ```
 
 The gateway never blocks. It suspends the call, answers the agent with JSON-RPC `-32120` and an elicitation id, and drives an OIDC CIBA backchannel request to Keycloak, which pushes the prompt to the manager's device. The `scope` binds the approval to the live amount, so a sign-off cannot be replayed against a larger change.
@@ -180,7 +182,7 @@ The whole demo is one command from [`demos/policy-engine`](https://github.com/pr
 
 Eleven scripted scenarios cover every control above, and `agent/chat.py --persona bob` drives the same gateway from an LLM chat agent, approvals included.
 
-Prefer the library-embedded flavor? The in-repo [Tutorial]({{< relref "/docs/tutorial" >}}) builds the same scenario with CPEX as a Rust crate inside the host process, one capability per module.
+Prefer the library-embedded flavor? The in-repo [Tutorial]({{< relref "/docs/tutorial" >}}) builds the same scenario with CPEX as a Rust crate inside the host process, one capability per module. The demo's gateway reaches Keycloak on a private Docker network, which needs the private-destination opt-in; a production deployment should install a transport with its own egress rules instead (see [Builtins]({{< relref "/docs/builtins#private-destinations" >}})).
 
 ## What to read next
 

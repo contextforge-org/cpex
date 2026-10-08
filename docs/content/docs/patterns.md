@@ -32,9 +32,16 @@ Before a new policy blocks traffic, run it in `audit` mode to observe what it wo
 ```yaml
 plugins:
   - name: new-policy-check
-    kind: validator/pii-scan
+    kind: acme/content-check   # a host plugin your program registers
+    hooks: [cmf.tool_pre_invoke]
     mode: audit          # observe only; flip to sequential to enforce
     on_error: ignore
+
+routes:
+  - tool: send_email
+    authorization:
+      pre_invocation:
+        - "run(new-policy-check)"
 ```
 
 ## Input and output guardrails
@@ -81,4 +88,4 @@ authorization:
 
 ## Defense in depth
 
-Combine the patterns: an attribute gate, a PDP relationship check, a PII scan on output, a taint, and an audit record, each a separate effect in one policy. No single layer is load-bearing alone; the operation has to pass all of them.
+Combine the patterns: an attribute gate, a PDP relationship check, field redaction on output, a taint, and an audit record, each a separate effect in one policy. No single layer is load-bearing alone; the operation has to pass all of them.

@@ -5,7 +5,7 @@ weight: 30
 
 # APL: configuring enforcement pipelines
 
-APL is the declarative configuration that defines a CPEX enforcement pipeline. Each capability an agent can invoke (a tool, resource, prompt, or A2A method) defines its own pipeline through a **route** that sequences the controls protecting it, evaluated at the boundary. You describe the conditions and the effects; you do not write enforcement logic in application code.
+APL (Authorization Policy Layer) is the declarative configuration that defines a CPEX enforcement pipeline. Each capability an agent can invoke (a tool, resource, prompt, or A2A method) defines its own pipeline through a **route** that sequences the controls protecting it, evaluated at the boundary. You describe the conditions and the effects; you do not write enforcement logic in application code.
 
 ![An APL config: plugins and global settings, then per-entity routes with a pre-invocation flow (require, PDP, delegate, run) and post-invocation result handling (taint, redact), plus session tainting across entities](images/apl_overview.png)
 
@@ -33,7 +33,7 @@ Policy is organized by **route**: an operation CPEX mediates, identified by the 
 
 The first `deny` in any phase halts that phase and every later phase. Nothing reaches the backend after a deny in `args` or `authorization.pre_invocation`.
 
-`authorization` names *when* the phase runs, not a pure allow/deny gate: alongside the decision, `pre_invocation` (and `post_invocation`) can carry obligations and effects — `taint(...)`, `delegate(...)`, and `plugin(...)` (which may transform the payload) — that run as part of the phase.
+`authorization` names *when* the phase runs, not a pure allow/deny gate: alongside the decision, `pre_invocation` (and `post_invocation`) can carry obligations and effects that run as part of the phase: `taint(...)`, `delegate(...)`, and `run(...)` (which may transform the payload).
 
 ```yaml
 routes:
@@ -50,7 +50,7 @@ routes:
       employee_id: "str | mask(4)"
 ```
 
-The `pre_invocation:` / `post_invocation:` lists may also be written flat on the route (without the `authorization:` wrapper); both forms are equivalent.
+`pre_invocation:` and `post_invocation:` nest under `authorization:`. Each phase is an ordered list of rules and effects, and an `authorization:` block must contribute at least one step: an open route writes `pre_invocation: ["allow"]`. Writing a phase list flat on the route, or wrapping terms in `apl:`, is a load error in 0.3 (see [Migrating to 0.3]({{< relref "/docs/migration-0.3#config-keys" >}})).
 
 ## Predicates
 
@@ -96,12 +96,12 @@ For richer conditionals, use the `when` / `do` form, where `do` is a single effe
 - when: "role.hr & !perm.view_ssn"
   do:
     - "taint(restricted, session)"
-    - "plugin(audit-log)"
+    - "run(audit-log)"
 ```
 
 ## Custom denial response
 
-By default a deny surfaces a reason and code, and the host renders its own denial. A route can instead attach a custom HTTP response — status, body, headers — through a `response:` block, a sibling of the route's `authorization:` block:
+By default a deny surfaces a reason and code, and the host renders its own denial. A route can instead attach a custom HTTP response (status, body, headers) through a `response:` block, a sibling of the route's `authorization:` block:
 
 ```yaml
 routes:
@@ -116,11 +116,11 @@ routes:
         WWW-Authenticate: "Bearer"
 ```
 
-All three fields are optional; an absent block leaves the host's default denial unchanged. When the route denies, the status/body/headers are carried on the violation for the host to render on the wire. `response:` is honored at route scope and at `global` scope (below); it is inert — and warns at load time — under `defaults` or a policy bundle. It is scope-local: a `global` `response:` is not inherited by entity routes.
+All three fields are optional; an absent block leaves the host's default denial unchanged. When the route denies, the status/body/headers are carried on the violation for the host to render on the wire. `response:` is honored at route scope and at `global` scope (below); it is inert, and warns at load time, under `defaults` or a policy bundle. It is scope-local: a `global` `response:` is not inherited by entity routes.
 
 ## Authorizing HTTP requests without an entity
 
-Routes key on an MCP / A2A entity — a tool, prompt, resource, or LLM. A generic HTTP request that carries no such entity is authorized by the `global` policy instead: when `global` declares an `authorization:` (or `args:`) block, CPEX evaluates it for these requests, reading the request line (`http.method`, `http.path`, `http.host`, `http.scheme`) and headers. Pair it with a `global` `response:` to return a custom denial.
+Routes key on an MCP / A2A entity: a tool, prompt, resource, or LLM. A generic HTTP request that carries no such entity is authorized by the `global` policy instead, or by an `http:` route that selects on the request line (see [HTTP Routing]({{< relref "/docs/http-routing" >}})). When `global` declares an `authorization:` (or `args:`) block, CPEX evaluates it for these requests, reading the request line (`http.method`, `http.path`, `http.host`, `http.scheme`) and headers. Pair it with a `global` `response:` to return a custom denial.
 
 ```yaml
 global:
@@ -154,12 +154,23 @@ The accepted stages:
 | Constraint validators | `enum(a, b, c)`, `regex("...")`, `len(1..100)`, range like `0..100` |
 | Transforms | `mask(N)` (keep last N), `redact`, `redact(!predicate)` (redact unless), `omit`, `hash` |
 | Scans | `pii.redact`, `pii.detect`, `injection.scan` |
-| Dispatch | `plugin(name)` (alias `run(name)`), `taint(label[, scope])` |
+| Dispatch | `run(name)`, `taint(label[, scope])` |
 
-Named-validator dispatch (`validate(name)`) is not implemented in the current build. Use `regex("...")` for pattern checks or `plugin(name)` to hand a field to a plugin.
+The scan stages do no detection. `pii.detect` and `injection.scan` label the session (`PII`, `injection`) whenever the stage runs, and `pii.redact` also replaces the value with `[REDACTED]`. For real detection, hand the field to a plugin with `run(name)`.
+
+`plugin(name)` is not a spelling here or in step position: `run(name)` is the one form that invokes a plugin, and `plugin(name)` fails the load naming the replacement.
+
+Named-validator dispatch (`validate(name)`) is refused at load. Use `regex("...")` for pattern checks, or `run(name)` to hand a field to a plugin. Inside a quoted literal, only `\\`, `\'` and `\"` are escapes, so a regex class needs a doubled backslash: `regex("\\d+")`.
 
 ## Effects beyond predicates
 
 A `pre_invocation:` rule can also call a PDP, mint a delegated token, or invoke a plugin. Those effects and how they sequence are covered in [Effects]({{< relref "/docs/apl/effects" >}}).
 
-Every fragment on this page is drawn from the `apl-core` parser tests and the reference deployments, so the forms shown here parse as written.
+## Beside the policy
+
+Two blocks sit alongside `authorization:` on the same sections and are not policy terms themselves:
+
+- `assertions:` renders engine-derived identity onto the upstream request as headers, and filters what an upstream may tell a client back. See [Header Assertions]({{< relref "/docs/assertions" >}}).
+- `authentication:` names the identity-resolution plugins that run before policy. Under the default `dispatch: policy`, a route with no `authentication:` at any scope runs no identity resolution. See [Identity]({{< relref "/docs/apl/identity" >}}).
+
+Every fragment on this page is drawn from the PPE APL parser tests and the reference deployments, so the forms shown here parse as written. PPE's [APL grammar](https://github.com/praxis-proxy/policy/blob/v0.4.1/docs/content/apl/apl-grammar.md) is the normative syntax.

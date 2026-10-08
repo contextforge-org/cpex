@@ -13,7 +13,9 @@
 [![MSRV](https://img.shields.io/badge/MSRV-1.96-blue.svg)](rust-toolchain.toml)
 
 > [!NOTE]
-> **Looking for CPEX Python?** It now lives on the [`0.1.x` branch](https://github.com/contextforge-org/cpex/tree/0.1.x), maintained for backwards compatibility. `main` (`0.2`+) is the **Rust** framework, re-architected around policy and authorization. Python bindings (PyO3) over the Rust core are coming.
+> **Looking for the pure-Python CPEX framework?** It lives on the [`0.1.x` branch](https://github.com/contextforge-org/cpex/tree/0.1.x), maintained for backwards compatibility. `main` (`0.2`+) is the policy-first runtime, with Rust, Python and Go APIs.
+>
+> **Upgrading from 0.2?** CPEX 0.3 runs on the [praxis-policy engine](https://github.com/praxis-proxy/policy) (PPE) and renames the API, hook names and several config keys. See the [migration guide](https://contextforge-org.github.io/cpex/docs/migration-0.3/).
 
 ## What's CPEX?
 
@@ -33,7 +35,7 @@ Each capability exposed to an agent defines its own enforcement pipeline, whethe
 
 APL is the configuration that defines that pipeline. A _route_ identifies an entity and sequences the controls that protect it: resolve identity, consult an external PDP, exchange credentials, invoke plugins, redact results, propagate taint, and audit the operation. Each step executes deterministically, in order, with only the context it explicitly declares.
 
-Policies execute in two phases—before the operation and after its result—making the complete enforcement pipeline easy to inspect and reason about.
+Policies execute in two phases, before the operation and after its result, making the complete enforcement pipeline easy to inspect and reason about.
 
 ## Context-aware enforcement
 
@@ -46,6 +48,9 @@ The example below places CPEX between a single agent and three backends: HR reco
 One policy defines three distinct enforcement pipelines, one for each entity.
 
 ```yaml
+global:
+  authentication: [jwt-user]   # resolve the caller's identity on every route
+
 routes:
   # HR lookup: gate on role, scope a downstream token, redact by permission, taint the session.
   - tool: get_compensation
@@ -74,7 +79,6 @@ routes:
     authorization:
       pre_invocation:
         - "require(perm.email_send)"
-        - "run(pii-scan)"
         - "security.labels contains \"secret\": deny('write-down blocked', 'session_tainted')"
         - "run(audit-log)"
 ```
@@ -83,7 +87,7 @@ Two examples illustrate the behavior:
 
 - **Same request, different result.** An HR analyst with `view_ssn` receives the full record. Without that permission, the SSN is redacted before the response leaves CPEX. Engineers never reach the backend because the request is rejected by `require(role.hr)`.
 
-- **Information follows the session.** Reading compensation data taints the session. Later attempts to send external email are blocked—even if the email itself contains no sensitive content.
+- **Information follows the session.** Reading compensation data taints the session. Later attempts to send external email are blocked, even if the email itself contains no sensitive content.
 
 The application stays the same. Only the policy changes.
 
@@ -116,28 +120,42 @@ It can run in front of tool servers, beside an agent as an egress sidecar, insid
 ## Install
 
 ```bash
-# Engine only (bring your own plugins):
-cargo add cpex
-
-# With the bundled builtin plugins/PDPs:
-cargo add cpex --features builtins
+cargo add cpex                 # Rust
+pip install maturin && (cd bindings/python && maturin develop)   # Python, from a checkout
+go get github.com/contextforge-org/cpex/go/cpex                # Go (links the signed libcpex_ffi artifact)
 ```
 
-The default `cpex = "0.2"` is the **engine alone**. Opt into the bundled extension set with the `builtins` feature, everything (incl. the Valkey session store) with `full`, or a granular subset: `jwt`, `oauth`, `pii`, `audit`, `cedar`, `cel`, `valkey`.
+`cpex = "0.3"` compiles in every bundled builtin: JWT and API-key identity, OAuth delegation, CIBA approval, the Cedar, CEL and OPA decision points, the Valkey session store, the Vault secret provider, and an outbound HTTP transport. The one optional feature is `python-host`, which runs existing Python CPEX plugins out of process.
 
 ```rust
 use std::sync::Arc;
-use cpex::PluginManager;
+use cpex::PolicyEngine;
 
-let mgr = Arc::new(PluginManager::default());
-
-// With a builtins feature enabled, register every enabled builtin factory
-// and install the APL config visitor in one call:
-cpex::install_builtins(&mgr);
-// ... then load an APL config that references the enabled plugin `kind`s.
+let engine = Arc::new(PolicyEngine::default());
+// Register every builtin factory and install the APL config visitor:
+cpex::install_builtins(&engine);
+// Builtins that call out (JWKS, token exchange, CIBA, Vault) borrow this
+// transport. It refuses private and loopback destinations by default.
+cpex::install_default_http_transport(&engine);
+engine.load_config_yaml(yaml)?;
+engine.initialize().await?;
 ```
 
-Authoring plugins or PDP resolvers? Depend on the lean [`cpex-sdk`](crates/cpex-sdk) crate instead of the full runtime. See [`crates/cpex-core/examples`](crates/cpex-core/examples) for runnable examples.
+```python
+from cpex import PolicyEngine
+
+engine = PolicyEngine("policy.yaml")   # builtins, transport and secret providers installed
+await engine.initialize()
+```
+
+```go
+engine, _ := cpex.NewPolicyEngineDefault()
+engine.EnableAPL()                     // builtins, transport and secret providers
+engine.LoadConfig(yaml)
+engine.Initialize()
+```
+
+`run(audit-log)` in the example above names a host plugin. CPEX ships no audit or PII-scanner plugin of its own; see [Builtins](https://contextforge-org.github.io/cpex/docs/builtins/). Writing a plugin? Implement it against `cpex::prelude` and register it with `engine.register_factory`; the [tutorial](examples/tutorial) shows how.
 
 ## Documentation
 
@@ -147,23 +165,23 @@ Authoring plugins or PDP resolvers? Depend on the lean [`cpex-sdk`](crates/cpex-
 - [**Use Cases**](https://contextforge-org.github.io/cpex/docs/use-cases/): complete integration examples with external middleware projects.
 - [**Tutorial**](https://contextforge-org.github.io/cpex/docs/tutorial/): a complete tour of the framework.
 - [**APL**](https://contextforge-org.github.io/cpex/docs/apl/): the policy pipeline configuration: predicates, effects, sequencing, field pipelines.
+- [**Migrating to 0.3**](https://contextforge-org.github.io/cpex/docs/migration-0.3/): every API, hook and config change from 0.2.x.
 
 ## Workspace layout
 
-CPEX is a Cargo workspace of focused crates:
+The engine, the APL compiler and runtime, and the builtins come from the [praxis-policy](https://github.com/praxis-proxy/policy) crates on crates.io, pinned to an exact version. This repository holds what CPEX adds:
 
-| Crate | Description |
-|-------|-------------|
-| [`cpex`](crates/cpex) | Host facade, re-exports the runtime and (optionally) the builtins |
-| [`cpex-core`](crates/cpex-core) | Plugin runtime: `PluginManager`, executor, hooks, config |
-| [`cpex-sdk`](crates/cpex-sdk) | Plugin author SDK: `Plugin`/`HookHandler` traits, payloads, results |
-| [`cpex-orchestration`](crates/cpex-orchestration) | Async concurrency primitives shared by the runtime |
-| [`cpex-builtins`](crates/cpex-builtins) | Feature-gated bundle of builtin plugins, PDPs, session stores |
-| [`cpex-ffi`](crates/cpex-ffi) | C FFI (`cdylib`/`staticlib`) for Go / Python / WASM host bindings |
-| [`apl-core`](crates/apl-core) · [`apl-cmf`](crates/apl-cmf) · [`apl-cpex`](crates/apl-cpex) | APL (Authorization Policy Language): compiler/evaluator, CMF bridge, CPEX integration |
-| `builtins/*` | Bundled plugins (PII scanner, audit logger, JWT identity, OAuth/Biscuit delegation), PDPs (Cedar, CEL, OPA/Rego), and the Valkey session store |
+| Path | Description |
+|------|-------------|
+| [`crates/cpex`](crates/cpex) | Host facade: re-exports `praxis-policy` (`PolicyEngine`, `install_builtins`, `prelude`, the builtin factories, `HyperTransport`) |
+| [`crates/cpex-hosts-python`](crates/cpex-hosts-python) | Runs existing Python CPEX plugins out of process, one virtualenv per plugin (`python-host` feature) |
+| [`crates/cpex-ffi`](crates/cpex-ffi) | C ABI v3 (`cdylib`/`staticlib`) used by the Go package |
+| [`builtins/plugins/delegator-biscuit`](builtins/plugins/delegator-biscuit) | Biscuit capability-token delegator |
+| [`bindings/python`](bindings/python) | PyO3 bindings: the Python `cpex` package |
+| [`go/cpex`](go/cpex) | Go bindings over the C ABI |
+| [`examples/tutorial`](examples/tutorial), [`examples/go-demo`](examples/go-demo) | Runnable tutorial modules and Go demos |
 
-The C FFI is distributed as signed prebuilt artifacts. See [`crates/cpex-ffi/RELEASE.md`](crates/cpex-ffi/RELEASE.md). Go bindings live in [`go/cpex`](go/cpex).
+The 0.2.x crates (`cpex-core`, `cpex-sdk`, `cpex-builtins`, `apl-core`, the `cpex-plugin-*` and `cpex-pdp-*` crates, and others) are no longer built; their 0.2.3 releases stay on crates.io. The C FFI is distributed as signed prebuilt artifacts. See [`crates/cpex-ffi/RELEASE.md`](crates/cpex-ffi/RELEASE.md).
 
 ## Development
 

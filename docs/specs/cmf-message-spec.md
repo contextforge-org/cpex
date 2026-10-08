@@ -71,7 +71,7 @@ The CMF is designed to satisfy the following goals:
   Define a provider-agnostic message format that decouples transport wire protocols from internal processing, enabling consistent handling across LLM providers, agent frameworks, tools, and enforcement systems.
 
 * **Complete and explicit enforcement surface**
-  Represent all policy-relevant data—including identity, access control metadata, governance attributes, execution context, and provenance—as structured, typed fields on the message.
+  Represent all policy-relevant data, including identity, access control metadata, governance attributes, execution context, and provenance, as structured, typed fields on the message.
 
 * **Integrity and safety by construction**
   Protect security-relevant data through explicit mutability tiers (immutable, monotonic, guarded, mutable) enforced by the processing pipeline, and enable safe read-only inspection for policy evaluation.
@@ -332,7 +332,7 @@ Execution environment and request-level timing/tracing. Available to all consume
 
 ### 3.4 AgentExtension (immutable)
 
-Agent execution context — session tracking, multi-agent lineage, and the original user intent. Immutable because the user's intent and session identity must not be modifiable by processing components.
+Agent execution context: session tracking, multi-agent lineage, and the original user intent. Immutable because the user's intent and session identity must not be modifiable by processing components.
 
 | Attribute | Type | Description |
 |-----------|------|-------------|
@@ -354,7 +354,7 @@ Agent execution context — session tracking, multi-agent lineage, and the origi
 
 ### 3.5 HttpExtension (guarded)
 
-HTTP request context. Readable with `read_headers`, writable with `write_headers`. The write capability exists because consumers sometimes need to inject headers for downstream systems — e.g., adding an OAuth token for an API call, or a correlation ID for tracing.
+HTTP request context. Readable with `read_headers`, writable with `write_headers`. The write capability exists because consumers sometimes need to inject headers for downstream systems: e.g., adding an OAuth token for an API call, or a correlation ID for tracing.
 
 | Attribute | Read Capability | Write Capability | Type | Description |
 |-----------|----------------|-----------------|------|-------------|
@@ -408,9 +408,9 @@ objects: dict[str, ObjectSecurityProfile] = {}
 | `trust_domain` | `str \| None` | Trust domain: `"internal"`, `"external"`, `"privileged"` |
 | `data_scope` | `list[str]` | Field names this entity accesses/returns (e.g., `["salary", "bonus"]`) |
 
-For MCP/framework messages (single entity), this map has one entry. For LLM provider messages with multiple tool calls, it has one entry per entity. The host pipeline populates this map during message ingestion by looking up each entity's registered profile from an implementation-defined registry (e.g., tool registration metadata, MCP server manifests, or a policy store). Profile lookup is keyed by entity identifier — the tool name, resource URI, or prompt name that appears in the message content.
+For MCP/framework messages (single entity), this map has one entry. For LLM provider messages with multiple tool calls, it has one entry per entity. The host pipeline populates this map during message ingestion by looking up each entity's registered profile from an implementation-defined registry (e.g., tool registration metadata, MCP server manifests, or a policy store). Profile lookup is keyed by entity identifier: the tool name, resource URI, or prompt name that appears in the message content.
 
-The `MessageView` exposes a singular accessor — each view resolves its own profile from the map:
+The `MessageView` exposes a singular accessor: each view resolves its own profile from the map:
 
 ```
 view.object → ObjectSecurityProfile | None
@@ -489,11 +489,11 @@ Typed metadata about the MCP entity being processed. Gives consumers access to t
 |-----------|------|-------------|
 | `name` | `str` | Prompt template name |
 | `description` | `str \| None` | Prompt description |
-| `arguments` | `list[dict] \| None` | Argument definitions — each entry has `name`, `description`, `required` |
+| `arguments` | `list[dict] \| None` | Argument definitions: each entry has `name`, `description`, `required` |
 | `server_id` | `str \| None` | ID of the server providing this prompt |
 | `annotations` | `dict` | MCP annotations |
 
-Note: Prompts use an argument list rather than JSON Schema for input definition, following the MCP prompt specification. There is no output schema — prompt output is always rendered messages.
+Note: Prompts use an argument list rather than JSON Schema for input definition, following the MCP prompt specification. There is no output schema: prompt output is always rendered messages.
 
 ### 3.8 CompletionExtension (immutable)
 
@@ -556,7 +556,7 @@ Agentic framework context. Captures the framework-level execution environment fo
 
 Host-provided operational metadata about the entity being processed. Set by the host system (gateway registration, static config, MCP manifest, admin UI) before the plugin pipeline runs. Plugins can read this data for routing and policy decisions but cannot modify it.
 
-`MetaExtension` is protocol-agnostic — it carries the same structure regardless of whether the entity came from MCP, A2A, gRPC, or REST.
+`MetaExtension` is protocol-agnostic: it carries the same structure regardless of whether the entity came from MCP, A2A, gRPC, or REST.
 
 | Attribute | Type | Description |
 |-----------|------|-------------|
@@ -578,7 +578,7 @@ Custom extensions. Fully mutable through copy-on-write, no restrictions on modif
 
 ## 4. MessageView
 
-`Message` is the **storage format** — it preserves the wire structure exactly as the LLM sent it. `MessageView` is the **policy and interaction surface** — it decomposes a message into individually addressable parts, enriches each with computed semantics, and provides a uniform interface regardless of content type.
+`Message` is the **storage format**: it preserves the wire structure exactly as the LLM sent it. `MessageView` is the **policy and interaction surface**: it decomposes a message into individually addressable parts, enriches each with computed semantics, and provides a uniform interface regardless of content type.
 
 ### 4.1 Message vs. MessageView
 
@@ -601,8 +601,8 @@ Calling `message.iter_views()` produces **four MessageViews**, each with a unifo
 
 | # | `kind` | `name` | `action` | `is_pre` | `uri` | `content` |
 |---|--------|--------|----------|----------|-------|-----------|
-| 1 | `thinking` | — | `generate` | `false` | — | `"The user wants admin users..."` |
-| 2 | `text` | — | `send` | `false` | — | `"Let me look that up for you."` |
+| 1 | `thinking` | none | `generate` | `false` | none | `"The user wants admin users..."` |
+| 2 | `text` | none | `send` | `false` | none | `"Let me look that up for you."` |
 | 3 | `tool_call` | `execute_sql` | `execute` | `true` | `tool://db-server/execute_sql` | `'{"query": "SELECT..."}'` |
 | 4 | `tool_call` | `send_email` | `execute` | `true` | `tool://email-server/send_email` | `'{"to": "boss@..."}'` |
 
@@ -632,7 +632,7 @@ An MCP tool invocation is simply a Message with one `tool_call` content part:
 {"role": "assistant", "content": [{"content_type": "tool_call", "name": "get_user", "arguments": {"id": "123"}}]}
 ```
 
-This produces one view. An OpenAI assistant response that bundles reasoning with two tool calls produces three views. The processing pipeline doesn't care — `iter_views()` yields the right number either way, and every view has the same interface.
+This produces one view. An OpenAI assistant response that bundles reasoning with two tool calls produces three views. The processing pipeline doesn't care: `iter_views()` yields the right number either way, and every view has the same interface.
 
 This means the CMF does not force a choice between "one action per message" (MCP, A2A) and "bundled response" (LLM providers). Both are first-class, and the same policies and routing rules work across both patterns without adaptation.
 
@@ -678,7 +678,7 @@ Direction is determined by a combination of ViewKind and Role:
 
 ### 4.5 Flat Accessors (capability-gated)
 
-MessageView provides flat accessor properties over extensions. These hide the underlying extension nesting — consumers write `view.roles`, not `view.extensions.security.subject.roles`. Availability depends on the consumer's declared capabilities — extensions for which access has not been granted are `None` on the view.
+MessageView provides flat accessor properties over extensions. These hide the underlying extension nesting: consumers write `view.roles`, not `view.extensions.security.subject.roles`. Availability depends on the consumer's declared capabilities: extensions for which access has not been granted are `None` on the view.
 
 | Accessor | Capability | Type | Reads From |
 |----------|-----------|------|------------|
