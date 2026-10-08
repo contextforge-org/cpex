@@ -105,7 +105,8 @@ no-op.
 Invoke a hook by name. Returns a `PipelineResult`.
 
 - `hook_name`: e.g. `"cmf.tool_pre_invoke"`. Any hook name is accepted;
-  `cmf.*` hooks use typed `MessagePayload`, others use `GenericPayload`.
+  `cmf.*` hooks use typed `MessagePayload`, `identity.resolve` uses typed
+  `IdentityPayload`, others use `GenericPayload`.
 - `payload`: JSON-compatible `dict` (str keys, depth at most 128).
 - `extensions`: optional `dict` of CPEX extensions fields. Under the
   default `dispatch: policy`, `meta.entity_type` and `meta.entity_name`
@@ -191,10 +192,34 @@ Defaults to tokio's `num_cpus` when unset.
 
 ## Deferred Features
 
-- **Identity and delegation hooks** (`identity.resolve`, `token.delegate`):
-  routed through `GenericPayload` from Python, so they do not reach the
-  typed identity and delegation handlers. Drive them from Rust or Go for
-  now.
+- **Delegation** (`delegate(...)` steps, `token.delegate`): the inbound
+  tokens a delegator exchanges are never serialized, so they cannot cross
+  from an `identity.resolve` result into a later tool call. Drive
+  delegation from Rust, or from Go with `InvokeResolved`.
+
+### Identity from Python
+
+`identity.resolve` takes a dict shaped like PPE's `IdentityPayload`. Pass
+the request's credential headers with lowercased names; the resolved
+subject comes back under `modified_payload["subject"]`. Put it in the tool
+call's extensions as `security.subject`:
+
+```python
+ident = await engine.invoke_hook(
+    "identity.resolve",
+    {"source": "bearer", "headers": {"authorization": f"Bearer {token}"}},
+    {"meta": {"entity_type": "tool", "entity_name": "get_compensation"}},
+)
+if ident.continue_processing:
+    ext = {
+        "meta": {"entity_type": "tool", "entity_name": "get_compensation"},
+        "security": {"subject": ident.modified_payload["subject"]},
+    }
+    result = await engine.invoke_hook("cmf.tool_pre_invoke", payload, ext)
+```
+
+The engine trusts the subject it is given, so only pass one that came
+from `identity.resolve`.
 
 ## Running Tests
 

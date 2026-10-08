@@ -94,10 +94,10 @@ side effects in tests, always call shutdown first.
 The following features from the legacy package are **not available in v1**
 of the Rust-backed package:
 
-- **Typed identity/delegation payloads** (`identity_resolve`,
-  `token_delegate`): these hooks route through `GenericPayload` in v1.
-  The raw dict is preserved; typed constructors and token injection are
-  deferred to v2.
+- **Delegation** (`token_delegate`, now `token.delegate`): inbound tokens
+  are never serialized, so a delegator cannot exchange them for a call
+  made from Python. `identity.resolve` (formerly `identity_resolve`) does
+  take a typed `IdentityPayload` dict; see the README.
 - **Dual-mode / backend selection**: this package is always Rust-backed.
   There is no environment variable to switch between backends.
 

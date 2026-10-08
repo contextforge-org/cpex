@@ -13,6 +13,7 @@ use praxis_policy_core::cmf::MessagePayload;
 use praxis_policy_core::context::PluginContextTable;
 use praxis_policy_core::extensions::Extensions;
 use praxis_policy_core::hooks::payload::PluginPayload;
+use praxis_policy_core::identity::{IdentityPayload, HOOK_IDENTITY_RESOLVE};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyDict, PyFloat, PyInt, PyList, PyString};
@@ -136,13 +137,22 @@ pub fn json_value_to_pyobj<'py>(py: Python<'py>, v: &Value) -> PyResult<Bound<'p
 /// Build the correct `Box<dyn PluginPayload>` for a hook.
 ///
 /// `cmf.*` hooks → `MessagePayload` (serde-constructed from the value).
+/// `identity.resolve` → `IdentityPayload`. Tokens travel in `headers`;
+/// the payload's raw token field is never deserialized.
 /// All other hook names → `GenericPayload { value }`.
 ///
-/// A `from_value` failure on a CMF payload raises `ValueError` rather than
-/// silently falling through to GenericPayload; the caller sent a cmf hook
-/// with a dict that doesn't match the MessagePayload schema.
+/// A `from_value` failure on a typed payload raises `ValueError` rather
+/// than silently falling through to GenericPayload; the caller sent a dict
+/// that doesn't match the hook's payload schema.
 pub fn resolve_payload(hook_name: &str, value: Value) -> PyResult<Box<dyn PluginPayload>> {
-    if hook_name.starts_with("cmf.") {
+    if hook_name == HOOK_IDENTITY_RESOLVE {
+        let idp: IdentityPayload = serde_json::from_value(value).map_err(|e| {
+            PyValueError::new_err(format!(
+                "cpex: payload for '{hook_name}' is not a valid IdentityPayload: {e}"
+            ))
+        })?;
+        Ok(Box::new(idp))
+    } else if hook_name.starts_with("cmf.") {
         let msg: MessagePayload = serde_json::from_value(value).map_err(|e| {
             PyValueError::new_err(format!(
                 "cpex: payload for '{hook_name}' is not a valid MessagePayload: {e}"
@@ -161,10 +171,15 @@ pub fn resolve_payload(hook_name: &str, value: Value) -> PyResult<Box<dyn Plugin
 /// `PipelineResult.errors` rather than silently dropping the modification.
 ///
 /// Downcast order: `MessagePayload` first (most common for `cmf.*` hooks),
-/// then `GenericPayload`; mirrors cpex-ffi's `serialize_payload` ordering.
+/// then `IdentityPayload`, then `GenericPayload`; mirrors cpex-ffi's
+/// `serialize_payload` ordering. Inbound credentials on an
+/// `IdentityPayload` are skip-serialized and never reach Python.
 pub fn serialize_payload(payload: &dyn PluginPayload) -> Option<Value> {
     if let Some(mp) = payload.as_any().downcast_ref::<MessagePayload>() {
         return serde_json::to_value(mp).ok();
+    }
+    if let Some(idp) = payload.as_any().downcast_ref::<IdentityPayload>() {
+        return serde_json::to_value(idp).ok();
     }
     if let Some(gp) = payload.as_any().downcast_ref::<GenericPayload>() {
         return serde_json::to_value(&gp.value).ok();
