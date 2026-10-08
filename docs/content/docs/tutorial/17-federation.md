@@ -23,18 +23,41 @@ One resolver, two `trusted_issuers`. From [`policies/m17.yaml`](https://github.c
 plugins:
   - name: keycloak
     kind: identity/jwt
+    hooks: [identity.resolve]
+    capabilities: [perform_http]
     config:
       role: user
+      header: Authorization
       claim_mapper: standard
       trusted_issuers:
-        - issuer: http://localhost:8081/realms/cpex-tutorial   # home realm
+        # Home issuer: your own workforce realm.
+        - issuer: http://localhost:8081/realms/cpex-tutorial
           audiences: [cpex-tutorial]
           algorithms: [RS256]
-          decoding_key: { kind: jwks_url, url: "…/cpex-tutorial/…/certs" }
-        - issuer: http://localhost:8081/realms/cpex-partner    # partner realm
+          decoding_key:
+            kind: jwks_url
+            url: http://localhost:8081/realms/cpex-tutorial/protocol/openid-connect/certs
+            insecure_http: true
+          leeway_seconds: 60
+        # Partner issuer: a different realm, validated on ITS OWN keys.
+        - issuer: http://localhost:8081/realms/cpex-partner
           audiences: [cpex-tutorial]
           algorithms: [RS256]
-          decoding_key: { kind: jwks_url, url: "…/cpex-partner/…/certs" }   # ITS OWN keys
+          decoding_key:
+            kind: jwks_url
+            url: http://localhost:8081/realms/cpex-partner/protocol/openid-connect/certs
+            insecure_http: true
+          leeway_seconds: 60
+
+routes:
+  # One route, one rule. It doesn't care WHICH issuer vouched for the caller,
+  # only that some trusted one did and the resolved subject has role.hr.
+  - tool: get_compensation
+    authentication:
+      - keycloak
+    authorization:
+      pre_invocation:
+        - "require(role.hr)"
 ```
 
 Each entry is a full trust anchor: its own issuer string, its own JWKS, its own accepted audiences. Here both issuers are realms in the same Keycloak, but they could be entirely separate products. The resolver only matches `iss`.

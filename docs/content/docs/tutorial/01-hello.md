@@ -15,26 +15,46 @@ You have tools an agent can call. Some should be gated, some open. You do not wa
 
 ## Build it
 
-The host is three lines plus loading a policy. From [`examples/tutorial/examples/m01_hello.rs`](https://github.com/contextforge-org/cpex/tree/main/examples/tutorial/examples/m01_hello.rs):
+The host builds an engine, registers the builtins, installs an HTTP transport, and loads a policy. From [`examples/tutorial/examples/m01_hello.rs`](https://github.com/contextforge-org/cpex/tree/main/examples/tutorial/examples/m01_hello.rs):
 
 ```rust
-let mgr = Arc::new(PluginManager::default());
-cpex::install_builtins(&mgr);               // register the bundled plugins + APL visitor
-mgr.load_config_yaml(POLICY).unwrap();      // load policies/m01.yaml
-mgr.initialize().await.unwrap();
+// --- Set up the enforcement point (the same steps a real host writes) ---
+let engine = Arc::new(PolicyEngine::default());
+cpex::install_builtins(&engine);
+// The HTTP transport builtins use to reach an IdP. Module 1 calls no IdP,
+// but every module installs it the same way; see `install_http_transport`.
+cpex_tutorial::install_http_transport(&engine);
+engine
+    .load_config_yaml(POLICY)
+    .expect("policy m01.yaml should load");
+engine.initialize().await.expect("initialize");
 ```
 
-The policy ([`policies/m01.yaml`](https://github.com/contextforge-org/cpex/tree/main/examples/tutorial/policies/m01.yaml)) defines two routes:
+`install_builtins` registers the bundled plugins and the APL config visitor. `install_http_transport` sets the HTTP client that builtins use to fetch signing keys, exchange tokens, and open approval requests. Builtins do not bring their own: the host installs one on the engine. From [`src/lib.rs`](https://github.com/contextforge-org/cpex/tree/main/examples/tutorial/src/lib.rs):
+
+```rust
+pub fn install_http_transport(engine: &Arc<PolicyEngine>) {
+    engine.set_http_transport(Arc::new(
+        HyperTransport::new().with_allow_private_destinations(),
+    ));
+}
+```
+
+The bundled transport refuses private and loopback destinations. The tutorial IdP runs on `localhost`, so this one allows them. **This is not a production setting:** it lets a policy document point a plugin at anything on the host's network. A production host keeps the default (`cpex::install_default_http_transport`) or installs its own transport with its own egress rules. Module 1 makes no outbound call; the transport matters from module 2 on.
+
+The policy ([`policies/m01.yaml`](https://github.com/contextforge-org/cpex/tree/main/examples/tutorial/policies/m01.yaml)) defines two routes. `get_compensation` requires an authenticated caller, so it denies the anonymous one. `search_repos` has a single unconditional `allow`. An `authorization:` block must name at least one step, so an open route says so explicitly.
 
 ```yaml
 routes:
   - tool: get_compensation
     authorization:
       pre_invocation:
-        - "require(authenticated)"    # denies an anonymous caller
+        - "require(authenticated)"
+
   - tool: search_repos
     authorization:
-      pre_invocation: []              # no rule, so open
+      pre_invocation:
+        - "allow"
 ```
 
 Each call goes through `mediate()`, the harness wrapper around the loop a host owns: resolve identity, run policy, call the backend, run policy on the result. It is harness code, not a CPEX API. Module 9 opens it up.
@@ -47,7 +67,7 @@ cargo run -p cpex-tutorial --example m01_hello
 
 ```
 ▸ anonymous → get_compensation (route requires authentication)
-  ✗ DENIED   [routes.tool:get_compensation.apl.pre_invocation[0]] access denied
+  ✗ DENIED   [routes.tool:get_compensation.pre_invocation[0]] access denied
 
 ▸ anonymous → search_repos (route has no rule)
   ✓ ALLOWED  {"visibility":"public","repositories":[{"name":"brand-site","visibility":"public"}]}
@@ -60,8 +80,8 @@ Same anonymous caller, same host code. The route decided the outcome, and the de
 ## Try it
 
 1. Change the failing predicate. In `examples/tutorial/policies/m01.yaml`, change `require(authenticated)` to `require(role.hr)` and re-run. Expect: `get_compensation` still denies, because the anonymous caller has no role either. The displayed reason is the same generic, position-based code (`...pre_invocation[0]] access denied`); what changed is which predicate rejected the call, not the visible text.
-2. Open the gated route. Delete the `require(authenticated)` line (leave `pre_invocation: []`) and re-run. Expect: both calls allow.
-3. Gate the open route. `get_compensation` already denies; add `- "require(authenticated)"` under `search_repos` too, leaving `get_compensation` unchanged, and re-run. Expect: both calls now deny.
+2. Open the gated route. Replace `require(authenticated)` under `get_compensation` with `allow` and re-run. Expect: both calls allow.
+3. Gate the open route. `get_compensation` already denies; replace `allow` under `search_repos` with `require(authenticated)`, leaving `get_compensation` unchanged, and re-run. Expect: both calls now deny.
 
 Reset any time with `git checkout -- examples/tutorial/policies`.
 
@@ -72,7 +92,7 @@ The route's `require(authenticated)` predicate failed, because the caller is ano
 {{< /details >}}
 
 {{< details "What makes search_repos allow?" >}}
-It has no denying rule. A route with an empty or absent `pre_invocation` is open by default. CPEX blocks only what policy tells it to.
+Its only step is `allow`, which never denies. CPEX blocks only what policy tells it to. An empty `pre_invocation` list is a load error, so a route that should be open says `allow`.
 {{< /details >}}
 
 ## Go deeper

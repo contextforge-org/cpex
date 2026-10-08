@@ -45,20 +45,46 @@ One resolver for the SVID, and a `subject: caller_workload` delegation. From [`p
 
 ```yaml
 plugins:
+  # The workload SVID, on X-Workload-Token -> caller_workload slot. Validated
+  # against SPIRE's JWKS (the spire-oidc discovery provider on :8443), ES256,
+  # with the SVID's audience = the tutorial realm issuer (the draft requires
+  # the SVID's sole audience to be the authorization server it authenticates to).
   - name: jwt-workload
     kind: identity/jwt
+    hooks: [identity.resolve]
+    capabilities: [perform_http]
     config:
-      role: caller_workload             # -> the caller_workload slot
+      role: caller_workload
       header: X-Workload-Token
+      claim_mapper: standard
       trusted_issuers:
-        - issuer: http://spire-oidc:8443            # SPIRE, not the IdP
-          audiences: [http://localhost:8081/realms/cpex-tutorial]   # SVID aud = the IdP
-          algorithms: [ES256]                       # SVIDs are EC-signed
-          decoding_key: { kind: jwks_url, url: "http://localhost:8443/keys" }
+        - issuer: http://spire-oidc:8443
+          audiences: [http://localhost:8081/realms/cpex-tutorial]
+          algorithms: [ES256]
+          decoding_key:
+            kind: jwks_url
+            url: http://localhost:8443/keys
+            insecure_http: true
+          leeway_seconds: 60
+
+  - name: workday-oauth
+    kind: delegator/oauth
+    hooks: [token.delegate]
+    capabilities: [read_inbound_credentials, write_delegated_tokens, perform_http]
+    config:
+      token_endpoint: http://localhost:8081/realms/cpex-tutorial/protocol/openid-connect/token
+      client_id: cpex-gateway
+      client_secret_source:
+        kind: literal
+        secret: gateway-dev-secret
+      insecure_http: true
 
 routes:
+  # The agent authenticates by SVID alone (no user/client token) and CPEX
+  # brokers a github-api-scoped token from it via the two-leg exchange.
   - tool: search_repos
-    authentication: [jwt-workload]        # authenticate by the SVID alone
+    authentication:
+      - jwt-workload
     authorization:
       pre_invocation:
         - "delegate(workday-oauth, target: github-api, audience: github-api, subject: caller_workload)"

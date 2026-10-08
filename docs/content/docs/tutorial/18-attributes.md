@@ -20,24 +20,50 @@ CPEX provisions them from a plain data file into the `data.*` namespace. Identit
 A data file of facts (note the top-level `data:` wrapper). From [`policies/attributes/controls.yaml`](https://github.com/contextforge-org/cpex/tree/main/examples/tutorial/policies/attributes/controls.yaml):
 
 ```yaml
+data:` mapping.
 data:
   org:
+    # The region this deployment's data must stay in.
     data_region: eu
   controls:
+    # An operator's per-tool kill switch: flip a tool off without touching
+    # policy or code. Policy reads these facts and decides.
     tools:
       get_compensation: { enabled: false }   # frozen by operations
       search_repos: { enabled: true }
 ```
 
-List it under `global.apl.attribute_files`, and read it in a rule. From [`policies/m18.yaml`](https://github.com/contextforge-org/cpex/tree/main/examples/tutorial/policies/m18.yaml):
+List it under `global.attribute_files`, and read it in a rule. From [`policies/m18.yaml`](https://github.com/contextforge-org/cpex/tree/main/examples/tutorial/policies/m18.yaml):
 
 ```yaml
 global:
-  apl:
-    attribute_files:
-      - examples/tutorial/policies/attributes/controls.yaml   # relative to repo root
+  # Deep-merged, in order, into one `data.*` tree at startup. Paths are
+  # relative to where you run the example (the repo root).
+  attribute_files:
+    - examples/tutorial/policies/attributes/controls.yaml
+
+plugins:
+  - name: keycloak
+    kind: identity/jwt
+    hooks: [identity.resolve]
+    capabilities: [perform_http]
+    config:
+      role: user
+      header: Authorization
+      claim_mapper: standard
+      trusted_issuers:
+        - issuer: http://localhost:8081/realms/cpex-tutorial
+          audiences: [cpex-tutorial]
+          algorithms: [RS256]
+          decoding_key:
+            kind: jwks_url
+            url: http://localhost:8081/realms/cpex-tutorial/protocol/openid-connect/certs
+            insecure_http: true
+          leeway_seconds: 60
 
 routes:
+  # Enabled/disabled is an operator fact, read from data.* per request. Each
+  # route consults its own tool's flag; policy never hard-codes the answer.
   - tool: get_compensation
     authentication: [keycloak]
     authorization:
@@ -46,6 +72,15 @@ routes:
         - when: "data.controls.tools.get_compensation.enabled == false"
           do:
             - "deny('get_compensation is disabled by operations', 'ops.tool_disabled')"
+
+  - tool: search_repos
+    authentication: [keycloak]
+    authorization:
+      pre_invocation:
+        - "require(authenticated)"
+        - when: "data.controls.tools.search_repos.enabled == false"
+          do:
+            - "deny('search_repos is disabled by operations', 'ops.tool_disabled')"
 ```
 
 The whole file flattens into the bag: `data.org.data_region`, `data.controls.tools.get_compensation.enabled`, and so on. Multiple files deep-merge in order, and the merge is fail-fast: two files setting the same leaf differently is a load error, and a file missing its `data:` wrapper is rejected. A config mistake stops startup rather than quietly mis-routing.

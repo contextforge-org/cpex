@@ -15,19 +15,21 @@ Most authorization systems judge each request alone. That misses a whole class o
 
 ## Build it
 
-One route taints the session; another refuses when the taint is present. From [`policies/m07.yaml`](https://github.com/contextforge-org/cpex/tree/main/examples/tutorial/policies/m07.yaml):
+One route taints the session; another refuses when the taint is present. The file also declares the `keycloak` plugin from module 2 (left out here). From [`policies/m07.yaml`](https://github.com/contextforge-org/cpex/tree/main/examples/tutorial/policies/m07.yaml):
 
 ```yaml
 routes:
   - tool: get_compensation
-    authentication: [keycloak]
+    authentication:
+      - keycloak
     authorization:
       pre_invocation:
         - "require(role.hr)"
-        - "taint(secret, session)"        # mark the session as having read secret data
+        - "taint(secret, session)"
 
   - tool: send_email
-    authentication: [keycloak]
+    authentication:
+      - keycloak
     authorization:
       pre_invocation:
         - "require(authenticated)"
@@ -63,16 +65,14 @@ The same `send_email` call is allowed in a clean session and denied in the sessi
 2. Rename the label. In `examples/tutorial/policies/m07.yaml`, change `taint(secret, session)` to `taint(pii, session)` and update the guard `security.labels contains "secret"` to `"pii"`. Re-run. Expect: the write-down still blocks, now keyed on the `pii` label. Labels are arbitrary names you choose; the write and the read just have to agree.
 3. Persist across restarts. The default store is in-memory and resets when the program exits. To back it with Valkey:
    - Start Valkey: `docker compose -f examples/tutorial/idp/docker-compose.yml --profile valkey up -d`.
-   - Enable the feature: in `examples/tutorial/Cargo.toml`, change the `cpex` dependency to `features = ["builtins", "valkey"]`.
    - In `policies/m07.yaml`, add a session store under `global`:
      ```yaml
      global:
-       apl:
-         session_store:
-           kind: valkey
-           endpoint: localhost:6379
+       session_store:
+         kind: valkey
+         endpoint: localhost:6379
      ```
-   Re-run: the taint now lives in Valkey and survives a process restart.
+   The Valkey store is a builtin, so no Cargo feature is needed. Re-run: the taint now lives in Valkey and survives a process restart.
 
 ## Checkpoint
 

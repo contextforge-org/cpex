@@ -26,22 +26,79 @@ Both credentials arrive on every call, on different headers, and a resolver pick
 
 ```yaml
 plugins:
-  - name: jwt-user            # the human, on X-User-Token  -> subject slot
+  # The human, on X-User-Token -> subject slot.
+  - name: jwt-user
     kind: identity/jwt
-    config: { role: user,   header: X-User-Token,  audiences: [cpex-tutorial], ... }
-  - name: jwt-agent           # the agent, on Authorization -> client slot
+    hooks: [identity.resolve]
+    capabilities: [perform_http]
+    config:
+      role: user
+      header: X-User-Token
+      claim_mapper: standard
+      trusted_issuers:
+        - issuer: http://localhost:8081/realms/cpex-tutorial
+          audiences: [cpex-tutorial]
+          algorithms: [RS256]
+          decoding_key:
+            kind: jwks_url
+            url: http://localhost:8081/realms/cpex-tutorial/protocol/openid-connect/certs
+            insecure_http: true
+          leeway_seconds: 60
+
+  # The agent, on Authorization -> client slot (the acting party).
+  - name: jwt-agent
     kind: identity/jwt
-    config: { role: client, header: Authorization, audiences: [cpex-gateway], ... }
+    hooks: [identity.resolve]
+    capabilities: [perform_http]
+    config:
+      role: client
+      header: Authorization
+      claim_mapper: standard
+      trusted_issuers:
+        - issuer: http://localhost:8081/realms/cpex-tutorial
+          audiences: [cpex-gateway]
+          algorithms: [RS256]
+          decoding_key:
+            kind: jwks_url
+            url: http://localhost:8081/realms/cpex-tutorial/protocol/openid-connect/certs
+            insecure_http: true
+          leeway_seconds: 60
+
+  - name: workday-oauth
+    kind: delegator/oauth
+    hooks: [token.delegate]
+    capabilities: [read_inbound_credentials, write_delegated_tokens, perform_http]
+    config:
+      token_endpoint: http://localhost:8081/realms/cpex-tutorial/protocol/openid-connect/token
+      client_id: cpex-gateway
+      client_secret_source:
+        kind: literal
+        secret: gateway-dev-secret
+      insecure_http: true
 
 routes:
+  # The user authorizes (require role.hr on the SUBJECT), the token is minted
+  # on behalf of the user, and the agent is named as the actor. CPEX puts the
+  # actor on the wire per RFC 8693 delegation; whether `act` lands in the
+  # minted token is the token service's call (Keycloak drops it, see the doc).
   - tool: get_compensation
-    authentication: [jwt-user, jwt-agent]     # both must resolve
+    authentication:
+      - jwt-user
+      - jwt-agent
     authorization:
       pre_invocation:
-        - "require(role.hr)"                   # authorize on the SUBJECT (the user)
-        - "delegate(workday-oauth, target: workday-api, audience: workday-api,
-                    subject: user, actor: client)"
+        - "require(role.hr)"
+        - "delegate(workday-oauth, target: workday-api, audience: workday-api, subject: user, actor: client)"
         - "require(delegation.granted)"
+
+  # The guardrail: `actor:` only pairs with an on-behalf-of subject. Naming an
+  # actor while the subject is `this_workload` (a client_credentials grant that
+  # carries no actor_token) is a mistake, and CPEX denies it when the step runs
+  # rather than silently dropping the actor.
+  - tool: sync_index
+    authorization:
+      pre_invocation:
+        - "delegate(workday-oauth, target: github-api, audience: github-api, subject: this_workload, actor: client)"
 ```
 
 `subject: user` makes the user's token the RFC 8693 `subject_token`; `actor: client` *additionally* attaches the agent's token as the `actor_token`. That is one exchange carrying two principals, not a second leg.
@@ -57,10 +114,10 @@ cargo run -p cpex-tutorial --example m15_dual_principal
   ✓ ALLOWED  { ... }
 
 ▸ alice only, no agent token → get_compensation (actor credential missing)
-  ✗ DENIED   [auth.malformed_header] header 'Authorization' missing ... (resolver 'jwt-agent')
+  ✗ DENIED   [auth.malformed_header] header 'Authorization' missing from request (resolver 'jwt-agent' / ...)
 
 ▸ sync_index (subject: this_workload + actor: client) → rejected as an invalid combo
-  ✗ DENIED   [...] `actor:` is not supported with `subject: caller_workload` or `subject: this_workload` ...
+  ✗ DENIED   [routes.tool:sync_index.pre_invocation[0]] delegate `workday-oauth` error: invalid delegation config: `actor:` is not supported with `subject: caller_workload` or `subject: this_workload` ...
 ```
 
 The first call carried both principals and went through. The second was missing the agent credential, and a dual-principal route needs both.

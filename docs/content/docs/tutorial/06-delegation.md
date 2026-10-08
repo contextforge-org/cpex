@@ -24,21 +24,40 @@ plugins:
   - name: keycloak
     kind: identity/jwt
     hooks: [identity.resolve]
-    config: { ... as in module 2 ... }
+    capabilities: [perform_http]
+    config:
+      claim_mapper: standard
+      trusted_issuers:
+        - issuer: http://localhost:8081/realms/cpex-tutorial
+          audiences: [cpex-tutorial]
+          algorithms: [RS256]
+          decoding_key:
+            kind: jwks_url
+            url: http://localhost:8081/realms/cpex-tutorial/protocol/openid-connect/certs
+            insecure_http: true
+          leeway_seconds: 60
 
   - name: workday-oauth
     kind: delegator/oauth
     hooks: [token.delegate]
-    capabilities: [read_inbound_credentials, write_delegated_tokens]
+    # The delegator needs to read the caller's inbound token (to exchange
+    # it) and write the minted downstream token. Declaring these here lets
+    # the route surface them to the enforcement boundary; without them the
+    # inbound token is filtered out before the exchange and it fails.
+    # perform_http lets it call the token endpoint.
+    capabilities: [read_inbound_credentials, write_delegated_tokens, perform_http]
     config:
       token_endpoint: http://localhost:8081/realms/cpex-tutorial/protocol/openid-connect/token
       client_id: cpex-gateway
-      client_secret_source: { kind: literal, secret: gateway-dev-secret }
-      insecure_http: true
+      client_secret_source:
+        kind: literal
+        secret: gateway-dev-secret
+      insecure_http: true    # localhost speaks http; never in production
 
 routes:
   - tool: get_compensation
-    authentication: [keycloak]
+    authentication:
+      - keycloak
     authorization:
       pre_invocation:
         - "require(role.hr)"
@@ -50,7 +69,8 @@ The `delegate(...)` step exchanges the caller's token for one scoped to the `wor
 
 Two things are load-bearing:
 
-- The plugin declares `capabilities: [read_inbound_credentials, write_delegated_tokens]`. Without them, the caller's inbound token is filtered out before the exchange runs, and delegation fails with an empty token. Capabilities scope what each step may touch.
+- The plugin declares `read_inbound_credentials` and `write_delegated_tokens`. Without them, the caller's inbound token is filtered out before the exchange runs, and delegation fails with an empty token. Capabilities scope what each step may touch.
+- The plugin also declares `perform_http`. The exchange is an outbound call to the token endpoint, made through the transport the host installed (module 1), and only plugins that declare `perform_http` may use it. Both plugins here declare it: `keycloak` to fetch the JWKS, `workday-oauth` to call the token endpoint.
 - The gateway client in Keycloak must be allowed to exchange for the target audience. In the tutorial realm, `cpex-gateway` sets `standard.token.exchange.audiences: workday-api,github-api` and carries audience mappers for those clients (see [`idp/realm-export.json`](https://github.com/contextforge-org/cpex/tree/main/examples/tutorial/idp)).
 
 ## Run it
@@ -64,14 +84,14 @@ cargo run -p cpex-tutorial --example m06_delegation
   ✓ ALLOWED  { ... }
 
 ▸ evan (engineer) → get_compensation (denied at require(role.hr), no delegation)
-  ✗ DENIED   [...] access denied
+  ✗ DENIED   [routes.tool:get_compensation.pre_invocation[0]] access denied
 ```
 
 alice's call runs a real token exchange and gets a `workday-api`-scoped token before the backend call. evan never reaches delegation, because `require(role.hr)` stops him first. Delegation is cheap to skip when it is not needed.
 
 ## Try it
 
-1. Drop the capabilities. Remove the `capabilities:` line from the plugin and re-run. Expect: alice is denied with `delegation.bad_request` (empty token), because the inbound credential was filtered out.
+1. Drop the credential capabilities. Remove `read_inbound_credentials` and `write_delegated_tokens` from the `workday-oauth` plugin's `capabilities:` list (keep `perform_http`) and re-run. Expect: alice is denied with `delegation.bad_request` (empty token), because the inbound credential was filtered out.
 2. Wrong audience. Change `audience:` to a client the gateway may not target and re-run. Expect: the exchange is rejected by Keycloak and the step denies.
 3. Narrow the grant (advanced). In `policies/m06.yaml`, add a `permissions:` argument to the `delegate(...)` step so it reads `delegate(workday-oauth, target: workday-api, audience: workday-api, permissions: [read_compensation])`. The exchange then requests only that scope. For Keycloak to actually issue it, the `read_compensation` client scope must exist on the realm and be assigned to the `workday-api` client (see [`idp/README.md`](https://github.com/contextforge-org/cpex/tree/main/examples/tutorial/idp)); without that realm setup the exchange returns the default scope. This is how you narrow the downstream grant to exactly what the operation needs.
 

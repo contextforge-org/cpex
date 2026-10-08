@@ -32,12 +32,12 @@ Budget 15 to 25 minutes per module: about 3 to 4 hours for modules 0 to 10 and t
 | 1 | [Hello, enforcement]({{< relref "01-hello" >}}) | Stand up an enforcement point; a route with `require()`; allow vs. deny | no |
 | 2 | [Who's calling? (Identity)]({{< relref "02-identity" >}}) | Resolve real JWTs from Keycloak into roles and permissions | yes |
 | 3 | [Shaping data]({{< relref "03-shaping" >}}) | `result:` field pipelines that redact and mask per permission | yes |
-| 4 | [Effects & sequencing]({{< relref "04-effects" >}}) | Ordered effects, halt-on-deny, custom deny codes, auditing | yes |
+| 4 | [Effects & sequencing]({{< relref "04-effects" >}}) | Ordered effects, halt-on-deny, custom deny codes, auditing | no |
 | 5 | [Delegating decisions (PDP)]({{< relref "05-pdp" >}}) | Hand a decision to CEL or Cedar; CPEX enforces the verdict | yes |
 | 6 | [Scoped credentials (Delegation)]({{< relref "06-delegation" >}}) | Mint a downstream-scoped token via RFC 8693 exchange | yes |
 | 7 | [Information flow (Tainting)]({{< relref "07-tainting" >}}) | Carry session state across requests; block write-down | yes |
 | 8 | [Human in the loop]({{< relref "08-elicitation" >}}) | Suspend an operation for human approval, then resume | yes |
-| 9 | [Write your own plugin]({{< relref "09-custom-plugin" >}}) | Build a custom plugin with the SDK; reference it from policy | no |
+| 9 | [Write your own plugin]({{< relref "09-custom-plugin" >}}) | Build a custom plugin with `cpex::prelude`; reference it from policy | no |
 | 10 | [Testing your policy]({{< relref "10-testing" >}}) | Table-driven allow/deny tests that run in CI | no |
 | 11 | [Organizing policy (Groups)]({{< relref "11-groups" >}}) | Factor shared identity/authz into reusable bundles routes join | yes |
 | 12 | [Delegation subjects]({{< relref "12-subjects" >}}) | Mint a downstream token as the caller (`user`) or as the gateway itself (`this_workload`) | yes |

@@ -23,17 +23,35 @@ There is nothing to add, only something to *leave out*: a plain resolver (as in 
 
 ```yaml
 plugins:
-  - name: keycloak            # validates the inbound token; that is its whole job
+  # A plain inbound resolver (as in module 2). Its only job here is to
+  # validate the caller's token; there is no delegator plugin at all.
+  - name: keycloak
     kind: identity/jwt
     hooks: [identity.resolve]
-    config: { role: user, ... as in module 2 ... }
+    capabilities: [perform_http]
+    config:
+      role: user
+      header: Authorization
+      claim_mapper: standard
+      trusted_issuers:
+        - issuer: http://localhost:8081/realms/cpex-tutorial
+          audiences: [cpex-tutorial]
+          algorithms: [RS256]
+          decoding_key:
+            kind: jwks_url
+            url: http://localhost:8081/realms/cpex-tutorial/protocol/openid-connect/certs
+            insecure_http: true
+          leeway_seconds: 60
 
 routes:
+  # Passthrough: validate the caller, authorize, and forward. No delegate
+  # step, so the token the caller presented is the token that flows on.
   - tool: search_repos
-    authentication: [keycloak]
+    authentication:
+      - keycloak
     authorization:
       pre_invocation:
-        - "require(authenticated)"   # no delegate step, so the caller's token is forwarded
+        - "require(authenticated)"
 ```
 
 | Shape | Step | What flows downstream |
@@ -52,7 +70,7 @@ cargo run -p cpex-tutorial --example m14_passthrough
   ✓ ALLOWED  { ... "repositories":[ ... ] }
 
 ▸ anonymous → search_repos (no token to forward, require(authenticated) denies)
-  ✗ DENIED   [...] access denied
+  ✗ DENIED   [routes.tool:search_repos.pre_invocation[0]] access denied
 ```
 
 `alice`'s token was validated and the call went through with no exchange, so her token is what would reach the backend. The anonymous caller had no token to forward, so `require(authenticated)` denied it.

@@ -20,18 +20,24 @@ One policy ([`policies/capstone.yaml`](https://github.com/contextforge-org/cpex/
 `get_compensation` is the densest route, and it runs each control you built in order:
 
 ```yaml
-- tool: get_compensation
-  authentication: [keycloak]                 # module 2: resolve the caller from a JWT
-  authorization:
-    pre_invocation:
-      - "require(role.hr)"                     # module 1/2: gate by role
-      - "delegate(workday-oauth, target: workday-api, audience: workday-api)"  # module 6
-      - "taint(secret, session)"               # module 7: mark the session
-      - "run(audit-log)"                       # module 4: record the attempt
-  result:
-    ssn: "str | redact(!perm.view_ssn)"        # module 3: shape the output per permission
-    salary: "int | redact(!role.hr)"
+routes:
+  # HR lookup: gate on role, mint a scoped downstream token, taint the
+  # session, audit, then redact fields by permission on the way out.
+  - tool: get_compensation
+    authentication:
+      - keycloak
+    authorization:
+      pre_invocation:
+        - "require(role.hr)"
+        - "delegate(workday-oauth, target: workday-api, audience: workday-api)"
+        - "taint(secret, session)"
+        - "run(audit-log)"
+    result:
+      ssn: "str | redact(!perm.view_ssn)"
+      salary: "int | redact(!role.hr)"
 ```
+
+Each step maps to a module: `authentication` resolves the caller from a JWT (module 2), `require(role.hr)` gates by role (modules 1 and 2), `delegate(...)` mints a scoped token (module 6), `taint(...)` marks the session (module 7), `run(audit-log)` records the attempt (module 4), and `result:` shapes the output per permission (module 3). The `audit-log` plugin is the tutorial's `tutorial/audit-line` host plugin from module 4, and the `keycloak` and `workday-oauth` plugins declare `perform_http` because they reach the IdP through the host's HTTP transport.
 
 The one control the Overview did not show is `delegate(...)`: before the backend call, CPEX exchanges the caller's token for a fresh one scoped to the `workday-api` audience (RFC 8693, [module 6]({{< relref "06-delegation" >}})), so the backend never receives the caller's original credential. Everything else on this route you have already seen on its own; the capstone just runs them together, in sequence, on one operation.
 
@@ -53,8 +59,10 @@ Two behaviors carry the whole idea.
   ✓ ALLOWED  { ... "ssn":"[REDACTED]" ... }
 
 ▸ evan (engineer) → get_compensation (denied, not HR)
-  ✗ DENIED   [...] access denied
+  ✗ DENIED   [routes.tool:get_compensation.pre_invocation[0]] access denied
 ```
+
+Each allowed call also prints one audit line to stderr: the plugin name, the entity, the caller's subject id and roles, and the tool name with its argument keys. Argument values are never logged. Evan's call writes no line, because `require(role.hr)` halts the pipeline before `run(audit-log)`.
 
 **Information follows the session.**
 
