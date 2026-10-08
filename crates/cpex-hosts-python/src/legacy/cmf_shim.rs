@@ -26,6 +26,61 @@
 // is translated. A message the legacy payload cannot represent fails closed
 // with `HostError::LegacyShim`, never a silent allow.
 //
+// # Field decisions
+//
+// Every field of the CMF parts the shim reads. "sent" fields reach the plugin
+// and are mapped back. "kept" fields are not sent and survive unchanged, which
+// is safe because they neither qualify what is authorized nor carry content a
+// plugin could need to rewrite. "refuse" fields are security-relevant and have
+// no legacy slot, so a message that sets them fails closed.
+//
+//   part              field                decision
+//   ----------------  -------------------  -------------------------------------
+//   tool_call         tool_call_id         kept: correlation only
+//                     name, arguments      sent
+//                     namespace            refuse when non-empty: a plugin that
+//                                          authorizes by bare name would approve
+//                                          the same name in any namespace
+//   tool_result       tool_call_id         kept: correlation only
+//                     tool_name, content   sent (structured content travels
+//                                          inside `content` as is)
+//                     is_error             refuse when true unless `content`
+//                                          carries `"isError": true`; a modified
+//                                          result must keep it
+//   prompt_request    prompt_request_id    kept: correlation only
+//                     name, arguments      sent
+//                     server_id            refuse when non-empty: same reason as
+//                                          tool namespace
+//   prompt_result     prompt_request_id    kept: correlation only
+//                     prompt_name          sent
+//                     messages             sent (role and text; per-message
+//                                          `schema_version` and `channel` kept)
+//                     content              refuse when non-empty: rendered text
+//                                          the plugin cannot see or redact
+//                     is_error             refuse when true: no legacy slot
+//                     error_message        refuse when non-empty: same as content
+//   resource          resource_request_id  sent on post-fetch as `id`, else kept
+//                     uri                  sent
+//                     name, description    kept: descriptive labels
+//                     resource_type        kept: the URI is the address
+//                     annotations          kept: labels that only restrict
+//                                          downstream, never widen
+//                     version              refuse when non-empty: selects which
+//                                          revision the URI resolves to
+//                     content              sent on post-fetch as `text`; on
+//                                          pre-fetch a URI rewrite refuses if set
+//                     blob                 refuse when set
+//                     mime_type            sent on post-fetch; on pre-fetch a
+//                                          URI rewrite refuses if set
+//                     size_bytes           not sent; recomputed when post-fetch
+//                                          text changes; on pre-fetch a URI
+//                                          rewrite refuses if set
+//   resource_ref      resource_request_id  kept: correlation only
+//                     uri                  sent
+//                     name, resource_type  kept: descriptive
+//                     range_start/end,     kept: they narrow what is read within
+//                     selector             the URI the plugin approved
+//
 // # Removing it
 //
 // Once every supported worker claims `cmf_hooks`, delete this file, its
@@ -39,7 +94,7 @@ use praxis_policy_core::cmf::constants::{
     HOOK_CMF_PROMPT_PRE_INVOKE, HOOK_CMF_RESOURCE_POST_FETCH, HOOK_CMF_RESOURCE_PRE_FETCH,
     HOOK_CMF_TOOL_POST_INVOKE, HOOK_CMF_TOOL_PRE_INVOKE,
 };
-use praxis_policy_core::cmf::{ContentPart, Message, MessagePayload, Role};
+use praxis_policy_core::cmf::{ContentPart, Message, MessagePayload, Resource, Role};
 use praxis_policy_core::hooks::payload::PluginPayload;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -195,6 +250,12 @@ impl ShimmedPayload {
             },
             (Shim::ToolPostInvoke, ContentPart::ToolResult { content }) => {
                 let legacy: ToolPostInvokePayload = self.parse(modified)?;
+                if content.is_error && !result_says_error(&legacy.result) {
+                    return Err(self.error(
+                        "the plugin cleared `isError` on an error tool result, and the CMF \
+                         `is_error` flag is not mapped back",
+                    ));
+                }
                 content.tool_name = legacy.name;
                 content.content = legacy.result;
             },
@@ -214,14 +275,29 @@ impl ShimmedPayload {
                 content.prompt_name = legacy.prompt_id;
             },
             (Shim::ResourcePreFetch, ContentPart::Resource { content }) => {
-                content.uri = self.resource_pre_uri(modified)?;
+                let uri = self.resource_pre_uri(modified)?;
+                // Embedded content, its type and its size describe the
+                // original URI. Carrying them onto a rewritten URI would serve
+                // the old content under the address the plugin chose.
+                if uri != content.uri
+                    && (content.is_embedded()
+                        || content.mime_type.is_some()
+                        || content.size_bytes.is_some())
+                {
+                    return Err(self.error(
+                        "the plugin rewrote the URI of a resource that carries content, \
+                         mime_type or size_bytes from the original URI",
+                    ));
+                }
+                content.uri = uri;
             },
             (Shim::ResourcePreFetch, ContentPart::ResourceRef { content }) => {
                 content.uri = self.resource_pre_uri(modified)?;
             },
             (Shim::ResourcePostFetch, ContentPart::Resource { content }) => {
                 let legacy: ResourcePostFetchPayload = self.parse(modified)?;
-                content.uri = legacy.uri;
+                let before = content.content.clone();
+                let original_uri = std::mem::replace(&mut content.uri, legacy.uri);
                 match legacy.content {
                     Value::Null => content.content = None,
                     Value::String(text) => content.content = Some(text),
@@ -230,6 +306,25 @@ impl ShimmedPayload {
                             return Err(self.error(
                                 "the plugin returned resource `content.blob`; binary resource \
                                  content is not carried by the shim",
+                            ));
+                        }
+                        // `content.id` and `content.uri` have no slot of their
+                        // own: the part keeps one id and one URI. A change to
+                        // either would otherwise be dropped.
+                        if fields.get("id").is_some_and(|id| {
+                            id.as_str() != Some(content.resource_request_id.as_str())
+                        }) {
+                            return Err(self.error(
+                                "the plugin changed `content.id`, which is not mapped back",
+                            ));
+                        }
+                        if fields.get("uri").is_some_and(|u| {
+                            u.as_str() != Some(content.uri.as_str())
+                                && u.as_str() != Some(original_uri.as_str())
+                        }) {
+                            return Err(self.error(
+                                "the plugin changed `content.uri` to a value other than `uri`, \
+                                 and only `uri` is mapped back",
                             ));
                         }
                         content.content = match fields.get("text") {
@@ -252,6 +347,11 @@ impl ShimmedPayload {
                         }
                     },
                     _ => return Err(self.error("`content` must be an object, a string, or null")),
+                }
+                // A size measured from the original text would misstate the
+                // text the plugin returned.
+                if content.content != before && content.size_bytes.is_some() {
+                    content.size_bytes = content.content.as_ref().map(|t| t.len() as u64);
                 }
             },
             _ => return Err(self.error("the original content part changed kind")),
@@ -414,22 +514,45 @@ pub fn to_legacy(
 
     let err = |message: &str| shim_error(hook_name, legacy, message);
     let json = match (shim, &original.message.content[part]) {
-        (Shim::ToolPreInvoke, ContentPart::ToolCall { content }) => to_json(
-            &ToolPreInvokePayload {
-                name: content.name.clone(),
-                args: Some(content.arguments.clone()),
-                headers: None,
-            },
-            &err,
-        )?,
-        (Shim::ToolPostInvoke, ContentPart::ToolResult { content }) => to_json(
-            &ToolPostInvokePayload {
-                name: content.tool_name.clone(),
-                result: content.content.clone(),
-            },
-            &err,
-        )?,
+        (Shim::ToolPreInvoke, ContentPart::ToolCall { content }) => {
+            if is_set(&content.namespace) {
+                return Err(err(
+                    "the tool call has a `namespace`, which the legacy payload cannot carry; \
+                     a plugin that authorizes by bare `name` would approve it in any namespace",
+                ));
+            }
+            to_json(
+                &ToolPreInvokePayload {
+                    name: content.name.clone(),
+                    args: Some(content.arguments.clone()),
+                    headers: None,
+                },
+                &err,
+            )?
+        },
+        (Shim::ToolPostInvoke, ContentPart::ToolResult { content }) => {
+            if content.is_error && !result_says_error(&content.content) {
+                return Err(err(
+                    "the tool result has `is_error` set, and its `content` does not carry \
+                     `\"isError\": true` for the legacy plugin to see",
+                ));
+            }
+            to_json(
+                &ToolPostInvokePayload {
+                    name: content.tool_name.clone(),
+                    result: content.content.clone(),
+                },
+                &err,
+            )?
+        },
         (Shim::PromptPreFetch, ContentPart::PromptRequest { content }) => {
+            if is_set(&content.server_id) {
+                return Err(err(
+                    "the prompt request has a `server_id`, which the legacy payload cannot \
+                     carry; a plugin that authorizes by bare `prompt_id` would approve it on \
+                     any server",
+                ));
+            }
             // dict[str, str] on the Python side, which Pydantic will not coerce
             // a number or an object into.
             let mut args = HashMap::with_capacity(content.arguments.len());
@@ -451,6 +574,25 @@ pub fn to_legacy(
             )?
         },
         (Shim::PromptPostFetch, ContentPart::PromptResult { content }) => {
+            // The legacy result holds only messages. Text left in these fields
+            // would survive a plugin that redacted the messages.
+            if is_set(&content.content) {
+                return Err(err(
+                    "the prompt result has rendered `content`, which the legacy payload cannot \
+                     carry, so a plugin could not inspect or redact it",
+                ));
+            }
+            if is_set(&content.error_message) {
+                return Err(err(
+                    "the prompt result has an `error_message`, which the legacy payload cannot \
+                     carry, so a plugin could not inspect or redact it",
+                ));
+            }
+            if content.is_error {
+                return Err(err(
+                    "the prompt result has `is_error` set, which the legacy payload cannot carry",
+                ));
+            }
             let mut messages = Vec::with_capacity(content.messages.len());
             for (i, message) in content.messages.iter().enumerate() {
                 let [ContentPart::Text { text }] = message.content.as_slice() else {
@@ -472,13 +614,16 @@ pub fn to_legacy(
                 &err,
             )?
         },
-        (Shim::ResourcePreFetch, ContentPart::Resource { content }) => to_json(
-            &ResourcePreFetchPayload {
-                uri: content.uri.clone(),
-                metadata: None,
-            },
-            &err,
-        )?,
+        (Shim::ResourcePreFetch, ContentPart::Resource { content }) => {
+            refuse_resource_version(content, &err)?;
+            to_json(
+                &ResourcePreFetchPayload {
+                    uri: content.uri.clone(),
+                    metadata: None,
+                },
+                &err,
+            )?
+        },
         (Shim::ResourcePreFetch, ContentPart::ResourceRef { content }) => to_json(
             &ResourcePreFetchPayload {
                 uri: content.uri.clone(),
@@ -487,6 +632,7 @@ pub fn to_legacy(
             &err,
         )?,
         (Shim::ResourcePostFetch, ContentPart::Resource { content }) => {
+            refuse_resource_version(content, &err)?;
             if content.blob.is_some() {
                 return Err(err(
                     "the resource carries binary `blob` content, which the shim does not \
@@ -526,6 +672,31 @@ pub fn to_legacy(
         part,
         json,
     })
+}
+
+/// Whether an optional string field holds a value. An empty string carries
+/// nothing and counts as unset.
+fn is_set(field: &Option<String>) -> bool {
+    field.as_deref().is_some_and(|s| !s.is_empty())
+}
+
+/// Whether a legacy tool result tells the plugin it is an error, the MCP
+/// `CallToolResult` way.
+fn result_says_error(result: &Value) -> bool {
+    result.get("isError") == Some(&Value::Bool(true))
+}
+
+fn refuse_resource_version(
+    resource: &Resource,
+    err: &dyn Fn(&str) -> HostError,
+) -> Result<(), HostError> {
+    if is_set(&resource.version) {
+        return Err(err(
+            "the resource has a `version`, which the legacy payload cannot carry; a plugin \
+             that authorizes by `uri` would approve any revision",
+        ));
+    }
+    Ok(())
 }
 
 fn to_json<T: Serialize>(value: &T, err: &dyn Fn(&str) -> HostError) -> Result<Value, HostError> {
@@ -574,7 +745,7 @@ mod tests {
                 tool_call_id: "call-1".into(),
                 name: "search".into(),
                 arguments: serde_json::from_value(args).unwrap(),
-                namespace: Some("acme".into()),
+                namespace: None,
             },
         }
     }
@@ -596,7 +767,7 @@ mod tests {
                 prompt_request_id: "pr-1".into(),
                 name: "greeting".into(),
                 arguments: serde_json::from_value(args).unwrap(),
-                server_id: Some("srv".into()),
+                server_id: None,
             },
         }
     }
@@ -607,7 +778,7 @@ mod tests {
                 prompt_request_id: "pr-1".into(),
                 prompt_name: "greeting".into(),
                 messages,
-                content: Some("rendered".into()),
+                content: None,
                 is_error: false,
                 error_message: None,
             },
@@ -765,7 +936,6 @@ mod tests {
                 "tool_call_id": "call-1",
                 "name": "search",
                 "arguments": {"q": "[REDACTED]", "extra": 1},
-                "namespace": "acme",
             }})
         );
         assert_surroundings_kept(&back);
@@ -887,7 +1057,6 @@ mod tests {
                 "prompt_request_id": "pr-1",
                 "name": "greeting",
                 "arguments": {"lang": "fr"},
-                "server_id": "srv",
             }})
         );
         assert_surroundings_kept(&back);
@@ -957,9 +1126,8 @@ mod tests {
             .unwrap();
 
         let part = part_json(&back);
-        assert_eq!(part["content"]["prompt_request_id"], "pr-1");
         assert_eq!(
-            part["content"]["content"], "rendered",
+            part["content"]["prompt_request_id"], "pr-1",
             "unmapped fields survive"
         );
         let messages = &part["content"]["messages"];
@@ -1024,17 +1192,27 @@ mod tests {
         assert_eq!(json_of(&back), json_of(&payload));
     }
 
+    /// A resource with no fetched content yet: nothing describes the URI
+    /// beyond labels.
+    fn unfetched_resource() -> Resource {
+        Resource {
+            mime_type: None,
+            size_bytes: None,
+            ..resource(None)
+        }
+    }
+
     #[test]
-    fn resource_pre_fetch_modified_uri_maps_back_onto_an_embedded_resource() {
+    fn resource_pre_fetch_modified_uri_maps_back_onto_an_unfetched_resource() {
         let payload = message_around(ContentPart::Resource {
-            content: resource(Some("hello")),
+            content: unfetched_resource(),
         });
         let shimmed = to_legacy("cmf.resource_pre_fetch", &payload).unwrap();
 
         let back = shimmed
             .apply_modified(json!({"uri": "file:///safe/a.txt", "metadata": {}}))
             .unwrap();
-        let mut expected = resource(Some("hello"));
+        let mut expected = unfetched_resource();
         expected.uri = "file:///safe/a.txt".into();
         assert_eq!(
             part_json(&back),
@@ -1100,11 +1278,12 @@ mod tests {
                 "mime_type": "text/plain", "text": "password=[REDACTED]", "blob": null,
             }}))
             .unwrap();
-        let expected = resource(Some("password=[REDACTED]"));
+        let mut expected = resource(Some("password=[REDACTED]"));
+        expected.size_bytes = Some("password=[REDACTED]".len() as u64);
         assert_eq!(
             part_json(&back),
             serde_json::to_value(ContentPart::Resource { content: expected }).unwrap(),
-            "only the text changes; name, annotations and size survive"
+            "the text changes and the size follows it; name and annotations survive"
         );
         assert_surroundings_kept(&back);
     }
@@ -1151,6 +1330,192 @@ mod tests {
             .apply_modified(json!({"uri": "file:///tmp/a.txt", "content": {"blob": "AAEC"}}))
             .unwrap_err();
         assert_shim_error(err, "cmf.resource_post_fetch", "blob");
+    }
+
+    // --- fields the legacy payload cannot carry ------------------------------
+
+    #[test]
+    fn tool_pre_invoke_with_a_namespace_fails_closed() {
+        let mut part = tool_call(json!({}));
+        if let ContentPart::ToolCall { content } = &mut part {
+            content.namespace = Some("other-tenant".into());
+        }
+        let err = to_legacy("cmf.tool_pre_invoke", &message_around(part)).unwrap_err();
+        assert_shim_error(err, "cmf.tool_pre_invoke", "namespace");
+    }
+
+    #[test]
+    fn tool_pre_invoke_with_an_empty_namespace_is_unqualified() {
+        let mut part = tool_call(json!({}));
+        if let ContentPart::ToolCall { content } = &mut part {
+            content.namespace = Some(String::new());
+        }
+        let payload = message_around(part);
+        let shimmed = to_legacy("cmf.tool_pre_invoke", &payload).unwrap();
+        let back = shimmed.apply_modified(shimmed.payload().clone()).unwrap();
+        assert_eq!(json_of(&back), json_of(&payload));
+    }
+
+    fn error_tool_result(content: Value) -> ContentPart {
+        let mut part = tool_result(content);
+        if let ContentPart::ToolResult { content } = &mut part {
+            content.is_error = true;
+        }
+        part
+    }
+
+    #[test]
+    fn tool_post_invoke_error_the_result_does_not_show_fails_closed() {
+        let payload = message_around(error_tool_result(json!({"text": "boom"})));
+        let err = to_legacy("cmf.tool_post_invoke", &payload).unwrap_err();
+        assert_shim_error(err, "cmf.tool_post_invoke", "is_error");
+    }
+
+    #[test]
+    fn tool_post_invoke_error_the_result_shows_round_trips() {
+        let payload = message_around(error_tool_result(json!({"content": [], "isError": true})));
+        let shimmed = to_legacy("cmf.tool_post_invoke", &payload).unwrap();
+        let back = shimmed.apply_modified(shimmed.payload().clone()).unwrap();
+        assert_eq!(json_of(&back), json_of(&payload));
+    }
+
+    #[test]
+    fn tool_post_invoke_clearing_is_error_fails_closed() {
+        let payload = message_around(error_tool_result(json!({"content": [], "isError": true})));
+        let shimmed = to_legacy("cmf.tool_post_invoke", &payload).unwrap();
+        let err = shimmed
+            .apply_modified(json!({"name": "search", "result": {"content": [], "isError": false}}))
+            .unwrap_err();
+        assert_shim_error(err, "cmf.tool_post_invoke", "isError");
+    }
+
+    #[test]
+    fn prompt_pre_invoke_with_a_server_id_fails_closed() {
+        let mut part = prompt_request(json!({}));
+        if let ContentPart::PromptRequest { content } = &mut part {
+            content.server_id = Some("other-server".into());
+        }
+        let err = to_legacy("cmf.prompt_pre_invoke", &message_around(part)).unwrap_err();
+        assert_shim_error(err, "cmf.prompt_pre_invoke", "server_id");
+    }
+
+    fn prompt_result_with(edit: impl FnOnce(&mut PromptResult)) -> MessagePayload {
+        let mut part = prompt_result(vec![Message::text(Role::User, "hi bob")]);
+        if let ContentPart::PromptResult { content } = &mut part {
+            edit(content);
+        }
+        message_around(part)
+    }
+
+    #[test]
+    fn prompt_post_invoke_with_rendered_content_fails_closed() {
+        // A plugin that redacts `messages` would leave "hi bob" here.
+        let payload = prompt_result_with(|r| r.content = Some("hi bob".into()));
+        let err = to_legacy("cmf.prompt_post_invoke", &payload).unwrap_err();
+        assert_shim_error(err, "cmf.prompt_post_invoke", "`content`");
+    }
+
+    #[test]
+    fn prompt_post_invoke_with_an_error_message_fails_closed() {
+        let payload = prompt_result_with(|r| r.error_message = Some("failed for bob".into()));
+        let err = to_legacy("cmf.prompt_post_invoke", &payload).unwrap_err();
+        assert_shim_error(err, "cmf.prompt_post_invoke", "error_message");
+    }
+
+    #[test]
+    fn prompt_post_invoke_with_is_error_fails_closed() {
+        let payload = prompt_result_with(|r| r.is_error = true);
+        let err = to_legacy("cmf.prompt_post_invoke", &payload).unwrap_err();
+        assert_shim_error(err, "cmf.prompt_post_invoke", "is_error");
+    }
+
+    #[test]
+    fn resource_hooks_with_a_version_fail_closed() {
+        let mut versioned = resource(Some("a"));
+        versioned.version = Some("v1".into());
+        let payload = message_around(ContentPart::Resource { content: versioned });
+        for hook in ["cmf.resource_pre_fetch", "cmf.resource_post_fetch"] {
+            let err = to_legacy(hook, &payload).unwrap_err();
+            assert_shim_error(err, hook, "version");
+        }
+    }
+
+    #[test]
+    fn resource_pre_fetch_unchanged_uri_keeps_embedded_content() {
+        let payload = message_around(ContentPart::Resource {
+            content: resource(Some("hello")),
+        });
+        let shimmed = to_legacy("cmf.resource_pre_fetch", &payload).unwrap();
+        let back = shimmed
+            .apply_modified(json!({"uri": "file:///tmp/a.txt", "metadata": {}}))
+            .unwrap();
+        assert_eq!(json_of(&back), json_of(&payload));
+    }
+
+    #[test]
+    fn resource_pre_fetch_uri_rewrite_on_fetched_content_fails_closed() {
+        let embedded = resource(Some("hello"));
+        let mut sized = unfetched_resource();
+        sized.size_bytes = Some(5);
+        let mut typed = unfetched_resource();
+        typed.mime_type = Some("text/plain".into());
+        let mut binary = unfetched_resource();
+        binary.blob = Some(vec![1]);
+        for res in [embedded, sized, typed, binary] {
+            let payload = message_around(ContentPart::Resource { content: res });
+            let shimmed = to_legacy("cmf.resource_pre_fetch", &payload).unwrap();
+            let err = shimmed
+                .apply_modified(json!({"uri": "file:///safe/a.txt", "metadata": {}}))
+                .unwrap_err();
+            assert_shim_error(err, "cmf.resource_pre_fetch", "rewrote the URI");
+        }
+    }
+
+    #[test]
+    fn resource_post_fetch_changed_content_id_fails_closed() {
+        let payload = message_around(ContentPart::Resource {
+            content: resource(Some("a")),
+        });
+        let shimmed = to_legacy("cmf.resource_post_fetch", &payload).unwrap();
+        let err = shimmed
+            .apply_modified(json!({"uri": "file:///tmp/a.txt", "content": {
+                "id": "res-2", "uri": "file:///tmp/a.txt", "text": "a",
+            }}))
+            .unwrap_err();
+        assert_shim_error(err, "cmf.resource_post_fetch", "content.id");
+    }
+
+    #[test]
+    fn resource_post_fetch_content_uri_alone_changed_fails_closed() {
+        let payload = message_around(ContentPart::Resource {
+            content: resource(Some("a")),
+        });
+        let shimmed = to_legacy("cmf.resource_post_fetch", &payload).unwrap();
+        let err = shimmed
+            .apply_modified(json!({"uri": "file:///tmp/a.txt", "content": {
+                "id": "res-1", "uri": "file:///safe/a.txt", "text": "a",
+            }}))
+            .unwrap_err();
+        assert_shim_error(err, "cmf.resource_post_fetch", "content.uri");
+    }
+
+    #[test]
+    fn resource_post_fetch_top_level_uri_change_maps_back() {
+        let payload = message_around(ContentPart::Resource {
+            content: resource(Some("a")),
+        });
+        let shimmed = to_legacy("cmf.resource_post_fetch", &payload).unwrap();
+        let back = shimmed
+            .apply_modified(json!({"uri": "file:///safe/a.txt", "content": {
+                "id": "res-1", "uri": "file:///tmp/a.txt", "text": "a",
+            }}))
+            .unwrap();
+        assert_eq!(part_json(&back)["content"]["uri"], "file:///safe/a.txt");
+        assert_eq!(
+            part_json(&back)["content"]["size_bytes"],
+            5,
+            "text unchanged"
+        );
     }
 
     // --- refusals -----------------------------------------------------------

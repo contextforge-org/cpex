@@ -124,7 +124,7 @@ SDK release: declare `cmf.tool_pre_invoke` and implement `tool_pre_invoke`.
 | `cmf.prompt_pre_invoke` | `prompt_request` | `prompt_pre_fetch`: `{prompt_id: name, args}` | `name`, `arguments` |
 | `cmf.prompt_post_invoke` | `prompt_result` | `prompt_post_fetch`: `{prompt_id: prompt_name, result: {messages: [{role, content: {type: "text", text}}], description: null}}` | `prompt_name`, `messages` (role and text; a message keeps its `channel`) |
 | `cmf.resource_pre_fetch` | `resource` or `resource_ref` | `resource_pre_fetch`: `{uri}` | `uri` |
-| `cmf.resource_post_fetch` | `resource` | `resource_post_fetch`: `{uri, content: {type: "resource", id, uri, mime_type, text}}` | `uri`, `content` (text), `mime_type` |
+| `cmf.resource_post_fetch` | `resource` | `resource_post_fetch`: `{uri, content: {type: "resource", id, uri, mime_type, text}}` | `uri`, `content` (text), `mime_type`; `size_bytes` is recomputed when the text changes |
 
 The worker's `continue_processing` and `violation` pass through unchanged. A
 modified legacy payload replaces only the fields in the last column; every
@@ -139,11 +139,27 @@ and the plugin, rather than allowing or skipping:
   (for example a `cmf.tool_pre_invoke` message with no tool call, or with two);
 - a prompt argument that is not a string (the legacy `args` is
   `dict[str, str]`);
+- a qualifier a plugin that authorizes by bare name or URI cannot see: a tool
+  call `namespace`, a prompt request `server_id`, or a resource `version`
+  (each when non-empty);
+- a tool result with `is_error` set whose `content` does not carry
+  `"isError": true`;
+- a prompt result with rendered `content`, an `error_message`, or `is_error`
+  set (the legacy result holds only messages, so a plugin could not redact
+  that text);
 - a prompt result message that is not a single text part;
 - a resource with a binary `blob`, or a `resource_ref` on post-fetch;
 - a modified payload that sets something the message cannot hold: tool
   `headers`, resource `metadata`, a prompt result `description`, a resource
-  `content.blob`, or non-text prompt message content.
+  `content.blob`, a changed resource `content.id`, a `content.uri` other than
+  the original or the returned `uri`, or non-text prompt message content;
+- a modified payload that would leave stale data behind: a cleared `isError`
+  on an error tool result, or a pre-fetch URI rewrite on a resource that
+  already carries `content`, `blob`, `mime_type` or `size_bytes` from the
+  original URI.
+
+The field-by-field decision for every CMF part field is the table at the top
+of `src/legacy/cmf_shim.rs`.
 
 The shim lives in `src/legacy/cmf_shim.rs`. It goes away once every supported
 worker claims `cmf_hooks`.

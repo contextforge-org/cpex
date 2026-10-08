@@ -308,7 +308,7 @@ fn cmf_tool_call(q: &str) -> MessagePayload {
                             "q".into(),
                             serde_json::json!(q),
                         )]),
-                        namespace: Some("acme".into()),
+                        namespace: None,
                     },
                 },
                 ContentPart::Thinking {
