@@ -1,9 +1,10 @@
 # Parity snapshots
 
-Golden decision snapshots recorded from the CPEX 0.2.3 engine. Each scenario
-is a config plus an ordered request set. The harness replays the requests and
-records what the engine decided, so a later engine can replay the same
-requests and diff against these files.
+Golden decision snapshots recorded from the CPEX 0.2.3 engine, and a parity
+check that replays the same requests through CPEX 0.3.0 (PPE 0.4.1) and
+diffs the outcomes against them. Each scenario is a config plus an ordered
+request set. A difference fails the check unless it is listed, with its
+cause, in `intended-differences.yaml`.
 
 ## Provenance
 
@@ -13,21 +14,27 @@ requests and diff against these files.
   feature.
 - Toolchain: rustc 1.96.0.
 - Valkey: `valkey/valkey:8-alpine` in Docker.
+- Harness: as committed in `c981609` (`test(parity): capture 0.2.3 decision
+  snapshots`). Later commits retarget it to 0.3.0, so the 0.2.3 snapshots can
+  only be regenerated from a checkout of that commit (see below).
 
-The snapshots are only valid against that engine. Regenerate them from the
-same commit if the harness or a scenario changes.
+`snapshots/` is the baseline and is never rewritten by the current harness.
 
 ## Layout
 
 ```
 tests/parity/
-  harness/                 capture harness (workspace member cpex-parity-harness)
+  harness/                 harness (workspace member cpex-parity-harness)
+  hook-renames.yaml        reviewed legacy-to-PPE hook rename table
+  intended-differences.yaml
+                           reviewed 0.2.3 to 0.3.0 differences, with causes
   scenarios/<name>/
     config.yaml            config in 0.2.3 form, with run-time placeholders
+    config.ppe.yaml        the same config migrated to the 0.3.0 form
     requests.yaml          mocks, test tokens, hook names, ordered requests
-  snapshots/<name>.json    recorded outcomes, one file per scenario
+  snapshots/<name>.json    0.2.3 outcomes, one file per scenario
   snapshots/valkey/<name>.keyspace.json
-                           raw taint:v1 keyspace left by a Valkey scenario
+                           raw taint:v1 keyspace left by a 0.2.3 Valkey run
 ```
 
 ## Scenarios
@@ -62,40 +69,70 @@ is unchanged.
 
 ## Running
 
-Capture all scenarios, with Valkey:
+Start a throwaway Valkey on a free port (the harness runs `FLUSHDB` on the
+database it is given):
 
 ```sh
-docker run -d --rm --name cpex-parity-valkey -p 127.0.0.1:6390:6379 valkey/valkey:8-alpine
-cargo run -p cpex-parity-harness -- --valkey-url redis://127.0.0.1:6390/0
-docker stop cpex-parity-valkey
+docker run -d --rm --name cpex-parity-valkey -p 127.0.0.1:6391:6379 valkey/valkey:8-alpine
+export PARITY_VALKEY_URL=redis://127.0.0.1:6391/0
+```
+
+Run the parity check, the Valkey read-back and the determinism test:
+
+```sh
+cargo test -p cpex-parity-harness
+```
+
+Print every difference against the baseline, marking the unlisted ones and
+rendering them as allow-list entries for review:
+
+```sh
+cargo run -p cpex-parity-harness -- --diff
+```
+
+Write a 0.3.0 capture, for example to inspect one scenario:
+
+```sh
+cargo run -p cpex-parity-harness -- --out /tmp/parity identity-jwt
 ```
 
 Options: `--root DIR` (default `tests/parity`), `--out DIR` (default
-`<root>/snapshots`), and scenario names to run a subset. `PARITY_VALKEY_URL`
-is read when `--valkey-url` is absent. The harness runs `FLUSHDB` on that
-database before each Valkey scenario, so point it at a throwaway instance.
+`target/parity` in the workspace; `snapshots/` is refused), `--valkey-url
+URL` (default `PARITY_VALKEY_URL`), and scenario names to run a subset.
 
-Without a Valkey URL, Valkey scenarios print `SKIPPED` and their snapshot and
-keyspace files are left as they are. Capture them where Valkey runs, such as
-CI with a service container.
+Without a Valkey URL, Valkey scenarios print `SKIPPED`, the parity test
+checks every other scenario (allow-list entries for the skipped one are not
+reported as stale), and the read-back test is skipped. All of them report
+the skip on stderr.
 
-Check that two captures are byte-identical and match the committed files:
+### Regenerating the 0.2.3 baseline
+
+Only needed when a scenario's requests change. The 0.2.3 engine is gone from
+this branch, so capture from the snapshot commit and copy the files back:
 
 ```sh
-PARITY_VALKEY_URL=redis://127.0.0.1:6390/0 cargo test -p cpex-parity-harness
+git worktree add /tmp/cpex-0.2.3 c981609
+# copy any changed scenarios/<name>/requests.yaml and config.yaml into
+# /tmp/cpex-0.2.3/tests/parity/scenarios/ first
+(cd /tmp/cpex-0.2.3 && cargo run -p cpex-parity-harness -- --valkey-url "$PARITY_VALKEY_URL")
+cp -R /tmp/cpex-0.2.3/tests/parity/snapshots/. tests/parity/snapshots/
+git worktree remove /tmp/cpex-0.2.3
 ```
 
-Without `PARITY_VALKEY_URL` the test still runs every other scenario and
-reports the skip on stderr.
+At that commit the harness writes to its own `tests/parity/snapshots/` and
+its test checks two captures against those files. Then rerun the parity
+check here and review the allow-list.
 
 ## Request format
 
 `requests.yaml` fields:
 
+- `config`, `ppe_config`: the 0.2.3 and 0.3.0 config files. Defaults are
+  `config.yaml` and `config.ppe.yaml`.
 - `hooks`: hook names a `mediate` request dispatches. Defaults are
   `identity: identity.resolve`, `pre: cmf.tool_pre_invoke`,
-  `post: cmf.tool_post_invoke`. A hook rename is applied here, once per
-  scenario.
+  `post: cmf.tool_post_invoke`. The rename table is applied here and to
+  each `invoke` request's `hook` before replaying.
 - `mocks`: routes the mock upstream serves at `{{MOCK_URL}}`. A route
   matches on method, path and `form` fields; `max_hits` lets a later route
   answer the same request differently. `builtin: jwks` serves the test keys.
@@ -151,27 +188,103 @@ and whether a TTL is set.
   string written to a temporary file and referenced through the plugins'
   `file` secret source. No secret appears in a config.
 
-## Observed 0.2.3 behavior worth knowing
+## Migrated configs
+
+Each `config.ppe.yaml` is its `config.yaml` with only the changes 0.3.0
+requires; the policy logic is the same:
+
+- `global.apl.pdp` and `global.apl.session_store` move up to `global.pdp`
+  and `global.session_store`.
+- Plugins that call out over HTTP (`identity/jwt` with `jwks_url`,
+  `delegator/oauth`, `elicitation/ciba`) declare `capabilities:
+  [perform_http]`.
+- An open route writes `pre_invocation: ["allow"]`; an empty list fails the
+  load.
+- `go-demo-cmf` follows `examples/go-demo/cmf_plugins.yaml`:
+  `engine_settings.dispatch: hooks` replaces `plugin_settings`,
+  `global.policies` and the per-route `plugins:` lists (hook dispatch
+  rejects `routes:` and `global:`), and the host kinds are `demo/cmf-*`.
+
+The harness installs the builtins and a hyper transport with private
+destinations allowed, since the mock upstream listens on 127.0.0.1.
+
+## Hook renames
+
+`hook-renames.yaml` maps every hook name 0.2.3 accepted and PPE rejects to
+its PPE name (`tool_pre_invoke` to `cmf.tool_pre_invoke`,
+`cmf.prompt_pre_fetch` to `cmf.prompt_pre_invoke`, `cmf.http_request` to
+`http.request`, and so on). The scenarios use only names that did not
+change, so applying it is the identity on these request sets. It is still
+applied on every replay, and to the `hook` of each recorded 0.2.3 stage
+before diffing, so a scenario that uses a legacy name is compared under its
+new name.
+
+## How the parity check works
+
+1. Replay each scenario through 0.3.0 with its migrated config and renamed
+   hooks, normalized exactly as the 0.2.3 capture was.
+2. Compare it to `snapshots/<name>.json` leaf by leaf: objects key by key,
+   arrays of equal length element by element. Requests are matched by `id`;
+   the `load` block reports under the id `<load>`. The top-level `config`
+   path is not compared.
+3. Each differing leaf must match an entry in `intended-differences.yaml` on
+   scenario, request, field, the 0.2.3 value and the 0.3.0 value. An entry
+   that matches nothing fails the check too, so the list cannot go stale.
+
+The Valkey read-back test flushes the database, seeds it from
+`snapshots/valkey/session-valkey.keyspace.json`, and replays only the
+requests that read labels without writing any. The tainted email is denied
+with `session_tainted` although nothing in the run tainted it, every
+replayed request matches its 0.2.3 record, and the keyspace afterwards
+equals the seed.
+
+The determinism test runs two 0.3.0 captures and checks they are
+byte-identical.
+
+## Result against PPE 0.4.1
+
+Every request reaches the same decision and the same non-path violation
+code as in 0.2.3. 54 of 68 requests match exactly; 14 differ in 26 fields,
+all listed in `intended-differences.yaml`:
+
+| Cause | Requests |
+|---|---|
+| Rule-path deny codes lose the `.apl.` segment (`routes.tool:x.apl.pre_invocation[1]` becomes `routes.tool:x.pre_invocation[1]`) | 10 |
+| A token-exchange denial reason no longer carries the IdP's `error_description` | 1 |
+| A token with an unknown `kid` triggers one on-demand JWKS refetch | 1 |
+| A route without `authentication:` does not run the identity plugin, so no subject reaches it (same decision on this open route) | 1 |
+
+Each entry cites the PPE changelog line behind it.
+
+## Observed behavior worth knowing
+
+These hold in both 0.2.3 and 0.3.0 unless noted.
 
 - Route denials without a custom code use the rule source path as the code,
-  for example `routes.tool:get_compensation.apl.pre_invocation[1]`. PDP steps
-  without `on_deny` use `cel`, `opa`, `cedar.default_deny` or the Cedar
-  policy id.
+  for example `routes.tool:get_compensation.pre_invocation[1]` (0.2.3 had
+  `.apl.` before `pre_invocation`). PDP steps without `on_deny` use `cel`,
+  `opa`, `cedar.default_deny` or the Cedar policy id.
 - CIBA polls once inside the dispatching call, so the first call reaches
   `pending` only when that poll is pending.
 - A caller can resume another subject's approved elicitation id and is
   allowed without a new upstream check (`approved-resume-by-other-subject`).
+  PPE 0.4.1 keeps this: the CIBA correlation store records only the expected
+  and resolved approver, `check` replays a cached approval for any caller
+  presenting the id, and `validate` compares the resolved approver with the
+  approver named at dispatch, not with the requesting subject or that
+  subject's own `from:` approver.
 - Repeated delegation for the same subject and audience calls the token
   endpoint again (`hr-delegated-again`).
 - Session labels are keyed by `sha256(subject : session id)`, so another
-  subject with the same session id is not tainted.
+  subject with the same session id is not tainted. 0.3.0 derives the same
+  keys: a full Valkey replay leaves a keyspace identical to the 0.2.3 export.
+- In 0.3.0 an identity plugin runs only on routes whose `authentication:`
+  names it. In 0.2.3 it ran on every route.
 
 ## Retargeting
 
 All engine-specific code is in `harness/src/engine.rs`: loading a config,
-dispatching hooks and projecting results into the snapshot shape. To replay
-on another engine, port that file, keep the projection shape, apply any hook
-renames through each scenario's `hooks` block, migrate the configs, and diff
-the new output against `snapshots/`. To check that stored labels are read
-back unchanged, seed a store from `snapshots/valkey/` before replaying the
-Valkey scenario.
+dispatching hooks and projecting results into the snapshot shape. To check
+a later engine, port that file, keep the projection shape, extend the rename
+table and migrated configs if names or config shape change, and rerun the
+parity check. Moving the PPE pin requires rerunning it.

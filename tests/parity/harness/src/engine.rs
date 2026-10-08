@@ -12,16 +12,16 @@ use std::sync::Arc;
 
 use serde_json::{json, Map, Value};
 
-use cpex::PluginManager;
-use cpex_core::cmf::content::{ToolCall, ToolResult};
-use cpex_core::cmf::enums::Role;
-use cpex_core::cmf::{CmfHook, ContentPart, Message, MessagePayload};
-use cpex_core::executor::PipelineResult;
-use cpex_core::extensions::{
+use cpex::{HyperTransport, PolicyEngine};
+use praxis_policy_core::cmf::content::{ToolCall, ToolResult};
+use praxis_policy_core::cmf::enums::Role;
+use praxis_policy_core::cmf::{CmfHook, ContentPart, Message, MessagePayload};
+use praxis_policy_core::executor::PipelineResult;
+use praxis_policy_core::extensions::{
     AgentExtension, Extensions, HttpExtension, MetaExtension, SecurityExtension, SubjectExtension,
     SubjectType,
 };
-use cpex_core::identity::{IdentityHook, IdentityPayload, TokenSource};
+use praxis_policy_core::identity::{IdentityHook, IdentityPayload, TokenSource};
 
 use crate::normalize::{sorted, SCRUBBED_TOKEN};
 use crate::spec::{ExtensionsSpec, InvokeRequest, MediateHooks};
@@ -39,7 +39,7 @@ const ELICITATION_ID_HEADER: &str = "X-Policy-Elicitation-Id";
 const CREDENTIAL_HEADERS: &[&str] = &["authorization", "x-user-token", "x-workload-token"];
 
 pub struct Engine {
-    mgr: Arc<PluginManager>,
+    mgr: Arc<PolicyEngine>,
 }
 
 /// A caller with its credentials already minted.
@@ -62,8 +62,13 @@ pub struct MediateOutcome {
 
 impl Engine {
     pub async fn load(yaml: &str, host_plugins: &[String]) -> Result<Self, String> {
-        let mgr = Arc::new(PluginManager::default());
+        let mgr = Arc::new(PolicyEngine::default());
         cpex::install_builtins(&mgr);
+        // The mock upstream listens on 127.0.0.1, which the bundled
+        // transport refuses unless private destinations are allowed.
+        mgr.set_http_transport(Arc::new(
+            HyperTransport::new().with_allow_private_destinations(),
+        ));
         for set in host_plugins {
             match set.as_str() {
                 "go-demo-cmf" => go_demo_cmf::register_cmf_factories(&mgr),
@@ -391,7 +396,7 @@ fn project_identity(p: &IdentityPayload) -> Value {
     })
 }
 
-fn project_raw_credentials(rc: &cpex_core::extensions::RawCredentialsExtension) -> Value {
+fn project_raw_credentials(rc: &praxis_policy_core::extensions::RawCredentialsExtension) -> Value {
     let mut inbound: Vec<Value> = rc
         .inbound_tokens
         .iter()

@@ -15,9 +15,13 @@ use serde_json::Value;
 #[serde(deny_unknown_fields)]
 pub struct Scenario {
     pub description: String,
-    /// Config file, relative to the scenario directory.
+    /// Config file in 0.2.3 form, relative to the scenario directory. Only
+    /// the 0.2.3 capture (at the snapshot commit) reads it.
     #[serde(default = "default_config")]
     pub config: String,
+    /// The same config migrated to the 0.3.0 form, which this harness loads.
+    #[serde(default = "default_ppe_config")]
+    pub ppe_config: String,
     /// External services the scenario needs. Only `valkey` is recognized.
     #[serde(default)]
     pub requires: Vec<String>,
@@ -39,6 +43,46 @@ pub struct Scenario {
 
 fn default_config() -> String {
     "config.yaml".to_string()
+}
+
+fn default_ppe_config() -> String {
+    "config.ppe.yaml".to_string()
+}
+
+impl Scenario {
+    /// Map every hook name a request dispatches through `renames`.
+    pub fn apply_hook_renames(&mut self, renames: &HookRenames) {
+        for name in [
+            &mut self.hooks.identity,
+            &mut self.hooks.pre,
+            &mut self.hooks.post,
+        ] {
+            *name = renames.map(name).to_string();
+        }
+        for req in &mut self.requests {
+            if let Request::Invoke(r) = req {
+                r.hook = renames.map(&r.hook).to_string();
+            }
+        }
+    }
+}
+
+/// The reviewed legacy-to-current hook rename table (`hook-renames.yaml`).
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HookRenames {
+    /// Legacy name to current name.
+    #[serde(default)]
+    pub renames: BTreeMap<String, String>,
+    /// Names that are the same in both releases, for the record.
+    #[serde(default)]
+    pub unchanged: Vec<String>,
+}
+
+impl HookRenames {
+    pub fn map<'a>(&'a self, hook: &'a str) -> &'a str {
+        self.renames.get(hook).map_or(hook, String::as_str)
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]

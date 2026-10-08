@@ -1,0 +1,41 @@
+# Reviewed hook rename table: hook names CPEX 0.2.3 accepted, mapped to the
+# names PPE 0.4.1 (CPEX 0.3.0) dispatches.
+#
+# The parity harness applies it to every scenario's `hooks` block and every
+# `invoke` request's `hook` before replaying, and to the `hook` field of the
+# recorded 0.2.3 stages before diffing, so a renamed hook is not reported as
+# a difference.
+#
+# Sources: the 0.2.3 hook constants (crates/cpex-core/src/hooks/types.rs and
+# crates/cpex-core/src/cmf/constants.rs at
+# the snapshot commit) and the removed_hooks list in
+# crates/cpex-ffi/tests/fixtures/wire_compat.json. PPE rejects every legacy
+# name on the left at config load.
+#
+# The scenarios use only names that are unchanged, listed under `unchanged`
+# for the record. A name absent from both lists is replayed as written.
+
+renames:
+  tool_pre_invoke: cmf.tool_pre_invoke
+  tool_post_invoke: cmf.tool_post_invoke
+  prompt_pre_fetch: cmf.prompt_pre_invoke
+  prompt_post_fetch: cmf.prompt_post_invoke
+  resource_pre_fetch: cmf.resource_pre_fetch
+  resource_post_fetch: cmf.resource_post_fetch
+  identity_resolve: identity.resolve
+  token_delegate: token.delegate
+  cmf.prompt_pre_fetch: cmf.prompt_pre_invoke
+  cmf.prompt_post_fetch: cmf.prompt_post_invoke
+  cmf.http_request: http.request
+  cmf.http_response: http.response
+
+unchanged:
+  - cmf.tool_pre_invoke
+  - cmf.tool_post_invoke
+  - cmf.llm_input
+  - cmf.llm_output
+  - cmf.resource_pre_fetch
+  - cmf.resource_post_fetch
+  - identity.resolve
+  - token.delegate
+  - elicit

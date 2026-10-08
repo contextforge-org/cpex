@@ -1,0 +1,40 @@
+# Session labels (tainting) with the default in-memory session store.
+#
+# Source: examples/tutorial/policies/m07.yaml, with the parity mock IdP.
+#
+# Migrated to the CPEX 0.3.0 (PPE) form from config.yaml in this directory:
+# - plugins that call out over HTTP declare `perform_http`.
+
+plugins:
+  - name: idp
+    kind: identity/jwt
+    hooks: [identity.resolve]
+    capabilities: [perform_http]
+    config:
+      claim_mapper: standard
+      trusted_issuers:
+        - issuer: https://idp.parity.test
+          audiences: [cpex-parity]
+          algorithms: [EdDSA]
+          decoding_key:
+            kind: jwks_url
+            url: "{{MOCK_URL}}/jwks"
+            insecure_http: true
+          leeway_seconds: 60
+
+routes:
+  - tool: get_compensation
+    authentication:
+      - idp
+    authorization:
+      pre_invocation:
+        - "require(role.hr)"
+        - "taint(secret, session)"
+
+  - tool: send_email
+    authentication:
+      - idp
+    authorization:
+      pre_invocation:
+        - "require(authenticated)"
+        - "security.labels contains \"secret\": deny('write-down blocked: this session read secret data', 'session_tainted')"

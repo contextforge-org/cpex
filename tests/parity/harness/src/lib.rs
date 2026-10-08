@@ -1,12 +1,13 @@
 // Location: ./tests/parity/harness/src/lib.rs
 // SPDX-License-Identifier: Apache-2.0
 //
-// Parity capture harness. For each scenario under `<root>/scenarios`:
-// template its config, start the mock upstream, mint its test tokens, load
-// the engine, replay the request set in order, and write one normalized
-// snapshot to `<out>/<scenario>.json`. Session-label scenarios that need
-// Valkey also write the raw `taint:v1` keyspace to
-// `<out>/valkey/<scenario>.keyspace.json`.
+// Parity harness. For each scenario under `<root>/scenarios`: map its hook
+// names through the rename table, template its migrated config, start the
+// mock upstream, mint its test tokens, load the engine, and replay the
+// request set in order into one normalized snapshot. `capture` writes it to
+// `<out>/<scenario>.json` (plus the raw `taint:v1` keyspace for Valkey
+// scenarios under `<out>/valkey/`); `check_parity` diffs it against the
+// 0.2.3 baseline in `<root>/snapshots` instead.
 //
 // Engine-specific code lives in `engine.rs`; everything else reads and
 // writes engine-neutral data.
@@ -15,6 +16,7 @@ pub mod engine;
 pub mod keys;
 pub mod mock;
 pub mod normalize;
+pub mod parity;
 pub mod spec;
 pub mod valkey;
 
@@ -27,11 +29,14 @@ use engine::{Engine, ResolvedCaller};
 use keys::KeyRing;
 use mock::MockServer;
 use normalize::{to_snapshot_string, Scrubber};
-use spec::{Request, Scenario};
+use spec::{HookRenames, Request, Scenario};
 
 /// TEST-ONLY client secret handed to OAuth and CIBA plugins through a file
 /// source. The mock upstream does not check it.
 const TEST_CLIENT_SECRET: &str = "parity-test-only-client-secret";
+
+/// The reviewed legacy-to-current hook rename table, relative to the root.
+pub const HOOK_RENAMES_FILE: &str = "hook-renames.yaml";
 
 pub struct Options {
     /// Directory holding `scenarios/`.
@@ -55,6 +60,12 @@ pub fn default_root() -> PathBuf {
         .parent()
         .expect("harness lives under tests/parity")
         .to_path_buf()
+}
+
+/// Where the binary writes a capture unless told otherwise: `target/parity`
+/// in the workspace, away from the committed baseline.
+pub fn default_out() -> PathBuf {
+    default_root().join("../../target/parity")
 }
 
 pub fn scenario_names(root: &Path) -> Result<Vec<String>, String> {
@@ -83,19 +94,67 @@ pub async fn capture(opts: &Options) -> Result<Vec<(String, Status)>, String> {
 }
 
 async fn capture_one(opts: &Options, name: &str) -> Result<Status, String> {
+    let (snapshot, keyspace) = match replay(opts, name, &Replay::default()).await? {
+        Replayed::Skipped(why) => return Ok(Status::Skipped(why)),
+        Replayed::Done { snapshot, keyspace } => (snapshot, keyspace),
+    };
+    std::fs::create_dir_all(&opts.out).map_err(|e| format!("{}: {e}", opts.out.display()))?;
+    write(
+        &opts.out.join(format!("{name}.json")),
+        &to_snapshot_string(snapshot),
+    )?;
+    if let Some(dump) = keyspace {
+        let vdir = opts.out.join("valkey");
+        std::fs::create_dir_all(&vdir).map_err(|e| format!("{}: {e}", vdir.display()))?;
+        write(
+            &vdir.join(format!("{name}.keyspace.json")),
+            &to_snapshot_string(dump),
+        )?;
+    }
+    Ok(Status::Written)
+}
+
+/// How one scenario is replayed. The default replays every request against
+/// an empty store.
+#[derive(Default)]
+pub struct Replay {
+    /// Seed the Valkey database with this keyspace export (the
+    /// `valkey/<name>.keyspace.json` shape) after flushing it.
+    pub valkey_seed: Option<Value>,
+    /// Replay only these request ids, in scenario order (all when empty).
+    pub only_requests: Vec<String>,
+}
+
+pub enum Replayed {
+    Skipped(String),
+    /// The normalized snapshot, and the Valkey keyspace left afterwards
+    /// when the scenario uses Valkey.
+    Done {
+        snapshot: Value,
+        keyspace: Option<Value>,
+    },
+}
+
+/// Replay one scenario and return its normalized snapshot without writing
+/// anything.
+pub async fn replay(opts: &Options, name: &str, plan: &Replay) -> Result<Replayed, String> {
     let dir = opts.root.join("scenarios").join(name);
     let raw = read(&dir.join("requests.yaml"))?;
-    let scenario: Scenario =
+    let mut scenario: Scenario =
         serde_yaml::from_str(&raw).map_err(|e| format!("{name}/requests.yaml: {e}"))?;
+    scenario.apply_hook_renames(&load_hook_renames(&opts.root)?);
 
     let needs_valkey = scenario.requires.iter().any(|r| r == "valkey");
     if let Some(other) = scenario.requires.iter().find(|r| *r != "valkey") {
         return Err(format!("{name}: unknown requirement '{other}'"));
     }
     if needs_valkey && opts.valkey_url.is_none() {
-        return Ok(Status::Skipped(
+        return Ok(Replayed::Skipped(
             "requires Valkey; pass --valkey-url or set PARITY_VALKEY_URL".into(),
         ));
+    }
+    if plan.valkey_seed.is_some() && !needs_valkey {
+        return Err(format!("{name}: a Valkey seed needs a Valkey scenario"));
     }
 
     let keys = KeyRing::default();
@@ -123,7 +182,7 @@ async fn capture_one(opts: &Options, name: &str) -> Result<Status, String> {
         .map_err(|e| format!("{}: {e}", secret_file.display()))?;
     scrub.add_secret(TEST_CLIENT_SECRET);
 
-    let config = read(&dir.join(&scenario.config))?
+    let config = read(&dir.join(&scenario.ppe_config))?
         .replace("{{MOCK_URL}}", mock.url())
         .replace("{{CLIENT_SECRET_FILE}}", &secret_file.to_string_lossy())
         .replace(
@@ -133,14 +192,18 @@ async fn capture_one(opts: &Options, name: &str) -> Result<Status, String> {
                 .unwrap_or("redis://127.0.0.1:6379"),
         );
 
+    let valkey_url = opts.valkey_url.as_deref().unwrap_or_default();
     if needs_valkey {
-        valkey::flush(opts.valkey_url.as_deref().unwrap_or_default())?;
+        valkey::flush(valkey_url)?;
+        if let Some(seed) = &plan.valkey_seed {
+            valkey::seed(valkey_url, seed)?;
+        }
     }
 
     let mut snapshot = json!({
         "scenario": name,
         "description": scenario.description,
-        "config": format!("scenarios/{name}/{}", scenario.config),
+        "config": format!("scenarios/{name}/{}", scenario.ppe_config),
     });
 
     match Engine::load(&config, &scenario.host_plugins).await {
@@ -153,6 +216,11 @@ async fn capture_one(opts: &Options, name: &str) -> Result<Status, String> {
             let mut outcomes = Vec::new();
             let mut elicitations: BTreeMap<String, String> = BTreeMap::new();
             for req in &scenario.requests {
+                if !plan.only_requests.is_empty()
+                    && !plan.only_requests.iter().any(|id| id == req.id())
+                {
+                    continue;
+                }
                 let mut rec = run_request(&engine, &scenario, req, &tokens, &elicitations).await?;
                 if let Some(eid) = rec
                     .remove("elicitation_id")
@@ -168,25 +236,61 @@ async fn capture_one(opts: &Options, name: &str) -> Result<Status, String> {
         },
     }
 
-    std::fs::create_dir_all(&opts.out).map_err(|e| format!("{}: {e}", opts.out.display()))?;
-    write(
-        &opts.out.join(format!("{name}.json")),
-        &to_snapshot_string(scrub.apply(snapshot)),
-    )?;
-
-    if needs_valkey {
-        let dump = valkey::export(opts.valkey_url.as_deref().unwrap_or_default())?;
-        let vdir = opts.out.join("valkey");
-        std::fs::create_dir_all(&vdir).map_err(|e| format!("{}: {e}", vdir.display()))?;
-        write(
-            &vdir.join(format!("{name}.keyspace.json")),
-            &to_snapshot_string(dump),
-        )?;
-    }
+    let keyspace = if needs_valkey {
+        Some(valkey::export(valkey_url)?)
+    } else {
+        None
+    };
 
     let _ = std::fs::remove_dir_all(&work);
     drop(mock);
-    Ok(Status::Written)
+    Ok(Replayed::Done {
+        snapshot: scrub.apply(snapshot),
+        keyspace,
+    })
+}
+
+/// Replay every selected scenario through the engine and diff each against
+/// its recorded snapshot under `<root>/snapshots`, then check the
+/// differences against `<root>/intended-differences.yaml`. Nothing is
+/// written. Returns the report and each scenario's status.
+pub async fn check_parity(
+    opts: &Options,
+) -> Result<(parity::Report, Vec<(String, Status)>), String> {
+    let renames = load_hook_renames(&opts.root)?;
+    let intended = parity::load_intended(&opts.root)?;
+    let mut differences = Vec::new();
+    let mut statuses = Vec::new();
+    let mut checked = Vec::new();
+    for name in scenario_names(&opts.root)? {
+        if !opts.only.is_empty() && !opts.only.contains(&name) {
+            continue;
+        }
+        let snapshot = match replay(opts, &name, &Replay::default()).await? {
+            Replayed::Skipped(why) => {
+                statuses.push((name, Status::Skipped(why)));
+                continue;
+            },
+            Replayed::Done { snapshot, .. } => snapshot,
+        };
+        // Round-trip through the snapshot text so both sides compare in the
+        // same form.
+        let current: Value = serde_json::from_str(&to_snapshot_string(snapshot))
+            .map_err(|e| format!("{name}: {e}"))?;
+        let path = opts.root.join("snapshots").join(format!("{name}.json"));
+        let baseline: Value =
+            serde_json::from_str(&read(&path)?).map_err(|e| format!("{}: {e}", path.display()))?;
+        differences.extend(parity::diff_scenario(&name, &baseline, &current, &renames));
+        checked.push(name.clone());
+        statuses.push((name, Status::Written));
+    }
+    Ok((parity::check(differences, &intended, &checked), statuses))
+}
+
+/// The reviewed hook rename table at `<root>/hook-renames.yaml`.
+pub fn load_hook_renames(root: &Path) -> Result<HookRenames, String> {
+    let path = root.join(HOOK_RENAMES_FILE);
+    serde_yaml::from_str(&read(&path)?).map_err(|e| format!("{}: {e}", path.display()))
 }
 
 async fn run_request(

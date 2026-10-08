@@ -1,0 +1,35 @@
+# Copied (below this header) from examples/go-demo/cmf_plugins.yaml as
+# ported to CPEX 0.3.0. The plugin kinds are registered by the harness from
+# examples/go-demo/ffi/src/cmf_plugins.rs.
+#
+# Migrated from config.yaml in this directory:
+# - `plugin_settings.routing_enabled` with `global.policies` and per-route
+#   `plugins:` lists becomes `engine_settings.dispatch: hooks`: each plugin
+#   fires at the hooks it declares. Hook dispatch rejects `routes:` and
+#   `global:`.
+# - The host kinds `builtin/cmf-*` are renamed `demo/cmf-*`.
+
+engine_settings:
+  dispatch: hooks
+  plugin_timeout: 30
+
+plugins:
+  - name: tool-policy
+    kind: demo/cmf-tool-policy
+    hooks: [cmf.tool_pre_invoke]
+    mode: sequential
+    priority: 10
+    on_error: fail
+    capabilities:
+      - read_labels
+      - read_subject
+
+  - name: header-injector
+    kind: demo/cmf-header-injector
+    hooks: [cmf.tool_pre_invoke, cmf.tool_post_invoke]
+    mode: sequential
+    priority: 50
+    on_error: ignore
+    capabilities:
+      - read_headers
+      - write_headers

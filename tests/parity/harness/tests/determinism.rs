@@ -1,9 +1,11 @@
 // Location: ./tests/parity/harness/tests/determinism.rs
 // SPDX-License-Identifier: Apache-2.0
 //
-// Two captures produce byte-identical output, and that output matches the
-// committed snapshots. Valkey scenarios run only when PARITY_VALKEY_URL is
-// set; without it they are skipped and reported on stderr.
+// Two captures through the current engine produce byte-identical output,
+// so a parity difference is never a run-to-run artifact. (Matching the
+// committed 0.2.3 snapshots is the parity test's job.) Valkey scenarios run
+// only when PARITY_VALKEY_URL is set; without it they are skipped and
+// reported on stderr.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -57,7 +59,7 @@ async fn run(out: PathBuf) -> Vec<(String, Status)> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn two_captures_are_byte_identical_and_match_committed_snapshots() {
+async fn two_captures_are_byte_identical() {
     let a = scratch("a");
     let b = scratch("b");
     let results = run(a.clone()).await;
@@ -79,27 +81,11 @@ async fn two_captures_are_byte_identical_and_match_committed_snapshots() {
         );
     }
 
-    let committed = tree(&default_root().join("snapshots"));
-    for (name, status) in &results {
-        if *status != Status::Written {
-            continue;
-        }
-        let mut files = vec![PathBuf::from(format!("{name}.json"))];
-        let keyspace = PathBuf::from("valkey").join(format!("{name}.keyspace.json"));
-        if ta.contains_key(&keyspace) {
-            files.push(keyspace);
-        }
-        for f in files {
-            let want = committed
-                .get(&f)
-                .unwrap_or_else(|| panic!("no committed snapshot {}", f.display()));
-            assert!(
-                *want == ta[&f],
-                "{} differs from the committed snapshot; rerun the capture and review the diff",
-                f.display()
-            );
-        }
-    }
+    let written = results
+        .iter()
+        .filter(|(_, s)| *s == Status::Written)
+        .count();
+    assert!(written > 0, "no scenario was captured");
 
     let _ = std::fs::remove_dir_all(&a);
     let _ = std::fs::remove_dir_all(&b);

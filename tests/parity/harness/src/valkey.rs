@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 // Raw keyspace access for session-label scenarios: clear the database
-// before a capture, then export every key under the label prefix so a
-// later run can seed a store from it and check it reads the same labels.
+// before a capture, export every key under the label prefix, and seed a
+// database from such an export so a later engine can read the labels back.
 
 use std::collections::BTreeMap;
 
@@ -82,4 +82,48 @@ pub fn export(url: &str) -> Result<Value, String> {
         );
     }
     Ok(json!({ "key_prefix": KEY_PREFIX, "keys": out }))
+}
+
+/// TTL given to seeded keys whose export says a TTL was set. The export
+/// does not keep the remaining seconds; any positive value reads back as
+/// `"set"`.
+const SEED_TTL_SECONDS: u64 = 3600;
+
+/// Write an [`export`] back into the database: one set per key with the
+/// recorded members, and a TTL where the export says one was set. Run
+/// [`flush`] first for an exact copy.
+pub fn seed(url: &str, dump: &Value) -> Result<(), String> {
+    let keys = dump
+        .get("keys")
+        .and_then(Value::as_object)
+        .ok_or("keyspace export has no `keys` object")?;
+    let mut con = connect(url)?;
+    for (key, entry) in keys {
+        if entry.get("type").and_then(Value::as_str) != Some("set") {
+            return Err(format!("{key}: only set keys can be seeded"));
+        }
+        let members: Vec<&str> = entry
+            .get("members")
+            .and_then(Value::as_array)
+            .ok_or_else(|| format!("{key}: no members"))?
+            .iter()
+            .map(|m| {
+                m.as_str()
+                    .ok_or_else(|| format!("{key}: non-string member"))
+            })
+            .collect::<Result<_, _>>()?;
+        redis::cmd("SADD")
+            .arg(key)
+            .arg(&members)
+            .query::<()>(&mut con)
+            .map_err(|e| format!("SADD {key}: {e}"))?;
+        if !entry.get("ttl").is_none_or(Value::is_null) {
+            redis::cmd("EXPIRE")
+                .arg(key)
+                .arg(SEED_TTL_SECONDS)
+                .query::<()>(&mut con)
+                .map_err(|e| format!("EXPIRE {key}: {e}"))?;
+        }
+    }
+    Ok(())
 }
