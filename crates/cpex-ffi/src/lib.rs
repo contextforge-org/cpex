@@ -1043,11 +1043,15 @@ pub unsafe extern "C" fn cpex_invoke_resolved(
             },
         };
 
+        // The identity hook gets the caller's extensions so its `meta`
+        // selects the route: under `dispatch: policy` the route's
+        // `authentication:` list decides which resolvers run, and a
+        // request with no route meta is refused as unidentified.
         let (id_result, _id_bg) = match run_safely(
             inner.engine.invoke_by_name(
                 praxis_policy_core::identity::HOOK_IDENTITY_RESOLVE,
                 Box::new(id_payload),
-                Extensions::default(),
+                base_extensions.clone(),
                 None,
             ),
             "cpex_invoke_resolved/identity",
