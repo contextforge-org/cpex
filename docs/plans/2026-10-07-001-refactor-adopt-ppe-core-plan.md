@@ -1,7 +1,7 @@
 ---
 title: "refactor: Adopt PPE as the CPEX core for 0.3.0"
 type: refactor
-status: active
+status: completed
 date: 2026-10-07
 origin: docs/brainstorms/ppe-core-adoption-requirements.md
 ---
