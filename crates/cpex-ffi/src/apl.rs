@@ -52,8 +52,8 @@ pub const CPEX_APL_KNOWN_FLAGS: u32 = CPEX_APL_ALLOW_PRIVATE_DESTINATIONS;
 /// What it installs:
 ///   - plugin factories: `identity/jwt`, `identity/api-key`,
 ///     `delegator/oauth`, `elicitation/ciba`
-///   - PDP factories for `global.apl.pdp[]`: `cedar-direct`, `cel`, `opa`
-///   - session store factory for `global.apl.session_store`: `valkey`
+///   - PDP factories for `global.pdp[]`: `cedar-direct`, `cel`, `opa`
+///   - session store factory for `global.session_store`: `valkey`
 ///     (the in-process memory store stays the default)
 ///   - the APL config visitor
 ///   - one `HyperTransport` for builtins that declare `perform_http`

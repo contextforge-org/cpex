@@ -311,10 +311,8 @@ Two environmental caveats, both upstream of this crate:
   `mcp>=1.26`, which renamed that symbol to `MCPError`. The e2e tests downgrade
   `mcp` in their pre-built venv only for those older checkouts. Current checkouts
   use the declared version, and the host reuses the cached venv in both cases.
-- The 0.1.x Python worker registers no `cmf.*` hooks (it never imports
-  `cpex.framework.hooks.message`), so a CMF round-trip cannot be proven end to
-  end yet, and Python plugins on PPE's `cmf.*` hooks fail at invoke until the
-  worker registers them. The host's CMF routing is covered by unit tests, and
-  the e2e suite asserts that a CMF hook is rejected cleanly rather than
-  silently allowed. The tool-hook e2e tests register `tool_pre_invoke` as a
-  host hook for that reason.
+- The 0.1.x Python worker registers no `cmf.*` hooks and does not report the
+  `cmf_hooks` feature, so the host translates `cmf.*` tool, prompt and resource
+  payloads to the legacy shapes for it (see the legacy worker section above).
+  The e2e suite runs 0.1.x plugins on `cmf.tool_pre_invoke` through that
+  translation, and checks that a message it cannot represent fails closed.
