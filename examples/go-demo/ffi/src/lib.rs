@@ -56,3 +56,28 @@ pub unsafe extern "C" fn cpex_demo_register_factories(
     cmf_plugins::register_cmf_factories(&inner.engine);
     0
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use praxis_policy_core::engine::PolicyEngine;
+
+    /// Both demo configs load once the demo hooks and factories are
+    /// registered, so the Go binaries do not fail on startup.
+    #[test]
+    fn demo_configs_load() {
+        let configs = [
+            ("plugins.yaml", include_str!("../../plugins.yaml")),
+            ("cmf_plugins.yaml", include_str!("../../cmf_plugins.yaml")),
+        ];
+        for (name, yaml) in configs {
+            let engine = Arc::new(PolicyEngine::default());
+            crate::demo_plugins::register_demo_factories(&engine);
+            crate::cmf_plugins::register_cmf_factories(&engine);
+            engine
+                .load_config_yaml(yaml)
+                .unwrap_or_else(|e| panic!("{name} failed to load: {e}"));
+        }
+    }
+}
