@@ -157,10 +157,13 @@ and the plugin, rather than allowing or skipping:
 - `cmf.llm_input` and `cmf.llm_output`, which have no legacy hook;
 - a message without exactly one content part of the kind in the second column
   (for example a `cmf.tool_pre_invoke` message with no tool call, or with two);
-- a message holding any other content part that carries text or data (a text
-  or thinking part with text, a media part, another tool or resource part),
-  on every shimmed hook: the plugin never sees it, so a filter would pass it
-  through unredacted. Empty text and thinking parts are kept;
+- on a post hook (`cmf.tool_post_invoke`, `cmf.prompt_post_invoke`,
+  `cmf.resource_post_fetch`), a message holding any other content part that
+  carries text or data (a text or thinking part with text, a media part,
+  another tool or resource part): the plugin never sees it, so a filter would
+  pass it through unredacted. Empty text and thinking parts are kept. On a pre
+  hook such sibling parts pass through unchanged: the plugin authorizes the
+  part it sees, and the rest of the message goes back as dispatched;
 - a prompt argument that is not a string (the legacy `args` is
   `dict[str, str]`);
 - a qualifier a plugin that authorizes by bare name or URI cannot see: a tool

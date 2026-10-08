@@ -151,7 +151,17 @@ A refused call fails closed: `delegation.egress_denied`, `elicitation.egress_den
 
 The `isolated_venv` host runs each Python plugin in its own subprocess and virtualenv, so a plugin crash or a dependency conflict stays out of the engine's process. It does not sandbox the plugin: the subprocess runs with the host's user and network access.
 
-For a Python worker that does not claim CMF support, the host translates each `cmf.*` hook into the legacy hook and payload the worker knows. Where it cannot represent a request faithfully (an LLM hook, a message with zero or several matching parts, a binary resource, a modified payload the message cannot hold), it fails closed with `legacy_shim_unsupported` rather than allowing or skipping the plugin.
+For a Python worker that does not claim CMF support, the host translates each `cmf.*` hook into the legacy hook and payload the worker knows. Where it cannot represent a request faithfully (an LLM hook, a message with zero or several matching parts, a binary resource, a modified payload the message cannot hold), it fails closed with `legacy_shim_unsupported` rather than allowing or skipping the plugin. On a post hook it also refuses a message with any other part that carries content, since a filter that cannot see that part would pass it through unredacted. On a pre hook such parts pass through unchanged: the plugin authorizes the call, request or URI it sees.
+
+Raw tokens reach a Python plugin only through a capability-gated `credential` object. On `identity.resolve` the payload a plugin sees omits the credential-bearing request headers (the source header, `authorization`, `proxy-authorization`, cookies, `x-api-key`, and any header holding the token) unless the plugin declares `read_inbound_credentials`. A delegator gets the caller's bearer token under the same capability. Once a token is in the worker, the gate no longer constrains it: the plugin's code and dependencies can read it.
+
+## Identity input from binding hosts
+
+The Python, Go and C bindings take an `identity.resolve` input from the host. That input may set only `source`, `source_header`, `headers`, `client_host` and `client_port`. A host bug or an attacker-shaped request that pre-filled `subject`, `client`, `caller_workload`, `delegation`, `raw_credentials`, `resolved_at` or `raw_claims` could forge the identity the resolvers return, so the bindings refuse it before any plugin runs. The result does not echo the request headers, so the inbound token does not travel back into host logs or responses.
+
+A hook name removed in 0.3 is refused at invoke time as well as at load. It would reach no handler and come back allowed with no policy evaluated.
+
+Extensions are a different matter: the engine trusts the `security.subject` a host passes on a later call. Pass only a subject that came from `identity.resolve`, or use Go `InvokeResolved` to keep resolution inside the engine.
 
 ## Known limitations
 

@@ -79,7 +79,7 @@ if result.IsDenied() {
 }
 ```
 
-Hook names follow the engine: `cmf.tool_pre_invoke`, `cmf.tool_post_invoke`, `cmf.prompt_pre_invoke`, `cmf.prompt_post_invoke`, `cmf.resource_pre_fetch`, `cmf.resource_post_fetch`, `identity.resolve`, `token.delegate`, and so on. The old unprefixed names (`tool_pre_invoke`, `identity_resolve`, ...) are rejected at config load.
+Hook names follow the engine: `cmf.tool_pre_invoke`, `cmf.tool_post_invoke`, `cmf.prompt_pre_invoke`, `cmf.prompt_post_invoke`, `cmf.resource_pre_fetch`, `cmf.resource_post_fetch`, `identity.resolve`, `token.delegate`, and so on. The old unprefixed names (`tool_pre_invoke`, `identity_resolve`, ...) are rejected at config load, and `InvokeByName` and `InvokeResolved` refuse them with `ErrCpexInvalidInput`: such a name reaches no handler, so dispatching it would come back allowed with no policy evaluated.
 
 ## Lifecycle
 
@@ -100,7 +100,7 @@ NewPolicyEngineDefault()
 
 `EnableAPL` installs every bundled builtin, one outbound HTTP transport, and the `env`, `file` and `vault` secret providers. Plugins that reach the network (`jwks_url`, OAuth delegation, CIBA, Vault) must declare `capabilities: [perform_http]`.
 
-The transport refuses private, loopback and link-local destinations by default. Pass `cpex.WithPrivateDestinations()` to allow them, for example for a local IdP. This is a host decision; no policy document can turn it on. `EnableAPL` is idempotent: a second call does nothing, whatever its options.
+The transport refuses private, loopback and link-local destinations by default. Pass `cpex.WithPrivateDestinations()` to allow them, for example for a local IdP. This is a host decision; no policy document can turn it on. `EnableAPL` is idempotent after a success: a second call does nothing, whatever its options. A call that panicked stays failed: it and every later call return an error wrapping `ErrCpexPanic`, because the engine may be half installed. Discard the engine and create a new one.
 
 `WithPrivateDestinations` is engine-wide. It lets every outbound builtin (JWKS, token exchange, CIBA, Vault) reach loopback, RFC 1918, link-local addresses including cloud metadata (`169.254.169.254`), and CGNAT. Use it for local development and demos only. A blocked JWKS fetch shows up as `auth.jwks_unavailable`; a blocked token exchange as `delegation.egress_denied`.
 
@@ -132,7 +132,7 @@ On package init the binding compares its expected FFI ABI version (3) with the o
 | `PayloadCMFMessage`  | 1     | Typed CMF `MessagePayload`       |
 | `PayloadIdentity`    | 2     | `IdentityPayload` for `identity.resolve` |
 
-Use `PayloadGeneric` for simple key-value payloads. Use `PayloadCMFMessage` when sending structured CMF messages with typed content parts (tool calls, resources, media, etc.). Use `PayloadIdentity` with `identity.resolve` (build it with `NewIdentityPayload`), and pass the route's `Meta` in the extensions: under the default `dispatch: policy`, the engine needs the entity to know which route's `authentication:` to run.
+Use `PayloadGeneric` for simple key-value payloads. Use `PayloadCMFMessage` when sending structured CMF messages with typed content parts (tool calls, resources, media, etc.). Use `PayloadIdentity` with `identity.resolve` (build it with `NewIdentityPayload`), and pass the route's `Meta` in the extensions: under the default `dispatch: policy`, the engine needs the entity to know which route's `authentication:` to run. An identity input may set only `Source`, `SourceHeader`, `Headers`, `ClientHost` and `ClientPort`; one that pre-fills a resolver output field (`Subject`, `RawClaims` and the like) is refused with `ErrCpexInvalidInput`. The resolved payload does not echo `Headers`, since they carry the inbound token.
 
 The generic HTTP hooks (`http.request`, `http.response`) are not invocable from Go in this release: the FFI has no payload type for the HTTP hook family. `HttpExtension` does carry the request line (`Method`, `Path`, `Host`, `Scheme`) and the response `Status`, so set `Method` and `Path` on the extensions of an `identity.resolve` call to select an `http:` route's own `authentication:` list.
 

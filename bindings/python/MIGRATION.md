@@ -34,11 +34,19 @@ from cpex import PluginManager, PipelineResult
 
 ## Hook Names
 
-Hook names are identical (`cmf.tool_pre_invoke`, etc.) and any hook name
-is accepted. The Rust-backed package picks the payload type from the hook
+Hook names follow the engine (`cmf.tool_pre_invoke`, `identity.resolve`,
+`token.delegate`, etc.). A name removed in 0.3 (`tool_pre_invoke`,
+`identity_resolve`, `prompt_pre_fetch` and the rest) raises `ValueError`
+naming its replacement, because it would reach no handler and come back
+allowed. The Rust-backed package picks the payload type from the hook
 name: `cmf.*` hooks use typed `MessagePayload`, `identity.resolve` uses
 typed `IdentityPayload`, and all other hooks use `GenericPayload`. For the
 two typed cases, a dict that doesn't match the schema raises `ValueError`.
+
+An `identity.resolve` payload may set only `source`, `source_header`,
+`headers`, `client_host` and `client_port`; one that sets a resolver
+output field (`subject`, `raw_claims` and the like) raises `ValueError`.
+The result's `modified_payload` does not echo `headers`.
 
 ## Payload Shape
 

@@ -15,7 +15,7 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
-## [0.3.0] - 2026-10-07
+## [0.3.0] - 2026-10-08
 
 CPEX now runs on the [praxis-policy engine](https://github.com/praxis-proxy/policy) (PPE) 0.4.1 from crates.io instead of its own engine crates. Policy language, plugin `kind` strings and violation codes stay the same. API names, hook names, several config keys and some defaults change. The [migration guide](docs/content/docs/migration-0.3.md) lists every change by surface.
 
@@ -28,6 +28,9 @@ CPEX now runs on the [praxis-policy engine](https://github.com/praxis-proxy/poli
 - **Legacy payload translation in the Python plugin host.** Plugins written for the 0.1.x Python worker keep working on PPE's `cmf.*` tool, prompt and resource hooks. The host translates payloads for workers that do not report the new `cmf_hooks` feature, and refuses any message it cannot represent with `legacy_shim_unsupported`.
 - **Parity and acceptance suites.** `tests/parity` replays 68 recorded 0.2.3 decisions against 0.3.0 and fails on any difference not listed with its cause. Python and Go acceptance suites drive identity, delegation, Cedar, OPA and session labels through the native libraries. CI also builds and smoke-tests the Python wheel and runs Go race tests on Linux and macOS.
 - **Docs pages adapted from PPE:** HTTP routing, assertions, auditing, identity claim mapping, CMF extensions and a crate map.
+- **`cpex::host` module.** The defaults every binding host shares: `install_host_defaults`, `secret_error_kind`, `REMOVED_HOOKS`, `removed_hook_replacement` and `resolved_identity_fields`. A Rust host that embeds the engine the way the bindings do can call them instead of copying the logic.
+- **PPE identity and delegation payloads in the Python plugin host.** A Python plugin on `identity.resolve` or `token.delegate` now accepts PPE's `IdentityPayload` and `DelegationPayload`, which PPE's FFI, its Python bindings and the APL `delegate(...)` step build. The plugin's `IdentityResult` or `DelegationResult` maps back onto the dispatched payload. A field PPE's types cannot hold fails closed.
+- **Go extension slots.** `SecurityExtension.Client`, `CallerWorkload` and `ThisWorkload`, `Extensions.CandidateConstraint`, the HTTP request line (`Method`, `Path`, `Host`, `Scheme`) and response `Status` on `HttpExtension`, and the MCP and delegation fields Go was missing.
 
 ### Changed
 
@@ -36,6 +39,11 @@ CPEX now runs on the [praxis-policy engine](https://github.com/praxis-proxy/poli
 - **BREAKING: Rust paths follow PPE.** `cpex_sdk` items come from `cpex::prelude`, engine modules from `cpex::praxis_policy_core`, and `PipelineResult` from `cpex::praxis_policy_core::executor`.
 - **BREAKING: facade features removed.** `pii`, `audit`, `jwt`, `oauth`, `elicitation-ciba`, `cedar`, `cel`, `valkey`, `builtins` and `full` are gone. All stable builtins are always on; `python-host` is the only feature.
 - **BREAKING: hook names follow PPE.** The unprefixed names (`tool_pre_invoke`, `identity_resolve`, `token_delegate`, `prompt_pre_fetch` and the rest) are rejected at load. Use `cmf.*`, `cmf.prompt_pre_invoke`, `identity.resolve` and `token.delegate`.
+- **BREAKING (Go): `SubjectExtension.Claims` is `map[string]any`.** Claims keep their JSON shape, so read one with a type switch or assertion. A token with a non-string claim used to fail to decode.
+- **BREAKING (Go): `SecurityExtension.Agent` and `AgentIdentity` are removed.** Rust has no such field, so the values were dropped on the way in. Use `ThisWorkload` (`WorkloadIdentity`, with `SpiffeID`, `TrustDomain` and `ClientID`).
+- **BREAKING (Python plugin host): a `token.delegate` plugin on PPE's `DelegationPayload` needs `read_inbound_credentials` to receive the bearer token.** It used to be gated on `read_delegated_tokens`. The bearer token is the caller's inbound credential, and PPE's own OAuth delegator declares `read_inbound_credentials`. A plugin that declared only `read_delegated_tokens` now gets an error instead of the token.
+- **Python `PolicyEngine` lifecycle.** `shutdown()` takes effect when awaited, not when the coroutine is created, and waits for an `initialize()` in flight. A timed-out `shutdown()` can be retried. An `initialize()` that times out rolls back the plugins it started once it ends, and leaves the engine terminal. A panicking secret provider makes `refresh_secrets()` raise `RuntimeError`.
+- **Legacy payload shim: siblings on pre hooks pass through.** On `cmf.tool_pre_invoke`, `cmf.prompt_pre_invoke` and `cmf.resource_pre_fetch`, content parts beside the one the legacy payload carries are returned unchanged. The plugin authorizes the part it sees.
 - **BREAKING: the policy document follows PPE 0.4.1.** The `apl:` wrapper and `global.apl:` are gone, phase lists nest under `authorization:`, empty authorization blocks fail, `plugin_settings` is `engine_settings`, `global.policies` is replaced by top-level `groups:`, route `plugins:` lists are removed, `priority:` is valid only under hook dispatch, and `plugin(x)` steps are `run(x)`.
 - **BREAKING: dispatch defaults to `policy`.** Identity runs only on routes that list `authentication:`, requests select routes by `meta`, and a request without it is denied with `unidentified_request` when routes are configured. A declared plugin no policy reaches fails the load.
 - **BREAKING: outbound plugins must declare `perform_http`.** JWT with `jwks_url`, OAuth delegation, CIBA and Vault fail to initialize without it. A blocked private JWKS shows as `auth.jwks_unavailable`.
@@ -52,10 +60,19 @@ CPEX now runs on the [praxis-policy engine](https://github.com/praxis-proxy/poli
 
 - **`cpex_invoke_resolved` passes the caller's extensions to identity resolution.** Without them every Go `InvokeResolved` call was refused under policy dispatch.
 - **Go `InvokeResolved` no longer double-frees a context table after an error.**
+- **Go `Resource.Blob` and messages without content parts decode across the FFI.** Both used to fail. `Resource.Blob` is now `ByteArray`, which matches the wire format Rust uses for bytes; a `[]byte` value still assigns to it.
+- **`EnableAPL` and `cpex_apl_install` stay failed after a panic.** A panicked call used to leave a half-installed engine that a second call reported as installed. Now that call and every later one return `ErrCpexPanic` / `RC_PANIC`; discard the engine.
+- **Python plugin host worker lifecycle.** A respawn under way when the plugin shuts down no longer starts a worker nothing stops. A respawn whose replacement fails verification no longer disables the plugin for good: the next call retries within the same budget. A capabilities probe that failed at startup is retried once, the first time a `cmf.*` hook needs it, instead of pinning the worker to the legacy shim.
 
 ### Security
 
 - **OAuth token-exchange denials no longer forward the IdP's `error_description`.** From PPE 0.2.0.
+- **Removed hook names are refused at invoke time.** A Go `InvokeByName` or `InvokeResolved`, Python `invoke_hook` or C `cpex_invoke` / `cpex_invoke_resolved` call naming one reached no handler and came back allowed with no policy evaluated. Go now returns `ErrCpexInvalidInput`, Python raises `ValueError` naming the replacement, and the FFI returns `RC_INVALID_INPUT`.
+- **`identity.resolve` input cannot carry a resolved identity.** An input may set only `source`, `source_header`, `headers`, `client_host` and `client_port`. One that sets `subject`, `client`, `caller_workload`, `delegation`, `raw_credentials`, `resolved_at` or `raw_claims` could forge the identity resolvers return, and is refused on every binding (`ValueError`, `ErrCpexInvalidInput`, `RC_INVALID_INPUT`).
+- **The `identity.resolve` result no longer echoes the request `headers`.** They include the credential header, so echoing them handed the inbound token back to anything that logs or forwards the result. Applies to Python `modified_payload` and to the Go and C identity payload. Every other field comes back as before.
+- **Go: an empty `DataPolicy.AllowedActions` no longer allows every action.** An empty slice was dropped on the way to Rust and read as unconstrained. Now nil allows every action and an empty non-nil slice allows none.
+- **Python plugin host scrubs credential headers.** On PPE's `IdentityPayload` the public payload a Python plugin sees omits the credential-bearing headers (the source header, `authorization`, `proxy-authorization`, cookies, `x-api-key` and any header holding the token). Only a plugin that declares `read_inbound_credentials` gets them, through the gated `credential` object.
+- **Legacy payload shim refuses post-hook messages with unseen content.** On `cmf.tool_post_invoke`, `cmf.prompt_post_invoke` and `cmf.resource_post_fetch`, a message holding a content part beside the result the legacy payload carries fails closed with `legacy_shim_unsupported`. The plugin cannot see that part, so a filter would pass it through unredacted.
 - **Known limitation: an elicitation approval is not bound to the requesting subject.** A caller presenting another subject's approved elicitation id is allowed. This is present in 0.2.3 and PPE 0.4.1; an upstream fix is pending. Keep elicitation timeouts short and return ids only to the requesting client.
 
 ## [0.2.3] - 2026-10-02

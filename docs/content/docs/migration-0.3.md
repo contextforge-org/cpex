@@ -87,7 +87,13 @@ The constructor installs the builtins, one HTTP transport and the `env`, `file` 
 
 `validator/pii-scan` and `audit/logger` no longer resolve in the wheel. A config naming them fails to load with an unknown-kind error. See [Builtins removed](#removed).
 
-`identity.resolve` takes a typed `IdentityPayload` dict: pass `{"source": "bearer", "headers": {"authorization": f"Bearer {token}"}}` with lowercased header names, plus the route's `meta` in the extensions. The resolved subject comes back in `modified_payload["subject"]`; copy it into `extensions["security"]["subject"]` for the tool call. Delegation (`delegate(...)` steps, `token.delegate`) is not available from Python, because inbound tokens do not cross back from an `identity.resolve` result. Drive delegation from Rust, or from Go with `InvokeResolved`.
+`identity.resolve` takes a typed `IdentityPayload` dict: pass `{"source": "bearer", "headers": {"authorization": f"Bearer {token}"}}` with lowercased header names, plus the route's `meta` in the extensions. The resolved subject comes back in `modified_payload["subject"]`; copy it into `extensions["security"]["subject"]` for the tool call. See [Identity input](#identity-input) for the fields an input may set and what the result leaves out. Delegation (`delegate(...)` steps, `token.delegate`) is not available from Python, because inbound tokens do not cross back from an `identity.resolve` result. Drive delegation from Rust, or from Go with `InvokeResolved`.
+
+The lifecycle calls are stricter:
+
+- `shutdown()` takes effect when the awaitable runs, not when the coroutine is created. It waits for an `initialize()` in flight, then tears down the plugins it started. It is terminal from the moment it starts. One that raised `TimeoutError` can be retried, and the retry waits for the first to finish.
+- An `initialize()` that raises `TimeoutError` keeps running; once it ends, the engine shuts down to stop the plugins it started. The engine is terminal from the timeout on, so build a new `PolicyEngine` to retry.
+- `refresh_secrets()` raises `RuntimeError` when a secret provider panics.
 
 ## Go API
 
@@ -102,8 +108,13 @@ The Go module and the FFI artifact must come from the same CPEX release. The pac
 | (none) | `cpex.WithPrivateDestinations()` |
 | (none) | `engine.RefreshSecrets()` |
 | (none) | `engine.SecretsLastSuccess(provider)` |
+| `SubjectExtension.Claims map[string]string` | `map[string]any`: a claim keeps its JSON shape, so type-assert to read it |
+| `SecurityExtension.Agent *AgentIdentity` | removed; use `ThisWorkload *WorkloadIdentity` (`SpiffeID`, `TrustDomain`, `ClientID`) |
+| (none) | `SecurityExtension.Client`, `.CallerWorkload`, `Extensions.CandidateConstraint` |
+| `Resource.Blob []byte` | `ByteArray`; a `[]byte` value still assigns, and it matches the Rust wire format |
+| `DataPolicy.AllowedActions` empty allowed every action | nil allows every action; an empty non-nil slice allows none |
 
-`EnableAPL` now also installs the HTTP transport and the secret providers. It is idempotent: a second call does nothing, whatever its options. `InvokeByName` callers must pass the new hook names (see [Hook names](#hook-names)), and an `identity.resolve` call must carry the route's `Meta` (entity type and name) like any other hook.
+`EnableAPL` now also installs the HTTP transport and the secret providers. It is idempotent after a success: a second call does nothing, whatever its options. A call that panicked stays failed: it and every later call return an error wrapping `ErrCpexPanic`, because the engine may be half installed. Discard the engine and create a new one. `InvokeByName` callers must pass the new hook names (see [Hook names](#hook-names)), and an `identity.resolve` call must carry the route's `Meta` (entity type and name) like any other hook.
 
 A plugin panic during `Invoke` now returns a nil error and a denied result whose violation code is `plugin_panic`. `ErrCpexPanic` is reserved for a panic in the FFI layer itself.
 
@@ -132,7 +143,7 @@ A plugin panic inside `cpex_invoke` or `cpex_invoke_resolved` now returns `RC_OK
 |---|---|---|
 | `CPEX_APL_ALLOW_PRIVATE_DESTINATIONS` | `1` | let builtins reach private, loopback and link-local addresses |
 
-Any other bit returns `RC_INVALID_INPUT`. The call is idempotent per handle: a second call returns `RC_OK` and changes nothing. `cpex_engine_new(yaml)` still registers no builtins and no transport.
+Any other bit returns `RC_INVALID_INPUT`. The call is idempotent per handle after a success: a second call returns `RC_OK` and changes nothing. After a call that panicked, every later call returns `RC_PANIC`; free the handle and create a new one. `cpex_engine_new(yaml)` still registers no builtins and no transport.
 
 `cpex_refresh_secrets` returns a MessagePack map `{updated, unchanged, failed}`; free it with `cpex_free_bytes`. `cpex_secrets_last_success` writes Unix milliseconds, or `0` when the provider's last refresh failed or the name is unknown.
 
@@ -156,6 +167,14 @@ The legacy unprefixed hook names are removed. A config that names one fails to l
 Unchanged: `cmf.tool_pre_invoke`, `cmf.tool_post_invoke`, `cmf.llm_input`, `cmf.llm_output`, `cmf.resource_pre_fetch`, `cmf.resource_post_fetch`, `identity.resolve`, `token.delegate` and `elicit`.
 
 This applies to three places: `hooks:` lists in config, Go `InvokeByName` and Python `invoke_hook` calls, and Python plugins run through the Python host (see [Python plugin host](#python-plugin-host)).
+
+A removed name is also refused at invoke time. It would reach no handler and come back allowed with no policy evaluated, so Go `InvokeByName` and `InvokeResolved` return `ErrCpexInvalidInput`, Python `invoke_hook` raises `ValueError` naming the replacement, and C `cpex_invoke` and `cpex_invoke_resolved` return `RC_INVALID_INPUT`.
+
+### Identity input
+
+An `identity.resolve` input may set only `source`, `source_header`, `headers`, `client_host` and `client_port`. The other fields (`subject`, `client`, `caller_workload`, `delegation`, `raw_credentials`, `resolved_at`, `raw_claims`) are what resolvers fill in, and a caller that pre-filled them could forge the resolved identity. An input that sets one is refused: Python raises `ValueError`, Go returns `ErrCpexInvalidInput`, and the C ABI returns `RC_INVALID_INPUT`. This covers `invoke_hook("identity.resolve", ...)`, `InvokeByName(HookIdentityResolve, ...)`, `cpex_invoke` and the identity payload of `InvokeResolved` / `cpex_invoke_resolved`.
+
+The result does not echo the request `headers`. They carry the credential header, so a host that logged or forwarded the result would leak the inbound token. Read the resolved fields (`subject`, `client`, `raw_claims` and the rest) from the result, and keep the headers you sent if you need them.
 
 ## Config keys
 
@@ -407,7 +426,14 @@ The `isolated_venv` host (`python-host` feature) follows the new hook names. Dec
 
 The released 0.1.x Python worker registers no `cmf.*` hooks. For a worker that does not claim the `cmf_hooks` capability at spawn time, the host translates each tool, prompt and resource `cmf.*` hook into the legacy hook and typed payload the worker expects (`tool_pre_invoke` with `{name, args}`, and so on), then maps the result back. A 0.1.x plugin keeps working with no SDK release: declare `cmf.tool_pre_invoke` in config and keep implementing `tool_pre_invoke` in Python.
 
-The translation fails closed with `legacy_shim_unsupported` when it cannot represent a request faithfully. It never allows or skips. The cases include `cmf.llm_input` / `cmf.llm_output`; a message without exactly one matching content part; a non-string prompt argument; a qualifier a legacy plugin that authorizes by bare name or URI cannot see (a tool call `namespace`, a prompt `server_id`, a resource `version`); a binary resource; an error result the legacy payload cannot mark; and a modified payload that sets something the message cannot hold or would leave stale data behind. The full list is in the [Python host README](https://github.com/contextforge-org/cpex/tree/main/crates/cpex-hosts-python#cmf-hooks-on-workers-without-cmf_hooks-the-legacy-payload-shim). A worker that claims `cmf_hooks` receives the CMF message directly.
+The translation fails closed with `legacy_shim_unsupported` when it cannot represent a request faithfully. It never allows or skips. The cases include `cmf.llm_input` / `cmf.llm_output`; a message without exactly one matching content part; on a post hook (`cmf.tool_post_invoke`, `cmf.prompt_post_invoke`, `cmf.resource_post_fetch`), any other part that carries text or data, since the plugin cannot see or redact it; a non-string prompt argument; a qualifier a legacy plugin that authorizes by bare name or URI cannot see (a tool call `namespace`, a prompt `server_id`, a resource `version`); a binary resource; an error result the legacy payload cannot mark; and a modified payload that sets something the message cannot hold or would leave stale data behind. The full list is in the [Python host README](https://github.com/contextforge-org/cpex/tree/main/crates/cpex-hosts-python#cmf-hooks-on-workers-without-cmf_hooks-the-legacy-payload-shim). A worker that claims `cmf_hooks` receives the CMF message directly. On a pre hook (`cmf.tool_pre_invoke`, `cmf.prompt_pre_invoke`, `cmf.resource_pre_fetch`), parts beside the one the legacy payload carries, such as narration text beside a tool call, pass through unchanged: the plugin authorizes the part it sees.
+
+On `identity.resolve` and `token.delegate` the host accepts PPE's `IdentityPayload` and `DelegationPayload`, which PPE's FFI, its Python bindings and the APL `delegate(...)` step build. The plugin keeps reading the Python `IdentityPayload` / `DelegationPayload` it already knows, and its `IdentityResult` / `DelegationResult` maps back onto PPE's payload.
+
+Two credential rules change:
+
+- A delegator on PPE's `DelegationPayload` receives the caller's bearer token only when it declares `read_inbound_credentials`, as PPE's own OAuth delegator does. A plugin that declared only `read_delegated_tokens` now gets an error instead of the token. Add `read_inbound_credentials` to its `capabilities:`.
+- A plugin that does not declare `read_inbound_credentials` sees the request headers without the credential-bearing ones (the source header, `authorization`, `proxy-authorization`, cookies, `x-api-key`, and any header holding the token).
 
 ## What each surface can do
 
@@ -415,7 +441,7 @@ The engine is the same everywhere, but not every feature reaches every surface i
 
 | Feature | Rust | Python | Go |
 |---|---|---|---|
-| `http:` routes and the `http.request` / `http.response` hooks | yes | no: the HTTP hooks expect an `HttpPayload` the binding cannot build | no: `HttpExtension` carries headers only, no method, path or status |
+| `http:` routes and the `http.request` / `http.response` hooks | yes | no: the HTTP hooks expect an `HttpPayload` the binding cannot build | no: the FFI has no payload type for the HTTP hooks |
 | Delegation (`delegate(...)`, `token.delegate`) | yes | no | yes, with `InvokeResolved` |
 | Audit sinks next to `routes:` | no (see below) | no | no |
 | Registering your own plugin factories | yes | no | yes, through a linked Rust FFI crate |

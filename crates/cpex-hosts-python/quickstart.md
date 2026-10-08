@@ -73,9 +73,10 @@ The plugin itself needs no change. The 0.1.x worker registers no `cmf.*` hooks,
 so the host serves `cmf.tool_pre_invoke` to it through the legacy payload shim:
 the plugin's `tool_pre_invoke` receives the usual `ToolPreInvokePayload`
 (`name` plus `args`), and a modified payload maps back onto the CMF message.
-See the README's "legacy payload shim" section for every hook it covers. A
-message that carries text beside the tool call fails closed there, since the
-legacy plugin would never see that text.
+See the README's "legacy payload shim" section for every hook it covers. Text
+beside the tool call passes through unchanged on this pre hook. On a post hook
+(`cmf.tool_post_invoke` and the like) a message with text beside the result
+fails closed, since the legacy plugin would never see that text.
 
 An identity or delegation plugin also needs no change. On `identity.resolve`
 and `token.delegate` it receives the `IdentityPayload` / `DelegationPayload` it

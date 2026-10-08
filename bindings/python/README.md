@@ -92,21 +92,36 @@ It is a host setting: no policy document can turn it on. Keyword only.
 Initialize all registered plugins and resolve declared secrets. Must be
 called before `invoke_hook`.
 
+Raises `RuntimeError` once `shutdown()` has started, including a shutdown
+that started after this call but before its awaitable ran. Raises
+`TimeoutError` past the wall-clock timeout. A timed-out initialize keeps
+running; once it ends, the engine shuts down to stop the plugins it
+started. The engine is terminal from the moment the timeout fires, so
+build a new `PolicyEngine` to try again.
+
 ### `await engine.shutdown()`
 
 Shut down all plugins and drain fire-and-forget background tasks.
 **Call this before exit if you need fire-and-forget side effects to complete.**
-Shutdown is terminal: later `initialize`, `invoke_hook` and
-`refresh_secrets` calls raise `RuntimeError`. A second `shutdown` is a
-no-op.
+Shutdown takes effect when the awaitable runs, not when the coroutine is
+created. It waits for an `initialize()` in flight, then tears down the
+plugins it started.
+
+Shutdown is terminal from the moment it starts: later `initialize`,
+`invoke_hook` and `refresh_secrets` calls raise `RuntimeError`. A second
+`shutdown` after one completed is a no-op. A shutdown that raised
+`TimeoutError` can be retried; the retry waits for the first to finish
+and reports its outcome.
 
 ### `await engine.invoke_hook(hook_name, payload, extensions=None, context_table=None)`
 
 Invoke a hook by name. Returns a `PipelineResult`.
 
-- `hook_name`: e.g. `"cmf.tool_pre_invoke"`. Any hook name is accepted;
-  `cmf.*` hooks use typed `MessagePayload`, `identity.resolve` uses typed
-  `IdentityPayload`, others use `GenericPayload`.
+- `hook_name`: e.g. `"cmf.tool_pre_invoke"`. `cmf.*` hooks use typed
+  `MessagePayload`, `identity.resolve` uses typed `IdentityPayload`,
+  others use `GenericPayload`. A hook name removed in 0.3
+  (`tool_pre_invoke`, `identity_resolve` and the rest) raises
+  `ValueError` naming its replacement.
 - `payload`: JSON-compatible `dict` (str keys, depth at most 128).
 - `extensions`: optional `dict` of CPEX extensions fields. Under the
   default `dispatch: policy`, `meta.entity_type` and `meta.entity_name`
@@ -115,7 +130,10 @@ Invoke a hook by name. Returns a `PipelineResult`.
 - `context_table`: optional `dict` for stateful plugins.
 
 **Raises:**
-- `ValueError`: payload conversion failure or config error.
+- `ValueError`: a hook name removed in 0.3; an `identity.resolve`
+  payload that sets a field other than `source`, `source_header`,
+  `headers`, `client_host` and `client_port`; payload conversion failure;
+  or config error.
 - `RuntimeError`: plugin execution error, or a call after `shutdown`.
 - `TimeoutError`: wall-clock timeout exceeded (60 s default).
 
@@ -140,6 +158,9 @@ schedule. Returns a dict with the same fields as the C FFI report:
 `kind` is one of `config`, `reference`, `not_found`, `malformed`, `backend`
 or `other`. A failed value keeps its last-good bytes; failures are listed,
 not raised. `message` never contains the secret.
+
+Raises `RuntimeError` after `shutdown()` or when a secret provider
+panics, and `TimeoutError` past the wall-clock timeout.
 
 ### `engine.secrets_last_success(provider: str) -> datetime | None`
 
@@ -217,6 +238,11 @@ if ident.continue_processing:
     }
     result = await engine.invoke_hook("cmf.tool_pre_invoke", payload, ext)
 ```
+
+The input may set only `source`, `source_header`, `headers`,
+`client_host` and `client_port`; a resolver output field such as
+`subject` raises `ValueError`. `modified_payload` does not echo the
+request `headers`, since they carry the inbound token.
 
 The engine trusts the subject it is given, so only pass one that came
 from `identity.resolve`.
