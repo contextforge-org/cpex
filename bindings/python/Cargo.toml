@@ -7,7 +7,7 @@
 #
 # Built via maturin (`maturin develop` / `maturin build`).
 # The `extension-module` feature is opt-in (non-default) so the pure-Rust
-# workspace build stays libpython-independent (KD3). maturin activates it
+# workspace build stays libpython-independent. maturin activates it
 # automatically via `[features] -> pyo3/extension-module` in pyproject.toml.
 #
 # Build this crate directly (macOS, Python present):
@@ -17,11 +17,14 @@
 
 [package]
 name = "cpex-python"
-description = "PyO3 bindings for the CPEX plugin runtime"
+description = "PyO3 bindings for the CPEX policy engine"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
 
 [lib]
 name = "_lib"

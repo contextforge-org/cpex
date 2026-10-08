@@ -15,6 +15,49 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-07
+
+CPEX now runs on the [praxis-policy engine](https://github.com/praxis-proxy/policy) (PPE) 0.4.1 from crates.io instead of its own engine crates. Policy language, plugin `kind` strings and violation codes stay the same. API names, hook names, several config keys and some defaults change. The [migration guide](docs/content/docs/migration-0.3.md) lists every change by surface.
+
+### Added
+
+- **OPA, CIBA, api-key identity and the Vault secret provider in the Python wheel and Go FFI library.** Bindings now ship every non-experimental PPE builtin.
+- **Secret refresh from every surface.** Python `refresh_secrets()` and `secrets_last_success()`, Go `RefreshSecrets()` and `SecretsLastSuccess()`, and C `cpex_refresh_secrets` and `cpex_secrets_last_success`. Vault values only renew when the host calls refresh, so binding hosts should call it on an interval and alarm on the last-success time.
+- **Private-destination opt-in for outbound HTTP.** Bindings install PPE's HTTP transport, which refuses loopback and private addresses by default. Python `PolicyEngine(..., allow_private_destinations=True)`, Go `EnableAPL(WithPrivateDestinations())` and the C `cpex_apl_install` flag bit allow them. The switch also opens link-local addresses, including cloud metadata, for every outbound builtin, so keep it to development and trusted networks.
+- **Typed `identity.resolve` from Python.** The binding sends an `IdentityPayload`, so JWT identity works from Python.
+- **Legacy payload translation in the Python plugin host.** Plugins written for the 0.1.x Python worker keep working on PPE's `cmf.*` tool, prompt and resource hooks. The host translates payloads for workers that do not report the new `cmf_hooks` feature, and refuses any message it cannot represent with `legacy_shim_unsupported`.
+- **Parity and acceptance suites.** `tests/parity` replays 68 recorded 0.2.3 decisions against 0.3.0 and fails on any difference not listed with its cause. Python and Go acceptance suites drive identity, delegation, Cedar, OPA and session labels through the native libraries. CI also builds and smoke-tests the Python wheel and runs Go race tests on Linux and macOS.
+- **Docs pages adapted from PPE:** HTTP routing, assertions, auditing, identity claim mapping, CMF extensions and a crate map.
+
+### Changed
+
+- **BREAKING: `PluginManager` is `PolicyEngine` on every surface.** Rust `cpex::PolicyEngine`, Go `NewPolicyEngine` / `NewPolicyEngineDefault` / `PolicyEngine`. Python keeps `PluginManager` as an alias of `PolicyEngine`.
+- **BREAKING: C ABI version 3.** `cpex_manager_new*` is `cpex_engine_new*`, `CpexManagerInner` is `CpexEngineInner` (built with `CpexEngineInner::new`), and `cpex_apl_install` takes a `flags` argument. Go and the FFI artifact must be upgraded together.
+- **BREAKING: Rust paths follow PPE.** `cpex_sdk` items come from `cpex::prelude`, engine modules from `cpex::praxis_policy_core`, and `PipelineResult` from `cpex::praxis_policy_core::executor`.
+- **BREAKING: facade features removed.** `pii`, `audit`, `jwt`, `oauth`, `elicitation-ciba`, `cedar`, `cel`, `valkey`, `builtins` and `full` are gone. All stable builtins are always on; `python-host` is the only feature.
+- **BREAKING: hook names follow PPE.** The unprefixed names (`tool_pre_invoke`, `identity_resolve`, `token_delegate`, `prompt_pre_fetch` and the rest) are rejected at load. Use `cmf.*`, `cmf.prompt_pre_invoke`, `identity.resolve` and `token.delegate`.
+- **BREAKING: the policy document follows PPE 0.4.1.** The `apl:` wrapper and `global.apl:` are gone, phase lists nest under `authorization:`, empty authorization blocks fail, `plugin_settings` is `engine_settings`, `global.policies` is replaced by top-level `groups:`, route `plugins:` lists are removed, `priority:` is valid only under hook dispatch, and `plugin(x)` steps are `run(x)`.
+- **BREAKING: dispatch defaults to `policy`.** Identity runs only on routes that list `authentication:`, requests select routes by `meta`, and a request without it is denied with `unidentified_request` when routes are configured. A declared plugin no policy reaches fails the load.
+- **BREAKING: outbound plugins must declare `perform_http`.** JWT with `jwks_url`, OAuth delegation, CIBA and Vault fail to initialize without it. A blocked private JWKS shows as `auth.jwks_unavailable`.
+- **A plugin panic is a denial.** PPE contains it and reports violation code `plugin_panic`; the FFI returns `RC_OK` with that violation instead of `RC_PANIC`.
+- **Rule-path deny codes drop `.apl.`.** `routes.tool:x.apl.pre_invocation[0]` is `routes.tool:x.pre_invocation[0]`.
+- **Rust edition 2024 and resolver 3.** The toolchain stays pinned to 1.96.0.
+
+### Removed
+
+- **The engine crates.** `cpex-core`, `cpex-orchestration`, `cpex-sdk`, `cpex-builtins`, `apl-core`, `apl-cmf`, `apl-cpex`, and the `cpex-plugin-*`, `cpex-pdp-*` and `cpex-session-valkey` crates are no longer built. Their 0.2.3 releases stay on crates.io.
+- **`pii-scanner` and `audit-logger`.** They are now unpublished PPE reference plugins. Rust hosts can copy their source into their own workspace and register them; the bindings do not include them. A CEL or APL rule, the APL `str | redact` pipeline, or a host plugin replaces most uses.
+
+### Fixed
+
+- **`cpex_invoke_resolved` passes the caller's extensions to identity resolution.** Without them every Go `InvokeResolved` call was refused under policy dispatch.
+- **Go `InvokeResolved` no longer double-frees a context table after an error.**
+
+### Security
+
+- **OAuth token-exchange denials no longer forward the IdP's `error_description`.** From PPE 0.2.0.
+- **Known limitation: an elicitation approval is not bound to the requesting subject.** A caller presenting another subject's approved elicitation id is allowed. This is present in 0.2.3 and PPE 0.4.1; an upstream fix is pending. Keep elicitation timeouts short and return ids only to the requesting client.
+
 ## [0.2.3] - 2026-10-02
 
 ### Added
@@ -146,7 +189,8 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/).
 
 - Initial release
 
-[Unreleased]: https://github.com/contextforge-org/cpex/compare/0.2.3...HEAD
+[Unreleased]: https://github.com/contextforge-org/cpex/compare/0.3.0...HEAD
+[0.3.0]: https://github.com/contextforge-org/cpex/compare/0.2.3...0.3.0
 [0.2.3]: https://github.com/contextforge-org/cpex/compare/0.2.2...0.2.3
 [0.2.2]: https://github.com/contextforge-org/cpex/compare/0.2.1...0.2.2
 [0.2.1]: https://github.com/contextforge-org/cpex/compare/0.2.0...0.2.1

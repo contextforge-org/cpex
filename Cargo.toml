@@ -47,7 +47,7 @@ default-members = [
 ]
 
 [workspace.package]
-version = "0.2.3"
+version = "0.3.0"
 edition = "2024"
 # MSRV — keep in sync with rust-toolchain.toml `channel` and clippy.toml `msrv`.
 rust-version = "1.96"
@@ -96,8 +96,8 @@ praxis-policy-apl-runtime = { version = "=0.4.1" }
 # time cargo substitutes it for the `path`. `cargo release` keeps these in sync
 # with the workspace version. Keys are package names (builtins differ from their
 # directory names), paths are workspace-root-relative.
-cpex-plugin-delegator-biscuit = { path = "builtins/plugins/delegator-biscuit", version = "0.2.3" }
-cpex-hosts-python             = { path = "crates/cpex-hosts-python",           version = "0.2.3", default-features = false }
+cpex-plugin-delegator-biscuit = { path = "builtins/plugins/delegator-biscuit", version = "0.3.0" }
+cpex-hosts-python             = { path = "crates/cpex-hosts-python",           version = "0.3.0", default-features = false }
 
 # Size-first release profile. The FFI artifact (libcpex_ffi.a) is linked
 # statically into host binaries, so its compiled size flows straight into
