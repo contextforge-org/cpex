@@ -3,19 +3,59 @@
 // SPDX-License-Identifier: Apache-2.0
 // Authors: Ted Habeck
 //
-// Register the bundled APL plugin factories and the APL config visitor on a
-// `PluginManager`. Must be called on the **same `Arc`** that will later be
-// passed to `load_config_yaml` so the APL visitor's `Weak<PluginManager>`
-// upgrades correctly during load.
+// Builtin, transport and secret-provider wiring for a `PolicyEngine`,
+// matching what `cpex_apl_install` does over the C FFI.
 //
-// Delegates to `cpex_builtins::install_builtins`, which mirrors the factory
-// set shipped by cpex-ffi. Any new builtin added to cpex-builtins is
-// automatically included here via the shared feature flags.
+// Must run on the **same `Arc`** that is later passed to
+// `load_config_yaml`, so the APL visitor's `Weak<PolicyEngine>` upgrades
+// during load.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use cpex_core::manager::PluginManager;
+use praxis_policy::{install_builtins, registry_with_vault, HyperTransport};
+use praxis_policy_core::engine::PolicyEngine;
+use praxis_policy_core::http::HttpTransport;
 
-pub fn register_builtin_factories(manager: &Arc<PluginManager>) {
-    cpex_builtins::install_builtins(manager);
+/// Install the bundled builtins, one outbound HTTP transport and the
+/// secret providers on `engine`, once.
+///
+/// What it installs:
+///   - plugin factories: `identity/jwt`, `identity/api-key`,
+///     `delegator/oauth`, `elicitation/ciba`
+///   - PDP factories for `global.pdp[]`: `cedar-direct`, `cel`, `opa`
+///   - session store factory for `global.session_store`: `valkey`
+///   - the APL config visitor
+///   - one `HyperTransport` for builtins that declare `perform_http`
+///   - secret providers `env`, `file` and `vault`, with Vault using the
+///     same transport instance
+///
+/// With `allow_private_destinations` the transport may reach private,
+/// loopback and link-local addresses; without it such requests are
+/// refused. This is a host decision; no policy document can turn it on.
+///
+/// `installed` guards the work: PPE's `install_builtins` appends a new
+/// APL visitor on every call, so a second install would walk `apl:`
+/// blocks twice. The flag is set before the work so a panic part way
+/// does not let a retry register a second visitor.
+pub fn install(
+    engine: &Arc<PolicyEngine>,
+    installed: &AtomicBool,
+    allow_private_destinations: bool,
+) {
+    if installed.swap(true, Ordering::AcqRel) {
+        return;
+    }
+
+    install_builtins(engine);
+
+    let mut hyper = HyperTransport::new();
+    if allow_private_destinations {
+        hyper = hyper.with_allow_private_destinations();
+    }
+    let transport: Arc<dyn HttpTransport> = Arc::new(hyper);
+    // Both setters are set-once and log their own warning when a
+    // transport or registry is already present.
+    let _ = engine.set_http_transport(Arc::clone(&transport));
+    let _ = engine.set_secret_providers(registry_with_vault(transport));
 }

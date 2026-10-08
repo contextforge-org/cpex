@@ -2,22 +2,20 @@
 # Copyright 2025
 # SPDX-License-Identifier: Apache-2.0
 #
-# Test fixture — validator/pii-scan in redact mode.
+# Test fixture: redact the `ssn` argument of a tool call.
 #
-# Used by test_manager.py to cover the modified_payload round-trip:
-# a cmf.tool_pre_invoke invoke with a payload containing an SSN →
-# continue_processing=True, modified_payload present with SSN replaced by [PII].
+# Used by test_manager.py to cover the modified_payload round-trip: a
+# cmf.tool_pre_invoke on tool `lookup_person` gives continue_processing=True
+# and a modified_payload whose `ssn` argument reads `[REDACTED]`.
+#
+# The `args:` field pipeline rewrites the argument before the call goes
+# out. The `allow` step is there because an `authorization:` block must
+# name at least one step.
 
-plugins:
-  - name: pii_redact
-    kind: validator/pii-scan
-    version: 1.0.0
-    hooks:
-      - cmf.tool_pre_invoke
-    mode: sequential
-    priority: 10
-    on_error: fail
-    config:
-      mode: redact
-      detect:
-        - kind: ssn
+routes:
+  - tool: lookup_person
+    args:
+      ssn: "str | redact"
+    authorization:
+      pre_invocation:
+        - "allow"

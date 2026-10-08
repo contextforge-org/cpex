@@ -6,13 +6,13 @@
 // PyObject ↔ serde_json::Value traversal, payload resolution, and
 // modified-payload serialization.
 //
-// Never calls Python's `json` module from Rust — all conversion is direct
+// Never calls Python's `json` module from Rust; all conversion is direct
 // PyObject inspection / construction (#2).
 
-use cpex_core::cmf::MessagePayload;
-use cpex_core::context::PluginContextTable;
-use cpex_core::extensions::Extensions;
-use cpex_core::hooks::payload::PluginPayload;
+use praxis_policy_core::cmf::MessagePayload;
+use praxis_policy_core::context::PluginContextTable;
+use praxis_policy_core::extensions::Extensions;
+use praxis_policy_core::hooks::payload::PluginPayload;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyDict, PyFloat, PyInt, PyList, PyString};
@@ -20,14 +20,14 @@ use serde_json::{Map, Value};
 
 /// Wraps any serde_json::Value for hooks that are not `cmf.*`.
 ///
-/// Defined locally because `cpex-core` exports the macro but not the struct
+/// Defined locally because `praxis-policy-core` exports the macro but not the struct
 /// itself (the FFI crate defines its own copy too).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct GenericPayload {
     pub value: Value,
 }
 
-cpex_core::impl_plugin_payload!(GenericPayload);
+praxis_policy_core::impl_plugin_payload!(GenericPayload);
 
 /// Convert a Python object to a `serde_json::Value`.
 ///
@@ -139,7 +139,7 @@ pub fn json_value_to_pyobj<'py>(py: Python<'py>, v: &Value) -> PyResult<Bound<'p
 /// All other hook names → `GenericPayload { value }`.
 ///
 /// A `from_value` failure on a CMF payload raises `ValueError` rather than
-/// silently falling through to GenericPayload — the caller sent a cmf hook
+/// silently falling through to GenericPayload; the caller sent a cmf hook
 /// with a dict that doesn't match the MessagePayload schema.
 pub fn resolve_payload(hook_name: &str, value: Value) -> PyResult<Box<dyn PluginPayload>> {
     if hook_name.starts_with("cmf.") {
@@ -161,7 +161,7 @@ pub fn resolve_payload(hook_name: &str, value: Value) -> PyResult<Box<dyn Plugin
 /// `PipelineResult.errors` rather than silently dropping the modification.
 ///
 /// Downcast order: `MessagePayload` first (most common for `cmf.*` hooks),
-/// then `GenericPayload` — mirrors cpex-ffi's `serialize_payload` ordering.
+/// then `GenericPayload`; mirrors cpex-ffi's `serialize_payload` ordering.
 pub fn serialize_payload(payload: &dyn PluginPayload) -> Option<Value> {
     if let Some(mp) = payload.as_any().downcast_ref::<MessagePayload>() {
         return serde_json::to_value(mp).ok();

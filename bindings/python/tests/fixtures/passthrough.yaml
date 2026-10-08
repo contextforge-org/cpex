@@ -1,0 +1,16 @@
+# Location: ./bindings/python/tests/fixtures/passthrough.yaml
+# Copyright 2025
+# SPDX-License-Identifier: Apache-2.0
+#
+# Test fixture: an engine with nothing to enforce.
+#
+# Used by test_conversions.py and test_errors.py, which exercise the
+# Python to Rust value conversion and need every call to come back
+# allowed with its payload intact. `dispatch: hooks` fires plugins at the
+# hooks they declare instead of by route, so a request needs no route
+# meta; with no plugins declared, nothing fires.
+
+engine_settings:
+  dispatch: hooks
+
+plugins: []

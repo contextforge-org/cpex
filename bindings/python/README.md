@@ -1,11 +1,12 @@
-# cpex — Rust-backed Python bindings
+# cpex: Rust-backed Python bindings
 
-A native Python extension wrapping the `cpex-core` Rust runtime via PyO3.
-Provides the canonical CPEX plugin lifecycle with `await`-based async APIs.
+A native Python extension wrapping the Praxis Policy Engine (PPE) Rust
+runtime via PyO3. Provides the CPEX policy engine lifecycle with
+`await`-based async APIs.
 
 ## Requirements
 
-- Python ≥ 3.10
+- Python 3.10 or later
 - Rust toolchain (`rustup`)
 - [maturin](https://github.com/PyO3/maturin) (`pip install maturin`)
 
@@ -24,20 +25,29 @@ maturin develop
 
 ```python
 import asyncio
-from cpex import PluginManager
+from cpex import PolicyEngine
 
 async def main():
-    mgr = PluginManager("plugins/config.yaml")
-    await mgr.initialize()
+    engine = PolicyEngine("policy.yaml")
+    await engine.initialize()
 
-    result = await mgr.invoke_hook(
+    result = await engine.invoke_hook(
         "cmf.tool_pre_invoke",
         {
             "message": {
-                "role": "user",
-                "content": [{"type": "text", "text": "Hello"}],
+                "role": "assistant",
+                "content": [{
+                    "content_type": "tool_call",
+                    "content": {
+                        "tool_call_id": "tc_1",
+                        "name": "lookup_person",
+                        "arguments": {"name": "Alice"},
+                    },
+                }],
             }
         },
+        # Under the default `dispatch: policy`, meta selects the route.
+        {"meta": {"entity_type": "tool", "entity_name": "lookup_person"}},
     )
 
     if not result.continue_processing:
@@ -46,53 +56,106 @@ async def main():
         print("Allowed")
 
     # Always shut down to drain fire-and-forget tasks.
-    await mgr.shutdown()
+    await engine.shutdown()
 
 asyncio.run(main())
 ```
 
 ## API
 
-### `PluginManager(config_path: str)`
+`cpex` exports `PolicyEngine`, `PipelineResult` and `PluginManager`.
+`PluginManager` is the pre-0.3 name, kept as an alias: `PluginManager is
+PolicyEngine`.
 
-Synchronous constructor. Reads the YAML config file, registers bundled APL
-factories, and loads the config. Raises `ValueError` on missing file,
-IO error, or config parse failure.
+### `PolicyEngine(config_path: str, *, allow_private_destinations: bool = False)`
 
-### `await manager.initialize()`
+Synchronous constructor. Installs the bundled builtins, one outbound HTTP
+transport and the secret providers, then reads and loads the YAML config.
+Raises `ValueError` on missing file, IO error, or config error (including
+an unknown plugin `kind` or a removed hook name).
 
-Initialize all registered plugins. Must be called before `invoke_hook`.
+Bundled builtins: plugin kinds `identity/jwt`, `identity/api-key`,
+`delegator/oauth` and `elicitation/ciba`; PDP kinds `cedar-direct`, `cel`
+and `opa`; session store kind `valkey`; secret provider kinds `env`,
+`file` and `vault`. Builtins that make HTTP calls must declare
+`capabilities: [perform_http]`.
 
-### `await manager.shutdown()`
+`allow_private_destinations` lets those builtins reach private, loopback
+and link-local addresses (a JWKS endpoint on localhost, an in-cluster
+Vault). It is off by default, which refuses such requests; the builtin
+then reports its egress-denied code (`delegation.egress_denied`,
+`elicitation.egress_denied`, or `auth.jwks_unavailable` for a JWKS fetch).
+It is a host setting: no policy document can turn it on. Keyword only.
+
+### `await engine.initialize()`
+
+Initialize all registered plugins and resolve declared secrets. Must be
+called before `invoke_hook`.
+
+### `await engine.shutdown()`
 
 Shut down all plugins and drain fire-and-forget background tasks.
 **Call this before exit if you need fire-and-forget side effects to complete.**
+Shutdown is terminal: later `initialize`, `invoke_hook` and
+`refresh_secrets` calls raise `RuntimeError`. A second `shutdown` is a
+no-op.
 
-### `await manager.invoke_hook(hook_name, payload, extensions=None, context_table=None)`
+### `await engine.invoke_hook(hook_name, payload, extensions=None, context_table=None)`
 
 Invoke a hook by name. Returns a `PipelineResult`.
 
-- `hook_name` — e.g. `"cmf.tool_pre_invoke"`. Any hook name is accepted;
+- `hook_name`: e.g. `"cmf.tool_pre_invoke"`. Any hook name is accepted;
   `cmf.*` hooks use typed `MessagePayload`, others use `GenericPayload`.
-- `payload` — JSON-compatible `dict` (str keys, depth ≤ 128).
-- `extensions` — optional `dict` of CPEX extensions fields.
-- `context_table` — optional `dict` for stateful plugins.
+- `payload`: JSON-compatible `dict` (str keys, depth at most 128).
+- `extensions`: optional `dict` of CPEX extensions fields. Under the
+  default `dispatch: policy`, `meta.entity_type` and `meta.entity_name`
+  pick the route; a request without them is denied with
+  `unidentified_request` when the config has routes.
+- `context_table`: optional `dict` for stateful plugins.
 
 **Raises:**
-- `ValueError` — payload conversion failure or config error.
-- `RuntimeError` — plugin execution error.
-- `TimeoutError` — wall-clock timeout exceeded (60 s default).
+- `ValueError`: payload conversion failure or config error.
+- `RuntimeError`: plugin execution error, or a call after `shutdown`.
+- `TimeoutError`: wall-clock timeout exceeded (60 s default).
 
-Policy denials **do not raise** — check `result.continue_processing`.
+Policy denials **do not raise**; check `result.continue_processing`.
+
+### `await engine.refresh_secrets()`
+
+Re-read every declared secret, renewing a Vault token when due. PPE never
+re-reads on its own, so a host that rotates secrets calls this on its own
+schedule. Returns a dict with the same fields as the C FFI report:
+
+```python
+{
+    "updated": ["api_key"],        # values whose bytes changed
+    "unchanged": 0,                # values re-read and found unchanged
+    "failed": [                    # values that could not be re-read
+        {"secret": "...", "provider": "...", "kind": "not_found", "message": "..."},
+    ],
+}
+```
+
+`kind` is one of `config`, `reference`, `not_found`, `malformed`, `backend`
+or `other`. A failed value keeps its last-good bytes; failures are listed,
+not raised. `message` never contains the secret.
+
+### `engine.secrets_last_success(provider: str) -> datetime | None`
+
+When `provider` last re-read all of its values without a failure, as a
+timezone-aware UTC `datetime`. `None` when its most recent refresh failed,
+the name is not a declared provider, or secrets are not resolved yet.
+Initialization counts as the first success. Synchronous.
 
 ### `PipelineResult`
 
 | Attribute | Type | Description |
 |-----------|------|-------------|
-| `continue_processing` | `bool` | `False` when a plugin denied |
+| `continue_processing` | `bool` | `False` when a plugin or policy denied |
 | `violation` | `dict \| None` | Populated on deny |
 | `errors` | `list[dict]` | Per-plugin errors (on_error: ignore/disable) |
 | `modified_payload` | `dict \| None` | Payload after transform-phase modifications |
+| `payload_modified` | `bool` | Whether a modification was accepted |
 | `modified_extensions` | `dict \| None` | Extensions after modifications |
 | `metadata` | `dict \| None` | Optional telemetry metadata |
 | `context_table` | `dict` | Per-plugin state |
@@ -100,14 +163,14 @@ Policy denials **do not raise** — check `result.continue_processing`.
 ## Shutdown Contract (Fire-and-Forget Tasks)
 
 Plugins configured with `mode: fire_and_forget` run asynchronously.
-Their side effects are **not guaranteed** until `await manager.shutdown()`
+Their side effects are **not guaranteed** until `await engine.shutdown()`
 completes. In tests always await `shutdown()` before asserting
 fire-and-forget side effects:
 
 ```python
-await mgr.invoke_hook(...)
-await mgr.shutdown()          # drain before asserting audit log
-assert audit_log_written()
+await engine.invoke_hook(...)
+await engine.shutdown()       # drain before asserting side effects
+assert side_effect_happened()
 ```
 
 ## Isolated Virtualenv Requirement
@@ -126,14 +189,12 @@ CPEX_PY_WORKER_THREADS=4  python my_script.py
 
 Defaults to tokio's `num_cpus` when unset.
 
-## v1 Deferred Features
+## Deferred Features
 
-- **Identity/delegation hooks** (`identity_resolve`, `token_delegate`):
-  routed through `GenericPayload` in v1 — token fields are preserved in
-  the raw dict but are not cryptographically validated. Typed constructors
-  and token injection are planned for v2.
-- **Cedarling PDP**: available behind the `cedarling` Cargo feature
-  (`--features cedarling`), off by default.
+- **Identity and delegation hooks** (`identity.resolve`, `token.delegate`):
+  routed through `GenericPayload` from Python, so they do not reach the
+  typed identity and delegation handlers. Drive them from Rust or Go for
+  now.
 
 ## Running Tests
 
@@ -141,6 +202,17 @@ Defaults to tokio's `num_cpus` when unset.
 cd bindings/python
 maturin develop
 pytest tests/ -v
+```
+
+Or from the repository root: `make bindings-python-test`.
+
+Wheel smoke test (builds a release wheel, installs it into a fresh venv,
+imports `cpex` there and runs a policy):
+
+```bash
+python bindings/python/tests/smoke_wheel.py
+# or test a wheel built elsewhere:
+python bindings/python/tests/smoke_wheel.py --wheel target/wheels/cpex-*.whl
 ```
 
 ## Migration

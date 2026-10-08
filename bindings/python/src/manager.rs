@@ -3,93 +3,129 @@
 // SPDX-License-Identifier: Apache-2.0
 // Authors: Ted Habeck
 //
-// `PyPluginManager` — PyO3 wrapper around `cpex_core::PluginManager`.
+// `PyPolicyEngine`: PyO3 wrapper around `praxis_policy_core::engine::PolicyEngine`,
+// exposed to Python as `cpex.PolicyEngine` (and the `cpex.PluginManager`
+// alias).
 //
 // Construction is synchronous; lifecycle methods (`initialize`, `shutdown`,
-// `invoke_hook`) are returned as Python awaitables via `future_into_py`.
+// `invoke_hook`, `refresh_secrets`) are returned as Python awaitables via
+// `future_into_py`.
 //
-// The design sketch in the plan:
-//   [GIL held]   convert payload/extensions/context under GIL
-//   [GIL release] future_into_py with timeout + tokio::spawn panic isolation
+// Call shape:
+//   [GIL held]    convert payload/extensions/context under the GIL
+//   [GIL released] future_into_py with timeout + tokio::spawn panic isolation
 //   [GIL re-acq.] pipeline_result_to_py
 //
 // BackgroundTasks are dropped (not awaited per call); fire-and-forget tasks
-// run on the manager's TaskTracker and are drained by `shutdown()`.
+// run on the engine's TaskTracker and are drained by `shutdown()`.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use cpex_core::context::PluginContextTable;
-use cpex_core::extensions::Extensions;
-use cpex_core::manager::PluginManager;
+use praxis_policy_core::context::PluginContextTable;
+use praxis_policy_core::engine::PolicyEngine;
+use praxis_policy_core::extensions::Extensions;
 use pyo3::exceptions::{PyRuntimeError, PyTimeoutError, PyValueError};
 use pyo3::prelude::*;
+use pyo3::types::{PyDateTime, PyTzInfo};
 use pyo3_async_runtimes::tokio::future_into_py;
 
-use crate::builtins::register_builtin_factories;
+use crate::builtins;
 use crate::conversions::{
     context_table_from_value, extensions_from_value, pyobj_to_json_value, resolve_payload,
 };
 use crate::error::plugin_error_to_pyerr;
 use crate::result::pipeline_result_to_py;
+use crate::secrets::Refresh;
 
 /// Wall-clock timeout for every async call through the PyO3 boundary.
 /// Mirrors `FFI_WALL_CLOCK_TIMEOUT` in cpex-ffi.
 const PY_WALL_CLOCK_TIMEOUT: Duration = Duration::from_secs(60);
 
-#[pyclass(name = "PluginManager")]
-pub struct PyPluginManager {
-    inner: Arc<PluginManager>,
+#[pyclass(name = "PolicyEngine")]
+pub struct PyPolicyEngine {
+    inner: Arc<PolicyEngine>,
+    /// Whether builtins, the transport and the secret providers are
+    /// installed. Install runs once per engine.
+    installed: AtomicBool,
+    /// Set by `shutdown()`. PPE's shutdown is terminal, so every later
+    /// call that would drive the engine raises instead.
+    shut_down: Arc<AtomicBool>,
+}
+
+impl PyPolicyEngine {
+    /// Raise `RuntimeError` when `shutdown()` already ran.
+    fn ensure_live(&self, op: &str) -> PyResult<()> {
+        if self.shut_down.load(Ordering::Acquire) {
+            return Err(PyRuntimeError::new_err(format!(
+                "cpex: cannot call {op}() after shutdown(); create a new PolicyEngine"
+            )));
+        }
+        Ok(())
+    }
 }
 
 #[pymethods]
-impl PyPluginManager {
-    /// Create a new `PluginManager` from a YAML config file path.
+impl PyPolicyEngine {
+    /// Create a new `PolicyEngine` from a YAML config file path.
     ///
-    /// Synchronous construction — no Python event loop needed.
+    /// Synchronous construction; no Python event loop needed.
     ///
-    /// Steps (order is load-bearing for APL Weak upgrade):
-    ///   1. `PluginManager::default()` → `Arc`
-    ///   2. `register_builtin_factories(&arc)` — factories + APL visitor on
-    ///      the same Arc that load_config_yaml will reference
-    ///   3. Read config file → `load_config_yaml(&arc, yaml)` — APL visitor
-    ///      Weak upgrades here
+    /// Steps (order is load-bearing for the APL visitor's `Weak` upgrade):
+    ///   1. `PolicyEngine::default()` into an `Arc`
+    ///   2. install builtins, the HTTP transport and the secret providers
+    ///      on that same `Arc`
+    ///   3. read the file and `load_config_yaml` it
+    ///
+    /// `allow_private_destinations` (keyword only, default `False`) lets
+    /// builtins that perform HTTP (JWKS fetch, OAuth delegation, CIBA,
+    /// Vault) reach private, loopback and link-local addresses. Off, such
+    /// requests are refused and the builtin reports its egress-denied
+    /// code. No policy document can turn this on.
     ///
     /// Raises `ValueError` on missing file, IO error, YAML parse error,
-    /// or config validation error.
+    /// or config validation error (including an unknown plugin kind).
     #[new]
-    fn new(config_path: &str) -> PyResult<Self> {
+    #[pyo3(signature = (config_path, *, allow_private_destinations = false))]
+    fn new(config_path: &str, allow_private_destinations: bool) -> PyResult<Self> {
         let yaml = std::fs::read_to_string(config_path).map_err(|e| {
             PyValueError::new_err(format!(
                 "cpex: cannot read config file '{config_path}': {e}"
             ))
         })?;
 
-        let manager = Arc::new(PluginManager::default());
-        register_builtin_factories(&manager);
-        manager
+        let engine = Self {
+            inner: Arc::new(PolicyEngine::default()),
+            installed: AtomicBool::new(false),
+            shut_down: Arc::new(AtomicBool::new(false)),
+        };
+        builtins::install(&engine.inner, &engine.installed, allow_private_destinations);
+        engine
+            .inner
             .load_config_yaml(&yaml)
             .map_err(plugin_error_to_pyerr)?;
 
-        Ok(Self { inner: manager })
+        Ok(engine)
     }
 
-    /// Initialize all registered plugins.
+    /// Initialize all registered plugins and resolve declared secrets.
     ///
     /// Must be called before any `invoke_hook` call.
     /// Returns an awaitable (coroutine).
     fn initialize<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        let manager = Arc::clone(&self.inner);
+        self.ensure_live("initialize")?;
+        let engine = Arc::clone(&self.inner);
         future_into_py(py, async move {
             let result = tokio::time::timeout(PY_WALL_CLOCK_TIMEOUT, async move {
-                manager.initialize().await.map_err(plugin_error_to_pyerr)
+                engine.initialize().await.map_err(plugin_error_to_pyerr)
             })
             .await;
 
             match result {
                 Ok(inner_result) => inner_result,
                 Err(_elapsed) => Err(PyTimeoutError::new_err(
-                    "cpex: PluginManager::initialize timed out",
+                    "cpex: PolicyEngine::initialize timed out",
                 )),
             }
         })
@@ -97,12 +133,18 @@ impl PyPluginManager {
 
     /// Shut down all registered plugins and drain fire-and-forget tasks.
     ///
+    /// Terminal: later `initialize`, `invoke_hook` and `refresh_secrets`
+    /// calls raise `RuntimeError`. A second `shutdown()` is a no-op.
     /// Returns an awaitable (coroutine).
     fn shutdown<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        let manager = Arc::clone(&self.inner);
+        let engine = Arc::clone(&self.inner);
+        let already = self.shut_down.swap(true, Ordering::AcqRel);
         future_into_py(py, async move {
+            if already {
+                return Ok(());
+            }
             let result = tokio::time::timeout(PY_WALL_CLOCK_TIMEOUT, async move {
-                manager.shutdown().await;
+                engine.shutdown().await;
                 Ok::<(), PyErr>(())
             })
             .await;
@@ -110,7 +152,7 @@ impl PyPluginManager {
             match result {
                 Ok(inner_result) => inner_result,
                 Err(_elapsed) => Err(PyTimeoutError::new_err(
-                    "cpex: PluginManager::shutdown timed out",
+                    "cpex: PolicyEngine::shutdown timed out",
                 )),
             }
         })
@@ -119,20 +161,23 @@ impl PyPluginManager {
     /// Invoke a hook by name.
     ///
     /// Args:
-    ///   hook_name: str — e.g. `"cmf.tool_pre_invoke"` or any custom name.
-    ///   payload:   dict — converted via direct PyObject↔serde_json traversal
-    ///              (no Python `json` module).
-    ///   extensions: dict | None — optional cpex Extensions fields.
-    ///   context_table: dict | None — optional PluginContextTable to thread
+    ///   hook_name: str, e.g. `"cmf.tool_pre_invoke"` or any custom name.
+    ///   payload:   dict, converted via direct PyObject to serde_json
+    ///              traversal (no Python `json` module).
+    ///   extensions: dict | None, optional cpex Extensions fields. Under
+    ///              the default `dispatch: policy`, `meta.entity_type` and
+    ///              `meta.entity_name` select the route.
+    ///   context_table: dict | None, optional PluginContextTable to thread
     ///              through for stateful plugins.
     ///
     /// Returns an awaitable that resolves to `PipelineResult`.
     ///
     /// Raises:
-    ///   `ValueError`     — payload/extensions/context conversion failure,
-    ///                      or depth > 128.
-    ///   `RuntimeError`   — plugin execution error or panic at the boundary.
-    ///   `TimeoutError`   — wall-clock timeout exceeded.
+    ///   `ValueError`     payload/extensions/context conversion failure,
+    ///                    or depth > 128.
+    ///   `RuntimeError`   plugin execution error, panic at the boundary,
+    ///                    or a call after `shutdown()`.
+    ///   `TimeoutError`   wall-clock timeout exceeded.
     #[pyo3(signature = (hook_name, payload, extensions=None, context_table=None))]
     fn invoke_hook<'py>(
         &self,
@@ -142,6 +187,7 @@ impl PyPluginManager {
         extensions: Option<&Bound<'_, PyAny>>,
         context_table: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Bound<'py, PyAny>> {
+        self.ensure_live("invoke_hook")?;
         let payload_value = pyobj_to_json_value(py, payload, 0)?;
         let rust_payload = resolve_payload(hook_name, payload_value)?;
 
@@ -157,13 +203,13 @@ impl PyPluginManager {
         };
         let rust_context: Option<PluginContextTable> = context_table_from_value(ctx_value)?;
 
-        let manager = Arc::clone(&self.inner);
+        let engine = Arc::clone(&self.inner);
         let hook_name = hook_name.to_string();
 
         // GIL released: async execution with wall-clock timeout.
         // future_into_py catches panics via tokio's JoinHandle and converts them
         // to pyo3_async_runtimes.RustPanic (a PyException subclass). To keep the
-        // documented interface consistent — the docstring promises RuntimeError —
+        // documented interface consistent (the docstring promises RuntimeError)
         // we spawn invoke_by_name as an isolated tokio task and intercept the
         // JoinError::is_panic() case ourselves, converting it to RuntimeError.
         // This mirrors cpex-ffi's run_safely/catch_unwind pattern at the async
@@ -171,7 +217,7 @@ impl PyPluginManager {
         future_into_py(
             py,
             invoke_with_timeout(
-                manager,
+                engine,
                 hook_name,
                 rust_payload,
                 rust_extensions,
@@ -179,6 +225,65 @@ impl PyPluginManager {
                 PY_WALL_CLOCK_TIMEOUT,
             ),
         )
+    }
+
+    /// Re-read every declared secret (renewing a Vault token when due).
+    ///
+    /// Returns an awaitable resolving to a dict:
+    ///
+    ///   {"updated": [str], "unchanged": int,
+    ///    "failed": [{"secret": str, "provider": str, "kind": str,
+    ///                "message": str}]}
+    ///
+    /// `kind` is one of `config`, `reference`, `not_found`, `malformed`,
+    /// `backend` or `other`. A failed re-read is listed, not raised; the
+    /// value keeps its last-good bytes. An engine with no `secrets:` block,
+    /// or not yet initialized, returns an empty report.
+    ///
+    /// Raises `RuntimeError` after `shutdown()` and `TimeoutError` past
+    /// the wall-clock timeout.
+    fn refresh_secrets<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        self.ensure_live("refresh_secrets")?;
+        let engine = Arc::clone(&self.inner);
+        future_into_py(py, async move {
+            match tokio::time::timeout(PY_WALL_CLOCK_TIMEOUT, engine.refresh_secrets()).await {
+                Ok(report) => {
+                    // Log only the names and the failure class. The full
+                    // message stays in the report returned to Python.
+                    for failure in &report.failed {
+                        tracing::warn!(
+                            secret = %failure.secret,
+                            provider = %failure.provider,
+                            kind = crate::secrets::error_kind(&failure.source),
+                            "cpex-python: secret refresh failed"
+                        );
+                    }
+                    Ok(Refresh::from(report))
+                },
+                Err(_elapsed) => Err(PyTimeoutError::new_err(
+                    "cpex: PolicyEngine::refresh_secrets timed out",
+                )),
+            }
+        })
+    }
+
+    /// When `provider` last re-read all of its values without a failure,
+    /// as a timezone-aware UTC `datetime`, or `None`.
+    ///
+    /// `None` means the provider's most recent refresh failed, the name is
+    /// not a declared provider, or secrets are not resolved yet.
+    /// Initialization counts as the first success. Synchronous.
+    fn secrets_last_success<'py>(
+        &self,
+        py: Python<'py>,
+        provider: &str,
+    ) -> PyResult<Option<Bound<'py, PyDateTime>>> {
+        let Some(at) = self.inner.secrets_last_success(provider) else {
+            return Ok(None);
+        };
+        let utc = PyTzInfo::utc(py)?.to_owned();
+        let seconds = at.timestamp_millis() as f64 / 1000.0;
+        PyDateTime::from_timestamp(py, seconds, Some(&utc)).map(Some)
     }
 }
 
@@ -188,9 +293,9 @@ impl PyPluginManager {
 /// Extracted from `invoke_hook` so the test module can pass a short timeout
 /// without touching `PY_WALL_CLOCK_TIMEOUT`.
 pub(crate) async fn invoke_with_timeout(
-    manager: Arc<PluginManager>,
+    manager: Arc<PolicyEngine>,
     hook_name: String,
-    rust_payload: Box<dyn cpex_core::hooks::payload::PluginPayload>,
+    rust_payload: Box<dyn praxis_policy_core::hooks::payload::PluginPayload>,
     rust_extensions: Extensions,
     rust_context: Option<PluginContextTable>,
     timeout: Duration,
@@ -247,24 +352,24 @@ mod tests {
     use std::sync::Arc;
 
     use async_trait::async_trait;
-    use cpex_core::context::PluginContext;
-    use cpex_core::extensions::Extensions;
-    use cpex_core::hooks::payload::PluginPayload;
-    use cpex_core::hooks::trait_def::HookTypeDef;
-    use cpex_core::hooks::PluginResult;
-    use cpex_core::manager::PluginManager;
+    use praxis_policy_core::context::PluginContext;
+    use praxis_policy_core::engine::PolicyEngine;
+    use praxis_policy_core::extensions::Extensions;
+    use praxis_policy_core::hooks::payload::PluginPayload;
+    use praxis_policy_core::hooks::trait_def::HookTypeDef;
+    use praxis_policy_core::hooks::PluginResult;
     use std::time::Duration;
 
-    use cpex_core::plugin::{Plugin, PluginConfig, PluginMode};
+    use praxis_policy_core::plugin::{Plugin, PluginConfig, PluginMode};
 
-    // A minimal payload type for test dispatch — must match the hook's
+    // A minimal payload type for test dispatch; must match the hook's
     // associated Payload type so the executor's typed-adapter downcast finds
     // the handler.
     #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
     struct TestPayload {
         value: String,
     }
-    cpex_core::impl_plugin_payload!(TestPayload);
+    praxis_policy_core::impl_plugin_payload!(TestPayload);
 
     struct PanicHook;
     impl HookTypeDef for PanicHook {
@@ -291,7 +396,7 @@ mod tests {
         }
     }
 
-    impl cpex_core::hooks::HookHandler<PanicHook> for PanickingPlugin {
+    impl praxis_policy_core::hooks::HookHandler<PanicHook> for PanickingPlugin {
         async fn handle(
             &self,
             _payload: &TestPayload,
@@ -302,7 +407,7 @@ mod tests {
         }
     }
 
-    /// A plugin that sleeps forever — exercises the wall-clock timeout path.
+    /// A plugin that sleeps forever; exercises the wall-clock timeout path.
     struct BlockingPlugin {
         cfg: PluginConfig,
     }
@@ -314,7 +419,7 @@ mod tests {
         }
     }
 
-    impl cpex_core::hooks::HookHandler<BlockHook> for BlockingPlugin {
+    impl praxis_policy_core::hooks::HookHandler<BlockHook> for BlockingPlugin {
         async fn handle(
             &self,
             _payload: &TestPayload,
@@ -326,8 +431,8 @@ mod tests {
         }
     }
 
-    fn build_blocking_manager() -> Arc<PluginManager> {
-        let manager = Arc::new(PluginManager::default());
+    fn build_blocking_manager() -> Arc<PolicyEngine> {
+        let manager = Arc::new(PolicyEngine::default());
         let cfg = PluginConfig {
             name: "blocker".into(),
             kind: "test".into(),
@@ -342,8 +447,8 @@ mod tests {
         manager
     }
 
-    fn build_panicking_manager() -> Arc<PluginManager> {
-        let manager = Arc::new(PluginManager::default());
+    fn build_panicking_manager() -> Arc<PolicyEngine> {
+        let manager = Arc::new(PolicyEngine::default());
         let cfg = PluginConfig {
             name: "panicker".into(),
             kind: "test".into(),
@@ -358,15 +463,13 @@ mod tests {
         manager
     }
 
-    /// The `tokio::spawn` in `invoke_hook` must catch a panicking plugin and
-    /// surface `JoinError::is_panic()` rather than aborting the process or
-    /// leaking the panic to the pyo3_async_runtimes dispatch task.
-    ///
-    /// This is the Rust-level regression test for the panic-isolation
-    /// guarantee; the Python-level guarantee is that `invoke_hook` raises
-    /// `RuntimeError` rather than `pyo3_async_runtimes.RustPanic`.
+    /// A panicking plugin must not abort the process or unwind into the
+    /// pyo3_async_runtimes dispatch task. PPE contains the panic in its
+    /// executor and reports it as a denial with code `plugin_panic`; the
+    /// `tokio::spawn` in `invoke_with_timeout` stays as the backstop for a
+    /// panic outside the executor.
     #[tokio::test]
-    async fn invoke_on_panicking_plugin_returns_join_error_is_panic() {
+    async fn invoke_on_panicking_plugin_is_contained_by_the_engine() {
         let manager = build_panicking_manager();
         manager.initialize().await.expect("initialize");
 
@@ -376,35 +479,17 @@ mod tests {
         let hook_name = "test.panic_hook".to_string();
         let manager2 = Arc::clone(&manager);
 
-        let join_result = tokio::spawn(async move {
+        let (result, _bg) = tokio::spawn(async move {
             manager2
                 .invoke_by_name(&hook_name, payload, Extensions::default(), None)
                 .await
         })
-        .await;
+        .await
+        .expect("the engine contains the panic; the task must not fail");
 
-        assert!(
-            join_result.is_err(),
-            "spawned task should have failed due to panic"
-        );
-        let join_err = join_result.unwrap_err();
-        assert!(
-            join_err.is_panic(),
-            "JoinError should report is_panic()=true, not a cancellation"
-        );
-
-        // Verify the panic message is extractable — this is the same downcast
-        // logic used in invoke_hook to build the RuntimeError message.
-        let payload = join_err.into_panic();
-        let msg = payload
-            .downcast_ref::<&str>()
-            .copied()
-            .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
-            .unwrap_or("unknown panic");
-        assert!(
-            msg.contains("simulated panic"),
-            "panic message should propagate, got: {msg}"
-        );
+        assert!(!result.continue_processing, "a panic must deny");
+        let violation = result.violation.expect("the panic is reported");
+        assert_eq!(violation.code, "plugin_panic");
     }
 
     /// The wall-clock timeout in `invoke_with_timeout` fires when a plugin
@@ -412,7 +497,7 @@ mod tests {
     /// mechanism: `tokio::time::timeout` with a 1 ms deadline on a future that
     /// sleeps for 1 hour returns `Err(Elapsed)`.
     ///
-    /// We test at this level — below `invoke_with_timeout` — because
+    /// We test at this level (below `invoke_with_timeout`) because
     /// constructing a `PyErr` (e.g. `PyTimeoutError::new_err`) requires a live
     /// Python interpreter, which is unavailable in pure `cargo test` runs.
     /// The production mapping from `Elapsed` → `PyTimeoutError` is trivial and
