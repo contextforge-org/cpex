@@ -47,10 +47,13 @@
 
 use std::collections::{HashMap, HashSet};
 
+use praxis_policy_core::delegation::DelegationPayload;
 use praxis_policy_core::extensions::Extensions;
 use praxis_policy_core::extensions::raw_credentials::{
     DelegationKey, DelegationMode, RawDelegatedToken, RawInboundToken, TokenKind, TokenRole,
 };
+use praxis_policy_core::hooks::payload::PluginPayload;
+use praxis_policy_core::identity::{IdentityPayload, TokenSource};
 use serde::Serialize;
 use serde_json::Value;
 
@@ -230,11 +233,136 @@ pub fn attach_credential(
         _ => return Ok(()),
     };
 
+    insert_dto(task, &dto)
+}
+
+/// Attach the `credential` object for this invocation's payload.
+///
+/// The entry point the adapter uses. PPE's own payloads carry the credential
+/// themselves: `IdentityPayload` holds the inbound token (in `raw_token`, or in
+/// its source header when a host deserialized it), and `DelegationPayload`
+/// holds the caller's bearer token. For those the token is read from the
+/// payload, because it is the credential the hook is about; an extensions
+/// token could belong to a different principal. Any other payload goes
+/// through [`attach_credential`] and the extensions view.
+///
+/// The gate is the same either way: no declared capability means no DTO, and
+/// a declared capability with no usable token is an error.
+pub fn attach_credential_for_payload(
+    task: &mut Value,
+    hook_name: &str,
+    payload: &dyn PluginPayload,
+    extensions: &Extensions,
+    capabilities: &HashSet<String>,
+) -> Result<(), HostError> {
+    let any = payload.as_any();
+    let dto = match payload_kind_for_hook(hook_name) {
+        PayloadKind::IdentityResolve => match any.downcast_ref::<IdentityPayload>() {
+            Some(identity) if capabilities.contains(CAP_READ_INBOUND) => CredentialDto {
+                inbound: Some(inbound_from_identity(identity, hook_name)?),
+                delegated: None,
+            },
+            Some(_) => return Ok(()),
+            None => return attach_credential(task, hook_name, extensions, capabilities),
+        },
+        // The bearer token on a PPE delegation payload is the caller's inbound
+        // credential, sourced from the inbound tokens PPE shows only to a
+        // plugin holding `read_inbound_credentials` (its own OAuth delegator
+        // declares exactly that). So that is the capability that gates it
+        // here too, rather than `read_delegated_tokens`, which names tokens
+        // already minted for an upstream.
+        PayloadKind::TokenDelegate => match any.downcast_ref::<DelegationPayload>() {
+            Some(delegation) if capabilities.contains(CAP_READ_INBOUND) => CredentialDto {
+                inbound: None,
+                delegated: Some(delegated_from_payload(delegation, hook_name)?),
+            },
+            Some(_) => return Ok(()),
+            None => return attach_credential(task, hook_name, extensions, capabilities),
+        },
+        _ => return attach_credential(task, hook_name, extensions, capabilities),
+    };
+    insert_dto(task, &dto)
+}
+
+/// `credential.inbound` from a PPE identity payload.
+///
+/// The header map travels whole, credential headers and all: this is the
+/// gated channel, and the worker scrubs the plaintext out of every value
+/// before the plugin sees it. The public payload JSON carries the scrubbed
+/// copy instead (`credential_payloads::public_headers`).
+fn inbound_from_identity(
+    identity: &IdentityPayload,
+    hook_name: &str,
+) -> Result<InboundCredential, HostError> {
+    let token = crate::credential_payloads::inbound_token(identity).ok_or_else(|| {
+        HostError::Credential {
+            message: format!(
+                "plugin declared '{CAP_READ_INBOUND}' for hook '{hook_name}' but the identity \
+                 payload carries no credential, in `raw_token` or its source header. Refusing \
+                 to dispatch without the token it asked for"
+            ),
+        }
+    })?;
+    let source_header = crate::credential_payloads::credential_header_name(identity);
+    let mut headers = identity.headers().clone();
+    if !headers
+        .keys()
+        .any(|name| name.eq_ignore_ascii_case(&source_header))
+    {
+        headers.insert(source_header.clone(), token.clone());
+    }
+    Ok(InboundCredential {
+        token,
+        source_header,
+        kind: token_source_kind(identity.source()).to_string(),
+        headers: Some(headers),
+    })
+}
+
+/// The `kind` wire name for a PPE token source.
+///
+/// The worker reads `kind` only to fill `source` when the payload left it at
+/// the default, and the payload already carries PPE's source, so this only
+/// has to land in the right family.
+fn token_source_kind(source: &TokenSource) -> &'static str {
+    match source {
+        TokenSource::SpiffeJwtSvid => "spiffe_jwt",
+        _ => "opaque",
+    }
+}
+
+/// `credential.delegated` from a PPE delegation payload: the caller's bearer
+/// token, for the worker to fold onto `DelegationPayload.bearer_token`. The
+/// worker reads the delegation hook's token from this sub-object whichever
+/// capability gated it.
+fn delegated_from_payload(
+    delegation: &DelegationPayload,
+    hook_name: &str,
+) -> Result<DelegatedCredential, HostError> {
+    let token = delegation.bearer_token();
+    if token.trim().is_empty() {
+        return Err(HostError::Credential {
+            message: format!(
+                "plugin declared '{CAP_READ_INBOUND}' for hook '{hook_name}' but the delegation \
+                 payload carries no bearer token. Refusing to dispatch without the token it \
+                 asked for"
+            ),
+        });
+    }
+    Ok(DelegatedCredential {
+        token: token.to_string(),
+        outbound_header: "Authorization".into(),
+        audience: delegation.target_audience().unwrap_or_default().to_string(),
+        scopes: delegation.required_permissions().to_vec(),
+    })
+}
+
+fn insert_dto(task: &mut Value, dto: &CredentialDto) -> Result<(), HostError> {
     let object = task.as_object_mut().ok_or_else(|| HostError::Protocol {
         message: "task must be a JSON object to carry a credential".into(),
     })?;
 
-    let serialized = serde_json::to_value(&dto).map_err(|e| HostError::Credential {
+    let serialized = serde_json::to_value(dto).map_err(|e| HostError::Credential {
         // The error names the failure, never the value.
         message: format!("could not serialize the credential DTO: {e}"),
     })?;
@@ -1305,5 +1433,159 @@ mod tests {
             CREDENTIAL_FIELD, "credential",
             "the worker reads task_data['credential']"
         );
+    }
+
+    // --- PPE identity and delegation payloads ---------------------------------
+
+    use praxis_policy_core::delegation::DelegationPayload;
+    use praxis_policy_core::identity::{IdentityPayload, TokenSource};
+
+    fn identity_payload() -> IdentityPayload {
+        IdentityPayload::new(INBOUND_SECRET, TokenSource::Bearer).with_headers(HashMap::from([
+            ("authorization".into(), format!("Bearer {INBOUND_SECRET}")),
+            ("cookie".into(), "session=abc".into()),
+            ("x-tenant".into(), "acme".into()),
+        ]))
+    }
+
+    #[test]
+    fn an_identity_payload_supplies_its_own_token_to_a_declaring_plugin() {
+        let mut task = task();
+        // No raw-credentials extension: PPE dispatches identity.resolve with the
+        // credential on the payload.
+        attach_credential_for_payload(
+            &mut task,
+            "identity.resolve",
+            &identity_payload(),
+            &Extensions::default(),
+            &caps(&[CAP_READ_INBOUND]),
+        )
+        .expect("the payload's token honors the capability");
+
+        let inbound = &task[CREDENTIAL_FIELD]["inbound"];
+        assert_eq!(inbound["token"], INBOUND_SECRET);
+        assert_eq!(inbound["source_header"], "authorization");
+        assert_eq!(inbound["kind"], "opaque");
+        // The gated channel carries the whole header map; the worker scrubs it.
+        assert_eq!(inbound["headers"]["cookie"], "session=abc");
+        assert_eq!(inbound["headers"]["x-tenant"], "acme");
+    }
+
+    #[test]
+    fn a_header_borne_identity_credential_is_found() {
+        let payload: IdentityPayload = serde_json::from_value(serde_json::json!({
+            "source": "bearer",
+            "source_header": "X-User-Token",
+            "headers": {"x-user-token": INBOUND_SECRET},
+        }))
+        .unwrap();
+        let mut task = task();
+        attach_credential_for_payload(
+            &mut task,
+            "identity.resolve",
+            &payload,
+            &Extensions::default(),
+            &caps(&[CAP_READ_INBOUND]),
+        )
+        .unwrap();
+        assert_eq!(task[CREDENTIAL_FIELD]["inbound"]["token"], INBOUND_SECRET);
+        assert_eq!(
+            task[CREDENTIAL_FIELD]["inbound"]["source_header"],
+            "x-user-token"
+        );
+    }
+
+    #[test]
+    fn an_identity_payload_gives_a_non_declaring_plugin_nothing() {
+        let mut task = task();
+        attach_credential_for_payload(
+            &mut task,
+            "identity.resolve",
+            &identity_payload(),
+            &extensions_with_credentials(),
+            &caps(&[CAP_READ_DELEGATED]),
+        )
+        .unwrap();
+        assert!(task.get(CREDENTIAL_FIELD).is_none());
+    }
+
+    #[test]
+    fn an_identity_payload_without_a_credential_fails_closed() {
+        let payload = IdentityPayload::new("", TokenSource::Bearer);
+        let mut task = task();
+        // The extensions hold a token, but it is not the one this hook is
+        // about, so it is not substituted.
+        let err = attach_credential_for_payload(
+            &mut task,
+            "identity.resolve",
+            &payload,
+            &extensions_with_credentials(),
+            &caps(&[CAP_READ_INBOUND]),
+        )
+        .unwrap_err();
+        assert!(matches!(err, HostError::Credential { .. }), "{err:?}");
+        assert!(task.get(CREDENTIAL_FIELD).is_none());
+    }
+
+    #[test]
+    fn a_delegation_payload_supplies_its_bearer_token_to_an_inbound_declaring_plugin() {
+        let payload = DelegationPayload::new(INBOUND_SECRET, "billing")
+            .with_target_audience("https://billing.example.com")
+            .with_required_permissions(vec!["read".into()]);
+        let mut gated = task();
+        attach_credential_for_payload(
+            &mut gated,
+            "token.delegate",
+            &payload,
+            &Extensions::default(),
+            &caps(&[CAP_READ_INBOUND]),
+        )
+        .unwrap();
+        let delegated = &gated[CREDENTIAL_FIELD]["delegated"];
+        assert_eq!(delegated["token"], INBOUND_SECRET);
+        assert_eq!(delegated["audience"], "https://billing.example.com");
+        assert_eq!(delegated["scopes"], serde_json::json!(["read"]));
+
+        // The bearer is an inbound credential, so the delegated-token
+        // capability alone does not unlock it.
+        let mut task = task();
+        attach_credential_for_payload(
+            &mut task,
+            "token.delegate",
+            &payload,
+            &Extensions::default(),
+            &caps(&[CAP_READ_DELEGATED]),
+        )
+        .unwrap();
+        assert!(task.get(CREDENTIAL_FIELD).is_none());
+    }
+
+    #[test]
+    fn a_delegation_payload_without_a_bearer_token_fails_closed() {
+        let payload = DelegationPayload::new("  ", "billing");
+        let mut task = task();
+        let err = attach_credential_for_payload(
+            &mut task,
+            "token.delegate",
+            &payload,
+            &extensions_with_credentials(),
+            &caps(&[CAP_READ_INBOUND]),
+        )
+        .unwrap_err();
+        assert!(matches!(err, HostError::Credential { .. }), "{err:?}");
+    }
+
+    #[test]
+    fn a_legacy_payload_still_reads_the_extensions() {
+        let mut task = task();
+        attach_credential_for_payload(
+            &mut task,
+            "identity.resolve",
+            &crate::legacy::IdentityResolvePayload::default(),
+            &extensions_with_credentials(),
+            &caps(&[CAP_READ_INBOUND]),
+        )
+        .unwrap();
+        assert_eq!(task[CREDENTIAL_FIELD]["inbound"]["token"], INBOUND_SECRET);
     }
 }

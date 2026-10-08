@@ -168,7 +168,7 @@ test-ffi:
 # CPEX_PYTHON_SOURCE must point at a cpex Python checkout carrying
 # cpex/framework/isolated/worker.py (PyPI's is behind this branch).
 # config_e2e is left out: it needs cpex-test-plugin installed under plugins/.
-PYTHON_E2E_TESTS ?= credential_e2e isolated_venv_e2e extensions_merge_e2e
+PYTHON_E2E_TESTS ?= credential_e2e isolated_venv_e2e extensions_merge_e2e acceptance_e2e
 
 .PHONY: test-python-e2e
 test-python-e2e:

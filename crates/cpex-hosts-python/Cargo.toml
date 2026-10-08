@@ -28,6 +28,8 @@ rust-version.workspace = true
 praxis-policy-core = { workspace = true }
 
 async-trait = { workspace = true }
+# Expiry on a token a Python delegation plugin mints (`credential_payloads`).
+chrono      = { workspace = true }
 serde       = { workspace = true }
 serde_json  = { workspace = true }
 tracing     = { workspace = true }
@@ -61,8 +63,11 @@ tokio = { workspace = true, features = ["process", "io-util"] }
 testing = []
 
 [dev-dependencies]
-chrono     = { workspace = true }
 serde_yaml = { workspace = true }
+# The APL runtime, so `tests/acceptance_e2e.rs` can drive a route's
+# `require(...)` and `delegate(...)` steps through the real engine. A dev-only
+# edge: the facade depends on this crate, never the other way round.
+praxis-policy = { workspace = true }
 tokio      = { workspace = true, features = ["process", "io-util", "macros", "rt", "rt-multi-thread"] }
 
 # Self-dependency with the test-only feature on, so `tests/*.rs` see

@@ -64,6 +64,7 @@
 // this channel. See the `extensions` module.
 
 pub mod conversion;
+pub mod credential_payloads;
 pub mod credentials;
 pub mod error;
 pub mod extensions;

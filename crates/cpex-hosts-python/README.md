@@ -100,9 +100,29 @@ translates on the wire (the task's `hook_type` and the config's `hooks` list).
 | `cmf.llm_input` / `cmf.llm_output` | `MessagePayload` | same |
 | `cmf.prompt_pre_invoke` / `cmf.prompt_post_invoke` | `MessagePayload` | `cmf.prompt_pre_fetch` / `cmf.prompt_post_fetch` |
 | `cmf.resource_pre_fetch` / `cmf.resource_post_fetch` | `MessagePayload` | same |
-| `identity.resolve` | `IdentityResolvePayload` | `identity_resolve` |
-| `token.delegate` | `TokenDelegatePayload` | `token_delegate` |
+| `identity.resolve` | PPE's `IdentityPayload` (or the legacy `IdentityResolvePayload`) | `identity_resolve` |
+| `token.delegate` | PPE's `DelegationPayload` (or the legacy `TokenDelegatePayload`) | `token_delegate` |
 | anything else | `GenericPayload` | unchanged |
+
+### Identity and delegation payloads
+
+PPE dispatches `identity.resolve` with `praxis_policy_core::identity::IdentityPayload`
+and `token.delegate` with `delegation::DelegationPayload`; its FFI, its Python
+bindings and the APL `delegate(...)` step all build those. The host sends each
+to the worker as the matching Python model and maps the plugin's
+`IdentityResult` / `DelegationResult` back onto a clone of the dispatched
+payload, so PPE's `IdentityPayload::from_pipeline_result` and
+`DelegationPayload::from_pipeline_result` find it.
+
+| Direction | What happens |
+|---|---|
+| `IdentityPayload` out | `source`, `client_host`, `client_port`, and the request headers minus every credential-bearing one (the source header, `authorization`, `proxy-authorization`, cookies, `x-api-key`, and any header holding the token). `raw_token` is sent empty. |
+| `IdentityResult` back | `subject` and `delegation` are written, `raw_claims` merged. `rejected: true` becomes a deny (`auth.rejected`, with `reject_reason` and `reject_status`). Echoed input fields are ignored, as PPE treats them as canonical. Any other field, or a field PPE's types cannot hold, fails closed. |
+| `DelegationPayload` out | Target name, type, audience, permissions, trust domain, enforcement and attenuation. `bearer_token` is not sent. A delegation with an RFC 8693 actor, or for a subject other than `user`, fails closed: the Python model cannot carry either. |
+| `DelegationResult` back | `delegated_token` becomes PPE's `delegated_token` for the target audience and required permissions, expiring after `cache_ttl` (60 seconds when unset). `forwarded_headers` may only name the one header carrying the minted token; anything else fails closed. `delegation_update` is written when it is not empty. |
+
+The raw tokens on both payloads reach a plugin only through the
+capability-gated `credential` object (see [Credentials](#credentials)).
 
 The `cmf.*` rows apply to a worker that claims the `cmf_hooks` feature in the
 spawn-time `capabilities` handshake. No released worker does yet, so in
@@ -128,8 +148,8 @@ SDK release: declare `cmf.tool_pre_invoke` and implement `tool_pre_invoke`.
 
 The worker's `continue_processing` and `violation` pass through unchanged. A
 modified legacy payload replaces only the fields in the last column; every
-other content part, and every other field of the message and of the part, is
-kept as dispatched.
+other field of the message and of the part is kept as dispatched. A modified
+tool result that sets `"isError": true` also sets the part's `is_error`.
 
 The shim fails closed, with a `legacy_shim_unsupported` error naming the hook
 and the plugin, rather than allowing or skipping:
@@ -137,6 +157,10 @@ and the plugin, rather than allowing or skipping:
 - `cmf.llm_input` and `cmf.llm_output`, which have no legacy hook;
 - a message without exactly one content part of the kind in the second column
   (for example a `cmf.tool_pre_invoke` message with no tool call, or with two);
+- a message holding any other content part that carries text or data (a text
+  or thinking part with text, a media part, another tool or resource part),
+  on every shimmed hook: the plugin never sees it, so a filter would pass it
+  through unredacted. Empty text and thinking parts are kept;
 - a prompt argument that is not a string (the legacy `args` is
   `dict[str, str]`);
 - a qualifier a plugin that authorizes by bare name or URI cannot see: a tool
@@ -246,6 +270,18 @@ reading the in-memory token directly. Production credential types keep their
 serde guard and are never serialized; the FFI, Python-bindings, and audit paths
 are untouched.
 
+Where the token comes from depends on the payload:
+
+| Hook and payload | Token | Capability |
+|---|---|---|
+| `identity.resolve`, PPE `IdentityPayload` | `raw_token`, else the source header (a `Bearer ` prefix stripped). The gated object also carries the full header map, which the worker scrubs of the token. | `read_inbound_credentials` |
+| `token.delegate`, PPE `DelegationPayload` | `bearer_token`, the caller's inbound credential | `read_inbound_credentials`, as PPE's own OAuth delegator declares |
+| `identity.resolve`, legacy payload | the inbound token in `raw_credentials` | `read_inbound_credentials` |
+| `token.delegate`, legacy payload | the delegated token in `raw_credentials` for the target audience | `read_delegated_tokens` |
+
+A plugin on the same hook that declared nothing sees no token, and none of the
+credential-bearing headers.
+
 **Fail closed.** A plugin that declared nothing gets no `credential` field and
 no token material. A plugin that declared a capability the request cannot honor
 gets an error — not a silent no-token dispatch, which a resolver could read as
@@ -302,8 +338,14 @@ reason** when one is absent rather than failing:
 
 ```bash
 CPEX_PYTHON_SOURCE=/path/to/cpex-python \
-  cargo test -p cpex-hosts-python --features testing --test isolated_venv_e2e --test credential_e2e
+  cargo test -p cpex-hosts-python --features testing --test isolated_venv_e2e \
+  --test credential_e2e --test acceptance_e2e -- --ignored
 ```
+
+`make test-python-e2e CPEX_PYTHON_SOURCE=...` runs the same suites with skips
+turned into failures. `acceptance_e2e` loads a policy with Python plugins on
+`identity.resolve` and `token.delegate` plus an APL route, and drives PPE's own
+`IdentityPayload` and the route's `delegate(...)` step through `PolicyEngine`.
 
 Two environmental caveats, both upstream of this crate:
 

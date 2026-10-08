@@ -29,11 +29,11 @@ use praxis_policy_core::cmf::constants::{
     HOOK_CMF_PROMPT_PRE_INVOKE, HOOK_CMF_RESOURCE_POST_FETCH, HOOK_CMF_RESOURCE_PRE_FETCH,
     HOOK_CMF_TOOL_POST_INVOKE, HOOK_CMF_TOOL_PRE_INVOKE,
 };
-use praxis_policy_core::delegation::HOOK_TOKEN_DELEGATE;
+use praxis_policy_core::delegation::{DelegationPayload, HOOK_TOKEN_DELEGATE};
 use praxis_policy_core::error::PluginViolation;
 use praxis_policy_core::executor::ErasedResultFields;
 use praxis_policy_core::hooks::payload::PluginPayload;
-use praxis_policy_core::identity::HOOK_IDENTITY_RESOLVE;
+use praxis_policy_core::identity::{HOOK_IDENTITY_RESOLVE, IdentityPayload};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -261,6 +261,17 @@ pub fn serialize_payload(payload: &dyn PluginPayload) -> Result<Value, HostError
         };
     }
 
+    // PPE's own identity and delegation payloads, which its FFI, bindings and
+    // APL delegate step dispatch on these two hooks. Translated rather than
+    // serialized as is: the worker rebuilds its own Python models, and no raw
+    // token may ride this JSON (see `credential_payloads`).
+    if let Some(identity) = any.downcast_ref::<IdentityPayload>() {
+        return crate::credential_payloads::identity_to_worker(identity);
+    }
+    if let Some(delegation) = any.downcast_ref::<DelegationPayload>() {
+        return crate::credential_payloads::delegation_to_worker(delegation);
+    }
+
     try_downcast!(
         MessagePayload,
         ToolPreInvokePayload,
@@ -281,7 +292,8 @@ pub fn serialize_payload(payload: &dyn PluginPayload) -> Result<Value, HostError
 
     Err(HostError::Protocol {
         message: "payload type is not one this host can forward to a Python worker \
-                  (expected a CMF message payload, a legacy typed payload, or the generic payload)"
+                  (expected a CMF message payload, a PPE identity or delegation payload, a legacy typed \
+                  payload, or the generic payload)"
             .into(),
     })
 }

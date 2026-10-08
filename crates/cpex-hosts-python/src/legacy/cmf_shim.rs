@@ -46,7 +46,8 @@
 //                                          inside `content` as is)
 //                     is_error             refuse when true unless `content`
 //                                          carries `"isError": true`; a modified
-//                                          result must keep it
+//                                          result must keep it, and one that
+//                                          sets it sets the flag
 //   prompt_request    prompt_request_id    kept: correlation only
 //                     name, arguments      sent
 //                     server_id            refuse when non-empty: same reason as
@@ -80,6 +81,16 @@
 //                     name, resource_type  kept: descriptive
 //                     range_start/end,     kept: they narrow what is read within
 //                     selector             the URI the plugin approved
+//   any other part    (the whole part)     refuse unless it is a text or
+//                                          thinking part with no text: the
+//                                          plugin never sees it, so a PII
+//                                          filter would pass it through
+//                                          unredacted. Applies to the pre hooks
+//                                          too: narration beside a tool call or
+//                                          prompt request is still content a
+//                                          filter is expected to have seen, and
+//                                          a worker that claims `cmf_hooks`
+//                                          receives the whole message instead
 //
 // # Removing it
 //
@@ -256,6 +267,9 @@ impl ShimmedPayload {
                          `is_error` flag is not mapped back",
                     ));
                 }
+                // A plugin may turn a success into an error; the CMF flag
+                // follows, so downstream reads the error the plugin set.
+                content.is_error = content.is_error || result_says_error(&legacy.result);
                 content.tool_name = legacy.name;
                 content.content = legacy.result;
             },
@@ -512,6 +526,28 @@ pub fn to_legacy(
         },
     };
 
+    // The legacy payload holds the one part. Anything else in the message
+    // would go downstream on allow without the plugin having seen it.
+    if let Some(sibling) = original
+        .message
+        .content
+        .iter()
+        .enumerate()
+        .find(|(i, p)| *i != part && carries_content(p))
+        .map(|(_, p)| p)
+    {
+        return Err(shim_error(
+            hook_name,
+            legacy,
+            &format!(
+                "the message holds a {} content part beside the {} part, which the legacy \
+                 payload cannot carry, so a plugin could not inspect or redact it",
+                part_kind(sibling),
+                shim.part_name()
+            ),
+        ));
+    }
+
     let err = |message: &str| shim_error(hook_name, legacy, message);
     let json = match (shim, &original.message.content[part]) {
         (Shim::ToolPreInvoke, ContentPart::ToolCall { content }) => {
@@ -680,6 +716,33 @@ fn is_set(field: &Option<String>) -> bool {
     field.as_deref().is_some_and(|s| !s.is_empty())
 }
 
+/// Whether a part the legacy payload does not carry holds anything a plugin
+/// would need to see. Only a text or thinking part with no text holds nothing.
+fn carries_content(part: &ContentPart) -> bool {
+    match part {
+        ContentPart::Text { text } | ContentPart::Thinking { text } => !text.trim().is_empty(),
+        _ => true,
+    }
+}
+
+/// A content part's `content_type`, for diagnostics.
+fn part_kind(part: &ContentPart) -> &'static str {
+    match part {
+        ContentPart::Text { .. } => "text",
+        ContentPart::Thinking { .. } => "thinking",
+        ContentPart::ToolCall { .. } => "tool_call",
+        ContentPart::ToolResult { .. } => "tool_result",
+        ContentPart::Resource { .. } => "resource",
+        ContentPart::ResourceRef { .. } => "resource_ref",
+        ContentPart::PromptRequest { .. } => "prompt_request",
+        ContentPart::PromptResult { .. } => "prompt_result",
+        ContentPart::Image { .. } => "image",
+        ContentPart::Video { .. } => "video",
+        ContentPart::Audio { .. } => "audio",
+        ContentPart::Document { .. } => "document",
+    }
+}
+
 /// Whether a legacy tool result tells the plugin it is an error, the MCP
 /// `CallToolResult` way.
 fn result_says_error(result: &Value) -> bool {
@@ -715,24 +778,24 @@ mod tests {
 
     // --- fixtures -----------------------------------------------------------
 
-    /// A text part placed around the target part, so every round trip can
-    /// assert that unrelated content survives.
+    /// A text part that carries text.
     fn context_text() -> ContentPart {
         ContentPart::Text {
             text: "unrelated context".into(),
         }
     }
 
-    /// A message with the target part between two unrelated parts.
+    /// A message with the target part between two empty parts: the only
+    /// siblings the shim accepts, so every round trip can assert they survive.
     fn message_around(part: ContentPart) -> MessagePayload {
         let mut message = Message::with_content(
             Role::Assistant,
             vec![
-                context_text(),
-                part,
-                ContentPart::Thinking {
-                    text: "unrelated reasoning".into(),
+                ContentPart::Text {
+                    text: String::new(),
                 },
+                part,
+                ContentPart::Thinking { text: " ".into() },
             ],
         );
         message.channel = Some(Channel::Commentary);
@@ -825,11 +888,11 @@ mod tests {
         let json = json_of(payload);
         assert_eq!(
             json["message"]["content"][0],
-            json!({"content_type": "text", "text": "unrelated context"})
+            json!({"content_type": "text", "text": ""})
         );
         assert_eq!(
             json["message"]["content"][2],
-            json!({"content_type": "thinking", "text": "unrelated reasoning"})
+            json!({"content_type": "thinking", "text": " "})
         );
         assert_eq!(json["message"]["role"], "assistant");
         assert_eq!(json["message"]["channel"], "commentary");
@@ -1516,6 +1579,107 @@ mod tests {
             5,
             "text unchanged"
         );
+    }
+
+    #[test]
+    fn tool_post_invoke_a_plugin_setting_is_error_sets_the_flag() {
+        let payload = message_around(tool_result(json!({"content": [], "isError": false})));
+        let shimmed = to_legacy("cmf.tool_post_invoke", &payload).unwrap();
+        let back = shimmed
+            .apply_modified(json!({"name": "search", "result": {"content": [], "isError": true}}))
+            .unwrap();
+        assert_eq!(part_json(&back)["content"]["is_error"], true);
+        assert_eq!(part_json(&back)["content"]["content"]["isError"], true);
+    }
+
+    // --- sibling content parts ---------------------------------------------
+
+    /// Every shimmed hook, with a message holding just its part.
+    fn each_hook_with_its_part() -> Vec<(&'static str, ContentPart)> {
+        vec![
+            ("cmf.tool_pre_invoke", tool_call(json!({}))),
+            ("cmf.tool_post_invoke", tool_result(json!({"text": "ok"}))),
+            ("cmf.prompt_pre_invoke", prompt_request(json!({}))),
+            ("cmf.prompt_post_invoke", prompt_result(vec![])),
+            ("cmf.resource_pre_fetch", resource_ref()),
+            (
+                "cmf.resource_post_fetch",
+                ContentPart::Resource {
+                    content: resource(Some("a")),
+                },
+            ),
+        ]
+    }
+
+    #[test]
+    fn a_sibling_text_part_fails_closed_on_every_hook() {
+        // The plugin would approve the one part it sees while the text beside
+        // it went downstream unredacted.
+        for (hook, part) in each_hook_with_its_part() {
+            for sibling in [
+                ContentPart::Text {
+                    text: "SSN 123-45-6789".into(),
+                },
+                ContentPart::Thinking {
+                    text: "SSN 123-45-6789".into(),
+                },
+            ] {
+                let payload = MessagePayload {
+                    message: Message::with_content(Role::Assistant, vec![sibling, part.clone()]),
+                };
+                let err = to_legacy(hook, &payload).unwrap_err();
+                assert_shim_error(err, hook, "beside the");
+            }
+        }
+    }
+
+    #[test]
+    fn a_sibling_part_of_another_kind_fails_closed() {
+        let payload = MessagePayload {
+            message: Message::with_content(
+                Role::Assistant,
+                vec![
+                    tool_result(json!({"text": "ok"})),
+                    ContentPart::ToolCall {
+                        content: ToolCall {
+                            tool_call_id: "call-2".into(),
+                            name: "other".into(),
+                            arguments: HashMap::new(),
+                            namespace: None,
+                        },
+                    },
+                ],
+            ),
+        };
+        let err = to_legacy("cmf.tool_post_invoke", &payload).unwrap_err();
+        assert_shim_error(err, "cmf.tool_post_invoke", "tool_call content part beside");
+    }
+
+    #[test]
+    fn a_sibling_refusal_names_no_content() {
+        let payload = MessagePayload {
+            message: Message::with_content(
+                Role::Assistant,
+                vec![
+                    ContentPart::Text {
+                        text: "SECRET-SIBLING-TEXT".into(),
+                    },
+                    tool_call(json!({})),
+                ],
+            ),
+        };
+        let err = to_legacy("cmf.tool_pre_invoke", &payload).unwrap_err();
+        assert!(!err.to_string().contains("SECRET-SIBLING-TEXT"), "{err}");
+    }
+
+    #[test]
+    fn empty_sibling_parts_are_kept() {
+        for (hook, part) in each_hook_with_its_part() {
+            let payload = message_around(part);
+            let shimmed = to_legacy(hook, &payload).unwrap();
+            let back = shimmed.apply_modified(shimmed.payload().clone()).unwrap();
+            assert_surroundings_kept(&back);
+        }
     }
 
     // --- refusals -----------------------------------------------------------

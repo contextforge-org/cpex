@@ -261,6 +261,10 @@ pub struct WorkerClient {
     /// with no report and has to be asked again: the replacement may come from
     /// a rebuilt venv with a different `worker.py`.
     reported: std::sync::OnceLock<WorkerCapabilities>,
+
+    /// Whether the one probe retry this worker gets has been spent. See
+    /// [`Self::claim_probe_retry`].
+    probe_retry_spent: std::sync::atomic::AtomicBool,
 }
 
 /// Manual rather than derived: the outbound channel carries serialized task
@@ -350,7 +354,22 @@ impl WorkerClient {
             max_content_size,
             timeout_secs,
             reported: std::sync::OnceLock::new(),
+            probe_retry_spent: std::sync::atomic::AtomicBool::new(false),
         })
+    }
+
+    /// Claim this worker's single retry of a failed capabilities probe.
+    ///
+    /// True exactly once per worker. A probe that timed out or hit a worker
+    /// still starting leaves no report, and with no report a `cmf.*` hook is
+    /// served through the legacy shim for the worker's whole life. One retry
+    /// on first use recovers from a transient failure; bounding it to one
+    /// keeps a probe that keeps failing from adding a round trip to every
+    /// call.
+    pub fn claim_probe_retry(&self) -> bool {
+        !self
+            .probe_retry_spent
+            .swap(true, std::sync::atomic::Ordering::SeqCst)
     }
 
     /// The handshake report from the last successful [`Self::capabilities`]

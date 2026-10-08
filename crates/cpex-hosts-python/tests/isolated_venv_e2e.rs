@@ -290,15 +290,16 @@ async fn a_real_plugin_deny_surfaces_as_a_deny_result() {
     plugin.shutdown().await.unwrap();
 }
 
-/// A CMF tool call for `search` with one argument, between two unrelated
-/// parts, so an engine round trip can show those parts survive the shim.
+/// A CMF tool call for `search` with one argument, between two empty parts, so
+/// an engine round trip can show those parts survive the shim. A sibling part
+/// that carries text would be refused: the legacy plugin could not see it.
 fn cmf_tool_call(q: &str) -> MessagePayload {
     MessagePayload {
         message: Message::with_content(
             Role::Assistant,
             vec![
                 ContentPart::Text {
-                    text: "calling search".into(),
+                    text: String::new(),
                 },
                 ContentPart::ToolCall {
                     content: ToolCall {
@@ -312,7 +313,7 @@ fn cmf_tool_call(q: &str) -> MessagePayload {
                     },
                 },
                 ContentPart::Thinking {
-                    text: "unrelated reasoning".into(),
+                    text: String::new(),
                 },
             ],
         ),

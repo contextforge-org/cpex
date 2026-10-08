@@ -73,7 +73,16 @@ The plugin itself needs no change. The 0.1.x worker registers no `cmf.*` hooks,
 so the host serves `cmf.tool_pre_invoke` to it through the legacy payload shim:
 the plugin's `tool_pre_invoke` receives the usual `ToolPreInvokePayload`
 (`name` plus `args`), and a modified payload maps back onto the CMF message.
-See the README's "legacy payload shim" section for every hook it covers.
+See the README's "legacy payload shim" section for every hook it covers. A
+message that carries text beside the tool call fails closed there, since the
+legacy plugin would never see that text.
+
+An identity or delegation plugin also needs no change. On `identity.resolve`
+and `token.delegate` it receives the `IdentityPayload` / `DelegationPayload` it
+already reads, and its `IdentityResult` / `DelegationResult` maps back onto
+PPE's payload. To receive the raw token it declares `read_inbound_credentials`
+on either hook (the bearer token a delegator exchanges is the caller's inbound
+credential).
 
 ## Example driver program (replaces code-review/python-tests/src/main.rs)
 
