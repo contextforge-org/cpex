@@ -45,6 +45,9 @@ help:
 	@echo "  test-all          Rust tests + Go tests (with -race)"
 	@echo "  test-python-e2e   Python host e2e (#[ignore]d); needs CPEX_PYTHON_SOURCE."
 	@echo "                    Skips FAIL here — this lane must really run."
+	@echo "  parity            Replay the 0.2.3 snapshots (cpex-parity-harness)."
+	@echo "                    Set PARITY_VALKEY_URL to include Valkey; skips then fail."
+	@echo "  test-acceptance   Python bindings + Go acceptance suites"
 	@echo ""
 	@echo "Supply chain & coverage:"
 	@echo "  audit             cargo deny check (advisories, licenses, bans, sources)"
@@ -57,16 +60,22 @@ help:
 	@echo "  docs-clean        Remove generated documentation artifacts"
 	@echo ""
 	@echo "Go bindings (go/cpex):"
+	@echo "  ffi-release       Build the cpex-ffi release library the Go package links"
 	@echo "  go-build go-test go-test-race go-fmt go-vet go-lint-check go-lint-fix"
+	@echo "  go-test-acceptance  Go acceptance tests (TestAcceptance*), with -race"
+	@echo "                    GO_STATIC=1 removes the shared library first, so Go"
+	@echo "                    links libcpex_ffi.a as release consumers do (CI sets it)"
 	@echo ""
 	@echo "Python bindings (bindings/python — requires maturin):"
 	@echo "  bindings-python-build          Build and install Python bindings (debug)"
 	@echo "  bindings-python-build-release  Build Python bindings wheel (release)"
 	@echo "  bindings-python-test           Build + run Python binding tests"
+	@echo "  bindings-python-smoke          Build the wheel, install it in a fresh venv, run a policy"
+	@echo "  bindings-python-acceptance     Build + run the Python acceptance tests"
 	@echo ""
 	@echo "Examples:"
 	@echo "  examples-build    Build all Rust + Go examples (catches stale APIs)"
-	@echo "  examples-run      Run all examples end-to-end"
+	@echo "  examples-run      Run the tutorial (no-IdP) checks and the Go demos"
 	@echo ""
 	@echo "End-to-end:"
 	@echo "  ci                Lint + tests + examples-build (CI gate)"
@@ -156,7 +165,8 @@ test-ffi:
 #
 # CPEX_PYTHON_SOURCE must point at a cpex Python checkout carrying
 # cpex/framework/isolated/worker.py (PyPI's is behind this branch).
-PYTHON_E2E_TESTS = credential_e2e isolated_venv_e2e extensions_merge_e2e
+# config_e2e is left out: it needs cpex-test-plugin installed under plugins/.
+PYTHON_E2E_TESTS ?= credential_e2e isolated_venv_e2e extensions_merge_e2e
 
 .PHONY: test-python-e2e
 test-python-e2e:
@@ -180,6 +190,36 @@ test-python-e2e:
 # Rust workspace tests + Go tests under the race detector.
 .PHONY: test-all
 test-all: test go-test-race
+
+# Parity with the 0.2.3 baseline: replays every recorded scenario through the
+# current engine and diffs it against tests/parity/snapshots. See
+# tests/parity/README.md.
+#
+# Valkey scenarios and the stored-label read-back need a throwaway Valkey (the
+# harness runs FLUSHDB on it):
+#   docker run -d --rm -p 127.0.0.1:6391:6379 valkey/valkey:8-alpine
+#   make parity PARITY_VALKEY_URL=redis://127.0.0.1:6391/0
+# Without PARITY_VALKEY_URL those scenarios are skipped. With it set, any
+# skip fails the target, so a lane that is meant to have Valkey cannot pass
+# without it.
+PARITY_LOG = target/parity-test.log
+
+.PHONY: parity
+parity:
+	@mkdir -p target
+	@echo "🔁 parity against the 0.2.3 snapshots ..."
+	@PARITY_VALKEY_URL="$(PARITY_VALKEY_URL)" \
+		$(CARGO) test -p cpex-parity-harness -- --nocapture 2>&1 | tee $(PARITY_LOG)
+	@if [ -n "$(PARITY_VALKEY_URL)" ] && grep -q 'SKIPPED' $(PARITY_LOG); then \
+		echo "❌ PARITY_VALKEY_URL is set but some parity checks were skipped:"; \
+		grep 'SKIPPED' $(PARITY_LOG); exit 1; fi
+	@echo "✅  parity passed"
+
+# Acceptance suites that live beside each surface's own tests: the Python
+# bindings (tests/test_acceptance.py) and the Go package (TestAcceptance*).
+# The Python host's acceptance coverage runs in test-python-e2e.
+.PHONY: test-acceptance
+test-acceptance: bindings-python-acceptance go-test-acceptance
 
 # =============================================================================
 # Supply chain & coverage
@@ -252,28 +292,65 @@ bindings-python-test: bindings-python-build
 	@cd $(PYTHON_BINDINGS_DIR) && $(VENV_BIN)/pytest tests/ -v
 	@echo "✅  Python binding tests passed"
 
+.PHONY: bindings-python-acceptance
+bindings-python-acceptance: bindings-python-build
+	@echo "🧪 Running Python binding acceptance tests..."
+	@cd $(PYTHON_BINDINGS_DIR) && $(VENV_BIN)/pytest tests/test_acceptance.py -v
+	@echo "✅  Python binding acceptance tests passed"
+
+# Builds a release wheel, installs it into a fresh venv and runs a policy from
+# outside the source tree. Needs only python3; the script installs maturin into
+# a throwaway venv when it is not on PATH.
+PYTHON ?= python3
+
+.PHONY: bindings-python-smoke
+bindings-python-smoke:
+	@echo "🐍 Python wheel smoke test..."
+	@$(PYTHON) $(PYTHON_BINDINGS_DIR)/tests/smoke_wheel.py
+
 # =============================================================================
 # Go bindings (go/cpex)
 # =============================================================================
 #
-# go/cpex links against the cpex-ffi cdylib at target/release. Go targets
-# ensure the release build is current first — Go's linker errors on a missing
-# libcpex_ffi are easy to misread.
+# go/cpex links -lcpex_ffi from target/release. Go targets build cpex-ffi in
+# release mode first, since Go's linker errors on a missing libcpex_ffi are
+# easy to misread.
+#
+# cpex-ffi builds both a shared and a static library, and the linker prefers
+# the shared one when both are present. GO_STATIC=1 deletes the shared library
+# after the build so Go links libcpex_ffi.a, the way consumers of the release
+# artifacts do. That also checks the native link flags in go/cpex/ffi.go. CI
+# sets it; locally the default keeps the shared library.
+GO_STATIC ?=
+FFI_LIB_DIR = target/release
+
+.PHONY: ffi-release
+ffi-release:
+	@$(CARGO) build --release -p cpex-ffi
+	@if [ "$(GO_STATIC)" = "1" ]; then \
+		rm -f $(FFI_LIB_DIR)/libcpex_ffi.so $(FFI_LIB_DIR)/libcpex_ffi.dylib; \
+		echo "→ GO_STATIC=1: Go links $(FFI_LIB_DIR)/libcpex_ffi.a"; fi
 
 .PHONY: go-build
-go-build: build-release
+go-build: ffi-release
 	@cd $(GO_DIR) && $(GO) build ./...
 
 .PHONY: go-test
-go-test: build-release
+go-test: ffi-release
 	@cd $(GO_DIR) && $(GO) test -count=1 ./...
 
 .PHONY: go-test-race
-go-test-race: build-release
+go-test-race: ffi-release
 	@cd $(GO_DIR) && $(GO) test -count=1 -race ./...
 
+# Go acceptance tests follow the TestAcceptance* naming. go-test and
+# go-test-race already run them along with the rest of the package.
+.PHONY: go-test-acceptance
+go-test-acceptance: ffi-release
+	@cd $(GO_DIR) && $(GO) test -count=1 -race -run '^TestAcceptance' -v ./...
+
 .PHONY: go-vet
-go-vet: build-release
+go-vet: ffi-release
 	@cd $(GO_DIR) && $(GO) vet ./...
 
 .PHONY: go-fmt
@@ -281,13 +358,13 @@ go-fmt:
 	@cd $(GO_DIR) && $(GO) fmt ./...
 
 .PHONY: go-lint-fix
-go-lint-fix: build-release
+go-lint-fix: ffi-release
 	@command -v $(GOLANGCI_LINT) >/dev/null 2>&1 || { \
 		echo "❌ golangci-lint not found (brew install golangci-lint)"; exit 1; }
 	@cd $(GO_DIR) && $(GO) fmt ./... && $(GO) vet ./... && $(GOLANGCI_LINT) run --fix ./...
 
 .PHONY: go-lint-check
-go-lint-check: build-release
+go-lint-check: ffi-release
 	@command -v $(GOLANGCI_LINT) >/dev/null 2>&1 || { \
 		echo "❌ golangci-lint not found (brew install golangci-lint)"; exit 1; }
 	@cd $(GO_DIR) && unformatted=$$(gofmt -l .); \
@@ -306,18 +383,23 @@ go-lint-check: build-release
 rust-examples-build:
 	@$(CARGO) build --examples --workspace
 
+# The Go demo links its own staticlib (cpex-demo-ffi), which bundles cpex-ffi.
+.PHONY: go-examples-ffi
+go-examples-ffi:
+	@$(CARGO) build --release -p cpex-demo-ffi
+
 .PHONY: go-examples-build
-go-examples-build: build-release
+go-examples-build: go-examples-ffi
 	@cd $(GO_EXAMPLES_DIR) && $(GO) build ./...
 
 .PHONY: examples-build
 examples-build: rust-examples-build go-examples-build
 	@echo "✅  All examples built"
 
+# The tutorial modules are the Rust examples; tutorial-check-local runs the
+# ones that need no IdP.
 .PHONY: examples-run
 examples-run: examples-build tutorial-check-local
-	@$(CARGO) run --example plugin_demo -p cpex-core --quiet >/dev/null
-	@$(CARGO) run --example cmf_capabilities_demo -p cpex-core --quiet >/dev/null
 	@cd $(GO_EXAMPLES_DIR) && $(GO) run . >/dev/null
 	@cd $(GO_EXAMPLES_DIR) && $(GO) run ./cmd/cmf-demo >/dev/null
 	@echo "✅  All examples ran successfully"
@@ -442,12 +524,13 @@ release-version: release-tool
 release: release-tool
 	@$(CARGO) release $(RELEASE_ARG) --workspace --no-publish --no-push --execute
 
-# Build + verify a .crate for every crates.io-published member without
+# Build + verify a .crate for every crates.io-published member (cpex,
+# cpex-hosts-python, cpex-plugin-delegator-biscuit, cpex-python) without
 # uploading — the same check the release workflow's dry-run runs. The four
 # `publish = false` crates are excluded (cpex-ffi ships as signed prebuilt
 # artifacts; cpex-demo-ffi and cpex-tutorial are examples; cpex-parity-harness
-# is a test harness). CI runs this on a
-# clean checkout; --allow-dirty lets you run it locally with work in progress.
+# is a test harness). CI runs this on a clean checkout; --allow-dirty lets you
+# run it locally with work in progress.
 .PHONY: publish-dry
 publish-dry:
 	@$(CARGO) package --workspace --locked --allow-dirty --exclude cpex-ffi --exclude cpex-demo-ffi --exclude cpex-tutorial --exclude cpex-parity-harness

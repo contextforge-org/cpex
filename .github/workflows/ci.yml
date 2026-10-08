@@ -128,6 +128,102 @@ jobs:
           CPEX_PYTHON_SOURCE: ${{ github.workspace }}/cpex-python
         run: make test-python-e2e
 
+  # The PyO3 bindings: in-tree pytest suite (built with `maturin develop`),
+  # then a release wheel installed into a fresh venv and exercised from
+  # outside the source tree. The second step is what catches a wheel that
+  # builds but is missing its native module, package or stubs.
+  python-bindings:
+    name: Python bindings (pytest + wheel smoke)
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+      - name: Install Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Install Rust 1.96.0
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.96.0"
+      - uses: Swatinem/rust-cache@v2
+      - name: make bindings-python-test
+        run: make bindings-python-test
+      - name: make bindings-python-smoke
+        run: make bindings-python-smoke
+
+  # The Go package against the cpex-ffi release library, on both platforms
+  # the FFI ships for. GO_STATIC=1 removes the shared library so Go links
+  # libcpex_ffi.a the way release consumers do, which also checks the
+  # native link flags in go/cpex/ffi.go (macOS has needed extra frameworks
+  # before). The race run covers the shared tokio runtime behind the FFI.
+  go:
+    name: Go (${{ matrix.os }})
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+      - name: Install Rust 1.96.0
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.96.0"
+      - name: Install Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go/cpex/go.mod
+          cache-dependency-path: go/cpex/go.sum
+      - uses: Swatinem/rust-cache@v2
+      # One make invocation, so the release library is built (and its shared
+      # copy removed) once for all three targets.
+      - name: make go-vet go-test go-test-race
+        run: make go-vet go-test go-test-race GO_STATIC=1
+
+  # Replays the 0.2.3 decision snapshots against the current engine, with a
+  # Valkey so the session-store scenarios and the stored-label read-back run
+  # too. `make parity` fails when PARITY_VALKEY_URL is set and anything is
+  # still skipped. The workspace `test` job runs the same suite without
+  # Valkey.
+  parity:
+    name: Parity (0.2.3 snapshots, with Valkey)
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      valkey:
+        image: valkey/valkey:8-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "valkey-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+      - name: Install Rust 1.96.0
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.96.0"
+      - uses: Swatinem/rust-cache@v2
+      - name: make parity
+        env:
+          # The harness runs FLUSHDB on this database; the service is
+          # throwaway.
+          PARITY_VALKEY_URL: redis://127.0.0.1:6379/0
+        run: make parity
+
   examples:
     name: Examples build (Rust + Go FFI)
     if: github.event_name != 'pull_request' || !github.event.pull_request.draft
@@ -144,10 +240,12 @@ jobs:
       - name: Install Go
         uses: actions/setup-go@v7
         with:
-          go-version: "1.25.4"
+          go-version-file: examples/go-demo/go.mod
+          cache-dependency-path: examples/go-demo/go.sum
       - uses: Swatinem/rust-cache@v2
-      # Builds every Rust example plus the Go demo (which links the release
-      # cpex-ffi cdylib) — the cheapest guard against stale public-API usage.
+      # Builds every Rust example (the tutorial modules) plus the Go demo
+      # (which links the release cpex-demo-ffi library), the cheapest guard
+      # against stale public-API usage.
       - name: make examples-build
         run: make examples-build
 
@@ -178,10 +276,11 @@ jobs:
       # every publishable member without uploading. Catches publishability
       # regressions (missing version reqs, packaging-excluded files, broken
       # inter-crate deps) on every push/PR, long before a release tag. Mirrors
-      # `make publish-dry` and the release workflow's dry-run. The
-      # `publish = false` crates are excluded (not part of the registry set):
-      # the two FFI crates, the tutorial companion crate, and the parity
-      # capture harness.
+      # `make publish-dry` and the release workflow's dry-run. That covers
+      # cpex, cpex-hosts-python, cpex-plugin-delegator-biscuit and
+      # cpex-python. The `publish = false` crates are excluded (not part of
+      # the registry set): the two FFI crates, the tutorial companion crate,
+      # and the parity harness.
       - name: cargo package (no upload)
         run: |
           # Drop any pre-seeded registry index/cache so cargo fetches fresh and
