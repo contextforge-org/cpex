@@ -134,7 +134,7 @@ On package init the binding compares its expected FFI ABI version (3) with the o
 
 Use `PayloadGeneric` for simple key-value payloads. Use `PayloadCMFMessage` when sending structured CMF messages with typed content parts (tool calls, resources, media, etc.). Use `PayloadIdentity` with `identity.resolve` (build it with `NewIdentityPayload`), and pass the route's `Meta` in the extensions: under the default `dispatch: policy`, the engine needs the entity to know which route's `authentication:` to run.
 
-The generic HTTP hooks (`http.request`, `http.response`) and `http:` routes are not usable from Go in this release: `HttpExtension` carries headers only, with no method, path or status.
+The generic HTTP hooks (`http.request`, `http.response`) are not invocable from Go in this release: the FFI has no payload type for the HTTP hook family. `HttpExtension` does carry the request line (`Method`, `Path`, `Host`, `Scheme`) and the response `Status`, so set `Method` and `Path` on the extensions of an `identity.resolve` call to select an `http:` route's own `authentication:` list.
 
 ## CMF Content Types
 
@@ -160,8 +160,8 @@ The `ContentPart` tagged union supports all 12 content types:
 Extensions are passed separately from the payload. Each extension type maps to a Rust extension in `praxis_policy_core::extensions`:
 
 - `MetaExtension`: entity identification for route resolution
-- `SecurityExtension`: labels, classification, subject identity
-- `HttpExtension`: request/response headers
+- `SecurityExtension`: labels, classification, data policies, and four identity slots: `Subject` (user), `Client` (OAuth client), `CallerWorkload` and `ThisWorkload` (`WorkloadIdentity`)
+- `HttpExtension`: request line, request/response headers, response status
 - `DelegationExtension`: token delegation chain
 - `AgentExtension`: agent session and conversation context
 - `RequestExtension`: environment, tracing, request ID
@@ -170,6 +170,13 @@ Extensions are passed separately from the payload. Each extension type maps to a
 - `ProvenanceExtension`: message origin and threading
 - `LLMExtension`: model identity and capabilities
 - `FrameworkExtension`: agentic framework context
+- `CandidateConstraintExtension`: model, region and site constraints a plugin sets for a router
+
+`SubjectExtension.Claims` and `ClientExtension.Claims` are `map[string]any`: a claim keeps its JSON shape (string, bool, number, array or nested map), so use a type switch or assertion to read one.
+
+Some `[]string` fields tell nil apart from empty, matching a Rust `Option<Vec<_>>`: `DataPolicy.AllowedActions` and `CandidateConstraintExtension.AllowModels`, `AllowRegions` and `AllowSites`. A nil slice means unconstrained; an empty non-nil slice allows nothing.
+
+There is no Go field for the Rust `raw_credentials` slot. Its tokens are never serialized, so use `InvokeResolved` to keep inbound credentials inside the engine.
 
 ## Context Threading
 

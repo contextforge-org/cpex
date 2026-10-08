@@ -458,9 +458,9 @@ func TestExtensionsSerialization(t *testing.T) {
 		Security: &SecurityExtension{
 			Labels:         []string{"PII"},
 			Classification: "confidential",
-			Agent: &AgentIdentity{
+			ThisWorkload: &WorkloadIdentity{
 				ClientID:    "hr-agent",
-				WorkloadID:  "spiffe://corp.com/hr-agent",
+				SpiffeID:    "spiffe://corp.com/hr-agent",
 				TrustDomain: "corp.com",
 			},
 		},
