@@ -33,8 +33,9 @@ crate-type = ["cdylib"]
 [dependencies]
 praxis-policy-core = { workspace = true }
 
-# The builtin extension set and HTTP transport, matching cpex-ffi.
-praxis-policy = { workspace = true, features = ["builtins", "http-hyper"] }
+# The CPEX facade: the builtin extension set, the HTTP transport and the host
+# wiring shared with cpex-ffi (`cpex::host`).
+cpex = { workspace = true }
 
 serde = { workspace = true }
 serde_json = { workspace = true }

@@ -101,3 +101,45 @@ async def test_unconvertible_type_raises(passthrough_engine: PolicyEngine):
     bad_payload = {"items": {1, 2, 3}}  # type: ignore[dict-item]
     with pytest.raises(ValueError, match="cannot convert Python object"):
         await passthrough_engine.invoke_hook("custom.hook", bad_payload)
+
+
+# ---------------------------------------------------------------------------
+# identity.resolve input and output
+# ---------------------------------------------------------------------------
+
+
+IDENTITY_INPUT = {
+    "source": "bearer",
+    "source_header": "authorization",
+    "headers": {"authorization": "Bearer not-a-real-token"},
+    "client_host": "10.0.0.1",
+    "client_port": 443,
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "field, value",
+    [
+        ("subject", {"id": "alice", "roles": ["hr"]}),
+        ("client", {"client_id": "app"}),
+        ("resolved_at", "2026-01-01T00:00:00Z"),
+        ("raw_claims", {"sub": "alice"}),
+    ],
+)
+async def test_identity_input_with_resolved_fields_raises(passthrough_engine, field, value):
+    """A caller cannot pre-fill what the identity resolvers produce."""
+    payload = dict(IDENTITY_INPUT, **{field: value})
+    with pytest.raises(ValueError, match=f"must not set resolver output fields: {field}"):
+        await passthrough_engine.invoke_hook("identity.resolve", payload)
+
+
+@pytest.mark.asyncio
+async def test_identity_result_does_not_echo_request_headers(passthrough_engine):
+    """The returned identity payload drops the request headers, credential included."""
+    result = await passthrough_engine.invoke_hook("identity.resolve", IDENTITY_INPUT)
+    assert result.continue_processing is True
+    assert result.modified_payload is not None
+    assert "headers" not in result.modified_payload
+    assert "not-a-real-token" not in repr(result.modified_payload)
+    assert result.modified_payload["source"] == "bearer"

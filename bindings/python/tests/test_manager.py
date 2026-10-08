@@ -5,6 +5,8 @@
 #
 # Integration tests for the PolicyEngine lifecycle.
 
+import asyncio
+
 import pytest
 from cpex import PipelineResult, PluginManager, PolicyEngine
 
@@ -189,4 +191,62 @@ async def test_invoke_after_shutdown_raises(pii_deny_config_path: str):
         await eng.refresh_secrets()
 
     # A second shutdown is a no-op.
+    await eng.shutdown()
+
+
+# ---------------------------------------------------------------------------
+# Removed hook names
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "removed, replacement",
+    [
+        ("tool_pre_invoke", "cmf.tool_pre_invoke"),
+        ("prompt_pre_fetch", "cmf.prompt_pre_invoke"),
+        ("cmf.prompt_pre_fetch", "cmf.prompt_pre_invoke"),
+        ("identity_resolve", "identity.resolve"),
+        ("token_delegate", "token.delegate"),
+        ("cmf.http_request", "http.request"),
+    ],
+)
+async def test_removed_hook_name_raises_naming_the_replacement(
+    passthrough_engine: PolicyEngine, removed: str, replacement: str
+):
+    """A 0.2.x hook name at a call site raises instead of allowing unchecked."""
+    with pytest.raises(ValueError, match=f"'{removed}' was removed; use '{replacement}'"):
+        await passthrough_engine.invoke_hook(removed, {})
+
+
+# ---------------------------------------------------------------------------
+# Shutdown ordering
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_unawaited_shutdown_does_not_shut_down(passthrough_engine: PolicyEngine):
+    """Creating the shutdown awaitable changes nothing until it runs."""
+    pending = passthrough_engine.shutdown()
+    result = await passthrough_engine.invoke_hook("custom.hook", {})
+    assert result.continue_processing is True
+    await pending
+    with pytest.raises(RuntimeError, match="after shutdown"):
+        await passthrough_engine.invoke_hook("custom.hook", {})
+
+
+@pytest.mark.asyncio
+async def test_shutdown_concurrent_with_initialize(pii_deny_config_path: str):
+    """A shutdown racing initialize leaves the engine shut down, not live."""
+    eng = PolicyEngine(pii_deny_config_path)
+    init = asyncio.ensure_future(eng.initialize())
+    await eng.shutdown()
+    # Either initialize won the lock and ran first, or shutdown did and
+    # initialize was refused. Both end shut down.
+    try:
+        await init
+    except RuntimeError as err:
+        assert "after shutdown" in str(err)
+    with pytest.raises(RuntimeError, match="after shutdown"):
+        await eng.initialize()
     await eng.shutdown()

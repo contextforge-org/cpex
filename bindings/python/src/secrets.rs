@@ -7,10 +7,12 @@
 //
 // PPE resolves every declared secret once, at `initialize`, and never
 // re-reads on its own: the host decides when. The report shape and the
-// failure kind strings match the C FFI (`cpex_refresh_secrets`), so Go
-// and Python hosts read the same fields.
+// failure kind strings come from `cpex::host::secret_error_kind`, which the
+// C FFI (`cpex_refresh_secrets`) uses too, so Go and Python hosts read the
+// same fields.
 
-use praxis_policy_core::secrets::{RefreshReport, SecretError};
+use cpex::host::secret_error_kind;
+use praxis_policy_core::secrets::RefreshReport;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 
@@ -39,26 +41,13 @@ impl From<RefreshReport> for Refresh {
                 .failed
                 .into_iter()
                 .map(|f| RefreshFailure {
-                    kind: error_kind(&f.source),
+                    kind: secret_error_kind(&f.source),
                     message: f.source.to_string(),
                     secret: f.secret,
                     provider: f.provider,
                 })
                 .collect(),
         }
-    }
-}
-
-/// Failure class: `config`, `reference`, `not_found`, `malformed`,
-/// `backend`, or `other` for a class this build does not know.
-pub(crate) fn error_kind(err: &SecretError) -> &'static str {
-    match err {
-        SecretError::Config { .. } => "config",
-        SecretError::Reference { .. } => "reference",
-        SecretError::NotFound { .. } => "not_found",
-        SecretError::Malformed { .. } => "malformed",
-        SecretError::Backend { .. } => "backend",
-        _ => "other",
     }
 }
 

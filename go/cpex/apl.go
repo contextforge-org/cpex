@@ -90,7 +90,10 @@ func aplFlags(opts ...APLOption) uint32 {
 //	engine.Initialize()
 //
 // Idempotent per engine: once a call has succeeded, later calls do
-// nothing and return nil, whatever their options.
+// nothing and return nil, whatever their options. A call that panicked
+// stays failed: it and every later call on the engine return an error
+// wrapping ErrCpexPanic, because the engine may be half installed.
+// Discard the engine and create a new one.
 //
 // On failure the returned error wraps a typed sentinel
 // (ErrCpexInvalidHandle, ErrCpexInvalidInput, ErrCpexPanic).

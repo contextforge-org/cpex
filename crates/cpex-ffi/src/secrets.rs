@@ -14,7 +14,8 @@
 
 use std::os::raw::{c_char, c_int};
 
-use praxis_policy_core::secrets::{RefreshReport, SecretError};
+use cpex::host::secret_error_kind;
+use praxis_policy_core::secrets::RefreshReport;
 
 use crate::{
     CpexEngineInner, RC_INVALID_HANDLE, RC_INVALID_INPUT, RC_OK, RC_SERIALIZE_ERROR, SafeRun,
@@ -40,8 +41,9 @@ pub struct FfiRefreshFailure {
     pub secret: String,
     /// The provider it is bound to.
     pub provider: String,
-    /// Failure class: `config`, `reference`, `not_found`, `malformed`,
-    /// `backend`, or `other` for a class this build does not know.
+    /// Failure class from `cpex::host::secret_error_kind`: `config`,
+    /// `reference`, `not_found`, `malformed`, `backend`, or `other` for a
+    /// class this build does not know.
     pub kind: String,
     /// What the provider reported. Never contains the secret.
     pub message: String,
@@ -56,24 +58,13 @@ impl From<RefreshReport> for FfiRefreshReport {
                 .failed
                 .into_iter()
                 .map(|f| FfiRefreshFailure {
-                    kind: error_kind(&f.source).to_owned(),
+                    kind: secret_error_kind(&f.source).to_owned(),
                     message: f.source.to_string(),
                     secret: f.secret,
                     provider: f.provider,
                 })
                 .collect(),
         }
-    }
-}
-
-fn error_kind(err: &SecretError) -> &'static str {
-    match err {
-        SecretError::Config { .. } => "config",
-        SecretError::Reference { .. } => "reference",
-        SecretError::NotFound { .. } => "not_found",
-        SecretError::Malformed { .. } => "malformed",
-        SecretError::Backend { .. } => "backend",
-        _ => "other",
     }
 }
 
@@ -125,7 +116,7 @@ pub unsafe extern "C" fn cpex_refresh_secrets(
         tracing::warn!(
             secret = %failure.secret,
             provider = %failure.provider,
-            kind = error_kind(&failure.source),
+            kind = secret_error_kind(&failure.source),
             "cpex_refresh_secrets: secret refresh failed"
         );
     }

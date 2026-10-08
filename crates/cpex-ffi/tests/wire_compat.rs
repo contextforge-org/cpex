@@ -77,10 +77,10 @@ fn plugin_kinds_match_the_fixture() {
     // The probe above cannot see an extra kind, so also pin the set the
     // bundled facade exports.
     let exported = set([
-        praxis_policy::JWT_KIND,
-        praxis_policy::API_KEY_KIND,
-        praxis_policy::OAUTH_KIND,
-        praxis_policy::CIBA_KIND,
+        cpex::JWT_KIND,
+        cpex::API_KEY_KIND,
+        cpex::OAUTH_KIND,
+        cpex::CIBA_KIND,
     ]);
     assert_eq!(exported, fx.plugin_kinds);
     for kind in ["opa", "ciba", "api-key"] {
@@ -96,11 +96,11 @@ fn plugin_kinds_match_the_fixture() {
 #[test]
 fn pdp_and_session_store_kinds_match_the_fixture() {
     let fx = fixture();
-    let pdps = set(praxis_policy::builtin_pdp_factories()
+    let pdps = set(cpex::builtin_pdp_factories()
         .iter()
         .map(|f| f.kind().to_owned()));
     assert_eq!(pdps, fx.pdp_kinds);
-    let stores = set(praxis_policy::builtin_session_store_factories()
+    let stores = set(cpex::builtin_session_store_factories()
         .iter()
         .map(|f| f.kind().to_owned()));
     assert_eq!(stores, fx.session_store_kinds);
@@ -166,5 +166,25 @@ fn hook_names_match_the_fixture() {
             err.contains("unknown hook"),
             "{hook} must be rejected; got: {err}"
         );
+    }
+}
+
+/// Every removed hook in the fixture is refused at invoke time, through the
+/// facade's table, and its replacement is a pinned hook name.
+#[test]
+fn removed_hooks_are_refused_at_invoke() {
+    let fx = fixture();
+    let pinned: BTreeSet<&String> = fx.hooks.values().flatten().collect();
+    let engine = Engine::installed(0);
+    let payload = rmp_serde::to_vec_named(&serde_json::json!({})).expect("encode");
+    for hook in &fx.removed_hooks {
+        let replacement = cpex::host::removed_hook_replacement(hook)
+            .unwrap_or_else(|| panic!("{hook} is missing from cpex::host::REMOVED_HOOKS"));
+        assert!(
+            pinned.contains(&replacement.to_owned()),
+            "{hook} maps to {replacement}, which is not a pinned hook"
+        );
+        let (rc, _) = engine.invoke(hook, cpex_ffi::PAYLOAD_GENERIC, &payload);
+        assert_eq!(rc, cpex_ffi::RC_INVALID_INPUT, "{hook}");
     }
 }

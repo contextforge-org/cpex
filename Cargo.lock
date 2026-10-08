@@ -599,8 +599,8 @@ version = "0.3.0"
 dependencies = [
  "async-trait",
  "aws-lc-rs",
+ "cpex",
  "jsonwebtoken",
- "praxis-policy",
  "praxis-policy-core",
  "rmp-serde",
  "serde",
@@ -617,6 +617,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "cpex-hosts-python",
+ "praxis-policy",
  "praxis-policy-core",
  "serde",
  "serde_json",
@@ -666,7 +667,7 @@ name = "cpex-python"
 version = "0.3.0"
 dependencies = [
  "async-trait",
- "praxis-policy",
+ "cpex",
  "praxis-policy-core",
  "pyo3",
  "pyo3-async-runtimes",

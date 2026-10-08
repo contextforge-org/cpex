@@ -352,6 +352,52 @@ fn deserialize_payload(payload_type: u8, bytes: &[u8]) -> Result<Box<dyn PluginP
     }
 }
 
+/// Refuse a hook name removed in 0.3. Such a name reaches no handler, so
+/// dispatching it would return an allow with no policy evaluated. Logs the
+/// replacement name.
+fn reject_removed_hook(name: &str, op: &str) -> Result<(), c_int> {
+    match cpex::host::removed_hook_replacement(name) {
+        Some(replacement) => {
+            tracing::error!("{}: hook '{}' was removed; use '{}'", op, name, replacement);
+            Err(RC_INVALID_INPUT)
+        },
+        None => Ok(()),
+    }
+}
+
+/// Refuse an `identity.resolve` input that already carries resolver
+/// output (subject, client, claims and so on). Those fields are what the
+/// resolvers fill in; a caller that pre-fills them could forge the
+/// resolved identity.
+fn reject_resolved_identity(idp: &IdentityPayload, op: &str) -> Result<(), c_int> {
+    let set = cpex::host::resolved_identity_fields(idp);
+    if set.is_empty() {
+        return Ok(());
+    }
+    tracing::error!(
+        "{}: identity.resolve input must not set resolver output fields: {}",
+        op,
+        set.join(", ")
+    );
+    Err(RC_INVALID_INPUT)
+}
+
+/// [`reject_resolved_identity`] for a payload about to be dispatched on
+/// `hook_name`: applies only to an `IdentityPayload` on `identity.resolve`.
+fn reject_resolved_identity_payload(
+    hook_name: &str,
+    payload: &dyn PluginPayload,
+    op: &str,
+) -> Result<(), c_int> {
+    if hook_name != praxis_policy_core::identity::HOOK_IDENTITY_RESOLVE {
+        return Ok(());
+    }
+    match payload.as_any().downcast_ref::<IdentityPayload>() {
+        Some(idp) => reject_resolved_identity(idp, op),
+        None => Ok(()),
+    }
+}
+
 /// Serialize a modified payload back to MessagePack bytes.
 /// Returns the payload type ID alongside the bytes so the caller
 /// knows how to deserialize on the other side.
@@ -398,10 +444,14 @@ pub struct CpexEngineInner {
     /// `cpex_apl_install` can keep a `Weak<PolicyEngine>` that upgrades
     /// during `load_config_yaml`.
     pub engine: Arc<PolicyEngine>,
-    /// Whether `cpex_apl_install` already ran on this handle. A mutex
-    /// rather than an atomic so a concurrent second call waits for the
-    /// first to finish instead of returning before the builtins exist.
-    installed: Mutex<bool>,
+    /// Whether `cpex_apl_install` ran on this handle and how it ended. A
+    /// mutex rather than an atomic so a concurrent second call waits for
+    /// the first to finish instead of returning before the builtins exist.
+    install_state: Mutex<apl::InstallState>,
+    /// Test-only: makes the next `cpex_apl_install` panic inside its
+    /// catch_unwind, to reach the failed state.
+    #[cfg(test)]
+    fail_install: std::sync::atomic::AtomicBool,
 }
 
 impl CpexEngineInner {
@@ -409,7 +459,9 @@ impl CpexEngineInner {
     pub fn new(engine: Arc<PolicyEngine>) -> Self {
         Self {
             engine,
-            installed: Mutex::new(false),
+            install_state: Mutex::new(apl::InstallState::NotInstalled),
+            #[cfg(test)]
+            fail_install: std::sync::atomic::AtomicBool::new(false),
         }
     }
 }
@@ -739,6 +791,14 @@ pub unsafe extern "C" fn cpex_plugin_names(
 /// Invoke a hook by name.
 ///
 /// Payload and extensions are passed as MessagePack bytes.
+///
+/// A hook name removed in 0.3 (`tool_pre_invoke`, `identity_resolve` and
+/// the rest of `cpex::host::REMOVED_HOOKS`) returns `RC_INVALID_INPUT` and
+/// logs its replacement: it would reach no handler, so dispatching it would
+/// allow with no policy evaluated. An `identity.resolve` call with a
+/// `PAYLOAD_IDENTITY` payload that sets any resolver output field
+/// (`subject`, `client`, `caller_workload`, `delegation`, `raw_credentials`,
+/// `resolved_at`, `raw_claims`) also returns `RC_INVALID_INPUT`.
 /// ContextTable is an opaque handle (NULL for first invocation).
 /// Returns MessagePack-encoded PipelineResult + opaque handles for
 /// context table and background tasks.
@@ -843,6 +903,9 @@ pub unsafe extern "C" fn cpex_invoke(
         Some(s) => s,
         None => return RC_INVALID_INPUT,
     };
+    if let Err(rc) = reject_removed_hook(name, "cpex_invoke") {
+        return rc;
+    }
 
     // Deserialize payload using the type registry
     // SAFETY: the caller guarantees `payload_msgpack` is NULL or points to `payload_len` readable bytes.
@@ -858,6 +921,9 @@ pub unsafe extern "C" fn cpex_invoke(
             return RC_PARSE_ERROR;
         },
     };
+    if let Err(rc) = reject_resolved_identity_payload(name, payload.as_ref(), "cpex_invoke") {
+        return rc;
+    }
 
     // Deserialize extensions from MessagePack
     let extensions: Extensions = if extensions_len > 0 {
@@ -980,6 +1046,8 @@ pub unsafe extern "C" fn cpex_invoke(
 /// `identity.resolve` hook is registered, this degrades to a plain hook
 /// invoke against the supplied extensions. If `identity.resolve` denies
 /// (e.g. bad token), that denial is returned and the hook does not run.
+/// An identity payload that sets any resolver output field, or a removed
+/// hook name, returns `RC_INVALID_INPUT` as in [`cpex_invoke`].
 ///
 /// # Safety / ownership
 /// Identical contract to [`cpex_invoke`]: the input `context_table` is
@@ -1033,6 +1101,9 @@ pub unsafe extern "C" fn cpex_invoke_resolved(
         Some(s) => s,
         None => return RC_INVALID_INPUT,
     };
+    if let Err(rc) = reject_removed_hook(name, "cpex_invoke_resolved") {
+        return rc;
+    }
 
     // SAFETY: the caller guarantees `payload_msgpack` is NULL or points to `payload_len` readable bytes.
     let payload_bytes = match unsafe { c_bytes_to_slice(payload_msgpack, payload_len) } {
@@ -1046,6 +1117,11 @@ pub unsafe extern "C" fn cpex_invoke_resolved(
             return RC_PARSE_ERROR;
         },
     };
+    if let Err(rc) =
+        reject_resolved_identity_payload(name, payload.as_ref(), "cpex_invoke_resolved")
+    {
+        return rc;
+    }
 
     let base_extensions: Extensions = if extensions_len > 0 {
         // SAFETY: the caller guarantees `extensions_msgpack` is NULL or points to `extensions_len` readable bytes.
@@ -1089,6 +1165,9 @@ pub unsafe extern "C" fn cpex_invoke_resolved(
                 return RC_PARSE_ERROR;
             },
         };
+        if let Err(rc) = reject_resolved_identity(&id_payload, "cpex_invoke_resolved/identity") {
+            return rc;
+        }
 
         // The identity hook gets the caller's extensions so its `meta`
         // selects the route: under `dispatch: policy` the route's
@@ -1406,7 +1485,7 @@ struct FfiPipelineResult {
     modified_extensions: Option<Vec<u8>>,
 }
 
-/// Helper for serializing Option<Vec<u8>> as binary in MessagePack.
+/// Helper for serializing `Option<Vec<u8>>` as binary in MessagePack.
 mod serde_bytes_opt {
     use serde::{Deserializer, Serializer};
 
@@ -1775,6 +1854,212 @@ mod tests {
             assert_eq!(cpex_apl_install(handle, 1 << 31), RC_INVALID_INPUT);
             // A rejected call installs nothing, so a valid one still runs.
             assert_eq!(cpex_apl_install(handle, 0), RC_OK);
+            cpex_shutdown(handle);
+        }
+    }
+
+    /// `cpex_invoke` on `hook` with no context table; frees every output
+    /// and returns the rc.
+    unsafe fn invoke_named(
+        handle: *const CpexEngineInner,
+        hook: &str,
+        payload_type: u8,
+        payload: &[u8],
+    ) -> c_int {
+        let mut out: *mut u8 = ptr::null_mut();
+        let mut out_len: c_int = 0;
+        let mut ct: *mut CpexContextTableInner = ptr::null_mut();
+        let mut bg: *mut CpexBackgroundTasksInner = ptr::null_mut();
+        // SAFETY: `handle` is live per the caller contract; inputs are
+        // borrowed for the call and the out pointers are locals, each
+        // freed once below.
+        unsafe {
+            let rc = cpex_invoke(
+                handle,
+                hook.as_ptr() as *const c_char,
+                hook.len() as c_int,
+                payload_type,
+                payload.as_ptr(),
+                payload.len() as c_int,
+                ptr::null(),
+                0,
+                ptr::null_mut(),
+                &mut out,
+                &mut out_len,
+                &mut ct,
+                &mut bg,
+            );
+            free_outputs(out, out_len, ct, bg);
+            rc
+        }
+    }
+
+    /// `cpex_invoke_resolved` with an identity payload; frees every
+    /// output and returns the rc.
+    unsafe fn invoke_resolved_named(
+        handle: *const CpexEngineInner,
+        identity: &[u8],
+        hook: &str,
+        payload_type: u8,
+        payload: &[u8],
+    ) -> c_int {
+        let mut out: *mut u8 = ptr::null_mut();
+        let mut out_len: c_int = 0;
+        let mut ct: *mut CpexContextTableInner = ptr::null_mut();
+        let mut bg: *mut CpexBackgroundTasksInner = ptr::null_mut();
+        // SAFETY: as in `invoke_named`.
+        unsafe {
+            let rc = cpex_invoke_resolved(
+                handle,
+                identity.as_ptr(),
+                identity.len() as c_int,
+                hook.as_ptr() as *const c_char,
+                hook.len() as c_int,
+                payload_type,
+                payload.as_ptr(),
+                payload.len() as c_int,
+                ptr::null(),
+                0,
+                ptr::null_mut(),
+                &mut out,
+                &mut out_len,
+                &mut ct,
+                &mut bg,
+            );
+            free_outputs(out, out_len, ct, bg);
+            rc
+        }
+    }
+
+    unsafe fn free_outputs(
+        out: *mut u8,
+        out_len: c_int,
+        ct: *mut CpexContextTableInner,
+        bg: *mut CpexBackgroundTasksInner,
+    ) {
+        // SAFETY: each non-null value was written by an invoke and is
+        // freed exactly once here.
+        unsafe {
+            if !out.is_null() {
+                cpex_free_bytes(out, out_len);
+            }
+            if !ct.is_null() {
+                cpex_free_context_table(ct);
+            }
+            if !bg.is_null() {
+                cpex_free_background(bg);
+            }
+        }
+    }
+
+    fn identity_bytes(value: serde_json::Value) -> Vec<u8> {
+        rmp_serde::to_vec_named(&value).expect("encode identity payload")
+    }
+
+    /// A removed hook name is refused at invoke time instead of
+    /// dispatching to nothing and allowing.
+    #[test]
+    fn invoke_rejects_removed_hook_names() {
+        let handle = build_test_engine();
+        let payload = payload_bytes("x");
+        unsafe {
+            for (removed, _) in cpex::host::REMOVED_HOOKS {
+                assert_eq!(
+                    invoke_named(handle, removed, PAYLOAD_GENERIC, &payload),
+                    RC_INVALID_INPUT,
+                    "{removed}"
+                );
+                assert_eq!(
+                    invoke_resolved_named(handle, &[], removed, PAYLOAD_GENERIC, &payload),
+                    RC_INVALID_INPUT,
+                    "{removed}"
+                );
+            }
+            // A current name with no handler still dispatches and allows.
+            assert_eq!(
+                invoke_named(handle, "cmf.tool_pre_invoke", PAYLOAD_GENERIC, &payload),
+                RC_OK
+            );
+            assert_eq!(
+                invoke_named(handle, "custom.hook", PAYLOAD_GENERIC, &payload),
+                RC_OK
+            );
+            cpex_shutdown(handle);
+        }
+    }
+
+    /// An `identity.resolve` input carrying resolver output is refused on
+    /// both invoke entry points; a plain input is accepted.
+    #[test]
+    fn invoke_rejects_identity_input_with_resolved_fields() {
+        let input = identity_bytes(serde_json::json!({
+            "source": "bearer",
+            "headers": {"authorization": "Bearer x"},
+        }));
+        let forged = identity_bytes(serde_json::json!({
+            "source": "bearer",
+            "headers": {"authorization": "Bearer x"},
+            "subject": {"id": "alice"},
+        }));
+        let generic = payload_bytes("x");
+        unsafe {
+            let handle = cpex_engine_new_default();
+            assert_eq!(cpex_apl_install(handle, 0), RC_OK);
+            // A registered identity.resolve handler, so the fused path
+            // reads its identity payload.
+            assert_eq!(load(handle, APL_YAML), RC_OK);
+
+            assert_eq!(
+                invoke_named(handle, "identity.resolve", PAYLOAD_IDENTITY, &forged),
+                RC_INVALID_INPUT
+            );
+            assert_eq!(
+                invoke_resolved_named(
+                    handle,
+                    &forged,
+                    "cmf.tool_pre_invoke",
+                    PAYLOAD_GENERIC,
+                    &generic
+                ),
+                RC_INVALID_INPUT
+            );
+            assert_eq!(
+                invoke_resolved_named(handle, &[], "identity.resolve", PAYLOAD_IDENTITY, &forged),
+                RC_INVALID_INPUT
+            );
+            cpex_shutdown(handle);
+
+            // With no handler on identity.resolve the plain input
+            // dispatches and allows.
+            let bare = build_test_engine();
+            assert_eq!(
+                invoke_named(bare, "identity.resolve", PAYLOAD_IDENTITY, &input),
+                RC_OK
+            );
+            cpex_shutdown(bare);
+        }
+    }
+
+    /// An install that panicked stays failed: a retry returns RC_PANIC
+    /// rather than RC_OK over a half-installed engine.
+    #[test]
+    fn cpex_apl_install_after_a_panic_keeps_failing() {
+        unsafe {
+            let handle = cpex_engine_new_default();
+            (*handle)
+                .fail_install
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+            assert_eq!(cpex_apl_install(handle, 0), RC_PANIC);
+
+            // Clearing the injection does not help: the state is final.
+            (*handle)
+                .fail_install
+                .store(false, std::sync::atomic::Ordering::Relaxed);
+            assert_eq!(cpex_apl_install(handle, 0), RC_PANIC);
+            assert_eq!(
+                *(*handle).install_state.lock().unwrap(),
+                apl::InstallState::Failed
+            );
             cpex_shutdown(handle);
         }
     }

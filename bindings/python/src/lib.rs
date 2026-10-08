@@ -12,7 +12,6 @@
 
 use pyo3::prelude::*;
 
-mod builtins;
 mod conversions;
 mod error;
 mod manager;

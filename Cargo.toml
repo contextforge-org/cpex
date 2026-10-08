@@ -95,6 +95,7 @@ praxis-policy-core = { version = "=0.4.1" }
 # time cargo substitutes it for the `path`. `cargo release` keeps these in sync
 # with the workspace version. Keys are package names (builtins differ from their
 # directory names), paths are workspace-root-relative.
+cpex                          = { path = "crates/cpex",                        version = "0.3.0" }
 cpex-plugin-delegator-biscuit = { path = "builtins/plugins/delegator-biscuit", version = "0.3.0" }
 cpex-hosts-python             = { path = "crates/cpex-hosts-python",           version = "0.3.0", default-features = false }
 

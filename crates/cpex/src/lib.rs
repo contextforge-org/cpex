@@ -28,7 +28,10 @@
 //! [`AplOptions`], the builtin factory types, [`HyperTransport`] and
 //! [`install_default_http_transport`].
 //!
-//! The out-of-process Python plugin host is the one CPEX-only addition, behind
+//! Two CPEX-only additions sit on top: the [`host`] module, which holds the
+//! wiring the C FFI and the Python wheel share ([`host::install_host_defaults`],
+//! [`host::secret_error_kind`], the [`host::REMOVED_HOOKS`] table and the
+//! inbound identity check), and the out-of-process Python plugin host, behind
 //! the `python-host` feature.
 //!
 //! # Usage
@@ -71,6 +74,8 @@
 //! // install is measured in minutes, so do it at startup, not on demand.
 //! engine.initialize().await?;
 //! ```
+
+pub mod host;
 
 // The engine's facade, whole and by name, so `cpex::X` resolves for every
 // public `praxis_policy::X`.

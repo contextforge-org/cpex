@@ -105,6 +105,14 @@ def test_hook_names_match_the_wire_compat_fixture(tmp_path, wire_compat):
         assert "unknown hook" in err, f"{hook} must be rejected; got: {err}"
 
 
+@pytest.mark.asyncio
+async def test_removed_hook_names_are_refused_at_invoke(passthrough_engine, wire_compat):
+    """Every removed legacy name raises at invoke time instead of allowing."""
+    for hook in wire_compat["removed_hooks"]:
+        with pytest.raises(ValueError, match=f"'{hook}' was removed; use"):
+            await passthrough_engine.invoke_hook(hook, {})
+
+
 @pytest.mark.parametrize("kind", ["validator/pii-scan", "audit/logger"])
 def test_removed_builtin_kind_fails_with_unknown_kind_error(tmp_path, kind):
     """A config naming a builtin removed in 0.3 fails to load, naming the kind."""

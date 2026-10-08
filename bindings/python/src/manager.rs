@@ -18,6 +18,10 @@
 //
 // BackgroundTasks are dropped (not awaited per call); fire-and-forget tasks
 // run on the engine's TaskTracker and are drained by `shutdown()`.
+//
+// `initialize` and `shutdown` share one lifecycle lock (see `Lifecycle`), so
+// a shutdown waits for an in-flight initialize instead of finding nothing to
+// tear down while that initialize goes on to start plugins.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -25,15 +29,16 @@ use std::time::Duration;
 
 use praxis_policy_core::context::PluginContextTable;
 use praxis_policy_core::engine::PolicyEngine;
+use praxis_policy_core::error::PluginError;
 use praxis_policy_core::extensions::Extensions;
 use pyo3::exceptions::{PyRuntimeError, PyTimeoutError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyDateTime, PyTzInfo};
 use pyo3_async_runtimes::tokio::future_into_py;
 
-use crate::builtins;
 use crate::conversions::{
-    context_table_from_value, extensions_from_value, pyobj_to_json_value, resolve_payload,
+    context_table_from_value, extensions_from_value, pyobj_to_json_value, reject_removed_hook,
+    resolve_payload,
 };
 use crate::error::plugin_error_to_pyerr;
 use crate::result::pipeline_result_to_py;
@@ -43,21 +48,184 @@ use crate::secrets::Refresh;
 /// Mirrors `FFI_WALL_CLOCK_TIMEOUT` in cpex-ffi.
 const PY_WALL_CLOCK_TIMEOUT: Duration = Duration::from_secs(60);
 
-#[pyclass(name = "PolicyEngine")]
-pub struct PyPolicyEngine {
-    inner: Arc<PolicyEngine>,
-    /// Set by `shutdown()`. PPE's shutdown is terminal, so every later
-    /// call that would drive the engine raises instead.
+/// Why a lifecycle call failed, before it is mapped to a Python exception.
+/// Kept free of `PyErr` so the lifecycle logic is testable without an
+/// interpreter.
+#[derive(Debug)]
+pub(crate) enum LifecycleError {
+    /// `shutdown()` has started; the engine takes no more lifecycle calls.
+    ShutDown,
+    /// The wall-clock timeout elapsed.
+    Timeout,
+    /// The engine panicked; the message is the panic payload.
+    Panicked(String),
+    /// The engine reported an error.
+    Engine(Box<PluginError>),
+}
+
+/// The engine plus the state that orders `initialize` and `shutdown`.
+///
+/// Both hold `lock` for their whole run, and both run their engine call in
+/// a spawned task that owns the lock guard. A timeout or a cancelled
+/// awaitable therefore never drops PPE's `initialize` or `shutdown` part
+/// way: the task finishes and only then lets the next lifecycle call in.
+#[derive(Clone)]
+pub(crate) struct Lifecycle {
+    engine: Arc<PolicyEngine>,
+    lock: Arc<tokio::sync::Mutex<()>>,
+    /// Set when a `shutdown()` coroutine starts running, or when an
+    /// initialize timeout begins its rollback. Every later call that would
+    /// drive the engine is refused.
+    shutdown_started: Arc<AtomicBool>,
+    /// Set once `PolicyEngine::shutdown` has completed. A later shutdown
+    /// is then a no-op; until then a timed-out shutdown can be retried.
     shut_down: Arc<AtomicBool>,
 }
 
+impl Lifecycle {
+    pub(crate) fn new(engine: Arc<PolicyEngine>) -> Self {
+        Self {
+            engine,
+            lock: Arc::new(tokio::sync::Mutex::new(())),
+            shutdown_started: Arc::new(AtomicBool::new(false)),
+            shut_down: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    fn is_shutting_down(&self) -> bool {
+        self.shutdown_started.load(Ordering::Acquire)
+    }
+
+    /// Initialize the engine, waiting for any lifecycle call in flight.
+    ///
+    /// On timeout the initialize keeps running in its task; once it ends,
+    /// the engine is shut down to roll back the plugins it started, and the
+    /// engine is terminal from the moment the timeout fires.
+    pub(crate) async fn initialize(&self, timeout: Duration) -> Result<(), LifecycleError> {
+        let guard = match tokio::time::timeout(timeout, Arc::clone(&self.lock).lock_owned()).await {
+            Ok(guard) => guard,
+            Err(_elapsed) => return Err(LifecycleError::Timeout),
+        };
+        if self.is_shutting_down() {
+            return Err(LifecycleError::ShutDown);
+        }
+        let engine = Arc::clone(&self.engine);
+        let mut work = tokio::spawn(async move {
+            let result = engine.initialize().await;
+            (result, guard)
+        });
+        match tokio::time::timeout(timeout, &mut work).await {
+            Ok(Ok((result, _guard))) => result.map_err(LifecycleError::Engine),
+            Ok(Err(join_err)) => Err(join_error(join_err)),
+            Err(_elapsed) => {
+                self.shutdown_started.store(true, Ordering::Release);
+                let engine = Arc::clone(&self.engine);
+                let shut_down = Arc::clone(&self.shut_down);
+                tokio::spawn(async move {
+                    // Keep the lock through the rollback so a concurrent
+                    // shutdown() waits for it rather than running beside it.
+                    if let Ok((_result, _guard)) = work.await {
+                        engine.shutdown().await;
+                        shut_down.store(true, Ordering::Release);
+                    }
+                });
+                Err(LifecycleError::Timeout)
+            },
+        }
+    }
+
+    /// Shut the engine down, waiting for an in-flight initialize first.
+    ///
+    /// Terminal from the moment it starts running. A second call after a
+    /// completed shutdown is a no-op. A call that timed out leaves the
+    /// shutdown running; a retry waits for it and reports its outcome.
+    pub(crate) async fn shutdown(&self, timeout: Duration) -> Result<(), LifecycleError> {
+        self.shutdown_started.store(true, Ordering::Release);
+        let lock = Arc::clone(&self.lock);
+        let engine = Arc::clone(&self.engine);
+        let shut_down = Arc::clone(&self.shut_down);
+        let work = tokio::spawn(async move {
+            let _guard = lock.lock_owned().await;
+            if shut_down.load(Ordering::Acquire) {
+                return;
+            }
+            engine.shutdown().await;
+            shut_down.store(true, Ordering::Release);
+        });
+        match tokio::time::timeout(timeout, work).await {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(join_err)) => Err(join_error(join_err)),
+            Err(_elapsed) => Err(LifecycleError::Timeout),
+        }
+    }
+
+    /// Re-read every declared secret in an isolated task, so a panicking
+    /// provider surfaces as [`LifecycleError::Panicked`].
+    pub(crate) async fn refresh_secrets(
+        &self,
+        timeout: Duration,
+    ) -> Result<praxis_policy_core::secrets::RefreshReport, LifecycleError> {
+        let engine = Arc::clone(&self.engine);
+        let work = tokio::spawn(async move { engine.refresh_secrets().await });
+        match tokio::time::timeout(timeout, work).await {
+            Ok(Ok(report)) => Ok(report),
+            Ok(Err(join_err)) => Err(join_error(join_err)),
+            Err(_elapsed) => Err(LifecycleError::Timeout),
+        }
+    }
+}
+
+/// Map a failed spawned task to a [`LifecycleError`].
+fn join_error(join_err: tokio::task::JoinError) -> LifecycleError {
+    if join_err.is_panic() {
+        LifecycleError::Panicked(panic_message(join_err))
+    } else {
+        LifecycleError::Panicked("task was cancelled".to_owned())
+    }
+}
+
+/// The text of a panic payload, or `"unknown panic"`.
+fn panic_message(join_err: tokio::task::JoinError) -> String {
+    let payload = join_err.into_panic();
+    payload
+        .downcast_ref::<&str>()
+        .map(|s| (*s).to_owned())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "unknown panic".to_owned())
+}
+
+/// Map a [`LifecycleError`] from operation `op` to the documented Python
+/// exception.
+fn lifecycle_error_to_pyerr(err: LifecycleError, op: &str) -> PyErr {
+    match err {
+        LifecycleError::ShutDown => shut_down_error(op),
+        LifecycleError::Timeout => {
+            PyTimeoutError::new_err(format!("cpex: PolicyEngine::{op} timed out"))
+        },
+        LifecycleError::Panicked(msg) => {
+            PyRuntimeError::new_err(format!("cpex: PolicyEngine::{op} panicked: {msg}"))
+        },
+        LifecycleError::Engine(e) => plugin_error_to_pyerr(e),
+    }
+}
+
+fn shut_down_error(op: &str) -> PyErr {
+    PyRuntimeError::new_err(format!(
+        "cpex: cannot call {op}() after shutdown(); create a new PolicyEngine"
+    ))
+}
+
+#[pyclass(name = "PolicyEngine")]
+pub struct PyPolicyEngine {
+    inner: Arc<PolicyEngine>,
+    lifecycle: Lifecycle,
+}
+
 impl PyPolicyEngine {
-    /// Raise `RuntimeError` when `shutdown()` already ran.
+    /// Raise `RuntimeError` when `shutdown()` already started.
     fn ensure_live(&self, op: &str) -> PyResult<()> {
-        if self.shut_down.load(Ordering::Acquire) {
-            return Err(PyRuntimeError::new_err(format!(
-                "cpex: cannot call {op}() after shutdown(); create a new PolicyEngine"
-            )));
+        if self.lifecycle.is_shutting_down() {
+            return Err(shut_down_error(op));
         }
         Ok(())
     }
@@ -92,65 +260,54 @@ impl PyPolicyEngine {
             ))
         })?;
 
-        let engine = Self {
-            inner: Arc::new(PolicyEngine::default()),
-            shut_down: Arc::new(AtomicBool::new(false)),
-        };
-        builtins::install(&engine.inner, allow_private_destinations);
-        engine
-            .inner
+        let inner = Arc::new(PolicyEngine::default());
+        cpex::host::install_host_defaults(&inner, allow_private_destinations);
+        inner
             .load_config_yaml(&yaml)
             .map_err(plugin_error_to_pyerr)?;
 
-        Ok(engine)
+        Ok(Self {
+            lifecycle: Lifecycle::new(Arc::clone(&inner)),
+            inner,
+        })
     }
 
     /// Initialize all registered plugins and resolve declared secrets.
     ///
     /// Must be called before any `invoke_hook` call.
     /// Returns an awaitable (coroutine).
+    ///
+    /// Raises `RuntimeError` once `shutdown()` has started, including a
+    /// shutdown that started after this call but before the awaitable ran.
+    /// Raises `TimeoutError` past the wall-clock timeout; the engine then
+    /// shuts itself down once the stalled initialize ends, and is terminal.
     fn initialize<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         self.ensure_live("initialize")?;
-        let engine = Arc::clone(&self.inner);
+        let lifecycle = self.lifecycle.clone();
         future_into_py(py, async move {
-            let result = tokio::time::timeout(PY_WALL_CLOCK_TIMEOUT, async move {
-                engine.initialize().await.map_err(plugin_error_to_pyerr)
-            })
-            .await;
-
-            match result {
-                Ok(inner_result) => inner_result,
-                Err(_elapsed) => Err(PyTimeoutError::new_err(
-                    "cpex: PolicyEngine::initialize timed out",
-                )),
-            }
+            lifecycle
+                .initialize(PY_WALL_CLOCK_TIMEOUT)
+                .await
+                .map_err(|e| lifecycle_error_to_pyerr(e, "initialize"))
         })
     }
 
     /// Shut down all registered plugins and drain fire-and-forget tasks.
     ///
-    /// Terminal: later `initialize`, `invoke_hook` and `refresh_secrets`
-    /// calls raise `RuntimeError`. A second `shutdown()` is a no-op.
+    /// Waits for an `initialize()` in flight, then shuts the engine down.
+    /// Terminal from the moment the awaitable starts running: later
+    /// `initialize`, `invoke_hook` and `refresh_secrets` calls raise
+    /// `RuntimeError`. A second `shutdown()` after one completed is a
+    /// no-op. One that raised `TimeoutError` can be retried; the retry
+    /// waits for the first to finish.
     /// Returns an awaitable (coroutine).
     fn shutdown<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        let engine = Arc::clone(&self.inner);
-        let already = self.shut_down.swap(true, Ordering::AcqRel);
+        let lifecycle = self.lifecycle.clone();
         future_into_py(py, async move {
-            if already {
-                return Ok(());
-            }
-            let result = tokio::time::timeout(PY_WALL_CLOCK_TIMEOUT, async move {
-                engine.shutdown().await;
-                Ok::<(), PyErr>(())
-            })
-            .await;
-
-            match result {
-                Ok(inner_result) => inner_result,
-                Err(_elapsed) => Err(PyTimeoutError::new_err(
-                    "cpex: PolicyEngine::shutdown timed out",
-                )),
-            }
+            lifecycle
+                .shutdown(PY_WALL_CLOCK_TIMEOUT)
+                .await
+                .map_err(|e| lifecycle_error_to_pyerr(e, "shutdown"))
         })
     }
 
@@ -169,7 +326,10 @@ impl PyPolicyEngine {
     /// Returns an awaitable that resolves to `PipelineResult`.
     ///
     /// Raises:
-    ///   `ValueError`     payload/extensions/context conversion failure,
+    ///   `ValueError`     a hook name removed in 0.3 (the message names
+    ///                    its replacement), an `identity.resolve` payload
+    ///                    that sets a resolver output field,
+    ///                    payload/extensions/context conversion failure,
     ///                    or depth > 128.
     ///   `RuntimeError`   plugin execution error, panic at the boundary,
     ///                    or a call after `shutdown()`.
@@ -184,6 +344,7 @@ impl PyPolicyEngine {
         context_table: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Bound<'py, PyAny>> {
         self.ensure_live("invoke_hook")?;
+        reject_removed_hook(hook_name)?;
         let payload_value = pyobj_to_json_value(py, payload, 0)?;
         let rust_payload = resolve_payload(hook_name, payload_value)?;
 
@@ -236,30 +397,27 @@ impl PyPolicyEngine {
     /// value keeps its last-good bytes. An engine with no `secrets:` block,
     /// or not yet initialized, returns an empty report.
     ///
-    /// Raises `RuntimeError` after `shutdown()` and `TimeoutError` past
-    /// the wall-clock timeout.
+    /// Raises `RuntimeError` after `shutdown()` or when a secret provider
+    /// panics, and `TimeoutError` past the wall-clock timeout.
     fn refresh_secrets<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         self.ensure_live("refresh_secrets")?;
-        let engine = Arc::clone(&self.inner);
+        let lifecycle = self.lifecycle.clone();
         future_into_py(py, async move {
-            match tokio::time::timeout(PY_WALL_CLOCK_TIMEOUT, engine.refresh_secrets()).await {
-                Ok(report) => {
-                    // Log only the names and the failure class. The full
-                    // message stays in the report returned to Python.
-                    for failure in &report.failed {
-                        tracing::warn!(
-                            secret = %failure.secret,
-                            provider = %failure.provider,
-                            kind = crate::secrets::error_kind(&failure.source),
-                            "cpex-python: secret refresh failed"
-                        );
-                    }
-                    Ok(Refresh::from(report))
-                },
-                Err(_elapsed) => Err(PyTimeoutError::new_err(
-                    "cpex: PolicyEngine::refresh_secrets timed out",
-                )),
+            let report = lifecycle
+                .refresh_secrets(PY_WALL_CLOCK_TIMEOUT)
+                .await
+                .map_err(|e| lifecycle_error_to_pyerr(e, "refresh_secrets"))?;
+            // Log only the names and the failure class. The full message
+            // stays in the report returned to Python.
+            for failure in &report.failed {
+                tracing::warn!(
+                    secret = %failure.secret,
+                    provider = %failure.provider,
+                    kind = cpex::host::secret_error_kind(&failure.source),
+                    "cpex-python: secret refresh failed"
+                );
             }
+            Ok(Refresh::from(report))
         })
     }
 
@@ -310,17 +468,10 @@ pub(crate) async fn invoke_with_timeout(
         .await
         {
             Ok((pipeline_result, _bg_tasks)) => pipeline_result_to_py(pipeline_result),
-            Err(join_err) if join_err.is_panic() => {
-                let payload = join_err.into_panic();
-                let msg = payload
-                    .downcast_ref::<&str>()
-                    .copied()
-                    .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
-                    .unwrap_or("unknown panic");
-                Err(PyRuntimeError::new_err(format!(
-                    "cpex: plugin panicked: {msg}"
-                )))
-            },
+            Err(join_err) if join_err.is_panic() => Err(PyRuntimeError::new_err(format!(
+                "cpex: plugin panicked: {}",
+                panic_message(join_err)
+            ))),
             Err(_cancelled) => Err(PyRuntimeError::new_err("cpex: plugin task was cancelled")),
         }
     })
@@ -523,5 +674,197 @@ mod tests {
             result.is_err(),
             "timeout should have fired before the plugin completed"
         );
+    }
+}
+
+// Lifecycle ordering, without a Python interpreter: the logic returns
+// `LifecycleError`, which only the pymethods map to `PyErr`.
+#[cfg(test)]
+mod lifecycle_tests {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+
+    use async_trait::async_trait;
+    use praxis_policy_core::context::PluginContext;
+    use praxis_policy_core::engine::PolicyEngine;
+    use praxis_policy_core::error::PluginError;
+    use praxis_policy_core::extensions::Extensions;
+    use praxis_policy_core::hooks::PluginResult;
+    use praxis_policy_core::hooks::trait_def::HookTypeDef;
+    use praxis_policy_core::plugin::{Plugin, PluginConfig, PluginMode};
+
+    use super::{Lifecycle, LifecycleError, join_error};
+
+    #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+    struct TestPayload;
+    praxis_policy_core::impl_plugin_payload!(TestPayload);
+
+    struct SlowHook;
+    impl HookTypeDef for SlowHook {
+        type Payload = TestPayload;
+        type Result = PluginResult<TestPayload>;
+        const NAME: &'static str = "test.slow_hook";
+    }
+
+    /// Takes `init_delay` to initialize and counts its initializations and
+    /// shutdowns.
+    struct SlowPlugin {
+        cfg: PluginConfig,
+        init_delay: Duration,
+        inits: Arc<AtomicUsize>,
+        shutdowns: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl Plugin for SlowPlugin {
+        fn config(&self) -> &PluginConfig {
+            &self.cfg
+        }
+
+        async fn initialize(&self) -> Result<(), Box<PluginError>> {
+            tokio::time::sleep(self.init_delay).await;
+            self.inits.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+
+        async fn shutdown(&self) -> Result<(), Box<PluginError>> {
+            self.shutdowns.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    impl praxis_policy_core::hooks::HookHandler<SlowHook> for SlowPlugin {
+        async fn handle(
+            &self,
+            _payload: &TestPayload,
+            _extensions: &Extensions,
+            _ctx: &mut PluginContext,
+        ) -> PluginResult<TestPayload> {
+            PluginResult::allow()
+        }
+    }
+
+    struct Probe {
+        lifecycle: Lifecycle,
+        engine: Arc<PolicyEngine>,
+        inits: Arc<AtomicUsize>,
+        shutdowns: Arc<AtomicUsize>,
+    }
+
+    fn probe(init_delay: Duration) -> Probe {
+        let engine = Arc::new(PolicyEngine::default());
+        let cfg = PluginConfig {
+            name: "slow".into(),
+            kind: "test".into(),
+            hooks: vec![SlowHook::NAME.into()],
+            mode: PluginMode::Sequential,
+            ..Default::default()
+        };
+        let inits = Arc::new(AtomicUsize::new(0));
+        let shutdowns = Arc::new(AtomicUsize::new(0));
+        let plugin = Arc::new(SlowPlugin {
+            cfg: cfg.clone(),
+            init_delay,
+            inits: Arc::clone(&inits),
+            shutdowns: Arc::clone(&shutdowns),
+        });
+        engine
+            .register_handler::<SlowHook, _>(plugin, cfg)
+            .expect("register");
+        Probe {
+            lifecycle: Lifecycle::new(Arc::clone(&engine)),
+            engine,
+            inits,
+            shutdowns,
+        }
+    }
+
+    const LONG: Duration = Duration::from_secs(10);
+
+    /// Wait until a lifecycle call holds the lock, so the test's next call
+    /// is known to arrive while it is in flight.
+    async fn wait_for_lock_held(lifecycle: &Lifecycle) {
+        while lifecycle.lock.try_lock().is_ok() {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    }
+
+    /// A shutdown that arrives while initialize is in flight waits for it,
+    /// then tears the started plugins down.
+    #[tokio::test]
+    async fn shutdown_waits_for_an_in_flight_initialize() {
+        let p = probe(Duration::from_millis(100));
+        let init = {
+            let lifecycle = p.lifecycle.clone();
+            tokio::spawn(async move { lifecycle.initialize(LONG).await })
+        };
+        wait_for_lock_held(&p.lifecycle).await;
+        p.lifecycle.shutdown(LONG).await.expect("shutdown");
+
+        init.await.expect("join").expect("initialize");
+        assert_eq!(p.inits.load(Ordering::SeqCst), 1);
+        assert_eq!(p.shutdowns.load(Ordering::SeqCst), 1);
+        assert!(!p.engine.is_initialized());
+
+        // A second shutdown is a no-op; initialize is refused.
+        p.lifecycle.shutdown(LONG).await.expect("second shutdown");
+        assert_eq!(p.shutdowns.load(Ordering::SeqCst), 1);
+        assert!(matches!(
+            p.lifecycle.initialize(LONG).await,
+            Err(LifecycleError::ShutDown)
+        ));
+    }
+
+    /// An initialize that times out is rolled back once it ends, and the
+    /// engine is terminal.
+    #[tokio::test]
+    async fn initialize_timeout_rolls_back() {
+        let p = probe(Duration::from_millis(100));
+        assert!(matches!(
+            p.lifecycle.initialize(Duration::from_millis(10)).await,
+            Err(LifecycleError::Timeout)
+        ));
+        assert!(p.lifecycle.is_shutting_down());
+
+        // shutdown() waits for the rollback and finds nothing left to do.
+        p.lifecycle.shutdown(LONG).await.expect("shutdown");
+        assert_eq!(p.inits.load(Ordering::SeqCst), 1);
+        assert_eq!(p.shutdowns.load(Ordering::SeqCst), 1);
+        assert!(!p.engine.is_initialized());
+    }
+
+    /// A shutdown that times out waiting can be retried, and the retry
+    /// runs the shutdown exactly once.
+    #[tokio::test]
+    async fn timed_out_shutdown_can_be_retried() {
+        let p = probe(Duration::from_millis(100));
+        let init = {
+            let lifecycle = p.lifecycle.clone();
+            tokio::spawn(async move { lifecycle.initialize(LONG).await })
+        };
+        wait_for_lock_held(&p.lifecycle).await;
+        assert!(matches!(
+            p.lifecycle.shutdown(Duration::from_millis(10)).await,
+            Err(LifecycleError::Timeout)
+        ));
+
+        p.lifecycle.shutdown(LONG).await.expect("retried shutdown");
+        init.await.expect("join").expect("initialize");
+        assert_eq!(p.shutdowns.load(Ordering::SeqCst), 1);
+        assert!(!p.engine.is_initialized());
+    }
+
+    /// A panic in a spawned lifecycle task maps to `Panicked` with the
+    /// payload text, the path refresh_secrets uses for a provider panic.
+    #[tokio::test]
+    async fn a_task_panic_maps_to_panicked() {
+        let join_err = tokio::spawn(async { panic!("provider exploded") })
+            .await
+            .expect_err("the task panics");
+        match join_error(join_err) {
+            LifecycleError::Panicked(msg) => assert_eq!(msg, "provider exploded"),
+            other => panic!("expected Panicked, got {other:?}"),
+        }
     }
 }

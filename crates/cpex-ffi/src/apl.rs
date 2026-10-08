@@ -8,8 +8,9 @@
 // `cpex_apl_install` registers PPE's bundled plugin, PDP and session-store
 // factories, installs the APL config visitor, installs one outbound HTTP
 // transport, and registers the secret providers (env, file, Vault) with
-// that same transport. A later `cpex_load_config` then walks `apl:` blocks
-// and installs per-route handlers.
+// that same transport, through `cpex::host::install_host_defaults`. A later
+// `cpex_load_config` then walks `apl:` blocks and installs per-route
+// handlers.
 //
 // Registration is explicit (no inventory/ctor magic): PPE's
 // `install_builtins` expands to explicit `register_factory` calls, so the
@@ -28,12 +29,21 @@
 
 use std::os::raw::c_int;
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::sync::Arc;
-
-use praxis_policy::{HyperTransport, install_builtins, registry_with_vault};
-use praxis_policy_core::http::HttpTransport;
 
 use crate::{CpexEngineInner, RC_INVALID_HANDLE, RC_INVALID_INPUT, RC_OK, RC_PANIC};
+
+/// Where `cpex_apl_install` stands on one handle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum InstallState {
+    /// No install has run yet.
+    #[default]
+    NotInstalled,
+    /// An install completed.
+    Installed,
+    /// An install panicked part way. What it left behind is unknown, and a
+    /// retry could register a second APL visitor, so the state is final.
+    Failed,
+}
 
 /// `cpex_apl_install` flag: let builtins reach private, loopback and
 /// link-local destinations (for example a JWKS endpoint on localhost or
@@ -65,15 +75,18 @@ pub const CPEX_APL_KNOWN_FLAGS: u32 = CPEX_APL_ALLOW_PRIVATE_DESTINATIONS;
 /// private and loopback addresses; without it, such requests are refused
 /// and builtins report their egress-denied codes.
 ///
-/// Idempotent per handle: once a call has succeeded or started, later
-/// calls do nothing and return `RC_OK`, whatever their flags. The
+/// Idempotent per handle: once a call has succeeded, later calls do
+/// nothing and return `RC_OK`, whatever their flags. A call that panicked
+/// leaves the engine in an unknown state, so it stays failed: every later
+/// call returns `RC_PANIC` and the host should discard the engine. The
 /// transport and the secret providers are set-once on the engine; if the
 /// host already installed either through Rust, the existing one is kept
 /// and a warning is logged.
 ///
 /// Returns `RC_OK` on success, `RC_INVALID_HANDLE` if `handle` is null,
-/// `RC_INVALID_INPUT` for an unknown flag bit, or `RC_PANIC` if
-/// registration panicked (caught at the FFI boundary).
+/// `RC_INVALID_INPUT` for an unknown flag bit, or `RC_PANIC` if this or
+/// an earlier install on the handle panicked (caught at the FFI
+/// boundary).
 ///
 /// # Safety
 /// `handle` must be a valid handle returned by `cpex_engine_new_default`
@@ -94,40 +107,43 @@ pub unsafe extern "C" fn cpex_apl_install(handle: *const CpexEngineInner, flags:
     }
 
     // Held for the whole install so a concurrent second call waits and
-    // then sees the flag, rather than racing ahead to load a config
-    // before the factories exist. A poisoned lock means an earlier
-    // install panicked part way; treat it as installed.
-    let mut installed = match inner.installed.lock() {
+    // then sees the outcome, rather than racing ahead to load a config
+    // before the factories exist. The install runs under catch_unwind, so
+    // the lock is not poisoned by it; recover the state either way.
+    let mut state = match inner.install_state.lock() {
         Ok(guard) => guard,
         Err(poisoned) => poisoned.into_inner(),
     };
-    if *installed {
-        return RC_OK;
+    match *state {
+        InstallState::Installed => return RC_OK,
+        InstallState::Failed => {
+            tracing::error!(
+                "cpex_apl_install: an earlier install on this handle panicked; discard the engine"
+            );
+            return RC_PANIC;
+        },
+        InstallState::NotInstalled => {},
     }
-    // Set before the work so a panic part way does not let a retry
-    // register a second APL visitor.
-    *installed = true;
 
     let allow_private = flags & CPEX_APL_ALLOW_PRIVATE_DESTINATIONS != 0;
     let result = catch_unwind(AssertUnwindSafe(|| {
-        install_builtins(&inner.engine);
-
-        let mut hyper = HyperTransport::new();
-        if allow_private {
-            hyper = hyper.with_allow_private_destinations();
+        #[cfg(test)]
+        if inner
+            .fail_install
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            panic!("injected install failure");
         }
-        let transport: Arc<dyn HttpTransport> = Arc::new(hyper);
-        // Both setters are set-once and log their own warning when a
-        // transport or registry is already present.
-        let _ = inner.engine.set_http_transport(Arc::clone(&transport));
-        let _ = inner
-            .engine
-            .set_secret_providers(registry_with_vault(transport));
+        cpex::host::install_host_defaults(&inner.engine, allow_private);
     }));
 
     match result {
-        Ok(()) => RC_OK,
+        Ok(()) => {
+            *state = InstallState::Installed;
+            RC_OK
+        },
         Err(_panic) => {
+            *state = InstallState::Failed;
             tracing::error!("cpex_apl_install: panic caught at FFI boundary");
             RC_PANIC
         },
