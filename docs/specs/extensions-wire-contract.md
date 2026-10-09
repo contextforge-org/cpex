@@ -39,10 +39,10 @@ is; read this for *how it crosses a process boundary*.
 Where the two disagree, each disagreement is called out inline below rather than
 resolved silently. There are three: the `delegation` and `raw_credentials` slots
 (present in the implementation, absent from §3), the `http` slot's field shape
-(§3.5 matches Python, not Rust), and the sensitive-header list (four names here,
-three in §3.5). None is a case of this wire deviating from a shape §3 pins down
-: they are places §3 has not caught up to the implementation, or where this
-transport strips more than the spec's floor requires.
+(§3.5 matches Python, not Rust), and the outbound raw-header policy (empty
+maps by default, stricter than §3.5's named-header strip). The first two are
+places §3 has not caught up to the implementation; the last is a stricter
+transport rule for unvalidated header values.
 
 This document pins the contract the two surfaces share, and records the answers
 to the plan's Open Questions as resolved against the actual code. It exists
@@ -214,40 +214,28 @@ close, not a divergence this contract is entitled to resolve by itself; treat
 §3 as authoritative on the shape and tiers of the slots it *does* describe, and
 this document as authoritative on what actually crosses the wire.
 
-## Sensitive headers
+## Raw header boundary
 
-`Authorization`, `Cookie`, `Set-Cookie`, and `X-API-Key` are stripped **in both
-directions**, matched case-insensitively (HTTP header names are case-insensitive,
-and `HttpExtension`'s own accessors look up that way, so a case-sensitive compare
-would pass `authorization` straight through).
+The Rust host sends empty `http.request_headers` and `http.response_headers`
+maps to the worker by default, even when the plugin has `read_headers`. A
+header name alone cannot establish that its value contains no credential.
+`credential_payloads::is_public_header` is the approval point; a future
+exception needs a strict value validator and a documented use. The same rule
+applies to the public `IdentityPayload.headers` map. The source header,
+selected token, and shared `CREDENTIAL_HEADERS` list remain extra checks.
 
-Source of truth: `SENSITIVE_HEADERS` in
-`crates/cpex-hosts-python/src/extensions.rs`, and `SENSITIVE_HEADERS` in
-`cpex/framework/isolated/worker.py`.
+The gated `credential` object is the path for a plugin with
+`read_inbound_credentials` to receive the full identity header map. Request-line
+fields on the `http` extension still cross without raw header values.
 
-Every header map on the slot is scrubbed, not just a request one: a response map
-can carry a `Set-Cookie` or an upstream `Authorization` echo just as a request map
-carries the inbound credential. Which maps exist depends on the language: see
-below.
-
-**This is four names, where CMF §3.5 names three.** The deliberate widening is
-`Set-Cookie`, and it is a widening of what gets *stripped*: strictly more
-redaction than the spec floor, never less, so it cannot make the channel leakier
-than CMF permits. It is here because `response_headers` exists on the Rust slot
-and a response map's whole job is carrying `Set-Cookie`; stripping `Cookie`
-inbound while forwarding `Set-Cookie` outbound would redact one direction of the
-same session credential.
-
-(An earlier revision of this document claimed the opposite: that only the
-spec's three were stripped and `Set-Cookie` was deliberately excluded. That was
-true of the code when it was written and is no longer; `extensions.rs` carries
-`set-cookie` in the list and a test asserts it. Recorded as a correction rather
-than silently replaced, per this document's convention.)
-
-CMF §3.5 is the floor, not the ceiling: it says sensitive headers "are stripped
-when serialized for external policy engines" and names three. Any further name
-added here must be added to *both* surfaces' `SENSITIVE_HEADERS` in the same
-change, or the two directions disagree.
+On worker return, the Rust host removes known credential header names
+case-insensitively from both maps and the executor requires `write_headers` to
+apply other edits. The worker's own `SENSITIVE_HEADERS` filter remains a second
+return-path check. The Rust list is `CREDENTIAL_HEADERS` in
+`crates/cpex-hosts-python/src/credential_payloads.rs`; it also includes
+`proxy-authorization` and common gateway token header names. CMF §3.5 lists
+three sensitive names as a floor for external serialization. The host's empty
+outbound maps are stricter.
 
 ## Known divergence: the http slot
 
@@ -275,10 +263,12 @@ the realistic resolution is to update CMF §3.5 to the Rust shape and map Python
 up to it: not the reverse. That is a spec change and needs the CMF owners, which
 is why it is not resolved here.
 
-Consequences, both currently unresolved by design rather than by accident:
+Consequences of the shape mismatch:
 
-- **The slot crosses, validates, and arrives empty: silently, in both
-  directions.** This is a correction: this document previously said a
+- **The slot crosses and validates, but Python's `headers` map is empty.**
+  Empty outbound header maps are now intentional. A worker-returned header edit
+  can still be lost because the Rust and Python field names differ. This is a
+  correction: this document previously said a
   Rust-serialized `http` slot does *not* validate into the Python model, and that
   `reconstruct_extensions` drops it with a warning. Both claims are wrong, and the
   real behaviour is worse because it is quiet.
@@ -290,7 +280,7 @@ Consequences, both currently unresolved by design rather than by accident:
 
   | Direction | On the wire | Deserializes to | Warning? |
   |---|---|---|---|
-  | Rust → Python | `{"request_headers": {"X-Request-Id": "r1"}}` | `HttpExtension(headers={})` | none |
+  | Rust → Python | `{"request_headers": {}}` | `HttpExtension(headers={})` | none |
   | Python → Rust | `{"headers": {"X-Fine": "yes"}}` | `HttpExtension { request_headers: {}, response_headers: {} }` | none |
 
   Verified empirically against the branch-built worker described under
@@ -304,24 +294,21 @@ Consequences, both currently unresolved by design rather than by accident:
   but the other eleven". The per-slot degradation this document implied does not
   exist on that path. Second, what actually happens instead is the **hollow slot**
   this contract explicitly rejects for `raw_credentials`: a plugin reading
-  `extensions.http.headers` gets `{}` and cannot distinguish "this request had no
-  headers" from "the headers did not cross". A dropped slot would at least have
-  been honest.
+  `extensions.http.headers` gets `{}`. That is the deliberate outbound policy,
+  although the model does not tell the plugin why the map is empty. On return,
+  the mismatched field names can still silently discard a permitted edit.
 
-  **A mapping is still needed on one side before the http slot works across the
-  boundary.** The other eleven slots line up.
+  **A mapping is still needed for worker-returned header edits.** The other
+  eleven slots line up.
 
-- The stripping code on each side is written against whichever fields the model
-  actually declares (`_HTTP_HEADER_FIELDS` in `worker.py`, `sanitize_http` in
-  `extensions.rs`), so neither leaks if the shapes change. The Python helper reads
-  `model_fields` and scrubs every header map it finds, so it keeps working if the
-  Python model later gains the split shape.
+- The Rust host's outbound approval runs before serialization, against its
+  actual header maps, so no unvalidated header value reaches the worker even
+  though the models disagree. The Python worker's return-path scrub still reads
+  `model_fields`; the Rust host applies its own known-name filter after parsing.
 
-  Note this is why the divergence is a correctness bug and not a security one: the
-  sensitive-header strip runs *before* serialization, against the fields the
-  sending model really has, so `Authorization` never reaches the wire regardless
-  of which shape the receiver expects. `config_e2e.rs` asserts exactly that: no
-  credential header value appears anywhere in the serialized task JSON.
+  The shape divergence is a correctness bug for header edits, not a raw-header
+  exposure on the outbound path. `config_e2e.rs` checks that credential header
+  values do not appear in the serialized task JSON.
 
 Note: the plan referred to `http.headers`, which is right for Python and wrong for
 Rust. Both are recorded above rather than picking one.
@@ -411,7 +398,8 @@ inbound one, as `config_e2e.rs` does.
 
 - **Per-slot sub-field mapping.** Serialize through each extension's own
   serde/pydantic model rather than a hand-written mapping, so the shape tracks the
-  structs as they evolve. Only `http` is rewritten, to strip sensitive headers.
+  structs as they evolve. Only `http` is rewritten, to default-deny outbound
+  raw header values.
   Eleven of the twelve slots line up 1:1; `http` does not: see "Known divergence"
   above. Two further corrections to the plan's assumptions: the `delegation` slot
   exists and is carried, and the plan's `http.headers` is right for Python only.
@@ -502,8 +490,9 @@ What the test establishes, and what it deliberately does not:
 - **Establishes** the no-capability contract against that real config, which
   declares `capabilities: []`: the gated `agent` and `http` slots and the gated
   `security.labels` sub-field are stripped by `filter_extensions`, while
-  unrestricted `request` and `custom` cross. And the sensitive-header strip holds:
-  no credential header value appears anywhere in the serialized task JSON.
+  unrestricted `request` and `custom` cross. The outbound `http` header maps
+  are empty; a host may separately place validated request metadata in another
+  slot such as `request.request_id`.
 - **Does not** observe what the plugin received from inside the hook body.
   `cpex-test-plugin`'s hooks are 2-arg `(payload, context)`, and the framework's
   `_accepts_extensions` forwards extensions only to 3-arg hooks, so this plugin
@@ -512,33 +501,30 @@ What the test establishes, and what it deliberately does not:
   explicit capability sets. What `config_e2e.rs` adds is the real config's
   no-capability path and proof the channel survives a genuine worker.
 
-The consequence for the `http` divergence is that it does **not** show up as a
-failure in either test suite: both sides validate happily and lose the headers in
-silence. It needs a test that asserts a header *value* survives the round trip,
-which nothing currently does. See Remaining work item 2.
+The `http` shape divergence does **not** show up as a validation failure in
+either test suite. Outbound raw headers are now withheld intentionally;
+worker-returned header edits still need a cross-surface test. See Remaining
+work item 2.
 
 ## Remaining work
 
-1. **Map the `http` slot** across the two shapes (see "Known divergence"). Until
-   then the other eleven slots cross correctly and `http` arrives as a
-   present-but-empty slot on both sides, with no warning. Pick one shape and adapt
-   the other, or teach each side's serializer to emit both keys during a
-   transition.
+1. **Map the `http` slot** across the two shapes (see "Known divergence") so
+   permitted worker-returned header edits can survive. Outbound raw headers
+   remain empty by policy. Pick one shape and adapt the other, or teach each
+   side's serializer to emit both keys during a transition.
 
-2. **Add a round-trip assertion on a header value.** The gap that let the
-   divergence be misdescribed for as long as it was: every existing test asserts
-   either on the wire JSON (Rust-shaped, so it passes) or on hook execution
-   succeeding (it does), and none asserts that a benign header set on one side is
-   readable on the other. A test that sends `X-Request-Id` and requires the plugin
-   to read it back would have failed immediately. Blocked on item 1: write it as a
-   failing test first.
+2. **Add a cross-surface assertion for an allowed header edit.** Existing
+   tests can assert an empty outbound header map. A worker-returned header
+   permitted by `write_headers` needs an end-to-end assertion after item 1.
+   An outbound value assertion would first require a reviewed, value-validated
+   exception to the empty allowlist.
 
    The same gap hid the capability double-filter (see "The task's
    `config.capabilities`"). Asserting on a *value the plugin actually read* is
    what distinguishes a live channel from one that validates cleanly and delivers
    nothing; `extensions_merge_e2e.rs` now does this for `security.labels`, which
-   is why that failure surfaced at all. The header assertion is the same shape of
-   test for the one slot still not covered by it.
+   is why that failure surfaced at all. The returned-header assertion is the
+   same shape of test for the remaining mapping gap.
 
 3. **Consider `extra="forbid"` / `deny_unknown_fields` on the extension models.**
    The permissive default is what converted a loud shape mismatch into a silent

@@ -728,10 +728,10 @@ impl IsolatedPythonPlugin {
     async fn verify_worker_understands(&self, worker: &WorkerClient) -> Result<(), HostError> {
         let required = self.required_worker_features();
 
-        // A plugin on a `cmf.*` hook also needs the report, to choose between
-        // native dispatch and the legacy payload shim. It requires nothing, so
-        // a probe that fails outright leaves the report unset and the adapter
-        // falls back to the shim, the conservative choice.
+        // Tool, prompt and resource `cmf.*` hooks also need the report to
+        // choose native dispatch or the legacy shim. When they require no wire
+        // feature, an inconclusive probe leaves the report unset and the
+        // adapter falls back to the shim. LLM hooks require `cmf_hooks` above.
         let declares_cmf_hook = self.config.hooks.iter().any(|h| cmf_shim::is_cmf_hook(h));
         if required.is_empty() {
             if declares_cmf_hook {
@@ -747,7 +747,19 @@ impl IsolatedPythonPlugin {
             return Ok(());
         }
 
-        let reported = worker.capabilities().await?;
+        let reported = worker.capabilities().await.map_err(|e| {
+            if required.contains(&crate::worker::FEATURE_CMF_HOOKS) {
+                HostError::Config {
+                    message: format!(
+                        "plugin '{}' declares an LLM hook, but the worker's `cmf_hooks` support \
+                         could not be verified ({e}); upgrade the cpex package in the plugin's venv",
+                        self.config.name
+                    ),
+                }
+            } else {
+                e
+            }
+        })?;
         if declares_cmf_hook {
             self.log_cmf_dispatch(&reported);
         }
@@ -825,6 +837,17 @@ impl IsolatedPythonPlugin {
     /// per invocation.
     fn required_worker_features(&self) -> Vec<&'static str> {
         let mut required = Vec::new();
+
+        // LLM messages have no legacy worker payload. A worker without native
+        // CMF dispatch cannot serve these hooks even if it needs no capability.
+        if self
+            .config
+            .hooks
+            .iter()
+            .any(|h| matches!(h.as_str(), "cmf.llm_input" | "cmf.llm_output"))
+        {
+            required.push(crate::worker::FEATURE_CMF_HOOKS);
+        }
 
         // A credential hook only receives material when the matching capability
         // is declared, so both halves are required for the field to travel —
@@ -1217,14 +1240,14 @@ fn apply_translated_modification(
     use praxis_policy_core::delegation::DelegationPayload;
     use praxis_policy_core::identity::IdentityPayload;
 
-    if let Some(shim) = shim {
-        fields.modified_payload = Some(Box::new(shim.apply_modified(modified)?));
-        return Ok(());
-    }
     // A deny modifies nothing, so a result the plugin attached to one is not
     // worth failing the deny over.
     if !fields.continue_processing {
         fields.modified_payload = None;
+        return Ok(());
+    }
+    if let Some(shim) = shim {
+        fields.modified_payload = Some(Box::new(shim.apply_modified(modified)?));
         return Ok(());
     }
     let any = payload.as_any();
@@ -1695,11 +1718,13 @@ while True:
     if m == "die":
         sys.exit(9)
 
-    if m == "deny":
+    if m in ("deny", "deny_unmappable"):
         response = {
             "continue_processing": False,
             "violation": {"code": "PII_DETECTED", "reason": "email in args", "details": {"field": "q"}},
         }
+        if m == "deny_unmappable":
+            response["modified_payload"] = {"headers": {"authorization": "invalid"}}
     elif m == "error":
         response = {"status": "error", "message": "the plugin raised ValueError"}
     elif m == "context":
@@ -2148,22 +2173,24 @@ while True:
             return;
         }
         let (dir, plugin) = adapter_plugin(&["cmf.tool_pre_invoke"], &[]).await;
-        set_mode(&dir, "deny");
+        for mode in ["deny", "deny_unmappable"] {
+            set_mode(&dir, mode);
+            let mut ctx = PluginContext::new();
+            let fields = invoke(
+                &plugin,
+                "cmf.tool_pre_invoke",
+                &cmf_tool_call("x"),
+                &mut ctx,
+            )
+            .await
+            .expect("an unusable modification must not replace a denial with an error");
 
-        let mut ctx = PluginContext::new();
-        let fields = invoke(
-            &plugin,
-            "cmf.tool_pre_invoke",
-            &cmf_tool_call("x"),
-            &mut ctx,
-        )
-        .await
-        .unwrap();
-
-        assert!(!fields.continue_processing);
-        let violation = fields.violation.expect("the deny keeps its violation");
-        assert_eq!(violation.code, "PII_DETECTED");
-        assert_eq!(violation.details["field"], "q");
+            assert!(!fields.continue_processing);
+            assert!(fields.modified_payload.is_none());
+            let violation = fields.violation.expect("the deny keeps its violation");
+            assert_eq!(violation.code, "PII_DETECTED");
+            assert_eq!(violation.details["field"], "q");
+        }
 
         plugin.shutdown().await.unwrap();
     }
@@ -2175,7 +2202,7 @@ while True:
         ) {
             return;
         }
-        let (dir, plugin) = adapter_plugin(&["cmf.tool_pre_invoke", "cmf.llm_input"], &[]).await;
+        let (dir, plugin) = adapter_plugin(&["cmf.tool_pre_invoke"], &[]).await;
         set_mode(&dir, "allow");
 
         let no_tool_call = praxis_policy_core::cmf::MessagePayload {
@@ -2184,7 +2211,7 @@ while True:
                 "hello",
             ),
         };
-        for hook in ["cmf.tool_pre_invoke", "cmf.llm_input"] {
+        for hook in ["cmf.tool_pre_invoke"] {
             let mut ctx = PluginContext::new();
             let Err(err) = invoke(&plugin, hook, &no_tool_call, &mut ctx).await else {
                 panic!("'{hook}' must fail closed rather than allow");
@@ -2489,6 +2516,34 @@ while True:
             plugin.worker.read().await.is_none(),
             "a failed handshake must not leave a worker in the slot"
         );
+    }
+
+    #[tokio::test]
+    async fn llm_hooks_require_a_worker_with_native_cmf_support() {
+        if crate::testing::skip_without_python3(
+            "llm_hooks_require_a_worker_with_native_cmf_support",
+        ) {
+            return;
+        }
+        for hook in ["cmf.llm_input", "cmf.llm_output"] {
+            for handshake in ["no_features", "unsupported"] {
+                let (dir, plugin) = uninitialized_adapter_plugin(&[hook], &[]);
+                set_handshake_mode(&dir, handshake);
+                let err = plugin
+                    .initialize()
+                    .await
+                    .expect_err("the shim cannot serve an LLM hook");
+                assert!(err.to_string().contains("cmf_hooks"), "{err}");
+                assert!(plugin.worker.read().await.is_none());
+            }
+            let (dir, plugin) = uninitialized_adapter_plugin(&[hook], &[]);
+            set_handshake_mode(&dir, "cmf");
+            plugin
+                .initialize()
+                .await
+                .expect("a native CMF worker can serve an LLM hook");
+            plugin.shutdown().await.unwrap();
+        }
     }
 
     #[tokio::test]
@@ -3084,10 +3139,7 @@ while True:
 
         let task = last_task(&dir);
         assert_eq!(task["hook_type"], "identity_resolve");
-        assert_eq!(
-            task["payload"]["headers"],
-            serde_json::json!({"x-tenant": "acme"})
-        );
+        assert_eq!(task["payload"]["headers"], serde_json::json!({}));
         assert!(task.get("credential").is_none());
         let wire = serde_json::to_string(&task).unwrap();
         assert!(!wire.contains("PPE-IDENTITY-SECRET-TOKEN"), "{wire}");

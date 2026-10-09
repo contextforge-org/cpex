@@ -288,8 +288,8 @@ pub fn attach_credential_for_payload(
 ///
 /// The header map travels whole, credential headers and all: this is the
 /// gated channel, and the worker scrubs the plaintext out of every value
-/// before the plugin sees it. The public payload JSON carries the scrubbed
-/// copy instead (`credential_payloads::public_headers`).
+/// before the plugin sees it. The public payload JSON carries no raw header
+/// values by default (`credential_payloads::public_headers`).
 fn inbound_from_identity(
     identity: &IdentityPayload,
     hook_name: &str,

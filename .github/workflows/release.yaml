@@ -95,8 +95,9 @@ jobs:
           # itself comes from the praxis-policy crates on crates.io, which
           # are already there. `cpex` takes `cpex-hosts-python` as an
           # optional dependency, and cargo still needs it in the index, so
-          # the host goes first. `cpex-plugin-delegator-biscuit` and
-          # `cpex-python` depend on no other member. Each `cargo publish`
+          # the host goes first. `cpex-plugin-delegator-biscuit` has no member
+          # dependency; `cpex-python` depends on `cpex`, so it goes last.
+          # Each `cargo publish`
           # blocks until the crate is visible in the index before returning,
           # so the next crate's dependency resolves; the short sleep is
           # extra slack for propagation.

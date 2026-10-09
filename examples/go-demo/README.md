@@ -86,7 +86,7 @@ cd examples/go-demo
 Plugins loaded: 2
 
 === Scenario 1: get_compensation tool call (no PII label) ===
-  Result: DENIED — Tool 'get_compensation' is PII-tagged but security context lacks PII label [pii_label_required]
+  Result: DENIED: Tool 'get_compensation' is PII-tagged but security context lacks PII label [pii_label_required]
 
 === Scenario 2: get_compensation tool call (with PII label) ===
   Result: ALLOWED
@@ -156,7 +156,7 @@ examples/go-demo/
     Cargo.toml               — Rust crate: cpex-demo-ffi
     src/
       lib.rs                 — C FFI: cpex_demo_register_factories()
-      demo_plugins.rs        — demo hooks + 3 generic plugins (identity, PII, audit)
+      demo_plugins.rs        - demo hooks + 3 generic plugins (identity, PII, audit)
       cmf_plugins.rs         — 2 CMF plugins (tool-policy, header-injector)
 ```
 

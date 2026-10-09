@@ -34,7 +34,8 @@ use praxis_policy_core::extensions::Extensions;
 use pyo3::exceptions::{PyRuntimeError, PyTimeoutError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyDateTime, PyTzInfo};
-use pyo3_async_runtimes::tokio::future_into_py;
+use pyo3_async_runtimes::tokio::{future_into_py, future_into_py_with_locals, get_current_locals};
+use tokio::task::JoinHandle;
 
 use crate::conversions::{
     context_table_from_value, extensions_from_value, pyobj_to_json_value, reject_removed_hook,
@@ -73,7 +74,7 @@ pub(crate) enum LifecycleError {
 pub(crate) struct Lifecycle {
     engine: Arc<PolicyEngine>,
     lock: Arc<tokio::sync::Mutex<()>>,
-    /// Set when a `shutdown()` coroutine starts running, or when an
+    /// Set when `shutdown()` is called, or when an
     /// initialize timeout begins its rollback. Every later call that would
     /// drive the engine is refused.
     shutdown_started: Arc<AtomicBool>,
@@ -134,29 +135,38 @@ impl Lifecycle {
         }
     }
 
-    /// Shut the engine down, waiting for an in-flight initialize first.
-    ///
-    /// Terminal from the moment it starts running. A second call after a
-    /// completed shutdown is a no-op. A call that timed out leaves the
-    /// shutdown running; a retry waits for it and reports its outcome.
-    pub(crate) async fn shutdown(&self, timeout: Duration) -> Result<(), LifecycleError> {
+    /// Start shutdown before returning an awaitable to Python. The task owns
+    /// the work, so dropping or cancelling the awaitable cannot undo it.
+    fn start_shutdown(&self, runtime: &tokio::runtime::Handle) -> JoinHandle<()> {
         self.shutdown_started.store(true, Ordering::Release);
         let lock = Arc::clone(&self.lock);
         let engine = Arc::clone(&self.engine);
         let shut_down = Arc::clone(&self.shut_down);
-        let work = tokio::spawn(async move {
+        runtime.spawn(async move {
             let _guard = lock.lock_owned().await;
             if shut_down.load(Ordering::Acquire) {
                 return;
             }
             engine.shutdown().await;
             shut_down.store(true, Ordering::Release);
-        });
+        })
+    }
+
+    /// Await a shutdown task, without cancelling it on timeout or cancellation.
+    async fn await_shutdown(work: JoinHandle<()>, timeout: Duration) -> Result<(), LifecycleError> {
         match tokio::time::timeout(timeout, work).await {
             Ok(Ok(())) => Ok(()),
             Ok(Err(join_err)) => Err(join_error(join_err)),
             Err(_elapsed) => Err(LifecycleError::Timeout),
         }
+    }
+
+    /// Shut the engine down, waiting for an in-flight initialize first.
+    /// A second call after a completed shutdown is a no-op. A timed-out
+    /// shutdown keeps running; a retry waits for it.
+    pub(crate) async fn shutdown(&self, timeout: Duration) -> Result<(), LifecycleError> {
+        let work = self.start_shutdown(&tokio::runtime::Handle::current());
+        Self::await_shutdown(work, timeout).await
     }
 
     /// Re-read every declared secret in an isolated task, so a panicking
@@ -275,10 +285,10 @@ impl PyPolicyEngine {
     /// Initialize all registered plugins and resolve declared secrets.
     ///
     /// Must be called before any `invoke_hook` call.
-    /// Returns an awaitable (coroutine).
+    /// Starts when called; await the returned future for its result.
     ///
-    /// Raises `RuntimeError` once `shutdown()` has started, including a
-    /// shutdown that started after this call but before the awaitable ran.
+    /// Raises `RuntimeError` once `shutdown()` has been called, including a
+    /// shutdown that raced with this call's scheduled work.
     /// Raises `TimeoutError` past the wall-clock timeout; the engine then
     /// shuts itself down once the stalled initialize ends, and is terminal.
     fn initialize<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
@@ -295,17 +305,23 @@ impl PyPolicyEngine {
     /// Shut down all registered plugins and drain fire-and-forget tasks.
     ///
     /// Waits for an `initialize()` in flight, then shuts the engine down.
-    /// Terminal from the moment the awaitable starts running: later
+    /// Terminal from the call itself: later
     /// `initialize`, `invoke_hook` and `refresh_secrets` calls raise
     /// `RuntimeError`. A second `shutdown()` after one completed is a
     /// no-op. One that raised `TimeoutError` can be retried; the retry
     /// waits for the first to finish.
-    /// Returns an awaitable (coroutine).
+    /// Starts the shutdown task before returning its awaitable. Dropping or
+    /// cancelling the awaitable does not cancel the shutdown task.
     fn shutdown<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        let lifecycle = self.lifecycle.clone();
-        future_into_py(py, async move {
-            lifecycle
-                .shutdown(PY_WALL_CLOCK_TIMEOUT)
+        // Resolve the Python event loop before starting teardown, so a call
+        // without an awaitable-capable loop cannot shut down the engine and
+        // then fail to return a way to observe its result.
+        let locals = get_current_locals(py)?;
+        let work = self
+            .lifecycle
+            .start_shutdown(pyo3_async_runtimes::tokio::get_runtime().handle());
+        future_into_py_with_locals(py, locals, async move {
+            Lifecycle::await_shutdown(work, PY_WALL_CLOCK_TIMEOUT)
                 .await
                 .map_err(|e| lifecycle_error_to_pyerr(e, "shutdown"))
         })
@@ -814,6 +830,29 @@ mod lifecycle_tests {
             p.lifecycle.initialize(LONG).await,
             Err(LifecycleError::ShutDown)
         ));
+    }
+
+    #[tokio::test]
+    async fn started_shutdown_survives_a_dropped_awaitable() {
+        let p = probe(Duration::ZERO);
+        p.lifecycle.initialize(LONG).await.expect("initialize");
+
+        let work = p
+            .lifecycle
+            .start_shutdown(&tokio::runtime::Handle::current());
+        assert!(p.lifecycle.is_shutting_down(), "terminal at call time");
+        drop(work);
+
+        tokio::time::timeout(LONG, async {
+            while p.shutdowns.load(Ordering::SeqCst) == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("detached shutdown completes");
+        assert!(!p.engine.is_initialized());
+        p.lifecycle.shutdown(LONG).await.expect("retry is a no-op");
+        assert_eq!(p.shutdowns.load(Ordering::SeqCst), 1);
     }
 
     /// An initialize that times out is rolled back once it ends, and the

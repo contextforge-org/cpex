@@ -168,7 +168,7 @@ func (m *PolicyEngine) Shutdown()
 ```
 
 **Notes:**
-- `NewPolicyEngine(yaml)` creates the manager AND loads config in one call (factories auto-registered).
+- `NewPolicyEngine(yaml)` creates the manager and loads config in one call; it registers no builtins. For the bundled builtins, call `NewPolicyEngineDefault()`, `EnableAPL()`, then `LoadConfig()`.
 - `NewPolicyEngineDefault()` creates an empty manager: call `RegisterFactories` then `LoadConfig` separately.
 - A Go finalizer calls `Shutdown()` if the caller forgets, but explicit `Shutdown()` is recommended.
 - The `PolicyEngine` wrapper holds a `sync.RWMutex` so `Shutdown()` cannot race with concurrent `Invoke*` calls; Operation methods take the read lock, lifecycle methods take the write lock.
@@ -967,11 +967,11 @@ var (
     // exceeded. A plugin is likely CPU-bound or blocking the OS
     // thread without yielding. Rust per-plugin timeouts only
     // catch cooperative-async timeouts; this catches the rest.
-    ErrCpexTimeout       = errors.New("cpex: wall-clock timeout")
+    ErrCpexTimeout       = errors.New("cpex: wall-clock timeout exceeded")
 
-    // ErrCpexPanic: a plugin panicked; caught by catch_unwind at
-    // the FFI boundary. Indicates a bug in plugin Rust code.
-    ErrCpexPanic         = errors.New("cpex: plugin panicked")
+    // ErrCpexPanic: an FFI-layer panic. A plugin panic is returned
+    // as a denied result with Violation.Code == "plugin_panic".
+    ErrCpexPanic         = errors.New("cpex: panic at FFI boundary")
 )
 ```
 
@@ -985,7 +985,7 @@ if err != nil {
         metrics.Inc("cpex.timeout")
         return retryWithBackoff(req)
     case errors.Is(err, cpex.ErrCpexPanic):
-        // Plugin bug: log, alert, fail closed.
+        // FFI-layer panic: log, alert, fail closed.
         metrics.Inc("cpex.panic")
         return denyOnPluginPanic()
     case errors.Is(err, cpex.ErrCpexInvalidHandle):
@@ -997,6 +997,10 @@ if err != nil {
         log.Error("cpex invoke:", err)
         return err
     }
+}
+if result.IsDenied() && result.Violation != nil && result.Violation.Code == "plugin_panic" {
+    metrics.Inc("cpex.plugin_panic")
+    return denyOnPluginPanic()
 }
 ```
 

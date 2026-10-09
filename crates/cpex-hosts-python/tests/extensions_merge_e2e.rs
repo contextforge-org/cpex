@@ -59,20 +59,17 @@
 // today) would be a dead hook rather than a narrower view. See
 // `IsolatedPythonPlugin::worker_capabilities`.
 //
-// # Still open, on the Python side: every header is dropped
+// # Outbound raw headers and the remaining HTTP shape mismatch
 //
 // This framework's `HttpExtension` models a single `headers` field, while the
 // host sends `request_headers`/`response_headers` per the wire contract.
-// Pydantic drops unknown keys silently, so *every* header the host sends is
-// discarded with no error — confirmed directly: `model_validate` on
-// `{"request_headers": {...}}` yields `headers={}`.
+// The host now sends empty raw header maps by default. Pydantic also drops
+// those split fields silently; a future approved outbound header or a
+// worker-returned header edit still needs a shape mapping.
 //
-// That is a gap in the Python model, not in this host, so it is not fixed here.
 // The fixture reads whichever attribute exists and records `HTTP_SLOT_EMPTY`,
-// which keeps the mismatch visible in the verdict instead of letting it read as
-// a clean run. The security assertion still holds either way, and holds for the
-// stronger reason: the label proves the channel is live, so an empty header map
-// is evidence of the model gap rather than of a dead channel.
+// which now records the deliberate empty outbound map. The label assertion
+// separately proves the extensions channel is live.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -158,9 +155,7 @@ class ExtensionsAwarePlugin(Plugin):
             if "x-request-id" in lowered:
                 verdict += ";GOT_SAFE_HEADER"
             elif slot_empty:
-                # The host sent a safe header; nothing arrived. Recorded so the
-                # host/worker field-name mismatch stays visible in the verdict
-                # rather than looking like a clean run.
+                # Raw headers are withheld by default, even on a live channel.
                 verdict += ";HTTP_SLOT_EMPTY"
 
         marker = os.path.join(os.getcwd(), "extensions_verdict.txt")
@@ -220,8 +215,8 @@ fn setup(dir: &TempDir, source: &Path, test_name: &str) -> Option<PathBuf> {
     }
 }
 
-/// Inbound extensions: a label to read, a safe header, and three that must be
-/// stripped before they reach another process.
+/// Inbound extensions: a label to read and raw headers that must all be
+/// withheld before they reach another process.
 fn inbound_extensions() -> Extensions {
     let mut security = SecurityExtension::default();
     security.add_label(INBOUND_LABEL);
@@ -319,17 +314,9 @@ fn the_inbound_task_carries_visible_slots_without_sensitive_headers() {
     let headers = wire["http"]["request_headers"]
         .as_object()
         .expect("request_headers is an object");
-    for name in headers.keys() {
-        let lowered = name.to_ascii_lowercase();
-        assert!(
-            !matches!(lowered.as_str(), "authorization" | "cookie" | "x-api-key"),
-            "sensitive header '{name}' must not cross the process boundary"
-        );
-    }
-    assert_eq!(
-        headers.get("X-Request-Id").and_then(|v| v.as_str()),
-        Some("req-e2e-1"),
-        "a non-sensitive header still travels"
+    assert!(
+        headers.is_empty(),
+        "no unvalidated raw header may cross the process boundary: {headers:?}"
     );
 
     let serialized = serde_json::to_string(&task).expect("the task serializes");

@@ -258,8 +258,9 @@ fn assert_allowed(result: &praxis_policy_core::executor::PipelineResult, hook_na
 /// * `security` — gated per sub-field. The slot survives, `labels` does not.
 ///
 /// The `Authorization` header is a second, independent guard: `attach_extensions`
-/// strips sensitive headers on the way out, so even a config that *did* declare
-/// `read_headers` must not put this value on the wire.
+/// withholds unvalidated raw headers on the way out, so even a config that *did* declare
+/// `read_headers` must not put this value on the wire. Outbound raw header maps
+/// are now empty by default.
 fn inbound_extensions() -> Extensions {
     let mut security = SecurityExtension::default();
     security.add_label(INBOUND_LABEL);

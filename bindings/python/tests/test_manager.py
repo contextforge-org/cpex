@@ -225,11 +225,11 @@ async def test_removed_hook_name_raises_naming_the_replacement(
 
 
 @pytest.mark.asyncio
-async def test_unawaited_shutdown_does_not_shut_down(passthrough_engine: PolicyEngine):
-    """Creating the shutdown awaitable changes nothing until it runs."""
+async def test_shutdown_is_terminal_when_called(passthrough_engine: PolicyEngine):
+    """Calling shutdown refuses new work before its awaitable is awaited."""
     pending = passthrough_engine.shutdown()
-    result = await passthrough_engine.invoke_hook("custom.hook", {})
-    assert result.continue_processing is True
+    with pytest.raises(RuntimeError, match="after shutdown"):
+        passthrough_engine.invoke_hook("custom.hook", {})
     await pending
     with pytest.raises(RuntimeError, match="after shutdown"):
         await passthrough_engine.invoke_hook("custom.hook", {})

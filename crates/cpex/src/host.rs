@@ -15,6 +15,7 @@ use std::sync::Arc;
 
 use praxis_policy::praxis_policy_core::http::HttpTransport;
 use praxis_policy::praxis_policy_core::identity::IdentityPayload;
+use praxis_policy::praxis_policy_core::secrets::RefreshReport;
 use praxis_policy::{
     HyperTransport, PolicyEngine, SecretError, install_builtins, registry_with_vault,
 };
@@ -134,6 +135,53 @@ pub fn resolved_identity_fields(payload: &IdentityPayload) -> Vec<&'static str> 
     set
 }
 
+/// The identity result visible to language bindings. Request headers may
+/// contain credentials, so they never appear in a returned payload.
+pub fn identity_result_value(
+    payload: &IdentityPayload,
+) -> Result<serde_json::Value, serde_json::Error> {
+    let mut value = serde_json::to_value(payload)?;
+    if let serde_json::Value::Object(map) = &mut value {
+        map.remove("headers");
+    }
+    Ok(value)
+}
+
+/// Refresh report shared by the C and Python bindings.
+#[derive(Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct RefreshSummary {
+    pub updated: Vec<String>,
+    pub unchanged: u64,
+    pub failed: Vec<RefreshFailure>,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct RefreshFailure {
+    pub secret: String,
+    pub provider: String,
+    pub kind: String,
+    pub message: String,
+}
+
+impl From<RefreshReport> for RefreshSummary {
+    fn from(report: RefreshReport) -> Self {
+        Self {
+            updated: report.updated,
+            unchanged: report.unchanged as u64,
+            failed: report
+                .failed
+                .into_iter()
+                .map(|failure| RefreshFailure {
+                    kind: secret_error_kind(&failure.source).to_owned(),
+                    message: failure.source.to_string(),
+                    secret: failure.secret,
+                    provider: failure.provider,
+                })
+                .collect(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -233,13 +281,25 @@ plugins:
         let forged: IdentityPayload = serde_json::from_value(serde_json::json!({
             "source": "bearer",
             "subject": {"id": "alice"},
+            "client": {"client_id": "app"},
+            "caller_workload": {"spiffe_id": "spiffe://example.org/app"},
+            "delegation": {"depth": 0},
+            "raw_credentials": {"inbound_tokens": {}},
             "resolved_at": "2026-01-01T00:00:00Z",
             "raw_claims": {"sub": "alice"},
         }))
         .expect("forged payload");
         assert_eq!(
             resolved_identity_fields(&forged),
-            vec!["subject", "resolved_at", "raw_claims"]
+            vec![
+                "subject",
+                "client",
+                "caller_workload",
+                "delegation",
+                "raw_credentials",
+                "resolved_at",
+                "raw_claims"
+            ]
         );
     }
 }

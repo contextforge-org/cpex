@@ -15,7 +15,7 @@ use pyo3::exceptions::{PyRuntimeError, PyTimeoutError, PyValueError};
 ///   Config / UnknownHook: `ValueError` (config/conversion failures,
 ///                         including an unknown plugin kind or hook name)
 ///   Timeout:              `TimeoutError`
-///   Execution / other:    `RuntimeError`
+///   Execution / Violation: `RuntimeError`
 ///
 /// Note: `PluginError::Violation` is unreachable on the `invoke_by_name`
 /// path. Denials surface as `PipelineResult { continue_processing: false,

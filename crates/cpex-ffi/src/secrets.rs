@@ -14,8 +14,7 @@
 
 use std::os::raw::{c_char, c_int};
 
-use cpex::host::secret_error_kind;
-use praxis_policy_core::secrets::RefreshReport;
+use cpex::host::{RefreshSummary, secret_error_kind};
 
 use crate::{
     CpexEngineInner, RC_INVALID_HANDLE, RC_INVALID_INPUT, RC_OK, RC_SERIALIZE_ERROR, SafeRun,
@@ -24,49 +23,7 @@ use crate::{
 
 /// Refresh report as it crosses the FFI, MessagePack-encoded with named
 /// fields.
-#[derive(Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
-pub struct FfiRefreshReport {
-    /// Names of values whose bytes changed.
-    pub updated: Vec<String>,
-    /// How many values were re-read and found unchanged.
-    pub unchanged: u64,
-    /// Values that could not be re-read. Each keeps its last-good value.
-    pub failed: Vec<FfiRefreshFailure>,
-}
-
-/// One value that failed to re-read.
-#[derive(Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
-pub struct FfiRefreshFailure {
-    /// The declared value name.
-    pub secret: String,
-    /// The provider it is bound to.
-    pub provider: String,
-    /// Failure class from `cpex::host::secret_error_kind`: `config`,
-    /// `reference`, `not_found`, `malformed`, `backend`, or `other` for a
-    /// class this build does not know.
-    pub kind: String,
-    /// What the provider reported. Never contains the secret.
-    pub message: String,
-}
-
-impl From<RefreshReport> for FfiRefreshReport {
-    fn from(report: RefreshReport) -> Self {
-        Self {
-            updated: report.updated,
-            unchanged: report.unchanged as u64,
-            failed: report
-                .failed
-                .into_iter()
-                .map(|f| FfiRefreshFailure {
-                    kind: secret_error_kind(&f.source).to_owned(),
-                    message: f.source.to_string(),
-                    secret: f.secret,
-                    provider: f.provider,
-                })
-                .collect(),
-        }
-    }
-}
+pub type FfiRefreshReport = RefreshSummary;
 
 /// Re-read every declared secret and return what changed and what failed.
 ///

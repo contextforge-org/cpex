@@ -116,7 +116,7 @@ payload, so PPE's `IdentityPayload::from_pipeline_result` and
 
 | Direction | What happens |
 |---|---|
-| `IdentityPayload` out | `source`, `client_host`, `client_port`, and the request headers minus every credential-bearing one (the source header, `authorization`, `proxy-authorization`, cookies, `x-api-key`, and any header holding the token). `raw_token` is sent empty. |
+| `IdentityPayload` out | `source`, `client_host`, `client_port`, and an empty public `headers` map. Raw header values have no default allowlist; a name alone cannot prove a value is safe. `raw_token` is sent empty. |
 | `IdentityResult` back | `subject` and `delegation` are written, `raw_claims` merged. `rejected: true` becomes a deny (`auth.rejected`, with `reject_reason` and `reject_status`). Echoed input fields are ignored, as PPE treats them as canonical. Any other field, or a field PPE's types cannot hold, fails closed. |
 | `DelegationPayload` out | Target name, type, audience, permissions, trust domain, enforcement and attenuation. `bearer_token` is not sent. A delegation with an RFC 8693 actor, or for a subject other than `user`, fails closed: the Python model cannot carry either. |
 | `DelegationResult` back | `delegated_token` becomes PPE's `delegated_token` for the target audience and required permissions, expiring after `cache_ttl` (60 seconds when unset). `forwarded_headers` may only name the one header carrying the minted token; anything else fails closed. `delegation_update` is written when it is not empty. |
@@ -137,6 +137,9 @@ prompt and resource `cmf.*` hook into the legacy hook and payload the worker
 already knows, and maps the result back. A 0.1.x plugin keeps working with no
 SDK release: declare `cmf.tool_pre_invoke` and implement `tool_pre_invoke`.
 
+`cmf.llm_input` and `cmf.llm_output` have no legacy hook. A plugin declaring
+either one fails initialization unless the worker reports `cmf_hooks`.
+
 | PPE hook | Built from (CMF part) | Legacy hook and payload sent | Mapped back onto the part |
 |---|---|---|---|
 | `cmf.tool_pre_invoke` | `tool_call` | `tool_pre_invoke`: `{name, args}` | `name`, `arguments` |
@@ -154,7 +157,6 @@ tool result that sets `"isError": true` also sets the part's `is_error`.
 The shim fails closed, with a `legacy_shim_unsupported` error naming the hook
 and the plugin, rather than allowing or skipping:
 
-- `cmf.llm_input` and `cmf.llm_output`, which have no legacy hook;
 - a message without exactly one content part of the kind in the second column
   (for example a `cmf.tool_pre_invoke` message with no tool call, or with two);
 - on a post hook (`cmf.tool_post_invoke`, `cmf.prompt_post_invoke`,
@@ -214,13 +216,16 @@ serialized onto the task under an `extensions` field, so a 3-arg
 equivalent would. Slot visibility comes from the filtered view — this host does
 not re-derive capability filtering.
 
-Two rules apply in **both** directions:
+The two directions have different rules:
 
 - `raw_credentials` never rides this channel. Raw tokens travel the
   capability-gated `credential` DTO instead (see below).
-- `Authorization`, `Cookie`, and `X-API-Key` are stripped from
-  `http.request_headers` and `http.response_headers` (spec §3.5), matched
-  case-insensitively.
+- Outbound `http.request_headers` and `http.response_headers` are empty by
+  default. A raw header may be added only with a value validator and a
+  documented use. Request-line fields still cross.
+- On worker return, known credential header names are removed
+  case-insensitively. Other header edits still require `write_headers` and
+  pass through the executor's guarded merge.
 
 A plugin's returned extensions come back on the response's
 `modified_extensions` field — the field the Python `PluginResult` model already
@@ -282,8 +287,9 @@ Where the token comes from depends on the payload:
 | `identity.resolve`, legacy payload | the inbound token in `raw_credentials` | `read_inbound_credentials` |
 | `token.delegate`, legacy payload | the delegated token in `raw_credentials` for the target audience | `read_delegated_tokens` |
 
-A plugin on the same hook that declared nothing sees no token, and none of the
-credential-bearing headers.
+A plugin on the same hook that declared nothing sees no token or raw request
+header values. A plugin with `read_inbound_credentials` receives the full map
+only through the gated credential object.
 
 **Fail closed.** A plugin that declared nothing gets no `credential` field and
 no token material. A plugin that declared a capability the request cannot honor

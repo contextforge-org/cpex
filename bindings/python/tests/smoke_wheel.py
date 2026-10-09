@@ -119,7 +119,7 @@ def build_wheel(work: Path) -> Path:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0] if __doc__ else None)
+    parser = argparse.ArgumentParser(description="Build and smoke test the CPEX Python wheel")
     parser.add_argument("--wheel", type=Path, help="test this wheel instead of building one")
     parser.add_argument("--keep", action="store_true", help="keep the scratch directory")
     args = parser.parse_args()

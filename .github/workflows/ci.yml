@@ -106,16 +106,10 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 1
-      # The Python framework lives on its own branch, and PyPI's `cpex` is behind
-      # it (its worker.py predates the credential and extensions fields). The
-      # *stable* 0.1.x branch is not enough either: it carries no
-      # cpex/framework/isolated/worker.py at all. The companion branch below is
-      # the one whose worker.py both consumes `credential` and delivers
-      # `extensions=` to execute_plugin, which is what these tests gate on.
-      #
-      # This is a cross-branch dependency: when the Python side merges, retarget
-      # this ref. Until then a wrong ref fails loudly (skips are errors here)
-      # rather than silently skipping — which is the whole point of this job.
+      # The 0.1.x branch carries the isolated worker with credential and
+      # extensions support. PyPI's `cpex` may lag that worker, so these tests
+      # install directly from the checked-out branch. A missing worker fails
+      # this job rather than silently skipping the integration tests.
       - name: Checkout the cpex Python framework
         uses: actions/checkout@v7
         with:

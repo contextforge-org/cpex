@@ -264,7 +264,7 @@ async def test_jwks_url_without_perform_http_fails_to_start(tmp_path, jwks_url):
         _write(tmp_path, _idp_plugin(jwks_url, perform_http=False) + IDENTITY_ROUTES),
         allow_private_destinations=True,
     )
-    with pytest.raises(Exception, match="perform_http") as info:
+    with pytest.raises(RuntimeError, match="perform_http") as info:
         await eng.initialize()
     assert "idp" in str(info.value)
     assert _Jwks.fetches == []

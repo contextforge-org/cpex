@@ -96,13 +96,23 @@ const DEFAULT_CREDENTIAL_HEADER: &str = "authorization";
 
 /// Header names that carry credentials by convention, compared lowercase.
 /// Never sent in the public header map, whatever the source header is.
-const CREDENTIAL_HEADERS: &[&str] = &[
+pub(crate) const CREDENTIAL_HEADERS: &[&str] = &[
     "authorization",
     "proxy-authorization",
     "cookie",
     "set-cookie",
     "x-api-key",
+    "x-auth-token",
+    "x-access-token",
+    "x-amzn-oidc-data",
+    "x-goog-iap-jwt-assertion",
+    "x-amz-security-token",
 ];
+
+/// A public header needs both an approved name and a validator for its value.
+/// Empty by default: unvalidated header values can contain credentials under
+/// any name, including names that normally carry tracing metadata.
+const PUBLIC_HEADER_VALIDATORS: &[(&str, fn(&str) -> bool)] = &[];
 
 /// Header the minted token is attached under when the plugin names none.
 const DEFAULT_OUTBOUND_HEADER: &str = "Authorization";
@@ -189,27 +199,38 @@ fn strip_bearer(value: &str) -> &str {
     }
 }
 
-/// The request headers with every credential-bearing one removed.
-///
-/// This is the copy every plugin sees, capability or not, so it has to be
-/// safe for a plugin that declared nothing.
+/// Whether a raw header may cross to a worker outside the gated credential
+/// channel. No name is approved yet: a familiar header name alone cannot
+/// prove its value contains no credential. Add an entry to
+/// `PUBLIC_HEADER_VALIDATORS` only with a strict validator and a documented
+/// need for that field.
+pub(crate) fn is_public_header(
+    name: &str,
+    value: &str,
+    source_header: Option<&str>,
+    token: Option<&str>,
+) -> bool {
+    let lower = name.to_ascii_lowercase();
+    if CREDENTIAL_HEADERS.contains(&lower.as_str())
+        || source_header.is_some_and(|source| lower.eq_ignore_ascii_case(source))
+        || token.is_some_and(|t| name.contains(t) || value.contains(t))
+    {
+        return false;
+    }
+    PUBLIC_HEADER_VALIDATORS
+        .iter()
+        .any(|(approved, validate)| lower == *approved && validate(value))
+}
+
+/// Public request headers for an identity plugin. The full map is available
+/// only through the `read_inbound_credentials`-gated credential DTO.
 pub(crate) fn public_headers(payload: &IdentityPayload) -> HashMap<String, String> {
     let token = inbound_token(payload);
-    let source = payload
-        .source_header()
-        .unwrap_or(DEFAULT_CREDENTIAL_HEADER)
-        .to_ascii_lowercase();
+    let source = payload.source_header().unwrap_or(DEFAULT_CREDENTIAL_HEADER);
     payload
         .headers()
         .iter()
-        .filter(|(name, value)| {
-            let lower = name.to_ascii_lowercase();
-            !CREDENTIAL_HEADERS.contains(&lower.as_str())
-                && lower != source
-                && token
-                    .as_deref()
-                    .is_none_or(|t| !name.contains(t) && !value.contains(t))
-        })
+        .filter(|(name, value)| is_public_header(name, value, Some(source), token.as_deref()))
         .map(|(name, value)| (name.clone(), value.clone()))
         .collect()
 }
@@ -464,12 +485,15 @@ pub fn delegation_from_worker(
                 .target_audience()
                 .unwrap_or_else(|| original.target_name())
                 .to_string();
+            let expires_at = chrono::Duration::try_seconds(ttl)
+                .and_then(|duration| now.checked_add_signed(duration))
+                .ok_or_else(|| protocol(HOOK_TOKEN_DELEGATE, "`cache_ttl` is out of range"))?;
             resolved.delegated_token = Some(RawDelegatedToken::new(
                 token,
                 outbound_header,
                 audience,
                 original.required_permissions().to_vec(),
-                now + chrono::Duration::seconds(ttl),
+                expires_at,
             ));
             resolved.delegation_mode = Some(original.subject().default_mode());
             resolved.minted_at = Some(now);
@@ -681,7 +705,7 @@ mod tests {
 
         assert_eq!(json["raw_token"], "");
         assert_eq!(json["source"], "bearer");
-        assert_eq!(json["headers"], json!({"x-tenant": "acme"}));
+        assert_eq!(json["headers"], json!({}));
         assert_eq!(json["client_host"], "10.0.0.1");
         assert_eq!(json["client_port"], 8443);
     }
@@ -696,20 +720,22 @@ mod tests {
     }
 
     #[test]
-    fn a_header_borne_credential_is_found_and_kept_off_the_public_headers() {
+    fn a_header_borne_credential_is_found_and_no_raw_headers_are_public() {
         // The FFI and the Python bindings deserialize the payload, so the token
         // arrives in the header map and `raw_token` is empty.
         let payload: IdentityPayload = serde_json::from_value(json!({
             "source": "bearer",
-            "headers": {"Authorization": format!("Bearer {TOKEN}"), "x-tenant": "acme"},
+            "headers": {
+                "Authorization": format!("Bearer {TOKEN}"),
+                "x-tenant": "acme",
+                "X-Amzn-Oidc-Data": "gateway-jwt",
+                "X-Request-Id": "looks-benign-but-unvalidated"
+            },
         }))
         .unwrap();
         assert_eq!(inbound_token(&payload).as_deref(), Some(TOKEN));
         assert_eq!(credential_header_name(&payload), "Authorization");
-        assert_eq!(
-            public_headers(&payload),
-            HashMap::from([("x-tenant".to_string(), "acme".to_string())])
-        );
+        assert!(public_headers(&payload).is_empty());
     }
 
     #[test]
@@ -955,6 +981,17 @@ mod tests {
             back.delegation_update.is_none(),
             "an empty default update is no update"
         );
+    }
+
+    #[test]
+    fn out_of_range_delegation_ttl_is_a_protocol_error() {
+        let err = delegation_from_worker(
+            &delegation(),
+            json!({"delegated_token": MINTED, "cache_ttl": i64::MAX}),
+        )
+        .unwrap_err();
+        assert!(matches!(err, HostError::Protocol { .. }), "{err:?}");
+        assert!(err.to_string().contains("`cache_ttl` is out of range"));
     }
 
     #[test]

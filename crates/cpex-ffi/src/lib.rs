@@ -41,7 +41,7 @@ pub use secrets::{cpex_refresh_secrets, cpex_secrets_last_success};
 // are stable wire ABI — additions go at the end with a fresh value;
 // don't renumber.
 //
-// Mapped on the Go side in `go/cpex/manager.go::errorFromRC`.
+// Mapped on the Go side in `go/cpex/errors.go::errorFromRC`.
 
 /// Operation succeeded.
 pub const RC_OK: c_int = 0;
@@ -63,7 +63,8 @@ pub const RC_SERIALIZE_ERROR: c_int = -5;
 /// Wall-clock timeout exceeded inside `run_safely` — plugin likely
 /// CPU-bound or blocking the OS thread without yielding.
 pub const RC_TIMEOUT: c_int = -6;
-/// Plugin panicked; caught by `catch_unwind` at the FFI boundary.
+/// FFI-layer panic caught by `catch_unwind`; plugin panics are denied
+/// results with violation code `plugin_panic`.
 pub const RC_PANIC: c_int = -7;
 
 // The FFI ABI version is an integer that identifies the C-surface
@@ -433,11 +434,8 @@ fn serialize_payload(payload: &dyn PluginPayload) -> Result<(u8, Vec<u8>), Strin
     // echoing them would hand the inbound token back to anything that logs
     // or forwards the result. The raw token field is skip-serialized by PPE.
     if let Some(idp) = payload.as_any().downcast_ref::<IdentityPayload>() {
-        let mut value = serde_json::to_value(idp)
+        let value = cpex::host::identity_result_value(idp)
             .map_err(|e| format!("identity payload serialize failed: {e}"))?;
-        if let serde_json::Value::Object(map) = &mut value {
-            map.remove("headers");
-        }
         return rmp_serde::to_vec_named(&value)
             .map(|b| (PAYLOAD_IDENTITY, b))
             .map_err(|e| format!("identity payload serialize failed: {e}"));
@@ -559,14 +557,6 @@ pub unsafe extern "C" fn cpex_engine_new(
         None => return ptr::null_mut(),
     };
 
-    let cpex_config = match praxis_policy_core::config::parse_config(yaml) {
-        Ok(c) => c,
-        Err(e) => {
-            tracing::error!("cpex_engine_new: config parse failed: {}", e);
-            return ptr::null_mut();
-        },
-    };
-
     // Touch the shared runtime so any later cpex_configure_runtime
     // call returns RC_INVALID_INPUT — communicates "you missed the
     // window" to the operator, instead of letting the configure call
@@ -575,11 +565,10 @@ pub unsafe extern "C" fn cpex_engine_new(
 
     let engine = Arc::new(PolicyEngine::default());
 
-    // This one-shot path uses `load_config` (no visitor walk), so APL is
-    // not wired here. APL requires the cpex_engine_new_default, then
-    // cpex_apl_install, then cpex_load_config flow.
-    if let Err(e) = engine.load_config(cpex_config) {
-        tracing::error!("cpex_engine_new: load_config failed: {}", e);
+    // The YAML entry point rejects APL-owned keys when no visitor is installed.
+    // Loading an already-parsed config here would silently discard those rules.
+    if let Err(e) = engine.load_config_yaml(yaml) {
+        tracing::error!("cpex_engine_new: load_config_yaml failed: {}", e);
         return ptr::null_mut();
     }
 
@@ -1526,9 +1515,7 @@ praxis_policy_core::impl_plugin_payload!(GenericPayload);
 
 // These tests call the `extern "C"` functions directly from Rust to
 // exercise the FFI safety layer (catch_unwind, return-code mapping,
-// payload-type validation) without needing a Go test harness. The
-// reviewer flagged that `cpex-ffi` had zero `#[cfg(test)]` coverage —
-// this seeds the file with regressions for the highest-value invariants.
+// payload-type validation) without needing a Go test harness.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1540,6 +1527,15 @@ mod tests {
     use praxis_policy_core::hooks::payload::Extensions;
     use praxis_policy_core::hooks::trait_def::HookTypeDef;
     use praxis_policy_core::plugin::{Plugin, PluginConfig, PluginMode};
+
+    #[test]
+    fn one_shot_constructor_rejects_apl_rules_without_a_visitor() {
+        let yaml =
+            "routes:\n  - tool: lookup\n    authorization:\n      pre_invocation: [\"deny\"]\n";
+        // SAFETY: the YAML slice remains alive for the duration of the call.
+        let handle = unsafe { cpex_engine_new(yaml.as_ptr().cast(), yaml.len() as c_int) };
+        assert!(handle.is_null(), "APL rules must not be silently discarded");
+    }
 
     /// Test hook type using GenericPayload — that's the type
     /// PAYLOAD_GENERIC produces at the FFI deserialization boundary,

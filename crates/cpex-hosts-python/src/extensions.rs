@@ -51,9 +51,9 @@
 //
 // This channel carries non-secret context only. `raw_credentials` is never
 // serialized here — raw tokens travel the capability-gated DTO in the
-// `credentials` module instead. Sensitive headers are stripped in both
-// directions per `docs/specs/cmf-message-spec.md` §3.5; a plugin that needs a
-// bearer token uses the credential path, not `http.request_headers`.
+// `credentials` module instead. No raw header values cross outbound by
+// default; known credential names are removed from worker-returned edits. A
+// plugin that needs a bearer token uses the credential path.
 
 use std::collections::HashMap;
 
@@ -66,6 +66,7 @@ use praxis_policy_core::extensions::security::SecurityExtension;
 use serde_json::Value;
 use tracing::warn;
 
+use crate::credential_payloads::{CREDENTIAL_HEADERS, is_public_header};
 use crate::error::HostError;
 
 /// Task field the inbound extensions ride on. Contract with `worker.py`, which
@@ -84,25 +85,24 @@ pub const EXTENSIONS_FIELD: &str = "extensions";
 /// exact same way its in-process equivalent does.
 pub const MODIFIED_EXTENSIONS_FIELD: &str = "modified_extensions";
 
-/// Headers stripped in both directions (spec §3.5).
-///
-/// Matched case-insensitively: HTTP header names are case-insensitive, and
-/// `HttpExtension`'s own accessors look up that way, so a plugin sending
-/// `authorization` must not slip past a case-sensitive compare.
-/// `set-cookie` is included because the doc comment on `sanitize_http` promises
-/// it and the response map is the one that carries it. It was previously absent
-/// while both strip tests asserted through `is_sensitive` itself — a tautology
-/// that passed either way, which is what let the gap survive.
-const SENSITIVE_HEADERS: &[&str] = &["authorization", "cookie", "set-cookie", "x-api-key"];
-
-/// True when `name` is a header this channel must not carry.
+/// True when a worker-returned header is credential-bearing by convention.
+/// The outbound path is stricter: it forwards no raw header values by default.
 fn is_sensitive(name: &str) -> bool {
-    SENSITIVE_HEADERS
+    CREDENTIAL_HEADERS
         .iter()
         .any(|s| name.eq_ignore_ascii_case(s))
 }
 
-/// Drop sensitive entries from a header map, leaving the rest untouched.
+/// Keep only individually approved and value-validated headers on the wire.
+fn public_http_headers(headers: &HashMap<String, String>) -> HashMap<String, String> {
+    headers
+        .iter()
+        .filter(|(name, value)| is_public_header(name, value, None, None))
+        .map(|(name, value)| (name.clone(), value.clone()))
+        .collect()
+}
+
+/// Drop known credential headers from worker-returned modifications.
 fn strip_sensitive(headers: &HashMap<String, String>) -> HashMap<String, String> {
     headers
         .iter()
@@ -111,16 +111,14 @@ fn strip_sensitive(headers: &HashMap<String, String>) -> HashMap<String, String>
         .collect()
 }
 
-/// Copy an `HttpExtension` with sensitive headers removed from both maps.
+/// Copy an `HttpExtension` with only approved outbound headers.
 ///
-/// Both maps are scrubbed: `response_headers` can carry a `Set-Cookie` or an
-/// upstream `Authorization` echo just as `request_headers` carries the inbound
-/// credential. The request line is copied through unchanged — it is not
-/// credential material, and the plugin needs it to make routing decisions.
+/// Both raw header maps are default-denied. Request-line fields still cross
+/// because the plugin needs them for routing decisions.
 fn sanitize_http(http: &HttpExtension) -> HttpExtension {
     HttpExtension {
-        request_headers: strip_sensitive(&http.request_headers),
-        response_headers: strip_sensitive(&http.response_headers),
+        request_headers: public_http_headers(&http.request_headers),
+        response_headers: public_http_headers(&http.response_headers),
         status: http.status,
         method: http.method.clone(),
         path: http.path.clone(),
@@ -189,8 +187,8 @@ pub fn attach_extensions(task: &mut Value, extensions: &Extensions) -> Result<()
 ///
 /// Slots serialize through their own serde impls — those are the source of
 /// truth for sub-field shape, so this function stays correct as the extension
-/// structs evolve. Only `http` is rewritten on the way out, to strip sensitive
-/// headers.
+/// structs evolve. Only `http` is rewritten on the way out, to default-deny
+/// unvalidated raw header values.
 fn to_wire(extensions: &Extensions) -> Result<Value, HostError> {
     let mut map = serde_json::Map::new();
 
@@ -443,6 +441,7 @@ mod tests {
         http.set_request_header("Cookie", "session=abc");
         http.set_request_header("X-API-Key", "key-123");
         http.set_request_header("X-Request-Id", "req-1");
+        http.set_request_header("X-Amzn-Oidc-Data", "gateway-jwt");
         http.set_response_header("Set-Cookie", "s=1");
         http.set_response_header("Authorization", "Bearer echoed");
         http.set_response_header("Content-Type", "application/json");
@@ -484,59 +483,26 @@ mod tests {
         assert!(wire.contains_key("security"), "security slot present");
     }
 
-    /// Assert a header map contains none of `names`, case-insensitively.
-    ///
-    /// Takes **literal** names rather than calling `is_sensitive`. The tests
-    /// below previously asserted `!is_sensitive(name)` over the surviving keys —
-    /// the same function under test on both sides, so the assertion held no
-    /// matter what `SENSITIVE_HEADERS` contained. That is what let `set-cookie`
-    /// be missing from the list while the comment claimed it was there, with
-    /// both strip tests green.
-    fn assert_absent(headers: &serde_json::Map<String, Value>, names: &[&str]) {
-        for name in names {
-            assert!(
-                !headers.keys().any(|k| k.eq_ignore_ascii_case(name)),
-                "header '{name}' must not cross the process boundary; got {:?}",
-                headers.keys().collect::<Vec<_>>()
-            );
-        }
-    }
-
     #[test]
-    fn sensitive_request_headers_are_stripped_but_others_survive() {
+    fn no_unvalidated_request_header_reaches_the_worker() {
         let mut task = serde_json::json!({});
         attach_extensions(&mut task, &populated()).expect("serializing");
 
         let headers = task[EXTENSIONS_FIELD]["http"]["request_headers"]
             .as_object()
-            .expect("request_headers is an object")
-            .clone();
-
-        assert_absent(&headers, &["Authorization", "Cookie", "X-API-Key"]);
-        assert_eq!(
-            headers.get("X-Request-Id").and_then(Value::as_str),
-            Some("req-1"),
-            "a non-sensitive header is preserved verbatim"
-        );
+            .expect("request_headers is an object");
+        assert!(headers.is_empty(), "raw request headers need validation");
     }
 
     #[test]
-    fn sensitive_response_headers_are_stripped_too() {
+    fn no_unvalidated_response_header_reaches_the_worker() {
         let mut task = serde_json::json!({});
         attach_extensions(&mut task, &populated()).expect("serializing");
 
         let headers = task[EXTENSIONS_FIELD]["http"]["response_headers"]
             .as_object()
-            .expect("response_headers is an object")
-            .clone();
-
-        // `Set-Cookie` is the one the module comment always claimed to strip.
-        // This assertion fails until it is actually in `SENSITIVE_HEADERS`.
-        assert_absent(&headers, &["Set-Cookie", "Authorization"]);
-        assert_eq!(
-            headers.get("Content-Type").and_then(Value::as_str),
-            Some("application/json"),
-        );
+            .expect("response_headers is an object");
+        assert!(headers.is_empty(), "raw response headers need validation");
     }
 
     #[test]
@@ -561,6 +527,23 @@ mod tests {
             returned.response_headers.is_empty() && returned.request_headers.is_empty(),
             "nor inbound on the return path"
         );
+    }
+
+    #[test]
+    fn gateway_credential_names_are_stripped_from_worker_edits() {
+        let mut http = HttpExtension::default();
+        http.set_request_header("Proxy-Authorization", "Bearer proxy-secret");
+        http.set_request_header("X-Amzn-Oidc-Data", "gateway-jwt");
+        http.set_response_header("X-Auth-Token", "response-secret");
+        http.set_response_header("X-Trace", "trace-only");
+
+        let returned = returned_http(&http, None);
+        assert!(returned.request_headers.is_empty());
+        assert_eq!(
+            returned.response_headers.get("X-Trace").map(String::as_str),
+            Some("trace-only")
+        );
+        assert_eq!(returned.response_headers.len(), 1);
     }
 
     #[test]

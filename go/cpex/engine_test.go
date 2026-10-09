@@ -64,6 +64,37 @@ func TestNewPolicyEngineInvalidYAML(t *testing.T) {
 	}
 }
 
+func TestNewPolicyEngineRejectsAPLRules(t *testing.T) {
+	yaml := "routes:\n  - tool: lookup\n    authorization:\n      pre_invocation: [\"deny\"]\n"
+	eng, err := NewPolicyEngine(yaml)
+	if err == nil {
+		eng.Shutdown()
+		t.Fatal("APL rules must not be silently discarded")
+	}
+}
+
+func TestIdentityResolveRejectsCallerSuppliedOutputs(t *testing.T) {
+	eng, err := NewPolicyEngineDefault()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer eng.Shutdown()
+	if err := eng.Initialize(); err != nil {
+		t.Fatal(err)
+	}
+	for name, payload := range map[string]IdentityPayload{
+		"subject": {Source: TokenSourceBearer, Subject: &SubjectExtension{ID: "forged"}},
+		"raw_claims": {Source: TokenSourceBearer, RawClaims: map[string]any{"sub": "forged"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, _, _, err := eng.InvokeByName(HookIdentityResolve, PayloadIdentity, payload, nil, nil)
+			if !errors.Is(err, ErrCpexInvalidInput) {
+				t.Fatalf("expected ErrCpexInvalidInput, got %v", err)
+			}
+		})
+	}
+}
+
 func TestInvokeByNameNoPlugins(t *testing.T) {
 	eng, err := NewPolicyEngineDefault()
 	if err != nil {

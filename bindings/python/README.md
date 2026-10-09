@@ -89,11 +89,11 @@ It is a host setting: no policy document can turn it on. Keyword only.
 
 ### `await engine.initialize()`
 
-Initialize all registered plugins and resolve declared secrets. Must be
-called before `invoke_hook`.
+Initialize all registered plugins and resolve declared secrets. The call
+schedules work immediately; await its result before `invoke_hook`.
 
-Raises `RuntimeError` once `shutdown()` has started, including a shutdown
-that started after this call but before its awaitable ran. Raises
+Raises `RuntimeError` once `shutdown()` has been called, including when
+shutdown races with scheduled initialization. Raises
 `TimeoutError` past the wall-clock timeout. A timed-out initialize keeps
 running; once it ends, the engine shuts down to stop the plugins it
 started. The engine is terminal from the moment the timeout fires, so
@@ -103,11 +103,12 @@ build a new `PolicyEngine` to try again.
 
 Shut down all plugins and drain fire-and-forget background tasks.
 **Call this before exit if you need fire-and-forget side effects to complete.**
-Shutdown takes effect when the awaitable runs, not when the coroutine is
-created. It waits for an `initialize()` in flight, then tears down the
-plugins it started.
+Calling `shutdown()` starts teardown and immediately refuses new work.
+Await its result to know when teardown has finished. The shutdown task
+continues if its awaitable is dropped or cancelled. It waits for an
+`initialize()` in flight, then tears down the plugins it started.
 
-Shutdown is terminal from the moment it starts: later `initialize`,
+Shutdown is terminal from the call: later `initialize`,
 `invoke_hook` and `refresh_secrets` calls raise `RuntimeError`. A second
 `shutdown` after one completed is a no-op. A shutdown that raised
 `TimeoutError` can be retried; the retry waits for the first to finish
@@ -126,7 +127,7 @@ Invoke a hook by name. Returns a `PipelineResult`.
 - `extensions`: optional `dict` of CPEX extensions fields. Under the
   default `dispatch: policy`, `meta.entity_type` and `meta.entity_name`
   pick the route; a request without them is denied with
-  `unidentified_request` when the config has routes.
+  `unidentified_request` when the config declares a policy.
 - `context_table`: optional `dict` for stateful plugins.
 
 **Raises:**

@@ -88,7 +88,7 @@ async def test_secret_provider_kinds_match_the_wire_compat_fixture(tmp_path, wir
             "  values:\n    probe_value:\n      provider: probe\n      ref: anything\n",
         )
     )
-    with pytest.raises(Exception) as info:
+    with pytest.raises(ValueError) as info:
         await eng.initialize()
     listed = str(info.value).split("registered kinds are [")[1].split("]")[0]
     assert set(listed.split(", ")) == set(wire_compat["secret_provider_kinds"])

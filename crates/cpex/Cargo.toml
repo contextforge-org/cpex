@@ -48,9 +48,10 @@ praxis-policy = { workspace = true, features = ["builtins", "http-hyper"] }
 # Python plugin host. Runs each Python plugin out-of-process, in its own
 # virtualenv, from the Rust PolicyEngine. Present only with `python-host`.
 cpex-hosts-python = { workspace = true, optional = true, default-features = false }
+serde = { workspace = true }
+serde_json = { workspace = true }
 
 [dev-dependencies]
-serde_json = { workspace = true }
 tokio = { workspace = true }
 
 [lints]

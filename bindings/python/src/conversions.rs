@@ -208,11 +208,7 @@ pub fn serialize_payload(payload: &dyn PluginPayload) -> Option<Value> {
         return serde_json::to_value(mp).ok();
     }
     if let Some(idp) = payload.as_any().downcast_ref::<IdentityPayload>() {
-        let mut value = serde_json::to_value(idp).ok()?;
-        if let Value::Object(map) = &mut value {
-            map.remove("headers");
-        }
-        return Some(value);
+        return cpex::host::identity_result_value(idp).ok();
     }
     if let Some(gp) = payload.as_any().downcast_ref::<GenericPayload>() {
         return serde_json::to_value(&gp.value).ok();

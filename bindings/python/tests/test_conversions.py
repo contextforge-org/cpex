@@ -123,6 +123,9 @@ IDENTITY_INPUT = {
     [
         ("subject", {"id": "alice", "roles": ["hr"]}),
         ("client", {"client_id": "app"}),
+        ("caller_workload", {"spiffe_id": "spiffe://example.org/app"}),
+        ("delegation", {"depth": 0}),
+        ("raw_credentials", {"inbound_tokens": {}}),
         ("resolved_at", "2026-01-01T00:00:00Z"),
         ("raw_claims", {"sub": "alice"}),
     ],

@@ -15,10 +15,10 @@
 //	resolved, _ := cpex.DeserializePayload[cpex.IdentityPayload](res)
 //	// resolved.Subject carries roles / permissions / teams.
 //
-// The resolved Subject / Client / RawCredentials are then applied onto
-// the Extensions passed to the downstream tool/prompt/resource hook so
-// per-route APL gates (require(role.*), redact(!perm.*), Cedar) and the
-// OAuth delegator can see the principal and its inbound credentials.
+// A Go host can copy the resolved Subject and Client into downstream
+// Extensions.Security. Raw token bytes do not survive Go/FFI serialization.
+// InvokeResolved keeps resolver-produced raw credentials inside Rust between
+// identity.resolve and the downstream hook when both run in one call.
 
 package cpex
 
@@ -53,9 +53,8 @@ const (
 // from there.
 //
 // Output slots the Go side doesn't model field-by-field are carried as
-// msgpack.RawMessage so they round-trip verbatim — a host can forward
-// them onto the next hook's Extensions without the bindings needing a
-// typed mirror of every Rust extension.
+// msgpack.RawMessage for inspection. RawCredentials cannot reconstruct
+// token bytes that Rust deliberately excludes from serialization.
 type IdentityPayload struct {
 	Source       string            `msgpack:"source"`
 	SourceHeader string            `msgpack:"source_header,omitempty"`

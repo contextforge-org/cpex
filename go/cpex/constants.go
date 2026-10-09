@@ -22,7 +22,7 @@ const (
 	PayloadCMFMessage uint8 = 1
 	// PayloadIdentity is an IdentityPayload — the input/output state of
 	// the identity.resolve hook. Send request headers in; read the
-	// resolved subject / client / raw credentials back out. The result
+	// resolved subject / client back out. Raw token bytes stay in Rust and
 	// does not echo the request headers.
 	PayloadIdentity uint8 = 2
 )
