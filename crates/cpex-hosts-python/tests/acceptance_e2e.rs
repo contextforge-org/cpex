@@ -339,7 +339,8 @@ async fn python_identity_and_delegation_plugins_serve_a_ppe_route() {
     // The capability decides who sees credential material. The capable plugin
     // gets the token on `raw_token` and the credential headers through the
     // gated channel, with the worker scrubbing the token out of the header
-    // values. The plugin beside it gets neither, only the public headers.
+    // values. The plugin beside it gets neither token nor raw headers: the
+    // public header map is empty by default.
     let capable = marker(&dir, "py-identity").expect("py-identity ran");
     assert!(capable.starts_with("GOT_TOKEN;"), "{capable}");
     assert!(capable.contains("token_in_headers=False"), "{capable}");
@@ -355,7 +356,7 @@ async fn python_identity_and_delegation_plugins_serve_a_ppe_route() {
         blind.contains("cookie=False"),
         "credential headers reach only a declaring plugin: {blind}"
     );
-    assert!(blind.contains("tenant=acme"), "{blind}");
+    assert!(blind.contains("tenant=None"), "{blind}");
 
     // 2. The host applies the identity, and carries the inbound token for the
     //    delegate step to exchange.

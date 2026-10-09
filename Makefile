@@ -385,9 +385,9 @@ go-lint-check: ffi-release
 rust-examples-build:
 	@$(CARGO) build --examples --workspace
 
-# The Go demo links its own staticlib (cpex-demo-ffi), which bundles cpex-ffi.
+# The Go demo links both its factory staticlib and the CPEX Go SDK's FFI library.
 .PHONY: go-examples-ffi
-go-examples-ffi:
+go-examples-ffi: ffi-release
 	@$(CARGO) build --release -p cpex-demo-ffi
 
 .PHONY: go-examples-build
