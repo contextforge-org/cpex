@@ -14,9 +14,12 @@ cause, in `intended-differences.yaml`.
   feature.
 - Toolchain: rustc 1.96.0.
 - Valkey: `valkey/valkey:8-alpine` in Docker.
-- Harness: as committed in `c981609` (`test(parity): capture 0.2.3 decision
-  snapshots`). Later commits retarget it to 0.3.0, so the 0.2.3 snapshots can
-  only be regenerated from a checkout of that commit (see below).
+- Capture harness: the sources committed in `c981609` (`test(parity):
+  capture 0.2.3 decision snapshots`) are retained in `baseline/`, including
+  their workspace lockfile. `capture-baseline.py` runs them out of tree
+  against the immutable `v0.2.3` commit
+  `e3a2b30bbaf14682808f4e1de4e3e5fa5be9f481`. Its engine and builtin
+  sources match the original snapshot engine commit.
 
 `snapshots/` is the baseline and is never rewritten by the current harness.
 
@@ -25,6 +28,8 @@ cause, in `intended-differences.yaml`.
 ```
 tests/parity/
   harness/                 harness (workspace member cpex-parity-harness)
+  baseline/                retained 0.2.3 capture sources and lockfile
+  capture-baseline.py      pinned, out-of-tree 0.2.3 capture runner
   hook-renames.yaml        reviewed legacy-to-PPE hook rename table
   intended-differences.yaml
                            reviewed 0.2.3 to 0.3.0 differences, with causes
@@ -107,21 +112,24 @@ the skip on stderr.
 
 ### Regenerating the 0.2.3 baseline
 
-Only needed when a scenario's requests change. The 0.2.3 engine is gone from
-this branch, so capture from the snapshot commit and copy the files back:
+Use the retained harness when a scenario changes or a baseline needs
+investigation. The runner exports the pinned engine from local Git history
+to a fresh temporary directory, adds `baseline/` as its capture harness,
+and uses the original lockfile. It requires Python 3.12 or later and the
+0.2.3 commit in local Git history (fetch the `v0.2.3` tag if absent).
 
 ```sh
-git worktree add /tmp/cpex-0.2.3 c981609
-# copy any changed scenarios/<name>/requests.yaml and config.yaml into
-# /tmp/cpex-0.2.3/tests/parity/scenarios/ first
-(cd /tmp/cpex-0.2.3 && cargo run -p cpex-parity-harness -- --valkey-url "$PARITY_VALKEY_URL")
-cp -R /tmp/cpex-0.2.3/tests/parity/snapshots/. tests/parity/snapshots/
-git worktree remove /tmp/cpex-0.2.3
+python3 tests/parity/capture-baseline.py --out /tmp/cpex-0.2.3-snapshots
+diff -ru tests/parity/snapshots /tmp/cpex-0.2.3-snapshots
 ```
 
-At that commit the harness writes to its own `tests/parity/snapshots/` and
-its test checks two captures against those files. Then rerun the parity
-check here and review the allow-list.
+It reads this branch's legacy configs and requests without renaming hooks.
+The runner refuses the committed snapshot directory as an output. Review
+any generated diff before replacing a baseline, then rerun PPE parity and
+review the allow-list. `--prepare-only --workdir /tmp/cpex-0.2.3` prepares
+an inspectable engine tree without running Cargo; the work directory must
+be empty. Remaining arguments select scenarios or supply `--valkey-url`.
+Do not run concurrent captures against the same Valkey database.
 
 ## Request format
 
@@ -218,6 +226,13 @@ change, so applying it is the identity on these request sets. It is still
 applied on every replay, and to the `hook` of each recorded 0.2.3 stage
 before diffing, so a scenario that uses a legacy name is compared under its
 new name.
+
+Before replay, the harness checks every fixture and captured stage,
+including scenarios skipped for missing Valkey. Each source name must
+have exactly one rename or `unchanged` row. Duplicate YAML keys, conflicting
+rows and incorrect removed-hook replacements fail. PPE's builtin hook
+registry supplies the target authority: every name must be a target, an
+identity row, or explicitly listed under `unused`. Unknown targets fail.
 
 ## How the parity check works
 

@@ -4,7 +4,7 @@
 // Data model for `scenarios/<name>/requests.yaml`. Engine-neutral: nothing
 // here names an engine type, so a retargeted harness reads the same files.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::Deserialize;
 use serde_json::Value;
@@ -50,6 +50,26 @@ fn default_ppe_config() -> String {
 }
 
 impl Scenario {
+    /// Hook names the fixture's host can dispatch, before any renaming.
+    pub fn hook_names(&self) -> BTreeSet<&str> {
+        let mut names = BTreeSet::new();
+        for request in &self.requests {
+            match request {
+                Request::Mediate(_) => {
+                    names.extend([
+                        self.hooks.identity.as_str(),
+                        self.hooks.pre.as_str(),
+                        self.hooks.post.as_str(),
+                    ]);
+                },
+                Request::Invoke(r) => {
+                    names.insert(r.hook.as_str());
+                },
+            }
+        }
+        names
+    }
+
     /// Map every hook name a request dispatches through `renames`.
     pub fn apply_hook_renames(&mut self, renames: &HookRenames) {
         for name in [
@@ -72,16 +92,105 @@ impl Scenario {
 #[serde(deny_unknown_fields)]
 pub struct HookRenames {
     /// Legacy name to current name.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "unique_renames")]
     pub renames: BTreeMap<String, String>,
     /// Names that are the same in both releases, for the record.
     #[serde(default)]
     pub unchanged: Vec<String>,
+    /// PPE hook names deliberately outside the fixture set.
+    #[serde(default)]
+    pub unused: Vec<String>,
+}
+
+fn unique_renames<'de, D>(deserializer: D) -> Result<BTreeMap<String, String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    struct UniqueRenames;
+    impl<'de> serde::de::Visitor<'de> for UniqueRenames {
+        type Value = BTreeMap<String, String>;
+
+        fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("a hook rename map with unique source names")
+        }
+
+        fn visit_map<M>(self, mut map: M) -> Result<Self::Value, M::Error>
+        where
+            M: serde::de::MapAccess<'de>,
+        {
+            let mut rows = BTreeMap::new();
+            while let Some((source, target)) = map.next_entry::<String, String>()? {
+                if rows.insert(source.clone(), target).is_some() {
+                    return Err(serde::de::Error::custom(format!(
+                        "duplicate hook rename: {source}"
+                    )));
+                }
+            }
+            Ok(rows)
+        }
+    }
+    deserializer.deserialize_map(UniqueRenames)
 }
 
 impl HookRenames {
     pub fn map<'a>(&'a self, hook: &'a str) -> &'a str {
         self.renames.get(hook).map_or(hook, String::as_str)
+    }
+
+    /// Check source totality and target coverage against PPE's authority.
+    pub fn validate<'a>(&self, captured: impl IntoIterator<Item = &'a str>) -> Result<(), String> {
+        let ppe: BTreeSet<String> = praxis_policy_core::hooks::types::builtin_hook_types()
+            .into_iter()
+            .map(|hook| hook.as_str().to_string())
+            .collect();
+        let mut sources: BTreeSet<&str> = self.renames.keys().map(String::as_str).collect();
+        for hook in &self.unchanged {
+            if !sources.insert(hook) {
+                return Err(format!("hook has more than one rename row: {hook}"));
+            }
+        }
+        for hook in captured {
+            if !sources.contains(hook) {
+                return Err(format!("captured hook has no rename row: {hook}"));
+            }
+        }
+        for (source, target) in cpex::host::REMOVED_HOOKS {
+            if self.renames.get(*source).map(String::as_str) != Some(*target) {
+                return Err(format!("expected hook rename {source} -> {target}"));
+            }
+        }
+        for (source, target) in &self.renames {
+            if cpex::host::removed_hook_replacement(source) != Some(target.as_str()) {
+                return Err(format!("unexpected hook rename {source} -> {target}"));
+            }
+        }
+        let targets: BTreeSet<&str> = self
+            .renames
+            .values()
+            .chain(&self.unchanged)
+            .map(String::as_str)
+            .collect();
+        let mut covered = targets.clone();
+        for hook in &self.unused {
+            if !covered.insert(hook) {
+                return Err(format!(
+                    "PPE hook is both covered and unused, or repeated: {hook}"
+                ));
+            }
+        }
+        for hook in &covered {
+            if !ppe.contains(*hook) {
+                return Err(format!(
+                    "rename target or unused hook is not dispatched by PPE: {hook}"
+                ));
+            }
+        }
+        for hook in &ppe {
+            if !covered.contains(hook.as_str()) {
+                return Err(format!("PPE hook has no target or unused row: {hook}"));
+            }
+        }
+        Ok(())
     }
 }
 

@@ -13,7 +13,8 @@
 # name on the left at config load.
 #
 # The scenarios use only names that are unchanged, listed under `unchanged`
-# for the record. A name absent from both lists is replayed as written.
+# as identity rows. Every captured name must have exactly one row. Every
+# PPE builtin hook must be a target, an identity row, or explicitly unused.
 
 renames:
   tool_pre_invoke: cmf.tool_pre_invoke
@@ -39,3 +40,6 @@ unchanged:
   - identity.resolve
   - token.delegate
   - elicit
+
+# No PPE 0.4.1 builtin name is outside the table's targets and identity rows.
+unused: []

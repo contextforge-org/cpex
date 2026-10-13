@@ -142,7 +142,9 @@ pub async fn replay(opts: &Options, name: &str, plan: &Replay) -> Result<Replaye
     let raw = read(&dir.join("requests.yaml"))?;
     let mut scenario: Scenario =
         serde_yaml::from_str(&raw).map_err(|e| format!("{name}/requests.yaml: {e}"))?;
-    scenario.apply_hook_renames(&load_hook_renames(&opts.root)?);
+    let renames = load_hook_renames(&opts.root)?;
+    renames.validate(scenario.hook_names())?;
+    scenario.apply_hook_renames(&renames);
 
     let needs_valkey = scenario.requires.iter().any(|r| r == "valkey");
     if let Some(other) = scenario.requires.iter().find(|r| *r != "valkey") {
@@ -258,6 +260,7 @@ pub async fn check_parity(
     opts: &Options,
 ) -> Result<(parity::Report, Vec<(String, Status)>), String> {
     let renames = load_hook_renames(&opts.root)?;
+    validate_hook_table(&opts.root, &renames)?;
     let intended = parity::load_intended(&opts.root)?;
     let mut differences = Vec::new();
     let mut statuses = Vec::new();
@@ -291,6 +294,34 @@ pub async fn check_parity(
 pub fn load_hook_renames(root: &Path) -> Result<HookRenames, String> {
     let path = root.join(HOOK_RENAMES_FILE);
     serde_yaml::from_str(&read(&path)?).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// Validate every fixture and captured stage, including skipped scenarios.
+pub fn validate_hook_table(root: &Path, renames: &HookRenames) -> Result<(), String> {
+    for name in scenario_names(root)? {
+        let scenario: Scenario = serde_yaml::from_str(&read(
+            &root.join("scenarios").join(&name).join("requests.yaml"),
+        )?)
+        .map_err(|e| format!("{name}/requests.yaml: {e}"))?;
+        renames.validate(scenario.hook_names())?;
+        let snapshot: Value =
+            serde_json::from_str(&read(&root.join("snapshots").join(format!("{name}.json")))?)
+                .map_err(|e| format!("{name}/snapshot: {e}"))?;
+        let mut hooks = Vec::new();
+        for request in snapshot["requests"]
+            .as_array()
+            .ok_or("snapshot has no requests")?
+        {
+            for stage in request["stages"]
+                .as_array()
+                .ok_or("snapshot request has no stages")?
+            {
+                hooks.push(stage["hook"].as_str().ok_or("snapshot stage has no hook")?);
+            }
+        }
+        renames.validate(hooks)?;
+    }
+    Ok(())
 }
 
 async fn run_request(
