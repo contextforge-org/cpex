@@ -71,7 +71,8 @@ readme = "README.md"
 # fs/process/signal/io-std surface the embedded library never exercises.
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "sync", "time", "macros"] }
 serde = { version = "1", features = ["derive", "rc"] }
-serde_yaml = "0.9"
+# Match PPE's maintained YAML fork while preserving the crate name at call sites.
+serde_yaml = { package = "yaml_serde", version = "0.10.4" }
 serde_json = "1"
 async-trait = "0.1"
 tracing = "0.1"
