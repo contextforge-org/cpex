@@ -50,9 +50,11 @@ praxis-policy = { workspace = true, features = ["builtins", "http-hyper"] }
 cpex-hosts-python = { workspace = true, optional = true, default-features = false }
 serde = { workspace = true }
 serde_json = { workspace = true }
+tracing = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
+tracing-subscriber = { version = "0.3", features = ["fmt"] }
 
 [lints]
 workspace = true

@@ -52,6 +52,7 @@ use cpex::{HyperTransport, PolicyEngine};
 /// host keeps the default (`cpex::install_default_http_transport`) or installs
 /// its own transport with its own egress rules.
 pub fn install_http_transport(engine: &Arc<PolicyEngine>) {
+    cpex::host::warn_private_destinations();
     engine.set_http_transport(Arc::new(
         HyperTransport::new().with_allow_private_destinations(),
     ));

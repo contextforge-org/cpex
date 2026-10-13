@@ -62,12 +62,14 @@ pub fn removed_hook_replacement(hook_name: &str) -> Option<&'static str> {
 /// With `allow_private_destinations` the transport may reach private,
 /// loopback and link-local addresses; without it such requests are
 /// refused and builtins report their egress-denied codes. This is a host
-/// decision; no policy document can turn it on.
+/// decision; no policy document can turn it on. Enabling it emits a
+/// startup warning through the host's tracing subscriber, or stderr when
+/// the host has no subscriber.
 ///
 /// Call it once per engine, on the same `Arc` that later loads the
 /// config, so the APL visitor's weak reference upgrades during the load.
 /// `install_builtins` appends a new APL visitor on every call, so a second
-/// call would walk `apl:` blocks twice. The transport and the secret
+/// call would walk policy sections twice. The transport and the secret
 /// providers are set-once: if the host already installed either, the
 /// existing one is kept and the engine logs a warning.
 pub fn install_host_defaults(engine: &Arc<PolicyEngine>, allow_private_destinations: bool) {
@@ -75,6 +77,7 @@ pub fn install_host_defaults(engine: &Arc<PolicyEngine>, allow_private_destinati
 
     let mut hyper = HyperTransport::new();
     if allow_private_destinations {
+        warn_private_destinations();
         hyper = hyper.with_allow_private_destinations();
     }
     let transport: Arc<dyn HttpTransport> = Arc::new(hyper);
@@ -82,6 +85,27 @@ pub fn install_host_defaults(engine: &Arc<PolicyEngine>, allow_private_destinati
     // transport or registry is already present.
     let _ = engine.set_http_transport(Arc::clone(&transport));
     let _ = engine.set_secret_providers(registry_with_vault(transport));
+}
+
+const PRIVATE_DESTINATIONS_WARNING: &str = "private destinations are enabled for all outbound builtins and Vault; \
+     loopback, RFC 1918, link-local (including cloud metadata) and CGNAT \
+     addresses are reachable; use only with trusted policies and networks";
+
+/// Report a host's global private-destination opt-in at startup.
+///
+/// Rust hosts constructing a transport directly can call this too.
+/// Hosts without a tracing subscriber receive the warning on stderr.
+pub fn warn_private_destinations() {
+    log_private_destinations(std::io::stderr());
+}
+
+fn log_private_destinations(mut fallback: impl std::io::Write) {
+    tracing::warn!("{PRIVATE_DESTINATIONS_WARNING}");
+    if tracing::dispatcher::get_default(|dispatch| {
+        dispatch.is::<tracing::subscriber::NoSubscriber>()
+    }) {
+        let _ = writeln!(fallback, "WARN cpex: {PRIVATE_DESTINATIONS_WARNING}");
+    }
 }
 
 /// The failure class of a secret error, as the bindings report it.
@@ -185,6 +209,54 @@ impl From<RefreshReport> for RefreshSummary {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn private_destination_warning_reaches_hosts_without_a_subscriber() {
+        let mut output = Vec::new();
+        tracing::subscriber::with_default(tracing::subscriber::NoSubscriber::new(), || {
+            log_private_destinations(&mut output);
+        });
+        assert_eq!(
+            String::from_utf8(output).unwrap(),
+            format!("WARN cpex: {PRIVATE_DESTINATIONS_WARNING}\n")
+        );
+    }
+
+    #[test]
+    fn private_destination_opt_in_warns_about_its_scope() {
+        #[derive(Clone)]
+        struct Log(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+        impl std::io::Write for Log {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let log = Log(Default::default());
+        let writer = log.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .without_time()
+            .with_writer(move || writer.clone())
+            .finish();
+        tracing::subscriber::with_default(subscriber, || {
+            install_host_defaults(&Arc::new(PolicyEngine::default()), false);
+            assert!(log.0.lock().unwrap().is_empty());
+            install_host_defaults(&Arc::new(PolicyEngine::default()), true);
+        });
+        let text = String::from_utf8(log.0.lock().unwrap().clone()).unwrap();
+        for expected in [
+            "WARN",
+            "all outbound builtins and Vault",
+            "cloud metadata",
+            "CGNAT",
+        ] {
+            assert!(text.contains(expected), "{text}");
+        }
+    }
 
     #[test]
     fn removed_hooks_map_to_their_replacements() {
