@@ -99,9 +99,10 @@ pub unsafe extern "C" fn cpex_refresh_secrets(
 /// Unix milliseconds (UTC).
 ///
 /// On `RC_OK`, `*unix_ms_out` holds the timestamp, or `0` when there is
-/// none: the provider's most recent refresh failed, the name is not a
+/// none: the provider has never refreshed successfully, the name is not a
 /// declared provider, or secrets are not resolved yet. Initialization
-/// counts as the first success.
+/// counts as the first success. Failed refreshes retain that timestamp;
+/// inspect the refresh report's `failed` entries to detect an outage.
 ///
 /// Returns `RC_OK`, `RC_INVALID_HANDLE` for a null handle, or
 /// `RC_INVALID_INPUT` for a null out pointer or a missing / non-UTF-8

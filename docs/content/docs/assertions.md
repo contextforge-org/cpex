@@ -173,6 +173,6 @@ When a block is configured, the engine logs the whole boundary as one document a
 
 ## Go deeper
 
-- PPE's [assertions wire contract](https://github.com/praxis-proxy/policy/blob/v0.4.1/docs/content/assertions.md), the source for this page. It also covers nested dispatch through `invoke_entries` and the `http:` route obligations in detail.
+- PPE's [assertions wire contract](https://github.com/praxis-proxy/policy/blob/v0.5.0/docs/content/assertions.md), the source for this page. It also covers nested dispatch through `invoke_entries` and the `http:` route obligations in detail.
 - [Identity & Delegation]({{< relref "/docs/identity-delegation" >}}): where the subject, client and claims come from.
 - [Deployment]({{< relref "/docs/deployment" >}}): where the boundary sits.

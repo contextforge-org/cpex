@@ -138,6 +138,6 @@ routes:
 
 ## Go deeper
 
-- PPE's [HTTP routing guide](https://github.com/praxis-proxy/policy/blob/v0.4.1/docs/content/http-routing.md), the source for this page.
+- PPE's [HTTP routing guide](https://github.com/praxis-proxy/policy/blob/v0.5.0/docs/content/http-routing.md), the source for this page.
 - [Header Assertions]({{< relref "/docs/assertions" >}}): control the identity and response headers that cross the boundary on these routes.
 - [Configuration]({{< relref "/docs/configuration" >}}): the full route schema.

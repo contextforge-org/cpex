@@ -94,7 +94,7 @@ authorization:
     - cel: { expr: "subject.department == 'compliance' || 'admin' in subject.roles" }
 ```
 
-With CEL 0.14, use `in` for list membership; container `.contains()` and the default `min`/`max` functions are unavailable. If the host registers custom CEL functions, give them names distinct from built-ins such as `double`, whose overloads may take precedence.
+PPE 0.5.0 uses `cel` 0.15. Use `in` for list membership; container `.contains()` and the default `min` / `max` functions are not available. String `size()` counts Unicode code points rather than UTF-8 bytes, and `exists()` can return true after another element errors. Review policies depending on byte limits or predicate errors. `CelResolver::with_functions` and its callback now return `Result`; conflicting standard-library overloads fail construction.
 
 All three builtin resolvers ship in every CPEX surface: the Rust facade, the Python package, the Go module and the C ABI.
 

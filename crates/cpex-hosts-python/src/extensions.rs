@@ -118,6 +118,7 @@ fn strip_sensitive(headers: &HashMap<String, String>) -> HashMap<String, String>
 fn sanitize_http(http: &HttpExtension) -> HttpExtension {
     HttpExtension {
         request_headers: public_http_headers(&http.request_headers),
+        secret_headers: http.secret_headers.clone(),
         response_headers: public_http_headers(&http.response_headers),
         status: http.status,
         method: http.method.clone(),
@@ -143,6 +144,9 @@ fn sanitize_http(http: &HttpExtension) -> HttpExtension {
 fn returned_http(returned: &HttpExtension, inbound: Option<&HttpExtension>) -> HttpExtension {
     HttpExtension {
         request_headers: strip_sensitive(&returned.request_headers),
+        secret_headers: inbound
+            .map(|h| h.secret_headers.clone())
+            .unwrap_or_default(),
         response_headers: strip_sensitive(&returned.response_headers),
         status: inbound.and_then(|h| h.status),
         method: inbound.and_then(|h| h.method.clone()),
@@ -434,6 +438,55 @@ mod tests {
     use praxis_policy_core::extensions::monotonic::MonotonicSet;
 
     use super::*;
+
+    #[test]
+    fn secret_assertion_provenance_survives_python_header_round_trips() {
+        use praxis_policy_core::assertions::config::OnMissing;
+        use praxis_policy_core::assertions::resolved::{
+            ResolvedContract, ResolvedHeader, ResolvedSource,
+        };
+        use praxis_policy_core::assertions::source::SourcePath;
+        use praxis_policy_core::assertions::{AssertionLevel, Direction, apply};
+
+        // Provenance must survive even after the wire filter drops the header.
+        let secret = "f47ac10b-58cc-4372-a567-0e02b2c3d479";
+        let contract = ResolvedContract {
+            headers: vec![ResolvedHeader {
+                name: "X-Request-Id".into(),
+                lowercase: "x-request-id".into(),
+                source: ResolvedSource::From(SourcePath::Secret("key".into())),
+                on_missing: OnMissing::Deny,
+                encode: None,
+                declared_in: "global".into(),
+                level: AssertionLevel::Global,
+                overrode: None,
+            }],
+            ..Default::default()
+        };
+        let mut ext = Extensions {
+            http: Some(Arc::new(HttpExtension::default())),
+            ..Default::default()
+        };
+        apply(
+            &contract,
+            &[("X-Request-Id".into(), secret.into())],
+            &mut ext,
+            Direction::Request,
+        );
+        let inbound = ext.http.as_deref().unwrap();
+        let mut outbound = sanitize_http(inbound);
+        assert!(outbound.request_headers.is_empty());
+        outbound.set_request_header("X-Request-Id", secret);
+        let mut worker = HttpExtension::default();
+        worker.set_request_header("x-request-id", secret);
+        worker.set_response_header("Content-Type", "application/json");
+        let returned = returned_http(&worker, Some(inbound));
+        for http in [outbound, returned] {
+            let wire = serde_json::to_string(&http).unwrap();
+            assert!(!wire.contains(secret), "{wire}");
+            assert!(wire.contains("<redacted secret.key>"), "{wire}");
+        }
+    }
 
     fn http_with_headers() -> HttpExtension {
         let mut http = HttpExtension::default();

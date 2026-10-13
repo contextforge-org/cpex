@@ -93,8 +93,9 @@ func (m *PolicyEngine) RefreshSecrets() (*RefreshReport, error) {
 // values without a failure. Initialization counts as the first success.
 //
 // ok is false, and the time is zero, when there is no such moment: the
-// provider's most recent refresh failed, the name is not a declared
-// provider, or secrets are not resolved yet.
+// provider has never refreshed successfully, the name is not a declared
+// provider, or secrets are not resolved yet. Failed refreshes retain the
+// last successful time; inspect RefreshReport.Failed to detect an outage.
 //
 // On failure the returned error wraps a typed sentinel
 // (ErrCpexInvalidHandle, ErrCpexInvalidInput).

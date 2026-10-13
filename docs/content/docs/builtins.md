@@ -14,6 +14,7 @@ CPEX ships a set of plugins, decision points, a session store and secret provide
 | `identity/jwt` | identity | Resolve a subject from a verified JWT, with configurable claim mapping (see [Identity]({{< relref "/docs/apl/identity" >}})). |
 | `identity/api-key` | identity | Resolve an opaque API key against a file or HTTP directory (see [Identity & Delegation]({{< relref "/docs/identity-delegation#recipe-7-an-opaque-api-key-resolved-against-a-directory" >}})). |
 | `delegator/oauth` | delegator | RFC 8693 token exchange and `client_credentials`, with optional caching (see [Delegation]({{< relref "/docs/apl/delegation" >}})). |
+| `delegator/vault` | delegator | Retrieve downstream credentials from Vault KV v2 for a user, client or workload. Authorize before delegation. |
 | `elicitation/ciba` | elicitation | OIDC CIBA human approval (see [Elicitation]({{< relref "/docs/apl/elicitation" >}})). |
 | `cedar-direct` | PDP resolver | Evaluate Cedar policy (dialect `cedar`). |
 | `cel` | PDP resolver | Evaluate CEL expressions (dialect `cel`). |
@@ -78,8 +79,8 @@ What to use instead:
 
 A Rust host can still register PPE's reference implementations. They are `publish = false`, so there is no crates.io package to depend on. Copy their source into your own workspace instead:
 
-1. Copy [`reference/plugins/pii-scanner`](https://github.com/praxis-proxy/policy/tree/v0.4.1/reference/plugins/pii-scanner) or [`reference/plugins/audit-logger`](https://github.com/praxis-proxy/policy/tree/v0.4.1/reference/plugins/audit-logger) from the PPE `v0.4.1` tag into your workspace, for example `plugins/pii-scanner`.
-2. In its `Cargo.toml`, replace every inherited `workspace = true` field and dependency with an explicit value (the crates use edition 2024), and depend on `praxis-policy-core = "=0.4.1"` from crates.io, the same version `cpex` pins.
+1. Copy [`reference/plugins/pii-scanner`](https://github.com/praxis-proxy/policy/tree/v0.5.0/reference/plugins/pii-scanner) or [`reference/plugins/audit-logger`](https://github.com/praxis-proxy/policy/tree/v0.5.0/reference/plugins/audit-logger) from the PPE `v0.5.0` tag into your workspace, for example `plugins/pii-scanner`.
+2. In its `Cargo.toml`, replace every inherited `workspace = true` field and dependency with an explicit value (the crates use edition 2024), and depend on `praxis-policy-core = "=0.5.0"` from crates.io, the same version `cpex` pins.
 3. Register its factory before loading the config:
 
 ```rust

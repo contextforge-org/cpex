@@ -80,6 +80,7 @@ fn plugin_kinds_match_the_fixture() {
         cpex::JWT_KIND,
         cpex::API_KEY_KIND,
         cpex::OAUTH_KIND,
+        cpex::VAULT_DELEGATOR_KIND,
         cpex::CIBA_KIND,
     ]);
     assert_eq!(exported, fx.plugin_kinds);

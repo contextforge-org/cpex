@@ -237,10 +237,12 @@ routes:
 
 
 async def _send_email(eng: PolicyEngine):
+    extensions = tool_route("send_email")
+    extensions["security"] = {"subject": {"id": "ciba-requester"}}
     return await eng.invoke_hook(
         "cmf.tool_pre_invoke",
         tool_call("send_email", {"approver": "mona"}),
-        tool_route("send_email"),
+        extensions,
     )
 
 
@@ -315,6 +317,7 @@ async def test_refresh_secrets_reports_updates_and_failures(tmp_path):
     rotated = await eng.refresh_secrets()
     assert rotated == {"updated": ["api_key"], "unchanged": 0, "failed": []}
     assert eng.secrets_last_success("local") >= first
+    last_good = eng.secrets_last_success("local")
 
     secret_file.unlink()
     broken = await eng.refresh_secrets()
@@ -326,7 +329,7 @@ async def test_refresh_secrets_reports_updates_and_failures(tmp_path):
     assert failure["provider"] == "local"
     assert failure["kind"] == "not_found"
     assert "second" not in failure["message"], "the message never carries the secret"
-    assert eng.secrets_last_success("local") is None, "a failed refresh clears last success"
+    assert eng.secrets_last_success("local") == last_good, "a failed refresh retains last success"
 
     await eng.shutdown()
 

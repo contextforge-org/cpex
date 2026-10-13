@@ -165,19 +165,15 @@ Extensions are a different matter: the engine trusts the `security.subject` a ho
 
 ## Known limitations
 
-### Elicitation approval is not bound to the requester
+### Elicitation approval binding
 
-An approved elicitation id can be resumed by a different subject. The CIBA correlation store records the expected and resolved approver; resume replays a cached approval for any caller presenting the id, and validation compares the resolved approver with the one named at dispatch, not with the subject that asked. A caller who obtains another subject's approved id can use it once the approval lands.
+PPE 0.5.0 binds CIBA approvals to the authenticated requester, route and tool, and redeems them atomically once within the plugin instance. This fixes the cross-subject approval reuse present in CPEX 0.2.3. Requests without an authenticated subject id fail before the backchannel call.
 
-This is present in CPEX 0.2.3 and in PPE 0.4.1, which 0.3.0 runs on. An upstream fix is pending. Until it lands:
-
-- keep the approval `timeout` short, so an approved id is usable for as little time as possible;
-- treat elicitation ids as secrets: return them only to the requesting client, and keep them out of logs and shared transcripts other callers can read;
-- prefer approval flows where the approver, not the requester, holds the id needed to resume.
+The correlation store remains in process. A restart loses pending approvals, and replicas need sticky routing for a dispatch/resume pair. Keep approval timeouts short and return ids only to the requesting client.
 
 ### Audit sinks cannot run beside routes
 
-Under `dispatch: policy`, PPE 0.4.1 cannot attach an audit sink to a config that has routes: a sink no step names fails the load, and `run(<sink>)` denies. The "unaccountable actions" control above therefore needs a hook plugin that a `run(...)` step names, or a host that logs the `PipelineResult` of every call. A host that does neither has no decision record. See [Auditing]({{< relref "/docs/auditing" >}}).
+Under `dispatch: policy`, PPE 0.5.0 cannot attach an audit sink to a config that has routes: a sink no step names fails the load, and `run(<sink>)` denies. The "unaccountable actions" control above therefore needs a hook plugin that a `run(...)` step names, or a host that logs the `PipelineResult` of every call. A host that does neither has no decision record. See [Auditing]({{< relref "/docs/auditing" >}}).
 
 ### Host-supplied client identity is visible only through `read_client`
 

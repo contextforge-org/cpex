@@ -114,7 +114,7 @@ The engine resolves secrets once, at `Initialize`, and never re-reads them on it
 report, err := engine.RefreshSecrets()   // Updated, Unchanged, Failed
 at, ok, err := engine.SecretsLastSuccess("vault")
 if !ok {
-    // the provider's last refresh failed, or it is not declared
+    // the provider has never refreshed successfully, or is undeclared
 }
 ```
 
@@ -219,7 +219,7 @@ edition = "2021"
 crate-type = ["staticlib", "cdylib"]
 
 [dependencies]
-praxis-policy-core = "=0.4.1"
+praxis-policy-core = "=0.5.0"
 cpex-ffi = { path = "path/to/crates/cpex-ffi" }
 async-trait = "0.1"
 tracing = "0.1"

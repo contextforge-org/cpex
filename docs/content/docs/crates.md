@@ -24,7 +24,7 @@ Most Rust hosts depend on `cpex` and nothing else.
 
 ## PPE crates the facade re-exports
 
-The workspace pins every PPE crate to an exact version, `=0.4.1`. PPE has shipped breaking changes inside a minor series, so CPEX moves the pin deliberately and reruns its parity suite when it does.
+The workspace pins `praxis-policy` and `praxis-policy-core` exactly to `=0.5.0`; `Cargo.lock` resolves every other PPE crate to 0.5.0 too. PPE has shipped breaking changes inside a minor series, so CPEX moves the pin deliberately and reruns its parity suite when it does.
 
 | PPE crate | Reached as | Role |
 |---|---|---|
@@ -60,5 +60,5 @@ There is no separate SDK crate. The plugin surface is `cpex::prelude`: the `Plug
 ## API docs
 
 - [docs.rs/cpex](https://docs.rs/cpex) for the facade.
-- [docs.rs/praxis-policy/0.4.1](https://docs.rs/praxis-policy/0.4.1) and [docs.rs/praxis-policy-core/0.4.1](https://docs.rs/praxis-policy-core/0.4.1) for the engine items the facade re-exports.
-- PPE's [crate reference](https://github.com/praxis-proxy/policy/blob/v0.4.1/docs/content/crates.md) for the engine's own layout.
+- [docs.rs/praxis-policy/0.5.0](https://docs.rs/praxis-policy/0.5.0) and [docs.rs/praxis-policy-core/0.5.0](https://docs.rs/praxis-policy-core/0.5.0) for the engine items the facade re-exports.
+- PPE's [crate reference](https://github.com/praxis-proxy/policy/blob/v0.5.0/docs/content/crates.md) for the engine's own layout.

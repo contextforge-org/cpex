@@ -173,4 +173,4 @@ Two blocks sit alongside `authorization:` on the same sections and are not polic
 - `assertions:` renders engine-derived identity onto the upstream request as headers, and filters what an upstream may tell a client back. See [Header Assertions]({{< relref "/docs/assertions" >}}).
 - `authentication:` names the identity-resolution plugins that run before policy. Under the default `dispatch: policy`, a route with no `authentication:` at any scope runs no identity resolution. See [Identity]({{< relref "/docs/apl/identity" >}}).
 
-Every fragment on this page is drawn from the PPE APL parser tests and the reference deployments, so the forms shown here parse as written. PPE's [APL grammar](https://github.com/praxis-proxy/policy/blob/v0.4.1/docs/content/apl/apl-grammar.md) is the normative syntax.
+Every fragment on this page is drawn from the PPE APL parser tests and the reference deployments, so the forms shown here parse as written. PPE's [APL grammar](https://github.com/praxis-proxy/policy/blob/v0.5.0/docs/content/apl/apl-grammar.md) is the normative syntax.

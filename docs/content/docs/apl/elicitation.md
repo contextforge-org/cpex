@@ -92,7 +92,7 @@ Two independent checks stand between an approval and the tool call, and it is wo
 
 The `purpose` is recorded verbatim as the source of truth for what was approved; it is never derived from model output.
 
-**Known limitation: the approval is not bound to the requester.** Validation checks the approver against the one named at dispatch, not the subject resuming the call, so a caller presenting another subject's approved elicitation id is allowed. CPEX 0.2.3 and PPE 0.4.1 both behave this way; an upstream fix is pending. Keep `timeout` short and treat elicitation ids as secrets, returned only to the requesting client. See the [threat model]({{< relref "/docs/threat-model#known-limitations" >}}).
+**Approval binding.** PPE 0.5.0 binds CIBA approvals to the authenticated requester, route and tool, with atomic single-use redemption within a plugin instance. A requester must have a non-empty subject id before dispatch. Keep `timeout` short and return elicitation ids only to the requesting client. Replicas need sticky routing because the correlation store is in process.
 
 ## How it connects to the pipeline
 

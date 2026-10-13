@@ -25,7 +25,7 @@ Both are off until you configure them. A plugin behaves the same either way: tur
 
 Engine settings are part of the policy document, so every surface reads them. Sinks are Rust plugins, and CPEX ships none: PPE's `audit/logger` is a reference plugin, not a builtin. A Rust host that wants it copies its source from the PPE repository into its own workspace, builds it against `praxis-policy-core`, and registers it under a `kind` of its choosing.
 
-**Sinks and routes in this release.** Under the default `dispatch: policy`, PPE 0.4.1 fails the load for any declared plugin that no step names, and that check includes sinks. A sink naming no hooks next to APL `routes:` fails with "no step names `<sink>`, so it can never run". Naming it with `run(<sink>)` does not help: the step has no handler to call, so the request is denied with `plugin:<sink>`. Until PPE changes this, a document with routes cannot attach a sink through `plugins:`. To log each call from policy, use a hook plugin that a step names, as the tutorial's [`tutorial/audit-line`]({{< relref "/docs/tutorial/04-effects" >}}) plugin does. Hosts on every surface can also log the `PipelineResult` each invocation returns, which carries the verdict and violation code.
+**Sinks and routes in this release.** Under the default `dispatch: policy`, PPE 0.5.0 fails the load for any declared plugin that no step names, and that check includes sinks. A sink naming no hooks next to APL `routes:` fails with "no step names `<sink>`, so it can never run". Naming it with `run(<sink>)` does not help: the step has no handler to call, so the request is denied with `plugin:<sink>`. Until PPE changes this, a document with routes cannot attach a sink through `plugins:`. To log each call from policy, use a hook plugin that a step names, as the tutorial's [`tutorial/audit-line`]({{< relref "/docs/tutorial/04-effects" >}}) plugin does. Hosts on every surface can also log the `PipelineResult` each invocation returns, which carries the verdict and violation code.
 
 ## What the engine promises
 
@@ -173,6 +173,6 @@ Grant a sink exactly the capabilities for what it records (`read_subject`, `read
 
 ## Go deeper
 
-- PPE's [auditing guide](https://github.com/praxis-proxy/policy/blob/v0.4.1/docs/content/auditing.md), the source for this page, with the full record schemas and the effect protocol for plugin authors (`perform_effect`, `begin_effect`, `complete_effect`).
+- PPE's [auditing guide](https://github.com/praxis-proxy/policy/blob/v0.5.0/docs/content/auditing.md), the source for this page, with the full record schemas and the effect protocol for plugin authors (`perform_effect`, `begin_effect`, `complete_effect`).
 - [Header Assertions]({{< relref "/docs/assertions" >}}): the contract that can refuse a request after the pipeline.
 - [Configuration]({{< relref "/docs/configuration" >}}): the `secrets:` block.

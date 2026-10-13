@@ -1,10 +1,10 @@
 # PPE adoption test reconciliation
 
-Reconstructed on 2026-10-13 from successful executions, including doctests. The 0.2.3 tag has the same engine and builtin sources as the snapshot engine commit. This records the current post-port branch, rather than inventing historical counts for the intermediate cut-over commit where kept surfaces were not yet ported.
+Reconstructed on 2026-10-13 from successful executions, including doctests. The 0.2.3 tag has the same engine and builtin sources as the snapshot engine commit. This records the post-port branch as initially reviewed, rather than inventing historical counts for the intermediate cut-over commit where kept surfaces were not yet ported.
 
 Environment: macOS, rustc 1.96.0, default workspace features. Before: `cargo test --workspace --locked --offline` on immutable `v0.2.3` (`e3a2b30`). After: `cargo test --workspace --offline -- --test-threads=4` on `8b3cbb9` plus the Teryl review fixes, with `PARITY_VALKEY_URL` pointing to a disposable Valkey 8 database. Four test threads avoid contention between Python subprocess timing tests. One existing worker-death timing assertion failed in a concurrent run; it passed in isolation and in the recorded run.
 
-**Before: 1434 executed, 39 ignored. After: 408 executed, 17 ignored. Both runs had zero failures.** PPE dependency tests are not executed by the CPEX workspace command. A smaller CPEX count therefore does not establish coverage parity by itself.
+**Initial PPE 0.4.1 reconciliation: before 1434 executed, 39 ignored; after 408 executed, 17 ignored. Both runs had zero failures.** PPE dependency tests are not executed by the CPEX workspace command. A smaller CPEX count therefore does not establish coverage parity by itself.
 
 The [machine-readable inventory](ppe-adoption-test-counts.json) records counts per executable and every ignored test with its reason. Default-feature counts exclude optional-feature-only tests; the retained baseline harness is run separately against the old engine.
 
@@ -125,3 +125,11 @@ Every ignored test is listed below. The supported legacy-worker release gate sep
 - `cpex-hosts-python / tests/isolated_venv_e2e.rs / legacy_plugins_on_cmf_tool_pre_invoke_rewrite_and_deny_through_the_engine`: requires python3 + a cpex Python checkout (CPEX_PYTHON_SOURCE); run via `make test-python-e2e`.
 - `cpex-hosts-python / tests/isolated_venv_e2e.rs / legacy_tool_pre_invoke_round_trips_through_the_real_worker`: requires python3 + a cpex Python checkout (CPEX_PYTHON_SOURCE); run via `make test-python-e2e`.
 - `cpex / doctests / crates/cpex/src/lib.rs - (line 66)`: marked #[ignore].
+
+## PPE 0.5.0 upgrade validation
+
+The 2026-10-13 upgrade pins every resolved PPE crate to 0.5.0. The same workspace command with four test threads and a real disposable Valkey executed **409 tests, with 17 explicitly ignored and zero failures**. The extra executed test checks secret-header provenance across the Python host boundary. The `ppe_0_5_0` entry in the machine-readable inventory lists every executable and ignored test for this run.
+
+The 68-request parity run has 53 exact matches and 15 requests differing in 38 explicitly reviewed fields. One decision intentionally changes: a second subject reusing a redeemed CIBA approval now denies. Delegated-token keys also gain delegator and target identity fields. The original 0.2.3 snapshots are unchanged.
+
+The Python binding suite passed 70 tests, the Go static-FFI race suite passed, and the four legacy SDK e2e suites passed all 14 tests with no skips. Workspace and all-feature facade clippy checks and the tutorial offline checks also passed. Further upstream fixes remain tracked in [PPE #208](https://github.com/praxis-proxy/policy/issues/208) and [PPE #209](https://github.com/praxis-proxy/policy/issues/209), to be implemented in a separate PPE PR before CPEX adopts a released fix.

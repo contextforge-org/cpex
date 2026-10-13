@@ -1,5 +1,5 @@
 # Reviewed hook rename table: hook names CPEX 0.2.3 accepted, mapped to the
-# names PPE 0.4.1 (CPEX 0.3.0) dispatches.
+# names PPE 0.5.0 (CPEX 0.3.0) dispatches.
 #
 # The parity harness applies it to every scenario's `hooks` block and every
 # `invoke` request's `hook` before replaying, and to the `hook` field of the
@@ -41,5 +41,5 @@ unchanged:
   - token.delegate
   - elicit
 
-# No PPE 0.4.1 builtin name is outside the table's targets and identity rows.
+# No PPE 0.5.0 builtin name is outside the table's targets and identity rows.
 unused: []

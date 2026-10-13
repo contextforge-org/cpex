@@ -14,6 +14,8 @@ Capture 0.2.3 decision snapshots first, while the old engine still exists. Then 
 
 ---
 
+**2026-10-13 release update:** The maintainer selected released PPE 0.5.0 for the final CPEX pin, superseding the original 0.4.x constraint. CPEX adopts its API and documented security changes, reruns parity, and tracks further upstream work in [PPE #208](https://github.com/praxis-proxy/policy/issues/208) and [PPE #209](https://github.com/praxis-proxy/policy/issues/209). Those fixes will be implemented in a separate PPE PR and adopted from a released version.
+
 ## Problem Frame
 
 CPEX carries a drifting copy of the engine that now lives in PPE. Every kept CPEX surface is wired to the old crates and the old `PluginManager` name. Full context in the origin document.
@@ -47,8 +49,8 @@ Carried from the origin document; R-IDs are the origin's.
 
 ### Deferred to Follow-Up Work
 
-- Idempotent PPE `install_builtins`: [confirmed defect and issue draft](ppe-adoption-follow-ups.md). Keep the binding guards; document double install as a Rust host error until the upstream patch ships. Any adopted fix ships as a 0.4.x patch and gates the tag on a new parity run.
-- A private-destination allow-list in PPE: [feature issue draft](ppe-adoption-follow-ups.md). It is outside this cut-over's feature scope. Meanwhile warn at binding startup when the global opt-in is enabled.
+- Idempotent PPE `install_builtins`: [confirmed defect, PPE #208](https://github.com/praxis-proxy/policy/issues/208). Keep the binding guards; document double install as a Rust host error until the upstream patch ships. Any adopted fix ships in a new PPE release and gates the tag on a new parity run.
+- A private-destination allow-list in PPE: [PPE #209](https://github.com/praxis-proxy/policy/issues/209). It is outside this cut-over's feature scope. Meanwhile warn at binding startup when the global opt-in is enabled.
 - Distinct `auth.egress_denied` code for identity-jwt in PPE: upstream issue.
 - Capture PyO3, Python host venv and HTTP transport learnings with a compound note after 0.3.0 ships.
 - Any final deprecation release for removed crate names on crates.io (they stay at 0.2.3; the changelog says so).
@@ -94,7 +96,7 @@ Carried from the origin document; R-IDs are the origin's.
 
 - Parity baseline is golden snapshots captured from 0.2.3, not a side-by-side build: two versions of the same engine in one workspace is fragile, and the first unit runs while the old engine is still present.
 - One cut-over commit for all workspace manifests and the facade: the workspace never resolves two engines at once. Cargo must load every member's manifest to resolve the workspace, so the cut-over also repoints every kept crate's `Cargo.toml` to the crates.io PPE crates (kept crates that the facade depends on, such as the Python host and biscuit, use `praxis-policy-core` directly to avoid a cycle). Source ports follow as their own commits; until each lands, only that crate fails to compile, and `cargo build -p cpex` without `python-host` works right after the cut-over. Work happens on one integration branch so `main` never sees the red window.
-- PPE is pinned exactly (`=0.4.N`) in the workspace, not by caret: PPE has shipped breaking changes inside 0.4.x and main already carries more. Any PPE fix CPEX needs ships as a 0.4.x patch cut from the release tag on a PPE release branch, not from main (which would be 0.5.0). Moving the pin requires rerunning parity (U11).
+- PPE is pinned exactly (`=0.5.0`) in the workspace, not by caret. Further engine fixes land in separate PPE PRs and are adopted from released versions. Moving the pin requires rerunning parity (U11).
 - Hook names follow PPE. The Python host remaps payload-kind and credential-hook detection onto PPE's dispatched names, the parity fixtures carry an explicit reviewed legacy-to-PPE hook rename table, and the migration guide and changelog list the renames for config authors, Python plugin authors and Go `InvokeByName` callers.
 - C ABI symbols rename `cpex_manager_*` to `cpex_engine_*`, the exported inner struct renames to match, and `FFI_ABI_VERSION` goes to 3 so a stale Go build fails its ABI check loudly. Go names follow (`NewPolicyEngine`, `NewPolicyEngineDefault`, `PolicyEngine` type).
 - Bindings build one transport per engine with private destinations blocked by default, and a per-binding opt-in (Python constructor keyword argument, Go option, FFI flag) enables `with_allow_private_destinations()`. The switch lives in host code only; no surface reads it from the policy document. The same transport instance is passed to Vault. Tutorial and local demos turn the opt-in on.
@@ -168,7 +170,7 @@ graph TD
 Surface layering after the cut-over:
 
 ```
-praxis-policy (crates.io, exact 0.4.N pin, features: builtins, http-hyper)
+praxis-policy (crates.io, exact 0.5.0 pin, features: builtins, http-hyper)
   └─ cpex (facade: re-exports PPE + CPEX-only features)
        ├─ cpex-hosts-python   (isolated_venv factory)
        ├─ delegator-biscuit   (CPEX-owned plugin)
@@ -629,8 +631,8 @@ praxis-policy (crates.io, exact 0.4.N pin, features: builtins, http-hyper)
 
 | Risk | Mitigation |
 |------|------------|
-| PPE 0.4.x lacks something a kept crate needs | Fixable gaps become PPE 0.4.x patches from a release branch, gating the 0.3.0 tag; unfixable or unexplained gaps trigger the abort criterion below |
-| A needed PPE fix ships alongside PPE's pending breaking changes | Patch from the 0.4.1 tag, not main; rerun U11 whenever the exact pin moves |
+| PPE lacks something a kept crate needs | Fixable gaps become separately reviewed PPE releases, gating the 0.3.0 tag; unfixable or unexplained gaps trigger the abort criterion below |
+| A needed PPE fix ships alongside unrelated breaking changes | Review the release changes and port affected surfaces; rerun U11 whenever the exact pin moves |
 | Python plugins silently lose credentials after the hook rename | Remap in U4 with tests that raw credentials arrive on `identity.resolve` and `token.delegate` |
 | The external Python worker SDK dispatches only legacy hooks | The in-repo legacy payload shim preserves 0.1.x workers; gate merge and the 0.3.0 tag on the four `make test-python-e2e` suites (credential, isolated-venv, extensions-merge and acceptance) against the supported `CPEX_PYTHON_SOURCE` checkout with no skips. If that compatibility path fails and requires an SDK change, the CPEX release maintainer coordinates and verifies the SDK release before tagging 0.3.0 |
 | Session store format drift breaks existing Valkey data | Include a stored-label read in parity snapshots; document if incompatible |

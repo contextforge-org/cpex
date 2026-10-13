@@ -271,7 +271,7 @@ After startup, the host decides when to re-read. Nothing in the engine re-reads 
 | Go | `engine.RefreshSecrets()` | `engine.SecretsLastSuccess(provider)` |
 | C ABI | `cpex_refresh_secrets` | `cpex_secrets_last_success` |
 
-A value that fails to re-read keeps its last good bytes, and the report names every failure without the secret itself. The interval you pick is the upper bound on how long a revoked credential stays in use.
+A value that fails to re-read keeps its last good bytes, and the report names every failure without the secret itself. Failed refreshes retain the last successful timestamp; inspect the refresh report's `failed` entries for current failures. Rust hosts can also query `engine.secrets_health(provider)`. Changes to resolved `secrets:` declarations require a restart; unused `env` provider settings are rejected. The interval you pick is the upper bound on how long a revoked credential stays in use.
 
 ### Per-plugin secret sources
 

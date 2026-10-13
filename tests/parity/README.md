@@ -1,7 +1,7 @@
 # Parity snapshots
 
 Golden decision snapshots recorded from the CPEX 0.2.3 engine, and a parity
-check that replays the same requests through CPEX 0.3.0 (PPE 0.4.1) and
+check that replays the same requests through CPEX 0.3.0 (PPE 0.5.0) and
 diffs the outcomes against them. Each scenario is a config plus an ordered
 request set. A difference fails the check unless it is listed, with its
 cause, in `intended-differences.yaml`.
@@ -256,11 +256,11 @@ equals the seed.
 The determinism test runs two 0.3.0 captures and checks they are
 byte-identical.
 
-## Result against PPE 0.4.1
+## Result against PPE 0.5.0
 
-Every request reaches the same decision and the same non-path violation
-code as in 0.2.3. 54 of 68 requests match exactly; 14 differ in 26 fields,
-all listed in `intended-differences.yaml`:
+67 of 68 requests retain their allow/deny decision. The CIBA approval-reuse
+request intentionally changes from allow to deny. 53 requests match exactly;
+15 differ in 38 fields, all listed in `intended-differences.yaml`:
 
 | Cause | Requests |
 |---|---|
@@ -268,6 +268,8 @@ all listed in `intended-differences.yaml`:
 | A token-exchange denial reason no longer carries the IdP's `error_description` | 1 |
 | A token with an unknown `kid` triggers one on-demand JWKS refetch | 1 |
 | A route without `authentication:` does not run the identity plugin, so no subject reaches it (same decision on this open route) | 1 |
+| Delegated-token keys include the delegator instance and logical target | 2 |
+| A redeemed CIBA approval cannot be reused by another subject | 1 |
 
 Each entry cites the PPE changelog line behind it.
 
@@ -281,13 +283,9 @@ These hold in both 0.2.3 and 0.3.0 unless noted.
   `opa`, `cedar.default_deny` or the Cedar policy id.
 - CIBA polls once inside the dispatching call, so the first call reaches
   `pending` only when that poll is pending.
-- A caller can resume another subject's approved elicitation id and is
-  allowed without a new upstream check (`approved-resume-by-other-subject`).
-  PPE 0.4.1 keeps this: the CIBA correlation store records only the expected
-  and resolved approver, `check` replays a cached approval for any caller
-  presenting the id, and `validate` compares the resolved approver with the
-  approver named at dispatch, not with the requesting subject or that
-  subject's own `from:` approver.
+- In PPE 0.5.0 an approval is bound to requester, route and tool and redeemed
+  once. `approved-resume-by-other-subject` now denies with
+  `elicitation.unknown_id` after the requester has redeemed the id.
 - Repeated delegation for the same subject and audience calls the token
   endpoint again (`hr-delegated-again`).
 - Session labels are keyed by `sha256(subject : session id)`, so another

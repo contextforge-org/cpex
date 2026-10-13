@@ -386,7 +386,7 @@ fn vault_refresh_picks_up_a_rotated_value() {
     assert!(after_rotation > at_init, "{after_rotation} > {at_init}");
 
     // A backend outage keeps the last-good value, names the failure, and
-    // clears the last-success stamp.
+    // retains the last-success stamp for staleness checks.
     server.set(VAULT_KV, 503, r#"{"errors":["sealed"]}"#);
     let report = refresh(&engine);
     assert_eq!(report.failed.len(), 1, "{report:?}");
@@ -398,7 +398,7 @@ fn vault_refresh_picks_up_a_rotated_value() {
         !failure.message.contains("rotated"),
         "no secret in the message"
     );
-    assert_eq!(last_success(&engine, "vault-dev"), 0);
+    assert_eq!(last_success(&engine, "vault-dev"), after_rotation);
 
     // Recovery stamps it again.
     set_password(&server, "rotated");

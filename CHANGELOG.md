@@ -17,7 +17,9 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/).
 
 ## [0.3.0] - 2026-10-08
 
-CPEX now runs on the [praxis-policy engine](https://github.com/praxis-proxy/policy) (PPE) 0.4.1 from crates.io instead of its own engine crates. Policy language, plugin `kind` strings and violation codes stay the same. API names, hook names, several config keys and some defaults change. The [migration guide](docs/content/docs/migration-0.3.md) lists every change by surface.
+CPEX now runs on the [praxis-policy engine](https://github.com/praxis-proxy/policy) (PPE) 0.5.0 from crates.io instead of its own engine crates. API names, hook names, several config keys, defaults and security checks change. The [migration guide](docs/content/docs/migration-0.3.md) lists every change by surface.
+
+PPE 0.5.0 also updates CEL to 0.15, adds the `delegator/vault` builtin, validates OAuth token responses more strictly, preserves secret-header provenance, and retains secret last-success timestamps after failed refreshes. Changes to resolved `secrets:` declarations require a restart. The migration guide documents these changes and their parity effects.
 
 ### Added
 
@@ -44,7 +46,7 @@ CPEX now runs on the [praxis-policy engine](https://github.com/praxis-proxy/poli
 - **BREAKING (Python plugin host): a `token.delegate` plugin on PPE's `DelegationPayload` needs `read_inbound_credentials` to receive the bearer token.** It used to be gated on `read_delegated_tokens`. The bearer token is the caller's inbound credential, and PPE's own OAuth delegator declares `read_inbound_credentials`. A plugin that declared only `read_delegated_tokens` now gets an error instead of the token.
 - **Python `PolicyEngine` lifecycle.** `shutdown()` starts when called, immediately refuses new work, and waits for an `initialize()` in flight. Awaiting reports completion; dropping or cancelling the awaitable does not stop teardown. A timed-out `shutdown()` can be retried. An `initialize()` that times out rolls back the plugins it started once it ends, and leaves the engine terminal. A panicking secret provider makes `refresh_secrets()` raise `RuntimeError`.
 - **Legacy payload shim: siblings on pre hooks pass through.** On `cmf.tool_pre_invoke`, `cmf.prompt_pre_invoke` and `cmf.resource_pre_fetch`, content parts beside the one the legacy payload carries are returned unchanged. The plugin authorizes the part it sees.
-- **BREAKING: the policy document follows PPE 0.4.1.** The `apl:` wrapper and `global.apl:` are gone, phase lists nest under `authorization:`, empty authorization blocks fail, `plugin_settings` is `engine_settings`, `global.policies` is replaced by top-level `groups:`, route `plugins:` lists are removed, `priority:` is valid only under hook dispatch, and `plugin(x)` steps are `run(x)`.
+- **BREAKING: the policy document follows PPE 0.5.0.** The `apl:` wrapper and `global.apl:` are gone, phase lists nest under `authorization:`, empty authorization blocks fail, `plugin_settings` is `engine_settings`, `global.policies` is replaced by top-level `groups:`, route `plugins:` lists are removed, `priority:` is valid only under hook dispatch, and `plugin(x)` steps are `run(x)`.
 - **BREAKING: dispatch defaults to `policy`.** Identity runs only on routes that list `authentication:`, requests select routes by `meta`, and a request without it is denied with `unidentified_request` when the config declares a policy. A declared plugin no policy reaches fails the load.
 - **BREAKING: outbound plugins must declare `perform_http`.** JWT with `jwks_url`, OAuth delegation, CIBA and Vault fail to initialize without it. A blocked private JWKS shows as `auth.jwks_unavailable`.
 - **A plugin panic is a denial.** PPE contains it and reports violation code `plugin_panic`; the FFI returns `RC_OK` with that violation instead of `RC_PANIC`.
@@ -73,7 +75,7 @@ CPEX now runs on the [praxis-policy engine](https://github.com/praxis-proxy/poli
 - **Go: an empty `DataPolicy.AllowedActions` no longer allows every action.** An empty slice was dropped on the way to Rust and read as unconstrained. Now nil allows every action and an empty non-nil slice allows none.
 - **Python plugin host withholds raw headers by default.** PPE's public `IdentityPayload` and the outbound `http` extension send empty raw header maps to a worker, because an unknown header name or an unvalidated value can hold a credential. Request-line fields still cross. Only a plugin declaring `read_inbound_credentials` receives the full identity header map, through the gated `credential` object. Worker-returned header edits still require `write_headers` and have known credential names removed.
 - **Legacy payload shim refuses post-hook messages with unseen content.** On `cmf.tool_post_invoke`, `cmf.prompt_post_invoke` and `cmf.resource_post_fetch`, a message holding a content part beside the result the legacy payload carries fails closed with `legacy_shim_unsupported`. The plugin cannot see that part, so a filter would pass it through unredacted.
-- **Known limitation: an elicitation approval is not bound to the requesting subject.** A caller presenting another subject's approved elicitation id is allowed. This is present in 0.2.3 and PPE 0.4.1; an upstream fix is pending. Keep elicitation timeouts short and return ids only to the requesting client.
+- **CIBA approvals are bound to requester, route and tool and redeemed once.** PPE 0.5.0 fixes the cross-subject approval reuse present in 0.2.3. Dispatch requires a non-empty authenticated subject id.
 
 ## [0.2.3] - 2026-10-02
 

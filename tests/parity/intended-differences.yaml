@@ -299,3 +299,290 @@ differences:
   cause: 'Rule-path deny code. A step without a custom deny code reports its source path, and PPE builds
     that path without the `.apl.` segment 0.2.3 inserted (PPE removed the `apl:` wrapper at every scope:
     praxis-policy CHANGELOG 0.2.0, Removed, "The `apl:` wrapper"). Same decision, same failing step index.'
+- scenario: delegation-oauth
+  request: hr-delegated
+  field: stages[1].extensions.raw_credentials.delegated_tokens[0].key.delegator_name
+  before: null
+  after: workday-oauth
+  cause: 'PPE 0.5.0 scopes delegated-token keys by delegator instance and logical target as well as principal, audience and scopes (praxis-proxy/policy#188). These added identity fields distinguish credentials for separate downstream targets; the decision and token effects are otherwise unchanged.'
+- scenario: delegation-oauth
+  request: hr-delegated
+  field: stages[1].extensions.raw_credentials.delegated_tokens[0].key.target_name
+  before: null
+  after: workday-api
+  cause: 'PPE 0.5.0 scopes delegated-token keys by delegator instance and logical target as well as principal, audience and scopes (praxis-proxy/policy#188). These added identity fields distinguish credentials for separate downstream targets; the decision and token effects are otherwise unchanged.'
+- scenario: delegation-oauth
+  request: hr-delegated
+  field: stages[2].extensions.raw_credentials.delegated_tokens[0].key.delegator_name
+  before: null
+  after: workday-oauth
+  cause: 'PPE 0.5.0 scopes delegated-token keys by delegator instance and logical target as well as principal, audience and scopes (praxis-proxy/policy#188). These added identity fields distinguish credentials for separate downstream targets; the decision and token effects are otherwise unchanged.'
+- scenario: delegation-oauth
+  request: hr-delegated
+  field: stages[2].extensions.raw_credentials.delegated_tokens[0].key.target_name
+  before: null
+  after: workday-api
+  cause: 'PPE 0.5.0 scopes delegated-token keys by delegator instance and logical target as well as principal, audience and scopes (praxis-proxy/policy#188). These added identity fields distinguish credentials for separate downstream targets; the decision and token effects are otherwise unchanged.'
+- scenario: delegation-oauth
+  request: hr-delegated-again
+  field: stages[1].extensions.raw_credentials.delegated_tokens[0].key.delegator_name
+  before: null
+  after: workday-oauth
+  cause: 'PPE 0.5.0 scopes delegated-token keys by delegator instance and logical target as well as principal, audience and scopes (praxis-proxy/policy#188). These added identity fields distinguish credentials for separate downstream targets; the decision and token effects are otherwise unchanged.'
+- scenario: delegation-oauth
+  request: hr-delegated-again
+  field: stages[1].extensions.raw_credentials.delegated_tokens[0].key.target_name
+  before: null
+  after: workday-api
+  cause: 'PPE 0.5.0 scopes delegated-token keys by delegator instance and logical target as well as principal, audience and scopes (praxis-proxy/policy#188). These added identity fields distinguish credentials for separate downstream targets; the decision and token effects are otherwise unchanged.'
+- scenario: delegation-oauth
+  request: hr-delegated-again
+  field: stages[2].extensions.raw_credentials.delegated_tokens[0].key.delegator_name
+  before: null
+  after: workday-oauth
+  cause: 'PPE 0.5.0 scopes delegated-token keys by delegator instance and logical target as well as principal, audience and scopes (praxis-proxy/policy#188). These added identity fields distinguish credentials for separate downstream targets; the decision and token effects are otherwise unchanged.'
+- scenario: delegation-oauth
+  request: hr-delegated-again
+  field: stages[2].extensions.raw_credentials.delegated_tokens[0].key.target_name
+  before: null
+  after: workday-api
+  cause: 'PPE 0.5.0 scopes delegated-token keys by delegator instance and logical target as well as principal, audience and scopes (praxis-proxy/policy#188). These added identity fields distinguish credentials for separate downstream targets; the decision and token effects are otherwise unchanged.'
+- scenario: elicitation-ciba
+  request: approved-resume-by-other-subject
+  field: code
+  before: null
+  after: elicitation.unknown_id
+  cause: 'PPE 0.5.0 binds CIBA approvals to requester, route and tool and atomically consumes each approved id once (praxis-proxy/policy#188). The fixture first redeems the id as evan, then retries it as harry; the second call now denies with elicitation.unknown_id instead of allowing another subject to reuse the approval.'
+- scenario: elicitation-ciba
+  request: approved-resume-by-other-subject
+  field: decision
+  before: allow
+  after: deny
+  cause: 'PPE 0.5.0 binds CIBA approvals to requester, route and tool and atomically consumes each approved id once (praxis-proxy/policy#188). The fixture first redeems the id as evan, then retries it as harry; the second call now denies with elicitation.unknown_id instead of allowing another subject to reuse the approval.'
+- scenario: elicitation-ciba
+  request: approved-resume-by-other-subject
+  field: result
+  before:
+    sent: true
+  after: null
+  cause: 'PPE 0.5.0 binds CIBA approvals to requester, route and tool and atomically consumes each approved id once (praxis-proxy/policy#188). The fixture first redeems the id as evan, then retries it as harry; the second call now denies with elicitation.unknown_id instead of allowing another subject to reuse the approval.'
+- scenario: elicitation-ciba
+  request: approved-resume-by-other-subject
+  field: stages
+  before:
+  - continue: true
+    errors: []
+    extensions:
+      agent: null
+      delegation: null
+      http:
+        request_headers:
+          X-Policy-Elicitation-Id: REQ-mona
+        response_headers: {}
+      meta:
+        entity_name: send_email
+        entity_type: tool
+        tags: []
+      raw_credentials: null
+      security: null
+    hook: identity.resolve
+    payload:
+      identity:
+        caller_workload: null
+        client: null
+        delegation: null
+        raw_claims:
+          aud: cpex-parity
+          exp: 4102444800
+          iat: 1767225600
+          iss: https://idp.parity.test
+          manager: dana
+          roles:
+          - hr
+          sub: harry
+        raw_credentials:
+          delegated_tokens: []
+          inbound_tokens:
+          - kind: jwt
+            role: user
+            source_header: Authorization
+            token: <token>
+        subject:
+          claims:
+            manager: dana
+          id: harry
+          permissions: []
+          roles:
+          - hr
+          teams: []
+    payload_modified: true
+    violation: null
+  - continue: true
+    errors: []
+    extensions:
+      agent: null
+      delegation: null
+      http:
+        request_headers:
+          X-Policy-Elicitation-Id: REQ-mona
+        response_headers: {}
+      meta:
+        entity_name: send_email
+        entity_type: tool
+        tags: []
+      raw_credentials:
+        delegated_tokens: []
+        inbound_tokens:
+        - kind: jwt
+          role: user
+          source_header: Authorization
+          token: <token>
+      security:
+        auth_method: null
+        caller_workload: null
+        classification: null
+        client: null
+        labels: []
+        subject:
+          claims:
+            manager: dana
+          id: harry
+          permissions: []
+          roles:
+          - hr
+          teams: []
+    hook: cmf.tool_pre_invoke
+    payload: null
+    payload_modified: false
+    violation: null
+  - continue: true
+    errors: []
+    extensions:
+      agent: null
+      delegation: null
+      http:
+        request_headers:
+          X-Policy-Elicitation-Id: REQ-mona
+        response_headers: {}
+      meta:
+        entity_name: send_email
+        entity_type: tool
+        tags: []
+      raw_credentials:
+        delegated_tokens: []
+        inbound_tokens:
+        - kind: jwt
+          role: user
+          source_header: Authorization
+          token: <token>
+      security:
+        auth_method: null
+        caller_workload: null
+        classification: null
+        client: null
+        labels: []
+        subject:
+          claims:
+            manager: dana
+          id: harry
+          permissions: []
+          roles:
+          - hr
+          teams: []
+    hook: cmf.tool_post_invoke
+    payload: null
+    payload_modified: false
+    violation: null
+  after:
+  - continue: true
+    errors: []
+    extensions:
+      agent: null
+      delegation: null
+      http:
+        request_headers:
+          X-Policy-Elicitation-Id: REQ-mona
+        response_headers: {}
+      meta:
+        entity_name: send_email
+        entity_type: tool
+        tags: []
+      raw_credentials: null
+      security: null
+    hook: identity.resolve
+    payload:
+      identity:
+        caller_workload: null
+        client: null
+        delegation: null
+        raw_claims:
+          aud: cpex-parity
+          exp: 4102444800
+          iat: 1767225600
+          iss: https://idp.parity.test
+          manager: dana
+          roles:
+          - hr
+          sub: harry
+        raw_credentials:
+          delegated_tokens: []
+          inbound_tokens:
+          - kind: jwt
+            role: user
+            source_header: Authorization
+            token: <token>
+        subject:
+          claims:
+            manager: dana
+          id: harry
+          permissions: []
+          roles:
+          - hr
+          teams: []
+    payload_modified: true
+    violation: null
+  - continue: false
+    errors: []
+    extensions:
+      agent: null
+      delegation: null
+      http:
+        request_headers:
+          X-Policy-Elicitation-Id: REQ-mona
+        response_headers: {}
+      meta:
+        entity_name: send_email
+        entity_type: tool
+        tags: []
+      raw_credentials:
+        delegated_tokens: []
+        inbound_tokens:
+        - kind: jwt
+          role: user
+          source_header: Authorization
+          token: <token>
+      security:
+        auth_method: null
+        caller_workload: null
+        classification: null
+        client: null
+        labels: []
+        subject:
+          claims:
+            manager: dana
+          id: harry
+          permissions: []
+          roles:
+          - hr
+          teams: []
+    hook: cmf.tool_pre_invoke
+    payload: null
+    payload_modified: false
+    violation:
+      code: elicitation.unknown_id
+      description: null
+      details: {}
+      plugin: apl::tool::send_email::pre
+      proto_error_code: null
+      reason: 'elicitation check failed: elicitation handler error elicitation.unknown_id: check: plugin `manager-approval` halted: unknown elicitation id'
+  cause: 'PPE 0.5.0 binds CIBA approvals to requester, route and tool and atomically consumes each approved id once (praxis-proxy/policy#188). The fixture first redeems the id as evan, then retries it as harry; the second call now denies with elicitation.unknown_id instead of allowing another subject to reuse the approval.'

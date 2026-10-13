@@ -81,12 +81,12 @@ serde_bytes = "0.11"
 chrono = { version = "0.4", features = ["serde"] }
 
 # Policy engine. Pinned exactly, not by caret: PPE has shipped breaking changes
-# inside 0.4.x, so moving the pin is a deliberate step that reruns the parity
-# suite. All PPE crates move together. `praxis-policy` is the facade `cpex`
+# between releases, so moving the pin is a deliberate step that reruns the
+# parity suite. All PPE crates move together. `praxis-policy` is the facade `cpex`
 # re-exports; kept crates that `cpex` itself depends on use
 # `praxis-policy-core` directly so there is no dependency cycle.
-praxis-policy      = { version = "=0.4.1", default-features = false }
-praxis-policy-core = { version = "=0.4.1" }
+praxis-policy      = { version = "=0.5.0", default-features = false }
+praxis-policy-core = { version = "=0.5.0" }
 
 # Internal workspace crates — single source of truth for their path + version
 # requirement. Members depend on these via `{ workspace = true }` so a version

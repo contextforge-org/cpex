@@ -102,11 +102,11 @@ config:
 
 ## API keys
 
-`identity/api-key` resolves an opaque key against a file or HTTP directory and maps the record's fields with the same mapping machinery, under `record_map:`. See PPE's [identity and delegation guide](https://github.com/praxis-proxy/policy/blob/v0.4.1/docs/content/identity-delegation.md#recipe-7-an-opaque-api-key-resolved-against-a-directory) for the full config and its denial codes.
+`identity/api-key` resolves an opaque key against a file or HTTP directory and maps the record's fields with the same mapping machinery, under `record_map:`. See PPE's [identity and delegation guide](https://github.com/praxis-proxy/policy/blob/v0.5.0/docs/content/identity-delegation.md#recipe-7-an-opaque-api-key-resolved-against-a-directory) for the full config and its denial codes.
 
 ## A preset for another IdP
 
-Presets are JSON files compiled into PPE's `identity/jwt` builtin, so a new one is a PPE change, not a CPEX one. Prototype it as an inline `claim_map` first: the schema is identical, and the map works today. To contribute it, follow PPE's [guide to adding a claim mapper preset](https://github.com/praxis-proxy/policy/blob/v0.4.1/docs/content/identity-claim-mapping.md). It ships to CPEX when CPEX moves its PPE pin.
+Presets are JSON files compiled into PPE's `identity/jwt` builtin, so a new one is a PPE change, not a CPEX one. Prototype it as an inline `claim_map` first: the schema is identical, and the map works today. To contribute it, follow PPE's [guide to adding a claim mapper preset](https://github.com/praxis-proxy/policy/blob/v0.5.0/docs/content/identity-claim-mapping.md). It ships to CPEX when CPEX moves its PPE pin.
 
 ## Go deeper
 

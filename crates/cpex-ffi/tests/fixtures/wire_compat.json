@@ -2,6 +2,7 @@
   "description": "Plugin kinds, PDP kinds, session store kinds, secret provider kinds and hook names that the CPEX bindings (C FFI and Python wheel) expose after installing builtins. A new PPE builtin is one edit here. Kinds listed under absent_plugin_kinds must not resolve.",
   "plugin_kinds": [
     "delegator/oauth",
+    "delegator/vault",
     "elicitation/ciba",
     "identity/api-key",
     "identity/jwt"

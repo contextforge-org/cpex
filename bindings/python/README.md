@@ -75,7 +75,7 @@ Raises `ValueError` on missing file, IO error, or config error (including
 an unknown plugin `kind` or a removed hook name).
 
 Bundled builtins: plugin kinds `identity/jwt`, `identity/api-key`,
-`delegator/oauth` and `elicitation/ciba`; PDP kinds `cedar-direct`, `cel`
+`delegator/oauth`, `delegator/vault` and `elicitation/ciba`; PDP kinds `cedar-direct`, `cel`
 and `opa`; session store kind `valkey`; secret provider kinds `env`,
 `file` and `vault`. Builtins that make HTTP calls must declare
 `capabilities: [perform_http]`.
@@ -166,8 +166,10 @@ panics, and `TimeoutError` past the wall-clock timeout.
 ### `engine.secrets_last_success(provider: str) -> datetime | None`
 
 When `provider` last re-read all of its values without a failure, as a
-timezone-aware UTC `datetime`. `None` when its most recent refresh failed,
-the name is not a declared provider, or secrets are not resolved yet.
+timezone-aware UTC `datetime`. Failed refreshes retain that timestamp;
+inspect the refresh report's `failed` entries to detect an outage. `None` when
+there has been no successful refresh, the provider is undeclared, or secrets
+are not resolved yet.
 Initialization counts as the first success. Synchronous.
 
 ### `PipelineResult`

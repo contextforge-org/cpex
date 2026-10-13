@@ -68,7 +68,7 @@ Beyond unit tests, each tutorial module binary supports a `--check` flag that ru
 
 Unit-evaluating a route proves the policy logic. It does not prove the plugins it dispatches behave correctly end to end. For effects that call out (a PDP resolver, a delegator, a host plugin), add an integration test that exercises the real plugin through the engine, so the interaction is covered and not just the policy's intent. Test the failure paths too: a PDP that denies, a token exchange that returns a short scope, an IdP that is unreachable, a JWKS endpoint the transport refuses.
 
-To test those failure paths without a server, a Rust test can install a scripted transport instead of a real one. `praxis_policy_core::http_testing::FakeTransport` (enable the `test-util` feature on `praxis-policy-core = "=0.4.1"` in `[dev-dependencies]`) scripts responses, timeouts, connect failures and key rotation between two fetches, without sleeping.
+To test those failure paths without a server, a Rust test can install a scripted transport instead of a real one. `praxis_policy_core::http_testing::FakeTransport` (enable the `test-util` feature on `praxis-policy-core = "=0.5.0"` in `[dev-dependencies]`) scripts responses, timeouts, connect failures and key rotation between two fetches, without sleeping.
 
 A test that talks to a mock IdP on `localhost` needs a transport that allows private destinations (`HyperTransport::new().with_allow_private_destinations()` in Rust, `allow_private_destinations=True` in Python, `cpex.WithPrivateDestinations()` in Go). Keep that setting in test and demo hosts only. Those are the branches policy exists to handle.
 

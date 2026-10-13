@@ -138,7 +138,7 @@ func TestRefreshSecretsReportsUpdatesAndFailures(t *testing.T) {
 	if strings.Contains(failure.Message, "second") {
 		t.Error("the failure message must not carry the secret")
 	}
-	if at, ok, err := eng.SecretsLastSuccess("local"); err != nil || ok || !at.IsZero() {
-		t.Errorf("expected a failed refresh to clear last success, got ok=%v at=%v err=%v", ok, at, err)
+	if at, ok, err := eng.SecretsLastSuccess("local"); err != nil || !ok || !at.Equal(again) {
+		t.Errorf("expected a failed refresh to retain last success %v, got ok=%v at=%v err=%v", again, ok, at, err)
 	}
 }

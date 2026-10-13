@@ -215,6 +215,6 @@ On `tool:` routes, OPA and CEL do not read the flattened `args.*` keys. They get
 
 ## Go deeper
 
-- PPE's [CMF extensions contract](https://github.com/praxis-proxy/policy/blob/v0.4.1/docs/content/cmf-extensions.md), the source for this page.
+- PPE's [CMF extensions contract](https://github.com/praxis-proxy/policy/blob/v0.5.0/docs/content/cmf-extensions.md), the source for this page.
 - [Common Message Format]({{< relref "/docs/cmf" >}}): the message the extensions travel with.
 - [Identity Claim Mapping]({{< relref "/docs/identity-claim-mapping" >}}): how token claims become `subject.*` and `client.*`.

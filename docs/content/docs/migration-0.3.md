@@ -5,7 +5,7 @@ weight: 125
 
 # Migrating from 0.2.x to 0.3
 
-CPEX 0.3.0 runs on the praxis-policy engine (PPE) 0.4.1 from crates.io instead of its own engine crates. The policy language, plugin `kind` strings, violation codes and the overall model stay the same. The API names, hook names, several config keys and some defaults change. This page lists every change a 0.2.x user has to act on, by surface.
+CPEX 0.3.0 runs on the praxis-policy engine (PPE) 0.5.0 from crates.io instead of its own engine crates. The API names, hook names, several config keys, defaults and security checks change. This page lists every change a 0.2.x user has to act on, by surface.
 
 Work through it in this order:
 
@@ -16,6 +16,8 @@ Work through it in this order:
 5. [Builtins](#builtins-added-and-removed) and [secrets](#secret-refresh-is-the-hosts-job): the bundled set changed.
 
 Load the migrated config through your own host. A 0.3.0 load names every key, hook and plugin it rejects, so read the whole error before fixing the first line.
+
+PPE 0.5.0 also validates OAuth token responses more strictly: issued token type, granted scopes and JWT audience/subject are checked by default. Delegated-token keys include the delegator instance and logical target. Review IdP responses and policies that depend on token defaults. Secret assertions add `HttpExtension::secret_headers`; exhaustive Rust literals must initialize it and hosts must preserve its provenance between hooks. JSON float parsing uses `float_roundtrip`, so numeric boundaries and re-serialized audit records can change. See the [PPE 0.5.0 release notes](https://github.com/praxis-proxy/policy/releases/tag/v0.5.0) for the full Rust API changes.
 
 ## Rust API
 
@@ -53,7 +55,7 @@ engine.initialize().await?;
 
 Without a transport, a plugin that needs one fails at `initialize()`, naming the missing host service. See [Outbound HTTP](#outbound-http-and-private-destinations).
 
-Call `install_builtins` exactly once per engine. PPE 0.4.1 appends an APL visitor on every call and discards its handle, so a second install is a Rust host error and can process policy sections twice. `cpex::host::install_host_defaults` has the same once-per-engine requirement. The C/Go and Python bindings retain their own idempotency guards. The [upstream follow-up](https://github.com/contextforge-org/cpex/blob/refactor/adopt-ppe-core/docs/plans/ppe-adoption-follow-ups.md) requests an idempotent PPE helper; keep the host guard until that fix ships.
+Call `install_builtins` exactly once per engine. PPE 0.5.0 appends an APL visitor on every call and discards its handle, so a second install is a Rust host error and can process policy sections twice. `cpex::host::install_host_defaults` has the same once-per-engine requirement. The C/Go and Python bindings retain their own idempotency guards. The [upstream follow-up, PPE #208](https://github.com/praxis-proxy/policy/issues/208) requests an idempotent PPE helper; keep the host guard until that fix ships.
 
 ### Facade features
 
@@ -147,7 +149,7 @@ A plugin panic inside `cpex_invoke` or `cpex_invoke_resolved` now returns `RC_OK
 
 Any other bit returns `RC_INVALID_INPUT`. The call is idempotent per handle after a success: a second call returns `RC_OK` and changes nothing. After a call that panicked, every later call returns `RC_PANIC`; free the handle and create a new one. `cpex_engine_new(yaml)` still registers no builtins and no transport.
 
-`cpex_refresh_secrets` returns a MessagePack map `{updated, unchanged, failed}`; free it with `cpex_free_bytes`. `cpex_secrets_last_success` writes Unix milliseconds, or `0` when the provider's last refresh failed or the name is unknown.
+`cpex_refresh_secrets` returns a MessagePack map `{updated, unchanged, failed}`; free it with `cpex_free_bytes`. `cpex_secrets_last_success` writes Unix milliseconds, or `0` when the provider has never refreshed successfully or the name is unknown. Failed refreshes retain the last successful timestamp; inspect `failed` to detect an outage.
 
 ## Hook names
 
@@ -299,7 +301,7 @@ Under `dispatch: policy`, a per-plugin `priority:` or `conditions:` is a load er
 - `not` is reserved (write `!`), and `&&` / `||` fail naming `&` / `|`.
 - `require(a, b | c)` now parses as `!(a & (b | c))`. A config that was rejected for mixing `,` and `|` may now load; check what it decides.
 
-PPE's [APL upgrade guide](https://github.com/praxis-proxy/policy/blob/v0.4.1/docs/content/upgrade-apl.md) covers each rule in detail.
+PPE's [APL upgrade guide](https://github.com/praxis-proxy/policy/blob/v0.5.0/docs/content/upgrade-apl.md) covers each rule in detail.
 
 ## New required capability: `perform_http`
 
@@ -355,7 +357,7 @@ The bundled transport **refuses private destinations by default**. Each surface 
 
 > **Blast radius.** The opt-in is not scoped to one plugin or host name. It permits loopback, RFC 1918 ranges, link-local addresses (including the cloud metadata endpoint at `169.254.169.254`) and CGNAT for every outbound builtin the engine runs: JWKS fetches, token exchange, CIBA and Vault. A policy author who can point a plugin at a URL can then reach anything on the host's network. The tutorial and the demos turn it on so they can reach a local IdP. Those settings are not for production. In production, reach in-cluster services through a host transport with its own egress rules (`set_http_transport`), or keep the default.
 
-The C/Go and Python binding installers emit a startup warning through the host's tracing subscriber, or stderr if none is installed, when the opt-in is enabled. The warning names the shared scope, cloud metadata and CGNAT. The tutorial emits it too. Rust hosts using `HyperTransport` directly can call `cpex::host::warn_private_destinations()`. A private-host allow-list is [deferred upstream](https://github.com/contextforge-org/cpex/blob/refactor/adopt-ppe-core/docs/plans/ppe-adoption-follow-ups.md); PPE 0.4.1 has no narrower switch.
+The C/Go and Python binding installers emit a startup warning through the host's tracing subscriber, or stderr if none is installed, when the opt-in is enabled. The warning names the shared scope, cloud metadata and CGNAT. The tutorial emits it too. Rust hosts using `HyperTransport` directly can call `cpex::host::warn_private_destinations()`. A private-host allow-list is [deferred upstream in PPE #209](https://github.com/praxis-proxy/policy/issues/209); PPE 0.5.0 has no narrower switch.
 
 What a refused call looks like:
 
@@ -450,7 +452,7 @@ The engine is the same everywhere, but not every feature reaches every surface i
 | Audit sinks next to `routes:` | no (see below) | no | no |
 | Registering your own plugin factories | yes | no | yes, through a linked Rust FFI crate |
 
-**Audit sinks and routes.** Under `dispatch: policy`, PPE 0.4.1 fails the load for a sink no step names, and `run(<sink>)` denies because a sink has no hook handler to call. Until PPE changes this, a config with routes cannot attach an audit sink. Use a hook plugin that a `run(...)` step names, or log the `PipelineResult` each call returns (it carries the verdict and violation code). See [Auditing]({{< relref "/docs/auditing" >}}).
+**Audit sinks and routes.** Under `dispatch: policy`, PPE 0.5.0 fails the load for a sink no step names, and `run(<sink>)` denies because a sink has no hook handler to call. Until PPE changes this, a config with routes cannot attach an audit sink. Use a hook plugin that a `run(...)` step names, or log the `PipelineResult` each call returns (it carries the verdict and violation code). See [Auditing]({{< relref "/docs/auditing" >}}).
 
 **Host-supplied client identity.** A host can set `security.client` in the extensions it passes, but route rules see `client.*` only when a plugin the route references declares `read_client`. A route whose rules read `client.*` with no such plugin reads absent values. Resolve the client with an `identity/jwt` plugin (`role: client`) on the route, or reference a plugin that declares `read_client`. See [CMF Extensions]({{< relref "/docs/cmf-extensions" >}}).
 
@@ -480,10 +482,10 @@ Other changes that can alter a decision, from PPE's own changelog:
 
 ## CEL notes
 
-CEL is still `cel` 0.14. Use `in` for list membership; container `.contains()` and the default `min` / `max` functions are not available. If the host registers custom CEL functions, give them names distinct from the built-ins (such as `double`), whose overloads may take precedence.
+PPE 0.5.0 uses `cel` 0.15. Use `in` for list membership; container `.contains()` and the default `min` / `max` functions are not available. String `size()` counts Unicode code points rather than UTF-8 bytes, and `exists()` can return true after another element errors. Review policies depending on byte limits or predicate errors. `CelResolver::with_functions` and its callback now return `Result`; conflicting standard-library overloads fail construction.
 
-## Known limitation: elicitation approval is not bound to the requester
+## Elicitation approvals are bound and single use
 
-An approved elicitation id can be resumed by a different subject. The CIBA correlation store records the expected and resolved approver, and validation checks the approver, not the subject that asked. A caller who learns another subject's approved id can present it and be allowed without a new approval. 0.2.3 behaves the same way, and so does PPE 0.4.1; an upstream fix is pending.
+PPE 0.5.0 binds CIBA approvals to the authenticated requester, selected route and tool, and redeems each approval once within the plugin instance. A request with no subject id fails before dispatch. Another subject cannot reuse an approval, and a second redemption is refused. This fixes the approval-reuse limitation present in 0.2.3 and PPE 0.4.1.
 
-Until then, keep approval `timeout` short and treat elicitation ids as secrets: return them only to the requesting client, and do not log them where other callers can read them. See the [threat model]({{< relref "/docs/threat-model#known-limitations" >}}).
+Keep approval `timeout` short and return elicitation ids only to the requesting client. The parity fixture records the intended change from allow to deny when a second subject retries a redeemed id.
