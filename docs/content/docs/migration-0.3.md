@@ -53,6 +53,8 @@ engine.initialize().await?;
 
 Without a transport, a plugin that needs one fails at `initialize()`, naming the missing host service. See [Outbound HTTP](#outbound-http-and-private-destinations).
 
+Call `install_builtins` exactly once per engine. PPE 0.4.1 appends an APL visitor on every call and discards its handle, so a second install is a Rust host error and can process policy sections twice. `cpex::host::install_host_defaults` has the same once-per-engine requirement. The C/Go and Python bindings retain their own idempotency guards. The [upstream follow-up](https://github.com/contextforge-org/cpex/blob/refactor/adopt-ppe-core/docs/plans/ppe-adoption-follow-ups.md) requests an idempotent PPE helper; keep the host guard until that fix ships.
+
 ### Facade features
 
 The facade features `builtins`, `full`, `jwt`, `oauth`, `elicitation-ciba`, `cedar`, `cel`, `valkey`, `pii` and `audit` are gone. Every stable builtin is always compiled in. The only feature left is `python-host`.
@@ -352,6 +354,8 @@ The bundled transport **refuses private destinations by default**. Each surface 
 | C ABI | `cpex_apl_install(handle, CPEX_APL_ALLOW_PRIVATE_DESTINATIONS)` |
 
 > **Blast radius.** The opt-in is not scoped to one plugin or host name. It permits loopback, RFC 1918 ranges, link-local addresses (including the cloud metadata endpoint at `169.254.169.254`) and CGNAT for every outbound builtin the engine runs: JWKS fetches, token exchange, CIBA and Vault. A policy author who can point a plugin at a URL can then reach anything on the host's network. The tutorial and the demos turn it on so they can reach a local IdP. Those settings are not for production. In production, reach in-cluster services through a host transport with its own egress rules (`set_http_transport`), or keep the default.
+
+The C/Go and Python binding installers emit a startup warning through the host's tracing subscriber, or stderr if none is installed, when the opt-in is enabled. The warning names the shared scope, cloud metadata and CGNAT. The tutorial emits it too. Rust hosts using `HyperTransport` directly can call `cpex::host::warn_private_destinations()`. A private-host allow-list is [deferred upstream](https://github.com/contextforge-org/cpex/blob/refactor/adopt-ppe-core/docs/plans/ppe-adoption-follow-ups.md); PPE 0.4.1 has no narrower switch.
 
 What a refused call looks like:
 

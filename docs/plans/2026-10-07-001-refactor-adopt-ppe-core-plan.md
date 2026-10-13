@@ -47,6 +47,8 @@ Carried from the origin document; R-IDs are the origin's.
 
 ### Deferred to Follow-Up Work
 
+- Idempotent PPE `install_builtins`: [confirmed defect and issue draft](ppe-adoption-follow-ups.md). Keep the binding guards; document double install as a Rust host error until the upstream patch ships. Any adopted fix ships as a 0.4.x patch and gates the tag on a new parity run.
+- A private-destination allow-list in PPE: [feature issue draft](ppe-adoption-follow-ups.md). It is outside this cut-over's feature scope. Meanwhile warn at binding startup when the global opt-in is enabled.
 - Distinct `auth.egress_denied` code for identity-jwt in PPE: upstream issue.
 - Capture PyO3, Python host venv and HTTP transport learnings with a compound note after 0.3.0 ships.
 - Any final deprecation release for removed crate names on crates.io (they stay at 0.2.3; the changelog says so).
@@ -192,7 +194,7 @@ praxis-policy (crates.io, exact 0.4.N pin, features: builtins, http-hyper)
 
 **Files:**
 - Create: `tests/parity/` fixtures (configs in 0.2.3 form, request sets, recorded outcomes)
-- Create: a small capture harness built against the current workspace (location chosen during implementation; it is deleted or retargeted in U11)
+- Create: a small capture harness built against the current workspace; retain its sources and lockfile under `tests/parity/baseline/` when U11 retargets the replay harness. The out-of-tree runner pins the immutable 0.2.3 engine commit.
 - Test: `tests/parity/README.md` documents how snapshots were produced and from which commit
 
 **Approach:**
@@ -268,6 +270,7 @@ praxis-policy (crates.io, exact 0.4.N pin, features: builtins, http-hyper)
 
 **Verification:**
 - The workspace resolves; `cargo build -p cpex` and `cargo test -p cpex` without `python-host` pass against crates.io PPE with no path or git dep on PPE; removed directories are gone.
+- Record before/after executed-test counts and every ignored test, including doctests, in [test reconciliation](ppe-adoption-test-reconciliation.md). Map every deleted suite to its PPE owner or explicitly document intentional removal. A dependency's tests do not run as part of the CPEX workspace test command.
 
 ---
 
@@ -488,6 +491,7 @@ praxis-policy (crates.io, exact 0.4.N pin, features: builtins, http-hyper)
 
 **Approach:**
 - Requests replay through the hook rename table, and a store seeded from the U1 Valkey export is loaded before session-label replays.
+- Assert exactly one row for every captured hook name and assert PPE target coverage against its builtin registry, with any unused names listed explicitly. Check skipped fixtures too; reject duplicate keys and incorrect removed-hook replacements.
 - Each difference is either fixed (CPEX port bug or upstream PPE fix) or listed as intended with its cause, feeding the migration guide.
 
 **Test scenarios:**
@@ -625,9 +629,10 @@ praxis-policy (crates.io, exact 0.4.N pin, features: builtins, http-hyper)
 
 | Risk | Mitigation |
 |------|------------|
-| PPE 0.4.x lacks something a kept crate needs | Research found no gaps; any found becomes a PPE 0.4.x patch from a release branch, gating the 0.3.0 tag |
+| PPE 0.4.x lacks something a kept crate needs | Fixable gaps become PPE 0.4.x patches from a release branch, gating the 0.3.0 tag; unfixable or unexplained gaps trigger the abort criterion below |
 | A needed PPE fix ships alongside PPE's pending breaking changes | Patch from the 0.4.1 tag, not main; rerun U11 whenever the exact pin moves |
 | Python plugins silently lose credentials after the hook rename | Remap in U4 with tests that raw credentials arrive on `identity.resolve` and `token.delegate` |
+| The external Python worker SDK dispatches only legacy hooks | The in-repo legacy payload shim preserves 0.1.x workers; gate merge and the 0.3.0 tag on the four `make test-python-e2e` suites (credential, isolated-venv, extensions-merge and acceptance) against the supported `CPEX_PYTHON_SOURCE` checkout with no skips. If that compatibility path fails and requires an SDK change, the CPEX release maintainer coordinates and verifies the SDK release before tagging 0.3.0 |
 | Session store format drift breaks existing Valkey data | Include a stored-label read in parity snapshots; document if incompatible |
 | New native link deps break Go builds on one platform | Run Go race on macOS and Linux in CI from U7 onward |
 | Egress default breaks integrators silently | Distinct codes for oauth and CIBA; JWT shows `auth.jwks_unavailable`, called out in the migration guide; opt-in documented per binding |
@@ -637,6 +642,8 @@ praxis-policy (crates.io, exact 0.4.N pin, features: builtins, http-hyper)
 | Docs link CI fails on deleted paths | Link fixes are part of U12, not cleanup |
 | Edition 2024 changes FFI `unsafe` semantics or drop order | Separate commit series after ports; parity and FFI suites rerun before and after |
 | Python wheel breaks without notice (no wheel CI today) | Wheel build and smoke test job (U13) |
+
+**Abort criterion:** If U11 finds a behavior difference that cannot be fixed or explicitly accepted with its cause and migration impact by the CPEX release maintainer, stop the cut-over and leave the integration branch unmerged and 0.3.0 untagged; the release maintainer decides whether to resume after a fix or abandon the branch.
 
 ---
 
