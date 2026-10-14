@@ -46,7 +46,7 @@ serde_yaml = { workspace = true }
 # Test-only JWT signing (Ed25519 keys derived from fixed labels) and the
 # mock IdP / CIBA endpoints.
 aws-lc-rs = "1"
-base64 = "0.22"
+base64 = "0.23"
 sha2 = "0.10"
 tiny_http = "0.12"
 form_urlencoded = "1"
