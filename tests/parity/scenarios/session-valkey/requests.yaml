@@ -1,0 +1,82 @@
+requires: [valkey]
+
+description: >-
+  Valkey-backed session labels. A session that read compensation is
+  tainted `secret`, and a later email in that session is denied. Fresh
+  sessions and other subjects using the same session id are unaffected.
+
+mocks:
+  - method: GET
+    path: /jwks
+    builtin: jwks
+
+tokens:
+  alice:
+    claims: {iss: https://idp.parity.test, aud: cpex-parity, sub: alice, iat: 1767225600, exp: 4102444800, roles: [hr]}
+  evan:
+    claims: {iss: https://idp.parity.test, aud: cpex-parity, sub: evan, iat: 1767225600, exp: 4102444800, roles: [engineer]}
+
+requests:
+  - kind: mediate
+    id: email-before-taint
+    caller: {token: alice, session: sess-1}
+    tool: send_email
+    args: {to: bob@corp.example, subject: hello}
+    backend: {sent: true}
+
+  - kind: mediate
+    id: read-compensation-taints
+    caller: {token: alice, session: sess-1}
+    tool: get_compensation
+    args: {employee_id: e-1001}
+    backend: {employee_id: e-1001, salary: 185000}
+
+  - kind: mediate
+    id: email-after-taint-denied
+    caller: {token: alice, session: sess-1}
+    tool: send_email
+    args: {to: bob@corp.example, subject: numbers}
+    backend: {sent: true}
+
+  - kind: mediate
+    id: fresh-session-allowed
+    caller: {token: alice, session: sess-2}
+    tool: send_email
+    args: {to: bob@corp.example, subject: hello again}
+    backend: {sent: true}
+
+  - kind: mediate
+    id: other-subject-same-session-id
+    caller: {token: evan, session: sess-1}
+    tool: send_email
+    args: {to: bob@corp.example, subject: from evan}
+    backend: {sent: true}
+
+  - kind: mediate
+    id: taint-without-session-id
+    note: No agent session id; the session falls back to the identity-derived id.
+    caller: {token: alice}
+    tool: get_compensation
+    args: {employee_id: e-1003}
+    backend: {employee_id: e-1003, salary: 99000}
+
+  - kind: mediate
+    id: email-without-session-id
+    caller: {token: alice}
+    tool: send_email
+    args: {to: bob@corp.example, subject: no session}
+    backend: {sent: true}
+
+  - kind: mediate
+    id: engineer-denied-no-taint
+    caller: {token: evan, session: sess-3}
+    tool: get_compensation
+    args: {employee_id: e-1001}
+    backend: {employee_id: e-1001, salary: 185000}
+
+  - kind: mediate
+    id: engineer-email-after-denied-read
+    caller: {token: evan, session: sess-3}
+    tool: send_email
+    args: {to: bob@corp.example, subject: still clean}
+    backend: {sent: true}

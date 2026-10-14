@@ -19,11 +19,11 @@
 
 use std::sync::Arc;
 
-use cpex::PluginManager;
+use cpex::PolicyEngine;
 use cpex_tutorial::backends;
 use cpex_tutorial::idp;
 use cpex_tutorial::ui;
-use cpex_tutorial::{mediate, Caller};
+use cpex_tutorial::{Caller, mediate};
 
 use serde_json::json;
 
@@ -44,11 +44,13 @@ async fn agent_caller() -> Caller {
 async fn main() {
     ui::module_banner("Module 13: Delegation subject: client (the agent scopes its own token)");
 
-    let mgr = Arc::new(PluginManager::default());
-    cpex::install_builtins(&mgr);
-    mgr.load_config_yaml(POLICY)
+    let engine = Arc::new(PolicyEngine::default());
+    cpex::install_builtins(&engine);
+    cpex_tutorial::install_http_transport(&engine);
+    engine
+        .load_config_yaml(POLICY)
         .expect("policy m13.yaml should load");
-    mgr.initialize().await.expect("initialize");
+    engine.initialize().await.expect("initialize");
 
     let agent = agent_caller().await;
     let anon = Caller::anonymous();
@@ -59,7 +61,7 @@ async fn main() {
         "agent (cpex-agent client) → search_repos (subject: client, scopes the agent's own token)",
     );
     let o = mediate(
-        &mgr,
+        &engine,
         &agent,
         "search_repos",
         json!({ "visibility": "internal" }),
@@ -73,7 +75,7 @@ async fn main() {
         "anonymous → search_repos (subject: client, no client token to exchange, delegation fails)",
     );
     let o = mediate(
-        &mgr,
+        &engine,
         &anon,
         "search_repos",
         json!({ "visibility": "internal" }),
@@ -83,6 +85,8 @@ async fn main() {
     ui::print_outcome(&o);
     all_passed &= ui::expect(&o, false);
 
-    println!("`subject: client` scopes the CALLER's own client token: an agent acting as itself, not on behalf of a user.");
+    println!(
+        "`subject: client` scopes the CALLER's own client token: an agent acting as itself, not on behalf of a user."
+    );
     ui::finish_check(all_passed);
 }

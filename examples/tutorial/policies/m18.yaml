@@ -13,16 +13,16 @@
 # fact in a data file, not anything about the request.
 
 global:
-  apl:
-    # Deep-merged, in order, into one `data.*` tree at startup. Paths are
-    # relative to where you run the example (the repo root).
-    attribute_files:
-      - examples/tutorial/policies/attributes/controls.yaml
+  # Deep-merged, in order, into one `data.*` tree at startup. Paths are
+  # relative to where you run the example (the repo root).
+  attribute_files:
+    - examples/tutorial/policies/attributes/controls.yaml
 
 plugins:
   - name: keycloak
     kind: identity/jwt
     hooks: [identity.resolve]
+    capabilities: [perform_http]
     config:
       role: user
       header: Authorization

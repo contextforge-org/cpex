@@ -6,13 +6,14 @@
 // PyObject ↔ serde_json::Value traversal, payload resolution, and
 // modified-payload serialization.
 //
-// Never calls Python's `json` module from Rust — all conversion is direct
+// Never calls Python's `json` module from Rust; all conversion is direct
 // PyObject inspection / construction (#2).
 
-use cpex_core::cmf::MessagePayload;
-use cpex_core::context::PluginContextTable;
-use cpex_core::extensions::Extensions;
-use cpex_core::hooks::payload::PluginPayload;
+use praxis_policy_core::cmf::MessagePayload;
+use praxis_policy_core::context::PluginContextTable;
+use praxis_policy_core::extensions::Extensions;
+use praxis_policy_core::hooks::payload::PluginPayload;
+use praxis_policy_core::identity::{HOOK_IDENTITY_RESOLVE, IdentityPayload};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyDict, PyFloat, PyInt, PyList, PyString};
@@ -20,14 +21,14 @@ use serde_json::{Map, Value};
 
 /// Wraps any serde_json::Value for hooks that are not `cmf.*`.
 ///
-/// Defined locally because `cpex-core` exports the macro but not the struct
+/// Defined locally because `praxis-policy-core` exports the macro but not the struct
 /// itself (the FFI crate defines its own copy too).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct GenericPayload {
     pub value: Value,
 }
 
-cpex_core::impl_plugin_payload!(GenericPayload);
+praxis_policy_core::impl_plugin_payload!(GenericPayload);
 
 /// Convert a Python object to a `serde_json::Value`.
 ///
@@ -133,16 +134,49 @@ pub fn json_value_to_pyobj<'py>(py: Python<'py>, v: &Value) -> PyResult<Bound<'p
     }
 }
 
+/// Raise `ValueError` for a hook name removed in 0.3, naming its
+/// replacement. Such a name reaches no handler, so dispatching it would
+/// return an allow with no policy evaluated.
+pub fn reject_removed_hook(hook_name: &str) -> PyResult<()> {
+    match cpex::host::removed_hook_replacement(hook_name) {
+        Some(replacement) => Err(PyValueError::new_err(format!(
+            "cpex: hook '{hook_name}' was removed; use '{replacement}'"
+        ))),
+        None => Ok(()),
+    }
+}
+
 /// Build the correct `Box<dyn PluginPayload>` for a hook.
 ///
 /// `cmf.*` hooks → `MessagePayload` (serde-constructed from the value).
+/// `identity.resolve` → `IdentityPayload`. Tokens travel in `headers`;
+/// the payload's raw token field is never deserialized. Only the input
+/// fields (`source`, `source_header`, `headers`, `client_host`,
+/// `client_port`) may be set: a dict that pre-fills a resolver output
+/// field (`subject`, `client`, `caller_workload`, `delegation`,
+/// `raw_credentials`, `resolved_at`, `raw_claims`) raises `ValueError`,
+/// so a caller cannot forge the resolved identity.
 /// All other hook names → `GenericPayload { value }`.
 ///
-/// A `from_value` failure on a CMF payload raises `ValueError` rather than
-/// silently falling through to GenericPayload — the caller sent a cmf hook
-/// with a dict that doesn't match the MessagePayload schema.
+/// A `from_value` failure on a typed payload raises `ValueError` rather
+/// than silently falling through to GenericPayload; the caller sent a dict
+/// that doesn't match the hook's payload schema.
 pub fn resolve_payload(hook_name: &str, value: Value) -> PyResult<Box<dyn PluginPayload>> {
-    if hook_name.starts_with("cmf.") {
+    if hook_name == HOOK_IDENTITY_RESOLVE {
+        let idp: IdentityPayload = serde_json::from_value(value).map_err(|e| {
+            PyValueError::new_err(format!(
+                "cpex: payload for '{hook_name}' is not a valid IdentityPayload: {e}"
+            ))
+        })?;
+        let resolved = cpex::host::resolved_identity_fields(&idp);
+        if !resolved.is_empty() {
+            return Err(PyValueError::new_err(format!(
+                "cpex: payload for '{hook_name}' must not set resolver output fields: {}",
+                resolved.join(", ")
+            )));
+        }
+        Ok(Box::new(idp))
+    } else if hook_name.starts_with("cmf.") {
         let msg: MessagePayload = serde_json::from_value(value).map_err(|e| {
             PyValueError::new_err(format!(
                 "cpex: payload for '{hook_name}' is not a valid MessagePayload: {e}"
@@ -161,10 +195,20 @@ pub fn resolve_payload(hook_name: &str, value: Value) -> PyResult<Box<dyn Plugin
 /// `PipelineResult.errors` rather than silently dropping the modification.
 ///
 /// Downcast order: `MessagePayload` first (most common for `cmf.*` hooks),
-/// then `GenericPayload` — mirrors cpex-ffi's `serialize_payload` ordering.
+/// then `IdentityPayload`, then `GenericPayload`; mirrors cpex-ffi's
+/// `serialize_payload` ordering.
+///
+/// An `IdentityPayload` comes back without its `headers`: they are the
+/// request headers the caller passed in, including the credential header
+/// (`Authorization` and the like), so echoing them would hand the inbound
+/// token back to anything that logs or forwards the result. The raw token
+/// field is skip-serialized by PPE.
 pub fn serialize_payload(payload: &dyn PluginPayload) -> Option<Value> {
     if let Some(mp) = payload.as_any().downcast_ref::<MessagePayload>() {
         return serde_json::to_value(mp).ok();
+    }
+    if let Some(idp) = payload.as_any().downcast_ref::<IdentityPayload>() {
+        return cpex::host::identity_result_value(idp).ok();
     }
     if let Some(gp) = payload.as_any().downcast_ref::<GenericPayload>() {
         return serde_json::to_value(&gp.value).ok();

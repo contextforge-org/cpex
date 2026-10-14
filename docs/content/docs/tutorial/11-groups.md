@@ -24,31 +24,53 @@ plugins:
   - name: keycloak
     kind: identity/jwt
     hooks: [identity.resolve]
-    config: { ... as in module 2 ... }
+    capabilities: [perform_http]
+    config:
+      role: user
+      header: Authorization
+      claim_mapper: standard
+      trusted_issuers:
+        - issuer: http://localhost:8081/realms/cpex-tutorial
+          audiences: [cpex-tutorial]
+          algorithms: [RS256]
+          decoding_key:
+            kind: jwks_url
+            url: http://localhost:8081/realms/cpex-tutorial/protocol/openid-connect/certs
+            insecure_http: true    # localhost speaks http; never set this in production
+            refresh_secs: 600
+          leeway_seconds: 60
 
-# One reusable bundle: the resolver every route needs, written once.
+# One reusable bundle. Written once; joined by every route below.
 groups:
   identified:
     authentication:
       - keycloak
 
 routes:
+  # HR-only. Joins `identified` for the resolver, then requires the hr role.
   - tool: get_compensation
-    groups: identified            # inherits keycloak; no authentication: line
+    groups: identified
     authorization:
       pre_invocation:
         - "require(role.hr)"
+
+  # Engineering-only. Same resolver from the group; a different requirement.
   - tool: search_repos
     groups: identified
     authorization:
       pre_invocation:
         - "require(role.engineer)"
+
+  # Open to any authenticated caller. Still joins `identified`, which is what
+  # resolves the token in the first place, but adds no role requirement.
   - tool: send_email
-    groups: identified            # still resolves the token; no role required
+    groups: identified
     authorization:
       pre_invocation:
         - "require(authenticated)"
 ```
+
+The `keycloak` plugin is the module 2 resolver, unchanged. It declares `perform_http` because fetching the JWKS is an outbound call through the host's transport.
 
 The `identified` group carries the one thing all three routes share. Each route joins it and adds only its own authorization, so identity is resolved the same way everywhere while policy still decides each outcome per caller.
 
@@ -66,13 +88,13 @@ cargo run -p cpex-tutorial --example m11_groups
   ✓ ALLOWED  { ... }
 
 ▸ evan (engineer) → get_compensation (resolved by the same group, denied at require(role.hr))
-  ✗ DENIED   [...] access denied
+  ✗ DENIED   [routes.tool:get_compensation.pre_invocation[0]] access denied
 
 ▸ evan (engineer) → search_repos (same group, require(role.engineer) passes)
   ✓ ALLOWED  { ... }
 
 ▸ alice (hr) → search_repos (denied at require(role.engineer))
-  ✗ DENIED   [...] access denied
+  ✗ DENIED   [routes.tool:search_repos.pre_invocation[0]] access denied
 
 ▸ alice (hr) → send_email (group resolves her token; require(authenticated) passes)
   ✓ ALLOWED  { ... }
@@ -89,7 +111,7 @@ Every route resolved the caller's token through the same group, yet each outcome
 ## Checkpoint
 
 {{< details "Does the route repeat the group's authentication?" >}}
-No. The route has no `authentication:` block, so it inherits the group's. Identity resolution stacks broad → narrow (global → group → route); a route joining `identified` runs the group's `keycloak` resolver without naming it again.
+No. The route has no `authentication:` block, so it inherits the group's. Identity resolution stacks broad to narrow (global, then group, then route); a route joining `identified` runs the group's `keycloak` resolver without naming it again.
 {{< /details >}}
 
 {{< details "Group or the reserved `all` group?" >}}

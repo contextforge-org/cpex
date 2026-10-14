@@ -1,0 +1,277 @@
+{
+  "config": "scenarios/go-demo-cmf/config.yaml",
+  "description": "The go-demo CMF scenarios: a host-registered tool-policy plugin gates PII-tagged tools on a security label, and a header injector writes response headers through the capability-gated HTTP extension.",
+  "load": {
+    "ok": true,
+    "upstream_calls": []
+  },
+  "requests": [
+    {
+      "code": "pii_label_required",
+      "decision": "deny",
+      "id": "pii-tool-without-label",
+      "kind": "invoke",
+      "stages": [
+        {
+          "continue": false,
+          "errors": [],
+          "extensions": {
+            "agent": {
+              "session_id": "sess_abc123"
+            },
+            "delegation": null,
+            "http": {
+              "request_headers": {
+                "Authorization": "<token>",
+                "X-Request-ID": "req-001"
+              },
+              "response_headers": {}
+            },
+            "meta": {
+              "entity_name": "get_compensation",
+              "entity_type": "tool",
+              "tags": [
+                "hr",
+                "pii"
+              ]
+            },
+            "raw_credentials": null,
+            "security": {
+              "auth_method": null,
+              "caller_workload": null,
+              "classification": null,
+              "client": null,
+              "labels": [],
+              "subject": {
+                "claims": {},
+                "id": "alice",
+                "permissions": [],
+                "roles": [
+                  "hr_analyst"
+                ],
+                "subject_type": "user",
+                "teams": []
+              }
+            }
+          },
+          "hook": "cmf.tool_pre_invoke",
+          "payload": null,
+          "payload_modified": false,
+          "violation": {
+            "code": "pii_label_required",
+            "description": null,
+            "details": {},
+            "plugin": "tool-policy",
+            "proto_error_code": null,
+            "reason": "Tool 'get_compensation' is PII-tagged but security context lacks PII label"
+          }
+        }
+      ],
+      "upstream_calls": []
+    },
+    {
+      "code": null,
+      "decision": "allow",
+      "id": "pii-tool-with-label",
+      "kind": "invoke",
+      "stages": [
+        {
+          "continue": true,
+          "errors": [],
+          "extensions": {
+            "agent": {
+              "session_id": "sess_abc123"
+            },
+            "delegation": null,
+            "http": {
+              "request_headers": {
+                "Authorization": "<token>",
+                "X-Request-ID": "req-001"
+              },
+              "response_headers": {
+                "X-CPEX-Processed": "true",
+                "X-Tool-Name": "get_compensation",
+                "X-Tool-Status": "success"
+              }
+            },
+            "meta": {
+              "entity_name": "get_compensation",
+              "entity_type": "tool",
+              "tags": [
+                "hr",
+                "pii"
+              ]
+            },
+            "raw_credentials": null,
+            "security": {
+              "auth_method": null,
+              "caller_workload": null,
+              "classification": null,
+              "client": null,
+              "labels": [
+                "HR",
+                "PII"
+              ],
+              "subject": {
+                "claims": {},
+                "id": "alice",
+                "permissions": [],
+                "roles": [
+                  "hr_analyst"
+                ],
+                "subject_type": "user",
+                "teams": []
+              }
+            }
+          },
+          "hook": "cmf.tool_pre_invoke",
+          "payload": null,
+          "payload_modified": false,
+          "violation": null
+        }
+      ],
+      "upstream_calls": []
+    },
+    {
+      "code": null,
+      "decision": "allow",
+      "id": "tool-result-header-injection",
+      "kind": "invoke",
+      "stages": [
+        {
+          "continue": true,
+          "errors": [],
+          "extensions": {
+            "agent": null,
+            "delegation": null,
+            "http": {
+              "request_headers": {
+                "Authorization": "<token>",
+                "X-Request-ID": "req-001"
+              },
+              "response_headers": {
+                "X-CPEX-Processed": "true",
+                "X-Tool-Name": "get_compensation",
+                "X-Tool-Status": "success"
+              }
+            },
+            "meta": {
+              "entity_name": "get_compensation",
+              "entity_type": "tool",
+              "tags": [
+                "hr",
+                "pii"
+              ]
+            },
+            "raw_credentials": null,
+            "security": {
+              "auth_method": null,
+              "caller_workload": null,
+              "classification": null,
+              "client": null,
+              "labels": [
+                "HR",
+                "PII"
+              ],
+              "subject": null
+            }
+          },
+          "hook": "cmf.tool_post_invoke",
+          "payload": null,
+          "payload_modified": false,
+          "violation": null
+        }
+      ],
+      "upstream_calls": []
+    },
+    {
+      "code": null,
+      "decision": "allow",
+      "id": "non-pii-text-message",
+      "kind": "invoke",
+      "stages": [
+        {
+          "continue": true,
+          "errors": [],
+          "extensions": {
+            "agent": null,
+            "delegation": null,
+            "http": null,
+            "meta": {
+              "entity_name": "list_departments",
+              "entity_type": "tool",
+              "tags": []
+            },
+            "raw_credentials": null,
+            "security": null
+          },
+          "hook": "cmf.tool_pre_invoke",
+          "payload": null,
+          "payload_modified": false,
+          "violation": null
+        }
+      ],
+      "upstream_calls": []
+    },
+    {
+      "code": "admin_required",
+      "decision": "deny",
+      "id": "admin-tagged-tool-without-admin-role",
+      "kind": "invoke",
+      "stages": [
+        {
+          "continue": false,
+          "errors": [],
+          "extensions": {
+            "agent": null,
+            "delegation": null,
+            "http": {
+              "request_headers": {
+                "X-Request-ID": "req-002"
+              },
+              "response_headers": {}
+            },
+            "meta": {
+              "entity_name": "rotate_keys",
+              "entity_type": "tool",
+              "tags": [
+                "admin"
+              ]
+            },
+            "raw_credentials": null,
+            "security": {
+              "auth_method": null,
+              "caller_workload": null,
+              "classification": null,
+              "client": null,
+              "labels": [],
+              "subject": {
+                "claims": {},
+                "id": "alice",
+                "permissions": [],
+                "roles": [
+                  "hr_analyst"
+                ],
+                "subject_type": "user",
+                "teams": []
+              }
+            }
+          },
+          "hook": "cmf.tool_pre_invoke",
+          "payload": null,
+          "payload_modified": false,
+          "violation": {
+            "code": "admin_required",
+            "description": null,
+            "details": {},
+            "plugin": "tool-policy",
+            "proto_error_code": null,
+            "reason": "This tool requires admin role"
+          }
+        }
+      ],
+      "upstream_calls": []
+    }
+  ],
+  "scenario": "go-demo-cmf"
+}

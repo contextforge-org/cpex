@@ -22,14 +22,27 @@ plugins:
   - name: keycloak
     kind: identity/jwt
     hooks: [identity.resolve]
-    config: { ... as in module 2 ... }
+    capabilities: [perform_http]
+    config:
+      claim_mapper: standard
+      trusted_issuers:
+        - issuer: http://localhost:8081/realms/cpex-tutorial
+          audiences: [cpex-tutorial]
+          algorithms: [RS256]
+          decoding_key:
+            kind: jwks_url
+            url: http://localhost:8081/realms/cpex-tutorial/protocol/openid-connect/certs
+            insecure_http: true
+          leeway_seconds: 60
+
   - name: manager-approval
     kind: approval-channel
     hooks: [elicit]
 
 routes:
   - tool: send_email
-    authentication: [keycloak]
+    authentication:
+      - keycloak
     authorization:
       pre_invocation:
         - "require(authenticated)"
@@ -41,11 +54,66 @@ The first time a caller hits this route, the approval is pending, so policy susp
 The approval plugin ([`examples/m08_elicitation.rs`](https://github.com/contextforge-org/cpex/tree/main/examples/tutorial/examples/m08_elicitation.rs)) implements the `elicit` hook's three operations against a tiny approval channel:
 
 ```rust
-match payload.operation() {
-    ElicitationOp::Dispatch => { /* open a pending request, return its id */ }
-    ElicitationOp::Check    => { /* report Pending / Resolved{Approved|Denied} */ }
-    ElicitationOp::Validate => { /* confirm the approver */ }
+impl HookHandler<ElicitationHook> for ChannelApprover {
+    async fn handle(
+        &self,
+        payload: &ElicitationPayload,
+        _ext: &Extensions,
+        _ctx: &mut PluginContext,
+    ) -> PluginResult<ElicitationPayload> {
+        let mut out = payload.clone();
+        match payload.operation() {
+            ElicitationOp::Dispatch => {
+                let approver = payload.from().to_string();
+                let id = elicitation_id_for(&approver);
+                self.channel
+                    .open(&id, &approver, payload.purpose().unwrap_or("(no purpose)"));
+                out.id = Some(id);
+                out.status = Some(ElicitationStatusKind::Pending);
+                out.approver = Some(approver);
+            },
+            ElicitationOp::Check => {
+                let id = payload.elicitation_id().unwrap_or_default();
+                match self.channel.status(id) {
+                    Some(Status::Approved) => {
+                        out.status = Some(ElicitationStatusKind::Resolved);
+                        out.outcome = Some(ElicitationOutcomeKind::Approved);
+                    },
+                    Some(Status::Denied) => {
+                        out.status = Some(ElicitationStatusKind::Resolved);
+                        out.outcome = Some(ElicitationOutcomeKind::Denied);
+                    },
+                    _ => out.status = Some(ElicitationStatusKind::Pending),
+                }
+            },
+            ElicitationOp::Validate => {
+                out.valid = Some(true);
+                out.approver = Some(payload.from().to_string());
+            },
+        }
+        PluginResult::modify_payload(out)
+    }
 }
+```
+
+The plugin traits come from `cpex::prelude`, and the elicitation types (`ElicitationHook`, `ElicitationOp`, `ElicitationPayload`) from `praxis_policy_core::elicitation`.
+
+`approval-channel` is not a builtin. The host registers its factory on the engine before loading the policy:
+
+```rust
+let engine = Arc::new(PolicyEngine::default());
+engine.register_factory(
+    "approval-channel",
+    Box::new(ChannelApproverFactory {
+        channel: channel.clone(),
+    }),
+);
+cpex::install_builtins(&engine);
+cpex_tutorial::install_http_transport(&engine);
+engine
+    .load_config_yaml(POLICY)
+    .expect("policy m08.yaml should load");
+engine.initialize().await.expect("initialize");
 ```
 
 The channel is served over HTTP so a human can approve with `curl`. In production this would be an OIDC CIBA backchannel or a push to the approver's phone. CIBA (Client-Initiated Backchannel Authentication, [OpenID spec](https://openid.net/specs/openid-client-initiated-backchannel-authentication-core-1_0.html)) is the OpenID flow where the app asks the identity provider to prompt a user on a separate device and polls for their decision; see [Human-in-the-Loop Elicitation]({{< relref "/docs/apl/elicitation" >}}) for how CPEX drives it. The point here is CPEX's suspend and resume model, not the notification transport.

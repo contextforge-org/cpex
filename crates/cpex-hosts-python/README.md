@@ -1,6 +1,6 @@
 # cpex-hosts-python
 
-Runs existing Python CPEX plugins out-of-process from the Rust `PluginManager`.
+Runs existing Python CPEX plugins out-of-process from the Rust `PolicyEngine`.
 Each plugin gets its own cached virtualenv and a long-lived `worker.py`
 subprocess, spoken to over newline-delimited JSON on stdio — the same protocol
 the Python CLI already uses, so a plugin that works there works here unchanged.
@@ -20,14 +20,18 @@ framing.
 Register the factory before loading config:
 
 ```rust
-use cpex_core::factory::PluginFactoryRegistry;
+use praxis_policy_core::engine::PolicyEngine;
+use praxis_policy_core::factory::PluginFactoryRegistry;
 use cpex_hosts_python::{IsolatedVenvFactory, KIND};
 
 let mut factories = PluginFactoryRegistry::new();
 factories.register(KIND, Box::new(IsolatedVenvFactory));
 
-let manager = PluginManager::from_config(config, &factories)?;
+let engine = PolicyEngine::from_config(config, &factories)?;
 ```
+
+Through the `cpex` facade, enable the `python-host` feature and register
+`cpex::IsolatedVenvFactory` under `cpex::ISOLATED_VENV_KIND`.
 
 ## Config schema
 
@@ -35,10 +39,12 @@ Host-specific settings live in the plugin entry's opaque `config:` map, because
 `PluginConfig` has no fields for them:
 
 ```yaml
+engine_settings:
+  dispatch: hooks      # or name the plugin from a policy step
 plugins:
   - name: pii-filter
     kind: isolated_venv
-    hooks: [tool_pre_invoke]
+    hooks: [cmf.tool_pre_invoke]
     config:
       # Required — the fully-qualified Python class.
       class_name: my_pkg.filters.PiiFilter
@@ -67,11 +73,11 @@ directory — as the worker's `sys.path` entry and as the directory the venv is
 built under. There is no config key for it:
 
 - a `plugin_dirs:` key inside a plugin's `config:` block is **ignored** (the
-  factory logs a warning naming the plugin), and
-- the top-level `plugin_dirs:` YAML key is **ignored** too — `cpex-core` parses
-  it, warns, and discards it.
-
-Both are ignored rather than rejected, so a config carrying either still loads.
+  factory logs a warning naming the plugin), so a config carrying it still
+  loads, and
+- the top-level `plugin_dirs:` YAML key is **rejected**: PPE's config loader
+  refuses unknown document keys. `cpex plugin install` still writes that key, so
+  remove it from an installer-written `config.yaml`.
 
 This is deliberate. `cpex plugin install` writes the plugin into
 `<project root>/plugins/` and builds its venv there, so both sides already agree
@@ -83,19 +89,120 @@ host), so the resolved directory is importable by construction.
 
 ## Hooks and payloads
 
-Both hook families work. The `cmf.` prefix selects the CMF message payload;
-each legacy name maps to its own typed payload; anything unrecognized falls
-back to a generic JSON payload.
+Hook names follow PPE. The host looks each declared name up in a fixed table
+that picks the payload type and the name the Python worker knows the hook by.
+The Python framework still registers the older spellings, so the host
+translates on the wire (the task's `hook_type` and the config's `hooks` list).
 
-| Hook | Payload |
+| Declared hook (PPE) | Payload | Worker hook name |
+|---|---|---|
+| `cmf.tool_pre_invoke` / `cmf.tool_post_invoke` | `MessagePayload` | same |
+| `cmf.llm_input` / `cmf.llm_output` | `MessagePayload` | same |
+| `cmf.prompt_pre_invoke` / `cmf.prompt_post_invoke` | `MessagePayload` | `cmf.prompt_pre_fetch` / `cmf.prompt_post_fetch` |
+| `cmf.resource_pre_fetch` / `cmf.resource_post_fetch` | `MessagePayload` | same |
+| `identity.resolve` | PPE's `IdentityPayload` (or the legacy `IdentityResolvePayload`) | `identity_resolve` |
+| `token.delegate` | PPE's `DelegationPayload` (or the legacy `TokenDelegatePayload`) | `token_delegate` |
+| anything else | `GenericPayload` | unchanged |
+
+### Identity and delegation payloads
+
+PPE dispatches `identity.resolve` with `praxis_policy_core::identity::IdentityPayload`
+and `token.delegate` with `delegation::DelegationPayload`; its FFI, its Python
+bindings and the APL `delegate(...)` step all build those. The host sends each
+to the worker as the matching Python model and maps the plugin's
+`IdentityResult` / `DelegationResult` back onto a clone of the dispatched
+payload, so PPE's `IdentityPayload::from_pipeline_result` and
+`DelegationPayload::from_pipeline_result` find it.
+
+| Direction | What happens |
 |---|---|
-| `cmf.*` | `MessagePayload` |
-| `tool_pre_invoke` / `tool_post_invoke` | `ToolPreInvokePayload` / `ToolPostInvokePayload` |
-| `prompt_pre_fetch` / `prompt_post_fetch` | `PromptPreFetchPayload` / `PromptPostFetchPayload` |
-| `resource_pre_fetch` / `resource_post_fetch` | `ResourcePreFetchPayload` / `ResourcePostFetchPayload` |
-| `identity_resolve` | `IdentityResolvePayload` |
-| `token_delegate` | `TokenDelegatePayload` |
-| anything else | `GenericPayload` |
+| `IdentityPayload` out | `source`, `client_host`, `client_port`, and an empty public `headers` map. Raw header values have no default allowlist; a name alone cannot prove a value is safe. `raw_token` is sent empty. |
+| `IdentityResult` back | `subject` and `delegation` are written, `raw_claims` merged. `rejected: true` becomes a deny (`auth.rejected`, with `reject_reason` and `reject_status`). Echoed input fields are ignored, as PPE treats them as canonical. Any other field, or a field PPE's types cannot hold, fails closed. |
+| `DelegationPayload` out | Target name, type, audience, permissions, trust domain, enforcement and attenuation. `bearer_token` is not sent. A delegation with an RFC 8693 actor, or for a subject other than `user`, fails closed: the Python model cannot carry either. |
+| `DelegationResult` back | `delegated_token` becomes PPE's `delegated_token` for the target audience and required permissions, expiring after `cache_ttl` (60 seconds when unset). `forwarded_headers` may only name the one header carrying the minted token; anything else fails closed. `delegation_update` is written when it is not empty. |
+
+The raw tokens on both payloads reach a plugin only through the
+capability-gated `credential` object (see [Credentials](#credentials)).
+
+The `cmf.*` rows apply to a worker that claims the `cmf_hooks` feature in the
+spawn-time `capabilities` handshake. No released worker does yet, so in
+practice the `cmf.*` hooks go through the legacy payload shim below.
+
+### CMF hooks on workers without `cmf_hooks` (the legacy payload shim)
+
+The released 0.1.x Python SDK registers no `cmf.*` hook in the worker, and its
+plugins implement `tool_pre_invoke` and friends with the typed payloads. So for
+any worker that does not claim `cmf_hooks`, the host translates each tool,
+prompt and resource `cmf.*` hook into the legacy hook and payload the worker
+already knows, and maps the result back. A 0.1.x plugin keeps working with no
+SDK release: declare `cmf.tool_pre_invoke` and implement `tool_pre_invoke`.
+
+`cmf.llm_input` and `cmf.llm_output` have no legacy hook. A plugin declaring
+either one fails initialization unless the worker reports `cmf_hooks`.
+
+| PPE hook | Built from (CMF part) | Legacy hook and payload sent | Mapped back onto the part |
+|---|---|---|---|
+| `cmf.tool_pre_invoke` | `tool_call` | `tool_pre_invoke`: `{name, args}` | `name`, `arguments` |
+| `cmf.tool_post_invoke` | `tool_result` | `tool_post_invoke`: `{name: tool_name, result: content}` | `tool_name`, `content` |
+| `cmf.prompt_pre_invoke` | `prompt_request` | `prompt_pre_fetch`: `{prompt_id: name, args}` | `name`, `arguments` |
+| `cmf.prompt_post_invoke` | `prompt_result` | `prompt_post_fetch`: `{prompt_id: prompt_name, result: {messages: [{role, content: {type: "text", text}}], description: null}}` | `prompt_name`, `messages` (role and text; a message keeps its `channel`) |
+| `cmf.resource_pre_fetch` | `resource` or `resource_ref` | `resource_pre_fetch`: `{uri}` | `uri` |
+| `cmf.resource_post_fetch` | `resource` | `resource_post_fetch`: `{uri, content: {type: "resource", id, uri, mime_type, text}}` | `uri`, `content` (text), `mime_type`; `size_bytes` is recomputed when the text changes |
+
+The worker's `continue_processing` and `violation` pass through unchanged. A
+modified legacy payload replaces only the fields in the last column; every
+other field of the message and of the part is kept as dispatched. A modified
+tool result that sets `"isError": true` also sets the part's `is_error`.
+
+The shim fails closed, with a `legacy_shim_unsupported` error naming the hook
+and the plugin, rather than allowing or skipping:
+
+- a message without exactly one content part of the kind in the second column
+  (for example a `cmf.tool_pre_invoke` message with no tool call, or with two);
+- on a post hook (`cmf.tool_post_invoke`, `cmf.prompt_post_invoke`,
+  `cmf.resource_post_fetch`), a message holding any other content part that
+  carries text or data (a text or thinking part with text, a media part,
+  another tool or resource part): the plugin never sees it, so a filter would
+  pass it through unredacted. Empty text and thinking parts are kept. On a pre
+  hook such sibling parts pass through unchanged: the plugin authorizes the
+  part it sees, and the rest of the message goes back as dispatched;
+- a prompt argument that is not a string (the legacy `args` is
+  `dict[str, str]`);
+- a qualifier a plugin that authorizes by bare name or URI cannot see: a tool
+  call `namespace`, a prompt request `server_id`, or a resource `version`
+  (each when non-empty);
+- a tool result with `is_error` set whose `content` does not carry
+  `"isError": true`;
+- a prompt result with rendered `content`, an `error_message`, or `is_error`
+  set (the legacy result holds only messages, so a plugin could not redact
+  that text);
+- a prompt result message that is not a single text part;
+- a resource with a binary `blob`, or a `resource_ref` on post-fetch;
+- a modified payload that sets something the message cannot hold: tool
+  `headers`, resource `metadata`, a prompt result `description`, a resource
+  `content.blob`, a changed resource `content.id`, a `content.uri` other than
+  the original or the returned `uri`, or non-text prompt message content;
+- a modified payload that would leave stale data behind: a cleared `isError`
+  on an error tool result, or a pre-fetch URI rewrite on a resource that
+  already carries `content`, `blob`, `mime_type` or `size_bytes` from the
+  original URI.
+
+The field-by-field decision for every CMF part field is the table at the top
+of `src/legacy/cmf_shim.rs`.
+
+The shim lives in `src/legacy/cmf_shim.rs`. It goes away once every supported
+worker claims `cmf_hooks`.
+
+The unprefixed `tool_pre_invoke`, `tool_post_invoke`, `prompt_pre_fetch`,
+`prompt_post_fetch`, `resource_pre_fetch` and `resource_post_fetch` keep their
+typed payloads (`ToolPreInvokePayload` and so on). PPE does not dispatch them
+and its config loader rejects them, so they only apply to a host that registers
+hook metadata for them (`praxis_policy_core::hooks::register_hook_metadata`)
+before loading config. The unprefixed `identity_resolve` and `token_delegate`
+are not in the table: they get the generic payload and no raw credential.
+
+The adapter reports the hook family of each declared name (`cmf` for the CMF
+hooks), so the engine's family check at registration accepts it.
 
 A plugin error is returned to the executor, which applies the plugin's
 configured `on_error` policy (fail / ignore / disable). This host does not
@@ -109,13 +216,16 @@ serialized onto the task under an `extensions` field, so a 3-arg
 equivalent would. Slot visibility comes from the filtered view — this host does
 not re-derive capability filtering.
 
-Two rules apply in **both** directions:
+The two directions have different rules:
 
 - `raw_credentials` never rides this channel. Raw tokens travel the
   capability-gated `credential` DTO instead (see below).
-- `Authorization`, `Cookie`, and `X-API-Key` are stripped from
-  `http.request_headers` and `http.response_headers` (spec §3.5), matched
-  case-insensitively.
+- Outbound `http.request_headers` and `http.response_headers` are empty by
+  default. A raw header may be added only with a value validator and a
+  documented use. Request-line fields still cross.
+- On worker return, known credential header names are removed
+  case-insensitively. Other header edits still require `write_headers` and
+  pass through the executor's guarded merge.
 
 A plugin's returned extensions come back on the response's
 `modified_extensions` field — the field the Python `PluginResult` model already
@@ -141,7 +251,7 @@ touched `custom`.
 
 Write authority comes from the `WriteToken` the executor mints per plugin from
 its declared capabilities and carries on the inbound view. `WriteToken::new()` is
-`pub(crate)` to `cpex-core`, so this host cannot mint one — a gated write with no
+`pub(crate)` to `praxis-policy-core`, so this host cannot mint one. A gated write with no
 token behind it is dropped rather than honored.
 
 ## Credentials
@@ -150,7 +260,7 @@ The token fields on the framework's credential types are `#[serde(skip)]`, so no
 generic serialization of an `Extensions` carries token bytes — which would leave
 identity resolvers and token delegators unable to work out-of-process. This host
 adds a narrow, capability-gated exception on a separate channel: raw credential
-material **does** reach the worker process, deliberately. `cpex-core`'s
+material **does** reach the worker process, deliberately. `praxis-policy-core`'s
 `RawCredentialsExtension` module docs state the same boundary from the other
 side.
 
@@ -160,13 +270,26 @@ A plugin declares what it needs:
     capabilities: [read_inbound_credentials]   # or read_delegated_tokens
 ```
 
-Only `identity_resolve` and `token_delegate` are eligible — they are the only
+Only `identity.resolve` and `token.delegate` are eligible: they are the only
 hooks whose Python payload models a raw token (`IdentityPayload.raw_token`,
 `DelegationPayload.bearer_token`). For a declaring plugin on one of those hooks,
 the host attaches a dedicated `credential` object to the task JSON, built by
 reading the in-memory token directly. Production credential types keep their
 serde guard and are never serialized; the FFI, Python-bindings, and audit paths
 are untouched.
+
+Where the token comes from depends on the payload:
+
+| Hook and payload | Token | Capability |
+|---|---|---|
+| `identity.resolve`, PPE `IdentityPayload` | `raw_token`, else the source header (a `Bearer ` prefix stripped). The gated object also carries the full header map, which the worker scrubs of the token. | `read_inbound_credentials` |
+| `token.delegate`, PPE `DelegationPayload` | `bearer_token`, the caller's inbound credential | `read_inbound_credentials`, as PPE's own OAuth delegator declares |
+| `identity.resolve`, legacy payload | the inbound token in `raw_credentials` | `read_inbound_credentials` |
+| `token.delegate`, legacy payload | the delegated token in `raw_credentials` for the target audience | `read_delegated_tokens` |
+
+A plugin on the same hook that declared nothing sees no token or raw request
+header values. A plugin with `read_inbound_credentials` receives the full map
+only through the gated credential object.
 
 **Fail closed.** A plugin that declared nothing gets no `credential` field and
 no token material. A plugin that declared a capability the request cannot honor
@@ -224,8 +347,14 @@ reason** when one is absent rather than failing:
 
 ```bash
 CPEX_PYTHON_SOURCE=/path/to/cpex-python \
-  cargo test -p cpex-hosts-python --features testing --test isolated_venv_e2e --test credential_e2e
+  cargo test -p cpex-hosts-python --features testing --test isolated_venv_e2e \
+  --test credential_e2e --test acceptance_e2e -- --ignored
 ```
+
+`make test-python-e2e CPEX_PYTHON_SOURCE=...` runs the same suites with skips
+turned into failures. `acceptance_e2e` loads a policy with Python plugins on
+`identity.resolve` and `token.delegate` plus an APL route, and drives PPE's own
+`IdentityPayload` and the route's `delegate(...)` step through `PolicyEngine`.
 
 Two environmental caveats, both upstream of this crate:
 
@@ -233,7 +362,8 @@ Two environmental caveats, both upstream of this crate:
   `mcp>=1.26`, which renamed that symbol to `MCPError`. The e2e tests downgrade
   `mcp` in their pre-built venv only for those older checkouts. Current checkouts
   use the declared version, and the host reuses the cached venv in both cases.
-- The Python hook registry registers no `cmf.*` hooks, so a CMF round-trip
-  cannot be proven end to end yet. The host's CMF routing is covered by unit
-  tests, and the e2e suite asserts that a CMF hook is rejected cleanly rather
-  than silently allowed.
+- The 0.1.x Python worker registers no `cmf.*` hooks and does not report the
+  `cmf_hooks` feature, so the host translates `cmf.*` tool, prompt and resource
+  payloads to the legacy shapes for it (see the legacy worker section above).
+  The e2e suite runs 0.1.x plugins on `cmf.tool_pre_invoke` through that
+  translation, and checks that a message it cannot represent fails closed.

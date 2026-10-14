@@ -20,10 +20,9 @@ Real routes do more than one thing. They audit the attempt, apply a business rul
 ```yaml
 plugins:
   - name: audit-log
-    kind: audit/logger
+    kind: tutorial/audit-line
     hooks: [cmf.tool_pre_invoke]
     capabilities: [read_subject, read_meta]
-    config: { destination: stderr }
 
 routes:
   - tool: send_email
@@ -33,6 +32,21 @@ routes:
         - "args.external == true: deny('outbound email to external recipients is blocked', 'email.external_blocked')"
         - "require(authenticated)"
 ```
+
+CPEX ships no audit plugin of its own, because the record's format and destination are what each deployment replaces. The `audit-log` plugin here has `kind: tutorial/audit-line`, a small host plugin in [`src/audit.rs`](https://github.com/contextforge-org/cpex/tree/main/examples/tutorial/src/audit.rs). It writes one JSON line per call to stderr with the entity, the subject, the tool name, and the argument keys. It leaves argument values out on purpose, since they can carry PII or secrets. The host registers its factory before loading the policy. From [`examples/m04_effects.rs`](https://github.com/contextforge-org/cpex/tree/main/examples/tutorial/examples/m04_effects.rs):
+
+```rust
+let engine = Arc::new(PolicyEngine::default());
+cpex::install_builtins(&engine);
+cpex_tutorial::install_http_transport(&engine);
+cpex_tutorial::audit::register(&engine);
+engine
+    .load_config_yaml(POLICY)
+    .expect("policy m04.yaml should load");
+engine.initialize().await.expect("initialize");
+```
+
+Policy reaches it by name with `run(audit-log)`, like any other plugin. Module 9 shows how to build one.
 
 Three effects, top to bottom:
 
@@ -48,15 +62,15 @@ cargo run -p cpex-tutorial --example m04_effects
 
 ```
 ▸ send_email to an external recipient (custom deny guard halts)
-{"ts":"...","plugin":"audit-log","entity":{"type":"tool","name":"send_email"}, ...}
+{"ts":1791421465,"plugin":"audit-log","entity":{"type":"tool","name":"send_email"},"tool_call":{"name":"send_email","arg_keys":["external","subject","to"]}}
   ✗ DENIED   [email.external_blocked] outbound email to external recipients is blocked
 
 ▸ send_email to an internal recipient (guard passes, auth check halts)
-{"ts":"...","plugin":"audit-log", ...}
-  ✗ DENIED   [routes.tool:send_email.apl.pre_invocation[2]] access denied
+{"ts":1791421465,"plugin":"audit-log","entity":{"type":"tool","name":"send_email"},"tool_call":{"name":"send_email","arg_keys":["external","subject","to"]}}
+  ✗ DENIED   [routes.tool:send_email.pre_invocation[2]] access denied
 ```
 
-The audit line (stderr) fires on both calls, because it runs before the denials. The external call halts at the custom guard with `email.external_blocked`. The internal call gets past the guard to `require(authenticated)` and halts there. Same route, different stopping point, because the order is policy.
+The caller is anonymous, so the audit line has no `subject`. The `ts` value is a Unix timestamp and differs on your run. The audit line (stderr) fires on both calls, because it runs before the denials. The external call halts at the custom guard with `email.external_blocked`. The internal call gets past the guard to `require(authenticated)` and halts there. Same route, different stopping point, because the order is policy.
 
 ## Try it
 
@@ -77,7 +91,8 @@ For a hand-written guard, the second argument to `deny('reason', 'code')`. For a
 ## Go deeper
 
 - [Effects & Sequencing]({{< relref "/docs/apl/effects" >}}) for the full effect set, halt-on-deny, and `on_allow`/`on_deny` reactions.
-- [Builtins]({{< relref "/docs/builtins" >}}) for the audit logger and other bundled plugins.
+- [Builtins]({{< relref "/docs/builtins" >}}) for the bundled plugins.
+- [Module 9]({{< relref "09-custom-plugin" >}}) for how a host plugin like `tutorial/audit-line` is built.
 
 ## Next
 

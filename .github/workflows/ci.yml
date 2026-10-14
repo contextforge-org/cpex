@@ -43,6 +43,10 @@ jobs:
         run: cargo fmt --all -- --check
       - name: clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
+      # The facade's optional `python-host` feature is off in the workspace
+      # run, so lint it on its own.
+      - name: clippy (cpex, all features)
+        run: cargo clippy -p cpex --all-targets --all-features -- -D warnings
 
   unused-deps:
     name: Unused deps (advisory)
@@ -81,6 +85,10 @@ jobs:
         # e2e tests are also `#[ignore]`d here — the `python-e2e` job below runs
         # them with a real interpreter and framework checkout.
         run: cargo test --workspace
+      - name: cargo test (cpex facade, python-host)
+        # Compiles the facade's python-host tests. They stop at plugin
+        # instantiation and never spawn an interpreter.
+        run: cargo test -p cpex --features python-host
 
   # The Python host's end-to-end tests, actually run.
   #
@@ -98,16 +106,10 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 1
-      # The Python framework lives on its own branch, and PyPI's `cpex` is behind
-      # it (its worker.py predates the credential and extensions fields). The
-      # *stable* 0.1.x branch is not enough either: it carries no
-      # cpex/framework/isolated/worker.py at all. The companion branch below is
-      # the one whose worker.py both consumes `credential` and delivers
-      # `extensions=` to execute_plugin, which is what these tests gate on.
-      #
-      # This is a cross-branch dependency: when the Python side merges, retarget
-      # this ref. Until then a wrong ref fails loudly (skips are errors here)
-      # rather than silently skipping — which is the whole point of this job.
+      # The 0.1.x branch carries the isolated worker with credential and
+      # extensions support. PyPI's `cpex` may lag that worker, so these tests
+      # install directly from the checked-out branch. A missing worker fails
+      # this job rather than silently skipping the integration tests.
       - name: Checkout the cpex Python framework
         uses: actions/checkout@v7
         with:
@@ -128,6 +130,117 @@ jobs:
           CPEX_PYTHON_SOURCE: ${{ github.workspace }}/cpex-python
         run: make test-python-e2e
 
+  # The PyO3 bindings: in-tree pytest suite (built with `maturin develop`),
+  # then a release wheel installed into a fresh venv and exercised from
+  # outside the source tree. The second step is what catches a wheel that
+  # builds but is missing its native module, package or stubs.
+  python-bindings:
+    name: Python bindings (pytest + wheel smoke)
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+      - name: Install Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Install Rust 1.96.0
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.96.0"
+      - uses: Swatinem/rust-cache@v2
+      - name: make bindings-python-test
+        run: make bindings-python-test
+      - name: make bindings-python-smoke
+        run: make bindings-python-smoke
+
+  # The Go package against the cpex-ffi release library, on both platforms
+  # the FFI ships for. GO_STATIC=1 removes the shared library so Go links
+  # libcpex_ffi.a the way release consumers do, which also checks the
+  # native link flags in go/cpex/ffi.go (macOS has needed extra frameworks
+  # before). The race run covers the shared tokio runtime behind the FFI.
+  go:
+    name: Go (${{ matrix.os }})
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    # Linux only: macOS runners have no Docker, so service containers are not
+    # available there. A blank image skips the service on that leg, and the
+    # Valkey acceptance test skips when CPEX_TEST_VALKEY_URL is empty.
+    services:
+      valkey:
+        image: ${{ matrix.os == 'ubuntu-latest' && 'valkey/valkey:8-alpine' || '' }}
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "valkey-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      CPEX_TEST_VALKEY_URL: ${{ matrix.os == 'ubuntu-latest' && 'redis://127.0.0.1:6379' || '' }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+      - name: Install Rust 1.96.0
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.96.0"
+      - name: Install Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go/cpex/go.mod
+          cache-dependency-path: go/cpex/go.sum
+      - uses: Swatinem/rust-cache@v2
+      # One make invocation, so the release library is built (and its shared
+      # copy removed) once for all three targets.
+      - name: make go-vet go-test go-test-race
+        run: make go-vet go-test go-test-race GO_STATIC=1
+
+  # Replays the 0.2.3 decision snapshots against the current engine, with a
+  # Valkey so the session-store scenarios and the stored-label read-back run
+  # too. `make parity` fails when PARITY_VALKEY_URL is set and anything is
+  # still skipped. The workspace `test` job runs the same suite without
+  # Valkey.
+  parity:
+    name: Parity (0.2.3 snapshots, with Valkey)
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      valkey:
+        image: valkey/valkey:8-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "valkey-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+      - name: Install Rust 1.96.0
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.96.0"
+      - uses: Swatinem/rust-cache@v2
+      - name: make parity
+        env:
+          # The harness runs FLUSHDB on this database; the service is
+          # throwaway.
+          PARITY_VALKEY_URL: redis://127.0.0.1:6379/0
+        run: make parity
+
   examples:
     name: Examples build (Rust + Go FFI)
     if: github.event_name != 'pull_request' || !github.event.pull_request.draft
@@ -144,10 +257,12 @@ jobs:
       - name: Install Go
         uses: actions/setup-go@v7
         with:
-          go-version: "1.25.4"
+          go-version-file: examples/go-demo/go.mod
+          cache-dependency-path: examples/go-demo/go.sum
       - uses: Swatinem/rust-cache@v2
-      # Builds every Rust example plus the Go demo (which links the release
-      # cpex-ffi cdylib) — the cheapest guard against stale public-API usage.
+      # Builds every Rust example (the tutorial modules) plus the Go demo
+      # (which links the release cpex-demo-ffi library), the cheapest guard
+      # against stale public-API usage.
       - name: make examples-build
         run: make examples-build
 
@@ -178,15 +293,17 @@ jobs:
       # every publishable member without uploading. Catches publishability
       # regressions (missing version reqs, packaging-excluded files, broken
       # inter-crate deps) on every push/PR, long before a release tag. Mirrors
-      # `make publish-dry` and the release workflow's dry-run. The
-      # `publish = false` crates are excluded (not part of the registry set):
-      # the two FFI crates and the tutorial companion crate.
+      # `make publish-dry` and the release workflow's dry-run. That covers
+      # cpex, cpex-hosts-python, cpex-plugin-delegator-biscuit and
+      # cpex-python. The `publish = false` crates are excluded (not part of
+      # the registry set): the two FFI crates, the tutorial companion crate,
+      # and the parity harness.
       - name: cargo package (no upload)
         run: |
           # Drop any pre-seeded registry index/cache so cargo fetches fresh and
           # --locked resolves against a clean index (see note above).
           rm -rf ~/.cargo/registry/index ~/.cargo/registry/cache
-          cargo package --workspace --locked --exclude cpex-ffi --exclude cpex-demo-ffi --exclude cpex-tutorial
+          cargo package --workspace --locked --exclude cpex-ffi --exclude cpex-demo-ffi --exclude cpex-tutorial --exclude cpex-parity-harness
 
   docs:
     name: Docs Build

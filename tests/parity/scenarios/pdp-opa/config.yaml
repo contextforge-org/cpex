@@ -1,0 +1,52 @@
+# OPA PDP decision (embedded Rego).
+#
+# Source: builtins/pdps/opa/tests/visitor_opa_config.rs, with JWT identity
+# from examples/tutorial/policies/m02.yaml. One route queries a boolean
+# rule, the other an object decision that carries a reason and policy id.
+
+global:
+  apl:
+    pdp:
+      - kind: opa
+        modules:
+          - |
+            package authz
+            default allow := false
+            allow if input.role.hr
+            allow if input.subject.id == "sam"
+
+            default decision := {"allow": false, "reason": "only security may export", "policy_id": "export.security_only"}
+            decision := {"allow": true} if input.role.security
+
+plugins:
+  - name: idp
+    kind: identity/jwt
+    hooks: [identity.resolve]
+    config:
+      claim_mapper: standard
+      trusted_issuers:
+        - issuer: https://idp.parity.test
+          audiences: [cpex-parity]
+          algorithms: [EdDSA]
+          decoding_key:
+            kind: jwks_url
+            url: "{{MOCK_URL}}/jwks"
+            insecure_http: true
+          leeway_seconds: 60
+
+routes:
+  - tool: get_compensation
+    authentication:
+      - idp
+    authorization:
+      pre_invocation:
+        - opa:
+            query: data.authz.allow
+
+  - tool: export_repos
+    authentication:
+      - idp
+    authorization:
+      pre_invocation:
+        - opa:
+            query: data.authz.decision

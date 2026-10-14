@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use cpex_core::{
+use praxis_policy_core::{
     context::PluginContext,
     error::PluginError,
     extensions::Extensions,
@@ -29,9 +29,10 @@ use cpex_core::{
 use serde::Deserialize;
 
 use crate::error::HostError;
+use crate::legacy::cmf_shim;
 use crate::venv::VenvManager;
 use crate::worker::WorkerClient;
-use crate::{conversion, credentials};
+use crate::{conversion, credential_payloads, credentials};
 
 /// Default cap on the serialized size of one outbound task, in bytes.
 ///
@@ -85,8 +86,8 @@ const RESPAWN_BUDGET_RESET_SECS: u64 = 60;
 /// This is the sole source of the worker's `sys.path` entries and of the
 /// directory the venv is built under. It is *not* configurable per plugin: a
 /// `plugin_dirs:` key inside a plugin's `config:` block is ignored (see
-/// `VenvConfig`), as is the top-level `plugin_dirs:` YAML key, which
-/// `cpex_core` already parses and discards.
+/// `VenvConfig`). A top-level `plugin_dirs:` YAML key is rejected by the
+/// config loader.
 ///
 /// # Why a fixed default rather than a config key
 ///
@@ -117,10 +118,12 @@ fn project_root() -> PathBuf {
 /// if something later changes the process cwd between `initialize()` and an
 /// invocation.
 fn default_plugin_dirs() -> Vec<String> {
-    vec![project_root()
-        .join(DEFAULT_PLUGIN_DIR)
-        .display()
-        .to_string()]
+    vec![
+        project_root()
+            .join(DEFAULT_PLUGIN_DIR)
+            .display()
+            .to_string(),
+    ]
 }
 
 /// Global-state key a host can set to propagate its own request id into the
@@ -167,8 +170,8 @@ const WORKER_KNOWN_CAPABILITIES: &[&str] = &[
 ///
 /// # `plugin_dirs` is deliberately absent
 ///
-/// A `plugin_dirs:` key in this block is **ignored**, as is the top-level
-/// `plugin_dirs:` YAML key. Plugin directories are not configurable: the host
+/// A `plugin_dirs:` key in this block is **ignored**; a top-level
+/// `plugin_dirs:` YAML key fails the config load. Plugin directories are not configurable: the host
 /// always uses `<project root>/plugins`, which is where `cpex plugin install`
 /// puts them. See `DEFAULT_PLUGIN_DIR`. Serde ignores unknown fields, so an
 /// existing config that still carries the key parses without error — the value
@@ -218,7 +221,7 @@ impl VenvConfig {
     /// Parse the venv settings out of a plugin entry's `config` map.
     ///
     /// A missing or malformed `class_name` is a config error, not a panic —
-    /// the manager surfaces it against the plugin name at load time.
+    /// the engine surfaces it against the plugin name at load time.
     pub fn from_plugin_config(config: &PluginConfig) -> Result<Self, Box<PluginError>> {
         let raw = config
             .config
@@ -280,6 +283,11 @@ pub struct IsolatedPythonPlugin {
     /// Respawn bookkeeping for a worker that dies after a successful
     /// `initialize()`.
     respawn: tokio::sync::Mutex<RespawnState>,
+
+    /// Set by `shutdown()` before it empties the worker slot, and cleared by
+    /// `initialize()`. A respawn already under way when the plugin shuts down
+    /// checks it, so it cannot launch and install a worker nothing will stop.
+    shut_down: std::sync::atomic::AtomicBool,
 }
 
 /// How many respawns this plugin has spent, and when the budget last reset.
@@ -349,7 +357,7 @@ impl IsolatedPythonPlugin {
         // A layout that will not resolve leaves the venv absent. That is a
         // config error in production, but the failure belongs in
         // `initialize()` rather than here: the factory should still hand back a
-        // named plugin the manager can report against.
+        // named plugin the engine can report against.
         let venv = VenvManager::new(
             &plugin_dirs,
             &venv_config.class_name,
@@ -367,7 +375,18 @@ impl IsolatedPythonPlugin {
             worker_override: None,
             worker_cwd: None,
             respawn: tokio::sync::Mutex::new(RespawnState::new()),
+            shut_down: std::sync::atomic::AtomicBool::new(false),
         })
+    }
+
+    fn is_shut_down(&self) -> bool {
+        self.shut_down.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    fn shut_down_error() -> HostError {
+        HostError::WorkerStart {
+            message: "the plugin has been shut down, so its worker is not respawned".into(),
+        }
     }
 
     /// The resolved plugin directories — `<project root>/plugins`.
@@ -508,10 +527,12 @@ impl IsolatedPythonPlugin {
             if worker.is_alive() {
                 return Ok(worker);
             }
+        } else if self.is_shut_down() {
+            return Err(to_plugin_error(Self::shut_down_error()));
         } else {
             // Never initialized is not a respawn case — respawning here would
             // paper over a lifecycle bug (or an initialize() that failed and
-            // was rolled back) by silently starting a worker the manager does
+            // was rolled back) by silently starting a worker the engine does
             // not know about.
             return Err(to_plugin_error(HostError::WorkerStart {
                 message: "plugin has no worker — initialize() did not run or it failed".into(),
@@ -532,12 +553,17 @@ impl IsolatedPythonPlugin {
         let mut respawn = self.respawn.lock().await;
 
         // Re-check under the lock. A concurrent invocation may already have
-        // done the work while this one waited.
-        if let Some(worker) = self.worker.read().await.clone() {
-            if worker.is_alive() {
-                return Ok(worker);
-            }
-        }
+        // done the work while this one waited, or the plugin may have shut
+        // down. An empty slot means the latter: a failed respawn leaves the
+        // dead worker in place, so only `shutdown()` empties it.
+        let dead = match self.worker.read().await.clone() {
+            Some(worker) if worker.is_alive() => return Ok(worker),
+            Some(_) if self.is_shut_down() => {
+                return Err(to_plugin_error(Self::shut_down_error()));
+            },
+            Some(worker) => worker,
+            None => return Err(to_plugin_error(Self::shut_down_error())),
+        };
 
         let Some(attempt) = respawn.try_reserve() else {
             tracing::error!(
@@ -567,12 +593,19 @@ impl IsolatedPythonPlugin {
         );
         tokio::time::sleep(backoff).await;
 
+        // The plugin may have shut down during the backoff.
+        if self.is_shut_down() {
+            return Err(to_plugin_error(Self::shut_down_error()));
+        }
+
         // Reap the corpse before replacing it, so the old process and its I/O
-        // tasks are not left behind on every respawn.
-        if let Some(dead) = self.worker.write().await.take() {
-            if let Err(e) = dead.shutdown().await {
-                tracing::debug!(plugin = %self.config.name, "reaping the dead worker: {e}");
-            }
+        // tasks are not left behind on every respawn. It stays in the slot
+        // until a replacement is installed: if the launch below fails, the
+        // next invocation finds a dead worker and comes back here, within the
+        // same budget, instead of reading an empty slot as "never initialized"
+        // and giving up on the plugin for good.
+        if let Err(e) = dead.shutdown().await {
+            tracing::debug!(plugin = %self.config.name, "reaping the dead worker: {e}");
         }
 
         // Same launch path as `initialize()` — see `launch_worker`.
@@ -582,11 +615,23 @@ impl IsolatedPythonPlugin {
         // fresh process resolving `worker.py` from the venv again, and the venv
         // can have been rebuilt or downgraded since. Skipping this would make
         // respawn the one path that installs an unverified worker.
-        self.verify_worker_understands(&worker)
-            .await
-            .map_err(to_plugin_error)?;
+        if let Err(e) = self.verify_worker_understands(&worker).await {
+            stop_unused_worker(&self.config.name, &worker).await;
+            return Err(to_plugin_error(e));
+        }
 
-        *self.worker.write().await = Some(Arc::clone(&worker));
+        // Checked under the slot's write lock, which `shutdown()` takes after
+        // setting the flag: either this sees the flag, or `shutdown()` waits
+        // here and then stops the worker installed below.
+        {
+            let mut slot = self.worker.write().await;
+            if self.is_shut_down() {
+                drop(slot);
+                stop_unused_worker(&self.config.name, &worker).await;
+                return Err(to_plugin_error(Self::shut_down_error()));
+            }
+            *slot = Some(Arc::clone(&worker));
+        }
 
         // Deliberately *not* `record_success()` here.
         //
@@ -682,11 +727,42 @@ impl IsolatedPythonPlugin {
     /// every existing plugin.
     async fn verify_worker_understands(&self, worker: &WorkerClient) -> Result<(), HostError> {
         let required = self.required_worker_features();
+
+        // Tool, prompt and resource `cmf.*` hooks also need the report to
+        // choose native dispatch or the legacy shim. When they require no wire
+        // feature, an inconclusive probe leaves the report unset and the
+        // adapter falls back to the shim. LLM hooks require `cmf_hooks` above.
+        let declares_cmf_hook = self.config.hooks.iter().any(|h| cmf_shim::is_cmf_hook(h));
         if required.is_empty() {
+            if declares_cmf_hook {
+                match worker.capabilities().await {
+                    Ok(reported) => self.log_cmf_dispatch(&reported),
+                    Err(e) => tracing::warn!(
+                        plugin = %self.config.name,
+                        "worker capabilities probe failed ({e}); serving cmf hooks through the \
+                         legacy payload shim"
+                    ),
+                }
+            }
             return Ok(());
         }
 
-        let reported = worker.capabilities().await?;
+        let reported = worker.capabilities().await.map_err(|e| {
+            if required.contains(&crate::worker::FEATURE_CMF_HOOKS) {
+                HostError::Config {
+                    message: format!(
+                        "plugin '{}' declares an LLM hook, but the worker's `cmf_hooks` support \
+                         could not be verified ({e}); upgrade the cpex package in the plugin's venv",
+                        self.config.name
+                    ),
+                }
+            } else {
+                e
+            }
+        })?;
+        if declares_cmf_hook {
+            self.log_cmf_dispatch(&reported);
+        }
         let missing: Vec<&str> = required
             .iter()
             .copied()
@@ -740,6 +816,20 @@ impl IsolatedPythonPlugin {
         })
     }
 
+    /// Say once, at startup, how this plugin's `cmf.*` hooks will be served.
+    fn log_cmf_dispatch(&self, reported: &crate::worker::WorkerCapabilities) {
+        if reported.has(crate::worker::FEATURE_CMF_HOOKS) {
+            tracing::debug!(plugin = %self.config.name, "worker serves cmf hooks natively");
+        } else {
+            tracing::info!(
+                plugin = %self.config.name,
+                "worker does not claim `{}`; serving cmf tool, prompt and resource hooks \
+                 through the legacy payload shim",
+                crate::worker::FEATURE_CMF_HOOKS
+            );
+        }
+    }
+
     /// The wire features this plugin's declaration commits the host to using.
     ///
     /// Derived from the declaration rather than from what a given request
@@ -747,6 +837,17 @@ impl IsolatedPythonPlugin {
     /// per invocation.
     fn required_worker_features(&self) -> Vec<&'static str> {
         let mut required = Vec::new();
+
+        // LLM messages have no legacy worker payload. A worker without native
+        // CMF dispatch cannot serve these hooks even if it needs no capability.
+        if self
+            .config
+            .hooks
+            .iter()
+            .any(|h| matches!(h.as_str(), "cmf.llm_input" | "cmf.llm_output"))
+        {
+            required.push(crate::worker::FEATURE_CMF_HOOKS);
+        }
 
         // A credential hook only receives material when the matching capability
         // is declared, so both halves are required for the field to travel —
@@ -781,9 +882,13 @@ impl IsolatedPythonPlugin {
     /// `PluginConfig(**config_raw)`, and `context` is the worker's own
     /// `{state, global_context, metadata}` shape rather than the Rust
     /// `PluginContext` layout.
+    ///
+    /// `legacy_cmf` selects the legacy payload shim's hook names for the
+    /// `cmf.*` hooks: true for a worker that does not claim `cmf_hooks`.
     fn build_task(
         &self,
         hook_name: &str,
+        legacy_cmf: bool,
         payload: serde_json::Value,
         ctx: &PluginContext,
     ) -> Result<serde_json::Value, HostError> {
@@ -799,10 +904,19 @@ impl IsolatedPythonPlugin {
         // `security.labels` empty and `http` as `None` no matter what it
         // declared. The two filters are now given the same input, so the second
         // one is idempotent rather than destructive.
+        // Hook names travel in the spelling the worker registers, which differs
+        // from PPE's for the identity, delegation and CMF prompt hooks, and for
+        // every shimmed CMF hook.
+        let worker_hooks: Vec<&str> = self
+            .config
+            .hooks
+            .iter()
+            .map(|hook| worker_hook_for(hook, legacy_cmf))
+            .collect();
         let config_json = serde_json::json!({
             "name": self.config.name,
             "kind": self.config.kind,
-            "hooks": self.config.hooks,
+            "hooks": worker_hooks,
             "capabilities": self.worker_capabilities(),
             "config": self.config.config.clone().unwrap_or(serde_json::Value::Null),
         });
@@ -826,7 +940,7 @@ impl IsolatedPythonPlugin {
             "plugin_dirs": self.plugin_dirs,
             "class_name": self.venv_config.class_name,
             "config": config_string,
-            "hook_type": hook_name,
+            "hook_type": worker_hook_for(hook_name, legacy_cmf),
             "plugin_name": self.config.name,
             "payload": payload,
             "context": {
@@ -859,9 +973,11 @@ impl Plugin for IsolatedPythonPlugin {
 
     /// Build the venv (or reuse a cached one) and launch the worker.
     ///
-    /// Heavy setup lives here rather than on the invoke path: the manager
+    /// Heavy setup lives here rather than on the invoke path: the engine
     /// awaits this once per plugin, with rollback on failure.
     async fn initialize(&self) -> Result<(), Box<PluginError>> {
+        self.shut_down
+            .store(false, std::sync::atomic::Ordering::SeqCst);
         let worker = self
             .launch_worker()
             .await
@@ -882,6 +998,10 @@ impl Plugin for IsolatedPythonPlugin {
 
     /// Stop the worker, killing it if it will not exit on its own.
     async fn shutdown(&self) -> Result<(), Box<PluginError>> {
+        // Before the slot is emptied, so a respawn in flight sees it. See
+        // `respawn_worker`.
+        self.shut_down
+            .store(true, std::sync::atomic::Ordering::SeqCst);
         let worker = self.worker.write().await.take();
         let result = match worker {
             Some(worker) => worker
@@ -895,17 +1015,42 @@ impl Plugin for IsolatedPythonPlugin {
         // rebuild is not permanently downgraded to an in-place update by a stale
         // owner entry. Best-effort: a registry write failure must not turn a
         // clean shutdown into an error, since the venv itself is fine.
-        if let Some(venv) = self.venv.as_ref() {
-            if let Err(e) = venv.release_owner().await {
-                tracing::warn!(
-                    plugin = %self.config.name,
-                    "could not release the venv owner claim: {e}"
-                );
-            }
+        if let Some(venv) = self.venv.as_ref()
+            && let Err(e) = venv.release_owner().await
+        {
+            tracing::warn!(
+                plugin = %self.config.name,
+                "could not release the venv owner claim: {e}"
+            );
         }
 
         result
     }
+}
+
+/// Stop a worker that was launched but will not be installed.
+async fn stop_unused_worker(plugin: &str, worker: &WorkerClient) {
+    if let Err(e) = worker.shutdown().await {
+        tracing::debug!(plugin = %plugin, "stopping an unused worker: {e}");
+    }
+}
+
+/// The hook name the worker knows `hook_name` by, given how `cmf.*` hooks are
+/// being served.
+fn worker_hook_for(hook_name: &str, legacy_cmf: bool) -> &str {
+    if legacy_cmf && let Some(legacy) = cmf_shim::legacy_hook_name(hook_name) {
+        return legacy;
+    }
+    conversion::worker_hook_name(hook_name)
+}
+
+/// Whether `worker` must be served `cmf.*` hooks through the legacy payload
+/// shim: true unless its handshake claimed `cmf_hooks`. A worker that was never
+/// asked, or could not answer, gets the shim.
+fn needs_legacy_cmf(worker: &WorkerClient) -> bool {
+    !worker
+        .reported_capabilities()
+        .is_some_and(|c| c.has(crate::worker::FEATURE_CMF_HOOKS))
 }
 
 /// Resolve an absolute `python3` from PATH.
@@ -972,17 +1117,53 @@ impl AnyHookHandler for PythonHookAdapter {
         let plugin_name = &self.plugin.config.name;
         let to_plugin_error = |e: HostError| e.into_plugin_error(plugin_name);
 
-        let payload_json = conversion::serialize_payload(payload).map_err(to_plugin_error)?;
+        // The worker first: whether it serves `cmf.*` hooks natively decides
+        // what the task carries, and a respawn inside `worker()` may replace it
+        // with one that answers differently.
+        let worker = self.plugin.worker().await?;
+
+        // A probe that failed at startup leaves no report, which would pin
+        // this worker to the shim for its whole life. Ask once more, the first
+        // time a `cmf.*` hook needs the answer.
+        if cmf_shim::is_cmf_hook(self.hook_name)
+            && worker.reported_capabilities().is_none()
+            && worker.claim_probe_retry()
+        {
+            match worker.capabilities().await {
+                Ok(reported) => self.plugin.log_cmf_dispatch(&reported),
+                Err(e) => tracing::warn!(
+                    plugin = %plugin_name,
+                    "worker capabilities probe failed again ({e}); serving cmf hooks through \
+                     the legacy payload shim for this worker"
+                ),
+            }
+        }
+        let legacy_cmf = needs_legacy_cmf(&worker);
+
+        // A worker that predates `cmf.*` hooks gets the legacy typed payload
+        // under the legacy hook name. A message the legacy payload cannot
+        // represent, and the LLM hooks, fail closed here.
+        let shim = if legacy_cmf && cmf_shim::is_cmf_hook(self.hook_name) {
+            Some(cmf_shim::to_legacy(self.hook_name, payload).map_err(to_plugin_error)?)
+        } else {
+            None
+        };
+
+        let payload_json = match shim.as_ref() {
+            Some(shim) => shim.payload().clone(),
+            None => conversion::serialize_payload(payload).map_err(to_plugin_error)?,
+        };
         let mut task = self
             .plugin
-            .build_task(self.hook_name, payload_json, ctx)
+            .build_task(self.hook_name, legacy_cmf, payload_json, ctx)
             .map_err(to_plugin_error)?;
 
         // Raw credentials, for the two hooks that carry them and only for a
         // plugin that declared the matching capability. Fails closed.
-        credentials::attach_credential(
+        credentials::attach_credential_for_payload(
             &mut task,
             self.hook_name,
+            payload,
             extensions,
             &self.plugin.config.capabilities,
         )
@@ -993,8 +1174,7 @@ impl AnyHookHandler for PythonHookAdapter {
         // would see in-process. Attaches nothing when no slot is visible.
         crate::extensions::attach_extensions(&mut task, extensions).map_err(to_plugin_error)?;
 
-        let worker = self.plugin.worker().await?;
-        let response = worker.send_task(task).await.map_err(to_plugin_error)?;
+        let mut response = worker.send_task(task).await.map_err(to_plugin_error)?;
 
         // A completed round trip is the only proof a (possibly respawned) worker
         // actually serves requests, so it is what returns the respawn budget.
@@ -1004,18 +1184,91 @@ impl AnyHookHandler for PythonHookAdapter {
         // before the result is returned, so a plugin's context writes survive.
         apply_context_deltas(&response, ctx);
 
+        // Under the shim the modified payload is a legacy one, so it is taken
+        // out before the generic conversion (which would parse it as a CMF
+        // message) and mapped back onto the original message afterwards.
+        // Allow, deny and the violation are converted unchanged.
+        //
+        // PPE's identity and delegation payloads take the same route: the
+        // plugin answers with the worker's result model, which is mapped onto
+        // a clone of the dispatched payload rather than parsed into a type
+        // PPE's own downcasts would not find.
+        let translated = shim.is_some() || credential_payloads::is_ppe_credential_payload(payload);
+        let returned_modified = if translated {
+            response
+                .as_object_mut()
+                .and_then(|r| r.remove("modified_payload"))
+        } else {
+            None
+        };
+
         // `extensions` is passed back in so the returned-extensions path can
         // reuse the inbound `Arc`s for immutable slots and read the write
         // tokens the executor issued. The executor's copy-on-write merge then
         // validates the result against the mutability tiers.
-        let fields = conversion::response_to_result(self.hook_name, response, extensions)
+        let mut fields = conversion::response_to_result(self.hook_name, response, extensions)
             .map_err(to_plugin_error)?;
+
+        if let Some(modified) = returned_modified.filter(|m| !m.is_null()) {
+            apply_translated_modification(shim.as_ref(), payload, modified, &mut fields)
+                .map_err(to_plugin_error)?;
+        }
         Ok(Box::new(fields))
     }
 
+    /// The hook family the declared name belongs to, so the registry's family
+    /// check accepts this handler. The adapter forwards whatever payload the
+    /// hook carries, so it serves the family of any name it is declared on. A
+    /// name with no family in the hook metadata reports itself, which the
+    /// registry accepts.
     fn hook_type_name(&self) -> &'static str {
-        self.hook_name
+        praxis_policy_core::hooks::lookup_hook_metadata(self.hook_name)
+            .and_then(|meta| meta.family)
+            .unwrap_or(self.hook_name)
     }
+}
+
+/// Map a modified payload the worker returned in its own model back onto the
+/// payload PPE dispatched, for the shimmed `cmf.*` hooks and for PPE's
+/// identity and delegation payloads.
+fn apply_translated_modification(
+    shim: Option<&cmf_shim::ShimmedPayload>,
+    payload: &dyn PluginPayload,
+    modified: serde_json::Value,
+    fields: &mut praxis_policy_core::executor::ErasedResultFields,
+) -> Result<(), HostError> {
+    use praxis_policy_core::delegation::DelegationPayload;
+    use praxis_policy_core::identity::IdentityPayload;
+
+    // A deny modifies nothing, so a result the plugin attached to one is not
+    // worth failing the deny over.
+    if !fields.continue_processing {
+        fields.modified_payload = None;
+        return Ok(());
+    }
+    if let Some(shim) = shim {
+        fields.modified_payload = Some(Box::new(shim.apply_modified(modified)?));
+        return Ok(());
+    }
+    let any = payload.as_any();
+    if let Some(identity) = any.downcast_ref::<IdentityPayload>() {
+        match credential_payloads::identity_from_worker(identity, modified)? {
+            credential_payloads::IdentityOutcome::Resolved(resolved) => {
+                fields.modified_payload = Some(resolved);
+            },
+            credential_payloads::IdentityOutcome::Rejected(violation) => {
+                // A rejection is a deny, and a deny modifies nothing.
+                fields.modified_payload = None;
+                fields.continue_processing = false;
+                fields.violation = Some(violation);
+            },
+        }
+    } else if let Some(delegation) = any.downcast_ref::<DelegationPayload>() {
+        fields.modified_payload = Some(Box::new(credential_payloads::delegation_from_worker(
+            delegation, modified,
+        )?));
+    }
+    Ok(())
 }
 
 /// Merge worker-returned context state back into the mutable plugin context.
@@ -1185,32 +1438,86 @@ mod tests {
     }
 
     #[test]
-    fn the_top_level_plugin_dirs_key_is_also_ignored() {
-        // `cpex plugin install` writes the key here. cpex_core parses and
-        // discards it; this pins that it does not reach the host either.
-        let yaml = r#"
-plugin_dirs: ["./top-level-dirs"]
-plugins:
-  - name: py-plugin
-    kind: isolated_venv
-    hooks: [tool_pre_invoke]
-    config:
-      class_name: my_pkg.Minimal
-"#;
-        let cpex_config: cpex_core::config::CpexConfig =
-            serde_yaml::from_str(yaml).expect("valid YAML");
-        assert_eq!(
-            cpex_config.plugin_dirs,
-            vec!["./top-level-dirs"],
-            "the top-level key still parses — it is simply not the host's source"
-        );
+    fn ppe_hook_names_reach_the_worker_in_its_own_spelling() {
+        // The Python framework keys payload models, hook methods and credential
+        // handling on the older names, so the task's `hook_type` and the
+        // config's `hooks` list both carry the worker's spelling.
+        let mut config = config_with(serde_json::json!({"class_name": "my_pkg.Minimal"}));
+        config.hooks = vec![
+            "identity.resolve".into(),
+            "token.delegate".into(),
+            "cmf.prompt_pre_invoke".into(),
+            "cmf.tool_pre_invoke".into(),
+        ];
+        let plugin = IsolatedPythonPlugin::from_config(&config).expect("parses");
 
-        let plugin =
-            IsolatedPythonPlugin::from_config(&cpex_config.plugins[0]).expect("config parses");
+        for (dispatched, worker) in [
+            ("identity.resolve", "identity_resolve"),
+            ("token.delegate", "token_delegate"),
+            ("cmf.prompt_pre_invoke", "cmf.prompt_pre_fetch"),
+            ("cmf.tool_pre_invoke", "cmf.tool_pre_invoke"),
+        ] {
+            let task = plugin
+                .build_task(
+                    dispatched,
+                    false,
+                    serde_json::json!({}),
+                    &PluginContext::new(),
+                )
+                .expect("task builds");
+            assert_eq!(task["hook_type"], worker, "hook_type for {dispatched}");
+        }
+
+        let task = plugin
+            .build_task(
+                "identity.resolve",
+                false,
+                serde_json::json!({}),
+                &PluginContext::new(),
+            )
+            .expect("task builds");
         assert_eq!(
-            plugin.plugin_dirs(),
-            [expected_default_dir()],
-            "the top-level key must not steer the host's plugin dir"
+            worker_config(&task)["hooks"],
+            serde_json::json!([
+                "identity_resolve",
+                "token_delegate",
+                "cmf.prompt_pre_fetch",
+                "cmf.tool_pre_invoke"
+            ])
+        );
+    }
+
+    #[test]
+    fn under_the_shim_cmf_hooks_reach_the_worker_under_legacy_names() {
+        let mut config = config_with(serde_json::json!({"class_name": "my_pkg.Minimal"}));
+        config.hooks = vec![
+            "cmf.tool_pre_invoke".into(),
+            "cmf.prompt_post_invoke".into(),
+            "cmf.resource_pre_fetch".into(),
+            "cmf.llm_input".into(),
+            "identity.resolve".into(),
+        ];
+        let plugin = IsolatedPythonPlugin::from_config(&config).expect("parses");
+
+        let task = plugin
+            .build_task(
+                "cmf.prompt_post_invoke",
+                true,
+                serde_json::json!({}),
+                &PluginContext::new(),
+            )
+            .expect("task builds");
+        assert_eq!(task["hook_type"], "prompt_post_fetch");
+        assert_eq!(
+            worker_config(&task)["hooks"],
+            serde_json::json!([
+                "tool_pre_invoke",
+                "prompt_post_fetch",
+                "resource_pre_fetch",
+                // No legacy name; the adapter refuses it before any task is built.
+                "cmf.llm_input",
+                "identity_resolve"
+            ])
         );
     }
 
@@ -1228,6 +1535,7 @@ plugins:
         let task = plugin
             .build_task(
                 "tool_pre_invoke",
+                false,
                 serde_json::json!({"name": "t"}),
                 &PluginContext::new(),
             )
@@ -1255,6 +1563,7 @@ plugins:
             .expect("parses")
             .build_task(
                 "tool_pre_invoke",
+                false,
                 serde_json::json!({"name": "t"}),
                 &PluginContext::new(),
             )
@@ -1339,6 +1648,20 @@ def mode_file(name, default=""):
 def mode():
     return mode_file("mode", "allow")
 
+def append(name, text):
+    with open(os.path.join(here, name), "a") as f:
+        f.write(text + "\n")
+
+def count(name):
+    try:
+        with open(os.path.join(here, name)) as f:
+            return len(f.read().splitlines())
+    except FileNotFoundError:
+        return 0
+
+# One line per launched process, so a test can tell whether a worker started.
+append("spawns", str(os.getpid()))
+
 while True:
     line = sys.stdin.readline()
     if not line:
@@ -1359,11 +1682,20 @@ while True:
     # real one implements; `handshake_mode` covers the old-worker case.
     if task.get("task_type") == "capabilities":
         hs = mode_file("handshake_mode")
+        append("probes", hs)
+        # An over-limit reply fails the probe the way a transient transport
+        # fault does, without the delay a timeout would cost. `flaky_cmf` fails
+        # only the first probe; `broken` fails every one.
+        if hs == "broken" or (hs == "flaky_cmf" and count("probes") == 1):
+            print(json.dumps({"request_id": rid, "pad": "x" * 8192}), flush=True)
+            continue
         if hs == "unsupported":
             # Exactly what a worker predating the handshake replies.
             print(json.dumps({"status": "error", "message": "task type not supported.", "request_id": rid}), flush=True)
             continue
         features = [] if hs == "no_features" else ["credential", "extensions", "modified_extensions"]
+        if hs in ("cmf", "flaky_cmf"):
+            features.append("cmf_hooks")
         print(json.dumps({
             "status": "success", "protocol_version": 1,
             "features": features, "cpex_version": "0.1.2", "request_id": rid,
@@ -1386,11 +1718,13 @@ while True:
     if m == "die":
         sys.exit(9)
 
-    if m == "deny":
+    if m in ("deny", "deny_unmappable"):
         response = {
             "continue_processing": False,
             "violation": {"code": "PII_DETECTED", "reason": "email in args", "details": {"field": "q"}},
         }
+        if m == "deny_unmappable":
+            response["modified_payload"] = {"headers": {"authorization": "invalid"}}
     elif m == "error":
         response = {"status": "error", "message": "the plugin raised ValueError"}
     elif m == "context":
@@ -1402,6 +1736,34 @@ while True:
         response = {
             "continue_processing": True,
             "modified_payload": {"name": "search", "args": {"q": "[REDACTED]"}},
+        }
+    elif m == "identity_result":
+        # What the worker dumps for a Python IdentityResult.
+        response = {
+            "continue_processing": True,
+            "modified_payload": {
+                "subject": {"id": "alice", "type": "user", "roles": ["hr"],
+                            "permissions": [], "teams": [], "claims": {}},
+                "delegation": None, "rejected": False, "reject_status": 401,
+                "reject_reason": "", "raw_claims": {"sub": "alice"},
+            },
+        }
+    elif m == "identity_rejected":
+        response = {
+            "continue_processing": True,
+            "modified_payload": {"subject": None, "rejected": True,
+                                 "reject_status": 401, "reject_reason": "token expired"},
+        }
+    elif m == "delegation_result":
+        response = {
+            "continue_processing": True,
+            "modified_payload": {
+                "delegated_token": "STUB-MINTED-TOKEN",
+                "delegation_update": {"chain": [], "depth": 0, "origin_subject_id": None,
+                                      "actor_subject_id": None, "delegated": False,
+                                      "age_seconds": 0.0},
+                "forwarded_headers": {}, "cache_key": None, "cache_ttl": None,
+            },
         }
     else:
         response = {"continue_processing": True}
@@ -1441,6 +1803,19 @@ while True:
         hooks: &[&str],
         capabilities: &[&str],
     ) -> (TempDir, Arc<IsolatedPythonPlugin>) {
+        uninitialized_adapter_plugin_with(
+            hooks,
+            capabilities,
+            serde_json::json!({ "class_name": "my_pkg.Plugin" }),
+        )
+    }
+
+    /// [`uninitialized_adapter_plugin`] with an explicit `config:` block.
+    fn uninitialized_adapter_plugin_with(
+        hooks: &[&str],
+        capabilities: &[&str],
+        config_block: serde_json::Value,
+    ) -> (TempDir, Arc<IsolatedPythonPlugin>) {
         let dir = TempDir::new();
         let script = dir.path().join("adapter_stub.py");
         std::fs::write(&script, ADAPTER_STUB).unwrap();
@@ -1450,7 +1825,7 @@ while True:
             kind: crate::factory::KIND.into(),
             hooks: hooks.iter().map(|h| (*h).to_string()).collect(),
             capabilities: capabilities.iter().map(|c| (*c).to_string()).collect(),
-            config: Some(serde_json::json!({ "class_name": "my_pkg.Plugin" })),
+            config: Some(config_block),
             ..Default::default()
         };
 
@@ -1474,10 +1849,10 @@ while True:
         hook: &'static str,
         payload: &dyn PluginPayload,
         ctx: &mut PluginContext,
-    ) -> Result<cpex_core::executor::ErasedResultFields, Box<PluginError>> {
+    ) -> Result<praxis_policy_core::executor::ErasedResultFields, Box<PluginError>> {
         let adapter = PythonHookAdapter::new(Arc::clone(plugin), hook);
         let erased = adapter.invoke(payload, &Extensions::default(), ctx).await?;
-        Ok(cpex_core::executor::extract_erased(erased)
+        Ok(praxis_policy_core::executor::extract_erased(erased)
             .expect("the adapter returns ErasedResultFields"))
     }
 
@@ -1655,15 +2030,23 @@ while True:
     }
 
     #[tokio::test]
-    async fn a_cmf_hook_sends_the_message_payload_shape() {
-        if crate::testing::skip_without_python3("a_cmf_hook_sends_the_message_payload_shape") {
+    async fn a_cmf_hook_sends_the_message_payload_shape_to_a_cmf_worker() {
+        if crate::testing::skip_without_python3(
+            "a_cmf_hook_sends_the_message_payload_shape_to_a_cmf_worker",
+        ) {
             return;
         }
-        let (dir, plugin) = adapter_plugin(&["cmf.tool_pre_invoke"], &[]).await;
+        let (dir, plugin) = uninitialized_adapter_plugin(&["cmf.tool_pre_invoke"], &[]);
+        // A worker claiming `cmf_hooks` gets the CMF message, not the shim.
+        set_handshake_mode(&dir, "cmf");
+        plugin.initialize().await.expect("the stub worker launches");
         set_mode(&dir, "allow");
 
-        let payload = cpex_core::cmf::MessagePayload {
-            message: cpex_core::cmf::Message::text(cpex_core::cmf::Role::User, "hello"),
+        let payload = praxis_policy_core::cmf::MessagePayload {
+            message: praxis_policy_core::cmf::Message::text(
+                praxis_policy_core::cmf::Role::User,
+                "hello",
+            ),
         };
         let mut ctx = PluginContext::new();
         invoke(&plugin, "cmf.tool_pre_invoke", &payload, &mut ctx)
@@ -1675,6 +2058,177 @@ while True:
         assert_eq!(
             task["payload"]["message"]["role"], "user",
             "a cmf hook must send the CMF message payload, not the generic wrapper"
+        );
+
+        plugin.shutdown().await.unwrap();
+    }
+
+    /// A CMF tool call after an empty text part, for the shim dispatch tests.
+    /// The shim keeps the empty sibling part as it was.
+    fn cmf_tool_call(q: &str) -> praxis_policy_core::cmf::MessagePayload {
+        use praxis_policy_core::cmf::{ContentPart, Message, Role, ToolCall};
+        praxis_policy_core::cmf::MessagePayload {
+            message: Message::with_content(
+                Role::Assistant,
+                vec![
+                    ContentPart::Text {
+                        text: String::new(),
+                    },
+                    ContentPart::ToolCall {
+                        content: ToolCall {
+                            tool_call_id: "call-7".into(),
+                            name: "search".into(),
+                            arguments: std::collections::HashMap::from([(
+                                "q".into(),
+                                serde_json::json!(q),
+                            )]),
+                            namespace: None,
+                        },
+                    },
+                ],
+            ),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_cmf_hook_reaches_an_old_worker_as_the_legacy_payload() {
+        if crate::testing::skip_without_python3(
+            "a_cmf_hook_reaches_an_old_worker_as_the_legacy_payload",
+        ) {
+            return;
+        }
+        // The default stub handshake claims no `cmf_hooks`, like a 0.1.x worker.
+        let (dir, plugin) = adapter_plugin(&["cmf.tool_pre_invoke"], &[]).await;
+        set_mode(&dir, "allow");
+
+        let mut ctx = PluginContext::new();
+        let fields = invoke(
+            &plugin,
+            "cmf.tool_pre_invoke",
+            &cmf_tool_call("rust"),
+            &mut ctx,
+        )
+        .await
+        .expect("the shimmed round trip succeeds");
+        assert!(fields.continue_processing);
+        assert!(fields.modified_payload.is_none());
+
+        let task = last_task(&dir);
+        assert_eq!(task["hook_type"], "tool_pre_invoke");
+        assert_eq!(
+            task["payload"],
+            serde_json::json!({"name": "search", "args": {"q": "rust"}})
+        );
+        assert_eq!(
+            worker_config(&task)["hooks"],
+            serde_json::json!(["tool_pre_invoke"])
+        );
+
+        plugin.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_legacy_modification_maps_back_onto_the_cmf_message() {
+        if crate::testing::skip_without_python3(
+            "a_legacy_modification_maps_back_onto_the_cmf_message",
+        ) {
+            return;
+        }
+        let (dir, plugin) = adapter_plugin(&["cmf.tool_pre_invoke"], &[]).await;
+        // Returns `{"name": "search", "args": {"q": "[REDACTED]"}}`.
+        set_mode(&dir, "modify");
+
+        let mut ctx = PluginContext::new();
+        let fields = invoke(
+            &plugin,
+            "cmf.tool_pre_invoke",
+            &cmf_tool_call("alice@example.com"),
+            &mut ctx,
+        )
+        .await
+        .unwrap();
+
+        let modified = fields.modified_payload.expect("the modification survives");
+        let message = modified
+            .as_any()
+            .downcast_ref::<praxis_policy_core::cmf::MessagePayload>()
+            .expect("a cmf hook's modification must come back as a MessagePayload");
+        let json = serde_json::to_value(message).unwrap();
+        assert_eq!(json["message"]["content"][0]["text"], "");
+        assert_eq!(
+            json["message"]["content"][1]["content"]["arguments"]["q"],
+            "[REDACTED]"
+        );
+        assert_eq!(
+            json["message"]["content"][1]["content"]["tool_call_id"],
+            "call-7"
+        );
+
+        plugin.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_legacy_deny_passes_through_the_shim_unchanged() {
+        if crate::testing::skip_without_python3("a_legacy_deny_passes_through_the_shim_unchanged") {
+            return;
+        }
+        let (dir, plugin) = adapter_plugin(&["cmf.tool_pre_invoke"], &[]).await;
+        for mode in ["deny", "deny_unmappable"] {
+            set_mode(&dir, mode);
+            let mut ctx = PluginContext::new();
+            let fields = invoke(
+                &plugin,
+                "cmf.tool_pre_invoke",
+                &cmf_tool_call("x"),
+                &mut ctx,
+            )
+            .await
+            .expect("an unusable modification must not replace a denial with an error");
+
+            assert!(!fields.continue_processing);
+            assert!(fields.modified_payload.is_none());
+            let violation = fields.violation.expect("the deny keeps its violation");
+            assert_eq!(violation.code, "PII_DETECTED");
+            assert_eq!(violation.details["field"], "q");
+        }
+
+        plugin.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_unrepresentable_message_fails_closed_before_reaching_the_worker() {
+        if crate::testing::skip_without_python3(
+            "an_unrepresentable_message_fails_closed_before_reaching_the_worker",
+        ) {
+            return;
+        }
+        let (dir, plugin) = adapter_plugin(&["cmf.tool_pre_invoke"], &[]).await;
+        set_mode(&dir, "allow");
+
+        let no_tool_call = praxis_policy_core::cmf::MessagePayload {
+            message: praxis_policy_core::cmf::Message::text(
+                praxis_policy_core::cmf::Role::User,
+                "hello",
+            ),
+        };
+        for hook in ["cmf.tool_pre_invoke"] {
+            let mut ctx = PluginContext::new();
+            let Err(err) = invoke(&plugin, hook, &no_tool_call, &mut ctx).await else {
+                panic!("'{hook}' must fail closed rather than allow");
+            };
+            let message = err.to_string();
+            assert!(message.contains(hook), "names the hook: {message}");
+            assert!(message.contains("py-plugin"), "names the plugin: {message}");
+            match *err {
+                PluginError::Execution { ref code, .. } => {
+                    assert_eq!(code.as_deref(), Some("legacy_shim_unsupported"));
+                },
+                ref other => panic!("expected an Execution error, got {other:?}"),
+            }
+        }
+        assert!(
+            !dir.path().join("last_task.json").exists(),
+            "nothing may reach the worker for a message the shim refused"
         );
 
         plugin.shutdown().await.unwrap();
@@ -1711,12 +2265,12 @@ while True:
         ) {
             return;
         }
-        use cpex_core::extensions::raw_credentials::{
+        use praxis_policy_core::extensions::raw_credentials::{
             RawCredentialsExtension, RawInboundToken, TokenKind, TokenRole,
         };
 
         let (dir, plugin) =
-            adapter_plugin(&["identity_resolve"], &["read_inbound_credentials"]).await;
+            adapter_plugin(&["identity.resolve"], &["read_inbound_credentials"]).await;
         set_mode(&dir, "allow");
 
         let mut raw = RawCredentialsExtension::default();
@@ -1731,7 +2285,7 @@ while True:
 
         let payload = crate::legacy::IdentityResolvePayload::default();
         let mut ctx = PluginContext::new();
-        let adapter = PythonHookAdapter::new(Arc::clone(&plugin), "identity_resolve");
+        let adapter = PythonHookAdapter::new(Arc::clone(&plugin), "identity.resolve");
         adapter
             .invoke(&payload, &extensions, &mut ctx)
             .await
@@ -1740,6 +2294,63 @@ while True:
         let task = last_task(&dir);
         assert_eq!(task["credential"]["inbound"]["token"], "E2E-SECRET-TOKEN");
         assert_eq!(task["credential"]["inbound"]["kind"], "jwt");
+        assert_eq!(
+            task["hook_type"], "identity_resolve",
+            "the worker registers the identity hook under its own spelling"
+        );
+
+        plugin.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_credential_capability_attaches_the_dto_on_a_delegation_hook() {
+        if crate::testing::skip_without_python3(
+            "a_credential_capability_attaches_the_dto_on_a_delegation_hook",
+        ) {
+            return;
+        }
+        use praxis_policy_core::extensions::raw_credentials::{
+            DelegationKey, DelegationMode, RawCredentialsExtension, RawDelegatedToken,
+        };
+
+        let (dir, plugin) = adapter_plugin(&["token.delegate"], &["read_delegated_tokens"]).await;
+        set_mode(&dir, "allow");
+
+        let audience = "https://billing.example.com";
+        let mut raw = RawCredentialsExtension::default();
+        raw.delegated_tokens.insert(
+            DelegationKey::new(DelegationMode::OnBehalfOfUser, audience, vec![]),
+            RawDelegatedToken::new(
+                "E2E-DELEGATED-TOKEN",
+                "Authorization",
+                audience,
+                vec![],
+                chrono::Utc::now(),
+            ),
+        );
+        let extensions = Extensions {
+            raw_credentials: Some(Arc::new(raw)),
+            ..Default::default()
+        };
+
+        let payload = crate::legacy::TokenDelegatePayload {
+            target_name: "billing".into(),
+            target_audience: Some(audience.into()),
+            ..Default::default()
+        };
+        let mut ctx = PluginContext::new();
+        let adapter = PythonHookAdapter::new(Arc::clone(&plugin), "token.delegate");
+        adapter
+            .invoke(&payload, &extensions, &mut ctx)
+            .await
+            .expect("dispatch succeeds");
+
+        let task = last_task(&dir);
+        assert_eq!(
+            task["credential"]["delegated"]["token"],
+            "E2E-DELEGATED-TOKEN"
+        );
+        assert_eq!(task["hook_type"], "token_delegate");
 
         plugin.shutdown().await.unwrap();
     }
@@ -1751,12 +2362,12 @@ while True:
         ) {
             return;
         }
-        use cpex_core::extensions::raw_credentials::{
+        use praxis_policy_core::extensions::raw_credentials::{
             RawCredentialsExtension, RawInboundToken, TokenKind, TokenRole,
         };
 
         // Same hook, same request — this plugin simply declared nothing.
-        let (dir, plugin) = adapter_plugin(&["identity_resolve"], &[]).await;
+        let (dir, plugin) = adapter_plugin(&["identity.resolve"], &[]).await;
         set_mode(&dir, "allow");
 
         let mut raw = RawCredentialsExtension::default();
@@ -1771,7 +2382,7 @@ while True:
 
         let payload = crate::legacy::IdentityResolvePayload::default();
         let mut ctx = PluginContext::new();
-        let adapter = PythonHookAdapter::new(Arc::clone(&plugin), "identity_resolve");
+        let adapter = PythonHookAdapter::new(Arc::clone(&plugin), "identity.resolve");
         adapter
             .invoke(&payload, &extensions, &mut ctx)
             .await
@@ -1880,7 +2491,7 @@ while True:
             return;
         }
         let (dir, plugin) =
-            uninitialized_adapter_plugin(&["identity_resolve"], &["read_inbound_credentials"]);
+            uninitialized_adapter_plugin(&["identity.resolve"], &["read_inbound_credentials"]);
         // A worker predating the handshake: replies "task type not supported."
         set_handshake_mode(&dir, "unsupported");
 
@@ -1905,6 +2516,34 @@ while True:
             plugin.worker.read().await.is_none(),
             "a failed handshake must not leave a worker in the slot"
         );
+    }
+
+    #[tokio::test]
+    async fn llm_hooks_require_a_worker_with_native_cmf_support() {
+        if crate::testing::skip_without_python3(
+            "llm_hooks_require_a_worker_with_native_cmf_support",
+        ) {
+            return;
+        }
+        for hook in ["cmf.llm_input", "cmf.llm_output"] {
+            for handshake in ["no_features", "unsupported"] {
+                let (dir, plugin) = uninitialized_adapter_plugin(&[hook], &[]);
+                set_handshake_mode(&dir, handshake);
+                let err = plugin
+                    .initialize()
+                    .await
+                    .expect_err("the shim cannot serve an LLM hook");
+                assert!(err.to_string().contains("cmf_hooks"), "{err}");
+                assert!(plugin.worker.read().await.is_none());
+            }
+            let (dir, plugin) = uninitialized_adapter_plugin(&[hook], &[]);
+            set_handshake_mode(&dir, "cmf");
+            plugin
+                .initialize()
+                .await
+                .expect("a native CMF worker can serve an LLM hook");
+            plugin.shutdown().await.unwrap();
+        }
     }
 
     #[tokio::test]
@@ -1979,12 +2618,12 @@ while True:
         ) {
             return;
         }
-        use cpex_core::extensions::raw_credentials::{
+        use praxis_policy_core::extensions::raw_credentials::{
             RawCredentialsExtension, RawInboundToken, TokenKind, TokenRole,
         };
 
         let (dir, plugin) =
-            adapter_plugin(&["identity_resolve"], &["read_inbound_credentials"]).await;
+            adapter_plugin(&["identity.resolve"], &["read_inbound_credentials"]).await;
         set_mode(&dir, "allow");
 
         let mut raw = RawCredentialsExtension::default();
@@ -1998,7 +2637,7 @@ while True:
         };
 
         let payload = crate::legacy::IdentityResolvePayload::default();
-        let adapter = PythonHookAdapter::new(Arc::clone(&plugin), "identity_resolve");
+        let adapter = PythonHookAdapter::new(Arc::clone(&plugin), "identity.resolve");
 
         let mut ctx = PluginContext::new();
         adapter
@@ -2044,11 +2683,11 @@ while True:
         ) {
             return;
         }
-        use cpex_core::extensions::raw_credentials::{
+        use praxis_policy_core::extensions::raw_credentials::{
             RawCredentialsExtension, RawInboundToken, TokenKind, TokenRole,
         };
 
-        let (dir, plugin) = adapter_plugin(&["identity_resolve"], &[]).await;
+        let (dir, plugin) = adapter_plugin(&["identity.resolve"], &[]).await;
         set_mode(&dir, "allow");
 
         let mut raw = RawCredentialsExtension::default();
@@ -2062,7 +2701,7 @@ while True:
         };
 
         let payload = crate::legacy::IdentityResolvePayload::default();
-        let adapter = PythonHookAdapter::new(Arc::clone(&plugin), "identity_resolve");
+        let adapter = PythonHookAdapter::new(Arc::clone(&plugin), "identity.resolve");
 
         let mut ctx = PluginContext::new();
         adapter
@@ -2255,6 +2894,352 @@ while True:
         invoke(&plugin, "tool_pre_invoke", &payload, &mut ctx)
             .await
             .expect("budget was not exhausted by the concurrent respawn");
+
+        plugin.shutdown().await.unwrap();
+    }
+
+    /// Lines in a file the stub appends to, or 0 when it has none.
+    fn lines_in(dir: &TempDir, name: &str) -> usize {
+        std::fs::read_to_string(dir.path().join(name))
+            .map(|s| s.lines().count())
+            .unwrap_or(0)
+    }
+
+    #[tokio::test]
+    async fn a_failed_respawn_is_retried_on_the_next_invocation() {
+        // A respawn whose replacement fails verification used to leave the
+        // slot empty, which every later call read as "initialize() did not
+        // run": one bad respawn disabled the plugin for good.
+        if crate::testing::skip_without_python3(
+            "a_failed_respawn_is_retried_on_the_next_invocation",
+        ) {
+            return;
+        }
+        // `read_labels` makes verification require the `extensions` feature.
+        let (dir, plugin) = adapter_plugin(&["tool_pre_invoke"], &["read_labels"]).await;
+        set_mode(&dir, "allow");
+        let payload = crate::legacy::ToolPreInvokePayload {
+            name: "search".into(),
+            ..Default::default()
+        };
+        let mut ctx = PluginContext::new();
+        invoke(&plugin, "tool_pre_invoke", &payload, &mut ctx)
+            .await
+            .unwrap();
+        let original_pid = last_pid(&dir);
+
+        set_mode(&dir, "die");
+        let _ = invoke(&plugin, "tool_pre_invoke", &payload, &mut ctx).await;
+        await_worker_death(&plugin).await;
+
+        // The replacement launches but fails the handshake.
+        set_handshake_mode(&dir, "no_features");
+        set_mode(&dir, "allow");
+        let Err(err) = invoke(&plugin, "tool_pre_invoke", &payload, &mut ctx).await else {
+            panic!("a replacement that fails verification must not serve the request");
+        };
+        assert!(
+            err.to_string().contains("does not implement extensions"),
+            "{err}"
+        );
+        assert!(
+            plugin.worker.read().await.is_some(),
+            "the dead worker stays in the slot so a later call can respawn again"
+        );
+
+        // The cause is fixed; the next call respawns within the same budget.
+        std::fs::remove_file(dir.path().join("handshake_mode")).unwrap();
+        let fields = invoke(&plugin, "tool_pre_invoke", &payload, &mut ctx)
+            .await
+            .expect("a later invocation retries the respawn");
+        assert!(fields.continue_processing);
+        assert_ne!(original_pid, last_pid(&dir), "served by a new process");
+
+        plugin.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_respawn_racing_shutdown_launches_no_worker() {
+        // A request that found the worker dead is in the respawn backoff when
+        // the engine shuts the plugin down. The respawn must give up rather
+        // than start a worker after shutdown, which nothing would stop.
+        if crate::testing::skip_without_python3("a_respawn_racing_shutdown_launches_no_worker") {
+            return;
+        }
+        let (dir, plugin) = adapter_plugin(&["tool_pre_invoke"], &[]).await;
+        set_mode(&dir, "allow");
+        let payload = crate::legacy::ToolPreInvokePayload {
+            name: "search".into(),
+            ..Default::default()
+        };
+        let mut ctx = PluginContext::new();
+        invoke(&plugin, "tool_pre_invoke", &payload, &mut ctx)
+            .await
+            .unwrap();
+        set_mode(&dir, "die");
+        let _ = invoke(&plugin, "tool_pre_invoke", &payload, &mut ctx).await;
+        await_worker_death(&plugin).await;
+        set_mode(&dir, "allow");
+        assert_eq!(lines_in(&dir, "spawns"), 1);
+
+        let racing = {
+            let plugin = Arc::clone(&plugin);
+            tokio::spawn(async move {
+                let payload = crate::legacy::ToolPreInvokePayload {
+                    name: "search".into(),
+                    ..Default::default()
+                };
+                let mut ctx = PluginContext::new();
+                invoke(&plugin, "tool_pre_invoke", &payload, &mut ctx)
+                    .await
+                    .map(|_| ())
+            })
+        };
+        // Inside the first respawn's 100ms backoff.
+        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+        plugin.shutdown().await.unwrap();
+
+        let Err(err) = racing.await.unwrap() else {
+            panic!("an invocation racing shutdown must not be served by a new worker");
+        };
+        assert!(err.to_string().contains("shut down"), "{err}");
+
+        // Give a wrongly launched worker time to show up before asserting none did.
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        assert_eq!(
+            lines_in(&dir, "spawns"),
+            1,
+            "no worker launched after shutdown"
+        );
+        assert!(plugin.worker.read().await.is_none(), "the slot stays empty");
+
+        // And later calls report the shutdown rather than respawning.
+        let Err(err) = invoke(&plugin, "tool_pre_invoke", &payload, &mut ctx).await else {
+            panic!("a shut-down plugin cannot serve a request");
+        };
+        assert!(err.to_string().contains("shut down"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn a_transient_probe_failure_is_retried_before_choosing_the_shim() {
+        if crate::testing::skip_without_python3(
+            "a_transient_probe_failure_is_retried_before_choosing_the_shim",
+        ) {
+            return;
+        }
+        // A small frame cap lets the stub fail a probe with an over-limit reply.
+        let (dir, plugin) = uninitialized_adapter_plugin_with(
+            &["cmf.tool_pre_invoke"],
+            &[],
+            serde_json::json!({ "class_name": "my_pkg.Plugin", "max_content_size": 4096 }),
+        );
+        // The startup probe fails; any later one claims `cmf_hooks`.
+        set_handshake_mode(&dir, "flaky_cmf");
+        plugin
+            .initialize()
+            .await
+            .expect("a failed probe does not stop a plugin that requires nothing");
+        set_mode(&dir, "allow");
+
+        let payload = praxis_policy_core::cmf::MessagePayload {
+            message: praxis_policy_core::cmf::Message::text(
+                praxis_policy_core::cmf::Role::User,
+                "hello",
+            ),
+        };
+        let mut ctx = PluginContext::new();
+        invoke(&plugin, "cmf.tool_pre_invoke", &payload, &mut ctx)
+            .await
+            .expect("served natively once the retried probe answers");
+
+        let task = last_task(&dir);
+        assert_eq!(
+            task["hook_type"], "cmf.tool_pre_invoke",
+            "the retried probe's report chooses native dispatch, not the shim"
+        );
+        assert_eq!(lines_in(&dir, "probes"), 2);
+
+        plugin.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_probe_that_keeps_failing_is_retried_once_per_worker() {
+        if crate::testing::skip_without_python3(
+            "a_probe_that_keeps_failing_is_retried_once_per_worker",
+        ) {
+            return;
+        }
+        let (dir, plugin) = uninitialized_adapter_plugin_with(
+            &["cmf.tool_pre_invoke"],
+            &[],
+            serde_json::json!({ "class_name": "my_pkg.Plugin", "max_content_size": 4096 }),
+        );
+        set_handshake_mode(&dir, "broken");
+        plugin.initialize().await.unwrap();
+        set_mode(&dir, "allow");
+
+        for _ in 0..3 {
+            let mut ctx = PluginContext::new();
+            invoke(
+                &plugin,
+                "cmf.tool_pre_invoke",
+                &cmf_tool_call("rust"),
+                &mut ctx,
+            )
+            .await
+            .expect("the shim still serves the hook");
+            assert_eq!(last_task(&dir)["hook_type"], "tool_pre_invoke");
+        }
+        assert_eq!(
+            lines_in(&dir, "probes"),
+            2,
+            "one startup probe and one retry, not one per call"
+        );
+
+        plugin.shutdown().await.unwrap();
+    }
+
+    // --- PPE identity and delegation payloads ---------------------------------
+
+    fn ppe_identity() -> praxis_policy_core::identity::IdentityPayload {
+        use praxis_policy_core::identity::{IdentityPayload, TokenSource};
+        IdentityPayload::new("PPE-IDENTITY-SECRET-TOKEN", TokenSource::Bearer).with_headers(
+            std::collections::HashMap::from([
+                (
+                    "authorization".into(),
+                    "Bearer PPE-IDENTITY-SECRET-TOKEN".into(),
+                ),
+                ("cookie".into(), "session=PPE-COOKIE-SECRET".into()),
+                ("x-tenant".into(), "acme".into()),
+            ]),
+        )
+    }
+
+    async fn invoke_on(
+        plugin: &Arc<IsolatedPythonPlugin>,
+        hook: &'static str,
+        payload: &dyn PluginPayload,
+    ) -> praxis_policy_core::executor::ErasedResultFields {
+        let mut ctx = PluginContext::new();
+        invoke(plugin, hook, payload, &mut ctx)
+            .await
+            .expect("dispatch succeeds")
+    }
+
+    #[tokio::test]
+    async fn a_ppe_identity_payload_reaches_the_worker_without_its_credential() {
+        if crate::testing::skip_without_python3(
+            "a_ppe_identity_payload_reaches_the_worker_without_its_credential",
+        ) {
+            return;
+        }
+        let (dir, plugin) = adapter_plugin(&["identity.resolve"], &[]).await;
+        set_mode(&dir, "allow");
+        invoke_on(&plugin, "identity.resolve", &ppe_identity()).await;
+
+        let task = last_task(&dir);
+        assert_eq!(task["hook_type"], "identity_resolve");
+        assert_eq!(task["payload"]["headers"], serde_json::json!({}));
+        assert!(task.get("credential").is_none());
+        let wire = serde_json::to_string(&task).unwrap();
+        assert!(!wire.contains("PPE-IDENTITY-SECRET-TOKEN"), "{wire}");
+        assert!(!wire.contains("PPE-COOKIE-SECRET"), "{wire}");
+
+        plugin.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_ppe_identity_payload_gives_a_declaring_plugin_the_gated_credential() {
+        if crate::testing::skip_without_python3(
+            "a_ppe_identity_payload_gives_a_declaring_plugin_the_gated_credential",
+        ) {
+            return;
+        }
+        let (dir, plugin) =
+            adapter_plugin(&["identity.resolve"], &["read_inbound_credentials"]).await;
+        set_mode(&dir, "identity_result");
+        let fields = invoke_on(&plugin, "identity.resolve", &ppe_identity()).await;
+
+        let task = last_task(&dir);
+        assert_eq!(
+            task["credential"]["inbound"]["token"],
+            "PPE-IDENTITY-SECRET-TOKEN"
+        );
+        assert!(
+            !serde_json::to_string(&task["payload"])
+                .unwrap()
+                .contains("PPE-IDENTITY-SECRET-TOKEN"),
+            "the token rides only the gated channel"
+        );
+
+        // The IdentityResult maps back onto the PPE payload PPE downcasts to.
+        let modified = fields
+            .modified_payload
+            .expect("the result is a modification");
+        let identity = modified
+            .as_any()
+            .downcast_ref::<praxis_policy_core::identity::IdentityPayload>()
+            .expect("identity.resolve must come back as PPE's IdentityPayload");
+        assert_eq!(
+            identity.subject.as_ref().and_then(|s| s.id.as_deref()),
+            Some("alice")
+        );
+        assert_eq!(identity.raw_token(), "PPE-IDENTITY-SECRET-TOKEN");
+
+        plugin.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_rejected_identity_result_becomes_a_deny() {
+        if crate::testing::skip_without_python3("a_rejected_identity_result_becomes_a_deny") {
+            return;
+        }
+        let (dir, plugin) = adapter_plugin(&["identity.resolve"], &[]).await;
+        set_mode(&dir, "identity_rejected");
+        let fields = invoke_on(&plugin, "identity.resolve", &ppe_identity()).await;
+        assert!(!fields.continue_processing);
+        assert!(fields.modified_payload.is_none());
+        assert_eq!(fields.violation.unwrap().reason, "token expired");
+
+        plugin.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_ppe_delegation_payload_round_trips_through_the_worker() {
+        if crate::testing::skip_without_python3(
+            "a_ppe_delegation_payload_round_trips_through_the_worker",
+        ) {
+            return;
+        }
+        use praxis_policy_core::delegation::DelegationPayload;
+
+        // PPE's bearer token is the caller's inbound credential.
+        let (dir, plugin) =
+            adapter_plugin(&["token.delegate"], &["read_inbound_credentials"]).await;
+        set_mode(&dir, "delegation_result");
+        let payload = DelegationPayload::new("PPE-CALLER-BEARER", "billing")
+            .with_target_audience("https://billing.example.com");
+        let fields = invoke_on(&plugin, "token.delegate", &payload).await;
+
+        let task = last_task(&dir);
+        assert_eq!(task["hook_type"], "token_delegate");
+        assert_eq!(task["payload"]["target_name"], "billing");
+        assert!(task["payload"].get("bearer_token").is_none());
+        assert_eq!(
+            task["credential"]["delegated"]["token"],
+            "PPE-CALLER-BEARER"
+        );
+
+        let modified = fields
+            .modified_payload
+            .expect("the result is a modification");
+        let delegation = modified
+            .as_any()
+            .downcast_ref::<DelegationPayload>()
+            .expect("token.delegate must come back as PPE's DelegationPayload");
+        let minted = delegation.delegated_token.as_ref().expect("a minted token");
+        assert_eq!(minted.token.as_str(), "STUB-MINTED-TOKEN");
+        assert_eq!(minted.audience, "https://billing.example.com");
 
         plugin.shutdown().await.unwrap();
     }

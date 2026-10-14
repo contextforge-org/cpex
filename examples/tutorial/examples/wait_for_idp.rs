@@ -11,8 +11,8 @@
 // exits 1 if it does not come up in time. This is the single place readiness
 // is gated: `make tutorial-check` runs it once after `docker compose up`, so
 // the IdP-backed modules do not each have to wait. The JWT plugin fetches
-// JWKS at manager initialize(), so the realm must be serving before any
-// module starts — running this probe first guarantees that.
+// JWKS at engine initialize(), so the realm must be serving before any
+// module starts; running this probe first guarantees that.
 
 use std::time::Duration;
 

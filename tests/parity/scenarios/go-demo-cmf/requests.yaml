@@ -1,0 +1,88 @@
+description: >-
+  The go-demo CMF scenarios: a host-registered tool-policy plugin gates
+  PII-tagged tools on a security label, and a header injector writes
+  response headers through the capability-gated HTTP extension.
+
+host_plugins: [go-demo-cmf]
+
+requests:
+  - kind: invoke
+    id: pii-tool-without-label
+    hook: cmf.tool_pre_invoke
+    payload:
+      message:
+        role: assistant
+        content:
+          - {content_type: text, text: "I'll look up the compensation data for you."}
+          - content_type: tool_call
+            content: {tool_call_id: tc_001, name: get_compensation, arguments: {employee_id: 42}, namespace: hr}
+    extensions:
+      meta: {entity_type: tool, entity_name: get_compensation, tags: [pii, hr]}
+      security:
+        labels: []
+        subject: {id: alice, roles: [hr_analyst]}
+      http:
+        request_headers: {Authorization: "Bearer test-placeholder", X-Request-ID: req-001}
+      agent: {session_id: sess_abc123, agent_id: hr-assistant}
+
+  - kind: invoke
+    id: pii-tool-with-label
+    hook: cmf.tool_pre_invoke
+    payload:
+      message:
+        role: assistant
+        content:
+          - {content_type: text, text: "I'll look up the compensation data for you."}
+          - content_type: tool_call
+            content: {tool_call_id: tc_001, name: get_compensation, arguments: {employee_id: 42}, namespace: hr}
+    extensions:
+      meta: {entity_type: tool, entity_name: get_compensation, tags: [pii, hr]}
+      security:
+        labels: [PII, HR]
+        subject: {id: alice, roles: [hr_analyst]}
+      http:
+        request_headers: {Authorization: "Bearer test-placeholder", X-Request-ID: req-001}
+      agent: {session_id: sess_abc123, agent_id: hr-assistant}
+
+  - kind: invoke
+    id: tool-result-header-injection
+    hook: cmf.tool_post_invoke
+    payload:
+      message:
+        role: tool
+        content:
+          - content_type: tool_result
+            content: {tool_call_id: tc_001, tool_name: get_compensation, content: {employee_id: 42, salary: 125000, currency: USD}, is_error: false}
+    extensions:
+      meta: {entity_type: tool, entity_name: get_compensation, tags: [pii, hr]}
+      security:
+        labels: [PII, HR]
+      http:
+        request_headers: {Authorization: "Bearer test-placeholder", X-Request-ID: req-001}
+
+  - kind: invoke
+    id: non-pii-text-message
+    hook: cmf.tool_pre_invoke
+    payload:
+      message:
+        role: user
+        content:
+          - {content_type: text, text: Show me the list of departments}
+    extensions:
+      meta: {entity_type: tool, entity_name: list_departments}
+
+  - kind: invoke
+    id: admin-tagged-tool-without-admin-role
+    hook: cmf.tool_pre_invoke
+    payload:
+      message:
+        role: assistant
+        content:
+          - content_type: tool_call
+            content: {tool_call_id: tc_002, name: rotate_keys, arguments: {}}
+    extensions:
+      meta: {entity_type: tool, entity_name: rotate_keys, tags: [admin]}
+      security:
+        subject: {id: alice, roles: [hr_analyst]}
+      http:
+        request_headers: {X-Request-ID: req-002}

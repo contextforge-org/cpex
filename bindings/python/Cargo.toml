@@ -7,7 +7,7 @@
 #
 # Built via maturin (`maturin develop` / `maturin build`).
 # The `extension-module` feature is opt-in (non-default) so the pure-Rust
-# workspace build stays libpython-independent (KD3). maturin activates it
+# workspace build stays libpython-independent. maturin activates it
 # automatically via `[features] -> pyo3/extension-module` in pyproject.toml.
 #
 # Build this crate directly (macOS, Python present):
@@ -17,29 +17,25 @@
 
 [package]
 name = "cpex-python"
-description = "PyO3 bindings for the CPEX plugin runtime"
+description = "PyO3 bindings for the CPEX policy engine"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
 
 [lib]
 name = "_lib"
 crate-type = ["cdylib"]
 
 [dependencies]
-cpex-core = { workspace = true }
+praxis-policy-core = { workspace = true }
 
-# The builtin extension set — mirrors the feature set shipped by cpex-ffi.
-cpex-builtins = { workspace = true, default-features = false, features = [
-    "pii-scanner",
-    "audit-logger",
-    "identity-jwt",
-    "delegator-oauth",
-    "cedar-direct",
-    "cel",
-    "valkey",
-] }
+# The CPEX facade: the builtin extension set, the HTTP transport and the host
+# wiring shared with cpex-ffi (`cpex::host`).
+cpex = { workspace = true }
 
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -58,3 +54,6 @@ tokio = { workspace = true, features = ["rt", "macros"] }
 
 [features]
 default = []
+
+[lints]
+workspace = true

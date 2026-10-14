@@ -22,11 +22,11 @@
 
 use std::sync::Arc;
 
-use cpex::PluginManager;
+use cpex::PolicyEngine;
 use cpex_tutorial::backends;
 use cpex_tutorial::idp;
 use cpex_tutorial::ui;
-use cpex_tutorial::{mediate, Caller, Outcome};
+use cpex_tutorial::{Caller, Outcome, mediate};
 
 use serde_json::json;
 
@@ -61,11 +61,14 @@ async fn main() {
         println!("(running the no-delegation variant)\n");
     }
 
-    let mgr = Arc::new(PluginManager::default());
-    cpex::install_builtins(&mgr);
-    mgr.load_config_yaml(policy)
+    let engine = Arc::new(PolicyEngine::default());
+    cpex::install_builtins(&engine);
+    cpex_tutorial::install_http_transport(&engine);
+    cpex_tutorial::audit::register(&engine);
+    engine
+        .load_config_yaml(policy)
         .expect("capstone policy should load");
-    mgr.initialize().await.expect("initialize");
+    engine.initialize().await.expect("initialize");
 
     let alice = token("alice").await;
     let dana = token("dana").await;
@@ -78,7 +81,7 @@ async fn main() {
 
     ui::scenario("alice (hr, view_ssn) → get_compensation");
     let o = mediate(
-        &mgr,
+        &engine,
         &Caller::with_token(&alice).in_session("s-alice"),
         "get_compensation",
         json!({ "employee_id": "e-1001" }),
@@ -90,7 +93,7 @@ async fn main() {
 
     ui::scenario("dana (hr, no view_ssn) → get_compensation (SSN redacted)");
     let o = mediate(
-        &mgr,
+        &engine,
         &Caller::with_token(&dana).in_session("s-dana"),
         "get_compensation",
         json!({ "employee_id": "e-1001" }),
@@ -102,7 +105,7 @@ async fn main() {
 
     ui::scenario("evan (engineer) → get_compensation (denied, not HR)");
     let o = mediate(
-        &mgr,
+        &engine,
         &Caller::with_token(&evan).in_session("s-evan"),
         "get_compensation",
         json!({ "employee_id": "e-1001" }),
@@ -117,7 +120,7 @@ async fn main() {
 
     ui::scenario("evan (engineer) → search_repos internal (allowed)");
     let o = mediate(
-        &mgr,
+        &engine,
         &Caller::with_token(&evan).in_session("s-evan"),
         "search_repos",
         json!({ "visibility": "internal" }),
@@ -129,7 +132,7 @@ async fn main() {
 
     ui::scenario("sam (security) → search_repos public (allowed)");
     let o = mediate(
-        &mgr,
+        &engine,
         &Caller::with_token(&sam).in_session("s-sam"),
         "search_repos",
         json!({ "visibility": "public" }),
@@ -144,7 +147,7 @@ async fn main() {
 
     ui::scenario("dana, fresh session → send_email (allowed: nothing read yet)");
     let o = mediate(
-        &mgr,
+        &engine,
         &Caller::with_token(&dana).in_session("s-clean"),
         "send_email",
         json!({ "to": "team@corp.example", "subject": "sync" }),
@@ -156,7 +159,7 @@ async fn main() {
 
     ui::scenario("dana, same session as her HR read → send_email (write-down blocked)");
     let o = mediate(
-        &mgr,
+        &engine,
         &Caller::with_token(&dana).in_session("s-dana"),
         "send_email",
         json!({ "to": "team@corp.example", "subject": "sync" }),
@@ -166,6 +169,8 @@ async fn main() {
     ui::print_outcome(&o);
     all_passed &= ui::expect(&o, false);
 
-    println!("One policy, one unchanged application. Identity, permission, and session history produced every outcome.");
+    println!(
+        "One policy, one unchanged application. Identity, permission, and session history produced every outcome."
+    );
     ui::finish_check(all_passed);
 }

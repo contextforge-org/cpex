@@ -29,22 +29,21 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 
-use cpex::PluginManager;
-use cpex_core::elicitation::{
+use cpex::PolicyEngine;
+use cpex::prelude::{
+    Extensions, HookHandler, Plugin, PluginConfig, PluginContext, PluginError, PluginFactory,
+    PluginInstance, PluginResult, TypedHandlerAdapter,
+};
+use praxis_policy_core::elicitation::{
     ElicitationHook, ElicitationOp, ElicitationOutcomeKind, ElicitationPayload,
     ElicitationStatusKind,
-};
-use cpex_core::factory::{PluginFactory, PluginInstance};
-use cpex_core::hooks::adapter::TypedHandlerAdapter;
-use cpex_sdk::{
-    Extensions, HookHandler, Plugin, PluginConfig, PluginContext, PluginError, PluginResult,
 };
 
 use cpex_tutorial::approvals::{ApprovalChannel, Status};
 use cpex_tutorial::backends;
 use cpex_tutorial::idp;
 use cpex_tutorial::ui;
-use cpex_tutorial::{mediate, Caller, Outcome};
+use cpex_tutorial::{Caller, Outcome, mediate};
 
 use serde_json::json;
 
@@ -151,17 +150,19 @@ async fn main() {
         channel.serve(APPROVAL_PORT);
     }
 
-    let mgr = Arc::new(PluginManager::default());
-    mgr.register_factory(
+    let engine = Arc::new(PolicyEngine::default());
+    engine.register_factory(
         "approval-channel",
         Box::new(ChannelApproverFactory {
             channel: channel.clone(),
         }),
     );
-    cpex::install_builtins(&mgr);
-    mgr.load_config_yaml(POLICY)
+    cpex::install_builtins(&engine);
+    cpex_tutorial::install_http_transport(&engine);
+    engine
+        .load_config_yaml(POLICY)
         .expect("policy m08.yaml should load");
-    mgr.initialize().await.expect("initialize");
+    engine.initialize().await.expect("initialize");
 
     let evan = match idp::mint_token("evan", "evan").await {
         Ok(t) => Caller::with_token(t),
@@ -175,7 +176,7 @@ async fn main() {
     // --- First attempt: the call suspends awaiting approval. ---
     ui::scenario("evan → send_email (first attempt: suspends for manager approval)");
     let outcome = mediate(
-        &mgr,
+        &engine,
         &evan,
         "send_email",
         json!({ "to": "client@partner.example", "subject": "proposal" }),
@@ -225,7 +226,7 @@ async fn main() {
     ui::scenario("evan → send_email (retry with the approval: resumes and runs)");
     let resumed = evan.clone().resuming(&elicitation_id);
     let outcome = mediate(
-        &mgr,
+        &engine,
         &resumed,
         "send_email",
         json!({ "to": "client@partner.example", "subject": "proposal" }),
@@ -235,9 +236,13 @@ async fn main() {
     ui::print_outcome(&outcome);
 
     if outcome.is_allowed() {
-        println!("The operation suspended until a human approved, then resumed. The agent could not proceed alone.");
+        println!(
+            "The operation suspended until a human approved, then resumed. The agent could not proceed alone."
+        );
     } else {
-        println!("The human denied the approval, so the suspended operation ended denied. The agent could not proceed alone.");
+        println!(
+            "The human denied the approval, so the suspended operation ended denied. The agent could not proceed alone."
+        );
     }
     // --check drives the approve path, so the resumed call must be allowed.
     all_passed &= ui::expect(&outcome, true);

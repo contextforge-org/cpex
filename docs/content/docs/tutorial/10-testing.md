@@ -15,26 +15,48 @@ Policy decides who sees what. A careless edit can silently open a route or over-
 
 ## Build it
 
-A test loads a policy into a manager and calls routes through `mediate()` with a fake backend, then asserts. Table-driven cases keep the matrix readable. From [`tests/policy_tests.rs`](https://github.com/contextforge-org/cpex/tree/main/examples/tutorial/tests/policy_tests.rs):
+A test loads a policy into an engine and calls routes through `mediate()` with a fake backend, then asserts. Table-driven cases keep the matrix readable. From [`tests/policy_tests.rs`](https://github.com/contextforge-org/cpex/tree/main/examples/tutorial/tests/policy_tests.rs):
 
 ```rust
-async fn manager_with(policy: &str) -> Arc<PluginManager> {
-    let mgr = Arc::new(PluginManager::default());
-    cpex::install_builtins(&mgr);
-    mgr.load_config_yaml(policy).expect("policy should load");
-    mgr.initialize().await.expect("initialize");
-    mgr
-}
-
-#[tokio::test]
-async fn module4_external_email_denied_with_custom_code() {
-    let mgr = manager_with(M04).await;
-    let outcome = mediate(&mgr, &Caller::anonymous(), "send_email",
-        json!({ "to": "x@evil.example", "external": true }),
-        |a| backends::dispatch("send_email", a)).await;
-    assert!(matches!(outcome, Outcome::Denied { code, .. } if code == "email.external_blocked"));
+/// Load a policy string into a ready-to-use engine.
+async fn engine_with(policy: &str) -> Arc<PolicyEngine> {
+    let engine = Arc::new(PolicyEngine::default());
+    cpex::install_builtins(&engine);
+    cpex_tutorial::install_http_transport(&engine);
+    cpex_tutorial::audit::register(&engine);
+    engine.load_config_yaml(policy).expect("policy should load");
+    engine.initialize().await.expect("initialize");
+    engine
 }
 ```
+
+The setup is the same as a module binary: builtins, the tutorial HTTP transport, and the tutorial's `tutorial/audit-line` plugin that `m04.yaml` declares. Each case is one row:
+
+```rust
+#[tokio::test]
+async fn module4_external_email_denied_with_custom_code() {
+    let engine = engine_with(M04).await;
+    let cases = [
+        Case {
+            tool: "send_email",
+            args: json!({ "to": "x@evil.example", "subject": "hi", "external": true }),
+            want_allowed: false,
+            want_code: Some("email.external_blocked"),
+        },
+        Case {
+            tool: "send_email",
+            args: json!({ "to": "x@corp.example", "subject": "hi", "external": false }),
+            want_allowed: false, // anonymous, so require(authenticated) halts it
+            want_code: None,
+        },
+    ];
+    for c in &cases {
+        run_case(&engine, c).await;
+    }
+}
+```
+
+A third test, `every_module_policy_loads`, loads every module's policy without calling `initialize()`. Loading is where the engine checks a policy's shape: unknown keys, plugins no step reaches, steps naming undeclared plugins, and capabilities a plugin needs but does not declare. Skipping `initialize()` keeps it offline, since that is where identity plugins fetch their JWKS.
 
 Anonymous callers exercise structural rules (authentication gates, argument guards, result pipelines) with no Keycloak. For identity-dependent rules, mint tokens the way the module binaries do.
 
@@ -45,9 +67,10 @@ cargo test -p cpex-tutorial
 ```
 
 ```
-running 2 tests
+running 3 tests
 test module1_gates_by_authentication ... ok
 test module4_external_email_denied_with_custom_code ... ok
+test every_module_policy_loads ... ok
 ```
 
 The example binary runs the same idea in the tutorial's output format:
@@ -56,14 +79,31 @@ The example binary runs the same idea in the tutorial's output format:
 cargo run -p cpex-tutorial --example m10_testing
 ```
 
+```
+▸ send_email {"to":"x@evil.example","external":true} → expect DENY
+{"ts":1791421466,"plugin":"audit-log","entity":{"type":"tool","name":"send_email"},"tool_call":{"name":"send_email","arg_keys":["external","to"]}}
+  ✗ DENIED   [email.external_blocked] outbound email to external recipients is blocked
+
+▸ send_email {"to":"x@corp.example","external":false} → expect DENY
+{"ts":1791421466,"plugin":"audit-log","entity":{"type":"tool","name":"send_email"},"tool_call":{"name":"send_email","arg_keys":["external","to"]}}
+  ✗ DENIED   [routes.tool:send_email.pre_invocation[2]] access denied
+```
+
+The JSON lines are the audit plugin writing to stderr. They list argument keys, never values.
+
 ## Try it
 
 1. Break a policy. Edit `examples/tutorial/policies/m04.yaml` to drop the external-recipient guard (the `deny(...)` line), then run `cargo test -p cpex-tutorial`. Expect: `module4_external_email_denied_with_custom_code` fails, catching the regression.
 2. Add a case. In `examples/tutorial/tests/policy_tests.rs`, add a row to the `cases` array in `module1_gates_by_authentication`, for example:
    ```rust
-   Case { tool: "search_repos", args: json!({ "visibility": "internal" }), want_allowed: true, want_code: None },
+   Case {
+       tool: "search_repos",
+       args: json!({ "visibility": "internal" }),
+       want_allowed: true,
+       want_code: None,
+   },
    ```
-   Run `cargo test -p cpex-tutorial`. Expect: it passes (`search_repos` is open in `m01.yaml`).
+   Run `cargo test -p cpex-tutorial`. Expect: it passes (`search_repos` is an unconditional `allow` in `m01.yaml`).
 3. Wire it into CI. `make test` runs the whole workspace test suite, including these.
 
 ## Checkpoint

@@ -19,26 +19,30 @@ For each route, cover the outcomes its policy produces:
 
 ## A table-driven policy test
 
-Load a policy into a manager, drive routes through it with a fake backend, and assert the outcome. The tutorial ships this as a working template you can copy: [`examples/tutorial/tests/policy_tests.rs`](https://github.com/contextforge-org/cpex/tree/main/examples/tutorial/tests/policy_tests.rs). The setup is a small helper:
+Load a policy into an engine, drive routes through it with a fake backend, and assert the outcome. The tutorial ships this as a working template you can copy: [`examples/tutorial/tests/policy_tests.rs`](https://github.com/contextforge-org/cpex/tree/main/examples/tutorial/tests/policy_tests.rs). The setup is a small helper:
 
 ```rust
-async fn manager_with(policy: &str) -> Arc<PluginManager> {
-    let mgr = Arc::new(PluginManager::default());
-    cpex::install_builtins(&mgr);
-    mgr.load_config_yaml(policy).expect("policy should load");
-    mgr.initialize().await.expect("initialize");
-    mgr
+async fn engine_with(policy: &str) -> Arc<PolicyEngine> {
+    let engine = Arc::new(PolicyEngine::default());
+    cpex::install_builtins(&engine);
+    cpex_tutorial::install_http_transport(&engine); // reaches the local IdP; not for production
+    cpex_tutorial::audit::register(&engine);        // the tutorial's own audit plugin
+    engine.load_config_yaml(policy).expect("policy should load");
+    engine.initialize().await.expect("initialize");
+    engine
 }
 ```
+
+A policy that fails to load fails the test at `load_config_yaml`, with the same message a deployment would log: an unknown key, a removed hook name, or a plugin no policy reaches. That makes a "every policy loads" test cheap and worth having (the tutorial's `every_module_policy_loads`).
 
 Then a table keeps the allow/deny matrix readable, one row per case:
 
 ```rust
 #[tokio::test]
 async fn external_email_denied_with_custom_code() {
-    let mgr = manager_with(POLICY).await;
+    let engine = engine_with(POLICY).await;
     let outcome = mediate(
-        &mgr,
+        &engine,
         &Caller::anonymous(),
         "send_email",
         json!({ "to": "x@evil.example", "external": true }),
@@ -62,13 +66,17 @@ Beyond unit tests, each tutorial module binary supports a `--check` flag that ru
 
 ## Integration coverage
 
-Unit-evaluating a route proves the policy logic. It does not prove the plugins it dispatches behave correctly end to end. For effects that call out (a PDP resolver, a delegator, a PII scanner), add an integration test that exercises the real plugin through the manager, so the interaction is covered and not just the policy's intent. Test the failure paths too: a PDP that denies, a token exchange that returns a short scope, a scanner that flags content. Those are the branches policy exists to handle.
+Unit-evaluating a route proves the policy logic. It does not prove the plugins it dispatches behave correctly end to end. For effects that call out (a PDP resolver, a delegator, a host plugin), add an integration test that exercises the real plugin through the engine, so the interaction is covered and not just the policy's intent. Test the failure paths too: a PDP that denies, a token exchange that returns a short scope, an IdP that is unreachable, a JWKS endpoint the transport refuses.
+
+To test those failure paths without a server, a Rust test can install a scripted transport instead of a real one. `praxis_policy_core::http_testing::FakeTransport` (enable the `test-util` feature on `praxis-policy-core = "=0.5.0"` in `[dev-dependencies]`) scripts responses, timeouts, connect failures and key rotation between two fetches, without sleeping.
+
+A test that talks to a mock IdP on `localhost` needs a transport that allows private destinations (`HyperTransport::new().with_allow_private_destinations()` in Rust, `allow_private_destinations=True` in Python, `cpex.WithPrivateDestinations()` in Go). Keep that setting in test and demo hosts only. Those are the branches policy exists to handle.
 
 ## Running
 
 ```bash
 cargo test -p cpex-tutorial     # the policy tests above
-cargo test --workspace          # everything, including the runtime and APL suites
+cargo test --workspace          # everything: facade, FFI, Python host, tutorial
 ```
 
 Copy [`examples/tutorial/tests/policy_tests.rs`](https://github.com/contextforge-org/cpex/tree/main/examples/tutorial/tests/policy_tests.rs) as the starting point for tests against your own policy.

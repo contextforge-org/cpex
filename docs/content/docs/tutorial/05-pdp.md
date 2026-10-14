@@ -19,9 +19,8 @@ Declare a PDP once, then reference it from a step. From [`policies/m05.yaml`](ht
 
 ```yaml
 global:
-  apl:
-    pdp:
-      - kind: cel
+  pdp:
+    - kind: cel
 
 routes:
   - tool: search_repos
@@ -35,6 +34,8 @@ routes:
             on_deny:
               - "deny('engineers read internal only; security reads any', 'repo.policy_denied')"
 ```
+
+The file also declares the same `keycloak` identity plugin as module 2 (with `capabilities: [perform_http]`); it is left out above.
 
 The `cel:` step evaluates a boolean expression over the same attributes predicates see: roles and request arguments. `true` allows, `false` runs `on_deny`. Guard optional attributes with `has(...)`, because referencing an unset attribute is an error, and CEL errors fail closed. Cedar is available too (`kind: cedar-direct`) when you want policy as data rather than an expression.
 

@@ -15,6 +15,7 @@ plugins:
   - name: keycloak
     kind: identity/jwt
     hooks: [identity.resolve]
+    capabilities: [perform_http]
     config:
       role: user
       header: Authorization

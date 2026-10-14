@@ -323,3 +323,59 @@ pub fn prebuild_venv(
     }
     Ok(())
 }
+
+/// Plugin kind [`TempDirFactory`] registers under. Distinct from
+/// [`crate::factory::KIND`] so registering it never shadows the real factory.
+pub const TEMP_DIR_KIND: &str = "isolated_venv_temp_dir";
+
+/// A factory that builds the real Python plugin against a scaffolded temp dir.
+///
+/// `IsolatedVenvFactory` deliberately ignores a `plugin_dirs` key in the
+/// `config:` block: the host always resolves `<project root>/plugins`, and that
+/// must not be relaxed to suit a test. It leaves the engine-driven e2e tests no
+/// config-only way to redirect the venv, and a run that built into the
+/// repository's real `plugins/` would be both destructive and dependent on
+/// developer-machine state. So this factory applies the builder-only overrides
+/// (`with_plugin_dirs` / `with_worker_cwd`) and hands the engine the finished
+/// plugin. Everything downstream is the real engine path.
+pub struct TempDirFactory {
+    pub plugin_dir: PathBuf,
+    pub worker_cwd: PathBuf,
+}
+
+impl praxis_policy_core::factory::PluginFactory for TempDirFactory {
+    fn create(
+        &self,
+        config: &praxis_policy_core::plugin::PluginConfig,
+    ) -> Result<
+        praxis_policy_core::factory::PluginInstance,
+        Box<praxis_policy_core::error::PluginError>,
+    > {
+        use std::sync::Arc;
+
+        use praxis_policy_core::registry::AnyHookHandler;
+
+        use crate::plugin::{IsolatedPythonPlugin, PythonHookAdapter};
+
+        let plugin = Arc::new(
+            IsolatedPythonPlugin::from_config(config)?
+                .with_plugin_dirs(vec![self.plugin_dir.display().to_string()])
+                .with_worker_cwd(self.worker_cwd.clone()),
+        );
+
+        let handlers = config
+            .hooks
+            .iter()
+            .map(|hook| -> (&'static str, Arc<dyn AnyHookHandler>) {
+                // Same leak the production factory does; bounded by config size.
+                let leaked: &'static str = Box::leak(hook.clone().into_boxed_str());
+                (
+                    leaked,
+                    Arc::new(PythonHookAdapter::new(Arc::clone(&plugin), leaked)),
+                )
+            })
+            .collect();
+
+        Ok(praxis_policy_core::factory::PluginInstance { plugin, handlers })
+    }
+}

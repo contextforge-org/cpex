@@ -1,0 +1,50 @@
+# Cedar PDP decision (cedar-direct, inline policy text).
+#
+# Source: builtins/pdps/cedar-direct/tests/visitor_pdp_config.rs, with JWT
+# identity from examples/tutorial/policies/m02.yaml and a forbid policy so
+# the deny code carries a policy id.
+#
+# Migrated to the CPEX 0.3.0 (PPE) form from config.yaml in this directory:
+# - `global.apl.*` keys move up to `global.*`.
+# - plugins that call out over HTTP declare `perform_http`.
+
+global:
+  pdp:
+    - kind: cedar-direct
+      policy_text: |
+        @id("hr-read-compensation")
+        permit(principal, action == Action::"read", resource)
+        when { principal.roles.contains("hr") };
+
+        @id("contractor-forbid")
+        forbid(principal, action, resource)
+        when { principal.roles.contains("contractor") };
+
+plugins:
+  - name: idp
+    kind: identity/jwt
+    hooks: [identity.resolve]
+    capabilities: [perform_http]
+    config:
+      claim_mapper: standard
+      trusted_issuers:
+        - issuer: https://idp.parity.test
+          audiences: [cpex-parity]
+          algorithms: [EdDSA]
+          decoding_key:
+            kind: jwks_url
+            url: "{{MOCK_URL}}/jwks"
+            insecure_http: true
+          leeway_seconds: 60
+
+routes:
+  - tool: get_compensation
+    authentication:
+      - idp
+    authorization:
+      pre_invocation:
+        - cedar:
+            action: 'Action::"read"'
+            resource:
+              type: Compensation
+              id: e-1001

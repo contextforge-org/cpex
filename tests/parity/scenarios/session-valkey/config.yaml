@@ -1,0 +1,45 @@
+# Session labels (tainting) persisted in Valkey.
+#
+# Source: examples/tutorial/policies/m07.yaml with the Valkey store from
+# docs/content/docs/apl/tainting.md. The harness substitutes the endpoint
+# and flushes that database before the run.
+
+global:
+  apl:
+    session_store:
+      kind: valkey
+      endpoint: "{{VALKEY_URL}}"
+      ttl_seconds: 3600
+
+plugins:
+  - name: idp
+    kind: identity/jwt
+    hooks: [identity.resolve]
+    config:
+      claim_mapper: standard
+      trusted_issuers:
+        - issuer: https://idp.parity.test
+          audiences: [cpex-parity]
+          algorithms: [EdDSA]
+          decoding_key:
+            kind: jwks_url
+            url: "{{MOCK_URL}}/jwks"
+            insecure_http: true
+          leeway_seconds: 60
+
+routes:
+  - tool: get_compensation
+    authentication:
+      - idp
+    authorization:
+      pre_invocation:
+        - "require(role.hr)"
+        - "taint(secret, session)"
+
+  - tool: send_email
+    authentication:
+      - idp
+    authorization:
+      pre_invocation:
+        - "require(authenticated)"
+        - "security.labels contains \"secret\": deny('write-down blocked: this session read secret data', 'session_tainted')"

@@ -22,11 +22,11 @@
 
 use std::sync::Arc;
 
-use cpex::PluginManager;
+use cpex::PolicyEngine;
 use cpex_tutorial::backends;
 use cpex_tutorial::idp;
 use cpex_tutorial::ui;
-use cpex_tutorial::{mediate, Caller};
+use cpex_tutorial::{Caller, mediate};
 
 use serde_json::json;
 
@@ -37,11 +37,13 @@ const SPIFFE_ID: &str = "spiffe://cpex.tutorial/agent/hr-copilot";
 async fn main() {
     ui::module_banner("Module 16: Workload identity (the agent proves itself with an SVID)");
 
-    let mgr = Arc::new(PluginManager::default());
-    cpex::install_builtins(&mgr);
-    mgr.load_config_yaml(POLICY)
+    let engine = Arc::new(PolicyEngine::default());
+    cpex::install_builtins(&engine);
+    cpex_tutorial::install_http_transport(&engine);
+    engine
+        .load_config_yaml(POLICY)
         .expect("policy m16.yaml should load");
-    mgr.initialize().await.expect("initialize");
+    engine.initialize().await.expect("initialize");
 
     // Mint the agent's SVID off SPIRE. This is the agent's identity credential
     // an ES256 JWT signed by SPIRE, audience = the tutorial realm issuer.
@@ -58,7 +60,7 @@ async fn main() {
     );
     let agent = Caller::anonymous().with_credential("X-Workload-Token", svid);
     let o = mediate(
-        &mgr,
+        &engine,
         &agent,
         "search_repos",
         json!({ "visibility": "internal" }),
@@ -72,7 +74,7 @@ async fn main() {
     // anonymous request has no identity to broker from.
     ui::scenario("anonymous → search_repos (no SVID, so nothing to broker from)");
     let o = mediate(
-        &mgr,
+        &engine,
         &Caller::anonymous(),
         "search_repos",
         json!({ "visibility": "internal" }),

@@ -25,20 +25,22 @@ categories.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-cpex-core = { workspace = true }
+praxis-policy-core = { workspace = true }
 
 async-trait = { workspace = true }
+# Expiry on a token a Python delegation plugin mints (`credential_payloads`).
+chrono      = { workspace = true }
 serde       = { workspace = true }
 serde_json  = { workspace = true }
 tracing     = { workspace = true }
 uuid        = { workspace = true }
 
 # Version-pinned rather than workspace-inherited, matching how the rest of the
-# tree declares it (crates/apl-cpex, builtins/session/valkey). Used by `venv`
+# tree declares it. Used by `venv`
 # to fingerprint a requirement set into its cache directory name.
 #
 # No `zeroize` here, deliberately, even though this crate handles plaintext
-# credentials. `cpex-core` and builtins/plugins/delegator-oauth hold a secret
+# credentials. `praxis-policy-core` and the OAuth delegator hold a secret
 # in memory for its lifetime, so `Zeroizing` there wipes the one authoritative
 # copy. This host instead *forwards* the plaintext: `credentials` reads the
 # token out of core's `Zeroizing` field and it is immediately copied into a
@@ -61,8 +63,11 @@ tokio = { workspace = true, features = ["process", "io-util"] }
 testing = []
 
 [dev-dependencies]
-chrono     = { workspace = true }
 serde_yaml = { workspace = true }
+# The APL runtime, so `tests/acceptance_e2e.rs` can drive a route's
+# `require(...)` and `delegate(...)` steps through the real engine. A dev-only
+# edge: the facade depends on this crate, never the other way round.
+praxis-policy = { workspace = true }
 tokio      = { workspace = true, features = ["process", "io-util", "macros", "rt", "rt-multi-thread"] }
 
 # Self-dependency with the test-only feature on, so `tests/*.rs` see

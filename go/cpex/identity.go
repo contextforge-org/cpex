@@ -3,22 +3,22 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 // IdentityPayload — Go view of the identity.resolve hook's input/output
-// state (crates/cpex-core/src/identity/payload.rs).
+// state (praxis_policy_core::identity::IdentityPayload).
 //
 // Hosts that don't run in-process Rust (i.e. the Go FFI bindings) drive
 // identity resolution like this:
 //
 //	idp := cpex.NewIdentityPayload(cpex.TokenSourceBearer, headers)
-//	res, ct, bg, err := mgr.InvokeByName(
+//	res, ct, bg, err := engine.InvokeByName(
 //	    cpex.HookIdentityResolve, cpex.PayloadIdentity, idp, ext, nil)
 //	// On success res.ModifiedPayload holds the resolved IdentityPayload.
 //	resolved, _ := cpex.DeserializePayload[cpex.IdentityPayload](res)
 //	// resolved.Subject carries roles / permissions / teams.
 //
-// The resolved Subject / Client / RawCredentials are then applied onto
-// the Extensions passed to the downstream tool/prompt/resource hook so
-// per-route APL gates (require(role.*), redact(!perm.*), Cedar) and the
-// OAuth delegator can see the principal and its inbound credentials.
+// A Go host can copy the resolved Subject and Client into downstream
+// Extensions.Security. Raw token bytes do not survive Go/FFI serialization.
+// InvokeResolved keeps resolver-produced raw credentials inside Rust between
+// identity.resolve and the downstream hook when both run in one call.
 
 package cpex
 
@@ -26,7 +26,7 @@ import "github.com/vmihailenco/msgpack/v5"
 
 // HookIdentityResolve is the hook name the identity resolver chain is
 // registered under. Matches HOOK_IDENTITY_RESOLVE in
-// crates/cpex-core/src/identity/hook.rs.
+// praxis_policy_core::identity.
 const HookIdentityResolve = "identity.resolve"
 
 // TokenSource values identify where a credential comes from. Wire form
@@ -43,7 +43,9 @@ const (
 // IdentityPayload mirrors the Rust IdentityPayload. Input fields
 // (Source, SourceHeader, Headers, ClientHost, ClientPort) are set by the
 // host before the call; output fields (Subject, Client, …) are populated
-// by the resolver chain and read back from the result.
+// by the resolver chain and read back from the result. The result leaves
+// Headers empty: they carry the inbound credential, so the engine does
+// not echo them back.
 //
 // raw_token is intentionally absent: it is #[serde(skip)] on the Rust
 // side (zeroized, never serialized). Tokens travel in Headers — each
@@ -51,9 +53,8 @@ const (
 // from there.
 //
 // Output slots the Go side doesn't model field-by-field are carried as
-// msgpack.RawMessage so they round-trip verbatim — a host can forward
-// them onto the next hook's Extensions without the bindings needing a
-// typed mirror of every Rust extension.
+// msgpack.RawMessage for inspection. RawCredentials cannot reconstruct
+// token bytes that Rust deliberately excludes from serialization.
 type IdentityPayload struct {
 	Source       string            `msgpack:"source"`
 	SourceHeader string            `msgpack:"source_header,omitempty"`

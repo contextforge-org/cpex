@@ -200,10 +200,10 @@ pub async fn wait_until_ready(max_wait: Duration) -> Result<(), String> {
     let url = format!("{}/.well-known/openid-configuration", issuer());
     let deadline = tokio::time::Instant::now() + max_wait;
     loop {
-        if let Ok(resp) = client.get(&url).send().await {
-            if resp.status().is_success() {
-                return Ok(());
-            }
+        if let Ok(resp) = client.get(&url).send().await
+            && resp.status().is_success()
+        {
+            return Ok(());
         }
         if tokio::time::Instant::now() >= deadline {
             return Err(format!(

@@ -3,12 +3,12 @@
 # SPDX-License-Identifier: Apache-2.0
 # Authors: Ted Habeck
 #
-# Tests for PyObject ↔ JSON value conversion behaviour (U3).
+# Tests for PyObject to JSON value conversion behaviour.
 # These are exercised through the Python API (invoke_hook with
-# various payload shapes) — the Rust internals are not callable directly.
+# various payload shapes); the Rust internals are not callable directly.
 
 import pytest
-from cpex import PluginManager
+from cpex import PolicyEngine
 
 
 def _build_generic_payload(value: dict) -> dict:
@@ -22,38 +22,38 @@ def _build_generic_payload(value: dict) -> dict:
 
 
 @pytest.mark.asyncio
-async def test_flat_dict_round_trip(manager: PluginManager):
+async def test_flat_dict_round_trip(passthrough_engine: PolicyEngine):
     """A flat dict passes through a non-cmf hook unchanged."""
     payload = {"key": "value", "num": 42, "flag": True}
-    result = await manager.invoke_hook("custom.hook", payload)
+    result = await passthrough_engine.invoke_hook("custom.hook", payload)
     assert result.continue_processing is True
 
 
 @pytest.mark.asyncio
-async def test_nested_dict_round_trip(manager: PluginManager):
+async def test_nested_dict_round_trip(passthrough_engine: PolicyEngine):
     """A nested dict/list passes through without ValueError."""
     payload = {"outer": {"inner": [1, 2, 3]}, "text": "hello"}
-    result = await manager.invoke_hook("custom.hook", payload)
+    result = await passthrough_engine.invoke_hook("custom.hook", payload)
     assert result.continue_processing is True
 
 
 @pytest.mark.asyncio
-async def test_mixed_scalar_types(manager: PluginManager):
+async def test_mixed_scalar_types(passthrough_engine: PolicyEngine):
     """bool, int, float, str, None all accepted."""
     payload = {"b": True, "i": 7, "f": 3.14, "s": "text", "n": None}
-    result = await manager.invoke_hook("custom.hook", payload)
+    result = await passthrough_engine.invoke_hook("custom.hook", payload)
     assert result.continue_processing is True
 
 
 @pytest.mark.asyncio
-async def test_empty_dict(manager: PluginManager):
-    result = await manager.invoke_hook("custom.hook", {})
+async def test_empty_dict(passthrough_engine: PolicyEngine):
+    result = await passthrough_engine.invoke_hook("custom.hook", {})
     assert result.continue_processing is True
 
 
 @pytest.mark.asyncio
-async def test_empty_list_in_payload(manager: PluginManager):
-    result = await manager.invoke_hook("custom.hook", {"items": []})
+async def test_empty_list_in_payload(passthrough_engine: PolicyEngine):
+    result = await passthrough_engine.invoke_hook("custom.hook", {"items": []})
     assert result.continue_processing is True
 
 
@@ -63,41 +63,86 @@ async def test_empty_list_in_payload(manager: PluginManager):
 
 
 @pytest.mark.asyncio
-async def test_nesting_at_128_levels_succeeds(manager: PluginManager):
-    """Exactly 128 levels deep (depth arg == 128) must succeed — depth > 128 is the guard."""
+async def test_nesting_at_128_levels_succeeds(passthrough_engine: PolicyEngine):
+    """Exactly 128 levels deep (depth arg == 128) must succeed; depth > 128 is the guard."""
     payload: dict = {}
     current = payload
     for _ in range(128):  # root is depth=0; 128 children → deepest call is depth=128
         current["child"] = {}
         current = current["child"]
-    result = await manager.invoke_hook("custom.hook", payload)
+    result = await passthrough_engine.invoke_hook("custom.hook", payload)
     assert result.continue_processing is True
 
 
 @pytest.mark.asyncio
-async def test_nesting_at_129_levels_raises(manager: PluginManager):
-    """129 levels deep (depth arg == 129 > 128) raises ValueError (R3)."""
+async def test_nesting_at_129_levels_raises(passthrough_engine: PolicyEngine):
+    """129 levels deep (depth arg == 129 > 128) raises ValueError."""
     payload: dict = {}
     current = payload
     for _ in range(129):  # root is depth=0; 129 children → deepest call depth=129 > 128
         current["child"] = {}
         current = current["child"]
     with pytest.raises(ValueError, match="nesting exceeds maximum depth"):
-        await manager.invoke_hook("custom.hook", payload)
+        await passthrough_engine.invoke_hook("custom.hook", payload)
 
 
 @pytest.mark.asyncio
-async def test_non_string_key_raises(manager: PluginManager):
+async def test_non_string_key_raises(passthrough_engine: PolicyEngine):
     """A dict with a non-string key must raise ValueError."""
     # Cannot construct {1: "v"} as a typed dict but we can via **kwargs trick.
     bad_payload = {1: "value"}  # type: ignore[dict-item]
     with pytest.raises((ValueError, TypeError)):
-        await manager.invoke_hook("custom.hook", bad_payload)
+        await passthrough_engine.invoke_hook("custom.hook", bad_payload)
 
 
 @pytest.mark.asyncio
-async def test_unconvertible_type_raises(manager: PluginManager):
+async def test_unconvertible_type_raises(passthrough_engine: PolicyEngine):
     """An unconvertible Python type (set) in the payload raises ValueError."""
     bad_payload = {"items": {1, 2, 3}}  # type: ignore[dict-item]
     with pytest.raises(ValueError, match="cannot convert Python object"):
-        await manager.invoke_hook("custom.hook", bad_payload)
+        await passthrough_engine.invoke_hook("custom.hook", bad_payload)
+
+
+# ---------------------------------------------------------------------------
+# identity.resolve input and output
+# ---------------------------------------------------------------------------
+
+
+IDENTITY_INPUT = {
+    "source": "bearer",
+    "source_header": "authorization",
+    "headers": {"authorization": "Bearer not-a-real-token"},
+    "client_host": "10.0.0.1",
+    "client_port": 443,
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "field, value",
+    [
+        ("subject", {"id": "alice", "roles": ["hr"]}),
+        ("client", {"client_id": "app"}),
+        ("caller_workload", {"spiffe_id": "spiffe://example.org/app"}),
+        ("delegation", {"depth": 0}),
+        ("raw_credentials", {"inbound_tokens": {}}),
+        ("resolved_at", "2026-01-01T00:00:00Z"),
+        ("raw_claims", {"sub": "alice"}),
+    ],
+)
+async def test_identity_input_with_resolved_fields_raises(passthrough_engine, field, value):
+    """A caller cannot pre-fill what the identity resolvers produce."""
+    payload = dict(IDENTITY_INPUT, **{field: value})
+    with pytest.raises(ValueError, match=f"must not set resolver output fields: {field}"):
+        await passthrough_engine.invoke_hook("identity.resolve", payload)
+
+
+@pytest.mark.asyncio
+async def test_identity_result_does_not_echo_request_headers(passthrough_engine):
+    """The returned identity payload drops the request headers, credential included."""
+    result = await passthrough_engine.invoke_hook("identity.resolve", IDENTITY_INPUT)
+    assert result.continue_processing is True
+    assert result.modified_payload is not None
+    assert "headers" not in result.modified_payload
+    assert "not-a-real-token" not in repr(result.modified_payload)
+    assert result.modified_payload["source"] == "bearer"

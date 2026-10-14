@@ -33,10 +33,12 @@ CMF operations run at CMF hooks, which parallel the typed hooks but carry a `Mes
 |------|-------|
 | `cmf.tool_pre_invoke` / `cmf.tool_post_invoke` | around a tool call |
 | `cmf.llm_input` / `cmf.llm_output` | around an inference call |
-| `cmf.prompt_pre_fetch` / `cmf.prompt_post_fetch` | around a prompt fetch |
+| `cmf.prompt_pre_invoke` / `cmf.prompt_post_invoke` | around a prompt fetch |
 | `cmf.resource_pre_fetch` / `cmf.resource_post_fetch` | around a resource fetch |
 
-An APL route's `policy` phase runs at the relevant `*_pre_*` hook and its `result` phase at the `*_post_*` hook. Writing a guardrail against the CMF hook means it covers every operation type that maps to it, rather than one protocol's payload.
+At the relevant pre-operation hook, a route evaluates `args` and `authorization.pre_invocation`. At the post-operation hook, it evaluates `result` and `authorization.post_invocation`. Writing a guardrail against the CMF hook means it covers every operation type that maps to it, rather than one protocol's payload.
+
+The prompt hooks were `cmf.prompt_pre_fetch` / `cmf.prompt_post_fetch` in 0.2.x; the old names fail to load. Generic HTTP requests use their own `http.request` / `http.response` hooks and carry no message.
 
 ## How it connects to policy
 

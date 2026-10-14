@@ -20,6 +20,9 @@ plugins:
   - name: keycloak
     kind: identity/jwt
     hooks: [identity.resolve]
+    # Fetching the JWKS is an outbound HTTP call, made through the transport
+    # the host installs. A plugin may use it only if it declares perform_http.
+    capabilities: [perform_http]
     config:
       role: user
       header: Authorization

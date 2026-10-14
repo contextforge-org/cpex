@@ -15,6 +15,68 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-08
+
+CPEX now runs on the [praxis-policy engine](https://github.com/praxis-proxy/policy) (PPE) 0.5.0 from crates.io instead of its own engine crates. API names, hook names, several config keys, defaults and security checks change. The [migration guide](docs/content/docs/migration-0.3.md) lists every change by surface.
+
+PPE 0.5.0 also updates CEL to 0.15, adds the `delegator/vault` builtin, validates OAuth token responses more strictly, preserves secret-header provenance, and retains secret last-success timestamps after failed refreshes. Changes to resolved `secrets:` declarations require a restart. The migration guide documents these changes and their parity effects.
+
+### Added
+
+- **OPA, CIBA, api-key identity and the Vault secret provider in the Python wheel and Go FFI library.** Bindings now ship every non-experimental PPE builtin.
+- **Secret refresh from every surface.** Python `refresh_secrets()` and `secrets_last_success()`, Go `RefreshSecrets()` and `SecretsLastSuccess()`, and C `cpex_refresh_secrets` and `cpex_secrets_last_success`. Vault values only renew when the host calls refresh, so binding hosts should call it on an interval and alarm on the last-success time.
+- **Private-destination opt-in for outbound HTTP.** Bindings install PPE's HTTP transport, which refuses loopback and private addresses by default. Python `PolicyEngine(..., allow_private_destinations=True)`, Go `EnableAPL(WithPrivateDestinations())` and the C `cpex_apl_install` flag bit allow them. The switch also opens link-local addresses, including cloud metadata, for every outbound builtin, so keep it to development and trusted networks.
+- **Typed `identity.resolve` from Python.** The binding sends an `IdentityPayload`, so JWT identity works from Python.
+- **Legacy payload translation in the Python plugin host.** Plugins written for the 0.1.x Python worker keep working on PPE's `cmf.*` tool, prompt and resource hooks. The host translates payloads for workers that do not report the new `cmf_hooks` feature, and refuses any message it cannot represent with `legacy_shim_unsupported`. LLM hooks have no legacy form, so a plugin declaring one requires a worker with `cmf_hooks` at startup.
+- **Parity and acceptance suites.** `tests/parity` replays 68 recorded 0.2.3 decisions against 0.3.0 and fails on any difference not listed with its cause. Python and Go acceptance suites drive identity, delegation, Cedar, OPA and session labels through the native libraries. CI also builds and smoke-tests the Python wheel and runs Go race tests on Linux and macOS.
+- **Docs pages adapted from PPE:** HTTP routing, assertions, auditing, identity claim mapping, CMF extensions and a crate map.
+- **`cpex::host` module.** The defaults every binding host shares: `install_host_defaults`, `secret_error_kind`, `REMOVED_HOOKS`, `removed_hook_replacement` and `resolved_identity_fields`. A Rust host that embeds the engine the way the bindings do can call them instead of copying the logic.
+- **PPE identity and delegation payloads in the Python plugin host.** A Python plugin on `identity.resolve` or `token.delegate` now accepts PPE's `IdentityPayload` and `DelegationPayload`, which PPE's FFI, its Python bindings and the APL `delegate(...)` step build. The plugin's `IdentityResult` or `DelegationResult` maps back onto the dispatched payload. A field PPE's types cannot hold fails closed.
+- **Go extension slots.** `SecurityExtension.Client`, `CallerWorkload` and `ThisWorkload`, `Extensions.CandidateConstraint`, the HTTP request line (`Method`, `Path`, `Host`, `Scheme`) and response `Status` on `HttpExtension`, and the MCP and delegation fields Go was missing.
+
+### Changed
+
+- **BREAKING: `PluginManager` is `PolicyEngine` on every surface.** Rust `cpex::PolicyEngine`, Go `NewPolicyEngine` / `NewPolicyEngineDefault` / `PolicyEngine`. Python keeps `PluginManager` as an alias of `PolicyEngine`.
+- **BREAKING: C ABI version 2 -> 3.** `cpex_manager_new*` is `cpex_engine_new*`, `CpexManagerInner` is `CpexEngineInner` (built with `CpexEngineInner::new`), and `cpex_apl_install` takes a `flags` argument. Go and the FFI artifact must be upgraded together.
+- **BREAKING: Rust paths follow PPE.** `cpex_sdk` items come from `cpex::prelude`, engine modules from `cpex::praxis_policy_core`, and `PipelineResult` from `cpex::praxis_policy_core::executor`.
+- **BREAKING: facade features removed.** `pii`, `audit`, `jwt`, `oauth`, `elicitation-ciba`, `cedar`, `cel`, `valkey`, `builtins` and `full` are gone. All stable builtins are always on; `python-host` is the only feature.
+- **BREAKING: hook names follow PPE.** The unprefixed names (`tool_pre_invoke`, `identity_resolve`, `token_delegate`, `prompt_pre_fetch` and the rest) are rejected at load. Use `cmf.*`, `cmf.prompt_pre_invoke`, `identity.resolve` and `token.delegate`.
+- **BREAKING (Go): `SubjectExtension.Claims` is `map[string]any`.** Claims keep their JSON shape, so read one with a type switch or assertion. A token with a non-string claim used to fail to decode.
+- **BREAKING (Go): `SecurityExtension.Agent` and `AgentIdentity` are removed.** Rust has no such field, so the values were dropped on the way in. Use `ThisWorkload` (`WorkloadIdentity`, with `SpiffeID`, `TrustDomain` and `ClientID`).
+- **BREAKING (Python plugin host): a `token.delegate` plugin on PPE's `DelegationPayload` needs `read_inbound_credentials` to receive the bearer token.** It used to be gated on `read_delegated_tokens`. The bearer token is the caller's inbound credential, and PPE's own OAuth delegator declares `read_inbound_credentials`. A plugin that declared only `read_delegated_tokens` now gets an error instead of the token.
+- **Python `PolicyEngine` lifecycle.** `shutdown()` starts when called, immediately refuses new work, and waits for an `initialize()` in flight. Awaiting reports completion; dropping or cancelling the awaitable does not stop teardown. A timed-out `shutdown()` can be retried. An `initialize()` that times out rolls back the plugins it started once it ends, and leaves the engine terminal. A panicking secret provider makes `refresh_secrets()` raise `RuntimeError`.
+- **Legacy payload shim: siblings on pre hooks pass through.** On `cmf.tool_pre_invoke`, `cmf.prompt_pre_invoke` and `cmf.resource_pre_fetch`, content parts beside the one the legacy payload carries are returned unchanged. The plugin authorizes the part it sees.
+- **BREAKING: the policy document follows PPE 0.5.0.** The `apl:` wrapper and `global.apl:` are gone, phase lists nest under `authorization:`, empty authorization blocks fail, `plugin_settings` is `engine_settings`, `global.policies` is replaced by top-level `groups:`, route `plugins:` lists are removed, `priority:` is valid only under hook dispatch, and `plugin(x)` steps are `run(x)`.
+- **BREAKING: dispatch defaults to `policy`.** Identity runs only on routes that list `authentication:`, requests select routes by `meta`, and a request without it is denied with `unidentified_request` when the config declares a policy. A declared plugin no policy reaches fails the load.
+- **BREAKING: outbound plugins must declare `perform_http`.** JWT with `jwks_url`, OAuth delegation, CIBA and Vault fail to initialize without it. A blocked private JWKS shows as `auth.jwks_unavailable`.
+- **A plugin panic is a denial.** PPE contains it and reports violation code `plugin_panic`; the FFI returns `RC_OK` with that violation instead of `RC_PANIC`.
+- **Rule-path deny codes drop `.apl.`.** `routes.tool:x.apl.pre_invocation[0]` is `routes.tool:x.pre_invocation[0]`.
+- **Rust edition 2024 and resolver 3.** The toolchain stays pinned to 1.96.0.
+
+### Removed
+
+- **The engine crates.** `cpex-core`, `cpex-orchestration`, `cpex-sdk`, `cpex-builtins`, `apl-core`, `apl-cmf`, `apl-cpex`, and the `cpex-plugin-*`, `cpex-pdp-*` and `cpex-session-valkey` crates are no longer built. Their 0.2.3 releases stay on crates.io.
+- **`pii-scanner` and `audit-logger`.** They are now unpublished PPE reference plugins. Rust hosts can copy their source into their own workspace and register them; the bindings do not include them. A CEL or APL rule, the APL `str | redact` pipeline, or a host plugin replaces most uses.
+
+### Fixed
+
+- **`cpex_invoke_resolved` passes the caller's extensions to identity resolution.** Without them every Go `InvokeResolved` call was refused under policy dispatch.
+- **Go `InvokeResolved` no longer double-frees a context table after an error.**
+- **Go `Resource.Blob` and messages without content parts decode across the FFI.** Both used to fail. `Resource.Blob` is now `ByteArray`, which matches the wire format Rust uses for bytes; a `[]byte` value still assigns to it.
+- **`EnableAPL` and `cpex_apl_install` stay failed after a panic.** A panicked call used to leave a half-installed engine that a second call reported as installed. Now that call and every later one return `ErrCpexPanic` / `RC_PANIC`; discard the engine.
+- **Python plugin host worker lifecycle.** A respawn under way when the plugin shuts down no longer starts a worker nothing stops. A respawn whose replacement fails verification no longer disables the plugin for good: the next call retries within the same budget. A capabilities probe that failed at startup is retried once, the first time a `cmf.*` hook needs it, instead of pinning the worker to the legacy shim.
+
+### Security
+
+- **OAuth token-exchange denials no longer forward the IdP's `error_description`.** From PPE 0.2.0.
+- **Removed hook names are refused at invoke time.** A Go `InvokeByName` or `InvokeResolved`, Python `invoke_hook` or C `cpex_invoke` / `cpex_invoke_resolved` call naming one reached no handler and came back allowed with no policy evaluated. Go now returns `ErrCpexInvalidInput`, Python raises `ValueError` naming the replacement, and the FFI returns `RC_INVALID_INPUT`.
+- **`identity.resolve` input cannot carry a resolved identity.** An input may set only `source`, `source_header`, `headers`, `client_host` and `client_port`. One that sets `subject`, `client`, `caller_workload`, `delegation`, `raw_credentials`, `resolved_at` or `raw_claims` could forge the identity resolvers return, and is refused on every binding (`ValueError`, `ErrCpexInvalidInput`, `RC_INVALID_INPUT`).
+- **The `identity.resolve` result no longer echoes the request `headers`.** They include the credential header, so echoing them handed the inbound token back to anything that logs or forwards the result. Applies to Python `modified_payload` and to the Go and C identity payload. Every other field comes back as before.
+- **Go: an empty `DataPolicy.AllowedActions` no longer allows every action.** An empty slice was dropped on the way to Rust and read as unconstrained. Now nil allows every action and an empty non-nil slice allows none.
+- **Python plugin host withholds raw headers by default.** PPE's public `IdentityPayload` and the outbound `http` extension send empty raw header maps to a worker, because an unknown header name or an unvalidated value can hold a credential. Request-line fields still cross. Only a plugin declaring `read_inbound_credentials` receives the full identity header map, through the gated `credential` object. Worker-returned header edits still require `write_headers` and have known credential names removed.
+- **Legacy payload shim refuses post-hook messages with unseen content.** On `cmf.tool_post_invoke`, `cmf.prompt_post_invoke` and `cmf.resource_post_fetch`, a message holding a content part beside the result the legacy payload carries fails closed with `legacy_shim_unsupported`. The plugin cannot see that part, so a filter would pass it through unredacted.
+- **CIBA approvals are bound to requester, route and tool and redeemed once.** PPE 0.5.0 fixes the cross-subject approval reuse present in 0.2.3. Dispatch requires a non-empty authenticated subject id.
+
 ## [0.2.3] - 2026-10-02
 
 ### Added
@@ -62,7 +124,7 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/).
 
 - **The host now verifies the worker understands what it is about to be sent, and fails closed at startup when it does not.** An older `worker.py` does not reject a wire field it predates — it ignores it, so a plugin declaring `read_inbound_credentials` against one started cleanly and then ran with **no credential at all**, silently, which is precisely what fail-closed rule 2 exists to prevent. Version strings cannot distinguish the two cases: two framework builds shipped as `0.1.2` with different worker protocols. `initialize()` therefore probes the worker with a new `capabilities` task before any plugin code loads, and the worker answers with the feature names it actually implements. A worker predating the handshake replies `task type not supported.`, which the host reads as "no features" — the conservative answer — while a timeout or a dead worker stays an error, since those mean the probe never completed. Enforcement is per plugin rather than a blanket version gate: a credential capability requires the `credential` feature, an extensions capability requires `extensions`, and a plugin declaring nothing gated still starts on any worker. A mismatch fails that plugin at startup with an error naming the missing feature and what the worker did report, rather than deferring the discovery to a live request; the respawn path re-verifies, because the replacement resolves `worker.py` from a venv that may have been rebuilt since. (#149)
 
-- **Raw credential material can now reach an out-of-process worker.** `RawInboundToken.token` and `RawDelegatedToken.token` are `#[serde(skip)]`, and the "raw credentials never leave the host process" invariant has held because nothing read those fields directly. The `isolated_venv` host narrowly reverses that for two hooks — `identity_resolve` and `token_delegate`, the only ones whose Python payload models a raw token at all — by reading the in-memory field and sending the plaintext in a dedicated `credential` DTO. This is opt-in twice over and fails closed: a plugin receives nothing unless it declares `read_inbound_credentials` or `read_delegated_tokens`, and a plugin that declares one but cannot be served (no extension, empty token) causes the dispatch to error rather than silently sending no credential — an empty bearer would otherwise read as "no authentication required". The `raw_credentials` extension slot itself is never carried, so no hollow token slot invites a plugin to misread "not on this channel" as "no credential present", and the sensitive-header strip (`Authorization` / `Cookie` / `Set-Cookie` / `X-API-Key`, case-insensitive, both directions) keeps credential headers out of the `http` slot regardless. The FFI, Python-bindings, and audit paths are untouched, and the in-process hosts are unaffected.
+- **Raw credential material can now reach an out-of-process worker.** `RawInboundToken.token` and `RawDelegatedToken.token` are `#[serde(skip)]`, and the "raw credentials never leave the host process" invariant has held because nothing read those fields directly. The `isolated_venv` host narrowly reverses that for two hooks — `identity_resolve` and `token_delegate`, the only ones whose Python payload models a raw token at all — by reading the in-memory field and sending the plaintext in a dedicated `credential` DTO. This is opt-in twice over and fails closed: a plugin receives nothing unless it declares `read_inbound_credentials` or `read_delegated_tokens`, and a plugin that declares one but cannot be served (no extension, empty token) causes the dispatch to error rather than silently sending no credential — an empty bearer would otherwise read as "no authentication required". The `raw_credentials` extension slot itself is never carried, so no hollow token slot invites a plugin to misread "not on this channel" as "no credential present". Outbound `http` header maps are empty by default; worker-returned edits are filtered for known credential names and guarded by `write_headers`. The FFI, Python-bindings, and audit paths are untouched, and the in-process hosts are unaffected.
 
   **Operators should note the residual exposure the capability gate does not close.** Once the plaintext is resident in the worker process it is readable by every transitively-installed dependency in that plugin's venv — a materially larger and less audited trust boundary than the in-process host, which neither the gate nor the transport can constrain. Grant these two capabilities only to plugins whose venv contents you control, and treat a plugin's requirements file as credential-adjacent supply chain. (#149)
 
@@ -146,7 +208,8 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/).
 
 - Initial release
 
-[Unreleased]: https://github.com/contextforge-org/cpex/compare/0.2.3...HEAD
+[Unreleased]: https://github.com/contextforge-org/cpex/compare/0.3.0...HEAD
+[0.3.0]: https://github.com/contextforge-org/cpex/compare/0.2.3...0.3.0
 [0.2.3]: https://github.com/contextforge-org/cpex/compare/0.2.2...0.2.3
 [0.2.2]: https://github.com/contextforge-org/cpex/compare/0.2.1...0.2.2
 [0.2.1]: https://github.com/contextforge-org/cpex/compare/0.2.0...0.2.1

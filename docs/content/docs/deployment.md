@@ -29,7 +29,7 @@ As a **gateway**, CPEX sits in front of the tool server and enforces on inbound 
 
 ## Route forms
 
-Routes are a list of `- tool:` entries (or `resource:` / `prompt:` / `llm:`), with the `authorization`, `args`, and `result` blocks under each. This is the form the runtime loads at every placement; the enforcement point changes, the config shape does not. See [Configuration]({{< relref "/docs/configuration" >}}) for the full structure.
+Routes are a list of `- tool:` entries (or `resource:` / `prompt:` / `llm:` / `http:`), with the `authorization`, `args`, and `result` blocks under each. This is the form the runtime loads at every placement; the enforcement point changes, the config shape does not. See [Configuration]({{< relref "/docs/configuration" >}}) for the full structure.
 
 ## Placement guidance
 
@@ -40,6 +40,17 @@ Routes are a list of `- tool:` entries (or `resource:` / `prompt:` / `llm:`), wi
 | In-framework | operations as the agent runtime issues them | you control the runtime and want enforcement inline |
 
 The decision is about which boundary you control and trust, not about policy capability. Identity resolution, PDP calls, delegation, redaction, and tainting all work the same at each. For what each placement does and does not defend against, see the [Threat Model]({{< relref "/docs/threat-model#where-the-boundary-sits-and-what-each-placement-covers" >}}).
+
+## Outbound calls from the enforcement point
+
+Wherever CPEX runs, the builtins that fetch JWKS, exchange tokens, poll CIBA or read Vault make outbound HTTP calls through one transport the host installs. The bundled transport refuses loopback, private, link-local and CGNAT addresses. A deployment whose IdP or Vault sits on an in-cluster address has two choices:
+
+- install a host transport with its own egress rules (`set_http_transport` in Rust), which is the production answer; or
+- turn on the private-destination opt-in for the surface (see [Builtins]({{< relref "/docs/builtins#private-destinations" >}})), which opens every private address, including cloud metadata, to every outbound builtin.
+
+The tutorial and demos use the second, which is fine for a laptop and wrong for a shared cluster.
+
+A host that uses Vault, or any rotating secret, also owns the refresh schedule: call secret refresh on an interval and alarm on the last-success time (see [Configuration]({{< relref "/docs/configuration#resolution-and-refresh" >}})).
 
 ## Inference traffic
 

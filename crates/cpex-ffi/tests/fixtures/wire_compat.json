@@ -1,0 +1,63 @@
+{
+  "description": "Plugin kinds, PDP kinds, session store kinds, secret provider kinds and hook names that the CPEX bindings (C FFI and Python wheel) expose after installing builtins. A new PPE builtin is one edit here. Kinds listed under absent_plugin_kinds must not resolve.",
+  "plugin_kinds": [
+    "delegator/oauth",
+    "delegator/vault",
+    "elicitation/ciba",
+    "identity/api-key",
+    "identity/jwt"
+  ],
+  "absent_plugin_kinds": [
+    "audit/logger",
+    "quota/limitador",
+    "validator/pii-scan"
+  ],
+  "pdp_kinds": [
+    "cedar-direct",
+    "cel",
+    "opa"
+  ],
+  "session_store_kinds": [
+    "valkey"
+  ],
+  "secret_provider_kinds": [
+    "env",
+    "file",
+    "vault"
+  ],
+  "hooks": {
+    "cmf": [
+      "cmf.llm_input",
+      "cmf.llm_output",
+      "cmf.prompt_post_invoke",
+      "cmf.prompt_pre_invoke",
+      "cmf.resource_post_fetch",
+      "cmf.resource_pre_fetch",
+      "cmf.tool_post_invoke",
+      "cmf.tool_pre_invoke"
+    ],
+    "http": [
+      "http.request",
+      "http.response"
+    ],
+    "identity": [
+      "identity.resolve"
+    ],
+    "delegation": [
+      "token.delegate"
+    ],
+    "elicitation": [
+      "elicit"
+    ]
+  },
+  "removed_hooks": [
+    "identity_resolve",
+    "prompt_post_fetch",
+    "prompt_pre_fetch",
+    "resource_post_fetch",
+    "resource_pre_fetch",
+    "token_delegate",
+    "tool_post_invoke",
+    "tool_pre_invoke"
+  ]
+}

@@ -17,11 +17,11 @@
 
 use std::sync::Arc;
 
-use cpex::PluginManager;
+use cpex::PolicyEngine;
 use cpex_tutorial::backends;
 use cpex_tutorial::idp;
 use cpex_tutorial::ui;
-use cpex_tutorial::{mediate, Caller};
+use cpex_tutorial::{Caller, mediate};
 
 use serde_json::json;
 
@@ -31,11 +31,13 @@ const POLICY: &str = include_str!("../policies/m07.yaml");
 async fn main() {
     ui::module_banner("Module 7: Information flow (Tainting)");
 
-    let mgr = Arc::new(PluginManager::default());
-    cpex::install_builtins(&mgr);
-    mgr.load_config_yaml(POLICY)
+    let engine = Arc::new(PolicyEngine::default());
+    cpex::install_builtins(&engine);
+    cpex_tutorial::install_http_transport(&engine);
+    engine
+        .load_config_yaml(POLICY)
         .expect("policy m07.yaml should load");
-    mgr.initialize().await.expect("initialize");
+    engine.initialize().await.expect("initialize");
 
     let token = match idp::mint_token("alice", "alice").await {
         Ok(t) => t,
@@ -50,7 +52,7 @@ async fn main() {
     let clean = Caller::with_token(token.clone()).in_session("session-clean");
     ui::scenario("alice, fresh session → send_email (nothing tainted yet)");
     let o = mediate(
-        &mgr,
+        &engine,
         &clean,
         "send_email",
         json!({ "to": "coworker@corp.example", "subject": "lunch" }),
@@ -64,7 +66,7 @@ async fn main() {
     let working = Caller::with_token(token.clone()).in_session("session-hr-work");
     ui::scenario("alice, session-hr-work → get_compensation (taints session 'secret')");
     let o = mediate(
-        &mgr,
+        &engine,
         &working,
         "get_compensation",
         json!({ "employee_id": "e-1001" }),
@@ -77,7 +79,7 @@ async fn main() {
     // ...then the SAME send_email is denied, because the session is tainted.
     ui::scenario("alice, session-hr-work → send_email (write-down blocked)");
     let o = mediate(
-        &mgr,
+        &engine,
         &working,
         "send_email",
         json!({ "to": "coworker@corp.example", "subject": "lunch" }),
@@ -87,6 +89,8 @@ async fn main() {
     ui::print_outcome(&o);
     all_passed &= ui::expect(&o, false);
 
-    println!("Identical send_email call: allowed in the clean session, denied after the same session read secret data.");
+    println!(
+        "Identical send_email call: allowed in the clean session, denied after the same session read secret data."
+    );
     ui::finish_check(all_passed);
 }

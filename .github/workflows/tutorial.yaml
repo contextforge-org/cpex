@@ -8,6 +8,9 @@
 # `--check`, and tear it down.
 name: Tutorial
 
+# The modules run against the facade, the kept builtin and the PPE crates
+# pinned in Cargo.toml/Cargo.lock, so a change to any of those triggers the
+# run on pull requests as well as on main.
 on:
   push:
     branches: [main]
@@ -15,10 +18,17 @@ on:
       - "examples/tutorial/**"
       - "crates/**"
       - "builtins/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
       - ".github/workflows/tutorial.yaml"
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - "examples/tutorial/**"
+      - "crates/**"
+      - "builtins/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
       - ".github/workflows/tutorial.yaml"
 
 jobs:

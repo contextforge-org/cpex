@@ -3,16 +3,18 @@
 **Version**: 2.0
 **Related**: [CMF Message Specification](../specs/cmf-message-spec.md)
 
+> **Status.** This is the language-neutral framework design. The shipped engine since CPEX 0.3.0 is the praxis-policy engine (PPE) 0.4.1, and it differs from this design in places: execution modes are `sequential`, `transform`, `audit`, `concurrent`, `fire_and_forget` and `disabled`; the config uses `engine_settings:` with `dispatch: policy` by default; and plugins are selected by APL steps (`run(name)`) rather than by priority alone. The engine object is `PolicyEngine`. For the current behavior, read the [CPEX docs](https://contextforge-org.github.io/cpex/docs/) and the [migration guide](https://contextforge-org.github.io/cpex/docs/migration-0.3/).
+
 ## Introduction
 
 This document specifies a hook-based extensibility framework that enables policy enforcement, observability, and extensibility through composable, capability-gated plugins that attach to named hook points in a host system's execution lifecycle.
 
 The framework separates four concerns:
 
-* **Payload model** — what plugins operate on, defined as well-typed models.
-* **Plugin definition** — what a plugin does, declared via code or configuration.
-* **Execution semantics** — how the pipeline dispatches plugins and handles their results.
-* **Capability gating** — which payload extensions each plugin can observe and modify.
+* **Payload model**: what plugins operate on, defined as well-typed models.
+* **Plugin definition**: what a plugin does, declared via code or configuration.
+* **Execution semantics**: how the pipeline dispatches plugins and handles their results.
+* **Capability gating**: which payload extensions each plugin can observe and modify.
 
 The framework operates on any `PluginPayload` subclass. CMF `Message` and `MessageView` are built-in payload types for the common case of message-level policy enforcement, but the same plugin model, scheduling, and capability gating apply to any domain-specific payload.
 
@@ -55,12 +57,12 @@ For the canonical message model, extensions, and `MessageView` abstraction, see 
 
 ## 1. Design Goals
 
-* **Payload-agnostic** — Operates on any typed, frozen Pydantic payload. CMF messages are a built-in payload type, not the only one. Domain-specific hooks define domain-specific payloads.
-* **Composable** — Multiple plugins attach to the same hook point and execute in priority order. Plugins are grouped into reusable sets.
-* **Minimal intrusion** — Plugins are opt-in. Without registered plugins, hook invocations are no-ops with zero overhead.
-* **Fail-safe** — Plugin failures are isolated. Error handling behavior is configurable per-plugin, independent of mode.
-* **Least privilege** — Plugins declare capabilities. The framework filters payload extensions per-plugin so each sees only the data it needs.
-* **Safe mutation** — Plugins that modify payloads operate on copies. The original payload is preserved for audit, rollback, and parallel inspection.
+* **Payload-agnostic**: Operates on any typed, frozen Pydantic payload. CMF messages are a built-in payload type, not the only one. Domain-specific hooks define domain-specific payloads.
+* **Composable**: Multiple plugins attach to the same hook point and execute in priority order. Plugins are grouped into reusable sets.
+* **Minimal intrusion**: Plugins are opt-in. Without registered plugins, hook invocations are no-ops with zero overhead.
+* **Fail-safe**: Plugin failures are isolated. Error handling behavior is configurable per-plugin, independent of mode.
+* **Least privilege**: Plugins declare capabilities. The framework filters payload extensions per-plugin so each sees only the data it needs.
+* **Safe mutation**: Plugins that modify payloads operate on copies. The original payload is preserved for audit, rollback, and parallel inspection.
 
 ## 2. Framework Model
 
@@ -79,7 +81,7 @@ This section introduces the type system that the rest of the specification build
 | `Plugin` | Abstract base class with `initialize()`, `shutdown()`, and `@hook`-decorated methods. |
 | `PluginConfig` | Plugin declaration: `name`, `kind`, `mode`, `on_error`, `priority`, `capabilities`, `config`. |
 | `PluginContext` | Per-invocation execution state: `local_state`, `global_state`. |
-| `PluginManager` | Singleton managing plugin lifecycle and dispatch. |
+| `PolicyEngine` | Singleton managing plugin lifecycle and dispatch. |
 | `PluginSet` | Composable, reusable grouping of related hooks and plugins. |
 | `@hook` | Decorator for registering async functions or methods as hook handlers. |
 | `@plugin` | Convenience decorator for marking a plain class as a multi-hook plugin. |
@@ -100,9 +102,9 @@ class PluginPayload(BaseModel, frozen=True):
 
 **Design rationale:**
 
-* **Frozen** — Payloads are immutable by default. Mutation is only possible through copy-on-write in `modify` mode.
-* **Optional extensions** — Payloads that carry extensions get automatic capability filtering. Payloads without extensions skip filtering entirely.
-* **Pydantic** — Provides validation, serialization, and `model_copy()` for COW semantics.
+* **Frozen**: Payloads are immutable by default. Mutation is only possible through copy-on-write in `modify` mode.
+* **Optional extensions**: Payloads that carry extensions get automatic capability filtering. Payloads without extensions skip filtering entirely.
+* **Pydantic**: Provides validation, serialization, and `model_copy()` for COW semantics.
 
 Domain-specific payloads subclass `PluginPayload` and add their own fields:
 
@@ -120,15 +122,15 @@ class ToolInvocationPayload(PluginPayload):
     server_id: str | None = None
 ```
 
-These payloads participate in the same plugin pipeline — same modes, same scheduling, same result types. When they carry extensions, capability gating works identically to CMF message payloads.
+These payloads participate in the same plugin pipeline: same modes, same scheduling, same result types. When they carry extensions, capability gating works identically to CMF message payloads.
 
 ### 2.3 CMF Integration
 
-CMF `Message` and `MessageView` are the primary built-in payload types. They are used by the standard hook points that process message-level interactions — the common case for policy enforcement, content scanning, and observability in agentic systems.
+CMF `Message` and `MessageView` are the primary built-in payload types. They are used by the standard hook points that process message-level interactions: the common case for policy enforcement, content scanning, and observability in agentic systems.
 
 ```python
 class MessagePayload(PluginPayload):
-    """CMF message payload — the primary built-in type.
+    """CMF message payload: the primary built-in type.
 
     Wraps a CMF Message and its decomposed views for policy evaluation.
     Extensions are always present (inherited from the message).
@@ -152,13 +154,13 @@ class MessagePayload(PluginPayload):
 Plugins can be written against `PluginPayload` for maximum generality, or against `MessagePayload` (or any other subclass) when they need domain-specific fields:
 
 ```python
-# Generic — works with any payload that has extensions
+# Generic: works with any payload that has extensions
 @hook("any_hook", mode="validate")
 async def check_labels(payload: PluginPayload, ctx):
     if payload.extensions and "RESTRICTED" in payload.extensions.security.labels:
         return block("Restricted content")
 
-# CMF-specific — accesses message views
+# CMF-specific: accesses message views
 @hook("message_pre_send", mode="validate")
 async def check_tool_calls(payload: MessagePayload, ctx):
     for view in payload.views:
@@ -230,9 +232,9 @@ async def log_tool_call(payload, ctx):
 
 **Parameters:**
 
-- `hook_type: str` — the hook point name (required).
-- `mode: str` — `"observe"`, `"validate"` (default), or `"modify"`.
-- `priority: int` — lower numbers execute first (default: `50`).
+- `hook_type: str`: the hook point name (required).
+- `mode: str`: `"observe"`, `"validate"` (default), or `"modify"`.
+- `priority: int`: lower numbers execute first (default: `50`).
 
 The `block()` helper is shorthand for returning a deny result:
 
@@ -250,12 +252,12 @@ def block(reason: str, *, description: str = None, code: str = "", details: dict
 
 For plugins that need shared state across multiple hooks, use the `@plugin` decorator or subclass the `Plugin` base class.
 
-**`@plugin` decorator** — marks a plain class as a multi-hook plugin. Parameters:
+**`@plugin` decorator**: marks a plain class as a multi-hook plugin. Parameters:
 
-- `name: str` — unique plugin identifier (required).
-- `priority: int` — default priority for all hooks in this plugin (default: `50`). Per-handler `@hook` priorities override this.
-- `on_error: str` — default error handling for all hooks (default: `"fail"`).
-- `capabilities: list[str]` — extension capabilities for all hooks (default: `[]`).
+- `name: str`: unique plugin identifier (required).
+- `priority: int`: default priority for all hooks in this plugin (default: `50`). Per-handler `@hook` priorities override this.
+- `on_error: str`: default error handling for all hooks (default: `"fail"`).
+- `capabilities: list[str]`: extension capabilities for all hooks (default: `[]`).
 
 ```python
 from framework import plugin, hook, PluginResult
@@ -282,7 +284,7 @@ class PIIRedactor:
         return text
 ```
 
-**`Plugin` base class** — for plugins that need lifecycle hooks (`initialize`/`shutdown`):
+**`Plugin` base class**: for plugins that need lifecycle hooks (`initialize`/`shutdown`):
 
 ```python
 from framework import Plugin, hook
@@ -326,7 +328,7 @@ observability = PluginSet("observability", [
 
 ### 3.4 Registration & Scoping
 
-**Global** — fires for all hook invocations:
+**Global**: fires for all hook invocations:
 
 ```python
 from framework import register
@@ -336,14 +338,14 @@ register([security, observability])
 register(enforce_budget)
 ```
 
-**Context manager** — fires within a `with` block:
+**Context manager**: fires within a `with` block:
 
 Plugins can be activated for a specific block of code using context managers:
 
 ```python
 from framework import plugin_scope
 
-# Factory — accepts any mix of hooks, plugins, and sets
+# Factory: accepts any mix of hooks, plugins, and sets
 with plugin_scope(enforce_budget, PIIRedactor()):
     result = generate("Name the planets.")
 # plugins deregistered here
@@ -358,7 +360,7 @@ with observability:
     result = generate("What is the capital of France?")
 ```
 
-All forms support `async with`. Scopes stack cleanly — each exit deregisters only its own plugins. The same instance cannot be active in two overlapping scopes simultaneously; create separate instances for concurrent use.
+All forms support `async with`. Scopes stack cleanly: each exit deregisters only its own plugins. The same instance cannot be active in two overlapping scopes simultaneously; create separate instances for concurrent use.
 
 ## 4. Plugin Behavior
 
@@ -414,9 +416,9 @@ Each mode grants specific capabilities:
 
 Execution scheduling is determined automatically from mode:
 
-* **Observe plugins** — Executed asynchronously. Never block the pipeline. May run in parallel.
-* **Validate plugins** — Executed in parallel. Pipeline waits for completion. Safe parallelism due to read-only access.
-* **Modify plugins** — Executed sequentially. Each plugin receives the output of the previous plugin. Ensures deterministic transformation order.
+* **Observe plugins**: Executed asynchronously. Never block the pipeline. May run in parallel.
+* **Validate plugins**: Executed in parallel. Pipeline waits for completion. Safe parallelism due to read-only access.
+* **Modify plugins**: Executed sequentially. Each plugin receives the output of the previous plugin. Ensures deterministic transformation order.
 
 Plugin authors do not control scheduling directly. Scheduling is derived from mode to guarantee safety and correctness.
 
@@ -505,7 +507,7 @@ Only `modify` plugins receive mutable payloads. All modifications use copy-on-wr
 * Modified copies propagate forward
 * Original remains available for audit and rollback
 
-For payloads that carry extensions, COW copies respect extension mutability tiers: immutable extensions are shared by reference, monotonic extensions are validated add-only, guarded extensions require write capabilities. See [CMF Message Specification — Mutability Tiers](../specs/cmf-message-spec.md#31-mutability-tiers). Payloads without extensions skip tier enforcement.
+For payloads that carry extensions, COW copies respect extension mutability tiers: immutable extensions are shared by reference, monotonic extensions are validated add-only, guarded extensions require write capabilities. See [CMF Message Specification: Mutability Tiers](../specs/cmf-message-spec.md#31-mutability-tiers). Payloads without extensions skip tier enforcement.
 
 This ensures:
 
@@ -548,7 +550,7 @@ async def redact_pii(payload: MessagePayload, ctx):
 
 ### 5.1 Hook Invocation
 
-Hook point names (e.g., `generation_pre_call`, `tool_post_invoke`, `message_pre_send`) are defined by the host system that integrates the plugin framework. This specification does not prescribe a fixed set of hook points — each host defines the hook points appropriate to its execution lifecycle and places `invoke_hook()` calls at those sites. Hook names used in examples throughout this specification are illustrative.
+Hook point names (e.g., `generation_pre_call`, `tool_post_invoke`, `message_pre_send`) are defined by the host system that integrates the plugin framework. This specification does not prescribe a fixed set of hook points: each host defines the hook points appropriate to its execution lifecycle and places `invoke_hook()` calls at those sites. Hook names used in examples throughout this specification are illustrative.
 
 The pipeline dispatches plugins through a single entry point placed at hook invocation sites:
 
@@ -566,10 +568,10 @@ async def invoke_hook(
 
 `PipelineResult` is a convenience wrapper around `PluginResult` returned by the pipeline after all hooks for an invocation have run. It aggregates individual plugin results and provides factory methods for the common outcomes:
 
-* `PipelineResult.allowed(payload)` — all plugins allowed; returns the (possibly modified) payload.
-* `PipelineResult.denied(results)` — at least one plugin denied; carries the violation(s).
+* `PipelineResult.allowed(payload)`: all plugins allowed; returns the (possibly modified) payload.
+* `PipelineResult.denied(results)`: at least one plugin denied; carries the violation(s).
 
-Callers treat `PipelineResult` identically to `PluginResult` — it exposes the same `continue_processing`, `modified_payload`, and `violation` fields.
+Callers treat `PipelineResult` identically to `PluginResult`: it exposes the same `continue_processing`, `modified_payload`, and `violation` fields.
 
 The caller (typically a framework base class) invokes the hook and processes one of three outcomes:
 
@@ -701,7 +703,7 @@ When no policy is registered for a hook, the `DefaultHookPolicy` determines beha
 | `ALLOW` | All payload fields are writable (default) |
 | `DENY` | No payload fields are writable; modify plugins are rejected at registration |
 
-Hook payload policies are registered on the `PluginManager` and are independent of plugin capabilities — capabilities control *extension* visibility, while hook policies control *field-level* write scope.
+Hook payload policies are registered on the `PolicyEngine` and are independent of plugin capabilities: capabilities control *extension* visibility, while hook policies control *field-level* write scope.
 
 #### Capability filtering and isolation
 
@@ -764,9 +766,9 @@ This ensures negligible overhead when the framework is unused.
 
 ## 6. Capability-Gated Extensions
 
-Plugins declare which extensions they need. The pipeline builds payload views with only the granted extensions visible — ungated extensions appear as `None`. Capability gating applies to any `PluginPayload` that carries extensions, not only CMF messages.
+Plugins declare which extensions they need. The pipeline builds payload views with only the granted extensions visible: ungated extensions appear as `None`. Capability gating applies to any `PluginPayload` that carries extensions, not only CMF messages.
 
-For the full extension model and mutability tiers, see [CMF Message Specification — Extensions](../specs/cmf-message-spec.md#3-extensions).
+For the full extension model and mutability tiers, see [CMF Message Specification: Extensions](../specs/cmf-message-spec.md#3-extensions).
 
 ### 6.1 Capability Model
 
@@ -798,11 +800,11 @@ For the full extension model and mutability tiers, see [CMF Message Specificatio
 
 A plugin that only needs content for scanning gets no subject, no headers, no labels. A plugin doing role-based authorization declares `read_subject` + `read_roles` and gets exactly that.
 
-The base tier and informational extensions shown above apply to CMF `MessageView` accessors. Informational extensions (`completion`, `provenance`, `mcp`, `llm`, `framework`) are always visible because they carry no security-sensitive data — they describe the message's origin and processing context. The `custom` extension requires `write_custom` to modify but is always readable. For non-CMF payloads, the base tier includes the payload's own fields; capability gating controls only the extensions.
+The base tier and informational extensions shown above apply to CMF `MessageView` accessors. Informational extensions (`completion`, `provenance`, `mcp`, `llm`, `framework`) are always visible because they carry no security-sensitive data: they describe the message's origin and processing context. The `custom` extension requires `write_custom` to modify but is always readable. For non-CMF payloads, the base tier includes the payload's own fields; capability gating controls only the extensions.
 
 ### 6.2 Extension Filtering
 
-The pipeline filters extensions per-plugin before dispatch. No intermediate context object is needed — the extensions themselves are the gating surface. This filter applies to any `PluginPayload` whose `extensions` field is not `None`.
+The pipeline filters extensions per-plugin before dispatch. No intermediate context object is needed: the extensions themselves are the gating surface. This filter applies to any `PluginPayload` whose `extensions` field is not `None`.
 
 ```python
 class ExtensionFilter:
@@ -813,7 +815,7 @@ class ExtensionFilter:
         """Return a filtered copy with only granted extensions visible."""
         filtered = Extensions()
 
-        # Base tier — always visible
+        # Base tier: always visible
         filtered.request = extensions.request
 
         # Capability-gated: subject and security fields
@@ -847,20 +849,20 @@ class ExtensionFilter:
         if "read_agent" in self.caps:
             filtered.agent = extensions.agent
 
-        # Immutable informational extensions — always visible
+        # Immutable informational extensions: always visible
         filtered.completion = extensions.completion
         filtered.provenance = extensions.provenance
         filtered.mcp = extensions.mcp
         filtered.llm = extensions.llm
         filtered.framework = extensions.framework
 
-        # Custom — always readable, writable with write_custom
+        # Custom: always readable, writable with write_custom
         filtered.custom = extensions.custom
 
         return filtered
 ```
 
-Ungated extensions are `None` on the view. Existing `MessageView` accessors handle this naturally — `view.roles` returns an empty set if the subject extension was not granted, `view.has_role("admin")` returns `False`.
+Ungated extensions are `None` on the view. Existing `MessageView` accessors handle this naturally: `view.roles` returns an empty set if the subject extension was not granted, `view.has_role("admin")` returns `False`.
 
 ### 6.3 Capability in Practice
 
@@ -961,19 +963,19 @@ class PluginConfig:
     config: dict[str, Any] = {}        # Plugin-specific settings
 ```
 
-**`kind`** — For native plugins, this is the class path (e.g., `plugins.security.rate_limiter.RateLimiter`). The framework dynamically imports and instantiates the class. For external plugins, use `"external"` — connection details are specified separately.
+**`kind`**: For native plugins, this is the class path (e.g., `plugins.security.rate_limiter.RateLimiter`). The framework dynamically imports and instantiates the class. For external plugins, use `"external"`: connection details are specified separately.
 
-**`mode`** — The plugin's authority level: `observe`, `validate`, or `modify` (see [4.1](#41-plugin-modes)).
+**`mode`**: The plugin's authority level: `observe`, `validate`, or `modify` (see [4.1](#41-plugin-modes)).
 
-**`on_error`** — Error handling behavior: `fail`, `ignore`, or `disable` (see [4.2](#42-error-handling)).
+**`on_error`**: Error handling behavior: `fail`, `ignore`, or `disable` (see [4.2](#42-error-handling)).
 
-**`capabilities`** — Extension capabilities the plugin requires (see [6.1](#61-capability-model)). The pipeline filters extensions before dispatching. Ungated extensions are `None`.
+**`capabilities`**: Extension capabilities the plugin requires (see [6.1](#61-capability-model)). The pipeline filters extensions before dispatching. Ungated extensions are `None`.
 
-**`priority`** — Controls execution order. Lower numbers run first. Plugins at the same priority may be parallelized when their modes permit.
+**`priority`**: Controls execution order. Lower numbers run first. Plugins at the same priority may be parallelized when their modes permit.
 
 ### 7.2 External Plugins
 
-External plugins run as separate processes — MCP servers, HTTP services, or WASM modules. The framework serializes the capability-filtered payload and sends it to the external plugin. The plugin returns a `PluginResult` as JSON. External plugins never see extensions they have not been granted.
+External plugins run as separate processes: MCP servers, HTTP services, or WASM modules. The framework serializes the capability-filtered payload and sends it to the external plugin. The plugin returns a `PluginResult` as JSON. External plugins never see extensions they have not been granted.
 
 ```yaml
 plugins:
@@ -1073,7 +1075,7 @@ YAML configuration is secondary to programmatic registration. When both are pres
 ### 7.4 Global Settings
 
 ```yaml
-plugin_settings:
+engine_settings:                      # 0.3.0 name; this block shows the design's settings
   plugin_timeout: 30                  # Default timeout (seconds)
   on_error: fail                      # Global default error behavior
   observe_pool_size: 4                # Thread pool for async observe plugins
@@ -1094,11 +1096,11 @@ PluginContext
 └── global_state: dict     # Shared across plugins. Use with care.
 ```
 
-All data needed for policy evaluation comes from the payload's extensions (filtered by capabilities). `PluginContext` is purely for transient execution state — counters, caches, intermediate results.
+All data needed for policy evaluation comes from the payload's extensions (filtered by capabilities). `PluginContext` is purely for transient execution state: counters, caches, intermediate results.
 
 ### 8.2 Manager Lifecycle & Execution Flow
 
-The `PluginManager` owns the plugin lifecycle and execution pipeline. A host system typically maintains a single `PluginManager` instance for its lifetime. The manager must be initialized before dispatching hooks and shut down gracefully to flush observe queues and disconnect external transports.
+The `PolicyEngine` owns the plugin lifecycle and execution pipeline. A host system typically maintains a single `PolicyEngine` instance for its lifetime. The manager must be initialized before dispatching hooks and shut down gracefully to flush observe queues and disconnect external transports.
 
 **Lifecycle:**
 
@@ -1122,7 +1124,7 @@ stateDiagram-v2
 **Execution flow:**
 
 ```python
-class PluginManager:
+class PolicyEngine:
     async def invoke_hook(
         self, hook_type: str, payload: PluginPayload, context: PluginContext
     ) -> PluginResult:
@@ -1191,7 +1193,7 @@ classDiagram
         +hook_name(payload, context)* async PluginResult
     }
 
-    class PluginManager {
+    class PolicyEngine {
         -timeout: int
         -hook_policies: dict~str, HookPayloadPolicy~
         +invoke_hook(hook_type, payload, context) PipelineResult
@@ -1280,9 +1282,9 @@ classDiagram
     Plugin ..> PluginContext : receives
     Plugin ..> hook : decorated by
 
-    PluginManager --> Plugin : manages 0..*
-    PluginManager --> HookPayloadPolicy : enforces per hook
-    PluginManager --> PluginSet : loads from
+    PolicyEngine --> Plugin : manages 0..*
+    PolicyEngine --> HookPayloadPolicy : enforces per hook
+    PolicyEngine --> PluginSet : loads from
 
     PluginConfig --> PluginMode : has
     PluginConfig --> OnError : has
@@ -1290,7 +1292,7 @@ classDiagram
     PluginResult --> PluginViolation : may contain
     %%PluginResult --> PluginPayload : wraps modified
     PipelineResult --|> PluginResult : extends
-    PluginManager ..> PipelineResult : returns
+    PolicyEngine ..> PipelineResult : returns
 ```
 
 ## 9. Properties

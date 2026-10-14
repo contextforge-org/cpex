@@ -1,0 +1,48 @@
+# Human approval through OIDC CIBA.
+#
+# Source: examples/tutorial/policies/m08.yaml, with the tutorial's custom
+# approval-channel plugin replaced by the elicitation/ciba builtin pointed
+# at the parity mock backchannel and token endpoints. The client secret
+# comes from a file the harness writes at run time.
+#
+# Migrated to the CPEX 0.3.0 (PPE) form from config.yaml in this directory:
+# - plugins that call out over HTTP declare `perform_http`.
+
+plugins:
+  - name: idp
+    kind: identity/jwt
+    hooks: [identity.resolve]
+    capabilities: [perform_http]
+    config:
+      claim_mapper: standard
+      trusted_issuers:
+        - issuer: https://idp.parity.test
+          audiences: [cpex-parity]
+          algorithms: [EdDSA]
+          decoding_key:
+            kind: jwks_url
+            url: "{{MOCK_URL}}/jwks"
+            insecure_http: true
+          leeway_seconds: 60
+
+  - name: manager-approval
+    kind: elicitation/ciba
+    hooks: [elicit]
+    capabilities: [perform_http]
+    config:
+      backchannel_endpoint: "{{MOCK_URL}}/ciba/auth"
+      token_endpoint: "{{MOCK_URL}}/ciba/token"
+      client_id: cpex-gateway
+      client_secret_source:
+        kind: file
+        path: "{{CLIENT_SECRET_FILE}}"
+      insecure_http: true
+
+routes:
+  - tool: send_email
+    authentication:
+      - idp
+    authorization:
+      pre_invocation:
+        - "require(authenticated)"
+        - "require_approval(manager-approval, from: claim.manager, purpose: \"Approve outbound email\")"

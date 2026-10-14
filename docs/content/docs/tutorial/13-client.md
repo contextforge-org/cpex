@@ -31,23 +31,47 @@ Two changes from module 12. First, resolve the agent's token into the `client` s
 
 ```yaml
 plugins:
-  # role: client routes the inbound token to the `client` slot (not `subject`).
+  # Resolve the agent's inbound token into the CLIENT slot. `role: client` is
+  # what routes it to `client` (not `subject`); the delegation below then
+  # selects it with `subject: client`. The token is aud'd to cpex-gateway
+  # (the enforcement point), so this resolver trusts that audience.
   - name: keycloak-agent
     kind: identity/jwt
     hooks: [identity.resolve]
+    capabilities: [perform_http]
     config:
-      role: client                 # <-- the agent as an OAuth client
+      role: client
       header: Authorization
       claim_mapper: standard
       trusted_issuers:
         - issuer: http://localhost:8081/realms/cpex-tutorial
-          audiences: [cpex-gateway]   # the agent's token is aud'd to the gateway
+          audiences: [cpex-gateway]
           algorithms: [RS256]
-          decoding_key: { kind: jwks_url, url: "…/certs", insecure_http: true }
+          decoding_key:
+            kind: jwks_url
+            url: http://localhost:8081/realms/cpex-tutorial/protocol/openid-connect/certs
+            insecure_http: true
+          leeway_seconds: 60
+
+  - name: workday-oauth
+    kind: delegator/oauth
+    hooks: [token.delegate]
+    capabilities: [read_inbound_credentials, write_delegated_tokens, perform_http]
+    config:
+      token_endpoint: http://localhost:8081/realms/cpex-tutorial/protocol/openid-connect/token
+      client_id: cpex-gateway
+      client_secret_source:
+        kind: literal
+        secret: gateway-dev-secret
+      insecure_http: true
 
 routes:
+  # The agent scopes its own client token down to the github-api audience.
+  # `subject: client` exchanges the CALLER's client token, so, like
+  # subject: user, an anonymous request has nothing to exchange and fails.
   - tool: search_repos
-    authentication: [keycloak-agent]
+    authentication:
+      - keycloak-agent
     authorization:
       pre_invocation:
         - "delegate(workday-oauth, target: github-api, audience: github-api, subject: client)"

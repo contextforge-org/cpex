@@ -34,9 +34,19 @@ from cpex import PluginManager, PipelineResult
 
 ## Hook Names
 
-Hook names are identical (`cmf.tool_pre_invoke`, etc.). The Rust-backed
-package routes `cmf.*` hooks through `MessagePayload` and all other hook
-names through `GenericPayload` — no hook names raise `ValueError`.
+Hook names follow the engine (`cmf.tool_pre_invoke`, `identity.resolve`,
+`token.delegate`, etc.). A name removed in 0.3 (`tool_pre_invoke`,
+`identity_resolve`, `prompt_pre_fetch` and the rest) raises `ValueError`
+naming its replacement, because it would reach no handler and come back
+allowed. The Rust-backed package picks the payload type from the hook
+name: `cmf.*` hooks use typed `MessagePayload`, `identity.resolve` uses
+typed `IdentityPayload`, and all other hooks use `GenericPayload`. For the
+two typed cases, a dict that doesn't match the schema raises `ValueError`.
+
+An `identity.resolve` payload may set only `source`, `source_header`,
+`headers`, `client_host` and `client_port`; one that sets a resolver
+output field (`subject`, `raw_claims` and the like) raises `ValueError`.
+The result's `modified_payload` does not echo `headers`.
 
 ## Payload Shape
 
@@ -94,10 +104,10 @@ side effects in tests, always call shutdown first.
 The following features from the legacy package are **not available in v1**
 of the Rust-backed package:
 
-- **Typed identity/delegation payloads** (`identity_resolve`,
-  `token_delegate`): these hooks route through `GenericPayload` in v1.
-  The raw dict is preserved; typed constructors and token injection are
-  deferred to v2.
+- **Delegation** (`token_delegate`, now `token.delegate`): inbound tokens
+  are never serialized, so a delegator cannot exchange them for a call
+  made from Python. `identity.resolve` (formerly `identity_resolve`) does
+  take a typed `IdentityPayload` dict; see the README.
 - **Dual-mode / backend selection**: this package is always Rust-backed.
   There is no environment variable to switch between backends.
 

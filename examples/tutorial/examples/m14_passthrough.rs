@@ -17,11 +17,11 @@
 
 use std::sync::Arc;
 
-use cpex::PluginManager;
+use cpex::PolicyEngine;
 use cpex_tutorial::backends;
 use cpex_tutorial::idp;
 use cpex_tutorial::ui;
-use cpex_tutorial::{mediate, Caller};
+use cpex_tutorial::{Caller, mediate};
 
 use serde_json::json;
 
@@ -41,11 +41,13 @@ async fn token(user: &str) -> Caller {
 async fn main() {
     ui::module_banner("Module 14: Passthrough (forward the caller's token, mint nothing)");
 
-    let mgr = Arc::new(PluginManager::default());
-    cpex::install_builtins(&mgr);
-    mgr.load_config_yaml(POLICY)
+    let engine = Arc::new(PolicyEngine::default());
+    cpex::install_builtins(&engine);
+    cpex_tutorial::install_http_transport(&engine);
+    engine
+        .load_config_yaml(POLICY)
         .expect("policy m14.yaml should load");
-    mgr.initialize().await.expect("initialize");
+    engine.initialize().await.expect("initialize");
 
     let alice = token("alice").await;
     let anon = Caller::anonymous();
@@ -55,7 +57,7 @@ async fn main() {
     // downstream.
     ui::scenario("alice → search_repos (validated and forwarded, no token minted)");
     let o = mediate(
-        &mgr,
+        &engine,
         &alice,
         "search_repos",
         json!({ "visibility": "internal" }),
@@ -68,7 +70,7 @@ async fn main() {
     // Passthrough still needs a valid inbound token to forward.
     ui::scenario("anonymous → search_repos (no token to forward, require(authenticated) denies)");
     let o = mediate(
-        &mgr,
+        &engine,
         &anon,
         "search_repos",
         json!({ "visibility": "internal" }),

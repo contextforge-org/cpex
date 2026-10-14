@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Authors: Ted Habeck
 //
-// cpex-python — PyO3 native extension module `cpex._lib`.
+// cpex-python: PyO3 native extension module `cpex._lib`.
 //
 // Module registration and tokio runtime initialization.
 // The runtime is initialized once with a multi-thread builder that honours
@@ -12,13 +12,13 @@
 
 use pyo3::prelude::*;
 
-mod builtins;
 mod conversions;
 mod error;
 mod manager;
 mod result;
+mod secrets;
 
-use manager::PyPluginManager;
+use manager::PyPolicyEngine;
 use result::PyPipelineResult;
 
 /// Name of the env var operators set to bound worker threads.
@@ -53,7 +53,7 @@ fn _lib(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Initialize the pyo3-async-runtimes tokio runtime with a multi-thread
     // builder so async methods are dispatched onto a real thread pool rather
     // than a single-threaded executor. This must run before any `future_into_py`
-    // call — doing it here at module import time is the correct hook.
+    // call; doing it here at module import time is the correct hook.
     //
     // This is a separate runtime from cpex-ffi's SHARED_RUNTIME; the
     // shared-budget philosophy is mirrored, not the runtime instance.
@@ -64,7 +64,7 @@ fn _lib(m: &Bound<'_, PyModule>) -> PyResult<()> {
     }
     pyo3_async_runtimes::tokio::init(builder);
 
-    m.add_class::<PyPluginManager>()?;
+    m.add_class::<PyPolicyEngine>()?;
     m.add_class::<PyPipelineResult>()?;
 
     Ok(())

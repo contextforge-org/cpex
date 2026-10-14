@@ -1,0 +1,1282 @@
+{
+  "date": "2026-10-13",
+  "environment": "macOS; rustc 1.96.0; default workspace features; Valkey 8 for after parity",
+  "before": {
+    "revision": "e3a2b30bbaf14682808f4e1de4e3e5fa5be9f481 (v0.2.3)",
+    "command": "cargo test --workspace --locked --offline",
+    "executed": 1434,
+    "ignored": 39,
+    "suites": [
+      {
+        "package": "apl-cmf",
+        "suite": "lib",
+        "executed": 56,
+        "ignored": 0
+      },
+      {
+        "package": "apl-cmf",
+        "suite": "tests/end_to_end.rs",
+        "executed": 5,
+        "ignored": 0
+      },
+      {
+        "package": "apl-core",
+        "suite": "lib",
+        "executed": 299,
+        "ignored": 0
+      },
+      {
+        "package": "apl-core",
+        "suite": "tests/yaml_end_to_end.rs",
+        "executed": 8,
+        "ignored": 0
+      },
+      {
+        "package": "apl-cpex",
+        "suite": "lib",
+        "executed": 106,
+        "ignored": 0
+      },
+      {
+        "package": "apl-cpex",
+        "suite": "tests/attribute_source_e2e.rs",
+        "executed": 11,
+        "ignored": 0
+      },
+      {
+        "package": "apl-cpex",
+        "suite": "tests/canonical_authn_authz_e2e.rs",
+        "executed": 1,
+        "ignored": 0
+      },
+      {
+        "package": "apl-cpex",
+        "suite": "tests/capability_gating.rs",
+        "executed": 5,
+        "ignored": 0
+      },
+      {
+        "package": "apl-cpex",
+        "suite": "tests/cmf_invoker_dispatch.rs",
+        "executed": 13,
+        "ignored": 0
+      },
+      {
+        "package": "apl-cpex",
+        "suite": "tests/config_override.rs",
+        "executed": 5,
+        "ignored": 0
+      },
+      {
+        "package": "apl-cpex",
+        "suite": "tests/delegate_step_e2e.rs",
+        "executed": 6,
+        "ignored": 0
+      },
+      {
+        "package": "apl-cpex",
+        "suite": "tests/elicit_step_e2e.rs",
+        "executed": 6,
+        "ignored": 0
+      },
+      {
+        "package": "apl-cpex",
+        "suite": "tests/elicit_then_delegate_e2e.rs",
+        "executed": 2,
+        "ignored": 0
+      },
+      {
+        "package": "apl-cpex",
+        "suite": "tests/end_to_end_route.rs",
+        "executed": 13,
+        "ignored": 0
+      },
+      {
+        "package": "apl-cpex",
+        "suite": "tests/global_http_authz.rs",
+        "executed": 6,
+        "ignored": 0
+      },
+      {
+        "package": "apl-cpex",
+        "suite": "tests/payload_mutation_propagation.rs",
+        "executed": 15,
+        "ignored": 0
+      },
+      {
+        "package": "apl-cpex",
+        "suite": "tests/restrict_e2e.rs",
+        "executed": 5,
+        "ignored": 0
+      },
+      {
+        "package": "apl-cpex",
+        "suite": "tests/visitor_e2e.rs",
+        "executed": 18,
+        "ignored": 0
+      },
+      {
+        "package": "cpex",
+        "suite": "lib",
+        "executed": 1,
+        "ignored": 0
+      },
+      {
+        "package": "cpex-builtins",
+        "suite": "lib",
+        "executed": 3,
+        "ignored": 0
+      },
+      {
+        "package": "cpex-core",
+        "suite": "lib",
+        "executed": 344,
+        "ignored": 0
+      },
+      {
+        "package": "cpex-core",
+        "suite": "tests/delegation_e2e.rs",
+        "executed": 5,
+        "ignored": 0
+      },
+      {
+        "package": "cpex-core",
+        "suite": "tests/identity_e2e.rs",
+        "executed": 6,
+        "ignored": 0
+      },
+      {
+        "package": "cpex-core",
+        "suite": "tests/identity_route_e2e.rs",
+        "executed": 12,
+        "ignored": 0
+      },
+      {
+        "package": "cpex-demo-ffi",
+        "suite": "lib",
+        "executed": 0,
+        "ignored": 0
+      },
+      {
+        "package": "cpex-ffi",
+        "suite": "lib",
+        "executed": 10,
+        "ignored": 0
+      },
+      {
+        "package": "cpex-hosts-python",
+        "suite": "lib",
+        "executed": 209,
+        "ignored": 0
+      },
+      {
+        "package": "cpex-hosts-python",
+        "suite": "tests/config_e2e.rs",
+        "executed": 1,
+        "ignored": 2
+      },
+      {
+        "package": "cpex-hosts-python",
+        "suite": "tests/credential_e2e.rs",
+        "executed": 0,
+        "ignored": 5
+      },
+      {
+        "package": "cpex-hosts-python",
+        "suite": "tests/extensions_merge_e2e.rs",
+        "executed": 9,
+        "ignored": 2
+      },
+      {
+        "package": "cpex-hosts-python",
+        "suite": "tests/isolated_venv_e2e.rs",
+        "executed": 0,
+        "ignored": 4
+      },
+      {
+        "package": "cpex-orchestration",
+        "suite": "lib",
+        "executed": 7,
+        "ignored": 0
+      },
+      {
+        "package": "cpex-pdp-cedar-direct",
+        "suite": "lib",
+        "executed": 7,
+        "ignored": 0
+      },
+      {
+        "package": "cpex-pdp-cedar-direct",
+        "suite": "tests/basic_allow_deny.rs",
+        "executed": 7,
+        "ignored": 0
+      },
+      {
+        "package": "cpex-pdp-cedar-direct",
+        "suite": "tests/small_stack_eval.rs",
+        "executed": 1,
+        "ignored": 0
+      },
+      {
+        "package": "cpex-pdp-cedar-direct",
+        "suite": "tests/visitor_pdp_config.rs",
+        "executed": 2,
+        "ignored": 0
+      },
+      {
+        "package": "cpex-pdp-cel",
+        "suite": "lib",
+        "executed": 26,
+        "ignored": 0
+      },
+      {
+        "package": "cpex-pdp-cel",
+        "suite": "tests/visitor_cel_config.rs",
+        "executed": 6,
+        "ignored": 0
+      },
+      {
+        "package": "cpex-pdp-opa",
+        "suite": "lib",
+        "executed": 68,
+        "ignored": 0
+      },
+      {
+        "package": "cpex-pdp-opa",
+        "suite": "tests/visitor_opa_config.rs",
+        "executed": 6,
+        "ignored": 0
+      },
+      {
+        "package": "cpex-plugin-audit-logger",
+        "suite": "lib",
+        "executed": 1,
+        "ignored": 0
+      },
+      {
+        "package": "cpex-plugin-delegator-biscuit",
+        "suite": "lib",
+        "executed": 4,
+        "ignored": 0
+      },
+      {
+        "package": "cpex-plugin-delegator-biscuit",
+        "suite": "tests/biscuit_e2e.rs",
+        "executed": 6,
+        "ignored": 0
+      },
+      {
+        "package": "cpex-plugin-delegator-oauth",
+        "suite": "lib",
+        "executed": 13,
+        "ignored": 0
+      },
+      {
+        "package": "cpex-plugin-delegator-oauth",
+        "suite": "tests/oauth_e2e.rs",
+        "executed": 14,
+        "ignored": 0
+      },
+      {
+        "package": "cpex-plugin-elicitation-ciba",
+        "suite": "lib",
+        "executed": 8,
+        "ignored": 0
+      },
+      {
+        "package": "cpex-plugin-elicitation-ciba",
+        "suite": "tests/ciba_e2e.rs",
+        "executed": 7,
+        "ignored": 0
+      },
+      {
+        "package": "cpex-plugin-elicitation-ciba",
+        "suite": "tests/live_keycloak.rs",
+        "executed": 0,
+        "ignored": 1
+      },
+      {
+        "package": "cpex-plugin-identity-jwt",
+        "suite": "lib",
+        "executed": 23,
+        "ignored": 0
+      },
+      {
+        "package": "cpex-plugin-identity-jwt",
+        "suite": "tests/jwks_url_e2e.rs",
+        "executed": 7,
+        "ignored": 0
+      },
+      {
+        "package": "cpex-plugin-identity-jwt",
+        "suite": "tests/jwt_e2e.rs",
+        "executed": 10,
+        "ignored": 0
+      },
+      {
+        "package": "cpex-plugin-pii-scanner",
+        "suite": "lib",
+        "executed": 6,
+        "ignored": 0
+      },
+      {
+        "package": "cpex-python",
+        "suite": "lib",
+        "executed": 2,
+        "ignored": 0
+      },
+      {
+        "package": "cpex-sdk",
+        "suite": "lib",
+        "executed": 0,
+        "ignored": 0
+      },
+      {
+        "package": "cpex-session-valkey",
+        "suite": "lib",
+        "executed": 13,
+        "ignored": 0
+      },
+      {
+        "package": "cpex-session-valkey",
+        "suite": "tests/valkey_store_integration.rs",
+        "executed": 0,
+        "ignored": 5
+      },
+      {
+        "package": "cpex-tutorial",
+        "suite": "lib",
+        "executed": 0,
+        "ignored": 0
+      },
+      {
+        "package": "cpex-tutorial",
+        "suite": "tests/policy_tests.rs",
+        "executed": 2,
+        "ignored": 0
+      },
+      {
+        "package": "apl-cmf",
+        "suite": "doctests",
+        "executed": 0,
+        "ignored": 1
+      },
+      {
+        "package": "apl-core",
+        "suite": "doctests",
+        "executed": 0,
+        "ignored": 0
+      },
+      {
+        "package": "apl-cpex",
+        "suite": "doctests",
+        "executed": 0,
+        "ignored": 1
+      },
+      {
+        "package": "cpex",
+        "suite": "doctests",
+        "executed": 1,
+        "ignored": 2
+      },
+      {
+        "package": "cpex-builtins",
+        "suite": "doctests",
+        "executed": 0,
+        "ignored": 0
+      },
+      {
+        "package": "cpex-core",
+        "suite": "doctests",
+        "executed": 7,
+        "ignored": 15
+      },
+      {
+        "package": "cpex-ffi",
+        "suite": "doctests",
+        "executed": 0,
+        "ignored": 0
+      },
+      {
+        "package": "cpex-hosts-python",
+        "suite": "doctests",
+        "executed": 0,
+        "ignored": 0
+      },
+      {
+        "package": "cpex-orchestration",
+        "suite": "doctests",
+        "executed": 0,
+        "ignored": 0
+      },
+      {
+        "package": "cpex-pdp-cedar-direct",
+        "suite": "doctests",
+        "executed": 0,
+        "ignored": 0
+      },
+      {
+        "package": "cpex-pdp-cel",
+        "suite": "doctests",
+        "executed": 0,
+        "ignored": 1
+      },
+      {
+        "package": "cpex-pdp-opa",
+        "suite": "doctests",
+        "executed": 0,
+        "ignored": 0
+      },
+      {
+        "package": "cpex-plugin-audit-logger",
+        "suite": "doctests",
+        "executed": 0,
+        "ignored": 0
+      },
+      {
+        "package": "cpex-plugin-delegator-biscuit",
+        "suite": "doctests",
+        "executed": 0,
+        "ignored": 0
+      },
+      {
+        "package": "cpex-plugin-delegator-oauth",
+        "suite": "doctests",
+        "executed": 0,
+        "ignored": 0
+      },
+      {
+        "package": "cpex-plugin-elicitation-ciba",
+        "suite": "doctests",
+        "executed": 0,
+        "ignored": 0
+      },
+      {
+        "package": "cpex-plugin-identity-jwt",
+        "suite": "doctests",
+        "executed": 0,
+        "ignored": 0
+      },
+      {
+        "package": "cpex-plugin-pii-scanner",
+        "suite": "doctests",
+        "executed": 0,
+        "ignored": 0
+      },
+      {
+        "package": "cpex-sdk",
+        "suite": "doctests",
+        "executed": 0,
+        "ignored": 0
+      },
+      {
+        "package": "cpex-session-valkey",
+        "suite": "doctests",
+        "executed": 0,
+        "ignored": 0
+      },
+      {
+        "package": "cpex-tutorial",
+        "suite": "doctests",
+        "executed": 0,
+        "ignored": 0
+      }
+    ],
+    "ignored_tests": [
+      {
+        "package": "cpex-hosts-python",
+        "suite": "tests/config_e2e.rs",
+        "test": "config_yaml_dispatches_identity_resolve_and_token_delegate_to_the_installed_plugin",
+        "reason": "requires cpex-test-plugin installed under plugins/ with a built venv"
+      },
+      {
+        "package": "cpex-hosts-python",
+        "suite": "tests/config_e2e.rs",
+        "test": "config_yaml_dispatches_tool_pre_invoke_to_the_installed_plugin",
+        "reason": "requires cpex-test-plugin installed under plugins/ with a built venv"
+      },
+      {
+        "package": "cpex-hosts-python",
+        "suite": "tests/credential_e2e.rs",
+        "test": "a_capable_plugin_reads_the_raw_token_end_to_end",
+        "reason": "requires python3 + a cpex Python checkout (CPEX_PYTHON_SOURCE); run via `make test-python-e2e`"
+      },
+      {
+        "package": "cpex-hosts-python",
+        "suite": "tests/credential_e2e.rs",
+        "test": "a_declared_capability_that_cannot_be_honored_fails_closed_end_to_end",
+        "reason": "requires python3 + a cpex Python checkout (CPEX_PYTHON_SOURCE); run via `make test-python-e2e`"
+      },
+      {
+        "package": "cpex-hosts-python",
+        "suite": "tests/credential_e2e.rs",
+        "test": "a_non_capable_plugin_on_the_same_hook_receives_no_token",
+        "reason": "requires python3 + a cpex Python checkout (CPEX_PYTHON_SOURCE); run via `make test-python-e2e`"
+      },
+      {
+        "package": "cpex-hosts-python",
+        "suite": "tests/credential_e2e.rs",
+        "test": "the_credential_never_reaches_a_log_sink_the_host_controls",
+        "reason": "requires python3 + a cpex Python checkout (CPEX_PYTHON_SOURCE); run via `make test-python-e2e`"
+      },
+      {
+        "package": "cpex-hosts-python",
+        "suite": "tests/credential_e2e.rs",
+        "test": "the_real_worker_answers_the_capabilities_handshake",
+        "reason": "requires python3 + a cpex Python checkout (CPEX_PYTHON_SOURCE); run via `make test-python-e2e`"
+      },
+      {
+        "package": "cpex-hosts-python",
+        "suite": "tests/extensions_merge_e2e.rs",
+        "test": "an_appended_label_is_dropped_without_the_capability",
+        "reason": "requires python3 + a cpex Python checkout (CPEX_PYTHON_SOURCE); run via `make test-python-e2e`"
+      },
+      {
+        "package": "cpex-hosts-python",
+        "suite": "tests/extensions_merge_e2e.rs",
+        "test": "an_appended_label_survives_the_merge_when_the_capability_is_declared",
+        "reason": "requires python3 + a cpex Python checkout (CPEX_PYTHON_SOURCE); run via `make test-python-e2e`"
+      },
+      {
+        "package": "cpex-hosts-python",
+        "suite": "tests/isolated_venv_e2e.rs",
+        "test": "a_cmf_hook_is_rejected_cleanly_by_a_framework_that_has_no_cmf_hooks",
+        "reason": "requires python3 + a cpex Python checkout (CPEX_PYTHON_SOURCE); run via `make test-python-e2e`"
+      },
+      {
+        "package": "cpex-hosts-python",
+        "suite": "tests/isolated_venv_e2e.rs",
+        "test": "a_real_plugin_deny_surfaces_as_a_deny_result",
+        "reason": "requires python3 + a cpex Python checkout (CPEX_PYTHON_SOURCE); run via `make test-python-e2e`"
+      },
+      {
+        "package": "cpex-hosts-python",
+        "suite": "tests/isolated_venv_e2e.rs",
+        "test": "a_second_run_reuses_the_cached_venv",
+        "reason": "requires python3 + a cpex Python checkout (CPEX_PYTHON_SOURCE); run via `make test-python-e2e`"
+      },
+      {
+        "package": "cpex-hosts-python",
+        "suite": "tests/isolated_venv_e2e.rs",
+        "test": "legacy_tool_pre_invoke_round_trips_through_the_real_worker",
+        "reason": "requires python3 + a cpex Python checkout (CPEX_PYTHON_SOURCE); run via `make test-python-e2e`"
+      },
+      {
+        "package": "cpex-plugin-elicitation-ciba",
+        "suite": "tests/live_keycloak.rs",
+        "test": "live_dispatch_then_pending",
+        "reason": "requires a live Keycloak"
+      },
+      {
+        "package": "cpex-session-valkey",
+        "suite": "tests/valkey_store_integration.rs",
+        "test": "cross_node_concurrent_append_unions",
+        "reason": "marked #[ignore]"
+      },
+      {
+        "package": "cpex-session-valkey",
+        "suite": "tests/valkey_store_integration.rs",
+        "test": "ttl_set_on_append_and_refreshed_on_load",
+        "reason": "marked #[ignore]"
+      },
+      {
+        "package": "cpex-session-valkey",
+        "suite": "tests/valkey_store_integration.rs",
+        "test": "unknown_session_returns_empty_ok",
+        "reason": "marked #[ignore]"
+      },
+      {
+        "package": "cpex-session-valkey",
+        "suite": "tests/valkey_store_integration.rs",
+        "test": "unreachable_endpoint_fails_closed",
+        "reason": "marked #[ignore]"
+      },
+      {
+        "package": "cpex-session-valkey",
+        "suite": "tests/valkey_store_integration.rs",
+        "test": "wrongtype_reply_fails_closed",
+        "reason": "marked #[ignore]"
+      },
+      {
+        "package": "apl-cmf",
+        "suite": "doctests",
+        "test": "crates/apl-cmf/src/lib.rs - BagBuilder (line 84)",
+        "reason": "marked #[ignore]"
+      },
+      {
+        "package": "apl-cpex",
+        "suite": "doctests",
+        "test": "crates/apl-cpex/src/register.rs - register::register_apl (line 133)",
+        "reason": "marked #[ignore]"
+      },
+      {
+        "package": "cpex",
+        "suite": "doctests",
+        "test": "crates/cpex/src/lib.rs - (line 46)",
+        "reason": "marked #[ignore]"
+      },
+      {
+        "package": "cpex",
+        "suite": "doctests",
+        "test": "crates/cpex/src/lib.rs - (line 75)",
+        "reason": "marked #[ignore]"
+      },
+      {
+        "package": "cpex-core",
+        "suite": "doctests",
+        "test": "crates/cpex-core/src/delegation/hook.rs - delegation::hook::TokenDelegateHook (line 55)",
+        "reason": "marked #[ignore]"
+      },
+      {
+        "package": "cpex-core",
+        "suite": "doctests",
+        "test": "crates/cpex-core/src/elicitation/hook.rs - elicitation::hook::ElicitationHook (line 50)",
+        "reason": "marked #[ignore]"
+      },
+      {
+        "package": "cpex-core",
+        "suite": "doctests",
+        "test": "crates/cpex-core/src/extensions/container.rs - extensions::container::Extensions::cow_copy (line 162)",
+        "reason": "marked #[ignore]"
+      },
+      {
+        "package": "cpex-core",
+        "suite": "doctests",
+        "test": "crates/cpex-core/src/factory.rs - factory::PluginFactory (line 39)",
+        "reason": "marked #[ignore]"
+      },
+      {
+        "package": "cpex-core",
+        "suite": "doctests",
+        "test": "crates/cpex-core/src/factory.rs - factory::PluginFactoryRegistry (line 85)",
+        "reason": "marked #[ignore]"
+      },
+      {
+        "package": "cpex-core",
+        "suite": "doctests",
+        "test": "crates/cpex-core/src/hooks/macros.rs - hooks::macros::define_hook (line 21)",
+        "reason": "marked #[ignore]"
+      },
+      {
+        "package": "cpex-core",
+        "suite": "doctests",
+        "test": "crates/cpex-core/src/hooks/macros.rs - hooks::macros::define_hook (line 38)",
+        "reason": "marked #[ignore]"
+      },
+      {
+        "package": "cpex-core",
+        "suite": "doctests",
+        "test": "crates/cpex-core/src/hooks/trait_def.rs - hooks::trait_def::HookHandler (line 102)",
+        "reason": "marked #[ignore]"
+      },
+      {
+        "package": "cpex-core",
+        "suite": "doctests",
+        "test": "crates/cpex-core/src/identity/hook.rs - identity::hook::IdentityHook (line 65)",
+        "reason": "marked #[ignore]"
+      },
+      {
+        "package": "cpex-core",
+        "suite": "doctests",
+        "test": "crates/cpex-core/src/manager.rs - manager::PluginManager::invoke_named (line 1086)",
+        "reason": "marked #[ignore]"
+      },
+      {
+        "package": "cpex-core",
+        "suite": "doctests",
+        "test": "crates/cpex-core/src/manager.rs - manager::PluginManager::load_config_file (line 464)",
+        "reason": "marked #[ignore]"
+      },
+      {
+        "package": "cpex-core",
+        "suite": "doctests",
+        "test": "crates/cpex-core/src/manager.rs - manager::PluginManager::register_factory (line 438)",
+        "reason": "marked #[ignore]"
+      },
+      {
+        "package": "cpex-core",
+        "suite": "doctests",
+        "test": "crates/cpex-core/src/manager.rs - manager::PluginManager::register_handler (line 740)",
+        "reason": "marked #[ignore]"
+      },
+      {
+        "package": "cpex-core",
+        "suite": "doctests",
+        "test": "crates/cpex-core/src/manager.rs - manager::PluginManager::register_handler_for_names (line 771)",
+        "reason": "marked #[ignore]"
+      },
+      {
+        "package": "cpex-core",
+        "suite": "doctests",
+        "test": "crates/cpex-core/src/plugin.rs - plugin::Plugin (line 47)",
+        "reason": "marked #[ignore]"
+      },
+      {
+        "package": "cpex-pdp-cel",
+        "suite": "doctests",
+        "test": "builtins/pdps/cel/src/resolver.rs - resolver::CelResolver::with_functions (line 152)",
+        "reason": "marked #[ignore]"
+      }
+    ]
+  },
+  "after": {
+    "revision": "8b3cbb92ff25cfb1a8ea678f404646281c5965bd plus Teryl review fixes",
+    "command": "PARITY_VALKEY_URL=redis://127.0.0.1:6392/0 cargo test --workspace --offline -- --test-threads=4",
+    "executed": 408,
+    "ignored": 17,
+    "suites": [
+      {
+        "package": "cpex",
+        "suite": "lib",
+        "executed": 10,
+        "ignored": 0
+      },
+      {
+        "package": "cpex",
+        "suite": "tests/facade.rs",
+        "executed": 2,
+        "ignored": 0
+      },
+      {
+        "package": "cpex-demo-ffi",
+        "suite": "lib",
+        "executed": 1,
+        "ignored": 0
+      },
+      {
+        "package": "cpex-ffi",
+        "suite": "lib",
+        "executed": 19,
+        "ignored": 0
+      },
+      {
+        "package": "cpex-ffi",
+        "suite": "tests/egress.rs",
+        "executed": 8,
+        "ignored": 0
+      },
+      {
+        "package": "cpex-ffi",
+        "suite": "tests/wire_compat.rs",
+        "executed": 5,
+        "ignored": 0
+      },
+      {
+        "package": "cpex-hosts-python",
+        "suite": "lib",
+        "executed": 318,
+        "ignored": 0
+      },
+      {
+        "package": "cpex-hosts-python",
+        "suite": "tests/acceptance_e2e.rs",
+        "executed": 0,
+        "ignored": 2
+      },
+      {
+        "package": "cpex-hosts-python",
+        "suite": "tests/config_e2e.rs",
+        "executed": 1,
+        "ignored": 2
+      },
+      {
+        "package": "cpex-hosts-python",
+        "suite": "tests/credential_e2e.rs",
+        "executed": 0,
+        "ignored": 5
+      },
+      {
+        "package": "cpex-hosts-python",
+        "suite": "tests/extensions_merge_e2e.rs",
+        "executed": 9,
+        "ignored": 2
+      },
+      {
+        "package": "cpex-hosts-python",
+        "suite": "tests/isolated_venv_e2e.rs",
+        "executed": 0,
+        "ignored": 5
+      },
+      {
+        "package": "cpex-parity-harness",
+        "suite": "lib",
+        "executed": 6,
+        "ignored": 0
+      },
+      {
+        "package": "cpex-parity-harness",
+        "suite": "lib",
+        "executed": 0,
+        "ignored": 0
+      },
+      {
+        "package": "cpex-parity-harness",
+        "suite": "tests/determinism.rs",
+        "executed": 1,
+        "ignored": 0
+      },
+      {
+        "package": "cpex-parity-harness",
+        "suite": "tests/hook_table.rs",
+        "executed": 3,
+        "ignored": 0
+      },
+      {
+        "package": "cpex-parity-harness",
+        "suite": "tests/parity.rs",
+        "executed": 2,
+        "ignored": 0
+      },
+      {
+        "package": "cpex-plugin-delegator-biscuit",
+        "suite": "lib",
+        "executed": 4,
+        "ignored": 0
+      },
+      {
+        "package": "cpex-plugin-delegator-biscuit",
+        "suite": "tests/biscuit_e2e.rs",
+        "executed": 8,
+        "ignored": 0
+      },
+      {
+        "package": "cpex-python",
+        "suite": "lib",
+        "executed": 7,
+        "ignored": 0
+      },
+      {
+        "package": "cpex-tutorial",
+        "suite": "lib",
+        "executed": 0,
+        "ignored": 0
+      },
+      {
+        "package": "cpex-tutorial",
+        "suite": "tests/policy_tests.rs",
+        "executed": 3,
+        "ignored": 0
+      },
+      {
+        "package": "cpex",
+        "suite": "doctests",
+        "executed": 1,
+        "ignored": 1
+      },
+      {
+        "package": "cpex-ffi",
+        "suite": "doctests",
+        "executed": 0,
+        "ignored": 0
+      },
+      {
+        "package": "cpex-hosts-python",
+        "suite": "doctests",
+        "executed": 0,
+        "ignored": 0
+      },
+      {
+        "package": "cpex-parity-harness",
+        "suite": "doctests",
+        "executed": 0,
+        "ignored": 0
+      },
+      {
+        "package": "cpex-plugin-delegator-biscuit",
+        "suite": "doctests",
+        "executed": 0,
+        "ignored": 0
+      },
+      {
+        "package": "cpex-tutorial",
+        "suite": "doctests",
+        "executed": 0,
+        "ignored": 0
+      }
+    ],
+    "ignored_tests": [
+      {
+        "package": "cpex-hosts-python",
+        "suite": "tests/acceptance_e2e.rs",
+        "test": "a_rejected_credential_denies_and_an_unauthenticated_route_call_is_refused",
+        "reason": "requires python3 + a cpex Python checkout (CPEX_PYTHON_SOURCE); run via `make test-python-e2e`"
+      },
+      {
+        "package": "cpex-hosts-python",
+        "suite": "tests/acceptance_e2e.rs",
+        "test": "python_identity_and_delegation_plugins_serve_a_ppe_route",
+        "reason": "requires python3 + a cpex Python checkout (CPEX_PYTHON_SOURCE); run via `make test-python-e2e`"
+      },
+      {
+        "package": "cpex-hosts-python",
+        "suite": "tests/config_e2e.rs",
+        "test": "config_yaml_dispatches_identity_resolve_and_token_delegate_to_the_installed_plugin",
+        "reason": "requires cpex-test-plugin installed under plugins/ with a built venv"
+      },
+      {
+        "package": "cpex-hosts-python",
+        "suite": "tests/config_e2e.rs",
+        "test": "config_yaml_dispatches_tool_pre_invoke_to_the_installed_plugin",
+        "reason": "requires cpex-test-plugin installed under plugins/ with a built venv"
+      },
+      {
+        "package": "cpex-hosts-python",
+        "suite": "tests/credential_e2e.rs",
+        "test": "a_capable_plugin_reads_the_raw_token_end_to_end",
+        "reason": "requires python3 + a cpex Python checkout (CPEX_PYTHON_SOURCE); run via `make test-python-e2e`"
+      },
+      {
+        "package": "cpex-hosts-python",
+        "suite": "tests/credential_e2e.rs",
+        "test": "a_declared_capability_that_cannot_be_honored_fails_closed_end_to_end",
+        "reason": "requires python3 + a cpex Python checkout (CPEX_PYTHON_SOURCE); run via `make test-python-e2e`"
+      },
+      {
+        "package": "cpex-hosts-python",
+        "suite": "tests/credential_e2e.rs",
+        "test": "a_non_capable_plugin_on_the_same_hook_receives_no_token",
+        "reason": "requires python3 + a cpex Python checkout (CPEX_PYTHON_SOURCE); run via `make test-python-e2e`"
+      },
+      {
+        "package": "cpex-hosts-python",
+        "suite": "tests/credential_e2e.rs",
+        "test": "the_credential_never_reaches_a_log_sink_the_host_controls",
+        "reason": "requires python3 + a cpex Python checkout (CPEX_PYTHON_SOURCE); run via `make test-python-e2e`"
+      },
+      {
+        "package": "cpex-hosts-python",
+        "suite": "tests/credential_e2e.rs",
+        "test": "the_real_worker_answers_the_capabilities_handshake",
+        "reason": "requires python3 + a cpex Python checkout (CPEX_PYTHON_SOURCE); run via `make test-python-e2e`"
+      },
+      {
+        "package": "cpex-hosts-python",
+        "suite": "tests/extensions_merge_e2e.rs",
+        "test": "an_appended_label_is_dropped_without_the_capability",
+        "reason": "requires python3 + a cpex Python checkout (CPEX_PYTHON_SOURCE); run via `make test-python-e2e`"
+      },
+      {
+        "package": "cpex-hosts-python",
+        "suite": "tests/extensions_merge_e2e.rs",
+        "test": "an_appended_label_survives_the_merge_when_the_capability_is_declared",
+        "reason": "requires python3 + a cpex Python checkout (CPEX_PYTHON_SOURCE); run via `make test-python-e2e`"
+      },
+      {
+        "package": "cpex-hosts-python",
+        "suite": "tests/isolated_venv_e2e.rs",
+        "test": "a_cmf_message_the_shim_cannot_represent_fails_closed",
+        "reason": "requires python3 + a cpex Python checkout (CPEX_PYTHON_SOURCE); run via `make test-python-e2e`"
+      },
+      {
+        "package": "cpex-hosts-python",
+        "suite": "tests/isolated_venv_e2e.rs",
+        "test": "a_real_plugin_deny_surfaces_as_a_deny_result",
+        "reason": "requires python3 + a cpex Python checkout (CPEX_PYTHON_SOURCE); run via `make test-python-e2e`"
+      },
+      {
+        "package": "cpex-hosts-python",
+        "suite": "tests/isolated_venv_e2e.rs",
+        "test": "a_second_run_reuses_the_cached_venv",
+        "reason": "requires python3 + a cpex Python checkout (CPEX_PYTHON_SOURCE); run via `make test-python-e2e`"
+      },
+      {
+        "package": "cpex-hosts-python",
+        "suite": "tests/isolated_venv_e2e.rs",
+        "test": "legacy_plugins_on_cmf_tool_pre_invoke_rewrite_and_deny_through_the_engine",
+        "reason": "requires python3 + a cpex Python checkout (CPEX_PYTHON_SOURCE); run via `make test-python-e2e`"
+      },
+      {
+        "package": "cpex-hosts-python",
+        "suite": "tests/isolated_venv_e2e.rs",
+        "test": "legacy_tool_pre_invoke_round_trips_through_the_real_worker",
+        "reason": "requires python3 + a cpex Python checkout (CPEX_PYTHON_SOURCE); run via `make test-python-e2e`"
+      },
+      {
+        "package": "cpex",
+        "suite": "doctests",
+        "test": "crates/cpex/src/lib.rs - (line 66)",
+        "reason": "marked #[ignore]"
+      }
+    ]
+  },
+  "ppe_0_5_0": {
+    "revision": "a149a2a plus PPE 0.5.0 upgrade",
+    "command": "PARITY_VALKEY_URL=redis://127.0.0.1:6392/0 cargo test --workspace --locked -- --test-threads=4",
+    "executed": 409,
+    "ignored": 17,
+    "suites": [
+      {
+        "package": "cpex",
+        "suite": "lib",
+        "executed": 10,
+        "ignored": 0
+      },
+      {
+        "package": "cpex",
+        "suite": "tests/facade.rs",
+        "executed": 2,
+        "ignored": 0
+      },
+      {
+        "package": "cpex-demo-ffi",
+        "suite": "lib",
+        "executed": 1,
+        "ignored": 0
+      },
+      {
+        "package": "cpex-ffi",
+        "suite": "lib",
+        "executed": 19,
+        "ignored": 0
+      },
+      {
+        "package": "cpex-ffi",
+        "suite": "tests/egress.rs",
+        "executed": 8,
+        "ignored": 0
+      },
+      {
+        "package": "cpex-ffi",
+        "suite": "tests/wire_compat.rs",
+        "executed": 5,
+        "ignored": 0
+      },
+      {
+        "package": "cpex-hosts-python",
+        "suite": "lib",
+        "executed": 319,
+        "ignored": 0
+      },
+      {
+        "package": "cpex-hosts-python",
+        "suite": "tests/acceptance_e2e.rs",
+        "executed": 0,
+        "ignored": 2
+      },
+      {
+        "package": "cpex-hosts-python",
+        "suite": "tests/config_e2e.rs",
+        "executed": 1,
+        "ignored": 2
+      },
+      {
+        "package": "cpex-hosts-python",
+        "suite": "tests/credential_e2e.rs",
+        "executed": 0,
+        "ignored": 5
+      },
+      {
+        "package": "cpex-hosts-python",
+        "suite": "tests/extensions_merge_e2e.rs",
+        "executed": 9,
+        "ignored": 2
+      },
+      {
+        "package": "cpex-hosts-python",
+        "suite": "tests/isolated_venv_e2e.rs",
+        "executed": 0,
+        "ignored": 5
+      },
+      {
+        "package": "cpex-parity-harness",
+        "suite": "lib",
+        "executed": 6,
+        "ignored": 0
+      },
+      {
+        "package": "cpex-parity-harness",
+        "suite": "lib",
+        "executed": 0,
+        "ignored": 0
+      },
+      {
+        "package": "cpex-parity-harness",
+        "suite": "tests/determinism.rs",
+        "executed": 1,
+        "ignored": 0
+      },
+      {
+        "package": "cpex-parity-harness",
+        "suite": "tests/hook_table.rs",
+        "executed": 3,
+        "ignored": 0
+      },
+      {
+        "package": "cpex-parity-harness",
+        "suite": "tests/parity.rs",
+        "executed": 2,
+        "ignored": 0
+      },
+      {
+        "package": "cpex-plugin-delegator-biscuit",
+        "suite": "lib",
+        "executed": 4,
+        "ignored": 0
+      },
+      {
+        "package": "cpex-plugin-delegator-biscuit",
+        "suite": "tests/biscuit_e2e.rs",
+        "executed": 8,
+        "ignored": 0
+      },
+      {
+        "package": "cpex-python",
+        "suite": "lib",
+        "executed": 7,
+        "ignored": 0
+      },
+      {
+        "package": "cpex-tutorial",
+        "suite": "lib",
+        "executed": 0,
+        "ignored": 0
+      },
+      {
+        "package": "cpex-tutorial",
+        "suite": "tests/policy_tests.rs",
+        "executed": 3,
+        "ignored": 0
+      },
+      {
+        "package": "cpex",
+        "suite": "doctests",
+        "executed": 1,
+        "ignored": 1
+      },
+      {
+        "package": "cpex-ffi",
+        "suite": "doctests",
+        "executed": 0,
+        "ignored": 0
+      },
+      {
+        "package": "cpex-hosts-python",
+        "suite": "doctests",
+        "executed": 0,
+        "ignored": 0
+      },
+      {
+        "package": "cpex-parity-harness",
+        "suite": "doctests",
+        "executed": 0,
+        "ignored": 0
+      },
+      {
+        "package": "cpex-plugin-delegator-biscuit",
+        "suite": "doctests",
+        "executed": 0,
+        "ignored": 0
+      },
+      {
+        "package": "cpex-tutorial",
+        "suite": "doctests",
+        "executed": 0,
+        "ignored": 0
+      }
+    ],
+    "ignored_tests": [
+      {
+        "package": "cpex-hosts-python",
+        "suite": "tests/acceptance_e2e.rs",
+        "test": "a_rejected_credential_denies_and_an_unauthenticated_route_call_is_refused",
+        "reason": "requires python3 + a cpex Python checkout (CPEX_PYTHON_SOURCE); run via `make test-python-e2e`"
+      },
+      {
+        "package": "cpex-hosts-python",
+        "suite": "tests/acceptance_e2e.rs",
+        "test": "python_identity_and_delegation_plugins_serve_a_ppe_route",
+        "reason": "requires python3 + a cpex Python checkout (CPEX_PYTHON_SOURCE); run via `make test-python-e2e`"
+      },
+      {
+        "package": "cpex-hosts-python",
+        "suite": "tests/config_e2e.rs",
+        "test": "config_yaml_dispatches_identity_resolve_and_token_delegate_to_the_installed_plugin",
+        "reason": "requires cpex-test-plugin installed under plugins/ with a built venv"
+      },
+      {
+        "package": "cpex-hosts-python",
+        "suite": "tests/config_e2e.rs",
+        "test": "config_yaml_dispatches_tool_pre_invoke_to_the_installed_plugin",
+        "reason": "requires cpex-test-plugin installed under plugins/ with a built venv"
+      },
+      {
+        "package": "cpex-hosts-python",
+        "suite": "tests/credential_e2e.rs",
+        "test": "a_capable_plugin_reads_the_raw_token_end_to_end",
+        "reason": "requires python3 + a cpex Python checkout (CPEX_PYTHON_SOURCE); run via `make test-python-e2e`"
+      },
+      {
+        "package": "cpex-hosts-python",
+        "suite": "tests/credential_e2e.rs",
+        "test": "a_declared_capability_that_cannot_be_honored_fails_closed_end_to_end",
+        "reason": "requires python3 + a cpex Python checkout (CPEX_PYTHON_SOURCE); run via `make test-python-e2e`"
+      },
+      {
+        "package": "cpex-hosts-python",
+        "suite": "tests/credential_e2e.rs",
+        "test": "a_non_capable_plugin_on_the_same_hook_receives_no_token",
+        "reason": "requires python3 + a cpex Python checkout (CPEX_PYTHON_SOURCE); run via `make test-python-e2e`"
+      },
+      {
+        "package": "cpex-hosts-python",
+        "suite": "tests/credential_e2e.rs",
+        "test": "the_credential_never_reaches_a_log_sink_the_host_controls",
+        "reason": "requires python3 + a cpex Python checkout (CPEX_PYTHON_SOURCE); run via `make test-python-e2e`"
+      },
+      {
+        "package": "cpex-hosts-python",
+        "suite": "tests/credential_e2e.rs",
+        "test": "the_real_worker_answers_the_capabilities_handshake",
+        "reason": "requires python3 + a cpex Python checkout (CPEX_PYTHON_SOURCE); run via `make test-python-e2e`"
+      },
+      {
+        "package": "cpex-hosts-python",
+        "suite": "tests/extensions_merge_e2e.rs",
+        "test": "an_appended_label_is_dropped_without_the_capability",
+        "reason": "requires python3 + a cpex Python checkout (CPEX_PYTHON_SOURCE); run via `make test-python-e2e`"
+      },
+      {
+        "package": "cpex-hosts-python",
+        "suite": "tests/extensions_merge_e2e.rs",
+        "test": "an_appended_label_survives_the_merge_when_the_capability_is_declared",
+        "reason": "requires python3 + a cpex Python checkout (CPEX_PYTHON_SOURCE); run via `make test-python-e2e`"
+      },
+      {
+        "package": "cpex-hosts-python",
+        "suite": "tests/isolated_venv_e2e.rs",
+        "test": "a_cmf_message_the_shim_cannot_represent_fails_closed",
+        "reason": "requires python3 + a cpex Python checkout (CPEX_PYTHON_SOURCE); run via `make test-python-e2e`"
+      },
+      {
+        "package": "cpex-hosts-python",
+        "suite": "tests/isolated_venv_e2e.rs",
+        "test": "a_real_plugin_deny_surfaces_as_a_deny_result",
+        "reason": "requires python3 + a cpex Python checkout (CPEX_PYTHON_SOURCE); run via `make test-python-e2e`"
+      },
+      {
+        "package": "cpex-hosts-python",
+        "suite": "tests/isolated_venv_e2e.rs",
+        "test": "a_second_run_reuses_the_cached_venv",
+        "reason": "requires python3 + a cpex Python checkout (CPEX_PYTHON_SOURCE); run via `make test-python-e2e`"
+      },
+      {
+        "package": "cpex-hosts-python",
+        "suite": "tests/isolated_venv_e2e.rs",
+        "test": "legacy_plugins_on_cmf_tool_pre_invoke_rewrite_and_deny_through_the_engine",
+        "reason": "requires python3 + a cpex Python checkout (CPEX_PYTHON_SOURCE); run via `make test-python-e2e`"
+      },
+      {
+        "package": "cpex-hosts-python",
+        "suite": "tests/isolated_venv_e2e.rs",
+        "test": "legacy_tool_pre_invoke_round_trips_through_the_real_worker",
+        "reason": "requires python3 + a cpex Python checkout (CPEX_PYTHON_SOURCE); run via `make test-python-e2e`"
+      },
+      {
+        "package": "cpex",
+        "suite": "doctests",
+        "test": "crates/cpex/src/lib.rs - (line 66)",
+        "reason": "marked #[ignore]"
+      }
+    ]
+  }
+}

@@ -39,8 +39,8 @@ Before submitting a PR, make sure `make ci` passes.
 
 ## Coding standards
 
-- **Edition 2021**, MSRV **1.96**. Keep the toolchain, `clippy.toml` `msrv`, and
-  `rust-version` in sync when bumping.
+- **Edition 2024**, MSRV **1.96**. Keep the toolchain, `clippy.toml` `msrv`,
+  `rust-version` and the workspace `edition` in sync when bumping.
 - **Formatting:** `cargo fmt` (config in [`rustfmt.toml`](rustfmt.toml)). CI runs
   `cargo fmt --all -- --check`.
 - **Lints:** the workspace lint policy lives in `[workspace.lints]` in the root
@@ -71,7 +71,7 @@ Each source file should carry an Apache-2.0 SPDX header. For Rust:
 
 The docs site is Hugo (in [`docs/`](docs)). A few conventions keep it consistent:
 
-- **Route syntax:** write the flat list form the runtime parses, `routes:` with `- tool: <name>` entries. The map-keyed form is `apl-core`'s standalone/test surface only; see [Configuration](https://contextforge-org.github.io/cpex/docs/configuration/).
+- **Route syntax:** write the flat list form the runtime parses, `routes:` with `- tool: <name>` entries. The map-keyed form is `praxis-policy-apl-core`'s standalone/test surface only; see [Configuration](https://contextforge-org.github.io/cpex/docs/configuration/).
 - **Terminology:** "Quick Start" (two words) in prose; `builtin` (one word) for the bundled extensions; "allow/deny" for outcomes. Expand `APL` (Authorization Policy Language), `A2A` (agent-to-agent), `IdP` (identity provider), `PDP`, `CMF`, and `CIBA` on first use in a page.
 - **Images:** reference them relative (`images/foo.png`), not with a hardcoded base path (`/cpex/images/...`). The site render hook resolves them against `baseURL`, so previews and alternate deployments work. Put the file under `docs/static/images/`.
 - **Runnable examples:** prefer linking the tutorial crate (`examples/tutorial`) over maintaining a second partial example; its modules and tests are CI-run.

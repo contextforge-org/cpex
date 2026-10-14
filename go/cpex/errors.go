@@ -19,12 +19,12 @@ import (
 )
 
 // Sentinel errors returned by the FFI wrapper. Compare with `errors.Is`.
-// All errors returned from PluginManager / BackgroundTasks methods that
+// All errors returned from PolicyEngine / BackgroundTasks methods that
 // originated in a non-zero FFI return code wrap one of these.
 var (
-	// ErrCpexInvalidHandle: the manager handle is null or has been
-	// shutdown. Trying to use a manager after Shutdown produces this.
-	ErrCpexInvalidHandle = errors.New("cpex: invalid handle (manager null or shutdown)")
+	// ErrCpexInvalidHandle: the engine handle is null or has been
+	// shutdown. Trying to use an engine after Shutdown produces this.
+	ErrCpexInvalidHandle = errors.New("cpex: invalid handle (engine null or shutdown)")
 
 	// ErrCpexInvalidInput: caller-supplied input was malformed — bad
 	// UTF-8, null pointer where data was required, oversized buffer,
@@ -53,10 +53,11 @@ var (
 	// disable the offending plugin first.
 	ErrCpexTimeout = errors.New("cpex: wall-clock timeout exceeded")
 
-	// ErrCpexPanic: a plugin panicked across the FFI boundary; the
-	// panic was caught (preventing UB / process abort) but the
-	// invocation is lost. Same plugin will likely panic again.
-	ErrCpexPanic = errors.New("cpex: plugin panicked at FFI boundary")
+	// ErrCpexPanic: code in the FFI layer panicked; the panic was
+	// caught (preventing UB / process abort) but the call is lost.
+	// A plugin panic does not land here: the engine contains it and
+	// returns a denied result with violation code plugin_panic.
+	ErrCpexPanic = errors.New("cpex: panic at FFI boundary")
 )
 
 // errorFromRC maps an FFI return code to a typed error. `op` is included

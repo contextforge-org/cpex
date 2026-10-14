@@ -7,16 +7,17 @@
 #     until module 2, so every caller here is anonymous, this route
 #     always DENIES, and the denial names the predicate that failed.
 #
-#   * search_repos has no pre-invocation rule, so nothing blocks it, it
-#     always ALLOWS. A route with no denying rule is open by default.
+#   * search_repos has a single unconditional `allow`, so nothing blocks
+#     it, it always ALLOWS. An `authorization:` block must name at least
+#     one step, so an open route says so explicitly.
 #
 # The lesson: the route defines the pipeline. Same caller, same backend,
 # different route -> different outcome. Nothing in the Rust code changed.
 #
 # Try it: change `require(authenticated)` to `require(role.hr)` and re-run.
-# get_compensation still denies, but the reason code changes. Or add a
-# `require(authenticated)` line under search_repos and watch it start
-# denying too. Reset with `git checkout -- examples/tutorial/policies`.
+# get_compensation still denies, but the reason code changes. Or replace
+# `allow` under search_repos with `require(authenticated)` and watch it
+# start denying too. Reset with `git checkout -- examples/tutorial/policies`.
 
 routes:
   - tool: get_compensation
@@ -26,4 +27,5 @@ routes:
 
   - tool: search_repos
     authorization:
-      pre_invocation: []
+      pre_invocation:
+        - "allow"

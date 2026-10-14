@@ -5,30 +5,34 @@
 #
 # Pytest fixtures for cpex-python binding tests.
 #
-# No module-level os.environ mutation — env changes are scoped to the
-# test function that needs them (mirrors tests/unit/cpex/conftest.py style).
-
-import os
-from pathlib import Path
+# No module-level os.environ mutation: env changes are scoped to the
+# test function that needs them.
 
 import pytest
-from cpex import PluginManager
+from cpex import PolicyEngine
 
-FIXTURES_DIR = Path(__file__).parent / "fixtures"
-PII_DENY_CONFIG = str(FIXTURES_DIR / "pii_deny.yaml")
-PII_REDACT_CONFIG = str(FIXTURES_DIR / "pii_redact.yaml")
+from _support import PASSTHROUGH_CONFIG, PII_DENY_CONFIG, PII_REDACT_CONFIG
 
 
 @pytest.fixture
-async def manager():
-    """Create, initialize, and yield a PluginManager backed by pii_deny.yaml.
+async def engine():
+    """Create, initialize, and yield a PolicyEngine backed by pii_deny.yaml.
 
-    Shuts down after the test so fire-and-forget tasks are drained (KD4).
+    Shuts down after the test so fire-and-forget tasks are drained.
     """
-    mgr = PluginManager(PII_DENY_CONFIG)
-    await mgr.initialize()
-    yield mgr
-    await mgr.shutdown()
+    eng = PolicyEngine(PII_DENY_CONFIG)
+    await eng.initialize()
+    yield eng
+    await eng.shutdown()
+
+
+@pytest.fixture
+async def passthrough_engine():
+    """Create, initialize, and yield a PolicyEngine with nothing to enforce."""
+    eng = PolicyEngine(PASSTHROUGH_CONFIG)
+    await eng.initialize()
+    yield eng
+    await eng.shutdown()
 
 
 @pytest.fixture

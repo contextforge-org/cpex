@@ -19,11 +19,11 @@
 
 use std::sync::Arc;
 
-use cpex::PluginManager;
+use cpex::PolicyEngine;
 use cpex_tutorial::backends;
 use cpex_tutorial::idp;
 use cpex_tutorial::ui;
-use cpex_tutorial::{mediate, Caller};
+use cpex_tutorial::{Caller, mediate};
 
 use serde_json::json;
 
@@ -50,11 +50,13 @@ async fn agent_token() -> String {
 async fn main() {
     ui::module_banner("Module 15: Dual-principal delegation (who authorized vs. who acted)");
 
-    let mgr = Arc::new(PluginManager::default());
-    cpex::install_builtins(&mgr);
-    mgr.load_config_yaml(POLICY)
+    let engine = Arc::new(PolicyEngine::default());
+    cpex::install_builtins(&engine);
+    cpex_tutorial::install_http_transport(&engine);
+    engine
+        .load_config_yaml(POLICY)
         .expect("policy m15.yaml should load");
-    mgr.initialize().await.expect("initialize");
+    engine.initialize().await.expect("initialize");
 
     let alice = user_token("alice").await;
     let agent = agent_token().await;
@@ -67,7 +69,7 @@ async fn main() {
     );
     let both = Caller::with_token(agent.clone()).with_credential("X-User-Token", alice.clone());
     let o = mediate(
-        &mgr,
+        &engine,
         &both,
         "get_compensation",
         json!({ "employee_id": "e-1001" }),
@@ -82,7 +84,7 @@ async fn main() {
     ui::scenario("alice only, no agent token → get_compensation (actor credential missing)");
     let user_only = Caller::anonymous().with_credential("X-User-Token", alice.clone());
     let o = mediate(
-        &mgr,
+        &engine,
         &user_only,
         "get_compensation",
         json!({ "employee_id": "e-1001" }),
@@ -99,7 +101,7 @@ async fn main() {
         "sync_index (subject: this_workload + actor: client) → rejected as an invalid combo",
     );
     let o = mediate(
-        &mgr,
+        &engine,
         &Caller::anonymous(),
         "sync_index",
         json!({}),
@@ -109,6 +111,8 @@ async fn main() {
     ui::print_outcome(&o);
     all_passed &= ui::expect(&o, false);
 
-    println!("`subject:` is who the token speaks FOR; `actor:` is who is DOING it. Both principals ride one exchange.");
+    println!(
+        "`subject:` is who the token speaks FOR; `actor:` is who is DOING it. Both principals ride one exchange."
+    );
     ui::finish_check(all_passed);
 }

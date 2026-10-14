@@ -8,9 +8,9 @@
 // Demonstrates the full CPEX plugin pipeline from Go using
 // GenericPayload (untyped map payloads):
 //
-//   1. Create a PluginManager via the Go SDK
+//   1. Create a PolicyEngine via the Go SDK
 //   2. Register demo plugin factories (identity, PII, audit)
-//   3. Load YAML config with routing rules and policy groups
+//   3. Load YAML config (hook dispatch)
 //   4. Invoke hooks with MetaExtension for route resolution
 //   5. Inspect results (allow/deny, violations)
 //   6. Thread ContextTable between pre-invoke and post-invoke
@@ -30,7 +30,7 @@ package main
 #cgo darwin LDFLAGS: -framework CoreFoundation -framework Security
 #include <stdlib.h>
 
-int cpex_demo_register_factories(void* mgr);
+int cpex_demo_register_factories(void* engine);
 */
 import "C"
 
@@ -46,16 +46,16 @@ func main() {
 	fmt.Println("=== CPEX Go Demo ===")
 	fmt.Println()
 
-	// --- Create manager ---
-	mgr, err := cpex.NewPluginManagerDefault()
+	// --- Create engine ---
+	engine, err := cpex.NewPolicyEngineDefault()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "ERROR: %v\n", err)
 		os.Exit(1)
 	}
-	defer mgr.Shutdown()
+	defer engine.Shutdown()
 
 	// --- Register demo factories via callback ---
-	err = mgr.RegisterFactories(func(handle unsafe.Pointer) error {
+	err = engine.RegisterFactories(func(handle unsafe.Pointer) error {
 		rc := C.cpex_demo_register_factories(handle)
 		if rc != 0 {
 			return fmt.Errorf("cpex_demo_register_factories returned %d", rc)
@@ -74,21 +74,21 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err := mgr.LoadConfig(string(yaml)); err != nil {
+	if err := engine.LoadConfig(string(yaml)); err != nil {
 		fmt.Fprintf(os.Stderr, "ERROR: %v\n", err)
 		os.Exit(1)
 	}
 
 	// --- Initialize ---
-	if err := mgr.Initialize(); err != nil {
+	if err := engine.Initialize(); err != nil {
 		fmt.Fprintf(os.Stderr, "ERROR: %v\n", err)
 		os.Exit(1)
 	}
 
-	fmt.Printf("Plugins loaded: %d\n", mgr.PluginCount())
-	fmt.Printf("Hooks: tool_pre_invoke=%v  tool_post_invoke=%v\n\n",
-		mgr.HasHooksFor("tool_pre_invoke"),
-		mgr.HasHooksFor("tool_post_invoke"),
+	fmt.Printf("Plugins loaded: %d\n", engine.PluginCount())
+	fmt.Printf("Hooks: demo.tool_pre_invoke=%v  demo.tool_post_invoke=%v\n\n",
+		engine.HasHooksFor("demo.tool_pre_invoke"),
+		engine.HasHooksFor("demo.tool_post_invoke"),
 	)
 
 	// -----------------------------------------------------------------------
@@ -97,7 +97,7 @@ func main() {
 	fmt.Println("=== Scenario 1: get_compensation (no PII clearance) ===")
 	fmt.Println()
 
-	result, ct, bg, err := mgr.InvokeByName("tool_pre_invoke",
+	result, ct, bg, err := engine.InvokeByName("demo.tool_pre_invoke",
 		cpex.PayloadGeneric,
 		map[string]any{
 			"tool_name": "get_compensation",
@@ -127,7 +127,7 @@ func main() {
 	fmt.Println("=== Scenario 2: get_compensation (with PII clearance) ===")
 	fmt.Println()
 
-	result, ct, bg, err = mgr.InvokeByName("tool_pre_invoke",
+	result, ct, bg, err = engine.InvokeByName("demo.tool_pre_invoke",
 		cpex.PayloadGeneric,
 		map[string]any{
 			"tool_name":     "get_compensation",
@@ -155,7 +155,7 @@ func main() {
 	fmt.Println("  --- post-invoke for get_compensation ---")
 	fmt.Println()
 
-	result2, ct2, bg2, err := mgr.InvokeByName("tool_post_invoke",
+	result2, ct2, bg2, err := engine.InvokeByName("demo.tool_post_invoke",
 		cpex.PayloadGeneric,
 		map[string]any{
 			"tool_name": "get_compensation",
@@ -184,7 +184,7 @@ func main() {
 	fmt.Println("=== Scenario 3: list_departments (non-PII tool) ===")
 	fmt.Println()
 
-	result, ct, bg, err = mgr.InvokeByName("tool_pre_invoke",
+	result, ct, bg, err = engine.InvokeByName("demo.tool_pre_invoke",
 		cpex.PayloadGeneric,
 		map[string]any{
 			"tool_name": "list_departments",
@@ -212,7 +212,7 @@ func main() {
 	fmt.Println("=== Scenario 4: list_departments (no user identity) ===")
 	fmt.Println()
 
-	result, ct, bg, err = mgr.InvokeByName("tool_pre_invoke",
+	result, ct, bg, err = engine.InvokeByName("demo.tool_pre_invoke",
 		cpex.PayloadGeneric,
 		map[string]any{
 			"tool_name": "list_departments",

@@ -1,0 +1,37 @@
+# Identity: JWT validation against a JWKS endpoint.
+#
+# Source: examples/tutorial/policies/m01.yaml and m02.yaml, with the
+# Keycloak issuer replaced by the parity mock IdP (Ed25519 test keys served
+# at {{MOCK_URL}}/jwks).
+
+plugins:
+  - name: idp
+    kind: identity/jwt
+    hooks: [identity.resolve]
+    config:
+      role: user
+      header: Authorization
+      claim_mapper: standard
+      trusted_issuers:
+        - issuer: https://idp.parity.test
+          audiences: [cpex-parity]
+          algorithms: [EdDSA]
+          decoding_key:
+            kind: jwks_url
+            url: "{{MOCK_URL}}/jwks"
+            insecure_http: true
+            refresh_secs: 600
+          leeway_seconds: 60
+
+routes:
+  - tool: get_compensation
+    authentication:
+      - idp
+    authorization:
+      pre_invocation:
+        - "require(authenticated)"
+        - "require(role.hr)"
+
+  - tool: search_repos
+    authorization:
+      pre_invocation: []

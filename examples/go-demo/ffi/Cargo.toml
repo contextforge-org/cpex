@@ -12,7 +12,7 @@
 [package]
 name = "cpex-demo-ffi"
 version = "0.1.0"
-edition = "2021"
+edition.workspace = true
 license = "Apache-2.0"
 publish = false
 
@@ -26,7 +26,7 @@ release = false
 crate-type = ["staticlib", "cdylib"]
 
 [dependencies]
-cpex-core = { path = "../../../crates/cpex-core" }
+praxis-policy-core = { workspace = true }
 cpex-ffi = { path = "../../../crates/cpex-ffi" }
 async-trait = "0.1"
 tracing = "0.1"

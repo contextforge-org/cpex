@@ -33,20 +33,21 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use cpex_core::context::PluginContext;
-use cpex_core::extensions::raw_credentials::{
-    RawCredentialsExtension, RawInboundToken, TokenKind, TokenRole,
-};
-use cpex_core::extensions::Extensions;
-use cpex_core::plugin::{Plugin, PluginConfig};
-use cpex_core::registry::AnyHookHandler;
 use cpex_hosts_python::factory::KIND;
 use cpex_hosts_python::legacy::IdentityResolvePayload;
 use cpex_hosts_python::plugin::{IsolatedPythonPlugin, PythonHookAdapter};
 use cpex_hosts_python::testing::{
-    prebuild_venv, python_source, scaffold_plugin, skip, skip_without_python3,
-    worker_consumes_credentials, TempDir,
+    TempDir, prebuild_venv, python_source, scaffold_plugin, skip, skip_without_python3,
+    worker_consumes_credentials,
 };
+use praxis_policy_core::context::PluginContext;
+use praxis_policy_core::extensions::Extensions;
+use praxis_policy_core::extensions::raw_credentials::{
+    RawCredentialsExtension, RawInboundToken, TokenKind, TokenRole,
+};
+use praxis_policy_core::identity::HOOK_IDENTITY_RESOLVE;
+use praxis_policy_core::plugin::{Plugin, PluginConfig};
+use praxis_policy_core::registry::AnyHookHandler;
 
 /// The plaintext under test. Distinctive so a leak is unambiguous in any
 /// captured output.
@@ -162,7 +163,7 @@ fn plugin_config(capabilities: &[&str]) -> PluginConfig {
     PluginConfig {
         name: "identity-reader".into(),
         kind: KIND.into(),
-        hooks: vec!["identity_resolve".into()],
+        hooks: vec![HOOK_IDENTITY_RESOLVE.into()],
         capabilities: capabilities.iter().map(|c| (*c).to_string()).collect(),
         version: Some("1.0.0".into()),
         config: Some(serde_json::json!({
@@ -188,7 +189,8 @@ fn plugin_for(
     )
 }
 
-/// Run one identity_resolve invocation.
+/// Run one `identity.resolve` invocation. The fixture implements the worker's
+/// `identity_resolve` method; the host translates the name on the wire.
 ///
 /// Returns the plugin's recorded verdict plus the worker's retained stderr,
 /// captured before shutdown so the credential-leak assertions have something to
@@ -206,7 +208,7 @@ async fn run_identity_hook(
         .expect("the cached venv is reused and the worker starts");
 
     let payload = IdentityResolvePayload::default();
-    let adapter = PythonHookAdapter::new(Arc::clone(&plugin), "identity_resolve");
+    let adapter = PythonHookAdapter::new(Arc::clone(&plugin), HOOK_IDENTITY_RESOLVE);
     let mut ctx = PluginContext::new();
     adapter
         .invoke(&payload, &extensions_with_token(), &mut ctx)
@@ -370,7 +372,7 @@ async fn a_declared_capability_that_cannot_be_honored_fails_closed_end_to_end() 
     plugin.initialize().await.expect("initializes");
 
     let payload = IdentityResolvePayload::default();
-    let adapter = PythonHookAdapter::new(Arc::clone(&plugin), "identity_resolve");
+    let adapter = PythonHookAdapter::new(Arc::clone(&plugin), HOOK_IDENTITY_RESOLVE);
     let mut ctx = PluginContext::new();
     // No raw-credentials extension at all.
     let result = adapter

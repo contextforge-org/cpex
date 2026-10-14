@@ -19,11 +19,11 @@
 
 use std::sync::Arc;
 
-use cpex::PluginManager;
+use cpex::PolicyEngine;
 use cpex_tutorial::backends;
 use cpex_tutorial::idp;
 use cpex_tutorial::ui;
-use cpex_tutorial::{mediate, Caller};
+use cpex_tutorial::{Caller, mediate};
 
 use serde_json::json;
 
@@ -43,11 +43,13 @@ async fn token(user: &str) -> Caller {
 async fn main() {
     ui::module_banner("Module 6: Scoped credentials (Delegation)");
 
-    let mgr = Arc::new(PluginManager::default());
-    cpex::install_builtins(&mgr);
-    mgr.load_config_yaml(POLICY)
+    let engine = Arc::new(PolicyEngine::default());
+    cpex::install_builtins(&engine);
+    cpex_tutorial::install_http_transport(&engine);
+    engine
+        .load_config_yaml(POLICY)
         .expect("policy m06.yaml should load");
-    mgr.initialize().await.expect("initialize");
+    engine.initialize().await.expect("initialize");
 
     let alice = token("alice").await;
     let evan = token("evan").await;
@@ -55,7 +57,7 @@ async fn main() {
 
     ui::scenario("alice (hr) → get_compensation (delegate mints a workday-api token, then allow)");
     let o = mediate(
-        &mgr,
+        &engine,
         &alice,
         "get_compensation",
         json!({ "employee_id": "e-1001" }),
@@ -67,7 +69,7 @@ async fn main() {
 
     ui::scenario("evan (engineer) → get_compensation (denied at require(role.hr), no delegation)");
     let o = mediate(
-        &mgr,
+        &engine,
         &evan,
         "get_compensation",
         json!({ "employee_id": "e-1001" }),
@@ -77,6 +79,8 @@ async fn main() {
     ui::print_outcome(&o);
     all_passed &= ui::expect(&o, false);
 
-    println!("Delegation is a policy step: the caller's token was exchanged for a downstream-scoped one before the backend call.");
+    println!(
+        "Delegation is a policy step: the caller's token was exchanged for a downstream-scoped one before the backend call."
+    );
     ui::finish_check(all_passed);
 }

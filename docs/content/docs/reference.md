@@ -3,30 +3,32 @@ title: "Reference"
 weight: 120
 ---
 
-# Crate Reference
+# Reference
 
-CPEX is a Cargo workspace of focused crates. Most hosts depend on `cpex` (the facade); plugin authors depend on `cpex-sdk`.
+CPEX 0.3 runs on the praxis-policy engine (PPE) 0.5.0. Rust hosts depend on the `cpex` facade, which re-exports PPE's public surface; plugin authors use `cpex::prelude`. The [Crate Map]({{< relref "/docs/crates" >}}) lists every crate and what it re-exports.
 
-| Crate | Role |
-|-------|------|
-| [`cpex`](https://github.com/contextforge-org/cpex/tree/main/crates/cpex) | Host facade. Re-exports the runtime and, with a feature, the builtins. Start here. |
-| [`cpex-core`](https://github.com/contextforge-org/cpex/tree/main/crates/cpex-core) | The runtime: `PluginManager`, executor, hooks, config, extensions. |
-| [`cpex-sdk`](https://github.com/contextforge-org/cpex/tree/main/crates/cpex-sdk) | Plugin author SDK: the `Plugin` and `HookHandler` traits, payloads, results. Depend on this to write a plugin or PDP resolver. |
-| [`cpex-orchestration`](https://github.com/contextforge-org/cpex/tree/main/crates/cpex-orchestration) | Async concurrency primitives shared by the runtime. |
-| [`cpex-builtins`](https://github.com/contextforge-org/cpex/tree/main/crates/cpex-builtins) | Feature-gated bundle of builtin plugins, PDP resolvers, and the session store (see [Builtins]({{< relref "/docs/builtins" >}})). |
-| [`cpex-ffi`](https://github.com/contextforge-org/cpex/tree/main/crates/cpex-ffi) | C FFI (`cdylib` / `staticlib`) for Go, Python, and WASM host bindings. |
-| [`apl-core`](https://github.com/contextforge-org/cpex/tree/main/crates/apl-core) | APL compiler and evaluator: rules, effects, field pipelines, routes. |
-| [`apl-cmf`](https://github.com/contextforge-org/cpex/tree/main/crates/apl-cmf) | Bridges typed extensions into the flat attribute bag APL reads. |
-| [`apl-cpex`](https://github.com/contextforge-org/cpex/tree/main/crates/apl-cpex) | Runtime adapter: wires APL routes to hooks, dispatches plugins and PDPs. |
+| Surface | Entry point | Where |
+|---|---|---|
+| Rust | `cpex::PolicyEngine` | [`crates/cpex`](https://github.com/contextforge-org/cpex/tree/main/crates/cpex), [docs.rs/cpex](https://docs.rs/cpex) |
+| Python | `cpex.PolicyEngine` (`PluginManager` is an alias) | [`bindings/python`](https://github.com/contextforge-org/cpex/tree/main/bindings/python) |
+| Go | `cpex.PolicyEngine` | [`go/cpex`](https://github.com/contextforge-org/cpex/tree/main/go/cpex) |
+| C ABI | `cpex_engine_*`, ABI version 3 | [`crates/cpex-ffi`](https://github.com/contextforge-org/cpex/tree/main/crates/cpex-ffi) |
+| Python plugins | `isolated_venv` kind (`python-host` feature) | [`crates/cpex-hosts-python`](https://github.com/contextforge-org/cpex/tree/main/crates/cpex-hosts-python) |
 
-Generated API docs are on [docs.rs/cpex](https://docs.rs/cpex).
+Engine API docs are on [docs.rs/praxis-policy/0.5.0](https://docs.rs/praxis-policy/0.5.0) and [docs.rs/praxis-policy-core/0.5.0](https://docs.rs/praxis-policy-core/0.5.0).
 
 ## Language bindings
 
-The Rust core is exposed to other languages through `cpex-ffi`. Go bindings live in [`go/cpex`](https://github.com/contextforge-org/cpex/tree/main/go/cpex). Python (PyO3) and WASM bindings are planned over the same core.
+The Python package and the Go module wrap the same engine and install the same builtins, HTTP transport and secret providers. Both block private destinations by default and expose a host-side opt-in (`allow_private_destinations=True` in Python, `cpex.WithPrivateDestinations()` in Go). Both expose secret refresh (`refresh_secrets` / `RefreshSecrets`) and a last-success query, which a host using Vault calls on an interval. See [Builtins]({{< relref "/docs/builtins" >}}) and [Configuration]({{< relref "/docs/configuration#resolution-and-refresh" >}}).
+
+The Go package links `libcpex_ffi` and checks its ABI version at init. The Go module and the FFI artifact must come from the same CPEX release.
 
 ## Supply-chain integrity
 
 The C FFI is distributed as **signed prebuilt artifacts**. A host that links the FFI rather than building from source verifies the signature on the artifact before use, so the binary boundary between the Rust core and a non-Rust host is not an unverified trust gap. The signing and verification process is documented in [`crates/cpex-ffi/RELEASE.md`](https://github.com/contextforge-org/cpex/blob/main/crates/cpex-ffi/RELEASE.md).
 
 (The 0.1.x Python line had its own package-integrity verification for PyPI and Git installs; that mechanism is specific to the Python distribution and is documented in the [0.1.x docs]({{< relref "/docs/0.1.x" >}}).)
+
+## Upgrading
+
+[Migrating to 0.3]({{< relref "/docs/migration-0.3" >}}) maps every 0.2.x API, hook name and config key to its 0.3.0 form.

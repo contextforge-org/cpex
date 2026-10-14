@@ -5,19 +5,20 @@
 //
 // Maps Rust PluginError variants to Python exception types.
 
-use cpex_core::error::PluginError;
-use pyo3::exceptions::{PyRuntimeError, PyTimeoutError, PyValueError};
+use praxis_policy_core::error::PluginError;
 use pyo3::PyErr;
+use pyo3::exceptions::{PyRuntimeError, PyTimeoutError, PyValueError};
 
 /// Convert a `Box<PluginError>` into the appropriate Python exception.
 ///
 /// Mapping:
-///   Config / UnknownHook → `ValueError`   (config/conversion failures)
-///   Timeout              → `TimeoutError`
-///   Execution / other    → `RuntimeError`
+///   Config / UnknownHook: `ValueError` (config/conversion failures,
+///                         including an unknown plugin kind or hook name)
+///   Timeout:              `TimeoutError`
+///   Execution / Violation: `RuntimeError`
 ///
 /// Note: `PluginError::Violation` is unreachable on the `invoke_by_name`
-/// path — denials surface as `PipelineResult { continue_processing: false,
+/// path. Denials surface as `PipelineResult { continue_processing: false,
 /// violation: Some(...) }`, never as an `Err`. Kept here as a defensive
 /// catch-all that maps to `RuntimeError`.
 #[allow(clippy::boxed_local)]

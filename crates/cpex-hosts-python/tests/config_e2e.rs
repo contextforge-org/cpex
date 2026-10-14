@@ -3,22 +3,31 @@
 // SPDX-License-Identifier: Apache-2.0
 // Authors: Ted Habeck
 //
-// End-to-end through the *manager*: load `plugins/config.yaml`, register the
-// `isolated_venv` factory, and invoke hooks on cpex-test-plugin —
-// `tool_pre_invoke`, plus the two credential-adjacent hooks `identity_resolve`
-// and `token_delegate`.
+// End-to-end through the *engine*: load `plugins/config.yaml`, register the
+// `isolated_venv` factory, and invoke hooks on cpex-test-plugin:
+// `cmf.tool_pre_invoke`, plus the two credential-adjacent hooks
+// `identity.resolve` and `token.delegate`.
+//
+// # The installer config predates PPE
+//
+// `cpex plugin install` writes a top-level `plugin_dirs:` key and the
+// unprefixed hook names. PPE rejects both, so the test migrates the document
+// the way an operator must (see `migrate_installer_config`). The plugin still
+// implements the legacy `tool_pre_invoke`; the 0.1.x worker claims no
+// `cmf_hooks`, so the host serves `cmf.tool_pre_invoke` to it through the
+// legacy payload shim.
 //
 // # What this covers that `isolated_venv_e2e.rs` does not
 //
 // The other e2e tests build an `IsolatedPythonPlugin` directly and call its
 // adapter, which skips two layers a real gateway goes through: YAML → factory
-// → registry, and `PluginManager::invoke_by_name` → executor → adapter. This
+// → registry, and `PolicyEngine::invoke_by_name` → executor → adapter. This
 // one drives both, against a plugin installed the way an operator installs one
 // (`cpex plugin install`, not a scaffolded fixture). So it is the test that
 // catches a config-shape or dispatch-wiring break that a direct adapter call
 // would not see.
 //
-// `tool_pre_invoke` also carries populated `Extensions`, which makes this the
+// `cmf.tool_pre_invoke` also carries populated `Extensions`, which makes this the
 // only test that drives the extensions channel against an installer-written
 // config — one that declares `capabilities: []`. `extensions_merge_e2e.rs` owns
 // the observation and merge behaviour with a 3-arg fixture and explicit
@@ -33,17 +42,29 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use cpex_core::extensions::{
-    AgentExtension, Extensions, HttpExtension, RequestExtension, SecurityExtension,
-};
-use cpex_core::hooks::types::hook_names;
-use cpex_core::manager::PluginManager;
 use cpex_hosts_python::factory::{IsolatedVenvFactory, KIND};
-use cpex_hosts_python::legacy::{
-    IdentityResolvePayload, TokenDelegatePayload, ToolPreInvokePayload,
-};
+use cpex_hosts_python::legacy::{IdentityResolvePayload, TokenDelegatePayload};
 use cpex_hosts_python::plugin::IsolatedPythonPlugin;
 use cpex_hosts_python::testing::{skip, skip_without_python3};
+use praxis_policy_core::cmf::{ContentPart, Message, MessagePayload, Role, ToolCall};
+use praxis_policy_core::delegation::HOOK_TOKEN_DELEGATE;
+use praxis_policy_core::engine::{PolicyEngine, PolicyEngineConfig};
+use praxis_policy_core::extensions::{
+    AgentExtension, Extensions, HttpExtension, RequestExtension, SecurityExtension,
+};
+use praxis_policy_core::identity::HOOK_IDENTITY_RESOLVE;
+
+/// The PPE hook the tool test dispatches on.
+const TOOL_PRE_INVOKE: &str = "cmf.tool_pre_invoke";
+
+/// Marker `TestPlugin.tool_pre_invoke` writes: the legacy method the shim
+/// reaches for `cmf.tool_pre_invoke`.
+const TOOL_PRE_INVOKE_MARKER: &str = "tool_pre_invoke";
+
+/// Marker files `TestPlugin` writes, named after its Python hook methods. The
+/// host translates PPE's dispatched names to these on the wire.
+const IDENTITY_RESOLVE_MARKER: &str = "identity_resolve";
+const TOKEN_DELEGATE_MARKER: &str = "token_delegate";
 
 /// Plugin name in `plugins/config.yaml`.
 const PLUGIN_NAME: &str = "cpex-test-plugin";
@@ -75,6 +96,60 @@ fn repo_root() -> PathBuf {
         .and_then(Path::parent)
         .expect("the manifest dir has a crates/<crate> ancestry")
         .to_path_buf()
+}
+
+/// Rewrite an installer-written config into one PPE accepts.
+///
+/// Drops the top-level `plugin_dirs:` key, which PPE rejects, renames the
+/// unprefixed tool, identity and delegation hooks to PPE's names, and selects
+/// `dispatch: hooks` when the document has no `engine_settings:`, since the
+/// installer writes no `routes:` or `authorization:` block. These are the edits
+/// an operator makes by hand when moving an installed Python plugin onto PPE.
+fn migrate_installer_config(yaml: &str) -> String {
+    let mut doc: serde_yaml::Value = serde_yaml::from_str(yaml).expect("config.yaml is YAML");
+    let root = doc.as_mapping_mut().expect("config.yaml is a mapping");
+    root.remove("plugin_dirs");
+    if !root.contains_key("engine_settings") {
+        let mut settings = serde_yaml::Mapping::new();
+        settings.insert("dispatch".into(), "hooks".into());
+        root.insert("engine_settings".into(), settings.into());
+    }
+    if let Some(plugins) = root
+        .get_mut("plugins")
+        .and_then(serde_yaml::Value::as_sequence_mut)
+    {
+        for plugin in plugins {
+            let Some(hooks) = plugin
+                .get_mut("hooks")
+                .and_then(serde_yaml::Value::as_sequence_mut)
+            else {
+                continue;
+            };
+            for hook in hooks {
+                let renamed = match hook.as_str() {
+                    Some("tool_pre_invoke") => TOOL_PRE_INVOKE,
+                    Some("identity_resolve") => HOOK_IDENTITY_RESOLVE,
+                    Some("token_delegate") => HOOK_TOKEN_DELEGATE,
+                    _ => continue,
+                };
+                *hook = serde_yaml::Value::from(renamed);
+            }
+        }
+    }
+    serde_yaml::to_string(&doc).expect("the migrated config serializes")
+}
+
+/// Build an engine from the migrated installer config.
+fn load_installed_config(config_path: &Path) -> Arc<PolicyEngine> {
+    let yaml = std::fs::read_to_string(config_path).expect("plugins/config.yaml is readable");
+    let config = praxis_policy_core::config::parse_config(&migrate_installer_config(&yaml))
+        .expect("the migrated plugins/config.yaml parses");
+    let manager = Arc::new(PolicyEngine::new(PolicyEngineConfig::default()));
+    manager.register_factory(KIND, Box::new(IsolatedVenvFactory));
+    manager
+        .load_config(config)
+        .expect("plugins/config.yaml loads with the isolated_venv factory registered");
+    manager
 }
 
 /// Skip guard: `Some(config_path)` when the installed-plugin fixture is present.
@@ -151,7 +226,7 @@ fn assert_marker_written(marker: &Path, description: &str) {
 /// `errors` is checked first: a worker that failed to start or a hook the
 /// framework rejected surfaces there rather than as a deny, so checking the
 /// allow first would point the failure message at the wrong layer.
-fn assert_allowed(result: &cpex_core::executor::PipelineResult, hook_name: &str) {
+fn assert_allowed(result: &praxis_policy_core::executor::PipelineResult, hook_name: &str) {
     assert!(
         result.errors.is_empty(),
         "the pipeline recorded plugin errors on {hook_name}: {:?}",
@@ -183,8 +258,9 @@ fn assert_allowed(result: &cpex_core::executor::PipelineResult, hook_name: &str)
 /// * `security` — gated per sub-field. The slot survives, `labels` does not.
 ///
 /// The `Authorization` header is a second, independent guard: `attach_extensions`
-/// strips sensitive headers on the way out, so even a config that *did* declare
-/// `read_headers` must not put this value on the wire.
+/// withholds unvalidated raw headers on the way out, so even a config that *did* declare
+/// `read_headers` must not put this value on the wire. Outbound raw header maps
+/// are now empty by default.
 fn inbound_extensions() -> Extensions {
     let mut security = SecurityExtension::default();
     security.add_label(INBOUND_LABEL);
@@ -256,25 +332,21 @@ async fn config_yaml_dispatches_tool_pre_invoke_to_the_installed_plugin() {
     // The plugin's `tool_pre_invoke` writes `.tool_pre_invoke` at the worker's
     // cwd. Remove any stale copy so its existence proves *this* run executed
     // the hook body rather than a previous one.
-    let marker = clear_marker(&root, hook_names::TOOL_PRE_INVOKE);
+    let marker = clear_marker(&root, TOOL_PRE_INVOKE_MARKER);
 
-    // Loaded straight from disk with no patching: the whole point is that a
-    // config.yaml as written by `cpex plugin install` works as-is.
-    let manager = Arc::new(PluginManager::default());
-    manager.register_factory(KIND, Box::new(IsolatedVenvFactory));
-    manager
-        .load_config_file(&config_path)
-        .expect("plugins/config.yaml loads with the isolated_venv factory registered");
+    // Loaded from disk with only the migration PPE requires, so a config.yaml
+    // written by `cpex plugin install` is otherwise used as-is.
+    let manager = load_installed_config(&config_path);
 
     // A config that loaded but registered nothing would make every assertion
     // below vacuous: `invoke_by_name` short-circuits to an allow when no plugin
     // is on the hook, so the "clean input is allowed" checks would pass with no
     // Python involved at all.
     assert!(
-        manager.has_hooks_for(hook_names::TOOL_PRE_INVOKE),
+        manager.has_hooks_for(TOOL_PRE_INVOKE),
         "no plugin registered on {} — check that config.yaml still declares \
          kind: {KIND} and that hook",
-        hook_names::TOOL_PRE_INVOKE
+        TOOL_PRE_INVOKE
     );
     assert!(
         manager.plugin_names().iter().any(|n| n == PLUGIN_NAME),
@@ -287,15 +359,23 @@ async fn config_yaml_dispatches_tool_pre_invoke_to_the_installed_plugin() {
         .await
         .expect("the venv resolves and the worker starts");
 
-    // `tool_pre_invoke` carries the native Pydantic shape the Python plugin
-    // expects — `name` plus `args` — not the generic wrapper.
-    let payload = ToolPreInvokePayload {
-        name: "test_tool".to_string(),
-        args: Some(HashMap::from([(
-            "query".to_string(),
-            serde_json::json!("hello world"),
-        )])),
-        headers: None,
+    // A CMF tool call. The shim turns it into the `name` plus `args` shape the
+    // plugin's legacy `tool_pre_invoke` expects.
+    let payload = MessagePayload {
+        message: Message::with_content(
+            Role::Assistant,
+            vec![ContentPart::ToolCall {
+                content: ToolCall {
+                    tool_call_id: "call-config-e2e-1".to_string(),
+                    name: "test_tool".to_string(),
+                    arguments: HashMap::from([(
+                        "query".to_string(),
+                        serde_json::json!("hello world"),
+                    )]),
+                    namespace: None,
+                },
+            }],
+        ),
     };
 
     // Populated extensions rather than `Extensions::default()`. The default is
@@ -307,17 +387,12 @@ async fn config_yaml_dispatches_tool_pre_invoke_to_the_installed_plugin() {
     let inbound = inbound_extensions();
 
     let (result, _background) = manager
-        .invoke_by_name(
-            hook_names::TOOL_PRE_INVOKE,
-            Box::new(payload),
-            inbound.clone(),
-            None,
-        )
+        .invoke_by_name(TOOL_PRE_INVOKE, Box::new(payload), inbound.clone(), None)
         .await;
 
     manager.shutdown().await;
 
-    assert_allowed(&result, hook_names::TOOL_PRE_INVOKE);
+    assert_allowed(&result, TOOL_PRE_INVOKE_MARKER);
 
     // The marker proves the plugin's hook body ran. Without it, a response
     // shaped like an allow is indistinguishable from the manager's
@@ -329,7 +404,7 @@ async fn config_yaml_dispatches_tool_pre_invoke_to_the_installed_plugin() {
     // the worker's Pydantic models reject surfaces as a validation error in
     // `errors` and no marker — which is precisely the break a `default()` input
     // could never detect.
-    assert_marker_written(&marker, hook_names::TOOL_PRE_INVOKE);
+    assert_marker_written(&marker, TOOL_PRE_INVOKE_MARKER);
 
     // `modified_extensions` on an allowed pipeline is the *final* extensions
     // view, not a "something changed" signal — `PipelineResult::allowed_with`
@@ -375,7 +450,7 @@ async fn config_yaml_dispatches_tool_pre_invoke_to_the_installed_plugin() {
     // has no way to report what arrived, and `extensions_merge_e2e.rs` owns the
     // 3-arg observation path with a purpose-built fixture. This keeps the
     // capability contract pinned against the real installer-written config.
-    let filtered = cpex_core::extensions::filter_extensions(&inbound, &Default::default());
+    let filtered = praxis_policy_core::extensions::filter_extensions(&inbound, &Default::default());
     assert!(
         filtered.agent.is_none(),
         "`agent` is capability-gated and this config declares none, so it must \
@@ -417,14 +492,14 @@ async fn config_yaml_dispatches_tool_pre_invoke_to_the_installed_plugin() {
 }
 
 /// The two credential-adjacent hooks dispatch through the same config → factory
-/// → registry → executor → worker path as `tool_pre_invoke`.
+/// → registry → executor → worker path as `cmf.tool_pre_invoke`.
 ///
 /// # Why these two are worth their own test
 ///
-/// `identity_resolve` and `token_delegate` are the only hooks the host treats
+/// `identity.resolve` and `token.delegate` are the only hooks the host treats
 /// specially: `is_credential_hook` singles them out, and their payloads carry
 /// redacting fields (`raw_token`, `bearer_token`) that no other hook has. That
-/// makes them the two most likely to break in a way `tool_pre_invoke` cannot
+/// makes them the two most likely to break in a way the tool hook cannot
 /// detect — a payload-kind mapping that falls through to `PayloadKind::Generic`,
 /// for instance, still round-trips as an allow, so only a marker file
 /// distinguishes a real dispatch from a silent no-op. The plugin writes two
@@ -453,8 +528,8 @@ async fn config_yaml_dispatches_identity_resolve_and_token_delegate_to_the_insta
     // cwd at once — see the comment in the test above.
     std::env::set_current_dir(&root).expect("cd to the repo root");
 
-    let identity_marker = clear_marker(&root, hook_names::IDENTITY_RESOLVE);
-    let delegate_marker = clear_marker(&root, hook_names::TOKEN_DELEGATE);
+    let identity_marker = clear_marker(&root, IDENTITY_RESOLVE_MARKER);
+    let delegate_marker = clear_marker(&root, TOKEN_DELEGATE_MARKER);
 
     // Each credential hook writes a *second* marker when its redacting field
     // arrives non-empty (`.identity_resolve_raw_token`,
@@ -464,15 +539,11 @@ async fn config_yaml_dispatches_identity_resolve_and_token_delegate_to_the_insta
     let identity_field_marker = clear_marker(&root, IDENTITY_RAW_TOKEN_MARKER);
     let delegate_field_marker = clear_marker(&root, TOKEN_DELEGATE_BEARER_MARKER);
 
-    let manager = Arc::new(PluginManager::default());
-    manager.register_factory(KIND, Box::new(IsolatedVenvFactory));
-    manager
-        .load_config_file(&config_path)
-        .expect("plugins/config.yaml loads with the isolated_venv factory registered");
+    let manager = load_installed_config(&config_path);
 
     // Without these, both invocations below short-circuit to an allow with no
     // Python involved, and every assertion that follows would be vacuous.
-    for hook in [hook_names::IDENTITY_RESOLVE, hook_names::TOKEN_DELEGATE] {
+    for hook in [HOOK_IDENTITY_RESOLVE, HOOK_TOKEN_DELEGATE] {
         assert!(
             manager.has_hooks_for(hook),
             "no plugin registered on {hook} — check that config.yaml still lists it under \
@@ -490,7 +561,7 @@ async fn config_yaml_dispatches_identity_resolve_and_token_delegate_to_the_insta
         .await
         .expect("the venv resolves and the worker starts");
 
-    // `identity_resolve` mirrors Python's `IdentityPayload`. `raw_token` is a
+    // `identity.resolve` carries the payload mirroring Python's `IdentityPayload`. `raw_token` is a
     // `SecretStr` there and carries a placeholder on the wire — the plaintext
     // would ride the separate capability-gated `credential` object, which this
     // config declares no capability for.
@@ -504,14 +575,14 @@ async fn config_yaml_dispatches_identity_resolve_and_token_delegate_to_the_insta
 
     let (identity_result, _background) = manager
         .invoke_by_name(
-            hook_names::IDENTITY_RESOLVE,
+            HOOK_IDENTITY_RESOLVE,
             Box::new(identity_payload),
             Extensions::default(),
             None,
         )
         .await;
 
-    // `token_delegate` mirrors `DelegationPayload`. `target_type` and
+    // `token.delegate` carries the payload mirroring `DelegationPayload`. `target_type` and
     // `auth_enforced_by` are left to their defaults so the worker's Pydantic
     // model has to supply them — an omitted-field mismatch surfaces as a
     // validation error in `errors`, not as a deny.
@@ -533,7 +604,7 @@ async fn config_yaml_dispatches_identity_resolve_and_token_delegate_to_the_insta
 
     let (delegate_result, _background) = manager
         .invoke_by_name(
-            hook_names::TOKEN_DELEGATE,
+            HOOK_TOKEN_DELEGATE,
             Box::new(delegate_payload),
             Extensions::default(),
             None,
@@ -542,14 +613,14 @@ async fn config_yaml_dispatches_identity_resolve_and_token_delegate_to_the_insta
 
     manager.shutdown().await;
 
-    assert_allowed(&identity_result, hook_names::IDENTITY_RESOLVE);
-    assert_allowed(&delegate_result, hook_names::TOKEN_DELEGATE);
+    assert_allowed(&identity_result, HOOK_IDENTITY_RESOLVE);
+    assert_allowed(&delegate_result, HOOK_TOKEN_DELEGATE);
 
     // The markers are what separate a real dispatch from an allow-shaped no-op:
     // a hook that never reached the plugin still comes back as an allow, so
     // without these the assertions above would pass on a silent no-op.
-    assert_marker_written(&identity_marker, hook_names::IDENTITY_RESOLVE);
-    assert_marker_written(&delegate_marker, hook_names::TOKEN_DELEGATE);
+    assert_marker_written(&identity_marker, IDENTITY_RESOLVE_MARKER);
+    assert_marker_written(&delegate_marker, TOKEN_DELEGATE_MARKER);
 
     // And these prove the redacting fields survived the round trip as populated
     // `SecretStr`s. A payload-kind mapping that fell through to
@@ -565,25 +636,23 @@ async fn config_yaml_dispatches_identity_resolve_and_token_delegate_to_the_insta
     );
 }
 
-/// An installer-generated config resolves `plugins` at the project root with no
-/// patching, and neither `plugin_dirs` key steers it.
+/// An installer-generated config resolves `plugins` at the project root once
+/// migrated, and the per-plugin `plugin_dirs` key does not steer it.
 ///
-/// Needs no venv and no python3, so unlike the test above it runs on every
-/// `cargo test`. This is the regression guard for the gap that used to require a
-/// shim here: a config shaped exactly as `cpex plugin install` writes it must
-/// load *and* resolve to the right directory.
+/// Needs no venv and no python3, so unlike the tests above it runs on every
+/// `cargo test`.
 #[test]
 fn an_installer_generated_config_resolves_plugins_at_the_project_root() {
     // The shape `cpex plugin install` generates: plugin_dirs at the top level,
     // absent from the plugin's own config block. Plus a per-plugin
-    // `plugin_dirs` pointing somewhere bogus, to prove neither key wins.
+    // `plugin_dirs` pointing somewhere bogus, to prove it does not win.
     let yaml = r#"
 plugin_dirs:
   - /top/level/ignored
 plugins:
   - name: cpex-test-plugin
     kind: isolated_venv
-    hooks: [tool_pre_invoke]
+    hooks: [tool_pre_invoke, identity_resolve, token_delegate]
     version: 0.2.1
     config:
       class_name: cpex_test_plugin.plugin.TestPlugin
@@ -591,10 +660,22 @@ plugins:
       plugin_dirs: ["/per/plugin/ignored"]
 "#;
 
-    let config = cpex_core::config::parse_config(yaml).expect("valid config");
+    // As written, PPE refuses the top-level key and names its replacement.
+    let err = praxis_policy_core::config::parse_config(yaml)
+        .expect_err("a top-level plugin_dirs key must fail the load");
+    assert!(err.to_string().contains("plugin_dirs"), "{err}");
 
-    // Both keys still parse — they are simply not the host's source.
-    assert_eq!(config.plugin_dirs, vec!["/top/level/ignored".to_string()]);
+    let config = praxis_policy_core::config::parse_config(&migrate_installer_config(yaml))
+        .expect("the migrated config parses");
+    assert_eq!(
+        config.plugins[0].hooks,
+        vec![
+            TOOL_PRE_INVOKE.to_string(),
+            HOOK_IDENTITY_RESOLVE.to_string(),
+            HOOK_TOKEN_DELEGATE.to_string()
+        ],
+        "the migrated names are PPE hooks, so no host hook registration is needed"
+    );
 
     let plugin = IsolatedPythonPlugin::from_config(&config.plugins[0])
         .expect("an ignored plugin_dirs key must not fail the load");
@@ -607,6 +688,6 @@ plugins:
     assert_eq!(
         plugin.plugin_dirs(),
         [expected],
-        "the host must resolve <project root>/plugins, ignoring both config keys"
+        "the host must resolve <project root>/plugins, ignoring the per-plugin key"
     );
 }

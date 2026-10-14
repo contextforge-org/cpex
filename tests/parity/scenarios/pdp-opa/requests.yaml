@@ -1,0 +1,55 @@
+description: >-
+  OPA boolean and object decisions over role and subject attributes.
+
+mocks:
+  - method: GET
+    path: /jwks
+    builtin: jwks
+
+tokens:
+  alice:
+    claims: {iss: https://idp.parity.test, aud: cpex-parity, sub: alice, iat: 1767225600, exp: 4102444800, roles: [hr]}
+  evan:
+    claims: {iss: https://idp.parity.test, aud: cpex-parity, sub: evan, iat: 1767225600, exp: 4102444800, roles: [engineer]}
+  sam:
+    claims: {iss: https://idp.parity.test, aud: cpex-parity, sub: sam, iat: 1767225600, exp: 4102444800, roles: [security]}
+
+requests:
+  - kind: mediate
+    id: hr-allowed
+    caller: {token: alice}
+    tool: get_compensation
+    args: {employee_id: e-1001}
+    backend: {employee_id: e-1001, salary: 185000}
+
+  - kind: mediate
+    id: subject-rule-allowed
+    caller: {token: sam}
+    tool: get_compensation
+    args: {employee_id: e-1001}
+    backend: {employee_id: e-1001, salary: 185000}
+
+  - kind: mediate
+    id: engineer-denied
+    caller: {token: evan}
+    tool: get_compensation
+    args: {employee_id: e-1001}
+    backend: {employee_id: e-1001, salary: 185000}
+
+  - kind: mediate
+    id: anonymous-denied
+    tool: get_compensation
+    args: {employee_id: e-1001}
+    backend: {employee_id: e-1001, salary: 185000}
+
+  - kind: mediate
+    id: export-security-allowed
+    caller: {token: sam}
+    tool: export_repos
+    backend: {exported: 2}
+
+  - kind: mediate
+    id: export-engineer-denied-with-policy-id
+    caller: {token: evan}
+    tool: export_repos
+    backend: {exported: 2}

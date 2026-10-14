@@ -5,13 +5,13 @@
 //
 // cpex-hosts-python — out-of-process host for existing Python CPEX plugins.
 //
-// The Rust `PluginManager` cannot run a Python plugin on its own. This crate
+// The Rust `PolicyEngine` cannot run a Python plugin on its own. This crate
 // is the Rust counterpart to the Python CLI's `client.py` + `venv_comm.py`:
 // it builds a per-plugin virtualenv, launches the framework's `worker.py` in
 // that venv as a long-lived subprocess, and speaks the same
 // newline-delimited-JSON stdio protocol the Python CLI already uses. Existing
 // PII filters, identity resolvers, and token delegators keep working while
-// the gateway migrates to the Rust manager.
+// the gateway migrates to the Rust engine.
 //
 // # Topology
 //
@@ -20,7 +20,7 @@
 // protocol), and supplies one hook adapter per declared hook:
 //
 // ```text
-//   PluginManager
+//   PolicyEngine
 //     └── isolated_venv factory  ──> IsolatedPythonPlugin ──┬── venv manager
 //                                     (initialize/shutdown) └── worker client
 //           └── hook adapter (serialize, send, deserialize)      │
@@ -35,7 +35,7 @@
 // # Lifecycle
 //
 // Venv construction and worker launch happen in `initialize()`, which the
-// manager awaits once per plugin (with rollback on failure), and teardown in
+// engine awaits once per plugin (with rollback on failure), and teardown in
 // `shutdown()`, which it calls in reverse order. Neither belongs on the
 // invoke path — a cold pip install is measured in minutes.
 //
@@ -64,6 +64,7 @@
 // this channel. See the `extensions` module.
 
 pub mod conversion;
+pub mod credential_payloads;
 pub mod credentials;
 pub mod error;
 pub mod extensions;
@@ -83,6 +84,6 @@ pub use conversion::{GenericPayload, PayloadKind};
 pub use credentials::CredentialDto;
 pub use error::HostError;
 pub use factory::{IsolatedVenvFactory, KIND};
-pub use plugin::{IsolatedPythonPlugin, VenvConfig, DEFAULT_PLUGIN_DIR};
+pub use plugin::{DEFAULT_PLUGIN_DIR, IsolatedPythonPlugin, VenvConfig};
 pub use venv::{CacheVerdict, EnsureOutcome, VenvManager};
 pub use worker::WorkerClient;

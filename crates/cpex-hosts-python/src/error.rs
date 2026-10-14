@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Authors: Ted Habeck
 //
-// Host-internal errors and their mapping to `cpex_core::error::PluginError`.
+// Host-internal errors and their mapping to `praxis_policy_core::error::PluginError`.
 //
 // The host distinguishes failure modes the executor cannot see — a venv that
 // would not build, a worker that died mid-flight, a task over the size cap —
@@ -14,7 +14,7 @@
 use std::collections::HashMap;
 use std::fmt;
 
-use cpex_core::error::PluginError;
+use praxis_policy_core::error::PluginError;
 
 /// Cap on the stderr excerpt carried in `PluginError::Execution.details`.
 ///
@@ -170,6 +170,14 @@ pub enum HostError {
     ///
     /// The message never contains token material.
     Credential { message: String },
+
+    /// A `cmf.*` hook could not be translated for a worker that predates
+    /// `cmf.*` hook support, so the host failed closed rather than dispatching
+    /// a payload the plugin would misread or skipping the plugin.
+    ///
+    /// Like `Protocol`, the message names shapes (part types, field names),
+    /// never payload values.
+    LegacyShim { hook: String, message: String },
 }
 
 impl fmt::Display for HostError {
@@ -204,6 +212,11 @@ impl fmt::Display for HostError {
             Self::WorkerError { message } => write!(f, "worker returned an error: {message}"),
             Self::Protocol { message } => write!(f, "protocol error: {message}"),
             Self::Credential { message } => write!(f, "credential error: {message}"),
+            Self::LegacyShim { hook, message } => write!(
+                f,
+                "hook '{hook}' cannot be served by this worker, which predates cmf hook \
+                 support: {message}"
+            ),
         }
     }
 }
@@ -225,6 +238,7 @@ impl HostError {
             Self::WorkerError { .. } => "worker_error",
             Self::Protocol { .. } => "protocol_error",
             Self::Credential { .. } => "credential_error",
+            Self::LegacyShim { .. } => "legacy_shim_unsupported",
         }
     }
 
@@ -267,7 +281,8 @@ impl HostError {
             | Self::WorkerDied { .. }
             | Self::WorkerError { .. }
             | Self::Protocol { .. }
-            | Self::Credential { .. } => {},
+            | Self::Credential { .. }
+            | Self::LegacyShim { .. } => {},
         }
         details
     }
@@ -373,9 +388,11 @@ mod tests {
         let details = execution_details(pip_failure("", None));
 
         assert_eq!(details[DETAIL_EXIT_CODE], serde_json::Value::Null);
-        assert!(pip_failure("", None)
-            .to_string()
-            .contains("was killed by a signal"));
+        assert!(
+            pip_failure("", None)
+                .to_string()
+                .contains("was killed by a signal")
+        );
     }
 
     /// Long pip output is cut to the tail, where the actual error lives, and

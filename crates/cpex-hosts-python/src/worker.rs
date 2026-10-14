@@ -37,7 +37,7 @@ use std::sync::Arc;
 use serde_json::Value;
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
-use tokio::sync::{mpsc, oneshot, Mutex};
+use tokio::sync::{Mutex, mpsc, oneshot};
 
 use crate::error::HostError;
 
@@ -64,6 +64,13 @@ pub const FEATURE_CREDENTIAL: &str = "credential";
 
 /// Worker feature name for delivering the task's `extensions` field to a hook.
 pub const FEATURE_EXTENSIONS: &str = "extensions";
+
+/// Worker feature name for serving PPE's `cmf.*` hooks natively, with the CMF
+/// `MessagePayload` and the `cmf.*` hook names.
+///
+/// A worker that does not claim it gets the legacy payload shim instead (see
+/// `crate::legacy::cmf_shim`). No released worker claims it yet.
+pub const FEATURE_CMF_HOOKS: &str = "cmf_hooks";
 
 /// What a worker reported it can do, from the spawn-time handshake.
 ///
@@ -247,6 +254,17 @@ pub struct WorkerClient {
 
     /// Per-invocation response timeout.
     timeout_secs: u64,
+
+    /// What the spawn-time handshake reported, once it has run.
+    ///
+    /// Held on the client rather than the plugin so a respawned worker starts
+    /// with no report and has to be asked again: the replacement may come from
+    /// a rebuilt venv with a different `worker.py`.
+    reported: std::sync::OnceLock<WorkerCapabilities>,
+
+    /// Whether the one probe retry this worker gets has been spent. See
+    /// [`Self::claim_probe_retry`].
+    probe_retry_spent: std::sync::atomic::AtomicBool,
 }
 
 /// Manual rather than derived: the outbound channel carries serialized task
@@ -335,7 +353,29 @@ impl WorkerClient {
             child: Mutex::new(Some(child)),
             max_content_size,
             timeout_secs,
+            reported: std::sync::OnceLock::new(),
+            probe_retry_spent: std::sync::atomic::AtomicBool::new(false),
         })
+    }
+
+    /// Claim this worker's single retry of a failed capabilities probe.
+    ///
+    /// True exactly once per worker. A probe that timed out or hit a worker
+    /// still starting leaves no report, and with no report a `cmf.*` hook is
+    /// served through the legacy shim for the worker's whole life. One retry
+    /// on first use recovers from a transient failure; bounding it to one
+    /// keeps a probe that keeps failing from adding a round trip to every
+    /// call.
+    pub fn claim_probe_retry(&self) -> bool {
+        !self
+            .probe_retry_spent
+            .swap(true, std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// The handshake report from the last successful [`Self::capabilities`]
+    /// call, or `None` if the worker was never asked.
+    pub fn reported_capabilities(&self) -> Option<&WorkerCapabilities> {
+        self.reported.get()
     }
 
     /// Build a `WorkerDied` error, appending recent stderr when there is any.
@@ -432,7 +472,7 @@ impl WorkerClient {
                 Ok(Err(_)) => {
                     return Err(self
                         .died("worker exited while the request was in flight")
-                        .await)
+                        .await);
                 },
                 Err(_) => {
                     self.pending.lock().await.remove(&request_id);
@@ -472,7 +512,9 @@ impl WorkerClient {
                     "worker does not implement the capabilities handshake; \
                      treating it as supporting no gated wire features"
                 );
-                return Ok(WorkerCapabilities::none());
+                let none = WorkerCapabilities::none();
+                let _ = self.reported.set(none.clone());
+                return Ok(none);
             },
             Err(e) => return Err(e),
         };
@@ -488,7 +530,7 @@ impl WorkerClient {
             })
             .unwrap_or_default();
 
-        Ok(WorkerCapabilities {
+        let reported = WorkerCapabilities {
             protocol_version: response
                 .get("protocol_version")
                 .and_then(Value::as_u64)
@@ -498,7 +540,9 @@ impl WorkerClient {
                 .get("cpex_version")
                 .and_then(Value::as_str)
                 .map(str::to_string),
-        })
+        };
+        let _ = self.reported.set(reported.clone());
+        Ok(reported)
     }
 
     /// Ask the worker to exit, then wait out the grace window and kill it.
@@ -822,7 +866,7 @@ pub fn resolve_worker_script(venv_path: &Path, relative: &str) -> Result<PathBuf
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testing::{skip_without_python3, TempDir};
+    use crate::testing::{TempDir, skip_without_python3};
 
     /// A stub worker that speaks the same protocol as `worker.py`.
     ///

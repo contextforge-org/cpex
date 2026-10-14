@@ -37,13 +37,15 @@ use std::sync::Arc;
 
 use serde_json::{Map, Value};
 
-use cpex::PluginManager;
-use cpex_core::cmf::content::{ToolCall, ToolResult};
-use cpex_core::cmf::enums::Role;
-use cpex_core::cmf::{CmfHook, ContentPart, Message, MessagePayload};
-use cpex_core::executor::PipelineResult;
-use cpex_core::extensions::{AgentExtension, Extensions, HttpExtension, MetaExtension};
-use cpex_core::identity::{IdentityHook, IdentityPayload, TokenSource, HOOK_IDENTITY_RESOLVE};
+use cpex::PolicyEngine;
+use cpex::prelude::{
+    CmfHook, ContentPart, Extensions, Message, MessagePayload, Role, ToolCall, ToolResult,
+};
+use praxis_policy_core::executor::PipelineResult;
+use praxis_policy_core::extensions::{AgentExtension, HttpExtension, MetaExtension};
+use praxis_policy_core::identity::{
+    HOOK_IDENTITY_RESOLVE, IdentityHook, IdentityPayload, TokenSource,
+};
 
 /// Request header an agent echoes to resume a suspended elicitation. Its
 /// value is the `elicitation_id` from a prior pending outcome.
@@ -149,7 +151,7 @@ impl Outcome {
 /// This mirrors a real host, where CPEX sits in front of the actual tool
 /// and never calls it directly.
 pub async fn mediate<F>(
-    mgr: &Arc<PluginManager>,
+    engine: &Arc<PolicyEngine>,
     caller: &Caller,
     tool: &str,
     args: Value,
@@ -205,7 +207,7 @@ where
                 IdentityPayload::new(String::new(), TokenSource::Bearer).with_headers(headers)
             },
         };
-        let (id_result, id_bg) = mgr
+        let (id_result, id_bg) = engine
             .invoke_named::<IdentityHook>(HOOK_IDENTITY_RESOLVE, payload, ext.clone(), None)
             .await;
         id_bg.wait_for_background_tasks().await;
@@ -221,32 +223,32 @@ where
     let pre_payload = MessagePayload {
         message: tool_call_message(tool, &args),
     };
-    let (pre_result, pre_bg) = mgr
+    let (pre_result, pre_bg) = engine
         .invoke_named::<CmfHook>("cmf.tool_pre_invoke", pre_payload, ext.clone(), None)
         .await;
     pre_bg.wait_for_background_tasks().await;
     if !pre_result.continue_processing {
         // A suspended elicitation surfaces as a distinguished violation
         // carrying the elicitation id, not an ordinary denial.
-        if let Some(v) = &pre_result.violation {
-            if v.code == "elicitation.pending" {
-                let id = v
-                    .details
-                    .get("elicitation_id")
-                    .and_then(|x| x.as_str())
-                    .unwrap_or_default()
-                    .to_string();
-                let approver = v
-                    .details
-                    .get("approver")
-                    .and_then(|x| x.as_str())
-                    .unwrap_or("the approver")
-                    .to_string();
-                return Outcome::Pending {
-                    elicitation_id: id,
-                    approver,
-                };
-            }
+        if let Some(v) = &pre_result.violation
+            && v.code == "elicitation.pending"
+        {
+            let id = v
+                .details
+                .get("elicitation_id")
+                .and_then(|x| x.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let approver = v
+                .details
+                .get("approver")
+                .and_then(|x| x.as_str())
+                .unwrap_or("the approver")
+                .to_string();
+            return Outcome::Pending {
+                elicitation_id: id,
+                approver,
+            };
         }
         return denied(&pre_result);
     }
@@ -264,7 +266,7 @@ where
     let post_payload = MessagePayload {
         message: tool_result_message(tool, &raw_result),
     };
-    let (post_result, post_bg) = mgr
+    let (post_result, post_bg) = engine
         .invoke_named::<CmfHook>("cmf.tool_post_invoke", post_payload, post_ext, None)
         .await;
     post_bg.wait_for_background_tasks().await;

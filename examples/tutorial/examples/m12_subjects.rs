@@ -19,11 +19,11 @@
 
 use std::sync::Arc;
 
-use cpex::PluginManager;
+use cpex::PolicyEngine;
 use cpex_tutorial::backends;
 use cpex_tutorial::idp;
 use cpex_tutorial::ui;
-use cpex_tutorial::{mediate, Caller};
+use cpex_tutorial::{Caller, mediate};
 
 use serde_json::json;
 
@@ -43,11 +43,13 @@ async fn token(user: &str) -> Caller {
 async fn main() {
     ui::module_banner("Module 12: Delegation subjects (who the call speaks for)");
 
-    let mgr = Arc::new(PluginManager::default());
-    cpex::install_builtins(&mgr);
-    mgr.load_config_yaml(POLICY)
+    let engine = Arc::new(PolicyEngine::default());
+    cpex::install_builtins(&engine);
+    cpex_tutorial::install_http_transport(&engine);
+    engine
+        .load_config_yaml(POLICY)
         .expect("policy m12.yaml should load");
-    mgr.initialize().await.expect("initialize");
+    engine.initialize().await.expect("initialize");
 
     let alice = token("alice").await;
     let anon = Caller::anonymous();
@@ -56,7 +58,7 @@ async fn main() {
     // subject: user, on behalf of the caller. Needs a caller token to exchange.
     ui::scenario("alice → get_compensation (subject: user, exchanges alice's token)");
     let o = mediate(
-        &mgr,
+        &engine,
         &alice,
         "get_compensation",
         json!({ "employee_id": "e-1001" }),
@@ -70,7 +72,7 @@ async fn main() {
         "anonymous → get_compensation (subject: user, no token to exchange, delegation fails)",
     );
     let o = mediate(
-        &mgr,
+        &engine,
         &anon,
         "get_compensation",
         json!({ "employee_id": "e-1001" }),
@@ -85,7 +87,7 @@ async fn main() {
         "anonymous → search_repos (subject: this_workload, gateway mints via client_credentials)",
     );
     let o = mediate(
-        &mgr,
+        &engine,
         &anon,
         "search_repos",
         json!({ "visibility": "internal" }),
@@ -95,9 +97,11 @@ async fn main() {
     ui::print_outcome(&o);
     all_passed &= ui::expect(&o, true);
 
-    ui::scenario("alice → search_repos (subject: this_workload, same result: the caller's identity is not used)");
+    ui::scenario(
+        "alice → search_repos (subject: this_workload, same result: the caller's identity is not used)",
+    );
     let o = mediate(
-        &mgr,
+        &engine,
         &alice,
         "search_repos",
         json!({ "visibility": "internal" }),
@@ -107,6 +111,8 @@ async fn main() {
     ui::print_outcome(&o);
     all_passed &= ui::expect(&o, true);
 
-    println!("`subject:` chooses whose authority the downstream token carries: the caller (user) or the gateway itself (this_workload).");
+    println!(
+        "`subject:` chooses whose authority the downstream token carries: the caller (user) or the gateway itself (this_workload)."
+    );
     ui::finish_check(all_passed);
 }

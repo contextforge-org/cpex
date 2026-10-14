@@ -20,13 +20,15 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use cpex_core::context::PluginContext;
-use cpex_core::error::{PluginError, PluginViolation};
-use cpex_core::factory::{PluginFactory, PluginInstance};
-use cpex_core::hooks::adapter::TypedHandlerAdapter;
-use cpex_core::hooks::payload::Extensions;
-use cpex_core::hooks::trait_def::{HookHandler, HookTypeDef, PluginResult};
-use cpex_core::plugin::{Plugin, PluginConfig};
+use praxis_policy_core::context::PluginContext;
+use praxis_policy_core::engine::PolicyEngine;
+use praxis_policy_core::error::{PluginError, PluginViolation};
+use praxis_policy_core::factory::{PluginFactory, PluginInstance};
+use praxis_policy_core::hooks::adapter::TypedHandlerAdapter;
+use praxis_policy_core::hooks::payload::Extensions;
+use praxis_policy_core::hooks::trait_def::{HookHandler, HookTypeDef, PluginResult};
+use praxis_policy_core::hooks::{HookMetadata, HookPhase, register_hook_metadata};
+use praxis_policy_core::plugin::{Plugin, PluginConfig};
 
 use cpex_ffi::GenericPayload;
 
@@ -35,14 +37,40 @@ use cpex_ffi::GenericPayload;
 // ---------------------------------------------------------------------------
 
 /// A hook type for FFI callers that send untyped map payloads.
-/// The hook *name* varies at registration time (tool_pre_invoke, etc.)
-/// but the payload type is always GenericPayload.
+/// The hook *name* varies at registration time (demo.tool_pre_invoke,
+/// etc.) but the payload type is always GenericPayload.
 pub struct GenericHook;
 
 impl HookTypeDef for GenericHook {
     type Payload = GenericPayload;
     type Result = PluginResult<GenericPayload>;
     const NAME: &'static str = "generic";
+}
+
+/// Host hook fired before a tool runs. The `cmf.*` hooks carry a typed
+/// `MessagePayload`, so a generic-map demo declares its own pair.
+pub const HOOK_DEMO_TOOL_PRE_INVOKE: &str = "demo.tool_pre_invoke";
+
+/// Host hook fired after a tool runs.
+pub const HOOK_DEMO_TOOL_POST_INVOKE: &str = "demo.tool_post_invoke";
+
+/// Describe the demo hooks to the engine. The config loader refuses a
+/// `hooks:` entry it has no metadata for, so this runs before any config
+/// naming them is loaded.
+pub fn register_demo_hooks() {
+    for (name, phase) in [
+        (HOOK_DEMO_TOOL_PRE_INVOKE, HookPhase::Pre),
+        (HOOK_DEMO_TOOL_POST_INVOKE, HookPhase::Post),
+    ] {
+        register_hook_metadata(
+            name,
+            HookMetadata {
+                family: Some(GenericHook::NAME),
+                entity_type: Some("tool"),
+                phase,
+            },
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -102,11 +130,11 @@ impl PluginFactory for IdentityCheckerFactory {
             plugin: plugin.clone(),
             handlers: vec![
                 (
-                    "tool_pre_invoke",
+                    HOOK_DEMO_TOOL_PRE_INVOKE,
                     Arc::new(TypedHandlerAdapter::<GenericHook, _>::new(plugin.clone())),
                 ),
                 (
-                    "tool_post_invoke",
+                    HOOK_DEMO_TOOL_POST_INVOKE,
                     Arc::new(TypedHandlerAdapter::<GenericHook, _>::new(plugin)),
                 ),
             ],
@@ -189,7 +217,7 @@ impl PluginFactory for PiiGuardFactory {
         Ok(PluginInstance {
             plugin: plugin.clone(),
             handlers: vec![(
-                "tool_pre_invoke",
+                HOOK_DEMO_TOOL_PRE_INVOKE,
                 Arc::new(TypedHandlerAdapter::<GenericHook, _>::new(plugin)),
             )],
         })
@@ -255,11 +283,11 @@ impl PluginFactory for AuditLoggerFactory {
             plugin: plugin.clone(),
             handlers: vec![
                 (
-                    "tool_pre_invoke",
+                    HOOK_DEMO_TOOL_PRE_INVOKE,
                     Arc::new(TypedHandlerAdapter::<GenericHook, _>::new(plugin.clone())),
                 ),
                 (
-                    "tool_post_invoke",
+                    HOOK_DEMO_TOOL_POST_INVOKE,
                     Arc::new(TypedHandlerAdapter::<GenericHook, _>::new(plugin)),
                 ),
             ],
@@ -267,9 +295,10 @@ impl PluginFactory for AuditLoggerFactory {
     }
 }
 
-/// Register all demo plugin factories on a manager.
-pub fn register_demo_factories(manager: &cpex_core::manager::PluginManager) {
-    manager.register_factory("builtin/identity", Box::new(IdentityCheckerFactory));
-    manager.register_factory("builtin/pii", Box::new(PiiGuardFactory));
-    manager.register_factory("builtin/audit", Box::new(AuditLoggerFactory));
+/// Register the demo hooks and all demo plugin factories on an engine.
+pub fn register_demo_factories(engine: &PolicyEngine) {
+    register_demo_hooks();
+    engine.register_factory("demo/identity", Box::new(IdentityCheckerFactory));
+    engine.register_factory("demo/pii", Box::new(PiiGuardFactory));
+    engine.register_factory("demo/audit", Box::new(AuditLoggerFactory));
 }

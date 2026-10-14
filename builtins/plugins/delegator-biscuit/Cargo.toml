@@ -24,15 +24,15 @@
 # inbound biscuit; completion blocks land in a future post-result
 # audit hook.
 #
-# # When to reach for this vs `cpex-plugin-delegator-oauth`
+# # When to reach for this vs PPE's `delegator/oauth` builtin
 #
 # - **`cpex-plugin-delegator-biscuit`** — capability tokens, cryptographic
 #   attenuation, no IdP roundtrip. Use for federated agent
 #   ecosystems where there's no shared IdP, or for performance-
 #   sensitive paths where the IdP roundtrip cost matters.
-# - **`cpex-plugin-delegator-oauth`** (slice 6) — RFC 8693 against an
-#   OAuth IdP. Use when centralized audit/revocation matters more
-#   than roundtrip cost.
+# - **`delegator/oauth`** (PPE builtin kind, registered by
+#   `cpex::install_builtins`) — RFC 8693 against an OAuth IdP. Use
+#   when centralized audit/revocation matters more than roundtrip cost.
 
 [package]
 name = "cpex-plugin-delegator-biscuit"
@@ -48,7 +48,7 @@ categories.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-cpex-core = { workspace = true }
+praxis-policy-core = { workspace = true }
 
 # biscuit-auth v6 — current major. Maintained by Clever Cloud +
 # community. Ed25519 + Datalog. No default-features off needed; the

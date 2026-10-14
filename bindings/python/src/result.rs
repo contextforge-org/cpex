@@ -3,20 +3,21 @@
 // SPDX-License-Identifier: Apache-2.0
 // Authors: Ted Habeck
 //
-// `PyPipelineResult` — read-only Python view of `cpex_core::PipelineResult`.
+// `PyPipelineResult`: read-only Python view of
+// `praxis_policy_core::executor::PipelineResult`.
 //
 // Mirrors the field set of `PipelineResult` exactly. All fields are read-only
 // getters; no setters are exposed.
 //
 // If the modified_payload could not be serialised back to a Python dict the
 // caller appends a synthetic `PluginErrorRecord` to `errors` (#8);
-// `modified_payload` is exposed as `None` in that case — mirrors the pattern
+// `modified_payload` is exposed as `None` in that case; mirrors the pattern
 // at `crates/cpex-ffi/src/lib.rs:877`.
 
 use std::collections::HashMap;
 
-use cpex_core::error::PluginErrorRecord;
-use cpex_core::executor::PipelineResult;
+use praxis_policy_core::error::PluginErrorRecord;
+use praxis_policy_core::executor::PipelineResult;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use serde_json::Value;
@@ -61,7 +62,7 @@ impl PyPipelineResult {
     ///
     /// `modified_payload` is set on every allowed pipeline, carrying the
     /// final payload whether or not a plugin touched it, so it never
-    /// answered "did anything change?". Read this instead — comparing
+    /// answered "did anything change?". Read this instead; comparing
     /// payload contents cannot see mutations to non-text content parts.
     #[getter]
     fn payload_modified(&self) -> bool {
@@ -148,7 +149,7 @@ impl PyPipelineResult {
 ///
 /// If `modified_payload` is present but cannot be serialised, a synthetic
 /// `PluginErrorRecord` is appended to `errors` and `modified_payload` is
-/// exposed as `None` — mirrors cpex-ffi's behaviour at lib.rs:877 (#8).
+/// exposed as `None`; mirrors cpex-ffi's behaviour at lib.rs:877 (#8).
 pub fn pipeline_result_to_py(mut result: PipelineResult) -> PyResult<PyPipelineResult> {
     // Serialise modified_payload; on failure emit a synthetic error record.
     let modified_payload_value: Option<Value> = match result.modified_payload.take() {

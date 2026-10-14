@@ -5,7 +5,7 @@
 //
 // CMF (ContextForge Message Format) types for Go.
 //
-// Mirrors the Rust types in crates/cpex-core/src/cmf/. The Message
+// Mirrors the Rust types in praxis_policy_core::cmf. The Message
 // struct carries typed content parts (text, tool calls, resources,
 // media, etc.) without extensions — those are passed separately.
 //
@@ -15,10 +15,13 @@
 
 package cpex
 
-import "github.com/vmihailenco/msgpack/v5"
+import (
+	"github.com/vmihailenco/msgpack/v5"
+	"github.com/vmihailenco/msgpack/v5/msgpcode"
+)
 
 // MessagePayload wraps a Message for FFI transport.
-// Matches Rust's cpex_core::cmf::MessagePayload.
+// Matches Rust's praxis_policy_core::cmf::MessagePayload.
 type MessagePayload struct {
 	Message Message `msgpack:"message"`
 }
@@ -26,10 +29,12 @@ type MessagePayload struct {
 // Message is the ContextForge Message Format (CMF) message.
 // No extensions — those are passed separately to the plugin pipeline.
 type Message struct {
-	SchemaVersion string        `msgpack:"schema_version"`
-	Role          string        `msgpack:"role"`
-	Content       []ContentPart `msgpack:"content"`
-	Channel       string        `msgpack:"channel,omitempty"`
+	SchemaVersion string `msgpack:"schema_version"`
+	Role          string `msgpack:"role"`
+	// Content is omitted when empty: Rust defaults a missing list but
+	// rejects a nil one.
+	Content []ContentPart `msgpack:"content,omitempty"`
+	Channel string        `msgpack:"channel,omitempty"`
 }
 
 // NewMessage creates a Message with the default schema version.
@@ -270,7 +275,7 @@ type Resource struct {
 	Description       string         `msgpack:"description,omitempty"`
 	ResourceType      string         `msgpack:"resource_type"`
 	Content           string         `msgpack:"content,omitempty"`
-	Blob              []byte         `msgpack:"blob,omitempty"`
+	Blob              ByteArray      `msgpack:"blob,omitempty"`
 	MimeType          string         `msgpack:"mime_type,omitempty"`
 	SizeBytes         *uint64        `msgpack:"size_bytes,omitempty"`
 	Annotations       map[string]any `msgpack:"annotations,omitempty"`
@@ -335,6 +340,59 @@ type DocumentSource struct {
 	Data       string `msgpack:"data"`
 	MediaType  string `msgpack:"media_type,omitempty"`
 	Title      string `msgpack:"title,omitempty"`
+}
+
+// ByteArray is binary data on the wire format Rust uses for Vec<u8>: a
+// MessagePack array of integers, not a bin value. It decodes either
+// form. A []byte value assigns to it directly.
+type ByteArray []byte
+
+// EncodeMsgpack writes b as an array of uint8 values.
+func (b ByteArray) EncodeMsgpack(enc *msgpack.Encoder) error {
+	if b == nil {
+		return enc.EncodeNil()
+	}
+	if err := enc.EncodeArrayLen(len(b)); err != nil {
+		return err
+	}
+	for _, v := range b {
+		if err := enc.EncodeUint8(v); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// DecodeMsgpack reads an array of integers, a bin value or nil.
+func (b *ByteArray) DecodeMsgpack(dec *msgpack.Decoder) error {
+	code, err := dec.PeekCode()
+	if err != nil {
+		return err
+	}
+	if msgpcode.IsBin(code) || msgpcode.IsString(code) || code == msgpcode.Nil {
+		raw, err := dec.DecodeBytes()
+		if err != nil {
+			return err
+		}
+		*b = raw
+		return nil
+	}
+	n, err := dec.DecodeArrayLen()
+	if err != nil {
+		return err
+	}
+	if n < 0 {
+		*b = nil
+		return nil
+	}
+	out := make([]byte, n)
+	for i := range out {
+		if out[i], err = dec.DecodeUint8(); err != nil {
+			return err
+		}
+	}
+	*b = out
+	return nil
 }
 
 // decodeAs re-encodes a decoded msgpack value and unmarshals it into a

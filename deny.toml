@@ -5,26 +5,11 @@
 [advisories]
 unmaintained = "all"
 maximum-db-staleness = "P30D"
-# Every entry below is in a DEV-only or BUILD-time path — none ship in a
+# Every entry below is in a DEV-only or BUILD-time path; none ship in a
 # published library crate's runtime graph (verified via `cargo deny check
 # advisories` dependency trees). Revisit when the upstream test/build deps
 # release fixes.
 ignore = [
-    # --- Dev-only: testcontainers test harness for cpex-session-valkey ---
-    # tar/PAX extraction flaws in astral-tokio-tar pulled by testcontainers;
-    # only run by the #[ignore]d Valkey integration tests.
-    "RUSTSEC-2026-0066",
-    "RUSTSEC-2026-0112",
-    "RUSTSEC-2026-0113",
-    "RUSTSEC-2026-0145",
-    # rustls-pemfile unmaintained, via bollard -> testcontainers (dev-only).
-    "RUSTSEC-2025-0134",
-    # --- Dev-only: RSA keypair generation in cpex-plugin-identity-jwt tests ---
-    # Marvin timing sidechannel in `rsa`; no fixed release exists. `rsa` is a
-    # dev-dependency only (fixture keygen for the JWT tests): the runtime uses
-    # jsonwebtoken's `aws_lc_rs` backend, not the `rust_crypto` backend that
-    # would pull `rsa` into the shipped tree. So it never reaches consumers.
-    "RUSTSEC-2023-0071",
     # --- Build-time proc-macro: biscuit-quote -> biscuit-auth ---
     # proc-macro-error2 unmaintained; runs only at compile time, never shipped.
     "RUSTSEC-2026-0173",

@@ -3,12 +3,14 @@
 # SPDX-License-Identifier: Apache-2.0
 # Authors: Ted Habeck
 #
-# Tests for PyPipelineResult field access and repr (U5).
+# Tests for PipelineResult field access and repr.
 
 import re
 
 import pytest
-from cpex import PluginManager, PipelineResult
+from cpex import PipelineResult, PolicyEngine
+
+from _support import text_message, tool_call, tool_route
 
 
 # ---------------------------------------------------------------------------
@@ -17,81 +19,63 @@ from cpex import PluginManager, PipelineResult
 
 
 @pytest.mark.asyncio
-async def test_all_fields_accessible(manager: PluginManager):
-    """All seven PipelineResult fields are accessible after a real invoke."""
-    payload = {
-        "message": {
-            "role": "user",
-            "content": [{"content_type": "text", "text": "Hello"}],
-        }
-    }
-    result = await manager.invoke_hook("cmf.tool_pre_invoke", payload)
+async def test_all_fields_accessible(engine: PolicyEngine):
+    """All PipelineResult fields are accessible after a real invoke."""
+    result = await engine.invoke_hook(
+        "cmf.tool_pre_invoke",
+        tool_call("lookup_person", {"name": "Alice"}),
+        tool_route("lookup_person"),
+    )
     assert isinstance(result, PipelineResult)
 
     # continue_processing
     assert isinstance(result.continue_processing, bool)
-    # violation — None for an allowed result
+    # violation: None for an allowed result
     assert result.violation is None
-    # errors — list (may be empty)
+    # errors: list (may be empty)
     assert isinstance(result.errors, list)
-    # metadata — may be None
+    # metadata: may be None
     assert result.metadata is None or isinstance(result.metadata, dict)
-    # context_table — always a dict
+    # context_table: always a dict
     assert isinstance(result.context_table, dict)
 
 
 # ---------------------------------------------------------------------------
-# Deny result — violation dict shape
+# Deny result: violation dict shape
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
 async def test_deny_result_violation_fields(pii_deny_config_path: str):
     """A denied result exposes violation dict with expected keys."""
-    mgr = PluginManager(pii_deny_config_path)
-    await mgr.initialize()
+    eng = PolicyEngine(pii_deny_config_path)
+    await eng.initialize()
 
-    payload = {
-        "message": {
-            "role": "assistant",
-            "content": [
-                {
-                    "content_type": "tool_call",
-                    "content": {
-                        "tool_call_id": "tc_x",
-                        "name": "submit_form",
-                        "arguments": {"ssn": "987-65-4321"},
-                    },
-                }
-            ],
-        }
-    }
-    result = await mgr.invoke_hook("cmf.tool_pre_invoke", payload)
+    result = await eng.invoke_hook(
+        "cmf.tool_pre_invoke",
+        tool_call("lookup_person", {"ssn": "987-65-4321"}, call_id="tc_x"),
+        tool_route("lookup_person"),
+    )
 
     assert result.continue_processing is False
     assert result.violation is not None
     assert isinstance(result.violation, dict)
     # Standard violation keys
     assert "reason" in result.violation
+    assert "code" in result.violation
 
-    await mgr.shutdown()
+    await eng.shutdown()
 
 
 # ---------------------------------------------------------------------------
-# repr safety — no pointer leakage (R3)
+# repr safety: no pointer leakage
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_repr_no_pointers(manager: PluginManager):
-    """__repr__ must not contain hex pointer substrings (R3)."""
-    payload = {
-        "message": {
-            "role": "user",
-            "content": [{"content_type": "text", "text": "hi"}],
-        }
-    }
-    result = await manager.invoke_hook("cmf.tool_pre_invoke", payload)
+async def test_repr_no_pointers(engine: PolicyEngine):
+    """__repr__ must not contain hex pointer substrings."""
+    result = await engine.invoke_hook("cmf.tool_pre_invoke", text_message("hi"))
     r = repr(result)
     # Hex-pointer pattern: 0x followed by hex digits
     assert not re.search(r"0x[0-9a-fA-F]+", r), f"repr contains pointer: {r!r}"

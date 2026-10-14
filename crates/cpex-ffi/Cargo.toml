@@ -25,27 +25,15 @@ rust-version.workspace = true
 crate-type = ["lib", "cdylib", "staticlib"]
 
 [dependencies]
-cpex-core = { workspace = true }
-# APL governance layer — bundled so Go/Python hosts can enable APL
-# policies and route handlers via the `cpex_apl_install` FFI entry point.
-apl-cpex = { workspace = true }
-# The builtin extension set. `cpex_apl_install` delegates registration to
-# cpex-builtins, whose `register_builtins` expands to explicit
-# `register_factory` calls — so the factory symbols survive in the
-# staticlib (no inventory/linkme link-section GC hazard). The feature set
-# below is the exact bundle the default `.a` ships: four hook plugins, both
-# bundled PDPs (cedar-direct and cel), and the Valkey session store. Valkey
-# pulls a redis client + rustls TLS stack, so it adds materially to the `.a`
-# size and to the musl cross-build surface.
-cpex-builtins = { workspace = true, default-features = false, features = [
-    "pii-scanner",
-    "audit-logger",
-    "identity-jwt",
-    "delegator-oauth",
-    "cedar-direct",
-    "cel",
-    "valkey",
-] }
+praxis-policy-core = { workspace = true }
+# The CPEX facade: PPE with every stable builtin, the bundled hyper transport
+# and the Vault secret provider, plus the host wiring the bindings share
+# (`cpex::host`). `install_builtins` expands to explicit `register_factory`
+# calls, so the factory symbols survive in the staticlib (no inventory/linkme
+# link-section GC hazard). The Valkey session store pulls a redis client and a
+# rustls TLS stack, so it adds materially to the `.a` size and to the musl
+# cross-build surface.
+cpex = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -55,11 +43,15 @@ tracing = { workspace = true }
 
 [features]
 # No opt-in features: the bundled set (including the Valkey session store) is
-# fixed in the cpex-builtins dependency above.
+# fixed by the cpex facade dependency above.
 default = []
 
 [dev-dependencies]
 async-trait = { workspace = true }
+# Mint test JWTs and their JWKS for the identity-jwt egress tests. The key is
+# generated at test time, so no private key is checked in.
+jsonwebtoken = { version = "11", default-features = false, features = ["aws_lc_rs"] }
+aws-lc-rs = "1"
 
 [lints]
 workspace = true

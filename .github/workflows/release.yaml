@@ -4,10 +4,12 @@
 #
 # Triggered by a semver tag (vX.Y.Z). Validates the tag matches the
 # workspace version, runs the test suite, then publishes every
-# publishable crate to crates.io in dependency (leaf-first) order.
+# publishable crate to crates.io in dependency (leaf-first) order:
+# cpex-hosts-python, cpex-plugin-delegator-biscuit, cpex, cpex-python.
 #
 # `cpex-ffi` is `publish = false` (distributed as signed prebuilt
-# artifacts by release-ffi.yaml), so it is intentionally absent below.
+# artifacts by release-ffi.yaml), so it is intentionally absent below,
+# as are the example, tutorial and parity harness crates.
 #
 # Requires repo secret: CARGO_REGISTRY_TOKEN.
 
@@ -89,43 +91,46 @@ jobs:
           DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
         run: |
           set -euo pipefail
-          # Dry run: build + verify a .crate for every publishable member
-          # (cargo skips `publish = false` crates and resolves inter-member
-          # deps against each other's packaged versions) without uploading.
-          # This is how the workflow is exercised without a real release.
-          if [ "$DRY_RUN" = "true" ]; then
-            echo "::group::dry run — cargo package (no upload)"
-            # Verify the crates.io-published set only; these three
-            # publish=false crates are not part of the registry release.
-            cargo package --workspace --locked --exclude cpex-ffi --exclude cpex-demo-ffi --exclude cpex-tutorial
-            echo "::endgroup::"
-            exit 0
-          fi
-          # Leaf-first topological order. Each `cargo publish` blocks until the
-          # crate is visible in the index before returning, so the next crate's
-          # dependency resolves; the short sleep is extra slack for propagation.
+          # Dependency order. Only these four members publish; the engine
+          # itself comes from the praxis-policy crates on crates.io, which
+          # are already there. `cpex` takes `cpex-hosts-python` as an
+          # optional dependency, and cargo still needs it in the index, so
+          # the host goes first. `cpex-plugin-delegator-biscuit` has no member
+          # dependency; `cpex-python` depends on `cpex`, so it goes last.
+          # Each `cargo publish`
+          # blocks until the crate is visible in the index before returning,
+          # so the next crate's dependency resolves; the short sleep is
+          # extra slack for propagation.
           crates=(
-            cpex-orchestration
-            cpex-core
-            cpex-sdk
-            apl-core
-            apl-cmf
-            apl-cpex
-            cpex-plugin-pii-scanner
-            cpex-plugin-audit-logger
-            cpex-plugin-identity-jwt
-            cpex-plugin-delegator-oauth
-            cpex-plugin-delegator-biscuit
-            cpex-plugin-elicitation-ciba
-            cpex-pdp-cedar-direct
-            cpex-pdp-cel
-            cpex-pdp-opa
-            cpex-session-valkey
             cpex-hosts-python
-            cpex-builtins
+            cpex-plugin-delegator-biscuit
             cpex
             cpex-python
           )
+          # The list must name exactly the publishable members: a missing one
+          # stops the release halfway, as it did for 0.2.2. Compare against
+          # cargo metadata first, in dry runs too. `publish = false` shows up
+          # there as an empty list.
+          expected="$(cargo metadata --no-deps --format-version 1 \
+            | jq -r '.packages[] | select(.publish != []) | .name' | sort)"
+          listed="$(printf '%s\n' "${crates[@]}" | sort)"
+          if [ "$expected" != "$listed" ]; then
+            echo "::error::publish list does not match the publishable workspace members"
+            diff <(echo "$expected") <(echo "$listed") || true
+            exit 1
+          fi
+          # Dry run: build + verify a .crate for every publishable member
+          # (cargo resolves inter-member deps against each other's packaged
+          # versions) without uploading. This is how the workflow is
+          # exercised without a real release.
+          if [ "$DRY_RUN" = "true" ]; then
+            echo "::group::dry run — cargo package (no upload)"
+            # Verify the crates.io-published set only; these four
+            # publish=false crates are not part of the registry release.
+            cargo package --workspace --locked --exclude cpex-ffi --exclude cpex-demo-ffi --exclude cpex-tutorial --exclude cpex-parity-harness
+            echo "::endgroup::"
+            exit 0
+          fi
           for c in "${crates[@]}"; do
             echo "::group::publish $c"
             # Idempotent: a prior run can publish a leading prefix of this

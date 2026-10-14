@@ -23,7 +23,12 @@ plugins:
   - name: keycloak
     kind: identity/jwt
     hooks: [identity.resolve]
+    # Fetching the JWKS is an outbound HTTP call, made through the transport
+    # the host installs. A plugin may use it only if it declares perform_http.
+    capabilities: [perform_http]
     config:
+      role: user
+      header: Authorization
       claim_mapper: standard
       trusted_issuers:
         - issuer: http://localhost:8081/realms/cpex-tutorial
@@ -32,7 +37,8 @@ plugins:
           decoding_key:
             kind: jwks_url
             url: http://localhost:8081/realms/cpex-tutorial/protocol/openid-connect/certs
-            insecure_http: true      # localhost speaks http; never in production
+            insecure_http: true    # localhost speaks http; never set this in production
+            refresh_secs: 600
           leeway_seconds: 60
 
 routes:
@@ -47,7 +53,9 @@ routes:
 
 The plugin validates the JWT offline against the realm's signing keys, fetched once from the JWKS url and cached. It checks issuer, audience, expiry, and signature. A token that fails any check is rejected before any authorization rule runs. The realm emits flat `roles` and `permissions` claims (see [`idp/README.md`](https://github.com/contextforge-org/cpex/tree/main/examples/tutorial/idp)). The `standard` mapper turns `roles: ["hr"]` into `role.hr = true` and `permissions: ["view_ssn"]` into `perm.view_ssn = true`.
 
-The snippet is abbreviated; the file also sets `role`, `header`, and the JWKS `refresh_secs`. The tutorial personas: alice (hr and `view_ssn`), dana (hr, no `view_ssn`), evan (engineer), sam (security).
+Fetching the JWKS is an outbound HTTP call. It goes through the transport the host installed in module 1, and a plugin may use that transport only if it declares the `perform_http` capability. Leave out `capabilities: [perform_http]` and the plugin fails at initialize or on the first request, not at load. If the transport refuses the destination (the bundled default refuses `localhost`), the denial shows as `auth.jwks_unavailable`. The same code appears while Keycloak is still booting.
+
+The tutorial personas: alice (hr and `view_ssn`), dana (hr, no `view_ssn`), evan (engineer), sam (security).
 
 ## Run it
 
@@ -60,7 +68,7 @@ cargo run -p cpex-tutorial --example m02_identity
   ✓ ALLOWED  { ... }
 
 ▸ evan (engineer) → get_compensation (fails require(role.hr))
-  ✗ DENIED   [...] access denied
+  ✗ DENIED   [routes.tool:get_compensation.pre_invocation[1]] access denied
 
 ▸ garbage token → get_compensation (rejected at validation)
   ✗ DENIED   [auth.malformed_header] ...

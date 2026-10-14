@@ -19,27 +19,60 @@ A plugin is a Rust type implementing a hook handler. This one, a business-hours 
 
 ```rust
 impl HookHandler<CmfHook> for BusinessHours {
-    async fn handle(&self, payload: &MessagePayload, _ext: &Extensions, _ctx: &mut PluginContext)
-        -> PluginResult<MessagePayload>
-    {
-        let hour = payload.message.get_tool_calls().into_iter().next()
-            .and_then(|tc| tc.arguments.get("hour")).and_then(|v| v.as_u64());
+    async fn handle(
+        &self,
+        payload: &MessagePayload,
+        _extensions: &Extensions,
+        _ctx: &mut PluginContext,
+    ) -> PluginResult<MessagePayload> {
+        // Read the `hour` argument off the tool call.
+        let hour = payload
+            .message
+            .get_tool_calls()
+            .into_iter()
+            .next()
+            .and_then(|tc| tc.arguments.get("hour"))
+            .and_then(|v| v.as_u64());
+
         match hour {
             Some(h) if h >= self.open_hour && h < self.close_hour => PluginResult::allow(),
-            Some(h) => PluginResult::deny(PluginViolation::new("office.closed",
-                format!("requested at hour {h}, outside {}-{}", self.open_hour, self.close_hour))),
-            None => PluginResult::deny(PluginViolation::new("office.no_hour", "no `hour` argument")),
+            Some(h) => PluginResult::deny(PluginViolation::new(
+                "office.closed",
+                format!(
+                    "requested at hour {h}, outside business hours {}-{}",
+                    self.open_hour, self.close_hour
+                ),
+            )),
+            None => PluginResult::deny(PluginViolation::new(
+                "office.no_hour",
+                "request did not carry an `hour` argument",
+            )),
         }
     }
 }
 ```
 
-A factory builds it from config and wires the handler onto a hook. You register the factory before loading the policy, then reference the plugin by name. The traits come from `cpex-sdk`; the factory and handler-adapter plumbing come from `cpex-core`, the same pattern every builtin uses.
+A factory builds it from config and wires the handler onto a hook. You register the factory before loading the policy, then reference the plugin by name. The traits, the factory, and the handler-adapter plumbing all come from `cpex::prelude`, the same pattern every builtin uses. The `tutorial/audit-line` plugin from module 4 ([`src/audit.rs`](https://github.com/contextforge-org/cpex/tree/main/examples/tutorial/src/audit.rs)) is built the same way.
 
 ```rust
-mgr.register_factory("business-hours", Box::new(BusinessHoursFactory));
-cpex::install_builtins(&mgr);
-mgr.load_config_yaml(POLICY).unwrap();
+use cpex::prelude::{
+    CmfHook, Extensions, HookHandler, MessagePayload, Plugin, PluginConfig, PluginContext,
+    PluginError, PluginFactory, PluginInstance, PluginResult, PluginViolation, TypedHandlerAdapter,
+};
+use cpex::PolicyEngine;
+```
+
+```rust
+let engine = Arc::new(PolicyEngine::default());
+// Register the custom factory BEFORE loading config, so the APL visitor
+// can resolve `kind: business-hours` to it.
+engine.register_factory("business-hours", Box::new(BusinessHoursFactory));
+cpex::install_builtins(&engine);
+cpex_tutorial::install_http_transport(&engine);
+engine
+    .load_config_yaml(POLICY)
+    .expect("policy m09.yaml should load");
+engine.initialize().await.expect("initialize");
 ```
 
 The policy references it like any builtin ([`policies/m09.yaml`](https://github.com/contextforge-org/cpex/tree/main/examples/tutorial/policies/m09.yaml)):
@@ -49,7 +82,10 @@ plugins:
   - name: business-hours
     kind: business-hours
     hooks: [cmf.tool_pre_invoke]
-    config: { open_hour: 9, close_hour: 17 }
+    config:
+      open_hour: 9
+      close_hour: 17
+
 routes:
   - tool: get_compensation
     authorization:
@@ -65,7 +101,7 @@ cargo run -p cpex-tutorial --example m09_custom_plugin
 
 ```
 ▸ get_compensation at 10:00 (within 9-17 window)
-  ✓ ALLOWED  { ... }
+  ✓ ALLOWED  {"employee_id":"e-1001","name":"Alice Okafor","title":"Staff Engineer","salary":198000,"ssn":"521-38-7710"}
 
 ▸ get_compensation at 22:00 (outside the window)
   ✗ DENIED   [office.closed] requested at hour 22, outside business hours 9-17
@@ -82,7 +118,7 @@ cargo run -p cpex-tutorial --example m09_custom_plugin
        pre_invocation:
          - "run(business-hours)"
    ```
-   Then add a call to it in `m09_custom_plugin.rs` (e.g. `mediate(&mgr, &caller, "search_repos", json!({ "visibility": "public", "hour": 22 }), backends::search_repos)`), re-run, and confirm `search_repos` is denied at hour 22 too. One plugin, many routes.
+   Then add a call to it in `m09_custom_plugin.rs` (e.g. `mediate(&engine, &caller, "search_repos", json!({ "visibility": "public", "hour": 22 }), backends::search_repos)`), re-run, and confirm `search_repos` is denied at hour 22 too. One plugin, many routes.
 
 ## Checkpoint
 

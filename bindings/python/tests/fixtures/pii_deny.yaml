@@ -2,31 +2,26 @@
 # Copyright 2025
 # SPDX-License-Identifier: Apache-2.0
 #
-# Test fixture — validator/pii-scan in deny mode + audit/logger fire-and-forget.
+# Test fixture: deny a tool call whose `ssn` argument holds a US SSN.
 #
-# Used by test_manager.py for AE2 (KD10): a cmf.tool_pre_invoke invoke with a
-# payload containing an SSN → continue_processing=False, violation present.
-# The audit/logger runs as fire-and-forget and is asserted post-shutdown (KD4).
+# Used by test_manager.py and test_result.py: a cmf.tool_pre_invoke on
+# tool `lookup_person` with an SSN in the arguments gives
+# continue_processing=False and a violation with code `pii.ssn_detected`.
+#
+# The check is a CEL decision on the route. A CEL `expr` states when the
+# call is allowed; `on_deny` names the violation reported otherwise.
+# Routes are selected by `extensions.meta.entity_type` / `entity_name`,
+# so a call without that meta (or for another tool) is allowed.
 
-plugins:
-  - name: pii_deny
-    kind: validator/pii-scan
-    version: 1.0.0
-    hooks:
-      - cmf.tool_pre_invoke
-    mode: sequential
-    priority: 10
-    on_error: fail
-    config:
-      mode: deny
-      detect:
-        - kind: ssn
+global:
+  pdp:
+    - kind: cel
 
-  - name: audit_faf
-    kind: audit/logger
-    version: 1.0.0
-    hooks:
-      - cmf.tool_pre_invoke
-    mode: fire_and_forget
-    priority: 100
-    on_error: ignore
+routes:
+  - tool: lookup_person
+    authorization:
+      pre_invocation:
+        - cel:
+            expr: "!(has(args.ssn) && args.ssn.matches('^[0-9]{3}-[0-9]{2}-[0-9]{4}$'))"
+            on_deny:
+              - "deny('ssn found in tool arguments', 'pii.ssn_detected')"

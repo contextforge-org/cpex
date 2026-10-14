@@ -1,0 +1,588 @@
+# Reviewed differences between the CPEX 0.2.3 snapshots (snapshots/) and a
+# CPEX 0.3.0 replay of the same requests through the migrated configs.
+#
+# The parity test fails on any difference not listed here, and on any entry
+# that no longer matches a difference. Each entry names the scenario, the
+# request id (`<load>` for the load block), the field path inside that
+# request's record, the 0.2.3 value (`before`), the 0.3.0 value (`after`),
+# and the cause. A field missing on one side reads as null.
+#
+# To review a new difference, run
+#   cargo run -p cpex-parity-harness -- --diff
+# which prints every difference and the unlisted ones in this format.
+
+differences:
+- scenario: delegation-oauth
+  request: engineer-denied-before-delegation
+  field: code
+  before: routes.tool:get_compensation.apl.pre_invocation[0]
+  after: routes.tool:get_compensation.pre_invocation[0]
+  cause: 'Rule-path deny code. A step without a custom deny code reports its source path, and PPE builds
+    that path without the `.apl.` segment 0.2.3 inserted (PPE removed the `apl:` wrapper at every scope:
+    praxis-policy CHANGELOG 0.2.0, Removed, "The `apl:` wrapper"). Same decision, same failing step index.'
+- scenario: delegation-oauth
+  request: engineer-denied-before-delegation
+  field: stages[1].violation.code
+  before: routes.tool:get_compensation.apl.pre_invocation[0]
+  after: routes.tool:get_compensation.pre_invocation[0]
+  cause: 'Rule-path deny code. A step without a custom deny code reports its source path, and PPE builds
+    that path without the `.apl.` segment 0.2.3 inserted (PPE removed the `apl:` wrapper at every scope:
+    praxis-policy CHANGELOG 0.2.0, Removed, "The `apl:` wrapper"). Same decision, same failing step index.'
+- scenario: delegation-oauth
+  request: audience-refused
+  field: stages[1].violation.reason
+  before: 'invalid_target: audience not allowed for this client'
+  after: 'token exchange rejected: invalid_target'
+  cause: PPE no longer forwards the token endpoint's `error_description` on a token-exchange denial, only
+    the OAuth `error` code (praxis-policy CHANGELOG 0.2.0, Security, "Leg-2 token-exchange denials no
+    longer forward `error_description` or the raw body", praxis-proxy/policy#16). The violation code and
+    decision are unchanged.
+- scenario: elicitation-ciba
+  request: anonymous-denied
+  field: code
+  before: routes.tool:send_email.apl.pre_invocation[0]
+  after: routes.tool:send_email.pre_invocation[0]
+  cause: 'Rule-path deny code. A step without a custom deny code reports its source path, and PPE builds
+    that path without the `.apl.` segment 0.2.3 inserted (PPE removed the `apl:` wrapper at every scope:
+    praxis-policy CHANGELOG 0.2.0, Removed, "The `apl:` wrapper"). Same decision, same failing step index.'
+- scenario: elicitation-ciba
+  request: anonymous-denied
+  field: stages[0].violation.code
+  before: routes.tool:send_email.apl.pre_invocation[0]
+  after: routes.tool:send_email.pre_invocation[0]
+  cause: 'Rule-path deny code. A step without a custom deny code reports its source path, and PPE builds
+    that path without the `.apl.` segment 0.2.3 inserted (PPE removed the `apl:` wrapper at every scope:
+    praxis-policy CHANGELOG 0.2.0, Removed, "The `apl:` wrapper"). Same decision, same failing step index.'
+- scenario: elicitation-ciba
+  request: refused-resume-denied
+  field: code
+  before: routes.tool:send_email.apl.pre_invocation[1]
+  after: routes.tool:send_email.pre_invocation[1]
+  cause: 'Rule-path deny code. A step without a custom deny code reports its source path, and PPE builds
+    that path without the `.apl.` segment 0.2.3 inserted (PPE removed the `apl:` wrapper at every scope:
+    praxis-policy CHANGELOG 0.2.0, Removed, "The `apl:` wrapper"). Same decision, same failing step index.'
+- scenario: elicitation-ciba
+  request: refused-resume-denied
+  field: stages[1].violation.code
+  before: routes.tool:send_email.apl.pre_invocation[1]
+  after: routes.tool:send_email.pre_invocation[1]
+  cause: 'Rule-path deny code. A step without a custom deny code reports its source path, and PPE builds
+    that path without the `.apl.` segment 0.2.3 inserted (PPE removed the `apl:` wrapper at every scope:
+    praxis-policy CHANGELOG 0.2.0, Removed, "The `apl:` wrapper"). Same decision, same failing step index.'
+- scenario: elicitation-ciba
+  request: no-approver-claim
+  field: code
+  before: routes.tool:send_email.apl.pre_invocation[1]
+  after: routes.tool:send_email.pre_invocation[1]
+  cause: 'Rule-path deny code. A step without a custom deny code reports its source path, and PPE builds
+    that path without the `.apl.` segment 0.2.3 inserted (PPE removed the `apl:` wrapper at every scope:
+    praxis-policy CHANGELOG 0.2.0, Removed, "The `apl:` wrapper"). Same decision, same failing step index.'
+- scenario: elicitation-ciba
+  request: no-approver-claim
+  field: stages[1].violation.code
+  before: routes.tool:send_email.apl.pre_invocation[1]
+  after: routes.tool:send_email.pre_invocation[1]
+  cause: 'Rule-path deny code. A step without a custom deny code reports its source path, and PPE builds
+    that path without the `.apl.` segment 0.2.3 inserted (PPE removed the `apl:` wrapper at every scope:
+    praxis-policy CHANGELOG 0.2.0, Removed, "The `apl:` wrapper"). Same decision, same failing step index.'
+- scenario: identity-jwt
+  request: anonymous-get-compensation
+  field: code
+  before: routes.tool:get_compensation.apl.pre_invocation[0]
+  after: routes.tool:get_compensation.pre_invocation[0]
+  cause: 'Rule-path deny code. A step without a custom deny code reports its source path, and PPE builds
+    that path without the `.apl.` segment 0.2.3 inserted (PPE removed the `apl:` wrapper at every scope:
+    praxis-policy CHANGELOG 0.2.0, Removed, "The `apl:` wrapper"). Same decision, same failing step index.'
+- scenario: identity-jwt
+  request: anonymous-get-compensation
+  field: stages[0].violation.code
+  before: routes.tool:get_compensation.apl.pre_invocation[0]
+  after: routes.tool:get_compensation.pre_invocation[0]
+  cause: 'Rule-path deny code. A step without a custom deny code reports its source path, and PPE builds
+    that path without the `.apl.` segment 0.2.3 inserted (PPE removed the `apl:` wrapper at every scope:
+    praxis-policy CHANGELOG 0.2.0, Removed, "The `apl:` wrapper"). Same decision, same failing step index.'
+- scenario: identity-jwt
+  request: engineer-denied-by-role
+  field: code
+  before: routes.tool:get_compensation.apl.pre_invocation[1]
+  after: routes.tool:get_compensation.pre_invocation[1]
+  cause: 'Rule-path deny code. A step without a custom deny code reports its source path, and PPE builds
+    that path without the `.apl.` segment 0.2.3 inserted (PPE removed the `apl:` wrapper at every scope:
+    praxis-policy CHANGELOG 0.2.0, Removed, "The `apl:` wrapper"). Same decision, same failing step index.'
+- scenario: identity-jwt
+  request: engineer-denied-by-role
+  field: stages[1].violation.code
+  before: routes.tool:get_compensation.apl.pre_invocation[1]
+  after: routes.tool:get_compensation.pre_invocation[1]
+  cause: 'Rule-path deny code. A step without a custom deny code reports its source path, and PPE builds
+    that path without the `.apl.` segment 0.2.3 inserted (PPE removed the `apl:` wrapper at every scope:
+    praxis-policy CHANGELOG 0.2.0, Removed, "The `apl:` wrapper"). Same decision, same failing step index.'
+- scenario: identity-jwt
+  request: unknown-kid
+  field: upstream_calls
+  before: []
+  after:
+  - form: {}
+    method: GET
+    path: /jwks
+  cause: identity/jwt refetches the JWKS on demand when a token names a `kid` it does not hold, at most
+    once per `min_refresh_interval_secs` (praxis-policy CHANGELOG 0.2.0, Changed, "`identity-jwt` refreshes
+    JWKS on demand instead of on a timer", and Fixed, praxis-proxy/policy#29). The refetched set still
+    lacks the key, so the token is rejected with the same code.
+- scenario: identity-jwt
+  request: authenticated-open-route
+  field: stages[0].payload
+  before:
+    identity:
+      caller_workload: null
+      client: null
+      delegation: null
+      raw_claims:
+        aud: cpex-parity
+        exp: 4102444800
+        iat: 1767225600
+        iss: https://idp.parity.test
+        roles:
+        - engineer
+        sub: evan
+      raw_credentials:
+        delegated_tokens: []
+        inbound_tokens:
+        - kind: jwt
+          role: user
+          source_header: Authorization
+          token: <token>
+      subject:
+        claims: {}
+        id: evan
+        permissions: []
+        roles:
+        - engineer
+        teams: []
+  after: null
+  cause: 'Under PPE''s default `dispatch: policy` an identity plugin runs only on routes whose `authentication:`
+    names it (praxis-policy CHANGELOG 0.2.0, Changed, "`engine_settings.dispatch:` defaults to `policy`").
+    `search_repos` lists none, so 0.3.0 does not validate the bearer and no subject or inbound credential
+    reaches the pre and post stages; 0.2.3 ran the identity plugin on every route. The decision matches
+    because the route allows everyone. A route that reads `subject` or `authenticated` must now list `authentication:`.'
+- scenario: identity-jwt
+  request: authenticated-open-route
+  field: stages[0].payload_modified
+  before: true
+  after: false
+  cause: 'Under PPE''s default `dispatch: policy` an identity plugin runs only on routes whose `authentication:`
+    names it (praxis-policy CHANGELOG 0.2.0, Changed, "`engine_settings.dispatch:` defaults to `policy`").
+    `search_repos` lists none, so 0.3.0 does not validate the bearer and no subject or inbound credential
+    reaches the pre and post stages; 0.2.3 ran the identity plugin on every route. The decision matches
+    because the route allows everyone. A route that reads `subject` or `authenticated` must now list `authentication:`.'
+- scenario: identity-jwt
+  request: authenticated-open-route
+  field: stages[1].extensions.raw_credentials
+  before:
+    delegated_tokens: []
+    inbound_tokens:
+    - kind: jwt
+      role: user
+      source_header: Authorization
+      token: <token>
+  after: null
+  cause: 'Under PPE''s default `dispatch: policy` an identity plugin runs only on routes whose `authentication:`
+    names it (praxis-policy CHANGELOG 0.2.0, Changed, "`engine_settings.dispatch:` defaults to `policy`").
+    `search_repos` lists none, so 0.3.0 does not validate the bearer and no subject or inbound credential
+    reaches the pre and post stages; 0.2.3 ran the identity plugin on every route. The decision matches
+    because the route allows everyone. A route that reads `subject` or `authenticated` must now list `authentication:`.'
+- scenario: identity-jwt
+  request: authenticated-open-route
+  field: stages[1].extensions.security
+  before:
+    auth_method: null
+    caller_workload: null
+    classification: null
+    client: null
+    labels: []
+    subject:
+      claims: {}
+      id: evan
+      permissions: []
+      roles:
+      - engineer
+      teams: []
+  after: null
+  cause: 'Under PPE''s default `dispatch: policy` an identity plugin runs only on routes whose `authentication:`
+    names it (praxis-policy CHANGELOG 0.2.0, Changed, "`engine_settings.dispatch:` defaults to `policy`").
+    `search_repos` lists none, so 0.3.0 does not validate the bearer and no subject or inbound credential
+    reaches the pre and post stages; 0.2.3 ran the identity plugin on every route. The decision matches
+    because the route allows everyone. A route that reads `subject` or `authenticated` must now list `authentication:`.'
+- scenario: identity-jwt
+  request: authenticated-open-route
+  field: stages[2].extensions.raw_credentials
+  before:
+    delegated_tokens: []
+    inbound_tokens:
+    - kind: jwt
+      role: user
+      source_header: Authorization
+      token: <token>
+  after: null
+  cause: 'Under PPE''s default `dispatch: policy` an identity plugin runs only on routes whose `authentication:`
+    names it (praxis-policy CHANGELOG 0.2.0, Changed, "`engine_settings.dispatch:` defaults to `policy`").
+    `search_repos` lists none, so 0.3.0 does not validate the bearer and no subject or inbound credential
+    reaches the pre and post stages; 0.2.3 ran the identity plugin on every route. The decision matches
+    because the route allows everyone. A route that reads `subject` or `authenticated` must now list `authentication:`.'
+- scenario: identity-jwt
+  request: authenticated-open-route
+  field: stages[2].extensions.security
+  before:
+    auth_method: null
+    caller_workload: null
+    classification: null
+    client: null
+    labels: []
+    subject:
+      claims: {}
+      id: evan
+      permissions: []
+      roles:
+      - engineer
+      teams: []
+  after: null
+  cause: 'Under PPE''s default `dispatch: policy` an identity plugin runs only on routes whose `authentication:`
+    names it (praxis-policy CHANGELOG 0.2.0, Changed, "`engine_settings.dispatch:` defaults to `policy`").
+    `search_repos` lists none, so 0.3.0 does not validate the bearer and no subject or inbound credential
+    reaches the pre and post stages; 0.2.3 ran the identity plugin on every route. The decision matches
+    because the route allows everyone. A route that reads `subject` or `authenticated` must now list `authentication:`.'
+- scenario: pdp-cel
+  request: anonymous-internal
+  field: code
+  before: routes.tool:search_repos.apl.pre_invocation[0]
+  after: routes.tool:search_repos.pre_invocation[0]
+  cause: 'Rule-path deny code. A step without a custom deny code reports its source path, and PPE builds
+    that path without the `.apl.` segment 0.2.3 inserted (PPE removed the `apl:` wrapper at every scope:
+    praxis-policy CHANGELOG 0.2.0, Removed, "The `apl:` wrapper"). Same decision, same failing step index.'
+- scenario: pdp-cel
+  request: anonymous-internal
+  field: stages[0].violation.code
+  before: routes.tool:search_repos.apl.pre_invocation[0]
+  after: routes.tool:search_repos.pre_invocation[0]
+  cause: 'Rule-path deny code. A step without a custom deny code reports its source path, and PPE builds
+    that path without the `.apl.` segment 0.2.3 inserted (PPE removed the `apl:` wrapper at every scope:
+    praxis-policy CHANGELOG 0.2.0, Removed, "The `apl:` wrapper"). Same decision, same failing step index.'
+- scenario: session-memory
+  request: engineer-denied-no-taint
+  field: code
+  before: routes.tool:get_compensation.apl.pre_invocation[0]
+  after: routes.tool:get_compensation.pre_invocation[0]
+  cause: 'Rule-path deny code. A step without a custom deny code reports its source path, and PPE builds
+    that path without the `.apl.` segment 0.2.3 inserted (PPE removed the `apl:` wrapper at every scope:
+    praxis-policy CHANGELOG 0.2.0, Removed, "The `apl:` wrapper"). Same decision, same failing step index.'
+- scenario: session-memory
+  request: engineer-denied-no-taint
+  field: stages[1].violation.code
+  before: routes.tool:get_compensation.apl.pre_invocation[0]
+  after: routes.tool:get_compensation.pre_invocation[0]
+  cause: 'Rule-path deny code. A step without a custom deny code reports its source path, and PPE builds
+    that path without the `.apl.` segment 0.2.3 inserted (PPE removed the `apl:` wrapper at every scope:
+    praxis-policy CHANGELOG 0.2.0, Removed, "The `apl:` wrapper"). Same decision, same failing step index.'
+- scenario: session-valkey
+  request: engineer-denied-no-taint
+  field: code
+  before: routes.tool:get_compensation.apl.pre_invocation[0]
+  after: routes.tool:get_compensation.pre_invocation[0]
+  cause: 'Rule-path deny code. A step without a custom deny code reports its source path, and PPE builds
+    that path without the `.apl.` segment 0.2.3 inserted (PPE removed the `apl:` wrapper at every scope:
+    praxis-policy CHANGELOG 0.2.0, Removed, "The `apl:` wrapper"). Same decision, same failing step index.'
+- scenario: session-valkey
+  request: engineer-denied-no-taint
+  field: stages[1].violation.code
+  before: routes.tool:get_compensation.apl.pre_invocation[0]
+  after: routes.tool:get_compensation.pre_invocation[0]
+  cause: 'Rule-path deny code. A step without a custom deny code reports its source path, and PPE builds
+    that path without the `.apl.` segment 0.2.3 inserted (PPE removed the `apl:` wrapper at every scope:
+    praxis-policy CHANGELOG 0.2.0, Removed, "The `apl:` wrapper"). Same decision, same failing step index.'
+- scenario: delegation-oauth
+  request: hr-delegated
+  field: stages[1].extensions.raw_credentials.delegated_tokens[0].key.delegator_name
+  before: null
+  after: workday-oauth
+  cause: 'PPE 0.5.0 scopes delegated-token keys by delegator instance and logical target as well as principal, audience and scopes (praxis-proxy/policy#188). These added identity fields distinguish credentials for separate downstream targets; the decision and token effects are otherwise unchanged.'
+- scenario: delegation-oauth
+  request: hr-delegated
+  field: stages[1].extensions.raw_credentials.delegated_tokens[0].key.target_name
+  before: null
+  after: workday-api
+  cause: 'PPE 0.5.0 scopes delegated-token keys by delegator instance and logical target as well as principal, audience and scopes (praxis-proxy/policy#188). These added identity fields distinguish credentials for separate downstream targets; the decision and token effects are otherwise unchanged.'
+- scenario: delegation-oauth
+  request: hr-delegated
+  field: stages[2].extensions.raw_credentials.delegated_tokens[0].key.delegator_name
+  before: null
+  after: workday-oauth
+  cause: 'PPE 0.5.0 scopes delegated-token keys by delegator instance and logical target as well as principal, audience and scopes (praxis-proxy/policy#188). These added identity fields distinguish credentials for separate downstream targets; the decision and token effects are otherwise unchanged.'
+- scenario: delegation-oauth
+  request: hr-delegated
+  field: stages[2].extensions.raw_credentials.delegated_tokens[0].key.target_name
+  before: null
+  after: workday-api
+  cause: 'PPE 0.5.0 scopes delegated-token keys by delegator instance and logical target as well as principal, audience and scopes (praxis-proxy/policy#188). These added identity fields distinguish credentials for separate downstream targets; the decision and token effects are otherwise unchanged.'
+- scenario: delegation-oauth
+  request: hr-delegated-again
+  field: stages[1].extensions.raw_credentials.delegated_tokens[0].key.delegator_name
+  before: null
+  after: workday-oauth
+  cause: 'PPE 0.5.0 scopes delegated-token keys by delegator instance and logical target as well as principal, audience and scopes (praxis-proxy/policy#188). These added identity fields distinguish credentials for separate downstream targets; the decision and token effects are otherwise unchanged.'
+- scenario: delegation-oauth
+  request: hr-delegated-again
+  field: stages[1].extensions.raw_credentials.delegated_tokens[0].key.target_name
+  before: null
+  after: workday-api
+  cause: 'PPE 0.5.0 scopes delegated-token keys by delegator instance and logical target as well as principal, audience and scopes (praxis-proxy/policy#188). These added identity fields distinguish credentials for separate downstream targets; the decision and token effects are otherwise unchanged.'
+- scenario: delegation-oauth
+  request: hr-delegated-again
+  field: stages[2].extensions.raw_credentials.delegated_tokens[0].key.delegator_name
+  before: null
+  after: workday-oauth
+  cause: 'PPE 0.5.0 scopes delegated-token keys by delegator instance and logical target as well as principal, audience and scopes (praxis-proxy/policy#188). These added identity fields distinguish credentials for separate downstream targets; the decision and token effects are otherwise unchanged.'
+- scenario: delegation-oauth
+  request: hr-delegated-again
+  field: stages[2].extensions.raw_credentials.delegated_tokens[0].key.target_name
+  before: null
+  after: workday-api
+  cause: 'PPE 0.5.0 scopes delegated-token keys by delegator instance and logical target as well as principal, audience and scopes (praxis-proxy/policy#188). These added identity fields distinguish credentials for separate downstream targets; the decision and token effects are otherwise unchanged.'
+- scenario: elicitation-ciba
+  request: approved-resume-by-other-subject
+  field: code
+  before: null
+  after: elicitation.unknown_id
+  cause: 'PPE 0.5.0 binds CIBA approvals to requester, route and tool and atomically consumes each approved id once (praxis-proxy/policy#188). The fixture first redeems the id as evan, then retries it as harry; the second call now denies with elicitation.unknown_id instead of allowing another subject to reuse the approval.'
+- scenario: elicitation-ciba
+  request: approved-resume-by-other-subject
+  field: decision
+  before: allow
+  after: deny
+  cause: 'PPE 0.5.0 binds CIBA approvals to requester, route and tool and atomically consumes each approved id once (praxis-proxy/policy#188). The fixture first redeems the id as evan, then retries it as harry; the second call now denies with elicitation.unknown_id instead of allowing another subject to reuse the approval.'
+- scenario: elicitation-ciba
+  request: approved-resume-by-other-subject
+  field: result
+  before:
+    sent: true
+  after: null
+  cause: 'PPE 0.5.0 binds CIBA approvals to requester, route and tool and atomically consumes each approved id once (praxis-proxy/policy#188). The fixture first redeems the id as evan, then retries it as harry; the second call now denies with elicitation.unknown_id instead of allowing another subject to reuse the approval.'
+- scenario: elicitation-ciba
+  request: approved-resume-by-other-subject
+  field: stages
+  before:
+  - continue: true
+    errors: []
+    extensions:
+      agent: null
+      delegation: null
+      http:
+        request_headers:
+          X-Policy-Elicitation-Id: REQ-mona
+        response_headers: {}
+      meta:
+        entity_name: send_email
+        entity_type: tool
+        tags: []
+      raw_credentials: null
+      security: null
+    hook: identity.resolve
+    payload:
+      identity:
+        caller_workload: null
+        client: null
+        delegation: null
+        raw_claims:
+          aud: cpex-parity
+          exp: 4102444800
+          iat: 1767225600
+          iss: https://idp.parity.test
+          manager: dana
+          roles:
+          - hr
+          sub: harry
+        raw_credentials:
+          delegated_tokens: []
+          inbound_tokens:
+          - kind: jwt
+            role: user
+            source_header: Authorization
+            token: <token>
+        subject:
+          claims:
+            manager: dana
+          id: harry
+          permissions: []
+          roles:
+          - hr
+          teams: []
+    payload_modified: true
+    violation: null
+  - continue: true
+    errors: []
+    extensions:
+      agent: null
+      delegation: null
+      http:
+        request_headers:
+          X-Policy-Elicitation-Id: REQ-mona
+        response_headers: {}
+      meta:
+        entity_name: send_email
+        entity_type: tool
+        tags: []
+      raw_credentials:
+        delegated_tokens: []
+        inbound_tokens:
+        - kind: jwt
+          role: user
+          source_header: Authorization
+          token: <token>
+      security:
+        auth_method: null
+        caller_workload: null
+        classification: null
+        client: null
+        labels: []
+        subject:
+          claims:
+            manager: dana
+          id: harry
+          permissions: []
+          roles:
+          - hr
+          teams: []
+    hook: cmf.tool_pre_invoke
+    payload: null
+    payload_modified: false
+    violation: null
+  - continue: true
+    errors: []
+    extensions:
+      agent: null
+      delegation: null
+      http:
+        request_headers:
+          X-Policy-Elicitation-Id: REQ-mona
+        response_headers: {}
+      meta:
+        entity_name: send_email
+        entity_type: tool
+        tags: []
+      raw_credentials:
+        delegated_tokens: []
+        inbound_tokens:
+        - kind: jwt
+          role: user
+          source_header: Authorization
+          token: <token>
+      security:
+        auth_method: null
+        caller_workload: null
+        classification: null
+        client: null
+        labels: []
+        subject:
+          claims:
+            manager: dana
+          id: harry
+          permissions: []
+          roles:
+          - hr
+          teams: []
+    hook: cmf.tool_post_invoke
+    payload: null
+    payload_modified: false
+    violation: null
+  after:
+  - continue: true
+    errors: []
+    extensions:
+      agent: null
+      delegation: null
+      http:
+        request_headers:
+          X-Policy-Elicitation-Id: REQ-mona
+        response_headers: {}
+      meta:
+        entity_name: send_email
+        entity_type: tool
+        tags: []
+      raw_credentials: null
+      security: null
+    hook: identity.resolve
+    payload:
+      identity:
+        caller_workload: null
+        client: null
+        delegation: null
+        raw_claims:
+          aud: cpex-parity
+          exp: 4102444800
+          iat: 1767225600
+          iss: https://idp.parity.test
+          manager: dana
+          roles:
+          - hr
+          sub: harry
+        raw_credentials:
+          delegated_tokens: []
+          inbound_tokens:
+          - kind: jwt
+            role: user
+            source_header: Authorization
+            token: <token>
+        subject:
+          claims:
+            manager: dana
+          id: harry
+          permissions: []
+          roles:
+          - hr
+          teams: []
+    payload_modified: true
+    violation: null
+  - continue: false
+    errors: []
+    extensions:
+      agent: null
+      delegation: null
+      http:
+        request_headers:
+          X-Policy-Elicitation-Id: REQ-mona
+        response_headers: {}
+      meta:
+        entity_name: send_email
+        entity_type: tool
+        tags: []
+      raw_credentials:
+        delegated_tokens: []
+        inbound_tokens:
+        - kind: jwt
+          role: user
+          source_header: Authorization
+          token: <token>
+      security:
+        auth_method: null
+        caller_workload: null
+        classification: null
+        client: null
+        labels: []
+        subject:
+          claims:
+            manager: dana
+          id: harry
+          permissions: []
+          roles:
+          - hr
+          teams: []
+    hook: cmf.tool_pre_invoke
+    payload: null
+    payload_modified: false
+    violation:
+      code: elicitation.unknown_id
+      description: null
+      details: {}
+      plugin: apl::tool::send_email::pre
+      proto_error_code: null
+      reason: 'elicitation check failed: elicitation handler error elicitation.unknown_id: check: plugin `manager-approval` halted: unknown elicitation id'
+  cause: 'PPE 0.5.0 binds CIBA approvals to requester, route and tool and atomically consumes each approved id once (praxis-proxy/policy#188). The fixture first redeems the id as evan, then retries it as harry; the second call now denies with elicitation.unknown_id instead of allowing another subject to reuse the approval.'

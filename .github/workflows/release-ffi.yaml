@@ -83,9 +83,9 @@ jobs:
           key: ${{ matrix.target }}
 
       - name: Install musl toolchain
-        # ring (via jsonwebtoken/rustls/quinn) compiles C + asm through
-        # cc-rs, which for a *-unknown-linux-musl target shells out to
-        # <arch>-linux-musl-gcc. The runners ship only the glibc gcc, so
+        # ring (via rustls) and aws-lc-sys (via jsonwebtoken in the PPE
+        # builtins) compile C + asm through cc-rs, which for a
+        # *-unknown-linux-musl target shells out to <arch>-linux-musl-gcc. The runners ship only the glibc gcc, so
         # we install musl-gcc here. The matrix runs each musl target on
         # its native-arch runner, so musl-gcc targets the host arch and
         # the CC_/LINKER env vars below redirect cc-rs and the linker to

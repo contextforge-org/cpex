@@ -7,7 +7,7 @@
 //
 // All types use msgpack struct tags matching the Rust field names
 // for zero-copy serialization across the FFI boundary. Extension
-// types mirror crates/cpex-core/src/extensions/.
+// types mirror praxis_policy_core::extensions.
 
 package cpex
 
@@ -15,6 +15,10 @@ import "github.com/vmihailenco/msgpack/v5"
 
 // Extensions carries capability-gated data alongside the payload.
 // Serialized to/from MessagePack when crossing the FFI boundary.
+//
+// The Rust raw_credentials slot has no Go field. Its tokens are never
+// serialized, so a copy that crossed the FFI would carry empty tokens;
+// use InvokeResolved to keep inbound credentials in Rust memory.
 type Extensions struct {
 	Meta       *MetaExtension       `msgpack:"meta,omitempty"`
 	Security   *SecurityExtension   `msgpack:"security,omitempty"`
@@ -22,12 +26,16 @@ type Extensions struct {
 	Delegation *DelegationExtension `msgpack:"delegation,omitempty"`
 	Agent      *AgentExtension      `msgpack:"agent,omitempty"`
 	Request    *RequestExtension    `msgpack:"request,omitempty"`
-	MCP        *MCPExtension        `msgpack:"mcp,omitempty"`
-	Completion *CompletionExtension `msgpack:"completion,omitempty"`
-	Provenance *ProvenanceExtension `msgpack:"provenance,omitempty"`
-	LLM        *LLMExtension        `msgpack:"llm,omitempty"`
-	Framework  *FrameworkExtension  `msgpack:"framework,omitempty"`
-	Custom     map[string]any       `msgpack:"custom,omitempty"`
+	// CandidateConstraint narrows the model or backend candidate set.
+	// Plugins holding write_candidate_constraint fill it; a host reads it
+	// back from the result to filter its routing choices.
+	CandidateConstraint *CandidateConstraintExtension `msgpack:"candidate_constraint,omitempty"`
+	MCP                 *MCPExtension                 `msgpack:"mcp,omitempty"`
+	Completion          *CompletionExtension          `msgpack:"completion,omitempty"`
+	Provenance          *ProvenanceExtension          `msgpack:"provenance,omitempty"`
+	LLM                 *LLMExtension                 `msgpack:"llm,omitempty"`
+	Framework           *FrameworkExtension           `msgpack:"framework,omitempty"`
+	Custom              map[string]any                `msgpack:"custom,omitempty"`
 }
 
 // MetaExtension carries entity identification for route resolution.
@@ -40,11 +48,18 @@ type MetaExtension struct {
 }
 
 // SecurityExtension carries identity, labels, and data policies.
+//
+// It holds four identity slots: Subject (the user), Client (the OAuth
+// client that brokered the request), CallerWorkload (the attested peer
+// that called this service) and ThisWorkload (this service's own
+// workload identity).
 type SecurityExtension struct {
 	Labels         []string                         `msgpack:"labels,omitempty"`
 	Classification string                           `msgpack:"classification,omitempty"`
 	Subject        *SubjectExtension                `msgpack:"subject,omitempty"`
-	Agent          *AgentIdentity                   `msgpack:"agent,omitempty"`
+	Client         *ClientExtension                 `msgpack:"client,omitempty"`
+	CallerWorkload *WorkloadIdentity                `msgpack:"caller_workload,omitempty"`
+	ThisWorkload   *WorkloadIdentity                `msgpack:"this_workload,omitempty"`
 	AuthMethod     string                           `msgpack:"auth_method,omitempty"`
 	Objects        map[string]ObjectSecurityProfile `msgpack:"objects,omitempty"`
 	Data           map[string]DataPolicy            `msgpack:"data,omitempty"`
@@ -52,19 +67,50 @@ type SecurityExtension struct {
 
 // SubjectExtension represents the authenticated caller.
 type SubjectExtension struct {
-	ID          string            `msgpack:"id,omitempty"`
-	SubjectType string            `msgpack:"subject_type,omitempty"`
-	Roles       []string          `msgpack:"roles,omitempty"`
-	Permissions []string          `msgpack:"permissions,omitempty"`
-	Teams       []string          `msgpack:"teams,omitempty"`
-	Claims      map[string]string `msgpack:"claims,omitempty"`
+	ID          string   `msgpack:"id,omitempty"`
+	SubjectType string   `msgpack:"subject_type,omitempty"`
+	Roles       []string `msgpack:"roles,omitempty"`
+	Permissions []string `msgpack:"permissions,omitempty"`
+	Teams       []string `msgpack:"teams,omitempty"`
+	// Claims holds the token claims the resolver kept, with their JSON
+	// shape: a value can be a string, bool, number, array or nested map.
+	Claims map[string]any `msgpack:"claims,omitempty"`
 }
 
-// AgentIdentity represents this agent's own workload identity.
-type AgentIdentity struct {
-	ClientID    string `msgpack:"client_id,omitempty"`
-	WorkloadID  string `msgpack:"workload_id,omitempty"`
+// Client trust levels. A resolver can also set an operator-defined
+// string, which travels verbatim.
+const (
+	ClientTrustFirstParty = "first_party"
+	ClientTrustThirdParty = "third_party"
+	ClientTrustInternal   = "internal"
+)
+
+// ClientExtension is the OAuth client or gateway that brokered the
+// request, as distinct from the user in SubjectExtension.
+type ClientExtension struct {
+	ClientID   string `msgpack:"client_id"`
+	ClientName string `msgpack:"client_name,omitempty"`
+	// TrustLevel is one of the ClientTrust constants or a custom string.
+	// Empty means first_party on the Rust side.
+	TrustLevel          string         `msgpack:"trust_level,omitempty"`
+	AuthorizedScopes    []string       `msgpack:"authorized_scopes,omitempty"`
+	AuthorizedAudiences []string       `msgpack:"authorized_audiences,omitempty"`
+	Roles               []string       `msgpack:"roles,omitempty"`
+	Permissions         []string       `msgpack:"permissions,omitempty"`
+	Teams               []string       `msgpack:"teams,omitempty"`
+	Claims              map[string]any `msgpack:"claims,omitempty"`
+}
+
+// WorkloadIdentity is an attested workload identity, used for both
+// SecurityExtension.CallerWorkload and SecurityExtension.ThisWorkload.
+type WorkloadIdentity struct {
+	SpiffeID    string `msgpack:"spiffe_id,omitempty"`
 	TrustDomain string `msgpack:"trust_domain,omitempty"`
+	// AttestedAt is an RFC 3339 timestamp.
+	AttestedAt string   `msgpack:"attested_at,omitempty"`
+	Attestor   string   `msgpack:"attestor,omitempty"`
+	Selectors  []string `msgpack:"selectors,omitempty"`
+	ClientID   string   `msgpack:"client_id,omitempty"`
 }
 
 // ObjectSecurityProfile is a security profile for a managed object.
@@ -77,8 +123,11 @@ type ObjectSecurityProfile struct {
 
 // DataPolicy defines data handling policies.
 type DataPolicy struct {
-	ApplyLabels    []string         `msgpack:"apply_labels,omitempty"`
-	AllowedActions []string         `msgpack:"allowed_actions,omitempty"`
+	ApplyLabels []string `msgpack:"apply_labels,omitempty"`
+	// AllowedActions distinguishes nil from empty: nil allows every
+	// action, an empty non-nil slice allows none. The tag has no
+	// omitempty so an empty slice is not dropped on the way to Rust.
+	AllowedActions []string         `msgpack:"allowed_actions"`
 	DeniedActions  []string         `msgpack:"denied_actions,omitempty"`
 	Retention      *RetentionPolicy `msgpack:"retention,omitempty"`
 }
@@ -90,10 +139,19 @@ type RetentionPolicy struct {
 	DeleteAfter   string  `msgpack:"delete_after,omitempty"`
 }
 
-// HttpExtension carries HTTP request and response headers.
+// HttpExtension carries the HTTP request line, headers and response
+// status. Method and Path select `http:` routes; set them at the
+// identity.resolve invocation so the route's own authentication list
+// applies.
 type HttpExtension struct {
 	RequestHeaders  map[string]string `msgpack:"request_headers,omitempty"`
 	ResponseHeaders map[string]string `msgpack:"response_headers,omitempty"`
+	// Status is the response status code. Zero means unset.
+	Status uint16 `msgpack:"status,omitempty"`
+	Method string `msgpack:"method,omitempty"`
+	Path   string `msgpack:"path,omitempty"`
+	Host   string `msgpack:"host,omitempty"`
+	Scheme string `msgpack:"scheme,omitempty"`
 }
 
 // DelegationExtension carries the token delegation chain.
@@ -108,14 +166,19 @@ type DelegationExtension struct {
 
 // DelegationHop is a single step in the delegation chain.
 type DelegationHop struct {
-	SubjectID     string   `msgpack:"subject_id,omitempty"`
+	// SubjectID is required on the Rust side, so it is always sent.
+	SubjectID     string   `msgpack:"subject_id"`
 	SubjectType   string   `msgpack:"subject_type,omitempty"`
 	Audience      string   `msgpack:"audience,omitempty"`
 	ScopesGranted []string `msgpack:"scopes_granted,omitempty"`
-	Timestamp     string   `msgpack:"timestamp,omitempty"`
-	TTLSeconds    *uint64  `msgpack:"ttl_seconds,omitempty"`
-	Strategy      string   `msgpack:"strategy,omitempty"`
-	FromCache     bool     `msgpack:"from_cache,omitempty"`
+	// AuthorizationDetails holds RFC 9396 authorization_details entries.
+	// Each is a JSON-shaped map with a "type" key plus any other fields.
+	AuthorizationDetails []map[string]any `msgpack:"authorization_details,omitempty"`
+	// Timestamp is an RFC 3339 timestamp.
+	Timestamp  string  `msgpack:"timestamp,omitempty"`
+	TTLSeconds *uint64 `msgpack:"ttl_seconds,omitempty"`
+	Strategy   string  `msgpack:"strategy,omitempty"`
+	FromCache  bool    `msgpack:"from_cache,omitempty"`
 }
 
 // AgentExtension carries agent execution context.
@@ -135,7 +198,7 @@ type AgentExtension struct {
 }
 
 // ConversationContext is per-conversation summary state, shared across
-// turns. Mirrors `cpex_core::extensions::agent::ConversationContext`.
+// turns. Mirrors `praxis_policy_core::extensions::agent::ConversationContext`.
 type ConversationContext struct {
 	// Recent conversation history, lightweight summaries (free-form
 	// JSON-style values to match Rust's Vec<serde_json::Value>).
@@ -178,18 +241,22 @@ type ToolMetadata struct {
 
 // ResourceMetadata is MCP resource metadata.
 type ResourceMetadata struct {
-	URI         string `msgpack:"uri"`
-	Name        string `msgpack:"name,omitempty"`
-	Description string `msgpack:"description,omitempty"`
-	MimeType    string `msgpack:"mime_type,omitempty"`
-	ServerID    string `msgpack:"server_id,omitempty"`
+	URI         string         `msgpack:"uri"`
+	Name        string         `msgpack:"name,omitempty"`
+	Description string         `msgpack:"description,omitempty"`
+	MimeType    string         `msgpack:"mime_type,omitempty"`
+	ServerID    string         `msgpack:"server_id,omitempty"`
+	Annotations map[string]any `msgpack:"annotations,omitempty"`
 }
 
 // PromptMetadata is MCP prompt metadata.
 type PromptMetadata struct {
 	Name        string `msgpack:"name"`
 	Description string `msgpack:"description,omitempty"`
-	ServerID    string `msgpack:"server_id,omitempty"`
+	// Arguments are the prompt's declared arguments, JSON-shaped.
+	Arguments   []any          `msgpack:"arguments,omitempty"`
+	ServerID    string         `msgpack:"server_id,omitempty"`
+	Annotations map[string]any `msgpack:"annotations,omitempty"`
 }
 
 // CompletionExtension carries LLM completion information.
@@ -223,6 +290,28 @@ type LLMExtension struct {
 	ModelID      string   `msgpack:"model_id,omitempty"`
 	Provider     string   `msgpack:"provider,omitempty"`
 	Capabilities []string `msgpack:"capabilities,omitempty"`
+}
+
+// Candidate-constraint OnEmpty values.
+const (
+	OnEmptyDeny     = "deny"
+	OnEmptyFallback = "fallback"
+)
+
+// CandidateConstraintExtension narrows the set of models, regions or
+// sites a router may pick. The Allow* fields distinguish nil from
+// empty: nil leaves that dimension unconstrained, an empty non-nil
+// slice allows nothing. Their tags have no omitempty so an empty slice
+// reaches Rust as an empty list.
+type CandidateConstraintExtension struct {
+	AllowModels  []string          `msgpack:"allow_models"`
+	DenyModels   []string          `msgpack:"deny_models,omitempty"`
+	AllowRegions []string          `msgpack:"allow_regions"`
+	AllowSites   []string          `msgpack:"allow_sites"`
+	MaxCostTiers []string          `msgpack:"max_cost_tiers,omitempty"`
+	Custom       map[string]string `msgpack:"custom,omitempty"`
+	// OnEmpty is OnEmptyDeny or OnEmptyFallback. Empty means deny.
+	OnEmpty string `msgpack:"on_empty,omitempty"`
 }
 
 // FrameworkExtension carries agentic framework context.

@@ -17,10 +17,10 @@
 
 use std::sync::Arc;
 
-use cpex::PluginManager;
+use cpex::PolicyEngine;
 use cpex_tutorial::backends;
 use cpex_tutorial::ui;
-use cpex_tutorial::{mediate, Caller, Outcome};
+use cpex_tutorial::{Caller, Outcome, mediate};
 
 use serde_json::json;
 
@@ -30,18 +30,20 @@ const POLICY: &str = include_str!("../policies/m03.yaml");
 async fn main() {
     ui::module_banner("Module 3: Shaping data");
 
-    let mgr = Arc::new(PluginManager::default());
-    cpex::install_builtins(&mgr);
-    mgr.load_config_yaml(POLICY)
+    let engine = Arc::new(PolicyEngine::default());
+    cpex::install_builtins(&engine);
+    cpex_tutorial::install_http_transport(&engine);
+    engine
+        .load_config_yaml(POLICY)
         .expect("policy m03.yaml should load");
-    mgr.initialize().await.expect("initialize");
+    engine.initialize().await.expect("initialize");
 
     let caller = Caller::anonymous();
     let mut all_passed = true;
 
     ui::scenario("anonymous → get_compensation (result pipeline redacts ssn + salary, masks id)");
     let outcome = mediate(
-        &mgr,
+        &engine,
         &caller,
         "get_compensation",
         json!({ "employee_id": "e-1001" }),
@@ -55,17 +57,17 @@ async fn main() {
     // Field-level verification runs under --check only, so an interactive
     // "Try it" run (e.g. minting alice, where the SSN is meant to appear)
     // stays quiet; the printed result above already shows what was shaped.
-    if ui::check_mode() {
-        if let Outcome::Allowed { result } = &outcome {
-            let ssn = result.get("ssn").and_then(|v| v.as_str()).unwrap_or("");
-            let id = result
-                .get("employee_id")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            let ssn_redacted = ssn != "521-38-7710";
-            let id_masked = id != "e-1001";
-            all_passed &= ssn_redacted && id_masked;
-        }
+    if ui::check_mode()
+        && let Outcome::Allowed { result } = &outcome
+    {
+        let ssn = result.get("ssn").and_then(|v| v.as_str()).unwrap_or("");
+        let id = result
+            .get("employee_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let ssn_redacted = ssn != "521-38-7710";
+        let id_masked = id != "e-1001";
+        all_passed &= ssn_redacted && id_masked;
     }
     println!();
 

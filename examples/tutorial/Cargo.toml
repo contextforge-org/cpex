@@ -24,12 +24,10 @@ authors.workspace = true
 publish = false
 
 [dependencies]
-# The host facade with the bundled builtins (jwt, oauth, pii, audit,
-# cedar, cel, elicitation-ciba). Path dependency, the tutorial is not
-# published, so it does not use the workspace version table.
-cpex = { path = "../../crates/cpex", features = ["builtins"] }
-cpex-core = { workspace = true }
-cpex-sdk = { workspace = true }
+# The host facade, which bundles every stable builtin. Path dependency, the
+# tutorial is not published, so it does not use the workspace version table.
+cpex = { path = "../../crates/cpex" }
+praxis-policy-core = { workspace = true }
 
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "sync", "time", "macros"] }
 async-trait = { workspace = true }

@@ -6,32 +6,19 @@
 # Workspace root for the CPEX Rust crates.
 
 [workspace]
-resolver = "2"
+resolver = "3"
 members = [
     "crates/cpex",
-    "crates/cpex-core",
     "crates/cpex-hosts-python",
-    "crates/cpex-orchestration",
-    "crates/cpex-sdk",
-    "crates/cpex-builtins",
     "crates/cpex-ffi",
-    "crates/apl-core",
-    "crates/apl-cmf",
-    "crates/apl-cpex",
-    "builtins/plugins/pii-scanner",
-    "builtins/plugins/audit-logger",
-    "builtins/plugins/identity-jwt",
-    "builtins/plugins/delegator-oauth",
     "builtins/plugins/delegator-biscuit",
-    "builtins/plugins/elicitation-ciba",
-    "builtins/pdps/cedar-direct",
-    "builtins/pdps/cel",
-    "builtins/pdps/opa",
-    "builtins/session/valkey",
     "examples/go-demo/ffi",
     "examples/tutorial",
+    # Parity harness. Held out of default-members: it replays recorded request
+    # sets and is run explicitly.
+    "tests/parity/harness",
     # PyO3 bindings — excluded from default-members so plain `cargo build`
-    # stays libpython-independent (KD3). Use `cargo build -p cpex-python`
+    # stays libpython-independent. Use `cargo build -p cpex-python`
     # or `maturin develop` to build this crate explicitly.
     "bindings/python",
 ]
@@ -40,45 +27,28 @@ members = [
 # `-p` or `--workspace` flag) picks up. Two members are held out:
 #
 #   * `bindings/python` — links libpython, so including it would make a plain
-#     `cargo build` require a Python dev install (KD3).
-#   * `builtins/session/valkey` — pulls a redis client + a rustls TLS stack,
-#     which slows every default build.
+#     `cargo build` require a Python dev install.
+#   * `tests/parity/harness`: the parity harness, run on demand.
 #
 # Everything else, including `crates/cpex-hosts-python` (pure Rust; it only
 # *spawns* a Python subprocess, never links one), builds by default.
 #
 # To exercise a held-out member:
 #   cargo build --workspace                  # all members
-#   cargo build -p cpex-session-valkey       # just the Valkey session store
 #   cargo build -p cpex-python               # just the PyO3 bindings
 #   cargo test --workspace                   # full sweep (CI)
 default-members = [
     "crates/cpex",
-    "crates/cpex-core",
     "crates/cpex-hosts-python",
-    "crates/cpex-orchestration",
-    "crates/cpex-sdk",
-    "crates/cpex-builtins",
     "crates/cpex-ffi",
-    "crates/apl-core",
-    "crates/apl-cmf",
-    "crates/apl-cpex",
-    "builtins/plugins/pii-scanner",
-    "builtins/plugins/audit-logger",
-    "builtins/plugins/identity-jwt",
-    "builtins/plugins/delegator-oauth",
     "builtins/plugins/delegator-biscuit",
-    "builtins/plugins/elicitation-ciba",
-    "builtins/pdps/cedar-direct",
-    "builtins/pdps/cel",
-    "builtins/pdps/opa",
     "examples/go-demo/ffi",
     "examples/tutorial",
 ]
 
 [workspace.package]
-version = "0.2.3"
-edition = "2021"
+version = "0.3.0"
+edition = "2024"
 # MSRV — keep in sync with rust-toolchain.toml `channel` and clippy.toml `msrv`.
 rust-version = "1.96"
 license = "Apache-2.0"
@@ -100,23 +70,24 @@ readme = "README.md"
 # unification where they are actually needed. Dropping `full` removes the
 # fs/process/signal/io-std surface the embedded library never exercises.
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "sync", "time", "macros"] }
-tokio-util = { version = "0.7", features = ["rt"] }
 serde = { version = "1", features = ["derive", "rc"] }
-serde_yaml = "0.9"
+# Match PPE's maintained YAML fork while preserving the crate name at call sites.
+serde_yaml = { package = "yaml_serde", version = "0.10.4" }
 serde_json = "1"
 async-trait = "0.1"
-thiserror = "2"
 tracing = "0.1"
 uuid = { version = "1", features = ["v4", "serde"] }
-paste = "1"
-futures = "0.3"
-hashbrown = "0.17"
-arc-swap = "1.7"
-wildmatch = "2"
 rmp-serde = "1"
 serde_bytes = "0.11"
 chrono = { version = "0.4", features = ["serde"] }
-regex = "1"
+
+# Policy engine. Pinned exactly, not by caret: PPE has shipped breaking changes
+# between releases, so moving the pin is a deliberate step that reruns the
+# parity suite. All PPE crates move together. `praxis-policy` is the facade `cpex`
+# re-exports; kept crates that `cpex` itself depends on use
+# `praxis-policy-core` directly so there is no dependency cycle.
+praxis-policy      = { version = "=0.5.0", default-features = false }
+praxis-policy-core = { version = "=0.5.0" }
 
 # Internal workspace crates — single source of truth for their path + version
 # requirement. Members depend on these via `{ workspace = true }` so a version
@@ -125,24 +96,9 @@ regex = "1"
 # time cargo substitutes it for the `path`. `cargo release` keeps these in sync
 # with the workspace version. Keys are package names (builtins differ from their
 # directory names), paths are workspace-root-relative.
-cpex-core                     = { path = "crates/cpex-core",                   version = "0.2.3" }
-cpex-orchestration            = { path = "crates/cpex-orchestration",          version = "0.2.3" }
-cpex-sdk                      = { path = "crates/cpex-sdk",                     version = "0.2.3" }
-cpex-builtins                 = { path = "crates/cpex-builtins",               version = "0.2.3", default-features = false }
-apl-core                      = { path = "crates/apl-core",                    version = "0.2.3" }
-apl-cmf                       = { path = "crates/apl-cmf",                      version = "0.2.3" }
-apl-cpex                      = { path = "crates/apl-cpex",                     version = "0.2.3" }
-cpex-plugin-pii-scanner       = { path = "builtins/plugins/pii-scanner",       version = "0.2.3" }
-cpex-plugin-audit-logger      = { path = "builtins/plugins/audit-logger",      version = "0.2.3" }
-cpex-plugin-identity-jwt      = { path = "builtins/plugins/identity-jwt",      version = "0.2.3" }
-cpex-plugin-delegator-oauth   = { path = "builtins/plugins/delegator-oauth",   version = "0.2.3" }
-cpex-plugin-delegator-biscuit = { path = "builtins/plugins/delegator-biscuit", version = "0.2.3" }
-cpex-plugin-elicitation-ciba  = { path = "builtins/plugins/elicitation-ciba",  version = "0.2.3" }
-cpex-pdp-cedar-direct         = { path = "builtins/pdps/cedar-direct",         version = "0.2.3" }
-cpex-pdp-cel                  = { path = "builtins/pdps/cel",                   version = "0.2.3" }
-cpex-pdp-opa                  = { path = "builtins/pdps/opa",                   version = "0.2.3" }
-cpex-session-valkey           = { path = "builtins/session/valkey",            version = "0.2.3" }
-cpex-hosts-python             = { path = "crates/cpex-hosts-python",           version = "0.2.3", default-features = false }
+cpex                          = { path = "crates/cpex",                        version = "0.3.0" }
+cpex-plugin-delegator-biscuit = { path = "builtins/plugins/delegator-biscuit", version = "0.3.0" }
+cpex-hosts-python             = { path = "crates/cpex-hosts-python",           version = "0.3.0", default-features = false }
 
 # Size-first release profile. The FFI artifact (libcpex_ffi.a) is linked
 # statically into host binaries, so its compiled size flows straight into
@@ -151,7 +107,7 @@ cpex-hosts-python             = { path = "crates/cpex-hosts-python",           v
 # trade build time for a materially smaller archive.
 #
 # panic = "abort" is intentionally NOT set: cpex-ffi catches panics at its
-# `#[no_mangle]` boundary with `catch_unwind`, and aborting would turn a
+# `#[unsafe(no_mangle)]` boundary with `catch_unwind`, and aborting would turn a
 # recoverable policy panic into a host-process kill. Revisit only if that
 # boundary is reworked to not rely on unwinding.
 [profile.release]
@@ -178,6 +134,10 @@ strip = true         # drop symbols + debug info from the artifact
 #               (most are `cargo clippy --fix`-able one lint at a time).
 [workspace.lints.rust]
 # --- Enforced ---
+# A renamed or removed feature leaves its `cfg(feature = ...)` gates silently
+# false, which drops whatever they guard. Denying unknown cfgs turns that into a
+# build error at the moment of the rename.
+unexpected_cfgs = "deny"
 unused_imports = "deny"
 unused_variables = "deny"
 trivial_numeric_casts = "deny"

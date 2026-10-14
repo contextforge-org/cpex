@@ -17,11 +17,11 @@
 
 use std::sync::Arc;
 
-use cpex::PluginManager;
+use cpex::PolicyEngine;
 use cpex_tutorial::backends;
 use cpex_tutorial::idp;
 use cpex_tutorial::ui;
-use cpex_tutorial::{mediate, Caller};
+use cpex_tutorial::{Caller, mediate};
 
 use serde_json::json;
 
@@ -41,11 +41,13 @@ async fn token(user: &str) -> Caller {
 async fn main() {
     ui::module_banner("Module 5: Delegating decisions (PDP)");
 
-    let mgr = Arc::new(PluginManager::default());
-    cpex::install_builtins(&mgr);
-    mgr.load_config_yaml(POLICY)
+    let engine = Arc::new(PolicyEngine::default());
+    cpex::install_builtins(&engine);
+    cpex_tutorial::install_http_transport(&engine);
+    engine
+        .load_config_yaml(POLICY)
         .expect("policy m05.yaml should load");
-    mgr.initialize().await.expect("initialize");
+    engine.initialize().await.expect("initialize");
 
     let evan = token("evan").await;
     let sam = token("sam").await;
@@ -53,7 +55,7 @@ async fn main() {
 
     ui::scenario("evan (engineer) → search_repos internal (CEL allows)");
     let o = mediate(
-        &mgr,
+        &engine,
         &evan,
         "search_repos",
         json!({ "visibility": "internal" }),
@@ -65,7 +67,7 @@ async fn main() {
 
     ui::scenario("evan (engineer) → search_repos public (CEL denies: engineers internal-only)");
     let o = mediate(
-        &mgr,
+        &engine,
         &evan,
         "search_repos",
         json!({ "visibility": "public" }),
@@ -77,7 +79,7 @@ async fn main() {
 
     ui::scenario("sam (security) → search_repos public (CEL allows: security reads any)");
     let o = mediate(
-        &mgr,
+        &engine,
         &sam,
         "search_repos",
         json!({ "visibility": "public" }),
@@ -87,6 +89,8 @@ async fn main() {
     ui::print_outcome(&o);
     all_passed &= ui::expect(&o, true);
 
-    println!("One CEL expression captured a rule that mixes role and argument. The PDP decided; CPEX enforced.");
+    println!(
+        "One CEL expression captured a rule that mixes role and argument. The PDP decided; CPEX enforced."
+    );
     ui::finish_check(all_passed);
 }

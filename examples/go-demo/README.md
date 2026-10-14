@@ -1,6 +1,6 @@
 # CPEX Go Demo
 
-Two runnable examples showing the full CPEX plugin pipeline from Go, with plugins written in Rust and loaded via YAML configuration.
+Two runnable examples showing the full CPEX plugin pipeline from Go, with plugins written in Rust and loaded via YAML configuration. The plugins are host demo plugins registered by the demo FFI crate, not CPEX builtins. Both configs use hook dispatch (`engine_settings.dispatch: hooks`): each plugin fires at the hooks it declares, ordered by `priority`.
 
 ## Prerequisites
 
@@ -22,13 +22,13 @@ go build -o cmf-demo ./cmd/cmf-demo/
 
 ## Demo 1: Generic Payload (`cpex-demo`)
 
-Uses `PayloadGeneric` (untyped `map[string]any`) with three plugins:
+Uses `PayloadGeneric` (untyped `map[string]any`) with three plugins on the demo's own hooks, `demo.tool_pre_invoke` and `demo.tool_post_invoke`. The `cmf.*` hooks carry a typed `MessagePayload`, so a generic-map host declares its own hooks; the demo FFI crate registers their metadata before the config loads.
 
 | Plugin | Kind | Mode | What it does |
 |--------|------|------|-------------|
-| identity-checker | `builtin/identity` | sequential | Validates `user` field present |
-| pii-guard | `builtin/pii` | sequential | Blocks PII-tagged tools without clearance |
-| audit-logger | `builtin/audit` | fire_and_forget | Logs tool invocations |
+| identity-checker | `demo/identity` | sequential | Validates `user` field present |
+| pii-guard | `demo/pii` | sequential | Blocks PII-tagged tools without clearance |
+| audit-logger | `demo/audit` | fire_and_forget | Logs tool invocations |
 
 ### Run
 
@@ -43,7 +43,7 @@ cd examples/go-demo
 === CPEX Go Demo ===
 
 Plugins loaded: 3
-Hooks: tool_pre_invoke=true  tool_post_invoke=true
+Hooks: demo.tool_pre_invoke=true  demo.tool_post_invoke=true
 
 === Scenario 1: get_compensation (no PII clearance) ===
   Result: DENIED — PII clearance required for this operation [pii_access_denied]
@@ -60,7 +60,7 @@ Hooks: tool_pre_invoke=true  tool_post_invoke=true
 
 ### Config
 
-See [`plugins.yaml`](plugins.yaml) for the full configuration including routing rules and policy groups.
+See [`plugins.yaml`](plugins.yaml) for the full configuration.
 
 ## Demo 2: CMF Payload (`cmf-demo`)
 
@@ -68,8 +68,8 @@ Uses `PayloadCMFMessage` (typed CMF messages) with rich extensions and two plugi
 
 | Plugin | Kind | Mode | What it does |
 |--------|------|------|-------------|
-| tool-policy | `builtin/cmf-tool-policy` | sequential | Checks tool permissions against security labels |
-| header-injector | `builtin/cmf-header-injector` | sequential | Injects response headers via capability-gated write |
+| tool-policy | `demo/cmf-tool-policy` | sequential | Checks tool permissions against security labels |
+| header-injector | `demo/cmf-header-injector` | sequential | Injects response headers via capability-gated write |
 
 ### Run
 
@@ -86,7 +86,7 @@ cd examples/go-demo
 Plugins loaded: 2
 
 === Scenario 1: get_compensation tool call (no PII label) ===
-  Result: DENIED — Tool 'get_compensation' is PII-tagged but security context lacks PII label
+  Result: DENIED: Tool 'get_compensation' is PII-tagged but security context lacks PII label [pii_label_required]
 
 === Scenario 2: get_compensation tool call (with PII label) ===
   Result: ALLOWED
@@ -104,18 +104,18 @@ Plugins loaded: 2
 
 ### Config
 
-See [`cmf_plugins.yaml`](cmf_plugins.yaml) for capabilities and routing.
+See [`cmf_plugins.yaml`](cmf_plugins.yaml) for capabilities.
 
 ## Architecture
 
 ```
 Go (main.go)
   │
-  │  cpex.NewPluginManagerDefault()
-  │  cpex.RegisterFactories(callback)    ← one raw C call
-  │  cpex.LoadConfig(yaml)
-  │  cpex.Initialize()
-  │  cpex.InvokeByName(hook, payload, extensions, ...)
+  │  cpex.NewPolicyEngineDefault()
+  │  engine.RegisterFactories(callback)  ← one raw C call
+  │  engine.LoadConfig(yaml)
+  │  engine.Initialize()
+  │  engine.InvokeByName(hook, payload, extensions, ...)
   │
   ▼
 Go SDK (go/cpex/)
@@ -156,7 +156,7 @@ examples/go-demo/
     Cargo.toml               — Rust crate: cpex-demo-ffi
     src/
       lib.rs                 — C FFI: cpex_demo_register_factories()
-      demo_plugins.rs        — 3 generic plugins (identity, PII, audit)
+      demo_plugins.rs        - demo hooks + 3 generic plugins (identity, PII, audit)
       cmf_plugins.rs         — 2 CMF plugins (tool-policy, header-injector)
 ```
 
@@ -164,11 +164,11 @@ The `cpex-demo-ffi` crate builds a staticlib that includes both the core `cpex-f
 
 ## How Factory Registration Works
 
-The Go SDK's `PluginManager` wraps the Rust manager. Plugin factories are Rust code, so registration happens through a callback:
+The Go SDK's `PolicyEngine` wraps the Rust engine. Plugin factories are Rust code, so registration happens through a callback:
 
 ```go
-mgr.RegisterFactories(func(handle unsafe.Pointer) error {
-    // handle is the raw Rust manager pointer
+engine.RegisterFactories(func(handle unsafe.Pointer) error {
+    // handle is the raw cpex_ffi::CpexEngineInner pointer
     // Call your crate's C registration function
     C.cpex_demo_register_factories(handle)
     return nil
@@ -176,6 +176,8 @@ mgr.RegisterFactories(func(handle unsafe.Pointer) error {
 ```
 
 This keeps the Go SDK generic — it doesn't know about specific factories. Each Rust crate exports its own `register_*_factories()` function.
+
+To use the CPEX builtins (`identity/jwt`, `identity/api-key`, `delegator/oauth`, `elicitation/ciba`, the PDPs and Vault) as well, call `engine.EnableAPL()` before `LoadConfig`. Pass `cpex.WithPrivateDestinations()` when a builtin must reach a localhost or in-cluster address; those are blocked by default.
 
 ---
 
@@ -191,12 +193,13 @@ The CPEX payload type registry maps a `uint8` discriminator to a concrete Rust t
 |----|----------|-----------|---------|
 | 0 | `PAYLOAD_GENERIC` | `GenericPayload` | `map[string]any` |
 | 1 | `PAYLOAD_CMF_MESSAGE` | `MessagePayload` | `MessagePayload` |
+| 2 | `PAYLOAD_IDENTITY` | `IdentityPayload` | `IdentityPayload` |
 
 ## Step-by-Step: Adding a New Payload Type
 
 ### 1. Define the Rust payload type
 
-In your Rust crate (e.g., `cpex-core` or a separate crate):
+In your Rust crate:
 
 ```rust
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -204,7 +207,7 @@ pub struct MyPayload {
     pub field_a: String,
     pub field_b: i64,
 }
-cpex_core::impl_plugin_payload!(MyPayload);
+praxis_policy_core::impl_plugin_payload!(MyPayload);
 ```
 
 ### 2. Register the payload type in the FFI crate
@@ -213,7 +216,7 @@ In `crates/cpex-ffi/src/lib.rs`:
 
 ```rust
 // Add the constant
-pub const PAYLOAD_MY_TYPE: u8 = 2;
+pub const PAYLOAD_MY_TYPE: u8 = 3;
 
 // Add a deserialize arm
 fn deserialize_payload(payload_type: u8, bytes: &[u8]) -> Result<...> {
@@ -242,7 +245,7 @@ fn serialize_payload(payload: &dyn PluginPayload) -> Option<(u8, Vec<u8>)> {
 In `go/cpex/types.go` (or a new file):
 
 ```go
-const PayloadMyType uint8 = 2
+const PayloadMyType uint8 = 3
 
 type MyPayload struct {
     FieldA string `msgpack:"field_a"`
@@ -253,8 +256,8 @@ type MyPayload struct {
 ### 4. Use it
 
 ```go
-result, ct, bg, err := mgr.InvokeByName(
-    "my_hook",
+result, ct, bg, err := engine.InvokeByName(
+    "my.hook",
     cpex.PayloadMyType,
     MyPayload{FieldA: "hello", FieldB: 42},
     ext,
@@ -275,7 +278,7 @@ modified, err := cpex.DeserializePayload[MyPayload](result)
 
 ## Step-by-Step: Adding a New Hook Type
 
-Hooks define what payload goes in and what comes out. For Go callers, hooks are identified by string name (e.g., `"tool_pre_invoke"`).
+Hooks define what payload goes in and what comes out. For Go callers, hooks are identified by string name (e.g., `"cmf.tool_pre_invoke"`). A host hook needs its metadata registered before any config naming it loads; the config loader refuses a hook name it does not know.
 
 ### 1. Define the hook type in Rust
 
@@ -286,6 +289,13 @@ impl HookTypeDef for MyHook {
     type Result = PluginResult<MyPayload>;
     const NAME: &'static str = "my_hook";
 }
+
+// Describe the hook to the engine. `family` must match the hook type's
+// NAME, so only handlers for MyHook can register on it.
+register_hook_metadata(
+    "my.hook",
+    HookMetadata { family: Some(MyHook::NAME), entity_type: None, phase: HookPhase::Unphased },
+);
 ```
 
 ### 2. Write a plugin that handles it
@@ -309,12 +319,12 @@ impl HookHandler<MyHook> for MyPlugin {
 ```rust
 struct MyPluginFactory;
 impl PluginFactory for MyPluginFactory {
-    fn create(&self, config: &PluginConfig) -> Result<PluginInstance, PluginError> {
+    fn create(&self, config: &PluginConfig) -> Result<PluginInstance, Box<PluginError>> {
         let plugin = Arc::new(MyPlugin { cfg: config.clone() });
         Ok(PluginInstance {
             plugin: plugin.clone(),
             handlers: vec![
-                ("my_hook", Arc::new(TypedHandlerAdapter::<MyHook, _>::new(plugin))),
+                ("my.hook", Arc::new(TypedHandlerAdapter::<MyHook, _>::new(plugin))),
             ],
         })
     }
@@ -324,26 +334,31 @@ impl PluginFactory for MyPluginFactory {
 ### 4. Register in your FFI crate
 
 ```rust
-pub fn register_my_factories(manager: &mut PluginManager) {
-    manager.register_factory("my-plugin-kind", Box::new(MyPluginFactory));
+pub fn register_my_factories(engine: &PolicyEngine) {
+    engine.register_factory("my-plugin-kind", Box::new(MyPluginFactory));
 }
 ```
 
 ### 5. Add to YAML config
 
 ```yaml
+engine_settings:
+  dispatch: hooks
+
 plugins:
   - name: my-plugin
     kind: my-plugin-kind
-    hooks: [my_hook]
+    hooks: [my.hook]
     mode: sequential
     priority: 10
 ```
 
+`priority` is accepted only under `dispatch: hooks`. Under the default `dispatch: policy`, call `EnableAPL` and name the plugin from a policy step instead, for example `run(my-plugin)` under a route's `authorization.pre_invocation`.
+
 ### 6. Invoke from Go
 
 ```go
-result, ct, bg, err := mgr.InvokeByName("my_hook", cpex.PayloadMyType, payload, ext, nil)
+result, ct, bg, err := engine.InvokeByName("my.hook", cpex.PayloadMyType, payload, ext, nil)
 ```
 
 The Go side doesn't need to know about the Rust hook type — it just uses the string name and the payload type constant.

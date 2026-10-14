@@ -2,17 +2,17 @@
 # Copyright 2026
 # SPDX-License-Identifier: Apache-2.0
 #
-# Local development / integration Valkey for the cpex-session-valkey
-# backend. Brings up a single Valkey primary configured the way the
-# security model requires (see docs/operations/valkey-session-store.md):
+# Local development / integration Valkey for PPE's Valkey session store
+# (`kind: valkey`, registered by `cpex::install_builtins`). Brings up a
+# single Valkey primary configured the way the security model requires
+# (see docs/operations/valkey-session-store.md):
 #
 #   - maxmemory-policy noeviction: a full instance fails writes closed
-#     rather than silently evicting accumulated taint labels (R9).
+#     rather than silently evicting accumulated taint labels.
 #
 # Usage:
 #   docker compose -f deploy/valkey-compose.yml up -d
-#   VALKEY_TEST_URL=redis://127.0.0.1:6379 \
-#     cargo test -p cpex-session-valkey --test valkey_store_integration -- --ignored
+#   make parity PARITY_VALKEY_URL=redis://127.0.0.1:6379/0
 #
 # This is a DEV/TEST topology only — no TLS, no ACL. Production deployments
 # must add TLS (mTLS recommended), a least-privilege ACL, and HA via a

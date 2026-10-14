@@ -22,22 +22,58 @@ The `subject:` argument on a `delegate(...)` step picks which principal the mint
 Two routes, two subjects. From [`policies/m12.yaml`](https://github.com/contextforge-org/cpex/tree/main/examples/tutorial/policies/m12.yaml):
 
 ```yaml
+plugins:
+  - name: keycloak
+    kind: identity/jwt
+    hooks: [identity.resolve]
+    capabilities: [perform_http]
+    config:
+      claim_mapper: standard
+      trusted_issuers:
+        - issuer: http://localhost:8081/realms/cpex-tutorial
+          audiences: [cpex-tutorial]
+          algorithms: [RS256]
+          decoding_key:
+            kind: jwks_url
+            url: http://localhost:8081/realms/cpex-tutorial/protocol/openid-connect/certs
+            insecure_http: true
+          leeway_seconds: 60
+
+  - name: workday-oauth
+    kind: delegator/oauth
+    hooks: [token.delegate]
+    capabilities: [read_inbound_credentials, write_delegated_tokens, perform_http]
+    config:
+      token_endpoint: http://localhost:8081/realms/cpex-tutorial/protocol/openid-connect/token
+      client_id: cpex-gateway
+      client_secret_source:
+        kind: literal
+        secret: gateway-dev-secret
+      insecure_http: true
+
 routes:
-  # On behalf of the caller: exchange the CALLER's token.
+  # On behalf of the caller. `subject: user` (the default) exchanges the
+  # caller's token, so a request with no token has nothing to exchange and
+  # delegation fails at require(delegation.granted).
   - tool: get_compensation
-    authentication: [keycloak]
+    authentication:
+      - keycloak
     authorization:
       pre_invocation:
         - "delegate(workday-oauth, target: workday-api, audience: workday-api, subject: user)"
         - "require(delegation.granted)"
 
-  # As the gateway itself: mint via the gateway's own client credentials.
+  # As the gateway itself. `subject: this_workload` uses the gateway's own
+  # client credentials, so it needs no caller token at all: the enforcement
+  # point, not the caller, holds the downstream authority.
   - tool: search_repos
     authorization:
       pre_invocation:
         - "delegate(workday-oauth, target: github-api, audience: github-api, subject: this_workload)"
         - "require(delegation.granted)"
 ```
+
+Both plugins declare `perform_http`: the resolver fetches the JWKS and the delegator calls the token endpoint, each through the HTTP transport the host installs (module 6).
 
 - **`subject: user`** (the default) runs an RFC 8693 token exchange on the caller's inbound token. No caller token, nothing to exchange.
 - **`subject: this_workload`** runs an RFC 6749 `client_credentials` grant with the gateway's own `client_id` and secret, through the same `workday-oauth` plugin, reading no caller token at all. The `search_repos` route has no `authentication:` line, because this path needs no caller.

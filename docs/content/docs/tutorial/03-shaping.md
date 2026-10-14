@@ -21,14 +21,15 @@ The route allows the call, then a `result:` field pipeline transforms the respon
 routes:
   - tool: get_compensation
     authorization:
-      pre_invocation: []
+      pre_invocation:
+        - "allow"
     result:
       ssn: "str | redact(!perm.view_ssn)"
       salary: "int | redact(!role.hr)"
       employee_id: "str | mask(4)"
 ```
 
-Each entry reads `<field>: "<type> | <op>(<when>)"`. The op runs only when its predicate holds. `redact(!perm.view_ssn)` means redact when the caller does not have `view_ssn`. `mask(4)` always keeps the last four characters. This runs in the Post phase, after the backend returns and before the caller sees the response.
+Each entry reads `<field>: "<type> | <op>(<when>)"`. The op runs only when its predicate holds. `redact(!perm.view_ssn)` means redact when the caller does not have `view_ssn`. `mask(4)` always keeps the last four characters. The `allow` step is there because an `authorization:` block must name at least one step. This runs in the Post phase, after the backend returns and before the caller sees the response.
 
 ## Run it
 

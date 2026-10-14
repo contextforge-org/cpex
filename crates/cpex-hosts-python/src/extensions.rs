@@ -51,21 +51,22 @@
 //
 // This channel carries non-secret context only. `raw_credentials` is never
 // serialized here — raw tokens travel the capability-gated DTO in the
-// `credentials` module instead. Sensitive headers are stripped in both
-// directions per `docs/specs/cmf-message-spec.md` §3.5; a plugin that needs a
-// bearer token uses the credential path, not `http.request_headers`.
+// `credentials` module instead. No raw header values cross outbound by
+// default; known credential names are removed from worker-returned edits. A
+// plugin that needs a bearer token uses the credential path.
 
 use std::collections::HashMap;
 
-use cpex_core::extensions::container::{chain_extends, OwnedExtensions};
-use cpex_core::extensions::delegation::DelegationExtension;
-use cpex_core::extensions::guarded::Guarded;
-use cpex_core::extensions::http::HttpExtension;
-use cpex_core::extensions::security::SecurityExtension;
-use cpex_core::extensions::Extensions;
+use praxis_policy_core::extensions::Extensions;
+use praxis_policy_core::extensions::container::{OwnedExtensions, chain_extends};
+use praxis_policy_core::extensions::delegation::DelegationExtension;
+use praxis_policy_core::extensions::guarded::Guarded;
+use praxis_policy_core::extensions::http::HttpExtension;
+use praxis_policy_core::extensions::security::SecurityExtension;
 use serde_json::Value;
 use tracing::warn;
 
+use crate::credential_payloads::{CREDENTIAL_HEADERS, is_public_header};
 use crate::error::HostError;
 
 /// Task field the inbound extensions ride on. Contract with `worker.py`, which
@@ -84,25 +85,24 @@ pub const EXTENSIONS_FIELD: &str = "extensions";
 /// exact same way its in-process equivalent does.
 pub const MODIFIED_EXTENSIONS_FIELD: &str = "modified_extensions";
 
-/// Headers stripped in both directions (spec §3.5).
-///
-/// Matched case-insensitively: HTTP header names are case-insensitive, and
-/// `HttpExtension`'s own accessors look up that way, so a plugin sending
-/// `authorization` must not slip past a case-sensitive compare.
-/// `set-cookie` is included because the doc comment on `sanitize_http` promises
-/// it and the response map is the one that carries it. It was previously absent
-/// while both strip tests asserted through `is_sensitive` itself — a tautology
-/// that passed either way, which is what let the gap survive.
-const SENSITIVE_HEADERS: &[&str] = &["authorization", "cookie", "set-cookie", "x-api-key"];
-
-/// True when `name` is a header this channel must not carry.
+/// True when a worker-returned header is credential-bearing by convention.
+/// The outbound path is stricter: it forwards no raw header values by default.
 fn is_sensitive(name: &str) -> bool {
-    SENSITIVE_HEADERS
+    CREDENTIAL_HEADERS
         .iter()
         .any(|s| name.eq_ignore_ascii_case(s))
 }
 
-/// Drop sensitive entries from a header map, leaving the rest untouched.
+/// Keep only individually approved and value-validated headers on the wire.
+fn public_http_headers(headers: &HashMap<String, String>) -> HashMap<String, String> {
+    headers
+        .iter()
+        .filter(|(name, value)| is_public_header(name, value, None, None))
+        .map(|(name, value)| (name.clone(), value.clone()))
+        .collect()
+}
+
+/// Drop known credential headers from worker-returned modifications.
 fn strip_sensitive(headers: &HashMap<String, String>) -> HashMap<String, String> {
     headers
         .iter()
@@ -111,16 +111,16 @@ fn strip_sensitive(headers: &HashMap<String, String>) -> HashMap<String, String>
         .collect()
 }
 
-/// Copy an `HttpExtension` with sensitive headers removed from both maps.
+/// Copy an `HttpExtension` with only approved outbound headers.
 ///
-/// Both maps are scrubbed: `response_headers` can carry a `Set-Cookie` or an
-/// upstream `Authorization` echo just as `request_headers` carries the inbound
-/// credential. The request line is copied through unchanged — it is not
-/// credential material, and the plugin needs it to make routing decisions.
+/// Both raw header maps are default-denied. Request-line fields still cross
+/// because the plugin needs them for routing decisions.
 fn sanitize_http(http: &HttpExtension) -> HttpExtension {
     HttpExtension {
-        request_headers: strip_sensitive(&http.request_headers),
-        response_headers: strip_sensitive(&http.response_headers),
+        request_headers: public_http_headers(&http.request_headers),
+        secret_headers: http.secret_headers.clone(),
+        response_headers: public_http_headers(&http.response_headers),
+        status: http.status,
         method: http.method.clone(),
         path: http.path.clone(),
         host: http.host.clone(),
@@ -130,8 +130,8 @@ fn sanitize_http(http: &HttpExtension) -> HttpExtension {
 
 /// Build the returned `http` value: worker headers, canonical request line.
 ///
-/// The worker's return contributes header maps only. `method`, `path`, `host`,
-/// and `scheme` are taken from `inbound` — the value the executor issued —
+/// The worker's return contributes header maps only. `status`, `method`, `path`,
+/// `host`, and `scheme` are taken from `inbound` (the value the executor issued)
 /// because policies gate on them (CHANGELOG 0.2.2) and `write_headers` does not
 /// authorize rewriting request identity. `host` especially must trace back to a
 /// validated authority, which a worker's JSON is not.
@@ -144,7 +144,11 @@ fn sanitize_http(http: &HttpExtension) -> HttpExtension {
 fn returned_http(returned: &HttpExtension, inbound: Option<&HttpExtension>) -> HttpExtension {
     HttpExtension {
         request_headers: strip_sensitive(&returned.request_headers),
+        secret_headers: inbound
+            .map(|h| h.secret_headers.clone())
+            .unwrap_or_default(),
         response_headers: strip_sensitive(&returned.response_headers),
+        status: inbound.and_then(|h| h.status),
         method: inbound.and_then(|h| h.method.clone()),
         path: inbound.and_then(|h| h.path.clone()),
         host: inbound.and_then(|h| h.host.clone()),
@@ -187,8 +191,8 @@ pub fn attach_extensions(task: &mut Value, extensions: &Extensions) -> Result<()
 ///
 /// Slots serialize through their own serde impls — those are the source of
 /// truth for sub-field shape, so this function stays correct as the extension
-/// structs evolve. Only `http` is rewritten on the way out, to strip sensitive
-/// headers.
+/// structs evolve. Only `http` is rewritten on the way out, to default-deny
+/// unvalidated raw header values.
 fn to_wire(extensions: &Extensions) -> Result<Value, HostError> {
     let mut map = serde_json::Map::new();
 
@@ -319,7 +323,7 @@ pub fn owned_from_returned_slot(
     // The three writable-but-gated slots are honored only when the executor
     // issued the matching write token on the inbound view. The token is the
     // host's *only* evidence that the plugin declared the write capability —
-    // `WriteToken::new()` is `pub(crate)` to `cpex-core`, so this crate cannot
+    // `WriteToken::new()` is `pub(crate)` to `praxis-policy-core`, so this crate cannot
     // mint one, and a token can never be forged out of worker JSON. An edit
     // without the token is dropped and the inbound value stands.
     //
@@ -334,13 +338,13 @@ pub fn owned_from_returned_slot(
     // Guarded — `write_headers`. Headers only: the request line
     // (`method`/`path`/`host`/`scheme`) is preserved from the inbound value,
     // which policies gate on and this capability does not cover.
-    if let Some(http) = slot::<HttpExtension>(object, "http")? {
-        if inbound.http_write_token.is_some() {
-            // Strip on the way back too. A plugin cannot inject a credential
-            // header into the pipeline through its return value.
-            owned.http = Some(Guarded::new(returned_http(&http, inbound.http.as_deref())));
-            applied = true;
-        }
+    if let Some(http) = slot::<HttpExtension>(object, "http")?
+        && inbound.http_write_token.is_some()
+    {
+        // Strip on the way back too. A plugin cannot inject a credential
+        // header into the pipeline through its return value.
+        owned.http = Some(Guarded::new(returned_http(&http, inbound.http.as_deref())));
+        applied = true;
     }
 
     // Monotonic — `append_labels`. Labels *only*. Everything else on the slot
@@ -349,21 +353,21 @@ pub fn owned_from_returned_slot(
     // identity — otherwise `append_labels` alone would let a plugin rewrite the
     // authenticated principal it was authenticated as. The executor re-checks
     // `before ⊆ after` and drops a removal.
-    if let Some(security) = slot::<SecurityExtension>(object, "security")? {
-        if inbound.labels_write_token.is_some() {
-            let mut merged = inbound
-                .security
-                .as_deref()
-                .cloned()
-                .unwrap_or_else(SecurityExtension::default);
-            // Append-only, and only into the set the plugin was shown. Assigning
-            // the returned set would let a shorter one read as a removal.
-            for label in security.labels.iter() {
-                merged.add_label(label.clone());
-            }
-            owned.security = Some(merged);
-            applied = true;
+    if let Some(security) = slot::<SecurityExtension>(object, "security")?
+        && inbound.labels_write_token.is_some()
+    {
+        let mut merged = inbound
+            .security
+            .as_deref()
+            .cloned()
+            .unwrap_or_else(SecurityExtension::default);
+        // Append-only, and only into the set the plugin was shown. Assigning
+        // the returned set would let a shorter one read as a removal.
+        for label in security.labels.iter() {
+            merged.add_label(label.clone());
         }
+        owned.security = Some(merged);
+        applied = true;
     }
 
     // Monotonic — `append_delegation`. Validated rather than accepted blind: the
@@ -372,25 +376,25 @@ pub fn owned_from_returned_slot(
     // the hop that recorded a scope narrowing widens effective authority — so the
     // whole edit is refused and the inbound chain stands. `depth` and `delegated`
     // are recomputed by the executor from the merged chain, never trusted here.
-    if let Some(delegation) = slot::<DelegationExtension>(object, "delegation")? {
-        if inbound.delegation_write_token.is_some() {
-            let inbound_chain = inbound
-                .delegation
-                .as_deref()
-                .map(|d| d.chain.as_slice())
-                .unwrap_or_default();
-            if chain_extends(inbound_chain, &delegation.chain) {
-                owned.delegation = Some(delegation);
-                applied = true;
-            } else {
-                warn!(
-                    inbound_hops = inbound_chain.len(),
-                    returned_hops = delegation.chain.len(),
-                    "dropping a returned delegation chain that does not extend the \
+    if let Some(delegation) = slot::<DelegationExtension>(object, "delegation")?
+        && inbound.delegation_write_token.is_some()
+    {
+        let inbound_chain = inbound
+            .delegation
+            .as_deref()
+            .map(|d| d.chain.as_slice())
+            .unwrap_or_default();
+        if chain_extends(inbound_chain, &delegation.chain) {
+            owned.delegation = Some(delegation);
+            applied = true;
+        } else {
+            warn!(
+                inbound_hops = inbound_chain.len(),
+                returned_hops = delegation.chain.len(),
+                "dropping a returned delegation chain that does not extend the \
                      one the plugin was given — an append-only chain cannot be \
                      shortened or rewritten"
-                );
-            }
+            );
         }
     }
 
@@ -430,10 +434,59 @@ mod tests {
     use std::collections::HashSet;
     use std::sync::Arc;
 
-    use cpex_core::extensions::agent::AgentExtension;
-    use cpex_core::extensions::monotonic::MonotonicSet;
+    use praxis_policy_core::extensions::agent::AgentExtension;
+    use praxis_policy_core::extensions::monotonic::MonotonicSet;
 
     use super::*;
+
+    #[test]
+    fn secret_assertion_provenance_survives_python_header_round_trips() {
+        use praxis_policy_core::assertions::config::OnMissing;
+        use praxis_policy_core::assertions::resolved::{
+            ResolvedContract, ResolvedHeader, ResolvedSource,
+        };
+        use praxis_policy_core::assertions::source::SourcePath;
+        use praxis_policy_core::assertions::{AssertionLevel, Direction, apply};
+
+        // Provenance must survive even after the wire filter drops the header.
+        let secret = "f47ac10b-58cc-4372-a567-0e02b2c3d479";
+        let contract = ResolvedContract {
+            headers: vec![ResolvedHeader {
+                name: "X-Request-Id".into(),
+                lowercase: "x-request-id".into(),
+                source: ResolvedSource::From(SourcePath::Secret("key".into())),
+                on_missing: OnMissing::Deny,
+                encode: None,
+                declared_in: "global".into(),
+                level: AssertionLevel::Global,
+                overrode: None,
+            }],
+            ..Default::default()
+        };
+        let mut ext = Extensions {
+            http: Some(Arc::new(HttpExtension::default())),
+            ..Default::default()
+        };
+        apply(
+            &contract,
+            &[("X-Request-Id".into(), secret.into())],
+            &mut ext,
+            Direction::Request,
+        );
+        let inbound = ext.http.as_deref().unwrap();
+        let mut outbound = sanitize_http(inbound);
+        assert!(outbound.request_headers.is_empty());
+        outbound.set_request_header("X-Request-Id", secret);
+        let mut worker = HttpExtension::default();
+        worker.set_request_header("x-request-id", secret);
+        worker.set_response_header("Content-Type", "application/json");
+        let returned = returned_http(&worker, Some(inbound));
+        for http in [outbound, returned] {
+            let wire = serde_json::to_string(&http).unwrap();
+            assert!(!wire.contains(secret), "{wire}");
+            assert!(wire.contains("<redacted secret.key>"), "{wire}");
+        }
+    }
 
     fn http_with_headers() -> HttpExtension {
         let mut http = HttpExtension::default();
@@ -441,6 +494,7 @@ mod tests {
         http.set_request_header("Cookie", "session=abc");
         http.set_request_header("X-API-Key", "key-123");
         http.set_request_header("X-Request-Id", "req-1");
+        http.set_request_header("X-Amzn-Oidc-Data", "gateway-jwt");
         http.set_response_header("Set-Cookie", "s=1");
         http.set_response_header("Authorization", "Bearer echoed");
         http.set_response_header("Content-Type", "application/json");
@@ -482,59 +536,26 @@ mod tests {
         assert!(wire.contains_key("security"), "security slot present");
     }
 
-    /// Assert a header map contains none of `names`, case-insensitively.
-    ///
-    /// Takes **literal** names rather than calling `is_sensitive`. The tests
-    /// below previously asserted `!is_sensitive(name)` over the surviving keys —
-    /// the same function under test on both sides, so the assertion held no
-    /// matter what `SENSITIVE_HEADERS` contained. That is what let `set-cookie`
-    /// be missing from the list while the comment claimed it was there, with
-    /// both strip tests green.
-    fn assert_absent(headers: &serde_json::Map<String, Value>, names: &[&str]) {
-        for name in names {
-            assert!(
-                !headers.keys().any(|k| k.eq_ignore_ascii_case(name)),
-                "header '{name}' must not cross the process boundary; got {:?}",
-                headers.keys().collect::<Vec<_>>()
-            );
-        }
-    }
-
     #[test]
-    fn sensitive_request_headers_are_stripped_but_others_survive() {
+    fn no_unvalidated_request_header_reaches_the_worker() {
         let mut task = serde_json::json!({});
         attach_extensions(&mut task, &populated()).expect("serializing");
 
         let headers = task[EXTENSIONS_FIELD]["http"]["request_headers"]
             .as_object()
-            .expect("request_headers is an object")
-            .clone();
-
-        assert_absent(&headers, &["Authorization", "Cookie", "X-API-Key"]);
-        assert_eq!(
-            headers.get("X-Request-Id").and_then(Value::as_str),
-            Some("req-1"),
-            "a non-sensitive header is preserved verbatim"
-        );
+            .expect("request_headers is an object");
+        assert!(headers.is_empty(), "raw request headers need validation");
     }
 
     #[test]
-    fn sensitive_response_headers_are_stripped_too() {
+    fn no_unvalidated_response_header_reaches_the_worker() {
         let mut task = serde_json::json!({});
         attach_extensions(&mut task, &populated()).expect("serializing");
 
         let headers = task[EXTENSIONS_FIELD]["http"]["response_headers"]
             .as_object()
-            .expect("response_headers is an object")
-            .clone();
-
-        // `Set-Cookie` is the one the module comment always claimed to strip.
-        // This assertion fails until it is actually in `SENSITIVE_HEADERS`.
-        assert_absent(&headers, &["Set-Cookie", "Authorization"]);
-        assert_eq!(
-            headers.get("Content-Type").and_then(Value::as_str),
-            Some("application/json"),
-        );
+            .expect("response_headers is an object");
+        assert!(headers.is_empty(), "raw response headers need validation");
     }
 
     #[test]
@@ -559,6 +580,23 @@ mod tests {
             returned.response_headers.is_empty() && returned.request_headers.is_empty(),
             "nor inbound on the return path"
         );
+    }
+
+    #[test]
+    fn gateway_credential_names_are_stripped_from_worker_edits() {
+        let mut http = HttpExtension::default();
+        http.set_request_header("Proxy-Authorization", "Bearer proxy-secret");
+        http.set_request_header("X-Amzn-Oidc-Data", "gateway-jwt");
+        http.set_response_header("X-Auth-Token", "response-secret");
+        http.set_response_header("X-Trace", "trace-only");
+
+        let returned = returned_http(&http, None);
+        assert!(returned.request_headers.is_empty());
+        assert_eq!(
+            returned.response_headers.get("X-Trace").map(String::as_str),
+            Some("trace-only")
+        );
+        assert_eq!(returned.response_headers.len(), 1);
     }
 
     #[test]
@@ -607,7 +645,7 @@ mod tests {
 
     #[test]
     fn raw_credentials_never_appear_on_the_wire() {
-        use cpex_core::extensions::raw_credentials::{
+        use praxis_policy_core::extensions::raw_credentials::{
             RawCredentialsExtension, RawInboundToken, TokenKind, TokenRole,
         };
 
@@ -743,7 +781,7 @@ mod tests {
 
     // The three gated slots below can only be *accepted* when the executor
     // issued a write token, and `WriteToken::new()` is `pub(crate)` to
-    // `cpex-core` — this crate cannot mint one even in a test. That is the
+    // `praxis-policy-core`, so this crate cannot mint one even in a test. That is the
     // security property, so these tests assert the deny side here and the
     // accept side is covered end-to-end through the real executor in
     // `tests/extensions_merge_e2e.rs`, where tokens come from capabilities.
@@ -944,7 +982,7 @@ mod tests {
         // itself is asserted directly against the shared `chain_extends`
         // predicate the merge uses — the accept path needs a real executor
         // token and lives in `tests/extensions_merge_e2e.rs`.
-        use cpex_core::extensions::delegation::DelegationHop;
+        use praxis_policy_core::extensions::delegation::DelegationHop;
 
         let hop = |id: &str, scopes: Vec<&str>| DelegationHop {
             subject_id: id.into(),

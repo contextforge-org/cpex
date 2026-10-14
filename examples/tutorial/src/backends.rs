@@ -11,7 +11,7 @@
 // That separation is the whole point, the same backend returns the
 // same bytes regardless of caller; policy decides who sees what.
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 /// Look up an employee's full HR record by id. The record includes an
 /// SSN and salary; policy (not this function) decides whether the
