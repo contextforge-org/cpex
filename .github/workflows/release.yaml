@@ -19,7 +19,7 @@ on:
   push:
     tags:
       - "v[0-9]+.[0-9]+.[0-9]+"
-      - "v[0-9]+.[0-9]+.[0-9]+-*"   # pre-releases: v0.2.0-alpha.5, v1.0.0-rc.1, …
+      - "v[0-9]+.[0-9]+.[0-9]+-*"   # pre-releases: v0.3.0-rc.1, v1.0.0-rc.1, …
   workflow_dispatch:
     inputs:
       dry_run:
@@ -40,12 +40,16 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: "1.96.0"
-      - name: Check tag == workspace version
-        if: github.event_name == 'push'
+      - name: Check release versions, PPE dependencies and publishable members
+        run: make release-check
+      - name: Check publishing ref == workspace version
+        if: github.event_name == 'push' || !inputs.dry_run
         env:
           TAG: ${{ github.ref_name }}
+          REF_TYPE: ${{ github.ref_type }}
         run: |
           set -euo pipefail
+          test "$REF_TYPE" = tag || { echo "::error::Publishing requires a release tag"; exit 1; }
           TAG_VERSION="${TAG#v}"
           CARGO_VERSION="$(cargo metadata --no-deps --format-version 1 \
             | jq -r '.packages[] | select(.name=="cpex") | .version')"
@@ -66,11 +70,24 @@ jobs:
         with:
           toolchain: "1.96.0"
       - uses: Swatinem/rust-cache@v2
-      - run: cargo test --workspace
+      - run: make test
+
+  package:
+    name: Package and verify before publish
+    needs: [validate]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Rust 1.96.0
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.96.0"
+      # A fresh registry avoids partially restored sparse-index resolutions.
+      - run: make publish-dry
 
   publish:
     name: Publish to crates.io
-    needs: [validate, test]
+    needs: [validate, test, package]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -127,7 +144,8 @@ jobs:
             echo "::group::dry run — cargo package (no upload)"
             # Verify the crates.io-published set only; these four
             # publish=false crates are not part of the registry release.
-            cargo package --workspace --locked --exclude cpex-ffi --exclude cpex-demo-ffi --exclude cpex-tutorial --exclude cpex-parity-harness
+            # The package job has already built and verified every .crate.
+            echo "All four retained crates packaged and verified; nothing uploaded."
             echo "::endgroup::"
             exit 0
           fi

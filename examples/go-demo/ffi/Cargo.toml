@@ -11,14 +11,13 @@
 
 [package]
 name = "cpex-demo-ffi"
-version = "0.1.0"
+version.workspace = true
 edition.workspace = true
 license = "Apache-2.0"
 publish = false
 
-# Demo example crate: not part of the released workspace. Pinned to its own
-# version and skipped by `cargo release` (which otherwise bumps every member
-# to the shared workspace version).
+# Demo example crate: follows the workspace version, but never publishes or
+# creates its own release tag.
 [package.metadata.release]
 release = false
 

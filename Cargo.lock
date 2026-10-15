@@ -616,7 +616,7 @@ dependencies = [
 
 [[package]]
 name = "cpex-demo-ffi"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "cpex-ffi",
@@ -661,7 +661,7 @@ dependencies = [
 
 [[package]]
 name = "cpex-parity-harness"
-version = "0.0.0"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "aws-lc-rs",

@@ -25,6 +25,11 @@ on:
       - 'v[0-9]+.[0-9]+.[0-9]+'
       - 'v[0-9]+.[0-9]+.[0-9]+-*'
   workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Build and verify FFI artifacts without signing or publishing"
+        type: boolean
+        default: true
 
 # id-token: write is what unlocks Sigstore keyless signing (Fulcio
 # reads the GHA OIDC token to issue the short-lived signing cert).
@@ -40,8 +45,27 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  validate:
+    name: Validate release version and ABI
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.96.0"
+      - run: make release-check
+      - name: Validate publishing tag
+        if: github.event_name == 'push' || !inputs.dry_run
+        env:
+          TAG: ${{ github.ref_name }}
+          REF_TYPE: ${{ github.ref_type }}
+        run: |
+          test "$REF_TYPE" = tag || { echo "::error::Publishing requires a release tag"; exit 1; }
+          python3 scripts/release/check-release.py --version "$TAG"
+
   build:
     name: Build ${{ matrix.target }}
+    needs: [validate]
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false  # one tuple failing should not cancel the others
@@ -96,9 +120,8 @@ jobs:
       - name: Build artifact
         env:
           TARGET: ${{ matrix.target }}
-          # VERSION drops the leading "refs/tags/" so the tarball
-          # name matches the tag verbatim.
-          VERSION: ${{ github.ref_name }}
+          # Branch-based manual dry runs use the workspace version.
+          VERSION: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
           DIST_DIR: dist
           # Point cc-rs and the linker at musl-gcc for the musl targets.
           # No-ops for gnu/darwin (those triples don't match these keys).
@@ -107,6 +130,23 @@ jobs:
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
         run: bash scripts/release/build-artifact.sh
+
+      - name: Install Go for static-library verification
+        if: ${{ !contains(matrix.target, 'musl') }}
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go/cpex/go.mod
+          cache-dependency-path: go/cpex/go.sum
+
+      - name: Verify archive and Go bindings
+        env:
+          TARGET: ${{ matrix.target }}
+          VERSION: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+          DIST_DIR: dist
+          # GNU/Linux and macOS run Go race tests against the archive.
+          # musl runners verify metadata/checksums; Go's race runtime needs glibc.
+          VERIFY_GO: ${{ contains(matrix.target, 'musl') && '0' || '1' }}
+        run: bash scripts/release/verify-artifact.sh
 
       - name: Upload tarball + sha256
         uses: actions/upload-artifact@v7
@@ -121,6 +161,7 @@ jobs:
   sign-and-release:
     name: Sign and publish release
     needs: [build]
+    if: github.event_name == 'push' || !inputs.dry_run
     runs-on: ubuntu-latest
     steps:
       - name: Checkout

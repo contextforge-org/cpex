@@ -85,6 +85,42 @@ and a `version`; when adding a new internal dependency, include the `version` so
 the crate remains publishable. `cpex-ffi` is `publish = false` (distributed as
 signed prebuilt artifacts).
 
+For 0.3.0 the complete crates.io publish order is `cpex-hosts-python`,
+`cpex-plugin-delegator-biscuit`, `cpex`, then `cpex-python`. The facade consumes
+PPE 0.5.0 from crates.io; the removed CPEX core, SDK, APL and builtin crates
+remain at 0.2.3 and must not be added back to the release list.
+
+Run the local preparation checks before tagging:
+
+```bash
+make release-check VERSION=0.3.0   # manifests, Go demo, PPE pins, publish set, ABI
+make release-dry VERSION=0.3.0     # cargo-release preview; no changes
+make release-verify VERSION=0.3.0  # lint, tests, verified .crates, FFI, examples
+```
+
+`make publish-dry` builds and verifies all four `.crate` archives in
+`target/package/`, including dependencies between unpublished workspace
+versions. `make ffi-package` builds the host static library and creates its
+tarball and checksum in `dist/`. `make ffi-verify` additionally downloads that
+local bundle through the consumer helper, checks its metadata and ABI, and
+runs Go vet and race tests against the extracted archive from a temporary
+copy of the SDK. It cannot fall back to the workspace's shared library.
+Local bundles are unsigned; CI signs the verified release artifacts.
+
+Both release workflows support manual runs with `dry_run: true` by default.
+The Rust workflow packages and verifies every retained crate before any
+publish, and tests the facade with `python-host` enabled as well. The FFI
+workflow checks all five target bundles, with Go race tests on the GNU/Linux
+and macOS targets. Actual publishing requires a tag matching the workspace
+version. `make tag VERSION=0.3.0` creates and pushes the `v0.3.0`,
+`go/cpex/v0.3.0` and `0.3.0` tags; it starts publication immediately.
+
+The broader integration checks remain separate: `make test-python-e2e`
+requires a compatible `CPEX_PYTHON_SOURCE` checkout, `make parity` needs
+`PARITY_VALKEY_URL` for persistent-session coverage, and the full
+`make tutorial-check` needs Docker and the tutorial IdP. Run those CI lanes
+and the Python wheel smoke/acceptance lanes before publishing.
+
 ## Legal — Developer Certificate of Origin
 
 Contributions are accepted under the [Developer Certificate of Origin (DCO) 1.1](https://developercertificate.org/).

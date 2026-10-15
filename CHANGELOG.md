@@ -15,7 +15,7 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
-## [0.3.0] - 2026-10-08
+## [0.3.0] - 2026-10-14
 
 CPEX now runs on the [praxis-policy engine](https://github.com/praxis-proxy/policy) (PPE) 0.5.0 from crates.io instead of its own engine crates. API names, hook names, several config keys, defaults and security checks change. The [migration guide](docs/content/docs/migration-0.3.md) lists every change by surface.
 
@@ -60,6 +60,9 @@ PPE 0.5.0 also updates CEL to 0.15, adds the `delegator/vault` builtin, validate
 
 ### Fixed
 
+- **Release preparation.** Version and publish-set checks cover the four retained crates and the PPE pins. Local FFI packaging verifies checksums, metadata and ABI v3, then runs the Go race tests against the extracted static library. Manual FFI workflow runs default to packaging and verification without publishing.
+- **FFI download helper output.** Checksum diagnostics go to stderr so callers capturing the artifact directory receive a usable path.
+- **Dependency and CI maintenance.** Updated `base64` to 0.23.1, refreshed routine Rust dependencies, updated the `rustls-webpki` advisory exception and repaired external documentation link checks.
 - **`cpex_invoke_resolved` passes the caller's extensions to identity resolution.** Without them every Go `InvokeResolved` call was refused under policy dispatch.
 - **Go `InvokeResolved` no longer double-frees a context table after an error.**
 - **Go `Resource.Blob` and messages without content parts decode across the FFI.** Both used to fail. `Resource.Blob` is now `ByteArray`, which matches the wire format Rust uses for bytes; a `[]byte` value still assigns to it.

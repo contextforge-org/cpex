@@ -11,8 +11,8 @@
 #
 # Inputs (env):
 #   TARGET       Required. Rust target triple, e.g. x86_64-unknown-linux-gnu.
-#   VERSION      Required in CI. Git tag, e.g. v0.9.0. Falls back to
-#                `git describe --tags --dirty` for local invocations.
+#   VERSION      Git tag or version, e.g. v0.3.0. Defaults to the workspace
+#                version. An explicit version must match the workspace.
 #   DIST_DIR     Optional. Output dir for tarball + .sha256. Defaults to ./dist.
 #   USE_CROSS    Optional. If "1", build with `cross` instead of `cargo`.
 #                Required for cross-compiling musl/arm targets without a
@@ -34,12 +34,11 @@ USE_CROSS="${USE_CROSS:-0}"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO_ROOT"
 
-# Version resolution. CI sets VERSION from the tag; locally fall back
-# to git-describe so dev iterations get a sensible bundle name.
-if [[ -z "${VERSION:-}" ]]; then
-    VERSION="$(git describe --tags --dirty --always 2>/dev/null || echo "v0.0.0-dev")"
-    info "VERSION not set; using git-describe fallback: $VERSION"
-fi
+# Never label a bundle with a stale git-describe tag or a branch name.
+WORKSPACE_VERSION="$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json,sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"] == "cpex"))')"
+VERSION="${VERSION:-v$WORKSPACE_VERSION}"
+[[ "${VERSION#v}" == "$WORKSPACE_VERSION" ]] || err "VERSION $VERSION does not match workspace $WORKSPACE_VERSION"
+[[ "$VERSION" == v* ]] || VERSION="v$VERSION"
 
 # Map Rust target triple → our tuple naming. This is the contract
 # downstream consumers' download-ffi-artifact.sh inverts via uname.

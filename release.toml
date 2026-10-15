@@ -10,8 +10,8 @@
 #
 # Usage (see the "Release" section of the Makefile):
 #   make release-dry                  # preview (cargo-release dry-runs by default)
-#   make release LEVEL=alpha          # 0.2.0-alpha.5 -> 0.2.0-alpha.6
-#   make release VERSION=0.2.0        # explicit version
+#   make release LEVEL=alpha          # next alpha prerelease
+#   make release VERSION=0.3.0        # explicit version
 #   git push origin vX.Y.Z            # hand the tag to CI to publish
 
 shared-version = true                 # one version across the whole workspace
@@ -21,4 +21,4 @@ tag = true
 tag-name = "v{{version}}"             # matches the CI release tag trigger
 tag-message = "Release {{version}}"
 consolidate-commits = true            # a single bump commit for the workspace
-pre-release-commit-message = "chore(release): v{{version}}"
+pre-release-commit-message = "chore: release v{{version}}"

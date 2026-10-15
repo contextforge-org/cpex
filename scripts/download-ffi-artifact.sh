@@ -13,7 +13,7 @@
 # from raw.githubusercontent.com) and call it before `go build`.
 #
 # Inputs (env or flag-equivalent CLI args):
-#   CPEX_FFI_VERSION   Required. Tag of the release, e.g. v0.9.0.
+#   CPEX_FFI_VERSION   Required. Tag of the release, e.g. v0.3.0.
 #   CPEX_FFI_TARGET    Optional. Tuple name (linux-amd64-gnu,
 #                      linux-arm64-gnu, linux-amd64-musl,
 #                      linux-arm64-musl, darwin-arm64). Auto-detected
@@ -45,7 +45,7 @@ set -euo pipefail
 err() { echo "download-ffi-artifact: error: $*" >&2; exit 1; }
 info() { echo "download-ffi-artifact: $*" >&2; }  # stderr — stdout is the dest path
 
-: "${CPEX_FFI_VERSION:?CPEX_FFI_VERSION is required (e.g. v0.9.0)}"
+: "${CPEX_FFI_VERSION:?CPEX_FFI_VERSION is required (e.g. v0.3.0)}"
 CPEX_FFI_REPO="${CPEX_FFI_REPO:-contextforge-org/cpex}"
 
 # Detect target tuple if not provided. Inverse of the mapping in
@@ -128,9 +128,9 @@ fetch "${TARBALL_NAME}.sha256"
 # shasum -a 256 -c uses the same format.
 info "verifying sha256"
 if command -v sha256sum >/dev/null; then
-    (cd "$WORK_DIR" && sha256sum -c "${TARBALL_NAME}.sha256")
+    (cd "$WORK_DIR" && sha256sum -c "${TARBALL_NAME}.sha256") >&2
 else
-    (cd "$WORK_DIR" && shasum -a 256 -c "${TARBALL_NAME}.sha256")
+    (cd "$WORK_DIR" && shasum -a 256 -c "${TARBALL_NAME}.sha256") >&2
 fi
 
 # cosign verification — opt-out only. The certificate identity is the

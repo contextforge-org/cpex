@@ -8,6 +8,23 @@ without needing a Rust toolchain.
 This document covers what is published, how to consume and verify
 an artifact, and the FFI ABI policy that makes the contract durable.
 
+For CPEX 0.3.0, use the Go module tag `go/cpex/v0.3.0` together with the
+`v0.3.0` FFI artifact. Both expect C ABI **3**; upgrade them together.
+
+## Local preparation
+
+```sh
+make ffi-package VERSION=0.3.0  # host tarball + .sha256 in dist/
+make ffi-verify VERSION=0.3.0   # checksum, metadata, ABI, Go vet + race tests
+```
+
+Verification uses the extracted static library from a temporary SDK copy,
+so a workspace shared library cannot satisfy the link instead. Local bundles
+are unsigned; the local check skips cosign only for its `file://` source.
+The `Release FFI` workflow verifies every target bundle, runs Go race tests on
+GNU/Linux and macOS, then signs and publishes. Manual workflow runs default
+to `dry_run: true`, which leaves signing and GitHub Release uploads disabled.
+
 > **Builtins bundled.** The published `.a` includes the APL (Attribute
 > Policy Language) governance layer and every non-experimental PPE builtin:
 > plugin kinds `identity/jwt`, `identity/api-key`, `delegator/oauth` and
@@ -91,7 +108,7 @@ into your build (or fetch via `raw.githubusercontent.com` pinned to
 a tag) and call it before `go build` / `cargo build` / etc.
 
 ```sh
-export CPEX_FFI_VERSION=v0.9.0
+export CPEX_FFI_VERSION=v0.3.0
 ARTIFACT_DIR=$(bash scripts/download-ffi-artifact.sh)
 export CGO_LDFLAGS="-L${ARTIFACT_DIR} -lcpex_ffi"
 go build ./...
@@ -117,7 +134,7 @@ Subsequent runs against the same version + dest are no-ops.
 If you want to do it by hand:
 
 ```sh
-VER=v0.9.0
+VER=v0.3.0
 TUPLE=linux-amd64-gnu
 BASE="https://github.com/contextforge-org/cpex/releases/download/${VER}"
 NAME="cpex-ffi-${VER}-${TUPLE}.tar.gz"
@@ -151,7 +168,7 @@ unpacked artifact directory and the cgo `-L` from `LDFLAGS` will be
 augmented by the env var:
 
 ```sh
-ARTIFACT_DIR=$(CPEX_FFI_VERSION=v0.9.0 bash scripts/download-ffi-artifact.sh)
+ARTIFACT_DIR=$(CPEX_FFI_VERSION=v0.3.0 bash scripts/download-ffi-artifact.sh)
 CGO_LDFLAGS="-L${ARTIFACT_DIR}" go build ./...
 ```
 

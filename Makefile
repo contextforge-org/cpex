@@ -85,6 +85,10 @@ help:
 	@echo "  release-version   Set the version everywhere (no commit/tag)"
 	@echo "  release           Bump + commit + tag (then: git push origin vX.Y.Z)"
 	@echo "  publish-dry       Local packaging dry-run (mirrors CI dry-run)"
+	@echo "  release-check     Check versions, publishable crates, PPE pins and ABI"
+	@echo "  ffi-package       Package a host FFI tarball + checksum in dist/"
+	@echo "  ffi-verify        Package, verify and race-test Go against that archive"
+	@echo "  release-verify    Rust lint/tests/packages + FFI verification + examples"
 	@echo "                    Pass LEVEL=alpha|patch|minor|major|rc|release or VERSION=X.Y.Z"
 	@echo "  tag               Tag + push all 3 release tags: make tag VERSION=X.Y.Z"
 
@@ -328,7 +332,7 @@ FFI_LIB_DIR = target/release
 
 .PHONY: ffi-release
 ffi-release:
-	@$(CARGO) build --release -p cpex-ffi
+	@$(CARGO) build --release --locked -p cpex-ffi
 	@if [ "$(GO_STATIC)" = "1" ]; then \
 		rm -f $(FFI_LIB_DIR)/libcpex_ffi.so $(FFI_LIB_DIR)/libcpex_ffi.dylib; \
 		echo "→ GO_STATIC=1: Go links $(FFI_LIB_DIR)/libcpex_ffi.a"; fi
@@ -493,12 +497,12 @@ ci: lint test examples-build bindings-python-build-release bindings-python-test
 # release.toml; the actual crates.io publish runs in CI on the pushed tag.
 #
 # Bump level (LEVEL) or explicit VERSION:
-#   make release-dry                 # preview, no changes (default LEVEL=alpha)
-#   make release LEVEL=patch         # 0.2.0 -> 0.2.1
-#   make release VERSION=0.2.0       # drop the pre-release suffix
+#   make release-dry VERSION=0.3.0   # preview, no changes
+#   make release LEVEL=patch         # next patch release
+#   make release VERSION=0.3.0       # explicit release version
 #   git push origin "v$(...)"        # push the tag to let CI publish
 
-LEVEL   ?= alpha
+LEVEL   ?= release
 VERSION ?=
 # Explicit VERSION wins over LEVEL when set.
 RELEASE_ARG = $(if $(VERSION),$(VERSION),$(LEVEL))
@@ -534,20 +538,46 @@ release: release-tool
 # is a test harness). CI runs this on a clean checkout; --allow-dirty lets you
 # run it locally with work in progress.
 .PHONY: publish-dry
-publish-dry:
+publish-dry: release-check
 	@$(CARGO) package --workspace --locked --allow-dirty --exclude cpex-ffi --exclude cpex-demo-ffi --exclude cpex-tutorial --exclude cpex-parity-harness
+
+.PHONY: release-check
+release-check:
+	@$(PYTHON) scripts/release/check-release.py $(if $(VERSION),--version "$(VERSION)")
+
+# Local artifacts use the same builder as the CI target matrix. Verification
+# uses a fresh Go module copy so cgo cannot find a workspace shared library.
+FFI_TARGET ?= $(shell rustc -vV | sed -n 's/^host: //p')
+DIST_DIR ?= dist
+
+.PHONY: ffi-package
+ffi-package: release-check
+	@TARGET="$(FFI_TARGET)" VERSION="$(VERSION)" DIST_DIR="$(DIST_DIR)" bash scripts/release/build-artifact.sh
+
+.PHONY: ffi-verify
+ffi-verify: ffi-package
+	@TARGET="$(FFI_TARGET)" VERSION="$(VERSION)" DIST_DIR="$(DIST_DIR)" GO="$(GO)" bash scripts/release/verify-artifact.sh
+
+# Keep these sequential even under make -j: Go example builds and GO_STATIC
+# alter library files, while ffi-verify must consume only the packaged archive.
+.PHONY: release-verify
+release-verify: release-check
+	@$(MAKE) lint test
+	@$(MAKE) publish-dry
+	@$(MAKE) ffi-verify
+	@$(MAKE) examples-run GO_STATIC=1
 
 # Tag the current commit across the three namespaces the project releases on,
 # then push all three. The `v<version>` tag is what the CI release workflow
 # triggers on; `go/cpex/v<version>` is the Go module tag; the bare `<version>`
-# is the crates.io-style tag. VERSION must be semver (e.g. 0.2.0 or
-# 0.2.0-alpha.5), with no leading `v`.
-#   make tag VERSION=0.2.0-alpha.5
+# is the crates.io-style tag. VERSION must be semver (e.g. 0.3.0 or
+# 0.3.0-rc.1), with no leading `v`.
+#   make tag VERSION=0.3.0
 .PHONY: tag
-tag:
+tag: release-check
 	@test -n "$(VERSION)" || { echo "usage: make tag VERSION=X.Y.Z[-prerelease]"; exit 1; }
 	@echo "$(VERSION)" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$$' \
-		|| { echo "error: VERSION '$(VERSION)' is not semver (e.g. 0.2.0 or 0.2.0-alpha.5; no leading 'v')"; exit 1; }
+		|| { echo "error: VERSION '$(VERSION)' is not semver (e.g. 0.3.0 or 0.3.0-rc.1; no leading 'v')"; exit 1; }
 	git tag v$(VERSION)
 	git tag go/cpex/v$(VERSION)
 	git tag $(VERSION)
