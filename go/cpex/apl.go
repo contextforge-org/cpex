@@ -35,6 +35,10 @@ import "C"
 // in crates/cpex-ffi/src/apl.rs.
 const aplAllowPrivateDestinations uint32 = 1
 
+// aplExposeDelegatedCredentials mirrors
+// CPEX_APL_EXPOSE_DELEGATED_CREDENTIALS in crates/cpex-ffi/src/apl.rs.
+const aplExposeDelegatedCredentials uint32 = 2
+
 // APLOption configures EnableAPL.
 type APLOption func(*aplSettings)
 
@@ -50,6 +54,17 @@ type aplSettings struct {
 func WithPrivateDestinations() APLOption {
 	return func(s *aplSettings) {
 		s.flags |= aplAllowPrivateDestinations
+	}
+}
+
+// WithDelegatedCredentials returns the credentials delegate() steps mint
+// on allowed results, in PipelineResult.DelegatedCredentials, so the host
+// can attach them upstream. Without it the token bytes never leave the
+// engine. A library that predates this option rejects it with
+// ErrCpexInvalidInput.
+func WithDelegatedCredentials() APLOption {
+	return func(s *aplSettings) {
+		s.flags |= aplExposeDelegatedCredentials
 	}
 }
 

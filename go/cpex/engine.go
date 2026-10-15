@@ -569,12 +569,13 @@ func Invoke[P any](
 	}
 
 	typed := &TypedPipelineResult[P]{
-		ContinueProcessing: raw.ContinueProcessing,
-		Violation:          raw.Violation,
-		Errors:             raw.Errors,
-		Metadata:           raw.Metadata,
-		PayloadType:        raw.PayloadType,
-		PayloadModified:    raw.PayloadModified,
+		ContinueProcessing:   raw.ContinueProcessing,
+		Violation:            raw.Violation,
+		Errors:               raw.Errors,
+		Metadata:             raw.Metadata,
+		PayloadType:          raw.PayloadType,
+		PayloadModified:      raw.PayloadModified,
+		DelegatedCredentials: raw.DelegatedCredentials,
 	}
 
 	// Deserialize modified payload if present

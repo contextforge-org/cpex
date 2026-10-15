@@ -381,6 +381,36 @@ routes:
 	}
 
 	wantDenied(t, "audience refused", callTool(t, eng, alice, "read_repo", map[string]any{"repo": "cpex"}, ""), "")
+
+	// Without the host opt-in the minted token stays in the engine.
+	if got := callTool(t, eng, alice, "get_compensation", map[string]any{}, ""); len(got.DelegatedCredentials) != 0 {
+		t.Errorf("credentials returned without WithDelegatedCredentials: %d", len(got.DelegatedCredentials))
+	}
+
+	// With it, the allowed result carries the header to send upstream.
+	exposed := accEngine(t, yaml, WithPrivateDestinations(), WithDelegatedCredentials())
+	res := callTool(t, exposed, alice, "get_compensation", map[string]any{"employee_id": "e-1"}, "")
+	wantAllowed(t, "hr delegated, exposed", res)
+	if len(res.DelegatedCredentials) != 1 {
+		t.Fatalf("expected one delegated credential, got %d", len(res.DelegatedCredentials))
+	}
+	c := res.DelegatedCredentials[0]
+	if c.Header != "Authorization" || c.Value.Reveal() != "Bearer acceptance-only-workday-token" {
+		t.Errorf("credential = %s: <value len %d>", c.Header, len(c.Value.Reveal()))
+	}
+	if c.Delegator != "workday-oauth" || c.Target != "workday-api" || c.Audience != "workday-api" {
+		t.Errorf("credential metadata = %+v", c)
+	}
+	if exp, err := time.Parse(time.RFC3339, c.ExpiresAt); err != nil || !exp.After(time.Now()) {
+		t.Errorf("expires_at %q: %v", c.ExpiresAt, err)
+	}
+	if strings.Contains(fmt.Sprintf("%v %+v %#v", res, *res, c), "acceptance-only-workday-token") {
+		t.Error("a printed result leaked the minted token")
+	}
+	evan := mintJWT(t, "evan", []string{"engineer"}, 10*time.Minute, nil)
+	if got := callTool(t, exposed, evan, "get_compensation", map[string]any{}, ""); len(got.DelegatedCredentials) != 0 {
+		t.Error("a denied result must carry no credentials")
+	}
 }
 
 // ---------------------------------------------------------------------------

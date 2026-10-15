@@ -104,6 +104,8 @@ The transport refuses private, loopback and link-local destinations by default. 
 
 `WithPrivateDestinations` is engine-wide. It lets every outbound builtin (JWKS, token exchange, CIBA, Vault) reach loopback, RFC 1918, link-local addresses including cloud metadata (`169.254.169.254`), and CGNAT. Use it for local development and demos only. A blocked JWKS fetch shows up as `auth.jwks_unavailable`; a blocked token exchange as `delegation.egress_denied`.
 
+A `delegate()` step mints its credential inside the engine, and by default the token never leaves it. A host that forwards the request itself passes `cpex.WithDelegatedCredentials()`; allowed results then carry `PipelineResult.DelegatedCredentials`, each with the header name, the full header value (`Value.Reveal()`, scheme prefix included), target, audience, scopes and expiry. `Value` is a `SecretValue`, which prints, marshals and logs as `[REDACTED]`. A library that predates the option rejects it with `ErrCpexInvalidInput`.
+
 `LoadConfig` returns a typed error without the engine's message. The message, naming the rejected key, hook or plugin, goes to the FFI's `tracing` log.
 
 ## Secrets

@@ -11,7 +11,12 @@
 
 package cpex
 
-import "github.com/vmihailenco/msgpack/v5"
+import (
+	"fmt"
+	"log/slog"
+
+	"github.com/vmihailenco/msgpack/v5"
+)
 
 // Extensions carries capability-gated data alongside the payload.
 // Serialized to/from MessagePack when crossing the FFI boundary.
@@ -365,7 +370,54 @@ type PipelineResult struct {
 	PayloadModified bool `msgpack:"payload_modified"`
 	// Modified extensions as raw MessagePack bytes.
 	ModifiedExtensions []byte `msgpack:"modified_extensions,omitempty"`
+	// DelegatedCredentials are the credentials delegate() steps minted
+	// for this request, for the host to attach upstream. Populated only
+	// on allowed results of an engine enabled WithDelegatedCredentials.
+	DelegatedCredentials []DelegatedCredential `msgpack:"delegated_credentials,omitempty"`
 }
+
+// DelegatedCredential is one minted delegated credential: send it
+// upstream as the header Header with the value Value.Reveal().
+type DelegatedCredential struct {
+	// Header is the outbound header name, for example "Authorization".
+	Header string `msgpack:"header"`
+	// Value is the full header value, scheme prefix included
+	// ("Bearer ...", "token ...", or a bare API key).
+	Value SecretValue `msgpack:"value"`
+	// Delegator is the plugin instance that minted it.
+	Delegator string `msgpack:"delegator"`
+	// Target is the logical target named by the delegate() step.
+	Target   string   `msgpack:"target"`
+	Audience string   `msgpack:"audience"`
+	Scopes   []string `msgpack:"scopes,omitempty"`
+	// ExpiresAt is an RFC 3339 timestamp.
+	ExpiresAt string `msgpack:"expires_at"`
+}
+
+// SecretValue holds credential bytes. Every formatting path (fmt verbs,
+// JSON and text marshalling, slog) prints a redaction marker; Reveal
+// returns the value.
+type SecretValue string
+
+const redacted = "[REDACTED]"
+
+// Reveal returns the secret.
+func (s SecretValue) Reveal() string { return string(s) }
+
+// String redacts.
+func (s SecretValue) String() string { return redacted }
+
+// GoString redacts.
+func (s SecretValue) GoString() string { return redacted }
+
+// Format redacts under every verb.
+func (s SecretValue) Format(f fmt.State, _ rune) { _, _ = f.Write([]byte(redacted)) }
+
+// MarshalText redacts, which also covers encoding/json.
+func (s SecretValue) MarshalText() ([]byte, error) { return []byte(redacted), nil }
+
+// LogValue redacts.
+func (s SecretValue) LogValue() slog.Value { return slog.StringValue(redacted) }
 
 // TypedPipelineResult is a PipelineResult with the modified payload
 // and extensions deserialized into concrete Go types.
@@ -378,8 +430,9 @@ type TypedPipelineResult[P any] struct {
 	ModifiedPayload    *P
 	// PayloadModified reports whether a plugin actually changed the
 	// payload. See PipelineResult.PayloadModified.
-	PayloadModified    bool
-	ModifiedExtensions *Extensions
+	PayloadModified      bool
+	ModifiedExtensions   *Extensions
+	DelegatedCredentials []DelegatedCredential
 }
 
 // IsDenied returns true if the pipeline was halted by a plugin.
