@@ -13,5 +13,6 @@ example\.com
 github\.com/contextforge-org/cpex
 
 # GitHub's blob pages intermittently return 503 to the link checker. The docs
-# workflow verifies these paths against the demo repository tree through the API.
+# workflow verifies these paths against the repository trees through the API.
 ^https://github\.com/praxis-proxy/demos/blob/main/
+^https://github\.com/praxis-proxy/policy/blob/v0\.5\.0/

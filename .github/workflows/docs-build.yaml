@@ -50,8 +50,8 @@ jobs:
       - name: Check links
         uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8 # v2
         with:
-          # GitHub intermittently returns 503 for bursts of links to the demo
-          # repository. Slow requests per host and retry transient failures.
+          # GitHub intermittently returns 503 for bursts of source links.
+          # Slow requests per host and retry transient failures.
           args: >-
             --no-progress --host-concurrency 2 --host-request-interval 250ms
             --max-retries 5 --retry-wait-time 2
@@ -60,40 +60,45 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Check demo source links
+      - name: Check external source links
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          for attempt in 1 2 3; do
-            if gh api 'repos/praxis-proxy/demos/git/trees/main?recursive=1' > "$RUNNER_TEMP/demo-tree.json"; then
-              break
-            fi
-            if [ "$attempt" -eq 3 ]; then exit 1; fi
-            sleep "$((attempt * 2))"
+          for target in demos/main policy/v0.5.0; do
+            repo="${target%/*}"
+            ref="${target#*/}"
+            for attempt in 1 2 3; do
+              if gh api "repos/praxis-proxy/$repo/git/trees/$ref?recursive=1" > "$RUNNER_TEMP/$repo-tree.json"; then
+                break
+              fi
+              if [ "$attempt" -eq 3 ]; then exit 1; fi
+              sleep "$((attempt * 2))"
+            done
           done
-          python3 - "$RUNNER_TEMP/demo-tree.json" <<'PY'
+          python3 - "$RUNNER_TEMP" <<'PY'
           import json
           import re
           import sys
           from pathlib import Path
 
-          tree = json.loads(Path(sys.argv[1]).read_text())
-          if tree.get("truncated"):
-              raise SystemExit("Demo repository tree was truncated")
-          available = {entry["path"] for entry in tree["tree"] if entry["type"] == "blob"}
-          prefix = "https://github.com/praxis-proxy/demos/blob/main/"
-          pattern = re.compile(re.escape(prefix) + r"([^)\s#?]+)")
           missing = []
-          checked = set()
-          for source in Path("docs/content").rglob("*.md"):
-              for path in pattern.findall(source.read_text()):
-                  checked.add(path)
-                  if path not in available:
-                      missing.append((source, path))
-          for source, path in missing:
-              print(f"::error file={source}::Broken demo source link: {prefix}{path}")
-          print(f"Checked {len(checked)} demo source links against the repository tree")
+          for repo, ref in (("demos", "main"), ("policy", "v0.5.0")):
+              tree = json.loads((Path(sys.argv[1]) / f"{repo}-tree.json").read_text())
+              if tree.get("truncated"):
+                  raise SystemExit(f"{repo} repository tree was truncated")
+              available = {entry["path"] for entry in tree["tree"] if entry["type"] == "blob"}
+              prefix = f"https://github.com/praxis-proxy/{repo}/blob/{ref}/"
+              pattern = re.compile(re.escape(prefix) + r"([^)\s#?]+)")
+              checked = set()
+              for source in Path("docs/content").rglob("*.md"):
+                  for path in pattern.findall(source.read_text()):
+                      checked.add(path)
+                      if path not in available:
+                          missing.append((source, prefix + path))
+              print(f"Checked {len(checked)} {repo} source links against the repository tree")
+          for source, url in missing:
+              print(f"::error file={source}::Broken external source link: {url}")
           if missing:
               raise SystemExit(1)
           PY
