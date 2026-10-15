@@ -14,8 +14,6 @@
 
 > [!NOTE]
 > **Looking for the pure-Python CPEX framework?** It lives on the [`0.1.x` branch](https://github.com/contextforge-org/cpex/tree/0.1.x), maintained for backwards compatibility. `main` (`0.2`+) is the policy-first runtime, with Rust, Python and Go APIs.
->
-> **Upgrading from 0.2?** CPEX 0.3 runs on the [praxis-policy engine](https://github.com/praxis-proxy/policy) (PPE) and renames the API, hook names and several config keys. See the [migration guide](https://contextforge-org.github.io/cpex/docs/migration-0.3/).
 
 ## What's CPEX?
 
