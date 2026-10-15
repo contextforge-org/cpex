@@ -603,7 +603,7 @@ checksum = "773648b94d0e5d620f64f280777445740e61fe701025087ec8b57f45c791888b"
 
 [[package]]
 name = "cpex"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "cpex-hosts-python",
  "praxis-policy",
@@ -616,7 +616,7 @@ dependencies = [
 
 [[package]]
 name = "cpex-demo-ffi"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "async-trait",
  "cpex-ffi",
@@ -626,7 +626,7 @@ dependencies = [
 
 [[package]]
 name = "cpex-ffi"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "async-trait",
  "aws-lc-rs",
@@ -644,7 +644,7 @@ dependencies = [
 
 [[package]]
 name = "cpex-hosts-python"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "async-trait",
  "chrono",
@@ -662,7 +662,7 @@ dependencies = [
 
 [[package]]
 name = "cpex-parity-harness"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "async-trait",
  "aws-lc-rs",
@@ -682,7 +682,7 @@ dependencies = [
 
 [[package]]
 name = "cpex-plugin-delegator-biscuit"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "async-trait",
  "biscuit-auth",
@@ -696,7 +696,7 @@ dependencies = [
 
 [[package]]
 name = "cpex-python"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "async-trait",
  "cpex",
@@ -711,7 +711,7 @@ dependencies = [
 
 [[package]]
 name = "cpex-tutorial"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "async-trait",
  "cpex",

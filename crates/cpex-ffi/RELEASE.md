@@ -8,14 +8,14 @@ without needing a Rust toolchain.
 This document covers what is published, how to consume and verify
 an artifact, and the FFI ABI policy that makes the contract durable.
 
-For CPEX 0.3.0, use the Go module tag `go/cpex/v0.3.0` together with the
-`v0.3.0` FFI artifact. Both expect C ABI **3**; upgrade them together.
+For CPEX 0.3.1, use the Go module tag `go/cpex/v0.3.1` together with the
+`v0.3.1` FFI artifact. Both expect C ABI **3**; upgrade them together.
 
 ## Local preparation
 
 ```sh
-make ffi-package VERSION=0.3.0  # host tarball + .sha256 in dist/
-make ffi-verify VERSION=0.3.0   # checksum, metadata, ABI, Go vet + race tests
+make ffi-package VERSION=0.3.1  # host tarball + .sha256 in dist/
+make ffi-verify VERSION=0.3.1   # checksum, metadata, ABI, Go vet + race tests
 ```
 
 Verification uses the extracted static library from a temporary SDK copy,
@@ -108,7 +108,7 @@ into your build (or fetch via `raw.githubusercontent.com` pinned to
 a tag) and call it before `go build` / `cargo build` / etc.
 
 ```sh
-export CPEX_FFI_VERSION=v0.3.0
+export CPEX_FFI_VERSION=v0.3.1
 ARTIFACT_DIR=$(bash scripts/download-ffi-artifact.sh)
 export CGO_LDFLAGS="-L${ARTIFACT_DIR} -lcpex_ffi"
 go build ./...
@@ -134,7 +134,7 @@ Subsequent runs against the same version + dest are no-ops.
 If you want to do it by hand:
 
 ```sh
-VER=v0.3.0
+VER=v0.3.1
 TUPLE=linux-amd64-gnu
 BASE="https://github.com/contextforge-org/cpex/releases/download/${VER}"
 NAME="cpex-ffi-${VER}-${TUPLE}.tar.gz"
@@ -168,7 +168,7 @@ unpacked artifact directory and the cgo `-L` from `LDFLAGS` will be
 augmented by the env var:
 
 ```sh
-ARTIFACT_DIR=$(CPEX_FFI_VERSION=v0.3.0 bash scripts/download-ffi-artifact.sh)
+ARTIFACT_DIR=$(CPEX_FFI_VERSION=v0.3.1 bash scripts/download-ffi-artifact.sh)
 CGO_LDFLAGS="-L${ARTIFACT_DIR}" go build ./...
 ```
 
