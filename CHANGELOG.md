@@ -15,6 +15,12 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-10-15
+
+### Added
+
+- Host opt-in for delegated credentials: `cpex_apl_install` flag `CPEX_APL_EXPOSE_DELEGATED_CREDENTIALS` (Go `WithDelegatedCredentials()`) returns the credentials `delegate()` minted on allowed results as `delegated_credentials` (Go `PipelineResult.DelegatedCredentials`, value redacted when printed). Additive; the C ABI stays at 3.
+
 ## [0.3.0] - 2026-10-14
 
 CPEX now runs on the [praxis-policy engine](https://github.com/praxis-proxy/policy) (PPE) 0.5.0 from crates.io instead of its own engine crates. API names, hook names, several config keys, defaults and security checks change. The [migration guide](docs/content/docs/migration-0.3.md) lists every change by surface.
@@ -211,7 +217,8 @@ PPE 0.5.0 also updates CEL to 0.15, adds the `delegator/vault` builtin, validate
 
 - Initial release
 
-[Unreleased]: https://github.com/contextforge-org/cpex/compare/0.3.0...HEAD
+[Unreleased]: https://github.com/contextforge-org/cpex/compare/0.3.1...HEAD
+[0.3.1]: https://github.com/contextforge-org/cpex/compare/0.3.0...0.3.1
 [0.3.0]: https://github.com/contextforge-org/cpex/compare/0.2.3...0.3.0
 [0.2.3]: https://github.com/contextforge-org/cpex/compare/0.2.2...0.2.3
 [0.2.2]: https://github.com/contextforge-org/cpex/compare/0.2.1...0.2.2

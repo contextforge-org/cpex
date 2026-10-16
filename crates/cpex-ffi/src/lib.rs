@@ -456,6 +456,10 @@ pub struct CpexEngineInner {
     /// mutex rather than an atomic so a concurrent second call waits for
     /// the first to finish instead of returning before the builtins exist.
     install_state: Mutex<apl::InstallState>,
+    /// Set by `cpex_apl_install` with `CPEX_APL_EXPOSE_DELEGATED_CREDENTIALS`:
+    /// allowed results then carry the delegated credentials minted for the
+    /// request in `delegated_credentials`.
+    pub(crate) expose_delegated_credentials: std::sync::atomic::AtomicBool,
     /// Test-only: makes the next `cpex_apl_install` panic inside its
     /// catch_unwind, to reach the failed state.
     #[cfg(test)]
@@ -468,6 +472,7 @@ impl CpexEngineInner {
         Self {
             engine,
             install_state: Mutex::new(apl::InstallState::NotInstalled),
+            expose_delegated_credentials: std::sync::atomic::AtomicBool::new(false),
             #[cfg(test)]
             fail_install: std::sync::atomic::AtomicBool::new(false),
         }
@@ -991,6 +996,8 @@ pub unsafe extern "C" fn cpex_invoke(
         .as_ref()
         .and_then(|ext| rmp_serde::to_vec_named(ext).ok());
 
+    let delegated_credentials = host_delegated_credentials(inner, &result);
+
     // Build FFI result. `errors` flows through verbatim — it's already
     // PluginErrorRecord which is the canonical wire shape.
     let ffi_result = FfiPipelineResult {
@@ -1002,6 +1009,7 @@ pub unsafe extern "C" fn cpex_invoke(
         modified_payload: modified_payload_bytes,
         payload_modified: result.payload_modified,
         modified_extensions: modified_extensions_bytes,
+        delegated_credentials,
     };
 
     let result_bytes = match rmp_serde::to_vec_named(&ffi_result) {
@@ -1194,6 +1202,7 @@ pub unsafe extern "C" fn cpex_invoke_resolved(
             // caller, who guarantees they are writable.
             return unsafe {
                 finish_pipeline_result(
+                    inner,
                     id_result,
                     None,
                     payload_type,
@@ -1227,6 +1236,7 @@ pub unsafe extern "C" fn cpex_invoke_resolved(
     // who guarantees they are writable.
     unsafe {
         finish_pipeline_result(
+            inner,
             result,
             Some(bg),
             payload_type,
@@ -1248,6 +1258,7 @@ pub unsafe extern "C" fn cpex_invoke_resolved(
 /// Out pointers must be writable. Returns `RC_OK` on success or
 /// `RC_SERIALIZE_ERROR` if the result can't be MessagePack-encoded.
 unsafe fn finish_pipeline_result(
+    inner: &CpexEngineInner,
     mut result: praxis_policy_core::executor::PipelineResult,
     bg: Option<BackgroundTasks>,
     payload_type: u8,
@@ -1282,6 +1293,7 @@ unsafe fn finish_pipeline_result(
         .modified_extensions
         .as_ref()
         .and_then(|ext| rmp_serde::to_vec_named(ext).ok());
+    let delegated_credentials = host_delegated_credentials(inner, &result);
 
     let ffi_result = FfiPipelineResult {
         continue_processing: result.continue_processing,
@@ -1292,6 +1304,7 @@ unsafe fn finish_pipeline_result(
         modified_payload: modified_payload_bytes,
         payload_modified: result.payload_modified,
         modified_extensions: modified_extensions_bytes,
+        delegated_credentials,
     };
 
     let result_bytes = match rmp_serde::to_vec_named(&ffi_result) {
@@ -1482,6 +1495,87 @@ struct FfiPipelineResult {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     #[serde(with = "serde_bytes_opt")]
     modified_extensions: Option<Vec<u8>>,
+    /// Delegated credentials minted for this request, for the host to
+    /// attach upstream. Empty unless the host opted in at
+    /// `cpex_apl_install` and the pipeline allowed the request.
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    delegated_credentials: Vec<FfiDelegatedCredential>,
+}
+
+/// One minted delegated credential as the host must send it: `value` is
+/// the full header value, scheme prefix included. This is the only FFI
+/// output that carries token bytes; `Extensions.raw_credentials` keeps
+/// them skip-serialized.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct FfiDelegatedCredential {
+    /// Outbound header name, e.g. `Authorization`.
+    header: String,
+    /// Header value: prefix + token, e.g. `Bearer eyJ...`.
+    value: String,
+    /// Delegator plugin instance that minted it.
+    delegator: String,
+    /// Logical target named by the `delegate(...)` step.
+    target: String,
+    audience: String,
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    scopes: Vec<String>,
+    /// RFC 3339 expiry.
+    expires_at: String,
+}
+
+impl std::fmt::Debug for FfiDelegatedCredential {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FfiDelegatedCredential")
+            .field("header", &self.header)
+            .field("value", &"[REDACTED]")
+            .field("delegator", &self.delegator)
+            .field("target", &self.target)
+            .field("audience", &self.audience)
+            .field("scopes", &self.scopes)
+            .field("expires_at", &self.expires_at)
+            .finish()
+    }
+}
+
+/// Collect the delegated credentials an allowed result hands the host,
+/// sorted for a stable order. Nothing unless the host opted in. A token
+/// with no bytes (never minted in this process) is dropped: an empty
+/// bearer must not reach an upstream.
+fn host_delegated_credentials(
+    inner: &CpexEngineInner,
+    result: &praxis_policy_core::executor::PipelineResult,
+) -> Vec<FfiDelegatedCredential> {
+    let exposed = inner
+        .expose_delegated_credentials
+        .load(std::sync::atomic::Ordering::Acquire);
+    if !exposed || !result.continue_processing {
+        return Vec::new();
+    }
+    let Some(raw) = result
+        .modified_extensions
+        .as_ref()
+        .and_then(|e| e.raw_credentials.as_ref())
+    else {
+        return Vec::new();
+    };
+    let mut out: Vec<FfiDelegatedCredential> = raw
+        .delegated_tokens
+        .iter()
+        .filter(|(_, t)| !t.token.trim().is_empty())
+        .map(|(k, t)| FfiDelegatedCredential {
+            header: t.outbound_header.clone(),
+            value: format!("{}{}", t.outbound_prefix, t.token.as_str()),
+            delegator: k.delegator_name.clone(),
+            target: k.target_name.clone(),
+            audience: t.audience.clone(),
+            scopes: t.scopes.clone(),
+            expires_at: t.expires_at.to_rfc3339(),
+        })
+        .collect();
+    out.sort_by(|a, b| {
+        (&a.target, &a.audience, &a.header).cmp(&(&b.target, &b.audience, &b.header))
+    });
+    out
 }
 
 /// Helper for serializing `Option<Vec<u8>>` as binary in MessagePack.
@@ -2218,6 +2312,156 @@ routes:
 
             cpex_shutdown(once);
             cpex_shutdown(twice);
+        }
+    }
+
+    mod delegated_credentials {
+        use super::*;
+        use praxis_policy_core::extensions::raw_credentials::{
+            DelegationKey, DelegationMode, RawCredentialsExtension, RawDelegatedToken,
+        };
+
+        const MINTED: &str = "ffi-test-only-minted-token";
+
+        fn token(value: &str, prefix: &str) -> RawDelegatedToken {
+            RawDelegatedToken::new(
+                value,
+                "Authorization",
+                "workday-api",
+                vec!["read".to_string()],
+                chrono::Utc::now() + chrono::Duration::minutes(5),
+            )
+            .with_outbound_prefix(prefix)
+        }
+
+        fn key(target: &str) -> DelegationKey {
+            DelegationKey::new(DelegationMode::OnBehalfOfUser, "workday-api", vec![])
+                .with_subject_id("alice")
+                .with_delegator_name("workday-oauth")
+                .with_target_name(target)
+        }
+
+        fn extensions(tokens: Vec<(DelegationKey, RawDelegatedToken)>) -> Extensions {
+            let mut raw = RawCredentialsExtension::default();
+            raw.delegated_tokens.extend(tokens);
+            Extensions {
+                raw_credentials: Some(Arc::new(raw)),
+                ..Default::default()
+            }
+        }
+
+        fn allowed(ext: Extensions) -> praxis_policy_core::executor::PipelineResult {
+            praxis_policy_core::executor::PipelineResult::allowed_with(
+                Box::new(GenericPayload {
+                    value: serde_json::Value::Null,
+                }),
+                ext,
+                PluginContextTable::default(),
+            )
+        }
+
+        fn inner(expose: bool) -> CpexEngineInner {
+            let inner = CpexEngineInner::new(Arc::new(PolicyEngine::default()));
+            inner
+                .expose_delegated_credentials
+                .store(expose, std::sync::atomic::Ordering::Release);
+            inner
+        }
+
+        #[test]
+        fn exposed_on_allow_with_prefix_and_metadata() {
+            let res = allowed(extensions(vec![
+                (key("workday-api"), token(MINTED, "Bearer ")),
+                (key("github-api"), token("gh-only", "token ")),
+            ]));
+            let creds = host_delegated_credentials(&inner(true), &res);
+            assert_eq!(creds.len(), 2);
+            assert_eq!(creds[0].target, "github-api");
+            assert_eq!(creds[0].value, "token gh-only");
+            let c = &creds[1];
+            assert_eq!(c.header, "Authorization");
+            assert_eq!(c.value, format!("Bearer {MINTED}"));
+            assert_eq!(c.delegator, "workday-oauth");
+            assert_eq!(c.audience, "workday-api");
+            assert_eq!(c.scopes, vec!["read".to_string()]);
+            assert!(chrono::DateTime::parse_from_rfc3339(&c.expires_at).is_ok());
+        }
+
+        #[test]
+        fn withheld_without_opt_in_or_on_deny() {
+            let ext = || extensions(vec![(key("workday-api"), token(MINTED, "Bearer "))]);
+            assert!(host_delegated_credentials(&inner(false), &allowed(ext())).is_empty());
+            let denied = praxis_policy_core::executor::PipelineResult::denied(
+                praxis_policy_core::error::PluginViolation::new("denied", "test"),
+                ext(),
+                PluginContextTable::default(),
+            );
+            assert!(host_delegated_credentials(&inner(true), &denied).is_empty());
+        }
+
+        #[test]
+        fn empty_token_is_dropped() {
+            let res = allowed(extensions(vec![(
+                key("workday-api"),
+                token("  ", "Bearer "),
+            )]));
+            assert!(host_delegated_credentials(&inner(true), &res).is_empty());
+        }
+
+        #[test]
+        fn debug_redacts_value_and_wire_omits_empty() {
+            let res = allowed(extensions(vec![(
+                key("workday-api"),
+                token(MINTED, "Bearer "),
+            )]));
+            let creds = host_delegated_credentials(&inner(true), &res);
+            let printed = format!("{creds:?}");
+            assert!(!printed.contains(MINTED), "{printed}");
+            assert!(printed.contains("[REDACTED]"));
+
+            // The modified_extensions channel still carries no token bytes.
+            let ext_bytes =
+                rmp_serde::to_vec_named(res.modified_extensions.as_ref().unwrap()).unwrap();
+            assert!(
+                !ext_bytes
+                    .windows(MINTED.len())
+                    .any(|w| w == MINTED.as_bytes())
+            );
+
+            let none = allowed(Extensions::default());
+            let bytes = rmp_serde::to_vec_named(&FfiPipelineResult {
+                continue_processing: true,
+                violation: None,
+                errors: vec![],
+                metadata: None,
+                payload_type: PAYLOAD_GENERIC,
+                modified_payload: None,
+                payload_modified: false,
+                modified_extensions: None,
+                delegated_credentials: host_delegated_credentials(&inner(true), &none),
+            })
+            .unwrap();
+            let decoded: serde_json::Value = rmp_serde::from_slice(&bytes).unwrap();
+            assert!(decoded.get("delegated_credentials").is_none());
+        }
+
+        #[test]
+        fn apl_install_records_the_flag() {
+            unsafe {
+                for (flags, want) in [
+                    (0, false),
+                    (crate::apl::CPEX_APL_EXPOSE_DELEGATED_CREDENTIALS, true),
+                ] {
+                    let h = cpex_engine_new_default();
+                    assert_eq!(crate::apl::cpex_apl_install(h, flags), RC_OK);
+                    assert_eq!(
+                        (*h).expose_delegated_credentials
+                            .load(std::sync::atomic::Ordering::Acquire),
+                        want
+                    );
+                    cpex_shutdown(h);
+                }
+            }
         }
     }
 }

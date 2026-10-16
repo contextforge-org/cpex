@@ -51,10 +51,17 @@ pub(crate) enum InstallState {
 /// host decision; no policy document can turn it on.
 pub const CPEX_APL_ALLOW_PRIVATE_DESTINATIONS: u32 = 1;
 
+/// `cpex_apl_install` flag: return the delegated credentials minted by
+/// `delegate()` steps on allowed results (`delegated_credentials`), so the
+/// host can attach them to the upstream request. Off by default: without
+/// it no token bytes leave Rust.
+pub const CPEX_APL_EXPOSE_DELEGATED_CREDENTIALS: u32 = 2;
+
 /// Every flag bit this build understands. Any other bit is rejected with
 /// `RC_INVALID_INPUT`, so a host built against a newer flag set fails
 /// loudly instead of silently losing a setting.
-pub const CPEX_APL_KNOWN_FLAGS: u32 = CPEX_APL_ALLOW_PRIVATE_DESTINATIONS;
+pub const CPEX_APL_KNOWN_FLAGS: u32 =
+    CPEX_APL_ALLOW_PRIVATE_DESTINATIONS | CPEX_APL_EXPOSE_DELEGATED_CREDENTIALS;
 
 /// Install the bundled builtins, the outbound HTTP transport, and the
 /// secret providers on `handle`.
@@ -73,7 +80,9 @@ pub const CPEX_APL_KNOWN_FLAGS: u32 = CPEX_APL_ALLOW_PRIVATE_DESTINATIONS;
 /// `flags` is a bit set of `CPEX_APL_*` values. With
 /// `CPEX_APL_ALLOW_PRIVATE_DESTINATIONS` set, the transport may reach
 /// private and loopback addresses; without it, such requests are refused
-/// and builtins report their egress-denied codes.
+/// and builtins report their egress-denied codes. With
+/// `CPEX_APL_EXPOSE_DELEGATED_CREDENTIALS` set, allowed results carry the
+/// delegated credentials minted for the request.
 ///
 /// Idempotent per handle: once a call has succeeded, later calls do
 /// nothing and return `RC_OK`, whatever their flags. A call that panicked
@@ -139,6 +148,10 @@ pub unsafe extern "C" fn cpex_apl_install(handle: *const CpexEngineInner, flags:
 
     match result {
         Ok(()) => {
+            inner.expose_delegated_credentials.store(
+                flags & CPEX_APL_EXPOSE_DELEGATED_CREDENTIALS != 0,
+                std::sync::atomic::Ordering::Release,
+            );
             *state = InstallState::Installed;
             RC_OK
         },

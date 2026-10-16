@@ -48,6 +48,7 @@ default = []
 
 [dev-dependencies]
 async-trait = { workspace = true }
+chrono = { workspace = true }
 # Mint test JWTs and their JWKS for the identity-jwt egress tests. The key is
 # generated at test time, so no private key is checked in.
 jsonwebtoken = { version = "11", default-features = false, features = ["aws_lc_rs"] }
