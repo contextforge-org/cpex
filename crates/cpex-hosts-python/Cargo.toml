@@ -25,7 +25,7 @@ categories.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-praxis-policy-core = { workspace = true }
+ppe = { workspace = true }
 
 async-trait = { workspace = true }
 # Expiry on a token a Python delegation plugin mints (`credential_payloads`).
@@ -35,25 +35,10 @@ serde_json  = { workspace = true }
 tracing     = { workspace = true }
 uuid        = { workspace = true }
 
-# Version-pinned rather than workspace-inherited, matching how the rest of the
-# tree declares it. Used by `venv`
-# to fingerprint a requirement set into its cache directory name.
-#
-# No `zeroize` here, deliberately, even though this crate handles plaintext
-# credentials. `praxis-policy-core` and the OAuth delegator hold a secret
-# in memory for its lifetime, so `Zeroizing` there wipes the one authoritative
-# copy. This host instead *forwards* the plaintext: `credentials` reads the
-# token out of core's `Zeroizing` field and it is immediately copied into a
-# `serde_json::Value`, then into the serialized request line, then into the
-# pipe buffer, then into the worker's own address space. Zeroizing the DTO
-# field would wipe one of those copies and leave the rest, which reads as a
-# control that is not one. The real boundary is the worker process, and it is
-# documented as such in `credentials`' "Residual exposure" note.
+# Fingerprints virtualenv requirement sets for the cache directory.
 sha2 = "0.11"
 
-# `process` and `io-util` are absent from the workspace tokio floor (the
-# embedded library never spawns children). This host's whole job is a
-# long-lived child spoken to over piped stdio, so it opts both in.
+# Subprocess management and piped I/O for Python workers.
 tokio = { workspace = true, features = ["process", "io-util"] }
 
 [features]
@@ -64,10 +49,6 @@ testing = []
 
 [dev-dependencies]
 serde_yaml = { workspace = true }
-# The APL runtime, so `tests/acceptance_e2e.rs` can drive a route's
-# `require(...)` and `delegate(...)` steps through the real engine. A dev-only
-# edge: the facade depends on this crate, never the other way round.
-praxis-policy = { workspace = true }
 tokio      = { workspace = true, features = ["process", "io-util", "macros", "rt", "rt-multi-thread"] }
 
 # Self-dependency with the test-only feature on, so `tests/*.rs` see

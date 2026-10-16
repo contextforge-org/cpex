@@ -23,17 +23,17 @@
 // generic payload for any name outside it. The same table translates PPE's
 // dispatched names to the spellings the Python worker registers.
 
-use praxis_policy_core::cmf::MessagePayload;
-use praxis_policy_core::cmf::constants::{
+use ppe::praxis_policy_core::cmf::MessagePayload;
+use ppe::praxis_policy_core::cmf::constants::{
     HOOK_CMF_LLM_INPUT, HOOK_CMF_LLM_OUTPUT, HOOK_CMF_PROMPT_POST_INVOKE,
     HOOK_CMF_PROMPT_PRE_INVOKE, HOOK_CMF_RESOURCE_POST_FETCH, HOOK_CMF_RESOURCE_PRE_FETCH,
     HOOK_CMF_TOOL_POST_INVOKE, HOOK_CMF_TOOL_PRE_INVOKE,
 };
-use praxis_policy_core::delegation::{DelegationPayload, HOOK_TOKEN_DELEGATE};
-use praxis_policy_core::error::PluginViolation;
-use praxis_policy_core::executor::ErasedResultFields;
-use praxis_policy_core::hooks::payload::PluginPayload;
-use praxis_policy_core::identity::{HOOK_IDENTITY_RESOLVE, IdentityPayload};
+use ppe::praxis_policy_core::delegation::{DelegationPayload, HOOK_TOKEN_DELEGATE};
+use ppe::praxis_policy_core::error::PluginViolation;
+use ppe::praxis_policy_core::executor::ErasedResultFields;
+use ppe::praxis_policy_core::hooks::payload::PluginPayload;
+use ppe::praxis_policy_core::identity::{HOOK_IDENTITY_RESOLVE, IdentityPayload};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -56,7 +56,7 @@ pub struct GenericPayload {
     pub value: Value,
 }
 
-praxis_policy_core::impl_plugin_payload!(GenericPayload);
+ppe::praxis_policy_core::impl_plugin_payload!(GenericPayload);
 
 /// Which payload type a hook name maps to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -349,7 +349,7 @@ pub fn deserialize_payload(
 pub fn response_to_result(
     hook_name: &str,
     response: Value,
-    inbound: &praxis_policy_core::extensions::Extensions,
+    inbound: &ppe::praxis_policy_core::extensions::Extensions,
 ) -> Result<ErasedResultFields, HostError> {
     let continue_processing = response
         .get("continue_processing")
@@ -429,8 +429,8 @@ mod tests {
     /// tokens — so a gated slot in a response is dropped rather than applied.
     /// `extensions::tests` and `tests/extensions_merge_e2e.rs` cover the
     /// token-bearing cases.
-    fn no_inbound() -> praxis_policy_core::extensions::Extensions {
-        praxis_policy_core::extensions::Extensions::default()
+    fn no_inbound() -> ppe::praxis_policy_core::extensions::Extensions {
+        ppe::praxis_policy_core::extensions::Extensions::default()
     }
 
     // --- hook name resolution -----------------------------------------------
@@ -459,7 +459,7 @@ mod tests {
     fn the_table_covers_every_cmf_hook_ppe_dispatches() {
         // A CMF hook added upstream would otherwise fall to the generic payload
         // and lose its typed modified payload without any error.
-        for hook in praxis_policy_core::hooks::builtin_hook_types() {
+        for hook in ppe::praxis_policy_core::hooks::builtin_hook_types() {
             let name = hook.as_str();
             if name.starts_with("cmf.") {
                 assert_eq!(
@@ -648,7 +648,7 @@ mod tests {
 
     #[test]
     fn a_cmf_message_payload_serializes_as_itself() {
-        use praxis_policy_core::cmf::{Message, Role};
+        use ppe::praxis_policy_core::cmf::{Message, Role};
 
         let payload = MessagePayload {
             message: Message::text(Role::User, "what is the weather?"),
@@ -661,7 +661,7 @@ mod tests {
     fn an_unforwardable_payload_type_errors_rather_than_sending_null() {
         #[derive(Debug, Clone)]
         struct ForeignPayload;
-        praxis_policy_core::impl_plugin_payload!(ForeignPayload);
+        ppe::praxis_policy_core::impl_plugin_payload!(ForeignPayload);
 
         let err =
             serialize_payload(&ForeignPayload).expect_err("an unknown type cannot be forwarded");
@@ -684,7 +684,7 @@ mod tests {
 
     #[test]
     fn a_cmf_modified_payload_deserializes_as_a_message_payload() {
-        use praxis_policy_core::cmf::{Message, Role};
+        use ppe::praxis_policy_core::cmf::{Message, Role};
 
         // Round-tripped through the real type so the JSON matches the CMF
         // schema rather than a hand-guessed shape.

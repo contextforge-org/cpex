@@ -13,11 +13,10 @@
 
 use std::sync::Arc;
 
-use praxis_policy::praxis_policy_core::http::HttpTransport;
-use praxis_policy::praxis_policy_core::identity::IdentityPayload;
-use praxis_policy::praxis_policy_core::secrets::RefreshReport;
-use praxis_policy::{
-    HyperTransport, PolicyEngine, SecretError, install_builtins, registry_with_vault,
+use ppe::praxis_policy_core::http::HttpTransport;
+use ppe::praxis_policy_core::identity::IdentityPayload;
+use ppe::{
+    HyperTransport, PolicyEngine, RefreshReport, SecretError, install_builtins, registry_with_vault,
 };
 
 /// Hook names removed in 0.3, each paired with the name that replaced it.
@@ -279,7 +278,7 @@ mod tests {
     /// Every replacement is a hook the engine knows, and no removed name is.
     #[test]
     fn removed_hooks_are_unknown_and_replacements_known() {
-        use praxis_policy::praxis_policy_core::hooks::lookup_hook_metadata;
+        use ppe::praxis_policy_core::hooks::lookup_hook_metadata;
         for (removed, replacement) in REMOVED_HOOKS {
             assert!(
                 lookup_hook_metadata(removed).is_none(),

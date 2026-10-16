@@ -40,13 +40,13 @@ use biscuit_auth::builder::BlockBuilder;
 use biscuit_auth::{Biscuit, PublicKey};
 use chrono::Utc;
 
-use praxis_policy_core::context::PluginContext;
-use praxis_policy_core::delegation::{DelegationPayload, TokenDelegateHook};
-use praxis_policy_core::error::{PluginError, PluginViolation};
-use praxis_policy_core::extensions::raw_credentials::{DelegationMode, RawDelegatedToken};
-use praxis_policy_core::hooks::payload::Extensions;
-use praxis_policy_core::hooks::trait_def::{HookHandler, PluginResult};
-use praxis_policy_core::plugin::{Plugin, PluginConfig};
+use ppe::praxis_policy_core::context::PluginContext;
+use ppe::praxis_policy_core::delegation::{DelegationPayload, TokenDelegateHook};
+use ppe::praxis_policy_core::error::{PluginError, PluginViolation};
+use ppe::praxis_policy_core::extensions::raw_credentials::{DelegationMode, RawDelegatedToken};
+use ppe::praxis_policy_core::hooks::payload::Extensions;
+use ppe::praxis_policy_core::hooks::trait_def::{HookHandler, PluginResult};
+use ppe::praxis_policy_core::plugin::{Plugin, PluginConfig};
 
 use super::config::BiscuitDelegatorConfig;
 

@@ -24,9 +24,11 @@ use cpex_ffi::{
     CPEX_APL_ALLOW_PRIVATE_DESTINATIONS, PAYLOAD_IDENTITY, RC_INVALID_HANDLE, RC_INVALID_INPUT,
     RC_OK, RC_PIPELINE_ERROR, cpex_free_bytes, cpex_refresh_secrets, cpex_secrets_last_success,
 };
-use praxis_policy_core::delegation::{DelegationPayload, HOOK_TOKEN_DELEGATE, TokenDelegateHook};
-use praxis_policy_core::extensions::Extensions;
-use praxis_policy_core::identity::{IdentityPayload, TokenSource};
+use ppe::praxis_policy_core::delegation::{
+    DelegationPayload, HOOK_TOKEN_DELEGATE, TokenDelegateHook,
+};
+use ppe::praxis_policy_core::extensions::Extensions;
+use ppe::praxis_policy_core::identity::{IdentityPayload, TokenSource};
 
 use common::{Engine, MockServer, block_on, capture_warnings, warnings_containing};
 

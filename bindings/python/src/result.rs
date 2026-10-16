@@ -4,7 +4,7 @@
 // Authors: Ted Habeck
 //
 // `PyPipelineResult`: read-only Python view of
-// `praxis_policy_core::executor::PipelineResult`.
+// `ppe::praxis_policy_core::executor::PipelineResult`.
 //
 // Mirrors the field set of `PipelineResult` exactly. All fields are read-only
 // getters; no setters are exposed.
@@ -16,8 +16,8 @@
 
 use std::collections::HashMap;
 
-use praxis_policy_core::error::PluginErrorRecord;
-use praxis_policy_core::executor::PipelineResult;
+use ppe::praxis_policy_core::error::PluginErrorRecord;
+use ppe::praxis_policy_core::executor::PipelineResult;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use serde_json::Value;

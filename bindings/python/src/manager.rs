@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Authors: Ted Habeck
 //
-// `PyPolicyEngine`: PyO3 wrapper around `praxis_policy_core::engine::PolicyEngine`,
+// `PyPolicyEngine`: PyO3 wrapper around `ppe::PolicyEngine`,
 // exposed to Python as `cpex.PolicyEngine` (and the `cpex.PluginManager`
 // alias).
 //
@@ -27,10 +27,10 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use praxis_policy_core::context::PluginContextTable;
-use praxis_policy_core::engine::PolicyEngine;
-use praxis_policy_core::error::PluginError;
-use praxis_policy_core::extensions::Extensions;
+use ppe::PolicyEngine;
+use ppe::praxis_policy_core::context::PluginContextTable;
+use ppe::praxis_policy_core::error::PluginError;
+use ppe::praxis_policy_core::extensions::Extensions;
 use pyo3::exceptions::{PyRuntimeError, PyTimeoutError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyDateTime, PyTzInfo};
@@ -174,7 +174,7 @@ impl Lifecycle {
     pub(crate) async fn refresh_secrets(
         &self,
         timeout: Duration,
-    ) -> Result<praxis_policy_core::secrets::RefreshReport, LifecycleError> {
+    ) -> Result<ppe::RefreshReport, LifecycleError> {
         let engine = Arc::clone(&self.engine);
         let work = tokio::spawn(async move { engine.refresh_secrets().await });
         match tokio::time::timeout(timeout, work).await {
@@ -465,7 +465,7 @@ impl PyPolicyEngine {
 pub(crate) async fn invoke_with_timeout(
     manager: Arc<PolicyEngine>,
     hook_name: String,
-    rust_payload: Box<dyn praxis_policy_core::hooks::payload::PluginPayload>,
+    rust_payload: Box<dyn ppe::praxis_policy_core::hooks::payload::PluginPayload>,
     rust_extensions: Extensions,
     rust_context: Option<PluginContextTable>,
     timeout: Duration,
@@ -515,15 +515,15 @@ mod tests {
     use std::sync::Arc;
 
     use async_trait::async_trait;
-    use praxis_policy_core::context::PluginContext;
-    use praxis_policy_core::engine::PolicyEngine;
-    use praxis_policy_core::extensions::Extensions;
-    use praxis_policy_core::hooks::PluginResult;
-    use praxis_policy_core::hooks::payload::PluginPayload;
-    use praxis_policy_core::hooks::trait_def::HookTypeDef;
+    use ppe::PolicyEngine;
+    use ppe::praxis_policy_core::context::PluginContext;
+    use ppe::praxis_policy_core::extensions::Extensions;
+    use ppe::praxis_policy_core::hooks::PluginResult;
+    use ppe::praxis_policy_core::hooks::payload::PluginPayload;
+    use ppe::praxis_policy_core::hooks::trait_def::HookTypeDef;
     use std::time::Duration;
 
-    use praxis_policy_core::plugin::{Plugin, PluginConfig, PluginMode};
+    use ppe::praxis_policy_core::plugin::{Plugin, PluginConfig, PluginMode};
 
     // A minimal payload type for test dispatch; must match the hook's
     // associated Payload type so the executor's typed-adapter downcast finds
@@ -532,7 +532,7 @@ mod tests {
     struct TestPayload {
         value: String,
     }
-    praxis_policy_core::impl_plugin_payload!(TestPayload);
+    ppe::praxis_policy_core::impl_plugin_payload!(TestPayload);
 
     struct PanicHook;
     impl HookTypeDef for PanicHook {
@@ -559,7 +559,7 @@ mod tests {
         }
     }
 
-    impl praxis_policy_core::hooks::HookHandler<PanicHook> for PanickingPlugin {
+    impl ppe::praxis_policy_core::hooks::HookHandler<PanicHook> for PanickingPlugin {
         async fn handle(
             &self,
             _payload: &TestPayload,
@@ -582,7 +582,7 @@ mod tests {
         }
     }
 
-    impl praxis_policy_core::hooks::HookHandler<BlockHook> for BlockingPlugin {
+    impl ppe::praxis_policy_core::hooks::HookHandler<BlockHook> for BlockingPlugin {
         async fn handle(
             &self,
             _payload: &TestPayload,
@@ -702,19 +702,19 @@ mod lifecycle_tests {
     use std::time::Duration;
 
     use async_trait::async_trait;
-    use praxis_policy_core::context::PluginContext;
-    use praxis_policy_core::engine::PolicyEngine;
-    use praxis_policy_core::error::PluginError;
-    use praxis_policy_core::extensions::Extensions;
-    use praxis_policy_core::hooks::PluginResult;
-    use praxis_policy_core::hooks::trait_def::HookTypeDef;
-    use praxis_policy_core::plugin::{Plugin, PluginConfig, PluginMode};
+    use ppe::PolicyEngine;
+    use ppe::praxis_policy_core::context::PluginContext;
+    use ppe::praxis_policy_core::error::PluginError;
+    use ppe::praxis_policy_core::extensions::Extensions;
+    use ppe::praxis_policy_core::hooks::PluginResult;
+    use ppe::praxis_policy_core::hooks::trait_def::HookTypeDef;
+    use ppe::praxis_policy_core::plugin::{Plugin, PluginConfig, PluginMode};
 
     use super::{Lifecycle, LifecycleError, join_error};
 
     #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
     struct TestPayload;
-    praxis_policy_core::impl_plugin_payload!(TestPayload);
+    ppe::praxis_policy_core::impl_plugin_payload!(TestPayload);
 
     struct SlowHook;
     impl HookTypeDef for SlowHook {
@@ -750,7 +750,7 @@ mod lifecycle_tests {
         }
     }
 
-    impl praxis_policy_core::hooks::HookHandler<SlowHook> for SlowPlugin {
+    impl ppe::praxis_policy_core::hooks::HookHandler<SlowHook> for SlowPlugin {
         async fn handle(
             &self,
             _payload: &TestPayload,

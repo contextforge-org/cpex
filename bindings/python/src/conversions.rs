@@ -9,11 +9,11 @@
 // Never calls Python's `json` module from Rust; all conversion is direct
 // PyObject inspection / construction (#2).
 
-use praxis_policy_core::cmf::MessagePayload;
-use praxis_policy_core::context::PluginContextTable;
-use praxis_policy_core::extensions::Extensions;
-use praxis_policy_core::hooks::payload::PluginPayload;
-use praxis_policy_core::identity::{HOOK_IDENTITY_RESOLVE, IdentityPayload};
+use ppe::praxis_policy_core::cmf::MessagePayload;
+use ppe::praxis_policy_core::context::PluginContextTable;
+use ppe::praxis_policy_core::extensions::Extensions;
+use ppe::praxis_policy_core::hooks::payload::PluginPayload;
+use ppe::praxis_policy_core::identity::{HOOK_IDENTITY_RESOLVE, IdentityPayload};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyDict, PyFloat, PyInt, PyList, PyString};
@@ -28,7 +28,7 @@ pub struct GenericPayload {
     pub value: Value,
 }
 
-praxis_policy_core::impl_plugin_payload!(GenericPayload);
+ppe::praxis_policy_core::impl_plugin_payload!(GenericPayload);
 
 /// Convert a Python object to a `serde_json::Value`.
 ///

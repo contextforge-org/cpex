@@ -39,12 +39,12 @@ use cpex_hosts_python::testing::{
     TEMP_DIR_KIND, TempDir, TempDirFactory, prebuild_venv, python_source, scaffold_plugin, skip,
     skip_without_python3,
 };
-use praxis_policy_core::cmf::{ContentPart, Message, MessagePayload, Role, ToolCall};
-use praxis_policy_core::context::PluginContext;
-use praxis_policy_core::extensions::Extensions;
-use praxis_policy_core::hooks::payload::PluginPayload;
-use praxis_policy_core::plugin::{Plugin, PluginConfig};
-use praxis_policy_core::registry::AnyHookHandler;
+use ppe::praxis_policy_core::cmf::{ContentPart, Message, MessagePayload, Role, ToolCall};
+use ppe::praxis_policy_core::context::PluginContext;
+use ppe::praxis_policy_core::extensions::Extensions;
+use ppe::praxis_policy_core::hooks::payload::PluginPayload;
+use ppe::praxis_policy_core::plugin::{Plugin, PluginConfig};
+use ppe::praxis_policy_core::registry::AnyHookHandler;
 
 /// A Python plugin that marks the filesystem when its hook body runs, so the
 /// test can prove the plugin *executed* rather than merely that a response
@@ -173,14 +173,14 @@ async fn invoke(
     plugin: &Arc<IsolatedPythonPlugin>,
     hook: &'static str,
     payload: &dyn PluginPayload,
-) -> Result<praxis_policy_core::executor::ErasedResultFields, String> {
+) -> Result<ppe::praxis_policy_core::executor::ErasedResultFields, String> {
     let adapter = PythonHookAdapter::new(Arc::clone(plugin), hook);
     let mut ctx = PluginContext::new();
     let erased = adapter
         .invoke(payload, &Extensions::default(), &mut ctx)
         .await
         .map_err(|e| e.to_string())?;
-    Ok(praxis_policy_core::executor::extract_erased(erased)
+    Ok(ppe::praxis_policy_core::executor::extract_erased(erased)
         .expect("adapter returns ErasedResultFields"))
 }
 
@@ -336,8 +336,8 @@ async fn legacy_plugins_on_cmf_tool_pre_invoke_rewrite_and_deny_through_the_engi
         return;
     };
 
-    use praxis_policy_core::config::{DispatchMode, EngineSettings, PolicyConfig};
-    use praxis_policy_core::engine::{PolicyEngine, PolicyEngineConfig};
+    use ppe::praxis_policy_core::config::{DispatchMode, EngineSettings, PolicyConfig};
+    use ppe::praxis_policy_core::engine::{PolicyEngine, PolicyEngineConfig};
 
     let entry = |name: &str, mode: &str, priority: i32| {
         let mut config = plugin_config(&["cmf.tool_pre_invoke"], &[]);

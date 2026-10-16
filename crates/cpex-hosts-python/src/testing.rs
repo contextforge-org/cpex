@@ -343,17 +343,17 @@ pub struct TempDirFactory {
     pub worker_cwd: PathBuf,
 }
 
-impl praxis_policy_core::factory::PluginFactory for TempDirFactory {
+impl ppe::praxis_policy_core::factory::PluginFactory for TempDirFactory {
     fn create(
         &self,
-        config: &praxis_policy_core::plugin::PluginConfig,
+        config: &ppe::praxis_policy_core::plugin::PluginConfig,
     ) -> Result<
-        praxis_policy_core::factory::PluginInstance,
-        Box<praxis_policy_core::error::PluginError>,
+        ppe::praxis_policy_core::factory::PluginInstance,
+        Box<ppe::praxis_policy_core::error::PluginError>,
     > {
         use std::sync::Arc;
 
-        use praxis_policy_core::registry::AnyHookHandler;
+        use ppe::praxis_policy_core::registry::AnyHookHandler;
 
         use crate::plugin::{IsolatedPythonPlugin, PythonHookAdapter};
 
@@ -376,6 +376,6 @@ impl praxis_policy_core::factory::PluginFactory for TempDirFactory {
             })
             .collect();
 
-        Ok(praxis_policy_core::factory::PluginInstance { plugin, handlers })
+        Ok(ppe::praxis_policy_core::factory::PluginInstance { plugin, handlers })
     }
 }

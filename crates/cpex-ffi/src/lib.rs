@@ -18,12 +18,12 @@ use std::ptr;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
-use praxis_policy_core::context::PluginContextTable;
-use praxis_policy_core::engine::PolicyEngine;
-use praxis_policy_core::executor::BackgroundTasks;
-use praxis_policy_core::extensions::Extensions;
-use praxis_policy_core::hooks::payload::PluginPayload;
-use praxis_policy_core::identity::IdentityPayload;
+use ppe::PolicyEngine;
+use ppe::praxis_policy_core::context::PluginContextTable;
+use ppe::praxis_policy_core::executor::BackgroundTasks;
+use ppe::praxis_policy_core::extensions::Extensions;
+use ppe::praxis_policy_core::hooks::payload::PluginPayload;
+use ppe::praxis_policy_core::identity::IdentityPayload;
 
 // Builtin, HTTP transport and secret-provider wiring: the
 // `cpex_apl_install` extern "C" entry point.
@@ -341,7 +341,7 @@ fn deserialize_payload(payload_type: u8, bytes: &[u8]) -> Result<Box<dyn PluginP
             Ok(Box::new(GenericPayload { value }))
         },
         PAYLOAD_CMF_MESSAGE => {
-            let msg: praxis_policy_core::cmf::MessagePayload = rmp_serde::from_slice(bytes)
+            let msg: ppe::praxis_policy_core::cmf::MessagePayload = rmp_serde::from_slice(bytes)
                 .map_err(|e| format!("CMF payload deserialize failed: {}", e))?;
             Ok(Box::new(msg))
         },
@@ -391,7 +391,7 @@ fn reject_resolved_identity_payload(
     payload: &dyn PluginPayload,
     op: &str,
 ) -> Result<(), c_int> {
-    if hook_name != praxis_policy_core::identity::HOOK_IDENTITY_RESOLVE {
+    if hook_name != ppe::praxis_policy_core::identity::HOOK_IDENTITY_RESOLVE {
         return Ok(());
     }
     match payload.as_any().downcast_ref::<IdentityPayload>() {
@@ -415,7 +415,7 @@ fn serialize_payload(payload: &dyn PluginPayload) -> Result<(u8, Vec<u8>), Strin
     // Try CMF MessagePayload first (most common)
     if let Some(mp) = payload
         .as_any()
-        .downcast_ref::<praxis_policy_core::cmf::MessagePayload>()
+        .downcast_ref::<ppe::praxis_policy_core::cmf::MessagePayload>()
     {
         return rmp_serde::to_vec_named(mp)
             .map(|b| (PAYLOAD_CMF_MESSAGE, b))
@@ -626,7 +626,7 @@ pub unsafe extern "C" fn cpex_load_config(
     // (e.g. the APL visitor installed by cpex_apl_install) can walk the
     // `apl:` blocks and install per-route handlers. Plain `load_config`
     // does NOT run that visitor walk.
-    if let Err(e) = praxis_policy_core::config::parse_config(yaml) {
+    if let Err(e) = ppe::praxis_policy_core::config::parse_config(yaml) {
         tracing::error!("cpex_load_config: config parse failed: {}", e);
         return RC_PARSE_ERROR;
     }
@@ -976,7 +976,7 @@ pub unsafe extern "C" fn cpex_invoke(
                 tracing::warn!("cpex_invoke: dropped modified payload — {}", e);
                 result
                     .errors
-                    .push(praxis_policy_core::error::PluginErrorRecord {
+                    .push(ppe::praxis_policy_core::error::PluginErrorRecord {
                         plugin_name: "<ffi>".to_string(),
                         message: format!(
                             "modified payload could not be serialized across FFI: {e}"
@@ -1155,7 +1155,7 @@ pub unsafe extern "C" fn cpex_invoke_resolved(
     let merged_extensions: Extensions = if identity_len > 0
         && inner
             .engine
-            .has_hooks_for(praxis_policy_core::identity::HOOK_IDENTITY_RESOLVE)
+            .has_hooks_for(ppe::praxis_policy_core::identity::HOOK_IDENTITY_RESOLVE)
     {
         // SAFETY: the caller guarantees `identity_msgpack` is NULL or points to `identity_len` readable bytes.
         let id_bytes = match unsafe { c_bytes_to_slice(identity_msgpack, identity_len) } {
@@ -1182,7 +1182,7 @@ pub unsafe extern "C" fn cpex_invoke_resolved(
         // request with no route meta is refused as unidentified.
         let (id_result, _id_bg) = match run_safely(
             inner.engine.invoke_by_name(
-                praxis_policy_core::identity::HOOK_IDENTITY_RESOLVE,
+                ppe::praxis_policy_core::identity::HOOK_IDENTITY_RESOLVE,
                 Box::new(id_payload),
                 base_extensions.clone(),
                 None,
@@ -1259,7 +1259,7 @@ pub unsafe extern "C" fn cpex_invoke_resolved(
 /// `RC_SERIALIZE_ERROR` if the result can't be MessagePack-encoded.
 unsafe fn finish_pipeline_result(
     inner: &CpexEngineInner,
-    mut result: praxis_policy_core::executor::PipelineResult,
+    mut result: ppe::praxis_policy_core::executor::PipelineResult,
     bg: Option<BackgroundTasks>,
     payload_type: u8,
     result_msgpack_out: *mut *mut u8,
@@ -1275,7 +1275,7 @@ unsafe fn finish_pipeline_result(
                 tracing::warn!("cpex_invoke_resolved: dropped modified payload — {}", e);
                 result
                     .errors
-                    .push(praxis_policy_core::error::PluginErrorRecord {
+                    .push(ppe::praxis_policy_core::error::PluginErrorRecord {
                         plugin_name: "<ffi>".to_string(),
                         message: format!(
                             "modified payload could not be serialized across FFI: {e}"
@@ -1368,7 +1368,7 @@ pub unsafe extern "C" fn cpex_wait_background(
     };
 
     if bg_handle.is_null() {
-        let empty: Vec<praxis_policy_core::error::PluginErrorRecord> = Vec::new();
+        let empty: Vec<ppe::praxis_policy_core::error::PluginErrorRecord> = Vec::new();
         let empty_bytes = match rmp_serde::to_vec_named(&empty) {
             Ok(b) => b,
             Err(_) => return RC_SERIALIZE_ERROR,
@@ -1396,9 +1396,9 @@ pub unsafe extern "C" fn cpex_wait_background(
     // Flatten each Rust PluginError variant into the canonical wire
     // shape so Go callers get structured fields (plugin_name, code,
     // details) instead of a stringified Display impl.
-    let ffi_errors: Vec<praxis_policy_core::error::PluginErrorRecord> = errors
+    let ffi_errors: Vec<ppe::praxis_policy_core::error::PluginErrorRecord> = errors
         .iter()
-        .map(praxis_policy_core::error::PluginErrorRecord::from)
+        .map(ppe::praxis_policy_core::error::PluginErrorRecord::from)
         .collect();
     let error_bytes = match rmp_serde::to_vec_named(&ffi_errors) {
         Ok(b) => b,
@@ -1471,9 +1471,9 @@ pub unsafe extern "C" fn cpex_free_bytes(ptr: *mut u8, len: c_int) {
 struct FfiPipelineResult {
     continue_processing: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
-    violation: Option<praxis_policy_core::error::PluginViolation>,
+    violation: Option<ppe::praxis_policy_core::error::PluginViolation>,
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
-    errors: Vec<praxis_policy_core::error::PluginErrorRecord>,
+    errors: Vec<ppe::praxis_policy_core::error::PluginErrorRecord>,
     #[serde(skip_serializing_if = "Option::is_none")]
     metadata: Option<serde_json::Value>,
     /// Payload type ID — tells the Go caller how to deserialize.
@@ -1543,7 +1543,7 @@ impl std::fmt::Debug for FfiDelegatedCredential {
 /// bearer must not reach an upstream.
 fn host_delegated_credentials(
     inner: &CpexEngineInner,
-    result: &praxis_policy_core::executor::PipelineResult,
+    result: &ppe::praxis_policy_core::executor::PipelineResult,
 ) -> Vec<FfiDelegatedCredential> {
     let exposed = inner
         .expose_delegated_credentials
@@ -1605,7 +1605,7 @@ pub struct GenericPayload {
     pub value: serde_json::Value,
 }
 
-praxis_policy_core::impl_plugin_payload!(GenericPayload);
+ppe::praxis_policy_core::impl_plugin_payload!(GenericPayload);
 
 // These tests call the `extern "C"` functions directly from Rust to
 // exercise the FFI safety layer (catch_unwind, return-code mapping,
@@ -1617,10 +1617,10 @@ mod tests {
     use std::sync::Arc;
 
     use async_trait::async_trait;
-    use praxis_policy_core::hooks::PluginResult;
-    use praxis_policy_core::hooks::payload::Extensions;
-    use praxis_policy_core::hooks::trait_def::HookTypeDef;
-    use praxis_policy_core::plugin::{Plugin, PluginConfig, PluginMode};
+    use ppe::praxis_policy_core::hooks::PluginResult;
+    use ppe::praxis_policy_core::hooks::payload::Extensions;
+    use ppe::praxis_policy_core::hooks::trait_def::HookTypeDef;
+    use ppe::praxis_policy_core::plugin::{Plugin, PluginConfig, PluginMode};
 
     #[test]
     fn one_shot_constructor_rejects_apl_rules_without_a_visitor() {
@@ -1656,12 +1656,12 @@ mod tests {
         }
     }
 
-    impl praxis_policy_core::hooks::HookHandler<TestHook> for PanickingPlugin {
+    impl ppe::praxis_policy_core::hooks::HookHandler<TestHook> for PanickingPlugin {
         async fn handle(
             &self,
             _payload: &GenericPayload,
             _extensions: &Extensions,
-            _ctx: &mut praxis_policy_core::context::PluginContext,
+            _ctx: &mut ppe::praxis_policy_core::context::PluginContext,
         ) -> PluginResult<GenericPayload> {
             panic!("simulated panic from PanickingPlugin");
         }
@@ -1674,7 +1674,7 @@ mod tests {
         // Touch the shared runtime so it's initialized; tests use it
         // rather than a per-engine runtime.
         let _ = shared_runtime();
-        let engine = Arc::new(praxis_policy_core::engine::PolicyEngine::default());
+        let engine = Arc::new(ppe::PolicyEngine::default());
         Box::into_raw(Box::new(CpexEngineInner::new(engine)))
     }
 
@@ -2317,7 +2317,7 @@ routes:
 
     mod delegated_credentials {
         use super::*;
-        use praxis_policy_core::extensions::raw_credentials::{
+        use ppe::praxis_policy_core::extensions::raw_credentials::{
             DelegationKey, DelegationMode, RawCredentialsExtension, RawDelegatedToken,
         };
 
@@ -2350,8 +2350,8 @@ routes:
             }
         }
 
-        fn allowed(ext: Extensions) -> praxis_policy_core::executor::PipelineResult {
-            praxis_policy_core::executor::PipelineResult::allowed_with(
+        fn allowed(ext: Extensions) -> ppe::praxis_policy_core::executor::PipelineResult {
+            ppe::praxis_policy_core::executor::PipelineResult::allowed_with(
                 Box::new(GenericPayload {
                     value: serde_json::Value::Null,
                 }),
@@ -2391,8 +2391,8 @@ routes:
         fn withheld_without_opt_in_or_on_deny() {
             let ext = || extensions(vec![(key("workday-api"), token(MINTED, "Bearer "))]);
             assert!(host_delegated_credentials(&inner(false), &allowed(ext())).is_empty());
-            let denied = praxis_policy_core::executor::PipelineResult::denied(
-                praxis_policy_core::error::PluginViolation::new("denied", "test"),
+            let denied = ppe::praxis_policy_core::executor::PipelineResult::denied(
+                ppe::praxis_policy_core::error::PluginViolation::new("denied", "test"),
                 ext(),
                 PluginContextTable::default(),
             );

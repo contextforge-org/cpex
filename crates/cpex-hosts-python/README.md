@@ -20,8 +20,8 @@ framing.
 Register the factory before loading config:
 
 ```rust
-use praxis_policy_core::engine::PolicyEngine;
-use praxis_policy_core::factory::PluginFactoryRegistry;
+use ppe::PolicyEngine;
+use ppe::praxis_policy_core::factory::PluginFactoryRegistry;
 use cpex_hosts_python::{IsolatedVenvFactory, KIND};
 
 let mut factories = PluginFactoryRegistry::new();

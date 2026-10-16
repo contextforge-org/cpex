@@ -20,15 +20,15 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use praxis_policy_core::context::PluginContext;
-use praxis_policy_core::engine::PolicyEngine;
-use praxis_policy_core::error::{PluginError, PluginViolation};
-use praxis_policy_core::factory::{PluginFactory, PluginInstance};
-use praxis_policy_core::hooks::adapter::TypedHandlerAdapter;
-use praxis_policy_core::hooks::payload::Extensions;
-use praxis_policy_core::hooks::trait_def::{HookHandler, HookTypeDef, PluginResult};
-use praxis_policy_core::hooks::{HookMetadata, HookPhase, register_hook_metadata};
-use praxis_policy_core::plugin::{Plugin, PluginConfig};
+use ppe::PolicyEngine;
+use ppe::praxis_policy_core::context::PluginContext;
+use ppe::praxis_policy_core::error::{PluginError, PluginViolation};
+use ppe::praxis_policy_core::factory::{PluginFactory, PluginInstance};
+use ppe::praxis_policy_core::hooks::adapter::TypedHandlerAdapter;
+use ppe::praxis_policy_core::hooks::payload::Extensions;
+use ppe::praxis_policy_core::hooks::trait_def::{HookHandler, HookTypeDef, PluginResult};
+use ppe::praxis_policy_core::hooks::{HookMetadata, HookPhase, register_hook_metadata};
+use ppe::praxis_policy_core::plugin::{Plugin, PluginConfig};
 
 use cpex_ffi::GenericPayload;
 

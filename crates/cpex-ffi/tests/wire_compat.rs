@@ -13,7 +13,7 @@ mod common;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-use praxis_policy_core::engine::PolicyEngine;
+use ppe::PolicyEngine;
 
 use common::{Engine, block_on};
 
@@ -141,7 +141,7 @@ secrets:
 fn hook_names_match_the_fixture() {
     let fx = fixture();
     let pinned: BTreeSet<String> = fx.hooks.values().flatten().cloned().collect();
-    let builtin = set(praxis_policy_core::hooks::builtin_hook_types()
+    let builtin = set(ppe::praxis_policy_core::hooks::builtin_hook_types()
         .iter()
         .map(|h| h.as_str().to_owned()));
     assert_eq!(builtin, pinned);

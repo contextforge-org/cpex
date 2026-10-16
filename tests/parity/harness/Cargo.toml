@@ -34,7 +34,7 @@ path = "src/main.rs"
 [dependencies]
 # Engine under test. Everything specific to it lives in `src/engine.rs`.
 cpex = { path = "../../../crates/cpex" }
-praxis-policy-core = { workspace = true }
+ppe = { workspace = true }
 
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "sync", "time", "macros"] }
 async-trait = { workspace = true }

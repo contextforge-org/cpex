@@ -46,13 +46,13 @@ use cpex_hosts_python::factory::{IsolatedVenvFactory, KIND};
 use cpex_hosts_python::legacy::{IdentityResolvePayload, TokenDelegatePayload};
 use cpex_hosts_python::plugin::IsolatedPythonPlugin;
 use cpex_hosts_python::testing::{skip, skip_without_python3};
-use praxis_policy_core::cmf::{ContentPart, Message, MessagePayload, Role, ToolCall};
-use praxis_policy_core::delegation::HOOK_TOKEN_DELEGATE;
-use praxis_policy_core::engine::{PolicyEngine, PolicyEngineConfig};
-use praxis_policy_core::extensions::{
+use ppe::praxis_policy_core::cmf::{ContentPart, Message, MessagePayload, Role, ToolCall};
+use ppe::praxis_policy_core::delegation::HOOK_TOKEN_DELEGATE;
+use ppe::praxis_policy_core::engine::{PolicyEngine, PolicyEngineConfig};
+use ppe::praxis_policy_core::extensions::{
     AgentExtension, Extensions, HttpExtension, RequestExtension, SecurityExtension,
 };
-use praxis_policy_core::identity::HOOK_IDENTITY_RESOLVE;
+use ppe::praxis_policy_core::identity::HOOK_IDENTITY_RESOLVE;
 
 /// The PPE hook the tool test dispatches on.
 const TOOL_PRE_INVOKE: &str = "cmf.tool_pre_invoke";
@@ -142,7 +142,7 @@ fn migrate_installer_config(yaml: &str) -> String {
 /// Build an engine from the migrated installer config.
 fn load_installed_config(config_path: &Path) -> Arc<PolicyEngine> {
     let yaml = std::fs::read_to_string(config_path).expect("plugins/config.yaml is readable");
-    let config = praxis_policy_core::config::parse_config(&migrate_installer_config(&yaml))
+    let config = ppe::praxis_policy_core::config::parse_config(&migrate_installer_config(&yaml))
         .expect("the migrated plugins/config.yaml parses");
     let manager = Arc::new(PolicyEngine::new(PolicyEngineConfig::default()));
     manager.register_factory(KIND, Box::new(IsolatedVenvFactory));
@@ -226,7 +226,7 @@ fn assert_marker_written(marker: &Path, description: &str) {
 /// `errors` is checked first: a worker that failed to start or a hook the
 /// framework rejected surfaces there rather than as a deny, so checking the
 /// allow first would point the failure message at the wrong layer.
-fn assert_allowed(result: &praxis_policy_core::executor::PipelineResult, hook_name: &str) {
+fn assert_allowed(result: &ppe::praxis_policy_core::executor::PipelineResult, hook_name: &str) {
     assert!(
         result.errors.is_empty(),
         "the pipeline recorded plugin errors on {hook_name}: {:?}",
@@ -450,7 +450,8 @@ async fn config_yaml_dispatches_tool_pre_invoke_to_the_installed_plugin() {
     // has no way to report what arrived, and `extensions_merge_e2e.rs` owns the
     // 3-arg observation path with a purpose-built fixture. This keeps the
     // capability contract pinned against the real installer-written config.
-    let filtered = praxis_policy_core::extensions::filter_extensions(&inbound, &Default::default());
+    let filtered =
+        ppe::praxis_policy_core::extensions::filter_extensions(&inbound, &Default::default());
     assert!(
         filtered.agent.is_none(),
         "`agent` is capability-gated and this config declares none, so it must \
@@ -661,11 +662,11 @@ plugins:
 "#;
 
     // As written, PPE refuses the top-level key and names its replacement.
-    let err = praxis_policy_core::config::parse_config(yaml)
+    let err = ppe::praxis_policy_core::config::parse_config(yaml)
         .expect_err("a top-level plugin_dirs key must fail the load");
     assert!(err.to_string().contains("plugin_dirs"), "{err}");
 
-    let config = praxis_policy_core::config::parse_config(&migrate_installer_config(yaml))
+    let config = ppe::praxis_policy_core::config::parse_config(&migrate_installer_config(yaml))
         .expect("the migrated config parses");
     assert_eq!(
         config.plugins[0].hooks,

@@ -19,18 +19,18 @@ use biscuit_auth::{
 };
 use chrono::Utc;
 
-use praxis_policy_core::delegation::{
+use ppe::PolicyEngine;
+use ppe::praxis_policy_core::delegation::{
     AttenuationConfig, AuthEnforcedBy, DelegationPayload, HOOK_TOKEN_DELEGATE, TargetType,
     TokenDelegateHook,
 };
-use praxis_policy_core::engine::PolicyEngine;
-use praxis_policy_core::error::PluginError;
-use praxis_policy_core::executor::PipelineResult;
-use praxis_policy_core::extensions::raw_credentials::DelegationMode;
-use praxis_policy_core::factory::{PluginFactory, PluginInstance};
-use praxis_policy_core::hooks::TypedHandlerAdapter;
-use praxis_policy_core::hooks::payload::Extensions;
-use praxis_policy_core::plugin::PluginConfig;
+use ppe::praxis_policy_core::error::PluginError;
+use ppe::praxis_policy_core::executor::PipelineResult;
+use ppe::praxis_policy_core::extensions::raw_credentials::DelegationMode;
+use ppe::praxis_policy_core::factory::{PluginFactory, PluginInstance};
+use ppe::praxis_policy_core::hooks::TypedHandlerAdapter;
+use ppe::praxis_policy_core::hooks::payload::Extensions;
+use ppe::praxis_policy_core::plugin::PluginConfig;
 
 use cpex_plugin_delegator_biscuit::BiscuitDelegator;
 

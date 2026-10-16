@@ -13,15 +13,15 @@ use std::sync::Arc;
 use serde_json::{Map, Value, json};
 
 use cpex::{HyperTransport, PolicyEngine};
-use praxis_policy_core::cmf::content::{ToolCall, ToolResult};
-use praxis_policy_core::cmf::enums::Role;
-use praxis_policy_core::cmf::{CmfHook, ContentPart, Message, MessagePayload};
-use praxis_policy_core::executor::PipelineResult;
-use praxis_policy_core::extensions::{
+use ppe::praxis_policy_core::cmf::content::{ToolCall, ToolResult};
+use ppe::praxis_policy_core::cmf::enums::Role;
+use ppe::praxis_policy_core::cmf::{CmfHook, ContentPart, Message, MessagePayload};
+use ppe::praxis_policy_core::executor::PipelineResult;
+use ppe::praxis_policy_core::extensions::{
     AgentExtension, Extensions, HttpExtension, MetaExtension, SecurityExtension, SubjectExtension,
     SubjectType,
 };
-use praxis_policy_core::identity::{IdentityHook, IdentityPayload, TokenSource};
+use ppe::praxis_policy_core::identity::{IdentityHook, IdentityPayload, TokenSource};
 
 use crate::normalize::{SCRUBBED_TOKEN, sorted};
 use crate::spec::{ExtensionsSpec, InvokeRequest, MediateHooks};
@@ -396,7 +396,9 @@ fn project_identity(p: &IdentityPayload) -> Value {
     })
 }
 
-fn project_raw_credentials(rc: &praxis_policy_core::extensions::RawCredentialsExtension) -> Value {
+fn project_raw_credentials(
+    rc: &ppe::praxis_policy_core::extensions::RawCredentialsExtension,
+) -> Value {
     let mut inbound: Vec<Value> = rc
         .inbound_tokens
         .iter()

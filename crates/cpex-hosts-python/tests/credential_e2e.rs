@@ -40,14 +40,14 @@ use cpex_hosts_python::testing::{
     TempDir, prebuild_venv, python_source, scaffold_plugin, skip, skip_without_python3,
     worker_consumes_credentials,
 };
-use praxis_policy_core::context::PluginContext;
-use praxis_policy_core::extensions::Extensions;
-use praxis_policy_core::extensions::raw_credentials::{
+use ppe::praxis_policy_core::context::PluginContext;
+use ppe::praxis_policy_core::extensions::Extensions;
+use ppe::praxis_policy_core::extensions::raw_credentials::{
     RawCredentialsExtension, RawInboundToken, TokenKind, TokenRole,
 };
-use praxis_policy_core::identity::HOOK_IDENTITY_RESOLVE;
-use praxis_policy_core::plugin::{Plugin, PluginConfig};
-use praxis_policy_core::registry::AnyHookHandler;
+use ppe::praxis_policy_core::identity::HOOK_IDENTITY_RESOLVE;
+use ppe::praxis_policy_core::plugin::{Plugin, PluginConfig};
+use ppe::praxis_policy_core::registry::AnyHookHandler;
 
 /// The plaintext under test. Distinctive so a leak is unambiguous in any
 /// captured output.

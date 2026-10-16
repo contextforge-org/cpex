@@ -57,12 +57,12 @@
 
 use std::collections::HashMap;
 
-use praxis_policy_core::extensions::Extensions;
-use praxis_policy_core::extensions::container::{OwnedExtensions, chain_extends};
-use praxis_policy_core::extensions::delegation::DelegationExtension;
-use praxis_policy_core::extensions::guarded::Guarded;
-use praxis_policy_core::extensions::http::HttpExtension;
-use praxis_policy_core::extensions::security::SecurityExtension;
+use ppe::praxis_policy_core::extensions::Extensions;
+use ppe::praxis_policy_core::extensions::container::{OwnedExtensions, chain_extends};
+use ppe::praxis_policy_core::extensions::delegation::DelegationExtension;
+use ppe::praxis_policy_core::extensions::guarded::Guarded;
+use ppe::praxis_policy_core::extensions::http::HttpExtension;
+use ppe::praxis_policy_core::extensions::security::SecurityExtension;
 use serde_json::Value;
 use tracing::warn;
 
@@ -434,19 +434,19 @@ mod tests {
     use std::collections::HashSet;
     use std::sync::Arc;
 
-    use praxis_policy_core::extensions::agent::AgentExtension;
-    use praxis_policy_core::extensions::monotonic::MonotonicSet;
+    use ppe::praxis_policy_core::extensions::agent::AgentExtension;
+    use ppe::praxis_policy_core::extensions::monotonic::MonotonicSet;
 
     use super::*;
 
     #[test]
     fn secret_assertion_provenance_survives_python_header_round_trips() {
-        use praxis_policy_core::assertions::config::OnMissing;
-        use praxis_policy_core::assertions::resolved::{
+        use ppe::praxis_policy_core::assertions::config::OnMissing;
+        use ppe::praxis_policy_core::assertions::resolved::{
             ResolvedContract, ResolvedHeader, ResolvedSource,
         };
-        use praxis_policy_core::assertions::source::SourcePath;
-        use praxis_policy_core::assertions::{AssertionLevel, Direction, apply};
+        use ppe::praxis_policy_core::assertions::source::SourcePath;
+        use ppe::praxis_policy_core::assertions::{AssertionLevel, Direction, apply};
 
         // Provenance must survive even after the wire filter drops the header.
         let secret = "f47ac10b-58cc-4372-a567-0e02b2c3d479";
@@ -645,7 +645,7 @@ mod tests {
 
     #[test]
     fn raw_credentials_never_appear_on_the_wire() {
-        use praxis_policy_core::extensions::raw_credentials::{
+        use ppe::praxis_policy_core::extensions::raw_credentials::{
             RawCredentialsExtension, RawInboundToken, TokenKind, TokenRole,
         };
 
@@ -982,7 +982,7 @@ mod tests {
         // itself is asserted directly against the shared `chain_extends`
         // predicate the merge uses — the accept path needs a real executor
         // token and lives in `tests/extensions_merge_e2e.rs`.
-        use praxis_policy_core::extensions::delegation::DelegationHop;
+        use ppe::praxis_policy_core::extensions::delegation::DelegationHop;
 
         let hop = |id: &str, scopes: Vec<&str>| DelegationHop {
             subject_id: id.into(),

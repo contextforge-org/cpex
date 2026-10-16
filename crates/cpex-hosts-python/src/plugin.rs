@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use praxis_policy_core::{
+use ppe::praxis_policy_core::{
     context::PluginContext,
     error::PluginError,
     extensions::Extensions,
@@ -1222,7 +1222,7 @@ impl AnyHookHandler for PythonHookAdapter {
     /// name with no family in the hook metadata reports itself, which the
     /// registry accepts.
     fn hook_type_name(&self) -> &'static str {
-        praxis_policy_core::hooks::lookup_hook_metadata(self.hook_name)
+        ppe::praxis_policy_core::hooks::lookup_hook_metadata(self.hook_name)
             .and_then(|meta| meta.family)
             .unwrap_or(self.hook_name)
     }
@@ -1235,10 +1235,10 @@ fn apply_translated_modification(
     shim: Option<&cmf_shim::ShimmedPayload>,
     payload: &dyn PluginPayload,
     modified: serde_json::Value,
-    fields: &mut praxis_policy_core::executor::ErasedResultFields,
+    fields: &mut ppe::praxis_policy_core::executor::ErasedResultFields,
 ) -> Result<(), HostError> {
-    use praxis_policy_core::delegation::DelegationPayload;
-    use praxis_policy_core::identity::IdentityPayload;
+    use ppe::praxis_policy_core::delegation::DelegationPayload;
+    use ppe::praxis_policy_core::identity::IdentityPayload;
 
     // A deny modifies nothing, so a result the plugin attached to one is not
     // worth failing the deny over.
@@ -1849,10 +1849,10 @@ while True:
         hook: &'static str,
         payload: &dyn PluginPayload,
         ctx: &mut PluginContext,
-    ) -> Result<praxis_policy_core::executor::ErasedResultFields, Box<PluginError>> {
+    ) -> Result<ppe::praxis_policy_core::executor::ErasedResultFields, Box<PluginError>> {
         let adapter = PythonHookAdapter::new(Arc::clone(plugin), hook);
         let erased = adapter.invoke(payload, &Extensions::default(), ctx).await?;
-        Ok(praxis_policy_core::executor::extract_erased(erased)
+        Ok(ppe::praxis_policy_core::executor::extract_erased(erased)
             .expect("the adapter returns ErasedResultFields"))
     }
 
@@ -2042,9 +2042,9 @@ while True:
         plugin.initialize().await.expect("the stub worker launches");
         set_mode(&dir, "allow");
 
-        let payload = praxis_policy_core::cmf::MessagePayload {
-            message: praxis_policy_core::cmf::Message::text(
-                praxis_policy_core::cmf::Role::User,
+        let payload = ppe::praxis_policy_core::cmf::MessagePayload {
+            message: ppe::praxis_policy_core::cmf::Message::text(
+                ppe::praxis_policy_core::cmf::Role::User,
                 "hello",
             ),
         };
@@ -2065,9 +2065,9 @@ while True:
 
     /// A CMF tool call after an empty text part, for the shim dispatch tests.
     /// The shim keeps the empty sibling part as it was.
-    fn cmf_tool_call(q: &str) -> praxis_policy_core::cmf::MessagePayload {
-        use praxis_policy_core::cmf::{ContentPart, Message, Role, ToolCall};
-        praxis_policy_core::cmf::MessagePayload {
+    fn cmf_tool_call(q: &str) -> ppe::praxis_policy_core::cmf::MessagePayload {
+        use ppe::praxis_policy_core::cmf::{ContentPart, Message, Role, ToolCall};
+        ppe::praxis_policy_core::cmf::MessagePayload {
             message: Message::with_content(
                 Role::Assistant,
                 vec![
@@ -2151,7 +2151,7 @@ while True:
         let modified = fields.modified_payload.expect("the modification survives");
         let message = modified
             .as_any()
-            .downcast_ref::<praxis_policy_core::cmf::MessagePayload>()
+            .downcast_ref::<ppe::praxis_policy_core::cmf::MessagePayload>()
             .expect("a cmf hook's modification must come back as a MessagePayload");
         let json = serde_json::to_value(message).unwrap();
         assert_eq!(json["message"]["content"][0]["text"], "");
@@ -2205,9 +2205,9 @@ while True:
         let (dir, plugin) = adapter_plugin(&["cmf.tool_pre_invoke"], &[]).await;
         set_mode(&dir, "allow");
 
-        let no_tool_call = praxis_policy_core::cmf::MessagePayload {
-            message: praxis_policy_core::cmf::Message::text(
-                praxis_policy_core::cmf::Role::User,
+        let no_tool_call = ppe::praxis_policy_core::cmf::MessagePayload {
+            message: ppe::praxis_policy_core::cmf::Message::text(
+                ppe::praxis_policy_core::cmf::Role::User,
                 "hello",
             ),
         };
@@ -2265,7 +2265,7 @@ while True:
         ) {
             return;
         }
-        use praxis_policy_core::extensions::raw_credentials::{
+        use ppe::praxis_policy_core::extensions::raw_credentials::{
             RawCredentialsExtension, RawInboundToken, TokenKind, TokenRole,
         };
 
@@ -2309,7 +2309,7 @@ while True:
         ) {
             return;
         }
-        use praxis_policy_core::extensions::raw_credentials::{
+        use ppe::praxis_policy_core::extensions::raw_credentials::{
             DelegationKey, DelegationMode, RawCredentialsExtension, RawDelegatedToken,
         };
 
@@ -2362,7 +2362,7 @@ while True:
         ) {
             return;
         }
-        use praxis_policy_core::extensions::raw_credentials::{
+        use ppe::praxis_policy_core::extensions::raw_credentials::{
             RawCredentialsExtension, RawInboundToken, TokenKind, TokenRole,
         };
 
@@ -2618,7 +2618,7 @@ while True:
         ) {
             return;
         }
-        use praxis_policy_core::extensions::raw_credentials::{
+        use ppe::praxis_policy_core::extensions::raw_credentials::{
             RawCredentialsExtension, RawInboundToken, TokenKind, TokenRole,
         };
 
@@ -2683,7 +2683,7 @@ while True:
         ) {
             return;
         }
-        use praxis_policy_core::extensions::raw_credentials::{
+        use ppe::praxis_policy_core::extensions::raw_credentials::{
             RawCredentialsExtension, RawInboundToken, TokenKind, TokenRole,
         };
 
@@ -3041,9 +3041,9 @@ while True:
             .expect("a failed probe does not stop a plugin that requires nothing");
         set_mode(&dir, "allow");
 
-        let payload = praxis_policy_core::cmf::MessagePayload {
-            message: praxis_policy_core::cmf::Message::text(
-                praxis_policy_core::cmf::Role::User,
+        let payload = ppe::praxis_policy_core::cmf::MessagePayload {
+            message: ppe::praxis_policy_core::cmf::Message::text(
+                ppe::praxis_policy_core::cmf::Role::User,
                 "hello",
             ),
         };
@@ -3101,8 +3101,8 @@ while True:
 
     // --- PPE identity and delegation payloads ---------------------------------
 
-    fn ppe_identity() -> praxis_policy_core::identity::IdentityPayload {
-        use praxis_policy_core::identity::{IdentityPayload, TokenSource};
+    fn ppe_identity() -> ppe::praxis_policy_core::identity::IdentityPayload {
+        use ppe::praxis_policy_core::identity::{IdentityPayload, TokenSource};
         IdentityPayload::new("PPE-IDENTITY-SECRET-TOKEN", TokenSource::Bearer).with_headers(
             std::collections::HashMap::from([
                 (
@@ -3119,7 +3119,7 @@ while True:
         plugin: &Arc<IsolatedPythonPlugin>,
         hook: &'static str,
         payload: &dyn PluginPayload,
-    ) -> praxis_policy_core::executor::ErasedResultFields {
+    ) -> ppe::praxis_policy_core::executor::ErasedResultFields {
         let mut ctx = PluginContext::new();
         invoke(plugin, hook, payload, &mut ctx)
             .await
@@ -3178,7 +3178,7 @@ while True:
             .expect("the result is a modification");
         let identity = modified
             .as_any()
-            .downcast_ref::<praxis_policy_core::identity::IdentityPayload>()
+            .downcast_ref::<ppe::praxis_policy_core::identity::IdentityPayload>()
             .expect("identity.resolve must come back as PPE's IdentityPayload");
         assert_eq!(
             identity.subject.as_ref().and_then(|s| s.id.as_deref()),
@@ -3211,7 +3211,7 @@ while True:
         ) {
             return;
         }
-        use praxis_policy_core::delegation::DelegationPayload;
+        use ppe::praxis_policy_core::delegation::DelegationPayload;
 
         // PPE's bearer token is the caller's inbound credential.
         let (dir, plugin) =

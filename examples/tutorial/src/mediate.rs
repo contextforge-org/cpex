@@ -41,9 +41,9 @@ use cpex::PolicyEngine;
 use cpex::prelude::{
     CmfHook, ContentPart, Extensions, Message, MessagePayload, Role, ToolCall, ToolResult,
 };
-use praxis_policy_core::executor::PipelineResult;
-use praxis_policy_core::extensions::{AgentExtension, HttpExtension, MetaExtension};
-use praxis_policy_core::identity::{
+use ppe::praxis_policy_core::executor::PipelineResult;
+use ppe::praxis_policy_core::extensions::{AgentExtension, HttpExtension, MetaExtension};
+use ppe::praxis_policy_core::identity::{
     HOOK_IDENTITY_RESOLVE, IdentityHook, IdentityPayload, TokenSource,
 };
 

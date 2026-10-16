@@ -27,7 +27,7 @@ publish = false
 # The host facade, which bundles every stable builtin. Path dependency, the
 # tutorial is not published, so it does not use the workspace version table.
 cpex = { path = "../../crates/cpex" }
-praxis-policy-core = { workspace = true }
+ppe = { workspace = true }
 
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "sync", "time", "macros"] }
 async-trait = { workspace = true }

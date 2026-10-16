@@ -25,14 +25,8 @@ rust-version.workspace = true
 crate-type = ["lib", "cdylib", "staticlib"]
 
 [dependencies]
-praxis-policy-core = { workspace = true }
-# The CPEX facade: PPE with every stable builtin, the bundled hyper transport
-# and the Vault secret provider, plus the host wiring the bindings share
-# (`cpex::host`). `install_builtins` expands to explicit `register_factory`
-# calls, so the factory symbols survive in the staticlib (no inventory/linkme
-# link-section GC hazard). The Valkey session store pulls a redis client and a
-# rustls TLS stack, so it adds materially to the `.a` size and to the musl
-# cross-build surface.
+ppe = { workspace = true }
+# Bundled builtins, HTTP transport and shared host wiring.
 cpex = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }

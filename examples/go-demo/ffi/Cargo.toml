@@ -25,7 +25,7 @@ release = false
 crate-type = ["staticlib", "cdylib"]
 
 [dependencies]
-praxis-policy-core = { workspace = true }
+ppe = { workspace = true }
 cpex-ffi = { path = "../../../crates/cpex-ffi" }
 async-trait = "0.1"
 tracing = "0.1"

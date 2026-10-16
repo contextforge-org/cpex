@@ -12,7 +12,7 @@
 
 use std::sync::Arc;
 
-use praxis_policy_core::{
+use ppe::praxis_policy_core::{
     error::PluginError,
     factory::{PluginFactory, PluginInstance},
     plugin::PluginConfig,
@@ -82,7 +82,7 @@ impl PluginFactory for IsolatedVenvFactory {
             .map(
                 |hook| -> (
                     &'static str,
-                    Arc<dyn praxis_policy_core::registry::AnyHookHandler>,
+                    Arc<dyn ppe::praxis_policy_core::registry::AnyHookHandler>,
                 ) {
                     // The registry keys handlers by `&'static str`, and hook names
                     // arrive as owned Strings from YAML. Leaking is what
@@ -103,9 +103,9 @@ impl PluginFactory for IsolatedVenvFactory {
 
 #[cfg(test)]
 mod tests {
-    use praxis_policy_core::config::PolicyConfig;
-    use praxis_policy_core::engine::PolicyEngine;
-    use praxis_policy_core::factory::PluginFactoryRegistry;
+    use ppe::PolicyEngine;
+    use ppe::praxis_policy_core::config::PolicyConfig;
+    use ppe::praxis_policy_core::factory::PluginFactoryRegistry;
 
     use super::*;
 
@@ -297,7 +297,7 @@ plugins:
     config:
       class_name: my_pkg.Everything
 "#;
-        let config = praxis_policy_core::config::parse_config(yaml).expect("valid config");
+        let config = ppe::praxis_policy_core::config::parse_config(yaml).expect("valid config");
         let engine = PolicyEngine::from_config(config, &registry())
             .expect("every dispatched hook family accepts the isolated_venv handler");
         for hook in [
@@ -326,7 +326,7 @@ plugins:
     config:
       class_name: my_pkg.filters.PiiFilter
 "#;
-        let err = praxis_policy_core::config::parse_config(yaml)
+        let err = ppe::praxis_policy_core::config::parse_config(yaml)
             .expect_err("a top-level plugin_dirs key must be rejected");
         assert!(
             matches!(*err, PluginError::Config { .. }),
@@ -355,7 +355,7 @@ plugins:
     config:
       class_name: my_pkg.Resolver
 "#;
-        let err = praxis_policy_core::config::parse_config(yaml)
+        let err = ppe::praxis_policy_core::config::parse_config(yaml)
             .expect_err("PPE does not dispatch the unprefixed identity hook");
         assert!(err.to_string().contains("identity.resolve"), "{err}");
     }

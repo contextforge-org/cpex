@@ -139,7 +139,7 @@ impl HookRenames {
 
     /// Check source totality and target coverage against PPE's authority.
     pub fn validate<'a>(&self, captured: impl IntoIterator<Item = &'a str>) -> Result<(), String> {
-        let ppe: BTreeSet<String> = praxis_policy_core::hooks::types::builtin_hook_types()
+        let ppe: BTreeSet<String> = ppe::praxis_policy_core::hooks::types::builtin_hook_types()
             .into_iter()
             .map(|hook| hook.as_str().to_string())
             .collect();

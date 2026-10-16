@@ -207,7 +207,7 @@ pub struct MyPayload {
     pub field_a: String,
     pub field_b: i64,
 }
-praxis_policy_core::impl_plugin_payload!(MyPayload);
+ppe::praxis_policy_core::impl_plugin_payload!(MyPayload);
 ```
 
 ### 2. Register the payload type in the FFI crate

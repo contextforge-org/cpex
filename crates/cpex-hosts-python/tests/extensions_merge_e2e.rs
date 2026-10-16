@@ -80,9 +80,9 @@ use cpex_hosts_python::testing::{
     TEMP_DIR_KIND, TempDir, TempDirFactory, prebuild_venv, python_source, scaffold_plugin, skip,
     skip_without_python3, worker_delivers_extensions,
 };
-use praxis_policy_core::cmf::{ContentPart, Message, MessagePayload, Role, ToolCall};
-use praxis_policy_core::extensions::{Extensions, HttpExtension, SecurityExtension};
-use praxis_policy_core::plugin::PluginConfig;
+use ppe::praxis_policy_core::cmf::{ContentPart, Message, MessagePayload, Role, ToolCall};
+use ppe::praxis_policy_core::extensions::{Extensions, HttpExtension, SecurityExtension};
+use ppe::praxis_policy_core::plugin::PluginConfig;
 
 /// Fully-qualified class name of the fixture plugin.
 const FIXTURE_CLASS: &str = "ext_pkg.extensions_plugin.ExtensionsAwarePlugin";
@@ -261,9 +261,9 @@ fn tool_call_message() -> MessagePayload {
 
 /// Engine settings that fire each plugin at the hooks it declares, so the test
 /// needs no `routes:` or `authorization:` block.
-fn hooks_dispatch() -> praxis_policy_core::config::EngineSettings {
-    praxis_policy_core::config::EngineSettings {
-        dispatch: praxis_policy_core::config::DispatchMode::Hooks,
+fn hooks_dispatch() -> ppe::praxis_policy_core::config::EngineSettings {
+    ppe::praxis_policy_core::config::EngineSettings {
+        dispatch: ppe::praxis_policy_core::config::DispatchMode::Hooks,
         ..Default::default()
     }
 }
@@ -440,8 +440,8 @@ async fn run_pipeline(
     plugin_dir: &Path,
     capabilities: &[&str],
 ) -> (String, Extensions) {
-    use praxis_policy_core::config::PolicyConfig;
-    use praxis_policy_core::engine::{PolicyEngine, PolicyEngineConfig};
+    use ppe::praxis_policy_core::config::PolicyConfig;
+    use ppe::praxis_policy_core::engine::{PolicyEngine, PolicyEngineConfig};
 
     let mut config = plugin_config(capabilities);
     // The temp-dir redirection rides on the factory (see `TempDirFactory`),
@@ -505,14 +505,14 @@ mod fake_worker {
     use std::sync::Arc;
 
     use async_trait::async_trait;
-    use praxis_policy_core::context::PluginContext;
-    use praxis_policy_core::error::PluginError;
-    use praxis_policy_core::executor::ErasedResultFields;
-    use praxis_policy_core::extensions::Extensions;
-    use praxis_policy_core::factory::{PluginFactory, PluginInstance};
-    use praxis_policy_core::hooks::PluginPayload;
-    use praxis_policy_core::plugin::{Plugin, PluginConfig};
-    use praxis_policy_core::registry::AnyHookHandler;
+    use ppe::praxis_policy_core::context::PluginContext;
+    use ppe::praxis_policy_core::error::PluginError;
+    use ppe::praxis_policy_core::executor::ErasedResultFields;
+    use ppe::praxis_policy_core::extensions::Extensions;
+    use ppe::praxis_policy_core::factory::{PluginFactory, PluginInstance};
+    use ppe::praxis_policy_core::hooks::PluginPayload;
+    use ppe::praxis_policy_core::plugin::{Plugin, PluginConfig};
+    use ppe::praxis_policy_core::registry::AnyHookHandler;
     use serde_json::Value;
 
     /// Kind name for the stand-in factory.
@@ -559,7 +559,7 @@ mod fake_worker {
         }
 
         fn hook_type_name(&self) -> &'static str {
-            praxis_policy_core::hooks::lookup_hook_metadata(super::HOOK)
+            ppe::praxis_policy_core::hooks::lookup_hook_metadata(super::HOOK)
                 .and_then(|meta| meta.family)
                 .unwrap_or(super::HOOK)
         }
@@ -598,8 +598,8 @@ async fn merge_through_executor(
     capabilities: &[&str],
     response: serde_json::Value,
 ) -> Option<Extensions> {
-    use praxis_policy_core::config::PolicyConfig;
-    use praxis_policy_core::engine::{PolicyEngine, PolicyEngineConfig};
+    use ppe::praxis_policy_core::config::PolicyConfig;
+    use ppe::praxis_policy_core::engine::{PolicyEngine, PolicyEngineConfig};
 
     let config = PluginConfig {
         name: "fake-worker".into(),

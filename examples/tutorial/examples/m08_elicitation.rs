@@ -34,7 +34,7 @@ use cpex::prelude::{
     Extensions, HookHandler, Plugin, PluginConfig, PluginContext, PluginError, PluginFactory,
     PluginInstance, PluginResult, TypedHandlerAdapter,
 };
-use praxis_policy_core::elicitation::{
+use ppe::praxis_policy_core::elicitation::{
     ElicitationHook, ElicitationOp, ElicitationOutcomeKind, ElicitationPayload,
     ElicitationStatusKind,
 };

@@ -35,14 +35,14 @@ use cpex_hosts_python::testing::{
     TEMP_DIR_KIND, TempDir, TempDirFactory, prebuild_venv, python_source, scaffold_plugin, skip,
     skip_without_python3, worker_consumes_credentials,
 };
-use praxis_policy::{AplOptions, register_apl};
-use praxis_policy_core::cmf::{ContentPart, Message, MessagePayload, Role, ToolCall};
-use praxis_policy_core::engine::{PolicyEngine, PolicyEngineConfig};
-use praxis_policy_core::extensions::raw_credentials::{
+use ppe::praxis_policy_core::cmf::{ContentPart, Message, MessagePayload, Role, ToolCall};
+use ppe::praxis_policy_core::engine::{PolicyEngine, PolicyEngineConfig};
+use ppe::praxis_policy_core::extensions::raw_credentials::{
     RawCredentialsExtension, RawInboundToken, TokenKind, TokenRole,
 };
-use praxis_policy_core::extensions::{Extensions, MetaExtension};
-use praxis_policy_core::identity::{HOOK_IDENTITY_RESOLVE, IdentityPayload, TokenSource};
+use ppe::praxis_policy_core::extensions::{Extensions, MetaExtension};
+use ppe::praxis_policy_core::identity::{HOOK_IDENTITY_RESOLVE, IdentityPayload, TokenSource};
+use ppe::{AplOptions, register_apl};
 
 /// The inbound credential under test. Distinctive so a leak is unambiguous.
 const SECRET: &str = "ACCEPTANCE-INBOUND-PLAINTEXT-5d2e";

@@ -7,7 +7,7 @@
 //
 // # Why this exists
 //
-// PPE dispatches `identity.resolve` with `praxis_policy_core::identity::
+// PPE dispatches `identity.resolve` with `ppe::praxis_policy_core::identity::
 // IdentityPayload` and `token.delegate` with `delegation::DelegationPayload`.
 // The FFI, the Python bindings and the APL delegate step all build those
 // types. The Python worker knows neither: it rebuilds its own
@@ -80,11 +80,15 @@
 
 use std::collections::HashMap;
 
-use praxis_policy_core::delegation::{DelegationPayload, DelegationSubject, HOOK_TOKEN_DELEGATE};
-use praxis_policy_core::error::PluginViolation;
-use praxis_policy_core::extensions::{DelegationExtension, RawDelegatedToken, SubjectExtension};
-use praxis_policy_core::hooks::payload::PluginPayload;
-use praxis_policy_core::identity::{HOOK_IDENTITY_RESOLVE, IdentityPayload};
+use ppe::praxis_policy_core::delegation::{
+    DelegationPayload, DelegationSubject, HOOK_TOKEN_DELEGATE,
+};
+use ppe::praxis_policy_core::error::PluginViolation;
+use ppe::praxis_policy_core::extensions::{
+    DelegationExtension, RawDelegatedToken, SubjectExtension,
+};
+use ppe::praxis_policy_core::hooks::payload::PluginPayload;
+use ppe::praxis_policy_core::identity::{HOOK_IDENTITY_RESOLVE, IdentityPayload};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Map, Value};
@@ -646,10 +650,10 @@ fn unrepresentable(hook: &str, field: &str) -> HostError {
 
 #[cfg(test)]
 mod tests {
-    use praxis_policy_core::delegation::AttenuationConfig;
-    use praxis_policy_core::extensions::raw_credentials::TokenRole;
-    use praxis_policy_core::extensions::{DelegationHop, SubjectType};
-    use praxis_policy_core::identity::TokenSource;
+    use ppe::praxis_policy_core::delegation::AttenuationConfig;
+    use ppe::praxis_policy_core::extensions::raw_credentials::TokenRole;
+    use ppe::praxis_policy_core::extensions::{DelegationHop, SubjectType};
+    use ppe::praxis_policy_core::identity::TokenSource;
     use serde_json::json;
 
     use super::*;
@@ -794,9 +798,9 @@ mod tests {
             .unwrap(),
         );
         let boxed: Box<dyn PluginPayload> = Box::new(back);
-        let result = praxis_policy_core::executor::PipelineResult::allowed_with(
+        let result = ppe::praxis_policy_core::executor::PipelineResult::allowed_with(
             boxed,
-            praxis_policy_core::extensions::Extensions::default(),
+            ppe::praxis_policy_core::extensions::Extensions::default(),
             Default::default(),
         );
         let extracted = IdentityPayload::from_pipeline_result(&result)
@@ -941,7 +945,7 @@ mod tests {
         assert!(ttl.num_seconds() > 250 && ttl.num_seconds() <= 300, "{ttl}");
         assert_eq!(
             back.delegation_mode,
-            Some(praxis_policy_core::extensions::raw_credentials::DelegationMode::OnBehalfOfUser)
+            Some(ppe::praxis_policy_core::extensions::raw_credentials::DelegationMode::OnBehalfOfUser)
         );
         let update = back
             .delegation_update
@@ -954,9 +958,9 @@ mod tests {
         assert_eq!(back.bearer_token(), TOKEN);
 
         let boxed: Box<dyn PluginPayload> = Box::new(back);
-        let result = praxis_policy_core::executor::PipelineResult::allowed_with(
+        let result = ppe::praxis_policy_core::executor::PipelineResult::allowed_with(
             boxed,
-            praxis_policy_core::extensions::Extensions::default(),
+            ppe::praxis_policy_core::extensions::Extensions::default(),
             Default::default(),
         );
         assert!(

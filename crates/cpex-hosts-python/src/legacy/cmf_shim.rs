@@ -101,13 +101,13 @@
 
 use std::collections::HashMap;
 
-use praxis_policy_core::cmf::constants::{
+use ppe::praxis_policy_core::cmf::constants::{
     HOOK_CMF_LLM_INPUT, HOOK_CMF_LLM_OUTPUT, HOOK_CMF_PROMPT_POST_INVOKE,
     HOOK_CMF_PROMPT_PRE_INVOKE, HOOK_CMF_RESOURCE_POST_FETCH, HOOK_CMF_RESOURCE_PRE_FETCH,
     HOOK_CMF_TOOL_POST_INVOKE, HOOK_CMF_TOOL_PRE_INVOKE,
 };
-use praxis_policy_core::cmf::{ContentPart, Message, MessagePayload, Resource, Role};
-use praxis_policy_core::hooks::payload::PluginPayload;
+use ppe::praxis_policy_core::cmf::{ContentPart, Message, MessagePayload, Resource, Role};
+use ppe::praxis_policy_core::hooks::payload::PluginPayload;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
@@ -780,7 +780,7 @@ fn to_json<T: Serialize>(value: &T, err: &dyn Fn(&str) -> HostError) -> Result<V
 
 #[cfg(test)]
 mod tests {
-    use praxis_policy_core::cmf::{
+    use ppe::praxis_policy_core::cmf::{
         Channel, PromptRequest, PromptResult, Resource, ResourceReference, ResourceType, ToolCall,
         ToolResult,
     };
@@ -944,7 +944,7 @@ mod tests {
     fn every_cmf_hook_ppe_dispatches_is_covered() {
         // A new upstream cmf hook must be either shimmed or refused, never
         // forwarded under a name the old worker does not know.
-        for hook in praxis_policy_core::hooks::builtin_hook_types() {
+        for hook in ppe::praxis_policy_core::hooks::builtin_hook_types() {
             let name = hook.as_str();
             if name.starts_with("cmf.") {
                 assert!(

@@ -3,16 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # Authors: Fred Araujo
 #
-# cpex: host facade over the praxis-policy engine (PPE).
-#
-# One dependency instead of a dozen: re-exports PPE's public surface
-# (PolicyEngine, AplOptions, register_apl, prelude, the builtin factories and
-# the bundled hyper HTTP transport). Every PPE builtin is compiled in, so
-#
-#   cpex = "0.3"
-#
-# then `cpex::install_builtins(&engine)` registers every bundled factory and
-# installs the APL config visitor in one call.
+# CPEX facade: PPE with all stable builtins and the hyper HTTP transport.
 
 [package]
 name = "cpex"
@@ -43,7 +34,7 @@ python-host = ["dep:cpex-hosts-python"]
 
 [dependencies]
 # The engine, with every stable builtin and the bundled hyper transport.
-praxis-policy = { workspace = true, features = ["builtins", "http-hyper"] }
+ppe = { workspace = true, features = ["builtins", "http-hyper"] }
 
 # Python plugin host. Runs each Python plugin out-of-process, in its own
 # virtualenv, from the Rust PolicyEngine. Present only with `python-host`.

@@ -159,7 +159,7 @@ The `ContentPart` tagged union supports all 12 content types:
 
 ## Extensions
 
-Extensions are passed separately from the payload. Each extension type maps to a Rust extension in `praxis_policy_core::extensions`:
+Extensions are passed separately from the payload. Each extension type maps to a Rust extension in `ppe::praxis_policy_core::extensions`:
 
 - `MetaExtension`: entity identification for route resolution
 - `SecurityExtension`: labels, classification, data policies, and four identity slots: `Subject` (user), `Client` (OAuth client), `CallerWorkload` and `ThisWorkload` (`WorkloadIdentity`)
@@ -221,7 +221,7 @@ edition = "2021"
 crate-type = ["staticlib", "cdylib"]
 
 [dependencies]
-praxis-policy-core = "=0.5.0"
+ppe = { package = "praxis-policy", version = "=0.5.0", default-features = false }
 cpex-ffi = { path = "path/to/crates/cpex-ffi" }
 async-trait = "0.1"
 tracing = "0.1"
@@ -234,15 +234,15 @@ tracing = "0.1"
 ```rust
 use std::sync::Arc;
 use async_trait::async_trait;
-use praxis_policy_core::context::PluginContext;
-use praxis_policy_core::error::{PluginError, PluginViolation};
-use praxis_policy_core::factory::{PluginFactory, PluginInstance};
-use praxis_policy_core::hooks::adapter::TypedHandlerAdapter;
-use praxis_policy_core::hooks::payload::Extensions;
-use praxis_policy_core::hooks::trait_def::{HookHandler, HookTypeDef, PluginResult};
-use praxis_policy_core::engine::PolicyEngine;
-use praxis_policy_core::hooks::{register_hook_metadata, HookMetadata, HookPhase};
-use praxis_policy_core::plugin::{Plugin, PluginConfig};
+use ppe::praxis_policy_core::context::PluginContext;
+use ppe::praxis_policy_core::error::{PluginError, PluginViolation};
+use ppe::praxis_policy_core::factory::{PluginFactory, PluginInstance};
+use ppe::praxis_policy_core::hooks::adapter::TypedHandlerAdapter;
+use ppe::praxis_policy_core::hooks::payload::Extensions;
+use ppe::praxis_policy_core::hooks::trait_def::{HookHandler, HookTypeDef, PluginResult};
+use ppe::PolicyEngine;
+use ppe::praxis_policy_core::hooks::{register_hook_metadata, HookMetadata, HookPhase};
+use ppe::praxis_policy_core::plugin::{Plugin, PluginConfig};
 use cpex_ffi::GenericPayload;
 
 // Hook type. NAME identifies the hook family; the hook name Go callers
@@ -376,7 +376,7 @@ pub struct MyPayload {
     pub field_a: String,
     pub field_b: i64,
 }
-praxis_policy_core::impl_plugin_payload!(MyPayload);
+ppe::praxis_policy_core::impl_plugin_payload!(MyPayload);
 ```
 
 **2. Register in FFI** (`crates/cpex-ffi/src/lib.rs`):

@@ -125,7 +125,7 @@ use cpex::prelude::{
     CmfHook, Extensions, HookHandler, MessagePayload, Plugin, PluginConfig, PluginContext,
     PluginError, PluginFactory, PluginInstance, PluginResult, TypedHandlerAdapter,
 };
-use praxis_policy_core::elicitation::{ElicitationHook, ElicitationPayload};
+use ppe::praxis_policy_core::elicitation::{ElicitationHook, ElicitationPayload};
 
 /// Stand-in for the plugins modules 8 and 9 define in their own binaries.
 /// Loading only needs a factory for the `kind` and a handler on the right

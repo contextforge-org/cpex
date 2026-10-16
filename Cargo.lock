@@ -620,7 +620,7 @@ version = "0.3.1"
 dependencies = [
  "async-trait",
  "cpex-ffi",
- "praxis-policy-core",
+ "praxis-policy",
  "tracing",
 ]
 
@@ -633,7 +633,7 @@ dependencies = [
  "chrono",
  "cpex",
  "jsonwebtoken",
- "praxis-policy-core",
+ "praxis-policy",
  "rmp-serde",
  "serde",
  "serde_bytes",
@@ -650,7 +650,6 @@ dependencies = [
  "chrono",
  "cpex-hosts-python",
  "praxis-policy",
- "praxis-policy-core",
  "serde",
  "serde_json",
  "sha2 0.11.0",
@@ -669,7 +668,7 @@ dependencies = [
  "base64 0.23.1",
  "cpex",
  "form_urlencoded",
- "praxis-policy-core",
+ "praxis-policy",
  "redis",
  "serde",
  "serde_json",
@@ -688,7 +687,7 @@ dependencies = [
  "biscuit-auth",
  "chrono",
  "hex",
- "praxis-policy-core",
+ "praxis-policy",
  "serde",
  "serde_json",
  "tokio",
@@ -700,7 +699,7 @@ version = "0.3.1"
 dependencies = [
  "async-trait",
  "cpex",
- "praxis-policy-core",
+ "praxis-policy",
  "pyo3",
  "pyo3-async-runtimes",
  "serde",
@@ -715,7 +714,7 @@ version = "0.3.1"
 dependencies = [
  "async-trait",
  "cpex",
- "praxis-policy-core",
+ "praxis-policy",
  "reqwest",
  "serde_json",
  "tiny_http",

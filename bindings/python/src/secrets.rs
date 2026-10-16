@@ -12,7 +12,7 @@
 // same fields.
 
 use cpex::host::RefreshSummary;
-use praxis_policy_core::secrets::RefreshReport;
+use ppe::RefreshReport;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 

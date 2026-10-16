@@ -31,7 +31,7 @@ name = "_lib"
 crate-type = ["cdylib"]
 
 [dependencies]
-praxis-policy-core = { workspace = true }
+ppe = { workspace = true }
 
 # The CPEX facade: the builtin extension set, the HTTP transport and the host
 # wiring shared with cpex-ffi (`cpex::host`).

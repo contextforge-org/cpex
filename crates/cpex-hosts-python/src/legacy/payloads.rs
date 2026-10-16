@@ -41,7 +41,7 @@ pub struct ToolPreInvokePayload {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub headers: Option<HashMap<String, String>>,
 }
-praxis_policy_core::impl_plugin_payload!(ToolPreInvokePayload);
+ppe::praxis_policy_core::impl_plugin_payload!(ToolPreInvokePayload);
 
 /// `tool_post_invoke` — mirrors `ToolPostInvokePayload`.
 ///
@@ -53,7 +53,7 @@ pub struct ToolPostInvokePayload {
     #[serde(default)]
     pub result: serde_json::Value,
 }
-praxis_policy_core::impl_plugin_payload!(ToolPostInvokePayload);
+ppe::praxis_policy_core::impl_plugin_payload!(ToolPostInvokePayload);
 
 /// `prompt_pre_fetch` — mirrors `PromptPrehookPayload`.
 ///
@@ -66,7 +66,7 @@ pub struct PromptPreFetchPayload {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub args: Option<HashMap<String, String>>,
 }
-praxis_policy_core::impl_plugin_payload!(PromptPreFetchPayload);
+ppe::praxis_policy_core::impl_plugin_payload!(PromptPreFetchPayload);
 
 /// `prompt_post_fetch` — mirrors `PromptPosthookPayload`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -76,7 +76,7 @@ pub struct PromptPostFetchPayload {
     #[serde(default)]
     pub result: serde_json::Value,
 }
-praxis_policy_core::impl_plugin_payload!(PromptPostFetchPayload);
+ppe::praxis_policy_core::impl_plugin_payload!(PromptPostFetchPayload);
 
 /// `resource_pre_fetch` — mirrors `ResourcePreFetchPayload`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -86,7 +86,7 @@ pub struct ResourcePreFetchPayload {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<HashMap<String, serde_json::Value>>,
 }
-praxis_policy_core::impl_plugin_payload!(ResourcePreFetchPayload);
+ppe::praxis_policy_core::impl_plugin_payload!(ResourcePreFetchPayload);
 
 /// `resource_post_fetch` — mirrors `ResourcePostFetchPayload`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -96,7 +96,7 @@ pub struct ResourcePostFetchPayload {
     #[serde(default)]
     pub content: serde_json::Value,
 }
-praxis_policy_core::impl_plugin_payload!(ResourcePostFetchPayload);
+ppe::praxis_policy_core::impl_plugin_payload!(ResourcePostFetchPayload);
 
 /// `identity.resolve` mirrors `IdentityPayload`. The worker knows the hook as
 /// `identity_resolve`.
@@ -131,7 +131,7 @@ pub struct IdentityResolvePayload {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client_port: Option<u16>,
 }
-praxis_policy_core::impl_plugin_payload!(IdentityResolvePayload);
+ppe::praxis_policy_core::impl_plugin_payload!(IdentityResolvePayload);
 
 impl std::fmt::Debug for IdentityResolvePayload {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -198,7 +198,7 @@ pub struct TokenDelegatePayload {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bearer_token: Option<String>,
 }
-praxis_policy_core::impl_plugin_payload!(TokenDelegatePayload);
+ppe::praxis_policy_core::impl_plugin_payload!(TokenDelegatePayload);
 
 fn default_target_type() -> String {
     "tool".to_string()

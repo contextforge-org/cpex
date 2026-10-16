@@ -47,13 +47,13 @@
 
 use std::collections::{HashMap, HashSet};
 
-use praxis_policy_core::delegation::DelegationPayload;
-use praxis_policy_core::extensions::Extensions;
-use praxis_policy_core::extensions::raw_credentials::{
+use ppe::praxis_policy_core::delegation::DelegationPayload;
+use ppe::praxis_policy_core::extensions::Extensions;
+use ppe::praxis_policy_core::extensions::raw_credentials::{
     DelegationKey, DelegationMode, RawDelegatedToken, RawInboundToken, TokenKind, TokenRole,
 };
-use praxis_policy_core::hooks::payload::PluginPayload;
-use praxis_policy_core::identity::{IdentityPayload, TokenSource};
+use ppe::praxis_policy_core::hooks::payload::PluginPayload;
+use ppe::praxis_policy_core::identity::{IdentityPayload, TokenSource};
 use serde::Serialize;
 use serde_json::Value;
 
@@ -578,7 +578,9 @@ fn delegated_from_token(
 mod tests {
     use std::sync::Arc;
 
-    use praxis_policy_core::extensions::raw_credentials::{DelegationKey, RawCredentialsExtension};
+    use ppe::praxis_policy_core::extensions::raw_credentials::{
+        DelegationKey, RawCredentialsExtension,
+    };
 
     use super::*;
 
@@ -1437,8 +1439,8 @@ mod tests {
 
     // --- PPE identity and delegation payloads ---------------------------------
 
-    use praxis_policy_core::delegation::DelegationPayload;
-    use praxis_policy_core::identity::{IdentityPayload, TokenSource};
+    use ppe::praxis_policy_core::delegation::DelegationPayload;
+    use ppe::praxis_policy_core::identity::{IdentityPayload, TokenSource};
 
     fn identity_payload() -> IdentityPayload {
         IdentityPayload::new(INBOUND_SECRET, TokenSource::Bearer).with_headers(HashMap::from([

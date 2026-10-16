@@ -77,10 +77,9 @@
 
 pub mod host;
 
-// The engine's facade, whole and by name, so `cpex::X` resolves for every
-// public `praxis_policy::X`.
-pub use praxis_policy;
-pub use praxis_policy::*;
+// Re-export PPE's public surface and preserve the named facade path.
+pub use ppe as praxis_policy;
+pub use ppe::*;
 
 // The whole Python host crate, for advanced use (venv and worker internals).
 #[cfg(feature = "python-host")]
@@ -94,7 +93,7 @@ pub use cpex_hosts_python::{IsolatedVenvFactory, KIND as ISOLATED_VENV_KIND};
 #[cfg(test)]
 mod tests {
     use super::*;
-    use praxis_policy_core::config::parse_config;
+    use ppe::praxis_policy_core::config::parse_config;
     use std::sync::Arc;
 
     #[test]
@@ -143,8 +142,8 @@ plugins:
 #[cfg(all(test, feature = "python-host"))]
 mod python_host_tests {
     use super::*;
-    use praxis_policy_core::config::parse_config;
-    use praxis_policy_core::factory::PluginFactoryRegistry;
+    use ppe::praxis_policy_core::config::parse_config;
+    use ppe::praxis_policy_core::factory::PluginFactoryRegistry;
 
     /// A config with one `isolated_venv` plugin, mirroring the YAML shape an
     /// operator writes. No `plugin_dirs`: the host always resolves

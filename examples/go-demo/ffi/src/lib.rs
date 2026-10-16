@@ -62,7 +62,7 @@ pub unsafe extern "C" fn cpex_demo_register_factories(
 mod tests {
     use std::sync::Arc;
 
-    use praxis_policy_core::engine::PolicyEngine;
+    use ppe::PolicyEngine;
 
     /// Both demo configs load once the demo hooks and factories are
     /// registered, so the Go binaries do not fail on startup.

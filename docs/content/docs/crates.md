@@ -20,11 +20,11 @@ Most Rust hosts depend on `cpex` and nothing else.
 | [`cpex-python`](https://github.com/contextforge-org/cpex/tree/main/bindings/python) | crates.io | PyO3 bindings, built with maturin into the Python package `cpex`: the Python `PolicyEngine`. |
 | [`go/cpex`](https://github.com/contextforge-org/cpex/tree/main/go/cpex) | Go module | cgo wrapper over `cpex-ffi`: the Go `PolicyEngine`. |
 
-`cpex-ffi` and `cpex-python` depend on PPE directly rather than through the facade, and install the same builtins, transport and secret providers for their hosts.
+`cpex-ffi` and `cpex-python` share the builtin registration, transport and secret-provider wiring in `cpex::host`.
 
 ## PPE crates the facade re-exports
 
-The workspace pins `praxis-policy` and `praxis-policy-core` exactly to `=0.5.0`; `Cargo.lock` resolves every other PPE crate to 0.5.0 too. PPE has shipped breaking changes inside a minor series, so CPEX moves the pin deliberately and reruns its parity suite when it does.
+The workspace uses one PPE dependency: `ppe`, an alias for the `praxis-policy` facade pinned to `=0.5.0`. Members access core and APL types through its re-exports. CPEX upgrades the pin deliberately and reruns its parity suite when it does.
 
 | PPE crate | Reached as | Role |
 |---|---|---|
