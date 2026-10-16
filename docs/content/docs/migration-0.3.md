@@ -70,7 +70,7 @@ cpex = "0.3"
 
 ### Removed crates
 
-`cpex-core`, `cpex-sdk`, `cpex-orchestration`, `cpex-builtins`, `apl-core`, `apl-cmf`, `apl-cpex`, `cpex-plugin-pii-scanner`, `cpex-plugin-audit-logger`, `cpex-plugin-identity-jwt`, `cpex-plugin-delegator-oauth`, `cpex-plugin-elicitation-ciba`, `cpex-pdp-cedar-direct`, `cpex-pdp-cel`, `cpex-pdp-opa` and `cpex-session-valkey` are no longer built here. Their last release, 0.2.3, stays on crates.io and gets no further updates. Replace each dependency with `cpex` (or with `praxis-policy-core` for a plugin crate). Do not keep one of them beside `cpex` 0.3: the two engines do not share types.
+`cpex-core`, `cpex-sdk`, `cpex-orchestration`, `cpex-builtins`, `apl-core`, `apl-cmf`, `apl-cpex`, `cpex-plugin-pii-scanner`, `cpex-plugin-audit-logger`, `cpex-plugin-identity-jwt`, `cpex-plugin-delegator-oauth`, `cpex-plugin-elicitation-ciba`, `cpex-pdp-cedar-direct`, `cpex-pdp-cel`, `cpex-pdp-opa` and `cpex-session-valkey` are no longer built here. Their last release, 0.2.3, stays on crates.io and gets no further updates. Replace each dependency with `cpex` (or with the `praxis-policy` facade, aliased as `ppe`, for a plugin crate). Do not keep one of them beside `cpex` 0.3: the two engines do not share types.
 
 ### Plugin errors
 
@@ -411,7 +411,7 @@ routes:
 
 A regex is not data-loss prevention. For real detection, register a host plugin backed by a detector you trust (Presidio, a cloud DLP API) and call it with `run(...)`.
 
-A Rust host that wants the old behavior can still run PPE's reference implementations. They are `publish = false`, so copy their source into your own workspace and build it against `praxis-policy-core` from crates.io. Do not add them as a git dependency: that builds a second copy of the core crate with types that do not match the one `cpex` links. See [Builtins]({{< relref "/docs/builtins#reference-plugins-in-a-rust-host" >}}). The Python and Go builds cannot load them.
+A Rust host that wants the old behavior can still run PPE's reference implementations. They are `publish = false`, so copy their source into your own workspace and build it against the `praxis-policy` facade from crates.io. Do not add them as a git dependency: that builds a second copy of the core crate with types that do not match the one `cpex` links. See [Builtins]({{< relref "/docs/builtins#reference-plugins-in-a-rust-host" >}}). The Python and Go builds cannot load them.
 
 ## Secret refresh is the host's job
 

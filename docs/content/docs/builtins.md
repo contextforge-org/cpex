@@ -80,7 +80,7 @@ What to use instead:
 A Rust host can still register PPE's reference implementations. They are `publish = false`, so there is no crates.io package to depend on. Copy their source into your own workspace instead:
 
 1. Copy [`reference/plugins/pii-scanner`](https://github.com/praxis-proxy/policy/tree/v0.5.0/reference/plugins/pii-scanner) or [`reference/plugins/audit-logger`](https://github.com/praxis-proxy/policy/tree/v0.5.0/reference/plugins/audit-logger) from the PPE `v0.5.0` tag into your workspace, for example `plugins/pii-scanner`.
-2. In its `Cargo.toml`, replace every inherited `workspace = true` field and dependency with an explicit value (the crates use edition 2024), and depend on `praxis-policy-core = "=0.5.0"` from crates.io, the same version `cpex` pins.
+2. In its `Cargo.toml`, replace every inherited `workspace = true` field and dependency with an explicit value (the crates use edition 2024), and replace the core dependency with `ppe = { package = "praxis-policy", version = "=0.5.0", default-features = false }`. Update `praxis_policy_core::` imports to `ppe::praxis_policy_core::` so the plugin uses the same facade version CPEX pins.
 3. Register its factory before loading the config:
 
 ```rust

@@ -1,10 +1,10 @@
 # CPEX Rust: Public API Specification
 
-**Status**: Design reference. Superseded in CPEX 0.3.0, where this runtime moved to the praxis-policy engine (PPE) 0.4.1.
+**Status**: Design reference. Superseded in CPEX 0.3.0, where this runtime moved to the praxis-policy engine (PPE) 0.5.0.
 **Date**: May 2026, names updated for 0.3.0
 **Source**: originally `crates/cpex-core`; now `praxis-policy-core` on crates.io, re-exported by the `cpex` facade
 
-> **Read this first.** This spec describes the plugin runtime as designed for CPEX 0.2. In 0.3.0 the runtime is PPE's `praxis-policy-core`, consumed through the `cpex` facade. Type and function names below are updated to 0.3.0 (`PolicyEngine`, `PolicyEngineConfig`, `praxis_policy_core::...`), and config snippets use the 0.3.0 shape. Module paths, signatures and the YAML key set may still differ in detail: the authoritative reference is [docs.rs/praxis-policy-core/0.5.0](https://docs.rs/praxis-policy-core/0.5.0) and the CPEX docs site. Host-defined hooks in the examples use a `demo.` prefix: the engine rejects the old unprefixed names (`tool_pre_invoke`, ...), and a host hook needs registered metadata (`praxis_policy_core::hooks::register_hook_metadata`, or the `define_hooks!` macro) before a config names it. The [migration guide](https://contextforge-org.github.io/cpex/docs/migration-0.3/) maps every 0.2 name.
+> **Read this first.** This spec describes the plugin runtime as designed for CPEX 0.2. In 0.3.0 the runtime is PPE's `praxis-policy-core`, consumed through the `cpex` facade. Type and function names below are updated to 0.3.0 (`PolicyEngine`, `PolicyEngineConfig`, `ppe::praxis_policy_core::...`), and config snippets use the 0.3.0 shape. Module paths, signatures and the YAML key set may still differ in detail: the authoritative reference is [docs.rs/praxis-policy-core/0.5.0](https://docs.rs/praxis-policy-core/0.5.0) and the CPEX docs site. Host-defined hooks in the examples use a `demo.` prefix: the engine rejects the old unprefixed names (`tool_pre_invoke`, ...), and a host hook needs registered metadata (`ppe::praxis_policy_core::hooks::register_hook_metadata`, or the `define_hooks!` macro) before a config names it. The [migration guide](https://contextforge-org.github.io/cpex/docs/migration-0.3/) maps every 0.2 name.
 
 CPEX Rust is the core plugin runtime: pure Rust, no FFI/WASM/PyO3 dependencies. It serves two audiences:
 
@@ -61,7 +61,7 @@ The Go SDK (`go/cpex`, see [cpex-go-spec.md](./cpex-go-spec.md)) is one consumer
 ```toml
 [dependencies]
 cpex = "0.3"                      # a host: the facade re-exports the engine
-praxis-policy-core = "=0.4.1"     # a plugin crate: the same version cpex pins
+ppe = { package = "praxis-policy", version = "=0.5.0", default-features = false } # plugin crate
 async-trait = "0.1"
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
@@ -72,19 +72,19 @@ serde_json = "1"
 
 | Module | Purpose |
 |---|---|
-| `praxis_policy_core::plugin` | `Plugin` trait, `PluginConfig`, `PluginMode`, `OnError`, `PluginCondition`, `MatchContext` |
-| `praxis_policy_core::hooks` | `HookTypeDef`, `HookHandler<H>`, `PluginPayload`, `PluginResult<P>`, `define_hook!` |
-| `praxis_policy_core::factory` | `PluginFactory`, `PluginInstance`, `PluginFactoryRegistry` |
-| `praxis_policy_core::manager` | `PolicyEngine`, `PolicyEngineConfig` |
-| `praxis_policy_core::executor` | `PipelineResult`, `BackgroundTasks` |
-| `praxis_policy_core::registry` | `HookEntry`, `PluginRef`, `group_by_mode` (rarely used directly) |
-| `praxis_policy_core::config` | `CpexConfig`, `load_config`, `parse_config` |
-| `praxis_policy_core::extensions` | `Extensions`, `OwnedExtensions`, all extension types, `WriteToken`, `Guarded`, `MonotonicSet` |
-| `praxis_policy_core::error` | `PluginError`, `PluginViolation`, `PluginErrorRecord` |
-| `praxis_policy_core::cmf` | CMF `MessagePayload`, `Message`, `ContentPart` |
-| `praxis_policy_core::context` | `PluginContext`, `PluginContextTable` |
+| `ppe::praxis_policy_core::plugin` | `Plugin` trait, `PluginConfig`, `PluginMode`, `OnError`, `PluginCondition`, `MatchContext` |
+| `ppe::praxis_policy_core::hooks` | `HookTypeDef`, `HookHandler<H>`, `PluginPayload`, `PluginResult<P>`, `define_hook!` |
+| `ppe::praxis_policy_core::factory` | `PluginFactory`, `PluginInstance`, `PluginFactoryRegistry` |
+| `ppe::praxis_policy_core::engine` | `PolicyEngine`, `PolicyEngineConfig` |
+| `ppe::praxis_policy_core::executor` | `PipelineResult`, `BackgroundTasks` |
+| `ppe::praxis_policy_core::registry` | `HookEntry`, `PluginRef`, `group_by_mode` (rarely used directly) |
+| `ppe::praxis_policy_core::config` | `CpexConfig`, `load_config`, `parse_config` |
+| `ppe::praxis_policy_core::extensions` | `Extensions`, `OwnedExtensions`, all extension types, `WriteToken`, `Guarded`, `MonotonicSet` |
+| `ppe::praxis_policy_core::error` | `PluginError`, `PluginViolation`, `PluginErrorRecord` |
+| `ppe::praxis_policy_core::cmf` | CMF `MessagePayload`, `Message`, `ContentPart` |
+| `ppe::praxis_policy_core::context` | `PluginContext`, `PluginContextTable` |
 
-There are no feature flags currently: everything is built unconditionally. cpex-ffi (the C ABI surface) lives in a separate crate and is not part of this spec.
+`cpex` bundles all stable builtins; its optional `python-host` feature adds the Python plugin host. The PPE facade enables builtins only through its features. cpex-ffi (the C ABI surface) lives in a separate crate and is not part of this spec.
 
 ## 3. Lifecycle
 
@@ -614,7 +614,7 @@ pub trait PluginPayload: Send + Sync + 'static {
 Implement it via the macro:
 
 ```rust
-use praxis_policy_core::impl_plugin_payload;
+use ppe::praxis_policy_core::impl_plugin_payload;
 
 #[derive(Debug, Clone)]
 struct ToolInvokePayload {
@@ -632,7 +632,7 @@ The macro expands to the three method impls: saves boilerplate per type. Require
 A hook type is a zero-sized marker struct that implements `HookTypeDef`. It associates a name (for registry lookup) with a typed payload and result.
 
 ```rust
-use praxis_policy_core::hooks::trait_def::{HookTypeDef, PluginResult};
+use ppe::praxis_policy_core::hooks::trait_def::{HookTypeDef, PluginResult};
 
 struct ToolPreInvoke;
 impl HookTypeDef for ToolPreInvoke {
@@ -653,7 +653,7 @@ impl HookTypeDef for ToolPreInvoke {
 For the common case, a macro generates the marker struct, the trait impl, and a `HookHandler<Self>` shorthand in one declaration:
 
 ```rust
-use praxis_policy_core::define_hook;
+use ppe::praxis_policy_core::define_hook;
 
 define_hook! {
     /// Hook for demo.tool_pre_invoke.
@@ -727,7 +727,7 @@ This is the case where `invoke_named::<CmfHook>("cmf.tool_pre_invoke", ...)` mat
 Extensions visible to a plugin are filtered by its declared `capabilities`. The framework uses copy-on-write tokens for writes: the plugin clones the extensions, gets a `WriteToken` for slots it has capabilities for, and returns the modified copy.
 
 ```rust
-use praxis_policy_core::hooks::payload::Extensions;
+use ppe::praxis_policy_core::hooks::payload::Extensions;
 
 async fn handle(
     &self,
@@ -752,7 +752,7 @@ async fn handle(
 
 A plugin without the capability sees `owned.http_write_token == None` and silently can't write: no runtime panic, no security violation. The token *is* the type-system enforcement of the YAML capability.
 
-**Common capabilities** (see `praxis_policy_core::extensions` for the full list):
+**Common capabilities** (see `ppe::praxis_policy_core::extensions` for the full list):
 
 | Capability | Grants |
 |---|---|
@@ -874,7 +874,7 @@ For capability-gated writes, see §6.7.
 **CMF (ContextForge Message Format)** is a typed multi-part message used by the agentic-pipeline hooks (`cmf.tool_pre_invoke`, `cmf.llm_input`, etc.). The full spec is in [cmf-message-spec.md](./cmf-message-spec.md); the highlights:
 
 ```rust
-use praxis_policy_core::cmf::{Message, MessagePayload, ContentPart, Role};
+use ppe::praxis_policy_core::cmf::{Message, MessagePayload, ContentPart, Role};
 use serde_json::json;
 
 let msg = MessagePayload {
@@ -990,7 +990,7 @@ This walks through a complete native-Rust plugin from payload definition to invo
 ### 11.1 Define the Payload
 
 ```rust
-use praxis_policy_core::impl_plugin_payload;
+use ppe::praxis_policy_core::impl_plugin_payload;
 
 #[derive(Debug, Clone)]
 struct ToolInvokePayload {
@@ -1004,7 +1004,7 @@ impl_plugin_payload!(ToolInvokePayload);
 ### 11.2 Define the Hook Types
 
 ```rust
-use praxis_policy_core::hooks::trait_def::{HookTypeDef, PluginResult};
+use ppe::praxis_policy_core::hooks::trait_def::{HookTypeDef, PluginResult};
 
 struct ToolPreInvoke;
 impl HookTypeDef for ToolPreInvoke {
@@ -1026,11 +1026,11 @@ impl HookTypeDef for ToolPostInvoke {
 ```rust
 use std::sync::Arc;
 use async_trait::async_trait;
-use praxis_policy_core::context::PluginContext;
-use praxis_policy_core::error::{PluginError, PluginViolation};
-use praxis_policy_core::hooks::payload::Extensions;
-use praxis_policy_core::hooks::trait_def::HookHandler;
-use praxis_policy_core::plugin::{Plugin, PluginConfig};
+use ppe::praxis_policy_core::context::PluginContext;
+use ppe::praxis_policy_core::error::{PluginError, PluginViolation};
+use ppe::praxis_policy_core::hooks::payload::Extensions;
+use ppe::praxis_policy_core::hooks::trait_def::HookHandler;
+use ppe::praxis_policy_core::plugin::{Plugin, PluginConfig};
 
 /// Plugin that requires a non-empty `user` field on every invocation.
 struct IdentityResolver {
@@ -1088,9 +1088,9 @@ impl HookHandler<ToolPostInvoke> for IdentityResolver {
 ### 11.5 Build a Factory
 
 ```rust
-use praxis_policy_core::factory::{PluginFactory, PluginInstance};
-use praxis_policy_core::hooks::adapter::TypedHandlerAdapter;
-use praxis_policy_core::registry::AnyHookHandler;
+use ppe::praxis_policy_core::factory::{PluginFactory, PluginInstance};
+use ppe::praxis_policy_core::hooks::adapter::TypedHandlerAdapter;
+use ppe::praxis_policy_core::registry::AnyHookHandler;
 
 struct IdentityFactory;
 
@@ -1128,8 +1128,8 @@ impl PluginFactory for IdentityFactory {
 Use `register_handler::<H, _>` for compile-time dispatch and `invoke::<H>` for the typed call path. The compiler enforces that the payload you pass matches `H::Payload`.
 
 ```rust
-use praxis_policy_core::engine::{PolicyEngine, PolicyEngineConfig};
-use praxis_policy_core::plugin::{PluginConfig, PluginMode, OnError};
+use ppe::praxis_policy_core::engine::{PolicyEngine, PolicyEngineConfig};
+use ppe::praxis_policy_core::plugin::{PluginConfig, PluginMode, OnError};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<PluginError>> {
@@ -1207,7 +1207,7 @@ The first invoke takes `None`; subsequent invokes within the same logical reques
 For YAML-driven registration, register the factory and call `from_config`:
 
 ```rust
-use praxis_policy_core::factory::PluginFactoryRegistry;
+use ppe::praxis_policy_core::factory::PluginFactoryRegistry;
 use std::path::Path;
 
 #[tokio::main]
@@ -1297,9 +1297,9 @@ Native Rust plugins are easy to unit-test: instantiate the plugin, build a `Plug
 #[cfg(test)]
 mod tests {
     use super::*;
-    use praxis_policy_core::context::PluginContext;
-    use praxis_policy_core::hooks::payload::Extensions;
-    use praxis_policy_core::plugin::PluginId;
+    use ppe::praxis_policy_core::context::PluginContext;
+    use ppe::praxis_policy_core::hooks::payload::Extensions;
+    use ppe::praxis_policy_core::plugin::PluginId;
 
     #[tokio::test]
     async fn rejects_empty_user() {
@@ -1424,4 +1424,4 @@ The handler-collapse work in §6.2 (single async `HookHandler<H>` trait) is orth
 | Native (`dlopen`) plugin loader | `cpex-hosts::native` (planned) | Not yet implemented |
 | `retry_delay_ms` in `PipelineResult` | `models.py` | Not implemented |
 
-The `praxis_policy_core::plugin::Plugin` trait doc-comment mentions `cpex-hosts::{wasm,python,native}` host crates that would bridge to non-Rust plugin runtimes. None exist yet: this is a design intent placeholder, not shipped functionality.
+The `ppe::praxis_policy_core::plugin::Plugin` trait doc-comment mentions `cpex-hosts::{wasm,python,native}` host crates that would bridge to non-Rust plugin runtimes. None exist yet: this is a design intent placeholder, not shipped functionality.

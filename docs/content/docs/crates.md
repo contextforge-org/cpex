@@ -51,7 +51,7 @@ The Vault KV v2 secret provider (`vault`) is compiled in too, but it is not a pl
 
 ## Reference plugins
 
-PPE keeps a PII scanner and an audit logger as reference plugins. They are not published and not bundled, so no CPEX surface registers them. A Rust host that wants one copies its source from the PPE repository into its own workspace, builds it against `praxis-policy-core` from crates.io, and registers its factory under a `kind` of its choosing. The Python and Go bindings do not include them. See [Auditing]({{< relref "/docs/auditing" >}}) for what an audit sink needs.
+PPE keeps a PII scanner and an audit logger as reference plugins. They are not published and not bundled, so no CPEX surface registers them. A Rust host that wants one copies its source from the PPE repository into its own workspace, builds it against the `praxis-policy` facade from crates.io, and registers its factory under a `kind` of its choosing. The Python and Go bindings do not include them. See [Auditing]({{< relref "/docs/auditing" >}}) for what an audit sink needs.
 
 ## Writing a plugin
 
