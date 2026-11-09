@@ -128,7 +128,7 @@ Invoke a hook by name. Returns a `PipelineResult`.
   default `dispatch: policy`, `meta.entity_type` and `meta.entity_name`
   pick the route; a request without them is denied with
   `unidentified_request` when the config declares a policy.
-- `context_table`: optional `dict` for stateful plugins.
+- `context_table`: pass the returned table to subsequent hooks in the same request; start a new request with no table.
 
 **Raises:**
 - `ValueError`: a hook name removed in 0.3; an `identity.resolve`
@@ -273,3 +273,9 @@ python bindings/python/tests/smoke_wheel.py --wheel target/wheels/cpex-*.whl
 
 See [MIGRATION.md](MIGRATION.md) for a mapping from the legacy
 pure-Python `cpex` framework to this Rust-backed package.
+
+## PPE 0.6 inputs
+
+CPEX 0.4 uses RustCrypto. Conversation history contains CMF message dictionaries; summaries belong in `summary`. HTTP query is raw text without `?` and is redacted in results: restore it from the original request before a separate hook call. `client_address` comes from the trusted host peer context.
+
+Non-null `llm_request` and acquired `metadata` inputs, and the two `ratelimit.*` hooks, require Rust APIs and are rejected. CIBA configuration needs an explicit correlation store. See the [0.4 migration guide](../../docs/content/docs/migration-0.4.md).

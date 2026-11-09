@@ -15,6 +15,26 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-09
+
+### Changed
+
+- Upgrade the engine to PPE 0.6.0 with an explicit RustCrypto backend.
+- Preserve inbound identity headers in Python and Go bindings and thread request context through fused identity calls.
+- **Breaking:** CIBA plugins require `store: { kind: memory }` or an explicit Valkey store. JWT credential extraction uses location-independent denial codes.
+- **Breaking:** conversation history contains CMF messages; Go uses `[]Message`. FFI ABI is now 4; rebuild the Go module and native library together.
+- Go HTTP extensions carry query strings and normalized client addresses; identities carry verified DPoP key bindings. Serialized queries are redacted and must be restored from the original request between hooks.
+- The legacy Python worker rejects unsupported query, LLM-request and acquired-metadata access rather than dropping it. Rate-limit hook dispatch and nonserialized LLM-request/acquired-metadata inputs require a Rust host.
+- PPE now accepts enabled audit sinks alongside policy routes. Reference sinks require explicit output destinations and remain outside the bundled set.
+
+### Fixed
+
+- Make the parity gate propagate Cargo failures on macOS Make 3.81.
+
+### Security
+
+- Update `ctutils`, `rustls-webpki` and `webpki-roots` to patched versions. The separate Biscuit dependency still resolves vulnerable `crypto-bigint` 0.5.5 (RUSTSEC-2026-0387); release audit remains blocked pending an upstream-compatible fix.
+
 ## [0.3.1] - 2026-10-15
 
 ### Added

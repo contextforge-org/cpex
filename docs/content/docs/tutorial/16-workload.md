@@ -55,7 +55,7 @@ plugins:
     capabilities: [perform_http]
     config:
       role: caller_workload
-      header: X-Workload-Token
+      credential: { kind: header, name: X-Workload-Token }
       claim_mapper: standard
       trusted_issuers:
         - issuer: http://spire-oidc:8443

@@ -5,6 +5,8 @@ weight: 125
 
 # Migrating from 0.2.x to 0.3
 
+For the current release, continue with [Migrating to 0.4]({{< relref "/docs/migration-0.4" >}}) after applying this historical 0.3 migration.
+
 CPEX 0.3.0 runs on the praxis-policy engine (PPE) 0.5.0 from crates.io instead of its own engine crates. The API names, hook names, several config keys, defaults and security checks change. This page lists every change a 0.2.x user has to act on, by surface.
 
 Work through it in this order:

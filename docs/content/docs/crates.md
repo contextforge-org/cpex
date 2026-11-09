@@ -24,7 +24,7 @@ Most Rust hosts depend on `cpex` and nothing else.
 
 ## PPE crates the facade re-exports
 
-The workspace uses one PPE dependency: `ppe`, an alias for the `praxis-policy` facade pinned to `=0.5.0`. Members access core and APL types through its re-exports. CPEX upgrades the pin deliberately and reruns its parity suite when it does.
+The workspace uses one PPE dependency: `ppe`, an alias for the `praxis-policy` facade pinned to `=0.6.0`. Members access core and APL types through its re-exports. CPEX upgrades the pin deliberately and reruns its parity suite when it does.
 
 | PPE crate | Reached as | Role |
 |---|---|---|
@@ -34,7 +34,7 @@ The workspace uses one PPE dependency: `ppe`, an alias for the `praxis-policy` f
 | `praxis-policy-apl-cmf` | `cpex::praxis_policy_apl_cmf` | Bridges typed extensions into the flat attribute bag policy reads. See [CMF Extensions]({{< relref "/docs/cmf-extensions" >}}). |
 | `praxis-policy-apl-runtime` | `cpex::praxis_policy_apl_runtime` | Wires APL routes to hooks and dispatches plugins and decision points. |
 | `praxis-policy-orchestration` | (internal) | Async branch-concurrency primitives the runtime uses. |
-| `praxis-policy-builtins` | factory types on `cpex::*` | The bundled extensions, one crate with a feature each. `cpex` turns on all of them. |
+| `praxis-policy-builtins` | factory types on `cpex::*` | The bundled extensions, one crate with a feature each. `cpex` enables every stable builtin, with RustCrypto for cryptography. FIPS and experimental rate limiting are not enabled. |
 
 The builtins `cpex::install_builtins` registers:
 
@@ -42,7 +42,7 @@ The builtins `cpex::install_builtins` registers:
 |---|---|
 | `identity/jwt` | identity resolver |
 | `identity/api-key` | identity resolver |
-| `delegator/oauth` | token delegator |
+| `delegator/oauth`, `delegator/vault` | token delegators |
 | `elicitation/ciba` | elicitation channel |
 | `cedar-direct`, `cel`, `opa` | PDP resolvers |
 | `valkey` | session store |
@@ -51,7 +51,7 @@ The Vault KV v2 secret provider (`vault`) is compiled in too, but it is not a pl
 
 ## Reference plugins
 
-PPE keeps a PII scanner and an audit logger as reference plugins. They are not published and not bundled, so no CPEX surface registers them. A Rust host that wants one copies its source from the PPE repository into its own workspace, builds it against the `praxis-policy` facade from crates.io, and registers its factory under a `kind` of its choosing. The Python and Go bindings do not include them. See [Auditing]({{< relref "/docs/auditing" >}}) for what an audit sink needs.
+PPE keeps a PII scanner, audit logger and transcript recorder as reference plugins. They are not published and not bundled, so no CPEX surface registers them. A Rust host that wants one copies its source from the PPE repository into its own workspace, builds it against the `praxis-policy` facade from crates.io, and registers its factory under a `kind` of its choosing. The Python and Go bindings do not include them. See [Auditing]({{< relref "/docs/auditing" >}}) for what an audit sink needs.
 
 ## Writing a plugin
 
@@ -60,5 +60,5 @@ There is no separate SDK crate. The plugin surface is `cpex::prelude`: the `Plug
 ## API docs
 
 - [docs.rs/cpex](https://docs.rs/cpex) for the facade.
-- [docs.rs/praxis-policy/0.5.0](https://docs.rs/praxis-policy/0.5.0) and [docs.rs/praxis-policy-core/0.5.0](https://docs.rs/praxis-policy-core/0.5.0) for the engine items the facade re-exports.
-- PPE's [crate reference](https://github.com/praxis-proxy/policy/blob/v0.5.0/docs/content/crates.md) for the engine's own layout.
+- [docs.rs/praxis-policy/0.6.0](https://docs.rs/praxis-policy/0.6.0) and [docs.rs/praxis-policy-core/0.6.0](https://docs.rs/praxis-policy-core/0.6.0) for the engine items the facade re-exports.
+- PPE's [crate reference](https://github.com/praxis-proxy/policy/blob/v0.6.0/docs/content/crates.md) for the engine's own layout.

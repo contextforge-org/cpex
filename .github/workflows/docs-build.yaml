@@ -65,11 +65,11 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          for target in demos/main policy/v0.5.0; do
+          for target in demos/main policy/v0.5.0 policy/v0.6.0; do
             repo="${target%/*}"
             ref="${target#*/}"
             for attempt in 1 2 3; do
-              if gh api "repos/praxis-proxy/$repo/git/trees/$ref?recursive=1" > "$RUNNER_TEMP/$repo-tree.json"; then
+              if gh api "repos/praxis-proxy/$repo/git/trees/$ref?recursive=1" > "$RUNNER_TEMP/$repo-$ref-tree.json"; then
                 break
               fi
               if [ "$attempt" -eq 3 ]; then exit 1; fi
@@ -83,8 +83,8 @@ jobs:
           from pathlib import Path
 
           missing = []
-          for repo, ref in (("demos", "main"), ("policy", "v0.5.0")):
-              tree = json.loads((Path(sys.argv[1]) / f"{repo}-tree.json").read_text())
+          for repo, ref in (("demos", "main"), ("policy", "v0.5.0"), ("policy", "v0.6.0")):
+              tree = json.loads((Path(sys.argv[1]) / f"{repo}-{ref}-tree.json").read_text())
               if tree.get("truncated"):
                   raise SystemExit(f"{repo} repository tree was truncated")
               available = {entry["path"] for entry in tree["tree"] if entry["type"] == "blob"}

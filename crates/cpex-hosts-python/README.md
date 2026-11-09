@@ -367,3 +367,7 @@ Two environmental caveats, both upstream of this crate:
   payloads to the legacy shapes for it (see the legacy worker section above).
   The e2e suite runs 0.1.x plugins on `cmf.tool_pre_invoke` through that
   translation, and checks that a message it cannot represent fails closed.
+
+## PPE 0.6 support boundary
+
+Header credential sources map to the legacy worker contract. Cookie/query raw sources are rejected. Canonical HTTP query and client address survive worker merges, but query access is not supported. Explicit `read_query`, `read_llm_request` or `read_metadata` fails before startup; `read_all` fails if its effective view includes one of those slots. Worker returns cannot replace LLM request or acquired metadata. The host uses RustCrypto and needs no FIPS provider.

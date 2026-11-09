@@ -33,7 +33,7 @@ plugins:
     capabilities: [perform_http]
     config:
       role: user
-      header: X-User-Token
+      credential: { kind: header, name: X-User-Token }
       claim_mapper: standard
       trusted_issuers:
         - issuer: http://localhost:8081/realms/cpex-tutorial
@@ -52,7 +52,7 @@ plugins:
     capabilities: [perform_http]
     config:
       role: client
-      header: Authorization
+      credential: { kind: header, name: Authorization }
       claim_mapper: standard
       trusted_issuers:
         - issuer: http://localhost:8081/realms/cpex-tutorial

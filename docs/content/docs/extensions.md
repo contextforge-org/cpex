@@ -23,9 +23,10 @@ Each extension flattens into bag attributes under its namespace, gated by a read
 | Agent | session, conversation, turn, and lineage context | `agent.*` | `read_agent` |
 | Meta | entity metadata: type, name, tags, scope, properties | `meta.*` | `read_meta` |
 | Request | environment, request id, timestamp, trace and span ids | `request.*` | `read_request` |
-| HTTP | request line (method, path, host, scheme) and request/response headers (lowercased) | `http.method`, `http.path`, `http.host`, `http.scheme`, `http.request_headers.*`, `http.response_headers.*` | `read_headers`, `write_headers` |
+| HTTP | request line, normalized peer address, raw query and request/response headers | `http.*` | `read_headers`, `read_query`, `write_headers` |
 | LLM | model id, provider, capabilities | `llm.*` | `read_llm` |
-| LLM request | the host-parsed inference request body | not flattened; OPA, CEL and Cedar read it as `llm.request` | `read_llm_request` |
+| LLM request | the host-parsed inference request body and normalized parts | `llm.input.*`; PDPs also read the body as `llm.request` | `read_llm_request` |
+| Acquired metadata | framework-installed facts and provenance per acquisition instance | `metadata.<instance>.*` | `read_metadata` |
 | MCP | tool, resource, or prompt metadata | `mcp.*` (`mcp.tool.*`, `mcp.resource.*`, `mcp.prompt.*`) | `read_mcp` |
 | Completion | stop reason, token counts, model, latency | `completion.*` | `read_completion` |
 | Provenance | source, message id, parent id | `provenance.*` | `read_provenance` |
@@ -37,6 +38,8 @@ Each extension flattens into bag attributes under its namespace, gated by a read
 The request arguments and response body are also flattened. An object writes `args.<dotted>` / `result.<dotted>`; a top-level scalar or scalar array writes the bare key `args` / `result`. The route name is available as `route.key`. APL field pipelines (`args:` / `result:`) operate on those. Operator-maintained static attributes are flattened under `data.*`. These come from config files, not the request, and need no capability (see [Static Attributes]({{< relref "/docs/apl/attributes" >}})).
 
 Most extensions are **inputs**: resolved before policy runs and flattened into the bag for predicates to read. The **candidate constraint** is the exception: it is an **output**. APL `restrict` effects fold into it (see [Backend Restriction]({{< relref "/docs/apl/restrict" >}})), it rides the returned extensions the same way minted delegation tokens do, and the host router reads it typed to prune its candidate set.
+
+The LLM request and acquired metadata need Rust host installation APIs. Python/Go reject non-null generic inputs for them, and the isolated Python worker rejects those read capabilities and query access. See the [0.4 migration guide]({{< relref "/docs/migration-0.4#support-boundaries" >}}). Serialized queries are redacted; retain the live value from the original request between hooks.
 
 ## Capabilities
 
@@ -69,8 +72,10 @@ plugins:
 | `read_meta` | `meta.*` |
 | `read_request` | `request.*` |
 | `read_headers` | `http.method`, `http.path`, `http.host`, `http.scheme`, `http.request_headers.*`, `http.response_headers.*` |
+| `read_query` | live `http.query`, without the leading `?` |
 | `read_llm` | `llm.*` |
-| `read_llm_request` | no bag keys; gates the parsed request body on the LLM request extension |
+| `read_llm_request` | normalized `llm.input.*` and the typed parsed request body |
+| `read_metadata` | acquired `metadata.<instance>.*` values and framework provenance |
 | `read_mcp` | `mcp.*` |
 | `read_completion` | `completion.*` |
 | `read_provenance` | `provenance.*` |

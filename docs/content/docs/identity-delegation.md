@@ -195,7 +195,7 @@ plugins:
     capabilities: [perform_http]   # fetches the IdP's JWKS
     config:
       role: user
-      header: X-User-Token
+      credential: { kind: header, name: X-User-Token }
       trusted_issuers:
         - issuer: "https://idp.example.com/realms/corp"
           audiences: ["cpex"]        # the audience the user token is minted for
@@ -251,7 +251,7 @@ plugins:
     on_error: fail
     config:
       role: caller_workload
-      header: X-Workload-Token
+      credential: { kind: header, name: X-Workload-Token }
       trusted_issuers:
         - issuer: "https://spire-oidc.internal:8443"   # SPIRE OIDC discovery
           audiences: ["https://idp.example.com/realms/corp"]   # SVID aud = the IdP
@@ -331,7 +331,7 @@ plugins:
     capabilities: [perform_http]
     config:
       role: client                 # the agent as an OAuth client
-      header: Authorization        # a normal bearer token, NOT X-Workload-Token
+      credential: { kind: header, name: Authorization        # a normal bearer token, NOT X-Workload-Token }
       trusted_issuers:
         - issuer: "https://idp.example.com/realms/corp"
           audiences: ["cpex"]

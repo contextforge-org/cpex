@@ -123,7 +123,7 @@ pip install maturin && (cd bindings/python && maturin develop)   # Python, from 
 go get github.com/contextforge-org/cpex/go/cpex                # Go (links the signed libcpex_ffi artifact)
 ```
 
-`cpex = "0.3"` compiles in every bundled builtin: JWT and API-key identity, OAuth delegation, CIBA approval, the Cedar, CEL and OPA decision points, the Valkey session store, the Vault secret provider, and an outbound HTTP transport. The one optional feature is `python-host`, which runs existing Python CPEX plugins out of process.
+`cpex = "0.4"` compiles in every bundled builtin: JWT and API-key identity, OAuth delegation, CIBA approval, the Cedar, CEL and OPA decision points, the Valkey session store, the Vault secret provider, and an outbound HTTP transport. The one optional feature is `python-host`, which runs existing Python CPEX plugins out of process.
 
 ```rust
 use std::sync::Arc;
@@ -173,7 +173,7 @@ The engine, the APL compiler and runtime, and the builtins come from the [praxis
 |------|-------------|
 | [`crates/cpex`](crates/cpex) | Host facade: re-exports `praxis-policy` (`PolicyEngine`, `install_builtins`, `prelude`, the builtin factories, `HyperTransport`) |
 | [`crates/cpex-hosts-python`](crates/cpex-hosts-python) | Runs existing Python CPEX plugins out of process, one virtualenv per plugin (`python-host` feature) |
-| [`crates/cpex-ffi`](crates/cpex-ffi) | C ABI v3 (`cdylib`/`staticlib`) used by the Go package |
+| [`crates/cpex-ffi`](crates/cpex-ffi) | C ABI v4 (`cdylib`/`staticlib`) used by the Go package |
 | [`builtins/plugins/delegator-biscuit`](builtins/plugins/delegator-biscuit) | Biscuit capability-token delegator |
 | [`bindings/python`](bindings/python) | PyO3 bindings: the Python `cpex` package |
 | [`go/cpex`](go/cpex) | Go bindings over the C ABI |

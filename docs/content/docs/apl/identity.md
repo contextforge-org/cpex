@@ -23,7 +23,7 @@ plugins:
     capabilities: [perform_http]   # fetches the issuer's JWKS
     config:
       role: user
-      header: X-User-Token
+      credential: { kind: header, name: X-User-Token }
       trusted_issuers:
         - issuer: "https://idp.example.com/realms/agents"
           audiences: ["cpex-gateway"]
@@ -70,7 +70,7 @@ So `require(role.hr)` is true when the verified token carried the `hr` role, and
 
 ## Multiple sources
 
-A request often carries more than one identity: the end user, the calling application, and the calling workload. Register an identity plugin per source. The bundled JWT plugin takes a `role` (`user`, `client`, or `caller_workload`) and a `header`, so each inbound credential resolves into its own namespace:
+A request often carries more than one identity: the end user, the calling application, and the calling workload. Register an identity plugin per source. The bundled JWT plugin takes a `role` (`user`, `client`, or `caller_workload`) and a typed `credential` location, so each inbound credential resolves into its own namespace:
 
 | `role` | Namespace | Typical credential |
 |--------|-----------|--------------------|
@@ -92,7 +92,7 @@ plugins:
     capabilities: [perform_http]
     config:
       role: caller_workload
-      header: X-Workload-Token
+      credential: { kind: header, name: X-Workload-Token }
       trusted_issuers:
         - issuer: "https://spire.example.com"
           audiences: ["cpex-gateway"]

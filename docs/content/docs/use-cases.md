@@ -15,7 +15,7 @@ The demo realizes the [running scenario]({{< relref "/docs/overview" >}}): one a
 | Eve | HR, no `view_ssn` | Same record, SSN redacted on the wire |
 | Alice | Engineering | Denied HR tools; allowed internal repos, denied external |
 
-[Praxis](https://github.com/praxis-proxy/praxis) is an AI-native proxy built around a filter chain. Its `policy` filter (the `policy-engine` feature) runs the praxis-policy engine (PPE), the same engine CPEX 0.3 embeds, so the gateway parses MCP JSON-RPC, runs the full policy pass, and only then forwards a scoped request upstream. The policy document is the same format a CPEX host loads:
+[Praxis](https://github.com/praxis-proxy/praxis) is an AI-native proxy built around a filter chain. Its `policy` filter (the `policy-engine` feature) runs the praxis-policy engine (PPE), the same engine CPEX 0.4 embeds, so the gateway parses MCP JSON-RPC, runs the full policy pass, and only then forwards a scoped request upstream. The policy document is the same format a CPEX host loads:
 
 ![The Praxis demo topology: a chat agent calls the Praxis gateway over MCP, where the mcp, policy (CPEX), and router filters run in sequence before forwarding to the hr-mcp server; the policy filter is configured by policy.yaml and talks to Keycloak for identity, token exchange, and CIBA, and to Valkey for session taint, while Keycloak pushes CIBA approvals to the auth-channel UI](images/use_cases_topology.png)
 
