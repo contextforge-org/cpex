@@ -586,3 +586,17 @@ differences:
       proto_error_code: null
       reason: 'elicitation check failed: elicitation handler error elicitation.unknown_id: check: plugin `manager-approval` halted: unknown elicitation id'
   cause: 'PPE 0.5.0 binds CIBA approvals to requester, route and tool and atomically consumes each approved id once (praxis-proxy/policy#188). The fixture first redeems the id as evan, then retries it as harry; the second call now denies with elicitation.unknown_id instead of allowing another subject to reuse the approval.'
+
+- scenario: identity-jwt
+  request: malformed-token
+  field: code
+  before: auth.malformed_header
+  after: auth.malformed_credential
+  cause: "PPE 0.6.0 uses location-independent JWT extraction denial codes (praxis-proxy/policy#96). The malformed credential still denies."
+
+- scenario: identity-jwt
+  request: malformed-token
+  field: stages[0].violation.code
+  before: auth.malformed_header
+  after: auth.malformed_credential
+  cause: "PPE 0.6.0 uses location-independent JWT extraction denial codes (praxis-proxy/policy#96). The malformed credential still denies."

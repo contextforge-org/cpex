@@ -112,7 +112,8 @@ type PolicyEngine struct {
 	handle C.CpexEngine // protected by mu; nil after Shutdown
 }
 
-// ContextTable holds per-plugin context state across hook invocations.
+// ContextTable holds per-plugin state across hooks in one request.
+// Start each new request with nil.
 // Opaque handle to Rust-owned data — not serialized.
 type ContextTable struct {
 	handle C.CpexContextTable

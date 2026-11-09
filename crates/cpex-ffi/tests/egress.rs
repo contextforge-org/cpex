@@ -9,7 +9,6 @@
 
 mod common;
 
-use std::collections::HashMap;
 use std::os::raw::{c_char, c_int};
 use std::ptr;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -104,10 +103,11 @@ plugins:
 }
 
 fn identity_payload(token: &str) -> Vec<u8> {
-    let headers = HashMap::from([("authorization".to_owned(), format!("Bearer {token}"))]);
-    let payload = IdentityPayload::new(token, TokenSource::Bearer)
-        .with_source_header("Authorization")
-        .with_headers(headers);
+    let payload = json!({
+        "source": TokenSource::Bearer,
+        "source_header": "Authorization",
+        "headers": {"authorization": format!("Bearer {token}")},
+    });
     rmp_serde::to_vec_named(&payload).expect("encode identity payload")
 }
 

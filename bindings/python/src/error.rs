@@ -24,6 +24,9 @@ use pyo3::exceptions::{PyRuntimeError, PyTimeoutError, PyValueError};
 #[allow(clippy::boxed_local)]
 pub fn plugin_error_to_pyerr(e: Box<PluginError>) -> PyErr {
     match *e {
+        PluginError::Crypto { .. } => {
+            PyRuntimeError::new_err("cpex crypto backend validation failed")
+        },
         PluginError::Config { message } => {
             PyValueError::new_err(format!("cpex config error: {message}"))
         },

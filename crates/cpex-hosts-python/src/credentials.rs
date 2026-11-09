@@ -432,15 +432,23 @@ fn inbound_from_token(
         });
     }
 
+    let source_header = match &token.source {
+        ppe::praxis_policy_core::extensions::Credential::Header { name } => name,
+        _ => {
+            return Err(HostError::Credential {
+                message: "the installed Python worker supports only header credentials".into(),
+            });
+        },
+    };
     Ok(InboundCredential {
         token: plaintext.to_string(),
-        source_header: token.source_header.clone(),
+        source_header: source_header.clone(),
         kind: token_kind_wire_name(&token.kind).to_string(),
         // Synthesized so a header-driven extractor learns which header carried
         // the credential. The worker scrubs the plaintext back out of these
         // values before a plugin can echo them onto a serialized payload.
         headers: Some(HashMap::from([(
-            token.source_header.clone(),
+            source_header.clone(),
             plaintext.to_string(),
         )])),
     })
@@ -596,7 +604,13 @@ mod tests {
         let mut raw = RawCredentialsExtension::default();
         raw.inbound_tokens.insert(
             TokenRole::User,
-            RawInboundToken::new(INBOUND_SECRET, "Authorization", TokenKind::Jwt),
+            RawInboundToken::new(
+                INBOUND_SECRET,
+                ppe::praxis_policy_core::extensions::Credential::Header {
+                    name: "Authorization".into(),
+                },
+                TokenKind::Jwt,
+            ),
         );
         raw.delegated_tokens.insert(
             DelegationKey::new(
@@ -899,7 +913,13 @@ mod tests {
             let mut raw = RawCredentialsExtension::default();
             raw.inbound_tokens.insert(
                 TokenRole::User,
-                RawInboundToken::new(token, "Authorization", TokenKind::Jwt),
+                RawInboundToken::new(
+                    token,
+                    ppe::praxis_policy_core::extensions::Credential::Header {
+                        name: "Authorization".into(),
+                    },
+                    TokenKind::Jwt,
+                ),
             );
             let extensions = Extensions {
                 raw_credentials: Some(Arc::new(raw)),
@@ -945,7 +965,13 @@ mod tests {
         let mut raw = RawCredentialsExtension::default();
         raw.inbound_tokens.insert(
             TokenRole::User,
-            RawInboundToken::new("   ", "Authorization", TokenKind::Jwt),
+            RawInboundToken::new(
+                "   ",
+                ppe::praxis_policy_core::extensions::Credential::Header {
+                    name: "Authorization".into(),
+                },
+                TokenKind::Jwt,
+            ),
         );
         let extensions = Extensions {
             raw_credentials: Some(Arc::new(raw)),
@@ -975,7 +1001,13 @@ mod tests {
         // loosened it, so a direct serialize of the production types still
         // strips the bytes. If this ever fails, the DTO stopped being the only
         // path token material can take.
-        let inbound = RawInboundToken::new(INBOUND_SECRET, "Authorization", TokenKind::Jwt);
+        let inbound = RawInboundToken::new(
+            INBOUND_SECRET,
+            ppe::praxis_policy_core::extensions::Credential::Header {
+                name: "Authorization".into(),
+            },
+            TokenKind::Jwt,
+        );
         let json = serde_json::to_string(&inbound).unwrap();
         assert!(
             !json.contains("INBOUND-SECRET-BYTES"),
@@ -1020,7 +1052,13 @@ mod tests {
     fn a_serialize_then_reparse_would_have_yielded_an_empty_token() {
         // Documents *why* the DTO reads the in-memory field directly. This is
         // the tempting shortcut, and it silently produces an empty credential.
-        let inbound = RawInboundToken::new(INBOUND_SECRET, "Authorization", TokenKind::Jwt);
+        let inbound = RawInboundToken::new(
+            INBOUND_SECRET,
+            ppe::praxis_policy_core::extensions::Credential::Header {
+                name: "Authorization".into(),
+            },
+            TokenKind::Jwt,
+        );
         let round_tripped: RawInboundToken =
             serde_json::from_str(&serde_json::to_string(&inbound).unwrap()).unwrap();
 
@@ -1028,7 +1066,28 @@ mod tests {
             &*round_tripped.token, "",
             "the guard strips the bytes on the way out"
         );
-        assert_eq!(round_tripped.source_header, "Authorization");
+        assert_eq!(
+            round_tripped.source,
+            ppe::praxis_policy_core::extensions::Credential::Header {
+                name: "Authorization".into()
+            }
+        );
+    }
+
+    #[test]
+    fn non_header_sources_are_not_fabricated_as_headers() {
+        use ppe::praxis_policy_core::extensions::Credential;
+        for source in [
+            Credential::Cookie {
+                name: "session".into(),
+            },
+            Credential::QueryParam {
+                name: "token".into(),
+            },
+        ] {
+            let token = RawInboundToken::new(INBOUND_SECRET, source, TokenKind::Jwt);
+            assert!(inbound_from_token(&token, "identity.resolve").is_err());
+        }
     }
 
     // --- redaction -----------------------------------------------------------
@@ -1122,11 +1181,23 @@ mod tests {
         let mut raw = RawCredentialsExtension::default();
         raw.inbound_tokens.insert(
             TokenRole::Client,
-            RawInboundToken::new("CLIENT-TOKEN", "X-Client", TokenKind::Opaque),
+            RawInboundToken::new(
+                "CLIENT-TOKEN",
+                ppe::praxis_policy_core::extensions::Credential::Header {
+                    name: "X-Client".into(),
+                },
+                TokenKind::Opaque,
+            ),
         );
         raw.inbound_tokens.insert(
             TokenRole::User,
-            RawInboundToken::new("USER-TOKEN", "Authorization", TokenKind::Jwt),
+            RawInboundToken::new(
+                "USER-TOKEN",
+                ppe::praxis_policy_core::extensions::Credential::Header {
+                    name: "Authorization".into(),
+                },
+                TokenKind::Jwt,
+            ),
         );
         let extensions = Extensions {
             raw_credentials: Some(Arc::new(raw)),
@@ -1475,12 +1546,12 @@ mod tests {
 
     #[test]
     fn a_header_borne_identity_credential_is_found() {
-        let payload: IdentityPayload = serde_json::from_value(serde_json::json!({
-            "source": "bearer",
-            "source_header": "X-User-Token",
-            "headers": {"x-user-token": INBOUND_SECRET},
-        }))
-        .unwrap();
+        let payload = IdentityPayload::new("", TokenSource::Bearer)
+            .with_source_header("X-User-Token")
+            .with_headers(HashMap::from([(
+                "x-user-token".into(),
+                INBOUND_SECRET.into(),
+            )]));
         let mut task = task();
         attach_credential_for_payload(
             &mut task,

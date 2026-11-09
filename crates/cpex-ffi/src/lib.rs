@@ -94,7 +94,7 @@ pub const RC_PANIC: c_int = -7;
 
 /// FFI ABI version. Bump on breaking C-surface changes; see module
 /// docs above for what counts as breaking.
-pub const FFI_ABI_VERSION: u32 = 3;
+pub const FFI_ABI_VERSION: u32 = 4;
 
 /// Returns the FFI ABI version this `libcpex_ffi` was built with.
 /// Language bindings call this at `init` and panic on mismatch
@@ -346,8 +346,9 @@ fn deserialize_payload(payload_type: u8, bytes: &[u8]) -> Result<Box<dyn PluginP
             Ok(Box::new(msg))
         },
         PAYLOAD_IDENTITY => {
-            let idp: IdentityPayload = rmp_serde::from_slice(bytes)
-                .map_err(|e| format!("identity payload deserialize failed: {}", e))?;
+            let value = rmp_serde::from_slice(bytes)
+                .map_err(|_| "identity payload deserialize failed".to_owned())?;
+            let idp = cpex::host::identity_input_from_value(value)?;
             Ok(Box::new(idp))
         },
         _ => Err(format!("unknown payload type: {}", payload_type)),
@@ -358,6 +359,10 @@ fn deserialize_payload(payload_type: u8, bytes: &[u8]) -> Result<Box<dyn PluginP
 /// dispatching it would return an allow with no policy evaluated. Logs the
 /// replacement name.
 fn reject_removed_hook(name: &str, op: &str) -> Result<(), c_int> {
+    if cpex::host::requires_rust_http_payload(name) {
+        tracing::error!("{op}: rate-limit hooks require an in-process Rust host");
+        return Err(RC_INVALID_INPUT);
+    }
     match cpex::host::removed_hook_replacement(name) {
         Some(replacement) => {
             tracing::error!("{}: hook '{}' was removed; use '{}'", op, name, replacement);
@@ -936,7 +941,10 @@ pub unsafe extern "C" fn cpex_invoke(
             Some(b) => b,
             None => return RC_INVALID_INPUT,
         };
-        match rmp_serde::from_slice(ext_bytes) {
+        match rmp_serde::from_slice(ext_bytes)
+            .map_err(|_| "invalid extensions MessagePack".to_owned())
+            .and_then(cpex::host::extensions_input_from_value)
+        {
             Ok(e) => e,
             Err(e) => {
                 tracing::error!("cpex_invoke: extensions deserialize failed: {}", e);
@@ -1058,8 +1066,7 @@ pub unsafe extern "C" fn cpex_invoke(
 ///
 /// # Safety / ownership
 /// Identical contract to [`cpex_invoke`]: the input `context_table` is
-/// consumed unconditionally (used for the hook invoke; the internal
-/// identity invoke gets a fresh one); out params are null/zero on error
+/// consumed unconditionally and threaded through both hooks; out params are null/zero on error
 /// and populated on `RC_OK`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn cpex_invoke_resolved(
@@ -1087,9 +1094,8 @@ pub unsafe extern "C" fn cpex_invoke_resolved(
         *bg_handle_out = std::ptr::null_mut();
     }
 
-    // Consume the input context table up front (used for the hook invoke),
-    // matching cpex_invoke's unconditional-consume ownership contract.
-    let input_ctx_table: Option<PluginContextTable> = if context_table.is_null() {
+    // Match cpex_invoke's unconditional-consume ownership contract.
+    let mut input_ctx_table: Option<PluginContextTable> = if context_table.is_null() {
         None
     } else {
         // SAFETY: `context_table` is non-null and, per the caller contract,
@@ -1136,7 +1142,10 @@ pub unsafe extern "C" fn cpex_invoke_resolved(
             Some(b) => b,
             None => return RC_INVALID_INPUT,
         };
-        match rmp_serde::from_slice(ext_bytes) {
+        match rmp_serde::from_slice(ext_bytes)
+            .map_err(|_| "invalid extensions MessagePack".to_owned())
+            .and_then(cpex::host::extensions_input_from_value)
+        {
             Ok(e) => e,
             Err(e) => {
                 tracing::error!("cpex_invoke_resolved: extensions deserialize failed: {}", e);
@@ -1162,7 +1171,10 @@ pub unsafe extern "C" fn cpex_invoke_resolved(
             Some(b) => b,
             None => return RC_INVALID_INPUT,
         };
-        let id_payload: IdentityPayload = match rmp_serde::from_slice(id_bytes) {
+        let id_payload = match rmp_serde::from_slice(id_bytes)
+            .map_err(|_| "invalid identity MessagePack".to_owned())
+            .and_then(cpex::host::identity_input_from_value)
+        {
             Ok(p) => p,
             Err(e) => {
                 tracing::error!(
@@ -1185,7 +1197,7 @@ pub unsafe extern "C" fn cpex_invoke_resolved(
                 ppe::praxis_policy_core::identity::HOOK_IDENTITY_RESOLVE,
                 Box::new(id_payload),
                 base_extensions.clone(),
-                None,
+                input_ctx_table.take(),
             ),
             "cpex_invoke_resolved/identity",
         ) {
@@ -1214,6 +1226,7 @@ pub unsafe extern "C" fn cpex_invoke_resolved(
             };
         }
 
+        input_ctx_table = Some(id_result.context_table.clone());
         match IdentityPayload::from_pipeline_result(&id_result) {
             Some(resolved) => resolved.apply_to_extensions(base_extensions),
             None => base_extensions,
@@ -1965,9 +1978,9 @@ mod tests {
     }
 
     #[test]
-    fn cpex_ffi_abi_version_is_3() {
-        assert_eq!(cpex_ffi_abi_version(), 3);
-        assert_eq!(FFI_ABI_VERSION, 3);
+    fn cpex_ffi_abi_version_is_4() {
+        assert_eq!(cpex_ffi_abi_version(), 4);
+        assert_eq!(FFI_ABI_VERSION, 4);
     }
 
     #[test]

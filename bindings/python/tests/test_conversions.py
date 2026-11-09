@@ -146,3 +146,26 @@ async def test_identity_result_does_not_echo_request_headers(passthrough_engine)
     assert "headers" not in result.modified_payload
     assert "not-a-real-token" not in repr(result.modified_payload)
     assert result.modified_payload["source"] == "bearer"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("field", ["llm_request", "metadata"])
+async def test_host_managed_extension_input_is_refused(passthrough_engine, field):
+    with pytest.raises(ValueError, match="requires an in-process Rust host"):
+        await passthrough_engine.invoke_hook("custom.hook", {}, {field: {}})
+
+
+@pytest.mark.asyncio
+async def test_redacted_query_cannot_replace_live_input(passthrough_engine):
+    with pytest.raises(ValueError, match="original request"):
+        await passthrough_engine.invoke_hook("custom.hook", {}, {"http": {"query": "[REDACTED]"}})
+
+
+@pytest.mark.asyncio
+async def test_history_requires_cmf_messages(passthrough_engine):
+    ext = {"agent": {"conversation": {"history": [{"role": "user", "content": []}]}}}
+    result = await passthrough_engine.invoke_hook("custom.hook", {}, ext)
+    assert result.continue_processing
+    ext["agent"]["conversation"]["history"] = ["free-form summary"]
+    with pytest.raises(ValueError, match="Extensions"):
+        await passthrough_engine.invoke_hook("custom.hook", {}, ext)

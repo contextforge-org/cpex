@@ -8,6 +8,7 @@
 use std::sync::Arc;
 
 use cpex::PolicyEngine;
+use cpex::praxis_policy_core::extensions::{MetaExtension, SecurityExtension, SubjectExtension};
 use cpex::prelude::*;
 
 /// Load a one-plugin config on an engine with the builtins installed and
@@ -126,4 +127,60 @@ async fn cmf_tool_pre_invoke_config_loads_and_dispatches() {
     assert_eq!(violation.as_deref(), Some("facade.banned_word"));
 
     engine.shutdown().await;
+}
+
+#[tokio::test]
+async fn settled_apl_predicates_survive_an_unorderable_operand() {
+    for predicate in [
+        "require(role.hr | args.amount <= 10000)",
+        "require(args.amount <= 10000 | role.hr)",
+        "require(!(role.guest & args.amount > 10000))",
+        "require(!(args.amount > 10000 & role.guest))",
+    ] {
+        let engine = Arc::new(PolicyEngine::default());
+        cpex::install_builtins(&engine);
+        engine.load_config_yaml(&format!(
+            "routes:\n  - tool: lookup\n    authorization:\n      pre_invocation: ['{predicate}']\n"
+        )).unwrap();
+        engine.initialize().await.unwrap();
+        let ext = Extensions {
+            meta: Some(Arc::new(MetaExtension {
+                entity_type: Some("tool".into()),
+                entity_name: Some("lookup".into()),
+                ..Default::default()
+            })),
+            security: Some(Arc::new(SecurityExtension {
+                subject: Some(SubjectExtension {
+                    id: Some("alice".into()),
+                    roles: ["hr".into()].into(),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            })),
+            ..Default::default()
+        };
+        let payload = MessagePayload {
+            message: Message::with_content(
+                Role::User,
+                vec![ContentPart::ToolCall {
+                    content: ToolCall {
+                        tool_call_id: "settled".into(),
+                        name: "lookup".into(),
+                        arguments: [("amount".into(), serde_json::json!("NaN"))].into(),
+                        namespace: None,
+                    },
+                }],
+            ),
+        };
+        let (result, bg) = engine
+            .invoke_by_name("cmf.tool_pre_invoke", Box::new(payload), ext, None)
+            .await;
+        bg.wait_for_background_tasks().await;
+        assert!(
+            result.continue_processing,
+            "{predicate}: {:?}",
+            result.violation
+        );
+        engine.shutdown().await;
+    }
 }

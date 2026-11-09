@@ -40,6 +40,10 @@
       "http.request",
       "http.response"
     ],
+    "ratelimit": [
+      "ratelimit.pre_identity",
+      "ratelimit.post_identity"
+    ],
     "identity": [
       "identity.resolve"
     ],

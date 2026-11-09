@@ -30,6 +30,7 @@ plugins:
     hooks: [elicit]
     capabilities: [perform_http]
     config:
+      store: { kind: memory }
       backchannel_endpoint: "{{MOCK_URL}}/ciba/auth"
       token_endpoint: "{{MOCK_URL}}/ciba/token"
       client_id: cpex-gateway

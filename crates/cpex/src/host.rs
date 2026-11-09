@@ -158,6 +158,47 @@ pub fn resolved_identity_fields(payload: &IdentityPayload) -> Vec<&'static str> 
     set
 }
 
+/// Decode binding input without discarding credential headers.
+pub fn identity_input_from_value(mut value: serde_json::Value) -> Result<IdentityPayload, String> {
+    let object = value
+        .as_object_mut()
+        .ok_or("identity input must be an object")?;
+    let headers = match object.remove("headers") {
+        None => std::collections::HashMap::new(),
+        Some(value) => serde_json::from_value(value)
+            .map_err(|_| "identity headers must map strings to strings")?,
+    };
+    let payload: IdentityPayload =
+        serde_json::from_value(value).map_err(|_| "invalid IdentityPayload input")?;
+    Ok(payload.with_headers(headers))
+}
+
+/// Whether a hook requires an HTTP payload unavailable in the bindings.
+pub fn requires_rust_http_payload(hook: &str) -> bool {
+    matches!(hook, "ratelimit.pre_identity" | "ratelimit.post_identity")
+}
+
+/// Decode binding extensions, refusing fields that cannot cross this boundary.
+pub fn extensions_input_from_value(
+    value: serde_json::Value,
+) -> Result<ppe::prelude::Extensions, String> {
+    for field in ["llm_request", "metadata"] {
+        if value.get(field).is_some_and(|v| !v.is_null()) {
+            return Err(format!("'{field}' requires an in-process Rust host"));
+        }
+    }
+    if value
+        .pointer("/http/query")
+        .and_then(serde_json::Value::as_str)
+        == Some("[REDACTED]")
+    {
+        return Err(
+            "http.query must come from the original request, not serialized extensions".into(),
+        );
+    }
+    serde_json::from_value(value).map_err(|_| "invalid Extensions input".into())
+}
+
 /// The identity result visible to language bindings. Request headers may
 /// contain credentials, so they never appear in a returned payload.
 pub fn identity_result_value(
@@ -208,6 +249,48 @@ impl From<RefreshReport> for RefreshSummary {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn binding_identity_keeps_headers_and_redacts_results() {
+        let payload = identity_input_from_value(serde_json::json!({
+            "source": "bearer",
+            "source_header": "X-User-Token",
+            "headers": {"X-User-Token": "secret", "Authorization": "Bearer other"},
+            "client_host": "192.0.2.1",
+            "client_port": 443,
+        }))
+        .unwrap();
+        assert_eq!(payload.headers()["X-User-Token"], "secret");
+        assert_eq!(payload.headers()["Authorization"], "Bearer other");
+        assert_eq!(payload.source_header(), Some("X-User-Token"));
+        assert_eq!(payload.client_port(), Some(443));
+        let result = identity_result_value(&payload).unwrap();
+        assert!(result.get("headers").is_none());
+        assert!(!result.to_string().contains("secret"));
+    }
+
+    #[test]
+    fn invalid_identity_headers_do_not_appear_in_errors() {
+        let err = identity_input_from_value(serde_json::json!({
+            "source": "bearer", "headers": {"secret": ["credential"]},
+        }))
+        .unwrap_err();
+        assert!(!err.contains("secret"));
+        assert!(!err.contains("credential"));
+    }
+
+    #[test]
+    fn binding_extensions_refuse_unrepresentable_inputs() {
+        for value in [
+            serde_json::json!({"metadata": {}}),
+            serde_json::json!({"llm_request": {"body": {}}}),
+            serde_json::json!({"http": {"query": "[REDACTED]"}}),
+        ] {
+            assert!(extensions_input_from_value(value).is_err());
+        }
+        let ext = extensions_input_from_value(serde_json::json!({"http": {"query": ""}})).unwrap();
+        assert_eq!(ext.http.unwrap().query.as_deref(), Some(""));
+    }
 
     #[test]
     fn private_destination_warning_reaches_hosts_without_a_subscriber() {

@@ -25,7 +25,7 @@ plugins:
     capabilities: [perform_http]
     config:
       role: user
-      header: Authorization
+      credential: { kind: header, name: Authorization }
       claim_mapper: standard
       trusted_issuers:
         - issuer: http://localhost:8081/realms/cpex-tutorial

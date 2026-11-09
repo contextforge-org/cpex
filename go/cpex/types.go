@@ -70,13 +70,20 @@ type SecurityExtension struct {
 	Data           map[string]DataPolicy            `msgpack:"data,omitempty"`
 }
 
+// KeyBinding records a verified proof of key possession.
+type KeyBinding struct {
+	Method     string `msgpack:"method"`
+	Thumbprint string `msgpack:"thumbprint"`
+}
+
 // SubjectExtension represents the authenticated caller.
 type SubjectExtension struct {
-	ID          string   `msgpack:"id,omitempty"`
-	SubjectType string   `msgpack:"subject_type,omitempty"`
-	Roles       []string `msgpack:"roles,omitempty"`
-	Permissions []string `msgpack:"permissions,omitempty"`
-	Teams       []string `msgpack:"teams,omitempty"`
+	KeyBinding  *KeyBinding `msgpack:"key_binding,omitempty"`
+	ID          string      `msgpack:"id,omitempty"`
+	SubjectType string      `msgpack:"subject_type,omitempty"`
+	Roles       []string    `msgpack:"roles,omitempty"`
+	Permissions []string    `msgpack:"permissions,omitempty"`
+	Teams       []string    `msgpack:"teams,omitempty"`
 	// Claims holds the token claims the resolver kept, with their JSON
 	// shape: a value can be a string, bool, number, array or nested map.
 	Claims map[string]any `msgpack:"claims,omitempty"`
@@ -93,8 +100,9 @@ const (
 // ClientExtension is the OAuth client or gateway that brokered the
 // request, as distinct from the user in SubjectExtension.
 type ClientExtension struct {
-	ClientID   string `msgpack:"client_id"`
-	ClientName string `msgpack:"client_name,omitempty"`
+	KeyBinding *KeyBinding `msgpack:"key_binding,omitempty"`
+	ClientID   string      `msgpack:"client_id"`
+	ClientName string      `msgpack:"client_name,omitempty"`
 	// TrustLevel is one of the ClientTrust constants or a custom string.
 	// Empty means first_party on the Rust side.
 	TrustLevel          string         `msgpack:"trust_level,omitempty"`
@@ -109,8 +117,9 @@ type ClientExtension struct {
 // WorkloadIdentity is an attested workload identity, used for both
 // SecurityExtension.CallerWorkload and SecurityExtension.ThisWorkload.
 type WorkloadIdentity struct {
-	SpiffeID    string `msgpack:"spiffe_id,omitempty"`
-	TrustDomain string `msgpack:"trust_domain,omitempty"`
+	KeyBinding  *KeyBinding `msgpack:"key_binding,omitempty"`
+	SpiffeID    string      `msgpack:"spiffe_id,omitempty"`
+	TrustDomain string      `msgpack:"trust_domain,omitempty"`
 	// AttestedAt is an RFC 3339 timestamp.
 	AttestedAt string   `msgpack:"attested_at,omitempty"`
 	Attestor   string   `msgpack:"attestor,omitempty"`
@@ -149,6 +158,10 @@ type RetentionPolicy struct {
 // identity.resolve invocation so the route's own authentication list
 // applies.
 type HttpExtension struct {
+	// Query excludes the leading ?. Nil means absent; an empty string means a bare ?.
+	// Reuse the original request value between hooks; results redact this field.
+	Query           *string           `msgpack:"query,omitempty"`
+	ClientAddress   string            `msgpack:"client_address,omitempty"`
 	RequestHeaders  map[string]string `msgpack:"request_headers,omitempty"`
 	ResponseHeaders map[string]string `msgpack:"response_headers,omitempty"`
 	// Status is the response status code. Zero means unset.
@@ -205,9 +218,8 @@ type AgentExtension struct {
 // ConversationContext is per-conversation summary state, shared across
 // turns. Mirrors `praxis_policy_core::extensions::agent::ConversationContext`.
 type ConversationContext struct {
-	// Recent conversation history, lightweight summaries (free-form
-	// JSON-style values to match Rust's Vec<serde_json::Value>).
-	History []any `msgpack:"history,omitempty"`
+	// Prior turns, oldest first. Free-form summaries belong in Summary.
+	History []Message `msgpack:"history,omitempty"`
 	// LLM-generated conversation summary.
 	Summary string `msgpack:"summary,omitempty"`
 	// Detected topics for routing / classification.

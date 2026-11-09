@@ -83,7 +83,7 @@ func TestIdentityResolveRejectsCallerSuppliedOutputs(t *testing.T) {
 		t.Fatal(err)
 	}
 	for name, payload := range map[string]IdentityPayload{
-		"subject": {Source: TokenSourceBearer, Subject: &SubjectExtension{ID: "forged"}},
+		"subject":    {Source: TokenSourceBearer, Subject: &SubjectExtension{ID: "forged"}},
 		"raw_claims": {Source: TokenSourceBearer, RawClaims: map[string]any{"sub": "forged"}},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -1041,7 +1041,7 @@ func TestExtensionsAddedFieldsRoundTrip(t *testing.T) {
 			Turn:           &turn,
 			AgentID:        "agent_1",
 			Conversation: &ConversationContext{
-				History: []any{"prior turn"},
+				History: []Message{NewMessage("user", NewTextPart("prior turn"))},
 				Summary: "user asked for compensation lookup",
 				Topics:  []string{"hr", "compensation"},
 			},

@@ -47,7 +47,7 @@ default-members = [
 ]
 
 [workspace.package]
-version = "0.3.1"
+version = "0.4.0"
 edition = "2024"
 # MSRV — keep in sync with rust-toolchain.toml `channel` and clippy.toml `msrv`.
 rust-version = "1.96"
@@ -82,7 +82,7 @@ serde_bytes = "0.11"
 chrono = { version = "0.4", features = ["serde"] }
 
 # PPE facade. Upgrade the exact pin deliberately and rerun the parity suite.
-ppe = { package = "praxis-policy", version = "=0.5.0", default-features = false }
+ppe = { package = "praxis-policy", version = "=0.6.0", default-features = false, features = ["crypto-rustcrypto"] }
 
 # Internal workspace crates — single source of truth for their path + version
 # requirement. Members depend on these via `{ workspace = true }` so a version
@@ -91,9 +91,9 @@ ppe = { package = "praxis-policy", version = "=0.5.0", default-features = false 
 # time cargo substitutes it for the `path`. `cargo release` keeps these in sync
 # with the workspace version. Keys are package names (builtins differ from their
 # directory names), paths are workspace-root-relative.
-cpex                          = { path = "crates/cpex",                        version = "0.3.1" }
-cpex-plugin-delegator-biscuit = { path = "builtins/plugins/delegator-biscuit", version = "0.3.1" }
-cpex-hosts-python             = { path = "crates/cpex-hosts-python",           version = "0.3.1", default-features = false }
+cpex                          = { path = "crates/cpex",                        version = "0.4.0" }
+cpex-plugin-delegator-biscuit = { path = "builtins/plugins/delegator-biscuit", version = "0.4.0" }
+cpex-hosts-python             = { path = "crates/cpex-hosts-python",           version = "0.4.0", default-features = false }
 
 # Size-first release profile. The FFI artifact (libcpex_ffi.a) is linked
 # statically into host binaries, so its compiled size flows straight into

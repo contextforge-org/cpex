@@ -222,6 +222,7 @@ plugins:
     hooks: [elicit]
     capabilities: [perform_http]
     config:
+      store: {{kind: memory}}
       backchannel_endpoint: {base}/ciba/auth
       token_endpoint: {base}/token
       client_id: cpex-test
@@ -342,3 +343,27 @@ async def test_refresh_secrets_without_a_secrets_block_is_empty(passthrough_engi
         "unchanged": 0,
         "failed": [],
     }
+
+
+@pytest.mark.parametrize("store", ["", "      store: {kind: missing-store}\n"])
+def test_ciba_requires_a_valid_explicit_store(tmp_path, store):
+    config = _ciba_config("http://127.0.0.1:1").replace("      store: {kind: memory}\n", store)
+    with pytest.raises(ValueError, match="store|variant"):
+        PolicyEngine(_write(tmp_path, config), allow_private_destinations=True)
+
+
+@pytest.mark.asyncio
+async def test_ciba_store_failure_halts_with_unavailable_code(tmp_path, mock_ciba):
+    config = _ciba_config(mock_ciba).replace(
+        "store: {kind: memory}",
+        "store: {kind: valkey, endpoint: 'redis://127.0.0.1:1', connect_timeout_ms: 100, command_timeout_ms: 100}",
+    )
+    eng = PolicyEngine(_write(tmp_path, config), allow_private_destinations=True)
+    await eng.initialize()
+    try:
+        result = await _send_email(eng)
+        assert not result.continue_processing
+        assert result.violation["code"] == "elicitation.store_unavailable"
+        assert result.violation["proto_error_code"] == -32122
+    finally:
+        await eng.shutdown()

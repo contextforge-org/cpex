@@ -27,7 +27,7 @@ plugins:
     capabilities: [perform_http]
     config:
       role: user
-      header: Authorization
+      credential: { kind: header, name: Authorization }
       trusted_issuers:
         - issuer: "https://idp.test.local"
           audiences: ["test-api"]
