@@ -138,6 +138,11 @@ pub fn json_value_to_pyobj<'py>(py: Python<'py>, v: &Value) -> PyResult<Bound<'p
 /// replacement. Such a name reaches no handler, so dispatching it would
 /// return an allow with no policy evaluated.
 pub fn reject_removed_hook(hook_name: &str) -> PyResult<()> {
+    if cpex::host::requires_rust_http_payload(hook_name) {
+        return Err(PyValueError::new_err(
+            "rate-limit hooks require an in-process Rust host",
+        ));
+    }
     match cpex::host::removed_hook_replacement(hook_name) {
         Some(replacement) => Err(PyValueError::new_err(format!(
             "cpex: hook '{hook_name}' was removed; use '{replacement}'"
@@ -163,7 +168,7 @@ pub fn reject_removed_hook(hook_name: &str) -> PyResult<()> {
 /// that doesn't match the hook's payload schema.
 pub fn resolve_payload(hook_name: &str, value: Value) -> PyResult<Box<dyn PluginPayload>> {
     if hook_name == HOOK_IDENTITY_RESOLVE {
-        let idp: IdentityPayload = serde_json::from_value(value).map_err(|e| {
+        let idp = cpex::host::identity_input_from_value(value).map_err(|e| {
             PyValueError::new_err(format!(
                 "cpex: payload for '{hook_name}' is not a valid IdentityPayload: {e}"
             ))
@@ -220,7 +225,7 @@ pub fn serialize_payload(payload: &dyn PluginPayload) -> Option<Value> {
 ///
 /// An empty dict yields `Extensions::default()` (all fields `#[serde(default)]`).
 pub fn extensions_from_value(value: Value) -> PyResult<Extensions> {
-    serde_json::from_value(value)
+    cpex::host::extensions_input_from_value(value)
         .map_err(|e| PyValueError::new_err(format!("cpex: extensions conversion failed: {e}")))
 }
 

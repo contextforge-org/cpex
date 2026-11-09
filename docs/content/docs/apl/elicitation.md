@@ -67,6 +67,7 @@ plugins:
         kind: file
         path: /etc/cpex-secrets/client-secret
       approver_claim: preferred_username
+      store: { kind: memory }
 ```
 
 `from` becomes the CIBA `login_hint`, `purpose` seeds the `binding_message`, and `timeout` maps to `requested_expiry`. Dispatch returns an `auth_req_id` that doubles as the elicitation id the agent echoes on retry.
@@ -92,7 +93,7 @@ Two independent checks stand between an approval and the tool call, and it is wo
 
 The `purpose` is recorded verbatim as the source of truth for what was approved; it is never derived from model output.
 
-**Approval binding.** PPE 0.5.0 binds CIBA approvals to the authenticated requester, route and tool, with atomic single-use redemption within a plugin instance. A requester must have a non-empty subject id before dispatch. Keep `timeout` short and return elicitation ids only to the requesting client. Replicas need sticky routing because the correlation store is in process.
+**Approval binding.** PPE binds CIBA approvals to the authenticated requester, route and tool, with atomic single-use redemption within a plugin instance. A requester must have a non-empty subject id before dispatch. Keep `timeout` short and return elicitation ids only to the requesting client. The `memory` store is local to the plugin instance and needs sticky routing across replicas. Use an explicitly configured `valkey` store for shared correlation state. Missing stores and unknown config keys fail at load. A storage outage fails closed as `elicitation.store_unavailable`, mapped to JSON-RPC `-32122`.
 
 ## How it connects to the pipeline
 

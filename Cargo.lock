@@ -603,7 +603,7 @@ checksum = "773648b94d0e5d620f64f280777445740e61fe701025087ec8b57f45c791888b"
 
 [[package]]
 name = "cpex"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "cpex-hosts-python",
  "praxis-policy",
@@ -616,7 +616,7 @@ dependencies = [
 
 [[package]]
 name = "cpex-demo-ffi"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "async-trait",
  "cpex-ffi",
@@ -626,7 +626,7 @@ dependencies = [
 
 [[package]]
 name = "cpex-ffi"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "async-trait",
  "aws-lc-rs",
@@ -644,7 +644,7 @@ dependencies = [
 
 [[package]]
 name = "cpex-hosts-python"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -661,7 +661,7 @@ dependencies = [
 
 [[package]]
 name = "cpex-parity-harness"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "async-trait",
  "aws-lc-rs",
@@ -681,7 +681,7 @@ dependencies = [
 
 [[package]]
 name = "cpex-plugin-delegator-biscuit"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "async-trait",
  "biscuit-auth",
@@ -695,7 +695,7 @@ dependencies = [
 
 [[package]]
 name = "cpex-python"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "async-trait",
  "cpex",
@@ -710,7 +710,7 @@ dependencies = [
 
 [[package]]
 name = "cpex-tutorial"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "async-trait",
  "cpex",
@@ -796,9 +796,9 @@ dependencies = [
 
 [[package]]
 name = "ctutils"
-version = "0.4.3"
+version = "0.4.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "03bb0e1cc970d482d121d9a1744999169b69a07470b3d644a7894e53fcaf4574"
+checksum = "12218662ccac37d9714f2191252553d67585b97df8c839cbe49e0bde278dc865"
 dependencies = [
  "cmov",
 ]
@@ -1986,15 +1986,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "msvc_spectre_libs"
-version = "0.1.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "29e871a9861f3664f18b7e04e9301d4edd55090c2dadb4b1c602e26ab32b1f5b"
-dependencies = [
- "cc",
-]
-
-[[package]]
 name = "murmur3"
 version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2299,9 +2290,9 @@ dependencies = [
 
 [[package]]
 name = "praxis-policy"
-version = "0.5.0"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c38539da1fc52a1cad1124aba99216eed98d602212f65ea913c37f7c96c6a526"
+checksum = "662b03ab6155d6789464d7e9e0b4d2065900cd9d04b370d532f1b18bb1e7006b"
 dependencies = [
  "async-trait",
  "bytes",
@@ -2322,9 +2313,9 @@ dependencies = [
 
 [[package]]
 name = "praxis-policy-apl-cmf"
-version = "0.5.0"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "02c17a247088d1aead6446293fa37affc68cd695e1f24cd93983fc9e0bfb2fae"
+checksum = "200333ebf208821f40f17070a27936d32867284605c103657fedaed6c12f504b"
 dependencies = [
  "chrono",
  "praxis-policy-apl-core",
@@ -2334,9 +2325,9 @@ dependencies = [
 
 [[package]]
 name = "praxis-policy-apl-core"
-version = "0.5.0"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1fa4564e982ddf61d7bb79a1e914a402be3d70f2e849370d1a7051c7f02274be"
+checksum = "abade295a61836accbfb9c860b3196e5491a34a378ca4769566674779511d1fa"
 dependencies = [
  "async-trait",
  "futures",
@@ -2351,9 +2342,9 @@ dependencies = [
 
 [[package]]
 name = "praxis-policy-apl-runtime"
-version = "0.5.0"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "94af76898d0400135296c76b0a19a5c3d4c783a9824d3638726b70c012ee195b"
+checksum = "1ce569d880efacc2c4893bdda5c1751095a90b2e9707ee92ff12366a61c91f5d"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2361,7 +2352,6 @@ dependencies = [
  "praxis-policy-apl-core",
  "praxis-policy-core",
  "serde_json",
- "sha2 0.11.0",
  "thiserror 2.0.20",
  "tokio",
  "tracing",
@@ -2370,9 +2360,9 @@ dependencies = [
 
 [[package]]
 name = "praxis-policy-builtins"
-version = "0.5.0"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "514f8817828c4563b523c48e25e81afcfb6b4cd1e9282136f9dff8c13d506601"
+checksum = "9629f9ab2cd663fb095a3e75feffe90497250af1dda841f70fac3b4ed80f1ed7"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -2383,10 +2373,10 @@ dependencies = [
  "chrono",
  "deadpool-redis",
  "futures",
- "getrandom 0.4.3",
  "hmac 0.13.0",
  "jsonwebtoken",
  "moka",
+ "praxis-policy-apl-cmf",
  "praxis-policy-apl-core",
  "praxis-policy-apl-runtime",
  "praxis-policy-core",
@@ -2407,15 +2397,16 @@ dependencies = [
 
 [[package]]
 name = "praxis-policy-core"
-version = "0.5.0"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fd60a2e3d73a8d139684dcab02afe73bba5e6496f15fbba1986f935b8b4174a4"
+checksum = "55950103a82d4f7d02945998bd9c42ff722b395e97e60dc4f721297467a0a711"
 dependencies = [
  "arc-swap",
  "async-trait",
  "bytes",
  "chrono",
  "futures",
+ "getrandom 0.4.3",
  "hashbrown 0.17.1",
  "hmac 0.13.0",
  "http",
@@ -2435,9 +2426,9 @@ dependencies = [
 
 [[package]]
 name = "praxis-policy-orchestration"
-version = "0.5.0"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8f194b463d5304f8267f89e3f4ec1c50953ff3ad8bb287186455943bb78b566b"
+checksum = "3b5057ca0a8c242d91f5dd5dc4fdfb779dd7deaebcafb6bff49520cad5ec08c2"
 dependencies = [
  "futures",
  "tokio",
@@ -2796,6 +2787,7 @@ dependencies = [
  "rustls",
  "rustls-native-certs",
  "ryu",
+ "sha1_smol",
  "socket2",
  "tokio",
  "tokio-rustls",
@@ -2864,9 +2856,9 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
 name = "regorus"
-version = "0.12.0"
+version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "94d90cbdbc4d2900378cf7dbb0c8df85a28e6de07fad75c60cd4d73283eded23"
+checksum = "800007e261eac92aecf7d709fd4110de132bf79651d4bd1e0137db9debd0cfe7"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2876,12 +2868,9 @@ dependencies = [
  "indexmap 2.14.0",
  "lazy_static",
  "lru",
- "msvc_spectre_libs",
  "num-bigint 0.5.1",
  "num-traits",
- "parking_lot",
  "postcard",
- "rand 0.10.2",
  "regex",
  "semver",
  "serde",
@@ -3034,9 +3023,9 @@ dependencies = [
 
 [[package]]
 name = "rustls-webpki"
-version = "0.103.15"
+version = "0.103.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f3c3cf1d8b1e7d4927e2d154c3fcb02979afb9939629c62cd9048d4f07b60ac2"
+checksum = "4443b1b6d39d7c663139942cc4558262562d2c84123bb6282ef177009ca8b281"
 dependencies = [
  "ring",
  "rustls-pki-types",
@@ -3255,6 +3244,12 @@ dependencies = [
  "base16ct",
  "serde",
 ]
+
+[[package]]
+name = "sha1_smol"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bbfa15b3dddfee50a0fff136974b3e1bde555604ba463834a7eb7deb6417705d"
 
 [[package]]
 name = "sha2"
@@ -3952,15 +3947,15 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "verus_builtin"
-version = "0.0.0-2026-08-09-0044"
+version = "0.0.0-2026-09-06-0133"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f5f2985ebd252c492375e32f2bfcff6e6a04523009a0d624785d3468f3729158"
+checksum = "856c9979b5ed3b75a2371d8667602da1839ab0cbb3720a2c1c8a182bcdb27cf7"
 
 [[package]]
 name = "verus_builtin_macros"
-version = "0.0.0-2026-08-23-0033"
+version = "0.0.0-2026-09-06-0133"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "62f5b1ed2151955cfe25ebfc1382ab422ae004e5cda6c502871425cc9e2ad5f3"
+checksum = "466bb5ed102507ccbcd002410e73716c9eb27b602980d81bbd176860ace8a89b"
 dependencies = [
  "convert_case",
  "proc-macro2",
@@ -3973,9 +3968,9 @@ dependencies = [
 
 [[package]]
 name = "verus_prettyplease"
-version = "0.0.0-2026-08-09-0044"
+version = "0.0.0-2026-09-06-0133"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "51fc115de5fb3806bc362060bb683024660ed2bc13c1183d1f01d464e4537139"
+checksum = "71956c0dcf55f57fd5a5335fff16981f7e0912d2e887914518c5a64fe36c063c"
 dependencies = [
  "proc-macro2",
  "verus_syn",
@@ -3983,9 +3978,9 @@ dependencies = [
 
 [[package]]
 name = "verus_state_machines_macros"
-version = "0.0.0-2026-08-02-0125"
+version = "0.0.0-2026-09-06-0133"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "93f77ff8d121edb1bf2651335769a80a2f611da8573c3b498434a66b3162805f"
+checksum = "5f78ea16629331605a440e9e0a259dd3492a78212186ba82253ad0988127407f"
 dependencies = [
  "indexmap 2.14.0",
  "proc-macro2",
@@ -3995,9 +3990,9 @@ dependencies = [
 
 [[package]]
 name = "verus_syn"
-version = "0.0.0-2026-08-02-0125"
+version = "0.0.0-2026-09-06-0133"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f17237ea6d267e457d53ce36f55b315fc9edd26eb88c765dd95e035c0b415869"
+checksum = "7d8b53574934e1f608dfccd809ce17f3733d6eb99c14ce8220326121929e1637"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -4006,9 +4001,9 @@ dependencies = [
 
 [[package]]
 name = "vstd"
-version = "0.0.0-2026-08-23-0033"
+version = "0.0.0-2026-09-06-0133"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "93b32ef60c0a4ce7d85691135c15fada7ab84b2c1471322d320fba313190e2e9"
+checksum = "9e5391d6f656ab9a485169f7e9fe87d3db1f0a6aa116fcb630dd0bef224170e7"
 dependencies = [
  "verus_builtin",
  "verus_builtin_macros",
@@ -4126,9 +4121,9 @@ dependencies = [
 
 [[package]]
 name = "webpki-roots"
-version = "1.0.8"
+version = "1.0.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bf85cb06032201fa7c6f829d7db5a7e5aa45bcc0655327713065f6f0576731bf"
+checksum = "1c1c8e20c8a38fc7d65abfe74eb7280e4aa667e8eec8bc84996d2874810748d9"
 dependencies = [
  "rustls-pki-types",
 ]

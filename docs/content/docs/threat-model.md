@@ -167,13 +167,13 @@ Extensions are a different matter: the engine trusts the `security.subject` a ho
 
 ### Elicitation approval binding
 
-PPE 0.5.0 binds CIBA approvals to the authenticated requester, route and tool, and redeems them atomically once within the plugin instance. This fixes the cross-subject approval reuse present in CPEX 0.2.3. Requests without an authenticated subject id fail before the backchannel call.
+PPE binds CIBA approvals to the authenticated requester, route and tool, and redeems them atomically once within the plugin instance. This fixes the cross-subject approval reuse present in CPEX 0.2.3. Requests without an authenticated subject id fail before the backchannel call.
 
-The correlation store remains in process. A restart loses pending approvals, and replicas need sticky routing for a dispatch/resume pair. Keep approval timeouts short and return ids only to the requesting client.
+Configure the correlation store explicitly. With `memory`, a restart loses pending approvals and replicas need sticky routing for a dispatch/resume pair. A shared `valkey` store supports cross-replica state; outages fail closed as `elicitation.store_unavailable`. Keep approval timeouts short and return ids only to the requesting client.
 
-### Audit sinks cannot run beside routes
+### Decision records require host configuration
 
-Under `dispatch: policy`, PPE 0.5.0 cannot attach an audit sink to a config that has routes: a sink no step names fails the load, and `run(<sink>)` denies. The "unaccountable actions" control above therefore needs a hook plugin that a `run(...)` step names, or a host that logs the `PipelineResult` of every call. A host that does neither has no decision record. See [Auditing]({{< relref "/docs/auditing" >}}).
+PPE 0.6.0 supports enabled hookless audit sinks beside routes under `dispatch: policy`. CPEX ships no sink: a Rust host must register one, a Go host can link a Rust factory, and every host can log each `PipelineResult`. Without either, there is no decision record. See [Auditing]({{< relref "/docs/auditing" >}}).
 
 ### Host-supplied client identity is visible only through `read_client`
 

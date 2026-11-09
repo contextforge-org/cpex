@@ -36,11 +36,11 @@ func TestCheckFFIABIVersionRejectsMismatch(t *testing.T) {
 	}
 }
 
-func TestLinkedLibraryReportsABI3(t *testing.T) {
-	if got := linkedFFIABIVersion(); got != 3 {
-		t.Errorf("expected linked libcpex_ffi ABI 3, got %d", got)
+func TestLinkedLibraryReportsABI4(t *testing.T) {
+	if got := linkedFFIABIVersion(); got != 4 {
+		t.Errorf("expected linked libcpex_ffi ABI 4, got %d", got)
 	}
-	if expectedFFIABIVersion != 3 {
-		t.Errorf("expected binding ABI 3, got %d", expectedFFIABIVersion)
+	if expectedFFIABIVersion != 4 {
+		t.Errorf("expected binding ABI 4, got %d", expectedFFIABIVersion)
 	}
 }

@@ -18,7 +18,7 @@ plugins:
     capabilities: [perform_http]
     config:
       role: user
-      header: Authorization
+      credential: { kind: header, name: Authorization }
       claim_mapper: standard
       trusted_issuers:
         # Home issuer: your own workforce realm.

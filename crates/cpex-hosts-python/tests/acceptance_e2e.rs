@@ -364,7 +364,13 @@ async fn python_identity_and_delegation_plugins_serve_a_ppe_route() {
     let mut raw = RawCredentialsExtension::default();
     raw.inbound_tokens.insert(
         TokenRole::User,
-        RawInboundToken::new(SECRET, "authorization", TokenKind::Opaque),
+        RawInboundToken::new(
+            SECRET,
+            ppe::praxis_policy_core::extensions::Credential::Header {
+                name: "authorization".into(),
+            },
+            TokenKind::Opaque,
+        ),
     );
     extensions.raw_credentials = Some(Arc::new(raw));
 

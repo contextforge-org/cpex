@@ -161,12 +161,20 @@ Per-hop scopes, audience and strategy stay on the typed chain.
 | Key | Type | When |
 |---|---|---|
 | `http.method`, `http.path`, `http.host`, `http.scheme` | String | set |
+| `http.query` | String | present, including an empty query; requires `read_query` |
+| `http.client_address` | String | trusted normalized peer address set |
 | `http.status` | Int | set (response half) |
 | `http.request_headers.<name>`, `http.response_headers.<name>` | String | each header, name lowercased |
 
 ### `llm`
 
-`llm.model_id`, `llm.provider` (String, set) and `llm.capabilities` (String set, always). The parsed request body is the separate `llm_request` slot: OPA and CEL read it as `llm.request`, Cedar as `context.llm.request`.
+Canonical model keys are `llm.model.id`, `llm.model.provider` (String, set) and `llm.model.capabilities` (String set, always). The earlier `llm.model_id`, `llm.provider` and `llm.capabilities` aliases remain available.
+
+A Rust host's normalized `llm_request` parts populate `llm.input.*`: offered tools, stop sequences, tool choice, forced tool, token/candidate limits, sampling parameters, streaming and instruction digest. Instruction text stays on the typed carrier. OPA and CEL read the body as `llm.request`, Cedar as `context.llm.request`. Python/Go generic inputs cannot install this carrier.
+
+### Acquired metadata
+
+Rust hosts install acquired facts through PPE's framework API. Values appear under `metadata.<instance>.*`, with provenance leaves such as `$source`, `$outcome`, `$cache` and `$fetched_at`. The slot requires `read_metadata`, is immutable to ordinary plugin writes, and is cleared by `for_child_request()`.
 
 ### `mcp`
 
@@ -182,6 +190,8 @@ Per-hop scopes, audience and strategy stay on the typed chain.
 Schemas and annotations are not flattened.
 
 ### `completion`
+
+These aliases remain available alongside canonical `llm.output.*` keys with the same suffixes.
 
 | Key | Type | When |
 |---|---|---|
@@ -215,6 +225,6 @@ On `tool:` routes, OPA and CEL do not read the flattened `args.*` keys. They get
 
 ## Go deeper
 
-- PPE's [CMF extensions contract](https://github.com/praxis-proxy/policy/blob/v0.5.0/docs/content/cmf-extensions.md), the source for this page.
+- PPE's [CMF extensions contract](https://github.com/praxis-proxy/policy/blob/v0.6.0/docs/content/cmf-extensions.md), the source for this page.
 - [Common Message Format]({{< relref "/docs/cmf" >}}): the message the extensions travel with.
 - [Identity Claim Mapping]({{< relref "/docs/identity-claim-mapping" >}}): how token claims become `subject.*` and `client.*`.

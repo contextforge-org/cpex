@@ -11,15 +11,15 @@ from cpex.framework import PluginManager
 from cpex.framework.models import PluginResult
 
 # After (Rust-backed)
-from cpex import PluginManager, PipelineResult
+from cpex import PolicyEngine, PipelineResult
 ```
 
 ## API Mapping Table
 
 | Concept | Legacy (`./cpex/`) | Rust-backed (`bindings/python/`) |
 |---------|-------------------|----------------------------------|
-| Import | `from cpex.framework import PluginManager` | `from cpex import PluginManager` |
-| Construction | `PluginManager()` (Borg singleton) | `PluginManager(config_path)` (explicit config) |
+| Import | `from cpex.framework import PluginManager` | `from cpex import PolicyEngine` |
+| Construction | `PluginManager()` (Borg singleton) | `PolicyEngine(config_path)` (explicit config) |
 | Initialize | `await manager.initialize()` | `await manager.initialize()` |
 | Shutdown | `await manager.shutdown()` | `await manager.shutdown()` |
 | Invoke | `result, violations = await manager.invoke_hook(hook, payload, context)` (2-tuple) | `result = await manager.invoke_hook(hook, payload)` (single result) |
@@ -40,7 +40,7 @@ Hook names follow the engine (`cmf.tool_pre_invoke`, `identity.resolve`,
 naming its replacement, because it would reach no handler and come back
 allowed. The Rust-backed package picks the payload type from the hook
 name: `cmf.*` hooks use typed `MessagePayload`, `identity.resolve` uses
-typed `IdentityPayload`, and all other hooks use `GenericPayload`. For the
+typed `IdentityPayload`, and other supported hooks use `GenericPayload`. The two `ratelimit.*` hooks require a Rust HTTP payload and are rejected. For the
 two typed cases, a dict that doesn't match the schema raises `ValueError`.
 
 An `identity.resolve` payload may set only `source`, `source_header`,
@@ -123,3 +123,9 @@ source .venv-cpex-rust/bin/activate
 pip install maturin
 cd bindings/python && maturin develop
 ```
+
+## CPEX 0.4 / PPE 0.6
+
+CPEX uses RustCrypto. CIBA needs an explicit `store: { kind: memory }` or a Valkey store. Conversation `history` entries must be CMF message dictionaries; put free-form text in `summary`. Thread `result.context_table` through hooks in the same request, and start a fresh table for a new request.
+
+Non-null `llm_request` and acquired `metadata` inputs are rejected because they require Rust host APIs. HTTP results redact `query` to `[REDACTED]`; restore the original query before the next hook. See the [0.4 migration guide](../../docs/content/docs/migration-0.4.md) for the complete contract.

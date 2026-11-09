@@ -214,7 +214,8 @@ PARITY_LOG = target/parity-test.log
 parity:
 	@mkdir -p target
 	@echo "🔁 parity against the 0.2.3 snapshots ..."
-	@PARITY_VALKEY_URL="$(PARITY_VALKEY_URL)" \
+	@set -o pipefail; \
+		PARITY_VALKEY_URL="$(PARITY_VALKEY_URL)" \
 		$(CARGO) test -p cpex-parity-harness -- --nocapture 2>&1 | tee $(PARITY_LOG)
 	@if [ -n "$(PARITY_VALKEY_URL)" ] && grep -q 'SKIPPED' $(PARITY_LOG); then \
 		echo "❌ PARITY_VALKEY_URL is set but some parity checks were skipped:"; \

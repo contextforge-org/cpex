@@ -41,7 +41,7 @@ def main():
         check(package["version"] == version, f"{package['name']} has stale version {package['version']}")
         for dep in package["dependencies"]:
             if dep["name"].startswith("praxis-policy"):
-                check(dep["req"] == "=0.5.0", f"{package['name']}: {dep['name']} must pin PPE =0.5.0")
+                check(dep["req"] == "=0.6.0", f"{package['name']}: {dep['name']} must pin PPE =0.6.0")
             if package["name"] in PUBLISHED and dep["kind"] != "dev" and dep.get("path") is not None:
                 check(dep["name"] in PUBLISHED, f"{package['name']} depends on unpublished {dep['name']}")
                 check(dep["req"] == f"^{version}", f"{package['name']}: stale requirement for {dep['name']}")
@@ -53,7 +53,7 @@ def main():
     go_abi = re.search(r"const expectedFFIABIVersion uint32 = (\d+)", (ROOT / "go/cpex/abi.go").read_text())
     check(rust_abi and go_abi and rust_abi[1] == go_abi[1], "Rust and Go FFI ABI versions differ")
     check(f"## [{version}] - " in (ROOT / "CHANGELOG.md").read_text(), "missing dated changelog entry")
-    print(f"release-check: CPEX {version}, four publishable crates, PPE 0.5.0, FFI ABI {rust_abi[1]}")
+    print(f"release-check: CPEX {version}, four publishable crates, PPE 0.6.0, FFI ABI {rust_abi[1]}")
 
 
 if __name__ == "__main__":

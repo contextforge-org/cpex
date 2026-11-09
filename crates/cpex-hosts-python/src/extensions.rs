@@ -117,6 +117,8 @@ fn strip_sensitive(headers: &HashMap<String, String>) -> HashMap<String, String>
 /// because the plugin needs them for routing decisions.
 fn sanitize_http(http: &HttpExtension) -> HttpExtension {
     HttpExtension {
+        query: None,
+        client_address: http.client_address.clone(),
         request_headers: public_http_headers(&http.request_headers),
         secret_headers: http.secret_headers.clone(),
         response_headers: public_http_headers(&http.response_headers),
@@ -143,6 +145,10 @@ fn sanitize_http(http: &HttpExtension) -> HttpExtension {
 /// policies into no-ops downstream.
 fn returned_http(returned: &HttpExtension, inbound: Option<&HttpExtension>) -> HttpExtension {
     HttpExtension {
+        query: inbound.and_then(|h| h.query.clone()),
+        client_address: inbound
+            .map(|h| h.client_address.clone())
+            .unwrap_or_default(),
         request_headers: strip_sensitive(&returned.request_headers),
         secret_headers: inbound
             .map(|h| h.secret_headers.clone())
@@ -194,6 +200,17 @@ pub fn attach_extensions(task: &mut Value, extensions: &Extensions) -> Result<()
 /// structs evolve. Only `http` is rewritten on the way out, to default-deny
 /// unvalidated raw header values.
 fn to_wire(extensions: &Extensions) -> Result<Value, HostError> {
+    if extensions.llm_request.is_some()
+        || extensions.metadata.is_some()
+        || extensions
+            .http
+            .as_ref()
+            .is_some_and(|http| http.query.is_some())
+    {
+        return Err(HostError::Protocol {
+            message: "the installed Python worker cannot represent query, LLM request or acquired metadata access".into(),
+        });
+    }
     let mut map = serde_json::Map::new();
 
     let mut put = |key: &str, value: Result<Value, serde_json::Error>| -> Result<(), HostError> {
@@ -293,6 +310,15 @@ pub fn owned_from_returned_slot(
             "the worker returned a '{MODIFIED_EXTENSIONS_FIELD}' field that is not a JSON object"
         ),
     })?;
+
+    if ["llm_request", "metadata"]
+        .iter()
+        .any(|key| object.get(*key).is_some_and(|v| !v.is_null()))
+    {
+        return Err(HostError::Protocol {
+            message: "worker results cannot replace LLM request or acquired metadata".into(),
+        });
+    }
 
     // Start from the inbound view: immutable slots keep their original `Arc`
     // pointers, and the write tokens the executor issued are carried over.
@@ -652,7 +678,13 @@ mod tests {
         let mut inbound_tokens = HashMap::new();
         inbound_tokens.insert(
             TokenRole::User,
-            RawInboundToken::new("super-secret", "Authorization", TokenKind::Jwt),
+            RawInboundToken::new(
+                "super-secret",
+                ppe::praxis_policy_core::extensions::Credential::Header {
+                    name: "Authorization".into(),
+                },
+                TokenKind::Jwt,
+            ),
         );
 
         let extensions = Extensions {
@@ -941,6 +973,8 @@ mod tests {
         inbound_http.path = Some("/api/v1/transfer".into());
         inbound_http.host = Some("bank.internal".into());
         inbound_http.scheme = Some("https".into());
+        inbound_http.query = Some("token=secret".into());
+        inbound_http.set_client_address("[::ffff:192.0.2.1]:443");
 
         // What a worker actually returns: headers only, request line absent.
         let returned_absent = HttpExtension {
@@ -952,6 +986,8 @@ mod tests {
         assert_eq!(merged.path.as_deref(), Some("/api/v1/transfer"));
         assert_eq!(merged.host.as_deref(), Some("bank.internal"));
         assert_eq!(merged.scheme.as_deref(), Some("https"));
+        assert_eq!(merged.query.as_deref(), Some("token=secret"));
+        assert_eq!(merged.client_address(), Some("192.0.2.1"));
         assert_eq!(
             merged.request_headers.get("X-Scanned").map(String::as_str),
             Some("1")
@@ -959,6 +995,10 @@ mod tests {
 
         // And a worker that *does* send a request line cannot override it.
         let returned_hostile = HttpExtension {
+            query: Some("forged=1".into()),
+            client_address: ppe::praxis_policy_core::extensions::ClientAddress::parse(
+                "198.51.100.1",
+            ),
             method: Some("GET".into()),
             path: Some("/healthz".into()),
             host: Some("evil.example".into()),

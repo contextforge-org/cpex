@@ -124,7 +124,7 @@ A value that fails to re-read keeps its last-good bytes and is listed in `report
 
 ## ABI Check
 
-On package init the binding compares its expected FFI ABI version (3) with the one `libcpex_ffi` reports and panics on a mismatch, naming both versions. Rebuild `libcpex_ffi` from the same CPEX release as the Go module.
+On package init the binding compares its expected FFI ABI version (4) with the one `libcpex_ffi` reports and panics on a mismatch, naming both versions. Rebuild `libcpex_ffi` from the same CPEX release as the Go module.
 
 ## Payload Types
 
@@ -182,7 +182,7 @@ There is no Go field for the Rust `raw_credentials` slot. Its tokens are never s
 
 ## Context Threading
 
-Pass the `ContextTable` from one invocation to the next to preserve per-plugin state across hooks:
+Pass the `ContextTable` from one invocation to the next to preserve per-plugin state across hooks in one request. Start a new request with nil:
 
 ```go
 result1, ct1, bg1, _ := engine.InvokeByName("cmf.tool_pre_invoke", ...)
@@ -221,7 +221,7 @@ edition = "2021"
 crate-type = ["staticlib", "cdylib"]
 
 [dependencies]
-ppe = { package = "praxis-policy", version = "=0.5.0", default-features = false }
+ppe = { package = "praxis-policy", version = "=0.6.0", default-features = false, features = ["crypto-rustcrypto"] }
 cpex-ffi = { path = "path/to/crates/cpex-ffi" }
 async-trait = "0.1"
 tracing = "0.1"
@@ -436,3 +436,9 @@ cd go/cpex && go test -v ./...
 - [Rust crates README](../../crates/README.md): the facade and the crates CPEX adds to the engine
 - [Migrating to 0.3](https://contextforge-org.github.io/cpex/docs/migration-0.3/): the Go, C ABI, hook and config changes from 0.2.x
 - [Tutorial](../../examples/tutorial/README.md): policy examples, builtins and custom plugins
+
+## CPEX 0.4 request state
+
+This release uses PPE 0.6.0 with RustCrypto and ABI 4. `InvokeResolved` threads context through identity and policy. Use `ConversationContext.History []Message` for earlier CMF turns and `Summary` for free-form summaries. Verified identities can carry `KeyBinding`.
+
+`HttpExtension.Query` excludes `?`; nil means absent and a pointer to an empty string means a bare `?`. Results redact it to `[REDACTED]`, which FFI refuses as live input. Restore it from the original request between separate hook calls. Supply `ClientAddress` from trusted peer context. Query/cookie JWT locations can use HTTP extension state; no dedicated raw credential carrier is exposed. The two `ratelimit.*` hooks, `llm_request` and acquired `metadata` require Rust host APIs. See the [0.4 migration guide](../../docs/content/docs/migration-0.4.md).

@@ -162,6 +162,7 @@ where
 {
     // --- Base extensions: which entity is this, and (optionally) which
     //     session does it belong to. Meta drives APL route matching. ---
+    let mut context_table = None;
     let mut ext = Extensions {
         meta: Some(Arc::new(MetaExtension {
             entity_type: Some("tool".into()),
@@ -208,12 +209,18 @@ where
             },
         };
         let (id_result, id_bg) = engine
-            .invoke_named::<IdentityHook>(HOOK_IDENTITY_RESOLVE, payload, ext.clone(), None)
+            .invoke_named::<IdentityHook>(
+                HOOK_IDENTITY_RESOLVE,
+                payload,
+                ext.clone(),
+                context_table.take(),
+            )
             .await;
         id_bg.wait_for_background_tasks().await;
         if !id_result.continue_processing {
             return denied(&id_result);
         }
+        context_table = Some(id_result.context_table.clone());
         if let Some(identity) = IdentityPayload::from_pipeline_result(&id_result) {
             ext = identity.apply_to_extensions(ext);
         }
@@ -224,7 +231,12 @@ where
         message: tool_call_message(tool, &args),
     };
     let (pre_result, pre_bg) = engine
-        .invoke_named::<CmfHook>("cmf.tool_pre_invoke", pre_payload, ext.clone(), None)
+        .invoke_named::<CmfHook>(
+            "cmf.tool_pre_invoke",
+            pre_payload,
+            ext.clone(),
+            context_table.take(),
+        )
         .await;
     pre_bg.wait_for_background_tasks().await;
     if !pre_result.continue_processing {
@@ -267,7 +279,12 @@ where
         message: tool_result_message(tool, &raw_result),
     };
     let (post_result, post_bg) = engine
-        .invoke_named::<CmfHook>("cmf.tool_post_invoke", post_payload, post_ext, None)
+        .invoke_named::<CmfHook>(
+            "cmf.tool_post_invoke",
+            post_payload,
+            post_ext,
+            Some(pre_result.context_table.clone()),
+        )
         .await;
     post_bg.wait_for_background_tasks().await;
     if !post_result.continue_processing {

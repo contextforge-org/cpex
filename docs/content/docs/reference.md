@@ -5,17 +5,17 @@ weight: 120
 
 # Reference
 
-CPEX 0.3 runs on the praxis-policy engine (PPE) 0.5.0. Rust hosts depend on the `cpex` facade, which re-exports PPE's public surface; plugin authors use `cpex::prelude`. The [Crate Map]({{< relref "/docs/crates" >}}) lists every crate and what it re-exports.
+CPEX 0.4 runs on the praxis-policy engine (PPE) 0.6.0. Rust hosts depend on the `cpex` facade, which re-exports PPE's public surface; plugin authors use `cpex::prelude`. The [Crate Map]({{< relref "/docs/crates" >}}) lists every crate and what it re-exports.
 
 | Surface | Entry point | Where |
 |---|---|---|
 | Rust | `cpex::PolicyEngine` | [`crates/cpex`](https://github.com/contextforge-org/cpex/tree/main/crates/cpex), [docs.rs/cpex](https://docs.rs/cpex) |
 | Python | `cpex.PolicyEngine` (`PluginManager` is an alias) | [`bindings/python`](https://github.com/contextforge-org/cpex/tree/main/bindings/python) |
 | Go | `cpex.PolicyEngine` | [`go/cpex`](https://github.com/contextforge-org/cpex/tree/main/go/cpex) |
-| C ABI | `cpex_engine_*`, ABI version 3 | [`crates/cpex-ffi`](https://github.com/contextforge-org/cpex/tree/main/crates/cpex-ffi) |
+| C ABI | `cpex_engine_*`, ABI version 4 | [`crates/cpex-ffi`](https://github.com/contextforge-org/cpex/tree/main/crates/cpex-ffi) |
 | Python plugins | `isolated_venv` kind (`python-host` feature) | [`crates/cpex-hosts-python`](https://github.com/contextforge-org/cpex/tree/main/crates/cpex-hosts-python) |
 
-Engine API docs are on [docs.rs/praxis-policy/0.5.0](https://docs.rs/praxis-policy/0.5.0) and [docs.rs/praxis-policy-core/0.5.0](https://docs.rs/praxis-policy-core/0.5.0).
+Engine API docs are on [docs.rs/praxis-policy/0.6.0](https://docs.rs/praxis-policy/0.6.0) and [docs.rs/praxis-policy-core/0.6.0](https://docs.rs/praxis-policy-core/0.6.0).
 
 ## Language bindings
 
@@ -32,3 +32,5 @@ The C FFI is distributed as **signed prebuilt artifacts**. A host that links the
 ## Upgrading
 
 [Migrating to 0.3]({{< relref "/docs/migration-0.3" >}}) maps every 0.2.x API, hook name and config key to its 0.3.0 form.
+
+[Migrating to 0.4]({{< relref "/docs/migration-0.4" >}}) covers PPE 0.6.0, explicit CIBA stores, CMF history and ABI 4.

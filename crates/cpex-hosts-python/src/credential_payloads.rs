@@ -725,18 +725,12 @@ mod tests {
 
     #[test]
     fn a_header_borne_credential_is_found_and_no_raw_headers_are_public() {
-        // The FFI and the Python bindings deserialize the payload, so the token
-        // arrives in the header map and `raw_token` is empty.
-        let payload: IdentityPayload = serde_json::from_value(json!({
-            "source": "bearer",
-            "headers": {
-                "Authorization": format!("Bearer {TOKEN}"),
-                "x-tenant": "acme",
-                "X-Amzn-Oidc-Data": "gateway-jwt",
-                "X-Request-Id": "looks-benign-but-unvalidated"
-            },
-        }))
-        .unwrap();
+        let payload = IdentityPayload::new("", TokenSource::Bearer).with_headers(HashMap::from([
+            ("Authorization".into(), format!("Bearer {TOKEN}")),
+            ("x-tenant".into(), "acme".into()),
+            ("X-Amzn-Oidc-Data".into(), "gateway-jwt".into()),
+            ("X-Request-Id".into(), "looks-benign-but-unvalidated".into()),
+        ]));
         assert_eq!(inbound_token(&payload).as_deref(), Some(TOKEN));
         assert_eq!(credential_header_name(&payload), "Authorization");
         assert!(public_headers(&payload).is_empty());

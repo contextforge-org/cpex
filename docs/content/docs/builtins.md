@@ -7,7 +7,7 @@ weight: 70
 
 CPEX ships a set of plugins, decision points, a session store and secret providers, all from the praxis-policy engine (PPE) builtins. Every CPEX surface carries the same set: the Rust facade, the Python package, the Go module and the C ABI. A config names a builtin by `kind`.
 
-## The 0.3.0 catalog
+## The 0.4.0 catalog
 
 | Kind | Type | Purpose |
 |------|------|---------|
@@ -38,7 +38,7 @@ CPEX also ships one plugin of its own: the Biscuit delegator (`cpex-plugin-deleg
 | Go | `engine.EnableAPL(opts...)` | all of the above |
 | C ABI | `cpex_apl_install(handle, flags)` | all of the above |
 
-There are no Cargo features to choose. `cpex = "0.3"` compiles every builtin in. The facade's only feature is `python-host`, which adds the out-of-process Python plugin host.
+There are no Cargo features to choose. `cpex = "0.4"` compiles every builtin in. The facade's only feature is `python-host`, which adds the out-of-process Python plugin host.
 
 ## The HTTP transport
 
@@ -79,8 +79,8 @@ What to use instead:
 
 A Rust host can still register PPE's reference implementations. They are `publish = false`, so there is no crates.io package to depend on. Copy their source into your own workspace instead:
 
-1. Copy [`reference/plugins/pii-scanner`](https://github.com/praxis-proxy/policy/tree/v0.5.0/reference/plugins/pii-scanner) or [`reference/plugins/audit-logger`](https://github.com/praxis-proxy/policy/tree/v0.5.0/reference/plugins/audit-logger) from the PPE `v0.5.0` tag into your workspace, for example `plugins/pii-scanner`.
-2. In its `Cargo.toml`, replace every inherited `workspace = true` field and dependency with an explicit value (the crates use edition 2024), and replace the core dependency with `ppe = { package = "praxis-policy", version = "=0.5.0", default-features = false }`. Update `praxis_policy_core::` imports to `ppe::praxis_policy_core::` so the plugin uses the same facade version CPEX pins.
+1. Copy [`reference/plugins/pii-scanner`](https://github.com/praxis-proxy/policy/tree/v0.6.0/reference/plugins/pii-scanner) or [`reference/plugins/audit-logger`](https://github.com/praxis-proxy/policy/tree/v0.6.0/reference/plugins/audit-logger) from the PPE `v0.6.0` tag into your workspace, for example `plugins/pii-scanner`.
+2. In its `Cargo.toml`, replace every inherited `workspace = true` field and dependency with an explicit value (the crates use edition 2024), and replace the core dependency with `ppe = { package = "praxis-policy", version = "=0.6.0", default-features = false, features = ["crypto-rustcrypto"] }`. Update `praxis_policy_core::` imports to `ppe::praxis_policy_core::` so the plugin uses the same facade version CPEX pins.
 3. Register its factory before loading the config:
 
 ```rust
@@ -118,7 +118,7 @@ plugins:
     capabilities: [perform_http]
     config:
       role: user
-      header: X-User-Token
+      credential: { kind: header, name: X-User-Token }
       trusted_issuers: [ ... ]
 
 global:

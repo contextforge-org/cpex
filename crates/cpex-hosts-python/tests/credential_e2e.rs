@@ -148,7 +148,13 @@ fn extensions_with_token() -> Extensions {
     let mut raw = RawCredentialsExtension::default();
     raw.inbound_tokens.insert(
         TokenRole::User,
-        RawInboundToken::new(SECRET, "Authorization", TokenKind::Jwt),
+        RawInboundToken::new(
+            SECRET,
+            ppe::praxis_policy_core::extensions::Credential::Header {
+                name: "Authorization".into(),
+            },
+            TokenKind::Jwt,
+        ),
     );
     Extensions {
         raw_credentials: Some(Arc::new(raw)),

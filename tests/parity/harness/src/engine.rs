@@ -111,6 +111,7 @@ impl Engine {
         backend: &Value,
     ) -> MediateOutcome {
         let mut stages = Vec::new();
+        let mut context_table = None;
         let mut ext = Extensions {
             meta: Some(Arc::new(MetaExtension {
                 entity_type: Some("tool".into()),
@@ -148,13 +149,19 @@ impl Engine {
             };
             let (res, bg) = self
                 .mgr
-                .invoke_named::<IdentityHook>(&hooks.identity, payload, ext.clone(), None)
+                .invoke_named::<IdentityHook>(
+                    &hooks.identity,
+                    payload,
+                    ext.clone(),
+                    context_table.take(),
+                )
                 .await;
             bg.wait_for_background_tasks().await;
             stages.push(project_stage(&hooks.identity, &res));
             if !res.continue_processing {
                 return halted(stages, &res);
             }
+            context_table = Some(res.context_table.clone());
             if let Some(identity) = IdentityPayload::from_pipeline_result(&res) {
                 ext = identity.apply_to_extensions(ext);
             }
@@ -175,7 +182,7 @@ impl Engine {
         };
         let (pre, bg) = self
             .mgr
-            .invoke_named::<CmfHook>(&hooks.pre, pre_payload, ext.clone(), None)
+            .invoke_named::<CmfHook>(&hooks.pre, pre_payload, ext.clone(), context_table.take())
             .await;
         bg.wait_for_background_tasks().await;
         stages.push(project_stage(&hooks.pre, &pre));
@@ -199,7 +206,12 @@ impl Engine {
         };
         let (post, bg) = self
             .mgr
-            .invoke_named::<CmfHook>(&hooks.post, post_payload, post_ext, None)
+            .invoke_named::<CmfHook>(
+                &hooks.post,
+                post_payload,
+                post_ext,
+                Some(pre.context_table.clone()),
+            )
             .await;
         bg.wait_for_background_tasks().await;
         stages.push(project_stage(&hooks.post, &post));
@@ -405,7 +417,10 @@ fn project_raw_credentials(
         .map(|(role, t)| {
             json!({
                 "role": to_json(role),
-                "source_header": t.source_header,
+                "source_header": match &t.source {
+                    ppe::praxis_policy_core::extensions::Credential::Header { name } => name.clone(),
+                    _ => panic!("legacy parity requires a header credential"),
+                },
                 "kind": to_json(&t.kind),
                 "token": if t.token.is_empty() { Value::Null } else { json!(SCRUBBED_TOKEN) },
             })

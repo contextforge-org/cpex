@@ -23,7 +23,9 @@
 package cpex
 
 import (
+	"crypto/ed25519"
 	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
@@ -548,4 +550,140 @@ global:
 	wantAllowed(t, "first engine taints", callTool(t, first, alice, "get_compensation", map[string]any{"employee_id": "e-1"}, session))
 	wantDenied(t, "second engine after taint", callTool(t, second, alice, "send_email", email, session), "session_tainted")
 	wantAllowed(t, "fresh session on second engine", callTool(t, second, alice, "send_email", email, session+"-fresh"))
+}
+
+func TestAcceptanceDPoPContextSurvivesInvokeResolved(t *testing.T) {
+	idp := newMockIdP(t)
+	public, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	jwk := map[string]string{"kty": "OKP", "crv": "Ed25519", "x": b64url(public)}
+	canonical, _ := json.Marshal(jwk)
+	thumbprint := sha256.Sum256(canonical)
+	header, _ := json.Marshal(map[string]string{"alg": "HS256", "kid": accKID})
+	claims, _ := json.Marshal(map[string]any{
+		"iss": accIssuer, "aud": accAudience, "sub": "alice",
+		"exp": time.Now().Add(time.Minute).Unix(),
+		"cnf": map[string]string{"jkt": b64url(thumbprint[:])},
+	})
+	signing := b64url(header) + "." + b64url(claims)
+	mac := hmac.New(sha256.New, accSecret)
+	mac.Write([]byte(signing))
+	token := signing + "." + b64url(mac.Sum(nil))
+	ath := sha256.Sum256([]byte(token))
+	proofHeader, _ := json.Marshal(map[string]any{"alg": "EdDSA", "typ": "dpop+jwt", "jwk": jwk})
+	proofClaims, _ := json.Marshal(map[string]any{
+		"htu": "https://gateway.test/tools", "htm": "POST", "iat": time.Now().Unix(),
+		"jti": "context-proof", "ath": b64url(ath[:]),
+	})
+	proofSigning := b64url(proofHeader) + "." + b64url(proofClaims)
+	proof := proofSigning + "." + b64url(ed25519.Sign(private, []byte(proofSigning)))
+	config := strings.Replace(idpPlugin(idp.srv.URL+"/jwks", true), "          algorithms: [HS256]",
+		"          algorithms: [HS256]\n          dpop: {mode: required, algorithms: [EdDSA]}", 1)
+	config = strings.Replace(config, "capabilities: [perform_http]", "capabilities: [perform_http, read_headers]", 1) + `
+routes:
+  - tool: lookup
+    authentication: [idp]
+    authorization:
+      pre_invocation: ["require(authenticated)"]
+`
+	eng := accEngine(t, config, WithPrivateDestinations())
+	identity := NewIdentityPayload(TokenSourceBearer, map[string]string{"authorization": "DPoP " + token, "dpop": proof})
+	ext := &Extensions{Meta: &MetaExtension{EntityType: "tool", EntityName: "lookup"},
+		Http: &HttpExtension{Method: "POST", Path: "/tools", Host: "gateway.test", Scheme: "https"}}
+	payload := MessagePayload{Message: NewMessage("user", NewToolCallPart(ToolCall{
+		ToolCallID: "proof-call", Name: "lookup", Arguments: map[string]any{},
+	}))}
+	first, ct, bg, err := eng.InvokeResolved(identity, "cmf.tool_pre_invoke", PayloadCMFMessage, payload, ext, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bg != nil {
+		bg.Close()
+	}
+	wantAllowed(t, "first proof", first)
+	resolved, err := first.DeserializeExtensions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved == nil || resolved.Security == nil || resolved.Security.Subject == nil || resolved.Security.Subject.KeyBinding == nil {
+		t.Fatal("verified key binding was lost")
+	}
+	if binding := resolved.Security.Subject.KeyBinding; binding.Method != "dpop" || binding.Thumbprint != b64url(thumbprint[:]) {
+		t.Fatalf("unexpected key binding: %+v", binding)
+	}
+	second, next, bg, err := eng.InvokeResolved(identity, "cmf.tool_pre_invoke", PayloadCMFMessage, payload, ext, ct)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bg != nil {
+		bg.Close()
+	}
+	if next != nil {
+		next.Close()
+	}
+	wantAllowed(t, "same request", second)
+	replay, last, bg, err := eng.InvokeResolved(identity, "cmf.tool_pre_invoke", PayloadCMFMessage, payload, ext, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bg != nil {
+		bg.Close()
+	}
+	if last != nil {
+		last.Close()
+	}
+	wantDenied(t, "different request", replay, "auth.dpop_replay")
+}
+
+func TestAcceptanceQueryIdentityAndTypedHistory(t *testing.T) {
+	idp := newMockIdP(t)
+	config := strings.Replace(idpPlugin(idp.srv.URL+"/jwks", true), "      claim_mapper: standard",
+		"      claim_mapper: standard\n      credential: {kind: query_param, name: access_token}", 1)
+	config = strings.Replace(config, "capabilities: [perform_http]", "capabilities: [perform_http, read_query]", 1) + `
+routes:
+  - tool: lookup
+    authentication: [idp]
+    authorization:
+      pre_invocation: ["require(authenticated)"]
+`
+	eng := accEngine(t, config, WithPrivateDestinations())
+	query := "access_token=" + mintJWT(t, "alice", nil, time.Minute, nil)
+	ext := &Extensions{
+		Meta: &MetaExtension{EntityType: "tool", EntityName: "lookup"},
+		Http: &HttpExtension{Query: &query, ClientAddress: "2001:0db8::1"},
+		Agent: &AgentExtension{Conversation: &ConversationContext{
+			History: []Message{NewMessage("user", NewTextPart("earlier turn"))},
+		}},
+	}
+	payload := MessagePayload{Message: NewMessage("assistant", NewToolCallPart(ToolCall{
+		ToolCallID: "query-call", Name: "lookup", Arguments: map[string]any{},
+	}))}
+	result, ct, bg, err := eng.InvokeResolved(NewIdentityPayload(TokenSourceBearer, nil),
+		"cmf.tool_pre_invoke", PayloadCMFMessage, payload, ext, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ct.Close()
+	defer bg.Close()
+	wantAllowed(t, "query credential", result)
+	returned, err := result.DeserializeExtensions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if returned == nil || returned.Http == nil || returned.Http.Query == nil || *returned.Http.Query != "[REDACTED]" {
+		t.Fatalf("query was not redacted: %+v", returned)
+	}
+	if returned.Http.ClientAddress != "2001:db8::/64" {
+		t.Fatalf("client address was not anonymized: %q", returned.Http.ClientAddress)
+	}
+	if returned.Agent == nil || returned.Agent.Conversation == nil || len(returned.Agent.Conversation.History) != 1 ||
+		returned.Agent.Conversation.History[0].Role != "user" {
+		t.Fatal("typed history was lost through FFI")
+	}
+	_, _, _, err = eng.InvokeByName("cmf.tool_pre_invoke", PayloadCMFMessage, payload, returned, nil)
+	if !errors.Is(err, ErrCpexParse) {
+		t.Fatalf("redacted query must be refused as live input: %v", err)
+	}
 }

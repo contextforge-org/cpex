@@ -229,7 +229,7 @@ async def test_jwt_identity_gates_a_route_by_role(tmp_path, jwks_url):
     [
         (mint("alice", ["hr"], exp_offset=-3600), "auth.token_expired"),
         (mint("alice", ["hr"], secret=b"not-the-issuer-key-not-the-issuer"), "auth.signature_invalid"),
-        ("not-a-jwt", "auth.malformed"),
+        ("not-a-jwt", "auth.malformed_credential"),
     ],
     ids=["expired", "forged", "malformed"],
 )

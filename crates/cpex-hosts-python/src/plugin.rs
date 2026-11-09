@@ -347,6 +347,14 @@ impl RespawnState {
 impl IsolatedPythonPlugin {
     /// Build a plugin from its config entry, parsing the venv settings.
     pub fn from_config(config: &PluginConfig) -> Result<Self, Box<PluginError>> {
+        for capability in ["read_query", "read_llm_request", "read_metadata"] {
+            if config.capabilities.contains(capability) {
+                return Err(PluginError::Config {
+                    message: format!("the installed Python worker cannot honor '{capability}'"),
+                }
+                .boxed());
+            }
+        }
         let venv_config = VenvConfig::from_plugin_config(config)?;
 
         // Not read from the config block — see `DEFAULT_PLUGIN_DIR`. A
@@ -1488,6 +1496,18 @@ mod tests {
     }
 
     #[test]
+    fn unsupported_worker_capabilities_fail_before_startup() {
+        for capability in ["read_query", "read_llm_request", "read_metadata"] {
+            let mut config = config_with(serde_json::json!({"class_name": "my_pkg.Minimal"}));
+            config.capabilities.insert(capability.into());
+            let err = IsolatedPythonPlugin::from_config(&config)
+                .err()
+                .expect("unsupported capability");
+            assert!(err.to_string().contains(capability));
+        }
+    }
+
+    #[test]
     fn under_the_shim_cmf_hooks_reach_the_worker_under_legacy_names() {
         let mut config = config_with(serde_json::json!({"class_name": "my_pkg.Minimal"}));
         config.hooks = vec![
@@ -2276,7 +2296,13 @@ while True:
         let mut raw = RawCredentialsExtension::default();
         raw.inbound_tokens.insert(
             TokenRole::User,
-            RawInboundToken::new("E2E-SECRET-TOKEN", "Authorization", TokenKind::Jwt),
+            RawInboundToken::new(
+                "E2E-SECRET-TOKEN",
+                ppe::praxis_policy_core::extensions::Credential::Header {
+                    name: "Authorization".into(),
+                },
+                TokenKind::Jwt,
+            ),
         );
         let extensions = Extensions {
             raw_credentials: Some(Arc::new(raw)),
@@ -2373,7 +2399,13 @@ while True:
         let mut raw = RawCredentialsExtension::default();
         raw.inbound_tokens.insert(
             TokenRole::User,
-            RawInboundToken::new("E2E-SECRET-TOKEN", "Authorization", TokenKind::Jwt),
+            RawInboundToken::new(
+                "E2E-SECRET-TOKEN",
+                ppe::praxis_policy_core::extensions::Credential::Header {
+                    name: "Authorization".into(),
+                },
+                TokenKind::Jwt,
+            ),
         );
         let extensions = Extensions {
             raw_credentials: Some(Arc::new(raw)),
@@ -2629,7 +2661,13 @@ while True:
         let mut raw = RawCredentialsExtension::default();
         raw.inbound_tokens.insert(
             TokenRole::User,
-            RawInboundToken::new("RESPAWN-SECRET", "Authorization", TokenKind::Jwt),
+            RawInboundToken::new(
+                "RESPAWN-SECRET",
+                ppe::praxis_policy_core::extensions::Credential::Header {
+                    name: "Authorization".into(),
+                },
+                TokenKind::Jwt,
+            ),
         );
         let extensions = Extensions {
             raw_credentials: Some(Arc::new(raw)),
@@ -2693,7 +2731,13 @@ while True:
         let mut raw = RawCredentialsExtension::default();
         raw.inbound_tokens.insert(
             TokenRole::User,
-            RawInboundToken::new("MUST-NOT-LEAK", "Authorization", TokenKind::Jwt),
+            RawInboundToken::new(
+                "MUST-NOT-LEAK",
+                ppe::praxis_policy_core::extensions::Credential::Header {
+                    name: "Authorization".into(),
+                },
+                TokenKind::Jwt,
+            ),
         );
         let extensions = Extensions {
             raw_credentials: Some(Arc::new(raw)),
